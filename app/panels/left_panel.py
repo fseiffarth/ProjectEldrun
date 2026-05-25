@@ -398,7 +398,7 @@ class LeftPanel(Gtk.Box):
             if self._oam is not None:
                 self._oam.add_or_update(app, os.path.basename(app), [])
                 self._notify_warm()
-            self._pending_auto_embed_exe = app
+            self._pending_auto_embed_exe = GLib.find_program_in_path(app) or app
         except OSError:
             self._show_choose_app_dialog(path)
 
@@ -477,7 +477,7 @@ class LeftPanel(Gtk.Box):
                 if self._oam is not None:
                     self._oam.add_or_update(cmd, os.path.basename(cmd), [])
                     self._notify_warm()
-                self._pending_auto_embed_exe = cmd
+                self._pending_auto_embed_exe = GLib.find_program_in_path(cmd) or cmd
             except OSError:
                 pass
             win.close()
@@ -819,14 +819,24 @@ class LeftPanel(Gtk.Box):
 
         self._running = new_running
 
-        # Auto-embed: if we're waiting for a specific exe to appear, embed it
+        # Auto-embed: scan all normal windows for the pending exe (skip CWD filter)
         if self._pending_auto_embed_exe is not None:
-            info = new_running.get(self._pending_auto_embed_exe)
-            if info is not None:
-                xid = info["xid"]
-                self._pending_auto_embed_exe = None
-                if self._center is not None and hasattr(self._center, "show_app_window"):
-                    GLib.idle_add(lambda: self._center.show_app_window(xid))
+            for xid in xids:
+                try:
+                    win = self._disp.create_resource_object("window", xid)
+                    if not self._is_normal(win):
+                        continue
+                    pid = self._window_pid(win)
+                    if pid is None or pid == _OWN_PID:
+                        continue
+                    exe = self._get_process_exe(pid)
+                    if exe == self._pending_auto_embed_exe:
+                        self._pending_auto_embed_exe = None
+                        if self._center is not None and hasattr(self._center, "show_app_window"):
+                            GLib.idle_add(lambda x=xid: self._center.show_app_window(x))
+                        break
+                except Exception:
+                    continue
 
         # Record newly-seen apps in open_apps.json
         if self._oam is not None:

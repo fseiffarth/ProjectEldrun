@@ -144,28 +144,26 @@
 
 ---
 
-## Next
-
 ### Phase 14 — Network status indicator
 
-Add a green/red status lamp in the top-left corner of the header bar that reflects live internet connectivity. When offline the terminal is considered unusable and the lamp signals this clearly.
-
-- [ ] **Status lamp widget**: small circular `Gtk.Label` (●) in the header bar, far left, with CSS classes `status-online` (green) and `status-offline` (red)
-- [ ] **Connectivity probe**: background `GLib.timeout_add` every 5 s — attempt a non-blocking TCP connect to a reliable host (e.g. `1.1.1.1:53`) via a thread; update lamp on the GTK main thread via `GLib.idle_add`
-- [ ] **Offline visual feedback**: when offline, overlay a translucent "No connection" banner or dim the active terminal; block new terminal spawns with a toast/label until connectivity is restored
-- [ ] **Tooltip**: lamp tooltip shows "Online" / "Offline" and the timestamp of the last successful probe
-- [ ] **Graceful fallback**: if the probe thread errors (e.g. no network interface), treat as offline rather than crashing
+- [x] **Status lamp widget**: small circular `Gtk.Label` (●) in the header bar, far left via `Gtk.CenterBox`; CSS classes `status-online` (green) and `status-offline` (red)
+- [x] **Connectivity probe**: daemon thread in `app/network_monitor.py`; TCP connect to `1.1.1.1:53` every 5 s; main-thread callback via `GLib.idle_add` on state change
+- [x] **Offline visual feedback**: translucent `⚠ No internet connection` banner overlay in center panel (`CenterPanel.set_offline()`)
+- [x] **Tooltip**: lamp tooltip shows "Online" or "Offline — last online HH:MM:SS"
+- [x] **Graceful fallback**: any socket/OS exception in `_probe()` returns `False` (treated as offline); thread runs as daemon and never crashes the main process
 
 ### Phase 15 — Project time tracking + timeline bar
 
-Track how long each project is the active terminal during the day and surface that information directly in the right panel and in each project's `status.md`.
+- [x] **Session recorder**: `TimeTracker` in `app/time_tracker.py`; `on_project_activated` / `on_project_deactivated` called from `_apply_panel_visibility`; appends `{project_id, date, start_iso, duration_s}` to `~/.local/share/eldrun/time_log.json`
+- [x] **Today's totals**: `TimeTracker.get_today_totals()` aggregates from log; refreshed on every project switch and every 60 s via `GLib.timeout_add`
+- [x] **Timeline bar in right panel**: `Gtk.ProgressBar` below each `ProjectRow`; fraction = project's share of today's max time; tooltip = "Xh Ym today"; hidden when zero
+- [x] **CSS**: `progressbar.project-time-bar` (muted blue fill, rounded, 4 px height)
+- [x] **status.md sync**: `TimeTracker._update_status_md()` rewrites `## Time Log` section on session close; creates section if absent, replaces if present; last 20 sessions in table; total duration line
+- [x] **Startup resume**: `TimeTracker._close_orphan_session()` reads `~/.local/share/eldrun/active_session.json` sentinel on init and synthesises a closing log entry
 
-- [ ] **Session recorder**: when `_on_center_page_changed` switches to a project terminal, start a session timer (`time.monotonic()`); when the project loses focus (switch to Root, another project, or app embed), close the session and append `{project_id, date, start_iso, duration_s}` to `~/.local/share/eldrun/time_log.json`
-- [ ] **Today's totals**: derive per-project totals for the current calendar date from `time_log.json`; recompute on every project switch and every 60 s via `GLib.timeout_add`
-- [ ] **Timeline bar in right panel**: below each `ProjectRow` label, render a thin (`4 px`) horizontal progress bar whose width is proportional to this project's share of total time today across all open projects; tooltip shows `"Xh Ym today"`; bar is hidden when today's total is zero
-- [ ] **CSS**: new class `project-time-bar` (muted blue fill, rounded, no border); bar container always occupies its reserved height so rows don't shift
-- [ ] **status.md sync**: on session close, rewrite the `## Time Log` section in the project's `status.md` — one summary line (`Total: Xh Ym`) and a table of the last 20 sessions (date, start time, duration); create the section if absent, replace it if present
-- [ ] **Startup resume**: on launch, any open project that was active when the app last closed has no matching session-end record; treat its last known start (stored in a `~/.local/share/eldrun/active_session.json` sentinel) as a session to close before displaying totals
+---
+
+## Next
 
 ---
 

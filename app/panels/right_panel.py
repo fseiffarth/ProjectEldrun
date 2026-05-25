@@ -13,11 +13,13 @@ class ProjectRow(Gtk.ListBoxRow):
         self.project_name = project["name"]
         self.get_style_context().add_class("project-row")
 
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         box.set_margin_start(10)
         box.set_margin_end(4)
         box.set_margin_top(6)
-        box.set_margin_bottom(6)
+        box.set_margin_bottom(2)
 
         icon = Gtk.Image.new_from_icon_name("folder-symbolic")
         box.append(icon)
@@ -34,7 +36,18 @@ class ProjectRow(Gtk.ListBoxRow):
         close_btn.connect("clicked", lambda _: on_close(project["id"]))
         box.append(close_btn)
 
-        self.set_child(box)
+        vbox.append(box)
+
+        self._time_bar = Gtk.ProgressBar()
+        self._time_bar.add_css_class("project-time-bar")
+        self._time_bar.set_fraction(0.0)
+        self._time_bar.set_visible(False)
+        self._time_bar.set_margin_start(10)
+        self._time_bar.set_margin_end(10)
+        self._time_bar.set_margin_bottom(4)
+        vbox.append(self._time_bar)
+
+        self.set_child(vbox)
 
     def set_active(self, active: bool):
         ctx = self.get_style_context()
@@ -50,13 +63,21 @@ class ProjectRow(Gtk.ListBoxRow):
         else:
             ctx.remove_class("project-row-warm")
 
+    def update_time_bar(self, fraction: float, tooltip: str):
+        if fraction > 0:
+            self._time_bar.set_fraction(min(1.0, fraction))
+            self._time_bar.set_tooltip_text(tooltip)
+            self._time_bar.set_visible(True)
+        else:
+            self._time_bar.set_visible(False)
+
 
 _TERMINAL_OPTIONS = ["claude", "codex"]
 
 
 class RightPanel(Gtk.Box):
     def __init__(self, project_manager, center_panel, on_new_project, on_import_project,
-                 settings_manager=None, default_apps_manager=None):
+                 settings_manager=None, default_apps_manager=None, on_toggle_theme=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("panel-right")
         self.set_size_request(220, -1)
@@ -67,6 +88,7 @@ class RightPanel(Gtk.Box):
         self._dam = default_apps_manager
         self._on_new_project = on_new_project
         self._on_import_project = on_import_project
+        self._on_toggle_theme = on_toggle_theme
         self._project_rows: dict[str, ProjectRow] = {}
         self._active_project_id: str | None = None
         self._popover: Gtk.Popover | None = None
@@ -142,6 +164,23 @@ class RightPanel(Gtk.Box):
 
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
+        theme_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        theme_lbl = Gtk.Label(label="Dark mode")
+        theme_lbl.set_hexpand(True)
+        theme_lbl.set_xalign(0)
+        theme_row.append(theme_lbl)
+
+        theme_switch = Gtk.Switch()
+        current_scheme = self._settings.get("color_scheme") if self._settings else "dark"
+        theme_switch.set_active(current_scheme != "light")
+        theme_switch.set_valign(Gtk.Align.CENTER)
+        theme_switch.connect("notify::active", self._on_theme_switched)
+        theme_row.append(theme_switch)
+
+        box.append(theme_row)
+
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
         ft_btn = Gtk.Button(label="File Type Apps…")
         ft_btn.add_css_class("flat")
         ft_btn.set_halign(Gtk.Align.START)
@@ -164,6 +203,13 @@ class RightPanel(Gtk.Box):
             self._settings.set("terminal_command", _TERMINAL_OPTIONS[idx])
             if hasattr(self._center, "respawn_all"):
                 self._center.respawn_all()
+
+    def _on_theme_switched(self, sw, _pspec):
+        is_dark = sw.get_active()
+        if self._settings:
+            self._settings.set("color_scheme", "dark" if is_dark else "light")
+        if self._on_toggle_theme:
+            self._on_toggle_theme(is_dark)
 
     # ── filetype settings window ──────────────────────────────────────────────
 
@@ -483,6 +529,19 @@ class RightPanel(Gtk.Box):
             row = self._project_rows.get(p["id"])
             if row:
                 row.set_warm(warm)
+
+    def update_time_bars(self, totals: dict):
+        """Update all per-project time bars. totals: {project_id: seconds_today}."""
+        max_time = max(totals.values(), default=0)
+        for pid, row in self._project_rows.items():
+            secs = totals.get(pid, 0.0)
+            if secs > 0 and max_time > 0:
+                fraction = secs / max_time
+                h = int(secs // 3600)
+                m = int((secs % 3600) // 60)
+                row.update_time_bar(fraction, f"{h}h {m}m today")
+            else:
+                row.update_time_bar(0, "")
 
     # ── callbacks ─────────────────────────────────────────────────────────────
 

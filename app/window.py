@@ -1,3 +1,5 @@
+import time
+
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
@@ -7,9 +9,12 @@ from gi.repository import Gtk, Adw, Gdk, GLib
 from project_manager import ProjectManager
 from settings_manager import SettingsManager
 from default_apps_manager import DefaultAppsManager
+from network_monitor import NetworkMonitor
+from time_tracker import TimeTracker
 from panels.center_panel import CenterPanel, _MASTER_PAGE
 from panels.left_panel import LeftPanel
 from panels.right_panel import RightPanel
+from eldrun import set_theme
 
 _LEFT_WIDTH = 220
 _RIGHT_WIDTH = 220
@@ -30,10 +35,14 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.project_manager = ProjectManager()
         self.settings_manager = SettingsManager()
         self.default_apps_manager = DefaultAppsManager()
+        self._time_tracker = TimeTracker()
+        set_theme(self.settings_manager.get("color_scheme") != "light")
         GLib.idle_add(self._bootstrap_default_apps)
         self._add_key_controller()
         self._build_layout()
         self.maximize()
+        self._network_monitor = NetworkMonitor(self._on_network_status_changed)
+        GLib.timeout_add(60_000, self._on_time_tick)
 
         self.connect("notify::maximized", self._on_maximized_notify)
 
@@ -66,33 +75,23 @@ class EldrunWindow(Adw.ApplicationWindow):
     # ── header bar ────────────────────────────────────────────────────────────
 
     def _build_header(self) -> Gtk.WindowHandle:
-        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        header_box.add_css_class("app-header")
+        center_box = Gtk.CenterBox()
+        center_box.add_css_class("app-header")
 
-        self._left_panel_btn = Gtk.Button(label="‹")
-        self._left_panel_btn.add_css_class("flat")
-        self._left_panel_btn.add_css_class("panel-toggle-btn")
-        self._left_panel_btn.set_valign(Gtk.Align.CENTER)
-        self._left_panel_btn.set_margin_start(4)
-        self._left_panel_btn.set_tooltip_text("Hide left panel")
-        self._left_panel_btn.connect("clicked", lambda _: self._toggle_left_panel())
-        header_box.append(self._left_panel_btn)
+        # Left: status lamp
+        self._status_lamp = Gtk.Label(label="●")
+        self._status_lamp.add_css_class("status-lamp")
+        self._status_lamp.add_css_class("status-online")
+        self._status_lamp.set_tooltip_text("Online")
+        self._status_lamp.set_valign(Gtk.Align.CENTER)
+        center_box.set_start_widget(self._status_lamp)
 
+        # Center: title
         title = Gtk.Label(label="ELDRUN")
         title.add_css_class("app-title")
-        title.set_hexpand(True)
-        title.set_halign(Gtk.Align.CENTER)
-        header_box.append(title)
+        center_box.set_center_widget(title)
 
-        self._right_panel_btn = Gtk.Button(label="›")
-        self._right_panel_btn.add_css_class("flat")
-        self._right_panel_btn.add_css_class("panel-toggle-btn")
-        self._right_panel_btn.set_valign(Gtk.Align.CENTER)
-        self._right_panel_btn.set_margin_end(4)
-        self._right_panel_btn.set_tooltip_text("Hide right panel")
-        self._right_panel_btn.connect("clicked", lambda _: self._toggle_right_panel())
-        header_box.append(self._right_panel_btn)
-
+        # Right: WM buttons
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         btn_box.set_valign(Gtk.Align.CENTER)
         btn_box.set_margin_end(8)
@@ -121,10 +120,10 @@ class EldrunWindow(Adw.ApplicationWindow):
         close_btn.connect("clicked", lambda _: self.get_application().quit())
         btn_box.append(close_btn)
 
-        header_box.append(btn_box)
+        center_box.set_end_widget(btn_box)
 
         handle = Gtk.WindowHandle()
-        handle.set_child(header_box)
+        handle.set_child(center_box)
         return handle
 
     def _on_maximize_clicked(self, _btn):
@@ -135,6 +134,7 @@ class EldrunWindow(Adw.ApplicationWindow):
 
     def _on_maximized_notify(self, win, _pspec):
         self._max_btn.set_tooltip_text("Restore" if win.is_maximized() else "Maximize")
+        GLib.idle_add(self._init_inner_paned)
 
     # ── layout ────────────────────────────────────────────────────────────────
 
@@ -161,6 +161,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_import_project=self._on_import_project_clicked,
             settings_manager=self.settings_manager,
             default_apps_manager=self.default_apps_manager,
+            on_toggle_theme=self._on_toggle_theme,
         )
 
         self._inner_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
@@ -181,20 +182,72 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._outer_paned.set_hexpand(True)
         self._outer_paned.set_vexpand(True)
 
-        root.append(self._outer_paned)
+        self._left_toggle_btn = Gtk.Button(label="‹")
+        self._left_toggle_btn.add_css_class("panel-edge-btn")
+        self._left_toggle_btn.set_valign(Gtk.Align.CENTER)
+        self._left_toggle_btn.set_halign(Gtk.Align.START)
+        self._left_toggle_btn.set_margin_start(_LEFT_WIDTH - 16)
+        self._left_toggle_btn.set_tooltip_text("Hide left panel")
+        self._left_toggle_btn.connect("clicked", lambda _: self._toggle_left_panel())
+
+        self._right_toggle_btn = Gtk.Button(label="›")
+        self._right_toggle_btn.add_css_class("panel-edge-btn")
+        self._right_toggle_btn.set_valign(Gtk.Align.CENTER)
+        self._right_toggle_btn.set_halign(Gtk.Align.END)
+        self._right_toggle_btn.set_margin_end(_RIGHT_WIDTH - 16)
+        self._right_toggle_btn.set_tooltip_text("Hide right panel")
+        self._right_toggle_btn.connect("clicked", lambda _: self._toggle_right_panel())
+
+        overlay = Gtk.Overlay()
+        overlay.set_child(self._outer_paned)
+        overlay.add_overlay(self._left_toggle_btn)
+        overlay.add_overlay(self._right_toggle_btn)
+        overlay.set_hexpand(True)
+        overlay.set_vexpand(True)
+
+        root.append(overlay)
         self.connect("map", self._on_map)
 
     def _on_map(self, *_):
-        w = self.get_allocated_width() or 1440
         self._outer_paned.set_position(_LEFT_WIDTH)
-        self._inner_paned.set_position(max(400, w - _LEFT_WIDTH - _RIGHT_WIDTH))
         for p in self.project_manager.projects:
             self._center_panel.add_project_terminal(p)
             self._right_panel.add_project_row(p)
         self._center_panel.open_master_terminal()
         self._right_panel.refresh_warm_states(self.project_manager.projects)
+        GLib.idle_add(self._init_inner_paned)
+
+    def _init_inner_paned(self):
+        outer_w = self._outer_paned.get_allocated_width() or 1440
+        page = self._center_panel._stack.get_visible_child_name() or "empty"
+        show_left = (page.startswith("project-")
+                     and not self._left_hidden and not self._panels_hidden)
+        show_right = not self._right_hidden and not self._panels_hidden
+        left_w = _LEFT_WIDTH if show_left else 0
+        if show_right:
+            self._inner_paned.set_position(max(400, outer_w - left_w - _RIGHT_WIDTH))
+        return False
 
     # ── panel toggle (Super key + individual buttons) ─────────────────────────
+
+    def _update_toggle_btns(self, show_left: bool, show_right: bool):
+        if show_left:
+            self._left_toggle_btn.set_label("‹")
+            self._left_toggle_btn.set_margin_start(_LEFT_WIDTH - 16)
+            self._left_toggle_btn.set_tooltip_text("Hide left panel")
+        else:
+            self._left_toggle_btn.set_label("›")
+            self._left_toggle_btn.set_margin_start(2)
+            self._left_toggle_btn.set_tooltip_text("Show left panel")
+
+        if show_right:
+            self._right_toggle_btn.set_label("›")
+            self._right_toggle_btn.set_margin_end(_RIGHT_WIDTH - 16)
+            self._right_toggle_btn.set_tooltip_text("Hide right panel")
+        else:
+            self._right_toggle_btn.set_label("‹")
+            self._right_toggle_btn.set_margin_end(2)
+            self._right_toggle_btn.set_tooltip_text("Show right panel")
 
     def _on_center_page_changed(self, page_name: str):
         self._apply_panel_visibility()
@@ -204,18 +257,36 @@ class EldrunWindow(Adw.ApplicationWindow):
         show_left = (page.startswith("project-")
                      and not self._left_hidden
                      and not self._panels_hidden)
+        show_right = not self._right_hidden and not self._panels_hidden
+
         self._left_panel.set_visible(show_left)
-        if show_left:
-            self._outer_paned.set_position(_LEFT_WIDTH)
+        self._right_panel.set_visible(show_right)
+        self._update_toggle_btns(show_left, show_right)
+
+        # GTK4 Paned does not auto-collapse when a child is hidden — positions
+        # must be set explicitly to reclaim the space.
+        self._outer_paned.set_position(_LEFT_WIDTH if show_left else 0)
+
+        if not show_right:
+            self._inner_paned.set_position(9999)  # clamped to paned max
+        elif self._outer_paned.get_allocated_width() > 0:
+            outer_w = self._outer_paned.get_allocated_width()
+            left_w = _LEFT_WIDTH if show_left else 0
+            self._inner_paned.set_position(max(400, outer_w - left_w - _RIGHT_WIDTH))
+
         if page.startswith("project-"):
             project_id = page[len("project-"):]
             project = self.project_manager.get_project(project_id)
             self._left_panel.update_project(project)
             self._right_panel.set_active_project(project_id)
+            if project:
+                self._time_tracker.on_project_activated(project)
+            self._refresh_time_bars()
         else:
             self._left_panel.update_project(None)
             self._right_panel.set_active_project(None)
-        self._right_panel.set_visible(not self._right_hidden and not self._panels_hidden)
+            self._time_tracker.on_project_deactivated()
+            self._refresh_time_bars()
 
     def _toggle_panels(self):
         self._panels_hidden = not self._panels_hidden
@@ -224,22 +295,14 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _toggle_left_panel(self):
         self._left_hidden = not self._left_hidden
         self._apply_panel_visibility()
-        if self._left_hidden:
-            self._left_panel_btn.set_label("›")
-            self._left_panel_btn.set_tooltip_text("Show left panel")
-        else:
-            self._left_panel_btn.set_label("‹")
-            self._left_panel_btn.set_tooltip_text("Hide left panel")
 
     def _toggle_right_panel(self):
         self._right_hidden = not self._right_hidden
         self._apply_panel_visibility()
-        if self._right_hidden:
-            self._right_panel_btn.set_label("‹")
-            self._right_panel_btn.set_tooltip_text("Show right panel")
-        else:
-            self._right_panel_btn.set_label("›")
-            self._right_panel_btn.set_tooltip_text("Hide right panel")
+
+    def _on_toggle_theme(self, is_dark: bool):
+        set_theme(is_dark)
+        self.settings_manager.set("color_scheme", "dark" if is_dark else "light")
 
     # ── project dialog handlers ───────────────────────────────────────────────
 
@@ -269,3 +332,33 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _bootstrap_default_apps(self) -> bool:
         self.default_apps_manager.bootstrap_from_system()
         return False
+
+    # ── network status (Phase 14) ─────────────────────────────────────────────
+
+    def _on_network_status_changed(self, is_online: bool, last_success_ts: float | None):
+        lamp = self._status_lamp
+        if is_online:
+            lamp.remove_css_class("status-offline")
+            lamp.add_css_class("status-online")
+            lamp.set_tooltip_text("Online")
+        else:
+            lamp.remove_css_class("status-online")
+            lamp.add_css_class("status-offline")
+            ts_str = ""
+            if last_success_ts is not None:
+                import datetime as _dt
+                ts_str = " — last online " + _dt.datetime.fromtimestamp(
+                    last_success_ts
+                ).strftime("%H:%M:%S")
+            lamp.set_tooltip_text(f"Offline{ts_str}")
+        self._center_panel.set_offline(not is_online)
+
+    # ── time tracking (Phase 15) ──────────────────────────────────────────────
+
+    def _on_time_tick(self) -> bool:
+        self._refresh_time_bars()
+        return True
+
+    def _refresh_time_bars(self):
+        totals = self._time_tracker.get_today_totals()
+        self._right_panel.update_time_bars(totals)

@@ -84,7 +84,18 @@ class CenterPanel(Gtk.Box):
         self._back_btn.connect("clicked", self._on_back_to_terminal)
         overlay.add_overlay(self._back_btn)
 
+        self._offline_banner = Gtk.Label(label="⚠  No internet connection")
+        self._offline_banner.add_css_class("offline-banner")
+        self._offline_banner.set_halign(Gtk.Align.CENTER)
+        self._offline_banner.set_valign(Gtk.Align.START)
+        self._offline_banner.set_visible(False)
+        overlay.add_overlay(self._offline_banner)
+
         self.append(overlay)
+
+    def set_offline(self, offline: bool):
+        """Show or hide the 'No internet connection' banner overlay."""
+        self._offline_banner.set_visible(offline)
 
     def _cmd(self) -> list[str]:
         name = self._settings.get("terminal_command") if self._settings else "claude"
