@@ -38,15 +38,27 @@ class ProjectRow(Gtk.ListBoxRow):
 
         vbox.append(box)
 
+        bar_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        bar_row.set_margin_start(10)
+        bar_row.set_margin_end(6)
+        bar_row.set_margin_bottom(4)
+        bar_row.set_visible(False)
+        self._time_bar_row = bar_row
+
         self._time_bar = Gtk.ProgressBar()
         self._time_bar.add_css_class("project-time-bar")
         self._time_bar.set_fraction(0.0)
-        self._time_bar.set_visible(False)
-        self._time_bar.set_margin_start(10)
-        self._time_bar.set_margin_end(10)
-        self._time_bar.set_margin_bottom(4)
-        vbox.append(self._time_bar)
+        self._time_bar.set_hexpand(True)
+        bar_row.append(self._time_bar)
 
+        self._time_label = Gtk.Label(label="")
+        self._time_label.add_css_class("project-time-label")
+        self._time_label.set_valign(Gtk.Align.CENTER)
+        self._time_label.set_width_chars(5)
+        self._time_label.set_xalign(1.0)
+        bar_row.append(self._time_label)
+
+        vbox.append(bar_row)
         self.set_child(vbox)
 
     def set_active(self, active: bool):
@@ -63,13 +75,14 @@ class ProjectRow(Gtk.ListBoxRow):
         else:
             ctx.remove_class("project-row-warm")
 
-    def update_time_bar(self, fraction: float, tooltip: str):
+    def update_time_bar(self, fraction: float, tooltip: str, label_text: str = ""):
         if fraction > 0:
             self._time_bar.set_fraction(min(1.0, fraction))
-            self._time_bar.set_tooltip_text(tooltip)
-            self._time_bar.set_visible(True)
+            self._time_bar_row.set_tooltip_text(tooltip)
+            self._time_label.set_text(label_text)
+            self._time_bar_row.set_visible(True)
         else:
-            self._time_bar.set_visible(False)
+            self._time_bar_row.set_visible(False)
 
 
 _TERMINAL_OPTIONS = ["claude", "codex"]
@@ -373,11 +386,19 @@ class RightPanel(Gtk.Box):
             r = Gtk.ListBoxRow()
             r.app_name = a["name"]
             r.app_exec = a["exec"]
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            row_box.set_margin_start(8)
+            row_box.set_margin_top(4)
+            row_box.set_margin_bottom(4)
+            icon = Gtk.Image.new_from_icon_name(
+                a.get("icon", "application-x-executable-symbolic")
+            )
+            icon.set_pixel_size(16)
+            row_box.append(icon)
             lbl = Gtk.Label(label=a["name"], xalign=0)
-            lbl.set_margin_start(8)
-            lbl.set_margin_top(4)
-            lbl.set_margin_bottom(4)
-            r.set_child(lbl)
+            lbl.set_hexpand(True)
+            row_box.append(lbl)
+            r.set_child(row_box)
             listbox.append(r)
 
         def on_activated(_lb, r):
@@ -450,9 +471,26 @@ class RightPanel(Gtk.Box):
         self._listbox = Gtk.ListBox()
         self._listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self._listbox.set_filter_func(self._row_filter)
+        self._listbox.set_sort_func(self._sort_rows)
         self._listbox.connect("row-selected", self._on_row_selected)
         scrolled.set_child(self._listbox)
         self.append(scrolled)
+
+    def _sort_rows(self, row1: Gtk.ListBoxRow, row2: Gtk.ListBoxRow) -> int:
+        active = self._active_project_id
+        id1 = getattr(row1, "project_id", None)
+        id2 = getattr(row2, "project_id", None)
+        if id1 == active and id2 != active:
+            return -1
+        if id2 == active and id1 != active:
+            return 1
+        n1 = getattr(row1, "project_name", "")
+        n2 = getattr(row2, "project_name", "")
+        if n1 < n2:
+            return -1
+        if n1 > n2:
+            return 1
+        return 0
 
     # ── add button (popover) ──────────────────────────────────────────────────
 
@@ -509,6 +547,7 @@ class RightPanel(Gtk.Box):
         self._active_project_id = project_id
         for pid, row in self._project_rows.items():
             row.set_active(pid == project_id)
+        self._listbox.invalidate_sort()
 
     def set_project_warm(self, project_id: str, warm: bool):
         row = self._project_rows.get(project_id)
@@ -539,9 +578,10 @@ class RightPanel(Gtk.Box):
                 fraction = secs / max_time
                 h = int(secs // 3600)
                 m = int((secs % 3600) // 60)
-                row.update_time_bar(fraction, f"{h}h {m}m today")
+                label_text = f"{h}h {m}m" if h > 0 else f"{m}m"
+                row.update_time_bar(fraction, f"{h}h {m}m today", label_text)
             else:
-                row.update_time_bar(0, "")
+                row.update_time_bar(0, "", "")
 
     # ── callbacks ─────────────────────────────────────────────────────────────
 

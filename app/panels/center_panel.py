@@ -29,6 +29,21 @@ def _dark_palette():
     return palette
 
 
+def _light_palette():
+    ansi = [
+        "#073642", "#dc322f", "#859900", "#b58900",
+        "#268bd2", "#d33682", "#2aa198", "#eee8d5",
+        "#002b36", "#cb4b16", "#586e75", "#657b83",
+        "#839496", "#6c71c4", "#93a1a1", "#fdf6e3",
+    ]
+    palette = []
+    for h in ansi:
+        c = Gdk.RGBA()
+        c.parse(h)
+        palette.append(c)
+    return palette
+
+
 def _resolve_command(name: str) -> list[str]:
     prog = GLib.find_program_in_path(name)
     if prog:
@@ -55,6 +70,8 @@ class CenterPanel(Gtk.Box):
         self._pm = project_manager
         self._settings = settings_manager
         self._on_page_changed = on_page_changed  # callable(page_name: str) | None
+        scheme = settings_manager.get("color_scheme") if settings_manager else "dark"
+        self._is_dark = scheme != "light"
         self._last_terminal_page = "empty"
         self._embedded_xid: int | None = None
         self._terminal_pids: dict[str, int] = {}     # page_name -> child PID
@@ -269,15 +286,27 @@ class CenterPanel(Gtk.Box):
         terminal = Vte.Terminal()
         terminal.set_scrollback_lines(10000)
         terminal.set_font(Pango.FontDescription("Monospace 11"))
-
-        bg = Gdk.RGBA()
-        bg.parse("#0d1117")
-        fg = Gdk.RGBA()
-        fg.parse("#e6edf3")
-        terminal.set_color_background(bg)
-        terminal.set_color_foreground(fg)
-        terminal.set_colors(fg, bg, _dark_palette())
+        self._apply_terminal_colors(terminal)
         return terminal
+
+    def _apply_terminal_colors(self, terminal: Vte.Terminal):
+        if self._is_dark:
+            bg_str, fg_str = "#0d1117", "#e6edf3"
+            palette = _dark_palette()
+        else:
+            bg_str, fg_str = "#ffffff", "#24292f"
+            palette = _light_palette()
+        bg = Gdk.RGBA()
+        bg.parse(bg_str)
+        fg = Gdk.RGBA()
+        fg.parse(fg_str)
+        terminal.set_colors(fg, bg, palette)
+
+    def apply_theme(self, is_dark: bool):
+        """Update all open terminals to match the given theme."""
+        self._is_dark = is_dark
+        for terminal in self._terminals.values():
+            self._apply_terminal_colors(terminal)
 
     def _notify_page(self, page_name: str):
         if self._on_page_changed is not None:

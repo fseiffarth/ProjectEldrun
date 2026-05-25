@@ -1,4 +1,4 @@
-"""Tests for network_monitor.py — covers Phase 14."""
+"""Tests for network_monitor.py — covers Phase 14 + connection type detection."""
 
 import os
 import socket
@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
 # Stub gi/GLib so the module can be imported without a GTK environment
@@ -144,26 +145,28 @@ class TestNetworkMonitorCallback(unittest.TestCase):
         time.sleep(0.05)
 
     def test_callback_on_offline_to_online_transition(self):
-        """Simulate offline→online: callback must fire on change."""
+        """Simulate offline→online: callback must fire on change with connection_type."""
         callback = MagicMock()
         mon = nm.NetworkMonitor.__new__(nm.NetworkMonitor)
         mon._on_status_changed = callback
         mon._online = False  # was offline
         mon._last_success = None
+        mon._connection_type = "disconnected"
         mon._running = False
 
         # Simulate a successful probe
         with patch.object(mon, "_probe", return_value=True):
             online = mon._probe()
+        ct = "lan"
         changed = online != mon._online
         if online:
             mon._last_success = time.time()
-        old = mon._online
         mon._online = online
+        mon._connection_type = ct
         if changed:
-            callback(online, mon._last_success)
+            callback(online, mon._last_success, ct)
 
-        callback.assert_called_once_with(True, mon._last_success)
+        callback.assert_called_once_with(True, mon._last_success, "lan")
 
     def test_no_callback_when_state_unchanged(self):
         """Callback must NOT be called if online state didn't change."""
@@ -195,6 +198,87 @@ class TestNetworkMonitorConstants(unittest.TestCase):
 
     def test_timeout_is_3_seconds(self):
         self.assertEqual(nm.NetworkMonitor._PROBE_TIMEOUT, 3)
+
+    def test_connection_type_property_default(self):
+        mon = nm.NetworkMonitor.__new__(nm.NetworkMonitor)
+        mon._connection_type = "disconnected"
+        self.assertEqual(mon.connection_type, "disconnected")
+
+
+class TestDetectConnectionType(unittest.TestCase):
+    """Tests for the detect_connection_type() module-level function.
+
+    detect_connection_type() accepts an optional net_dir parameter used here
+    to point at a temporary fake /sys/class/net tree instead of the real one.
+    """
+
+    def _make_net_dir(self, tmpdir: str, ifaces: list[dict]) -> Path:
+        """Create a fake /sys/class/net structure under tmpdir."""
+        net = Path(tmpdir) / "net"
+        net.mkdir(parents=True)
+        for iface in ifaces:
+            d = net / iface["name"]
+            d.mkdir()
+            (d / "operstate").write_text(iface.get("state", "down"))
+            if iface.get("wireless"):
+                (d / "wireless").mkdir()
+        return net
+
+    def test_wlan_detected_when_wireless_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            net = self._make_net_dir(tmp, [
+                {"name": "lo", "state": "unknown"},
+                {"name": "wlan0", "state": "up", "wireless": True},
+            ])
+            result = nm.detect_connection_type(net_dir=net)
+        self.assertEqual(result, "wlan")
+
+    def test_lan_detected_when_wired_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            net = self._make_net_dir(tmp, [
+                {"name": "lo", "state": "unknown"},
+                {"name": "eth0", "state": "up"},
+            ])
+            result = nm.detect_connection_type(net_dir=net)
+        self.assertEqual(result, "lan")
+
+    def test_disconnected_when_all_down(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            net = self._make_net_dir(tmp, [
+                {"name": "lo", "state": "unknown"},
+                {"name": "eth0", "state": "down"},
+                {"name": "wlan0", "state": "down", "wireless": True},
+            ])
+            result = nm.detect_connection_type(net_dir=net)
+        self.assertEqual(result, "disconnected")
+
+    def test_disconnected_when_no_interfaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            net = self._make_net_dir(tmp, [])
+            result = nm.detect_connection_type(net_dir=net)
+        self.assertEqual(result, "disconnected")
+
+    def test_only_loopback_is_disconnected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            net = self._make_net_dir(tmp, [
+                {"name": "lo", "state": "up"},
+            ])
+            result = nm.detect_connection_type(net_dir=net)
+        self.assertEqual(result, "disconnected")
+
+    def test_eth_comes_before_wlan_alphabetically(self):
+        """eth0 sorts before wlan0 so lan is returned when both are up."""
+        with tempfile.TemporaryDirectory() as tmp:
+            net = self._make_net_dir(tmp, [
+                {"name": "eth0", "state": "up"},
+                {"name": "wlan0", "state": "up", "wireless": True},
+            ])
+            result = nm.detect_connection_type(net_dir=net)
+        self.assertEqual(result, "lan")
+
+    def test_returns_valid_type_on_real_system(self):
+        result = nm.detect_connection_type()
+        self.assertIn(result, ("wlan", "lan", "disconnected"))
 
 
 if __name__ == "__main__":

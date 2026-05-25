@@ -168,8 +168,27 @@ class ProjectManager:
 
         return self.add_project(name, directory, git_type)
 
-    def import_project(self, source_dir: str, name: str, git_type: str) -> dict:
-        """Copy source_dir into ~/eldrun/projects/<name>/, fill missing scaffold, init git."""
+    def import_project(self, source_dir: str, name: str, git_type: str,
+                       mode: str = "keep") -> dict:
+        """Import a project.
+
+        mode:
+          'keep' — register source_dir in place without copying (default)
+          'copy' — copy source_dir into ~/eldrun/projects/<name>/
+          'move' — move source_dir into ~/eldrun/projects/<name>/
+        """
+        if not name.strip():
+            raise ValueError("Project name is invalid")
+
+        if mode == "keep":
+            target = pathlib.Path(source_dir)
+            existing = {f.name for f in target.iterdir() if f.is_file()}
+            _write_scaffold_missing(name, str(target), git_type, existing)
+            if not (target / ".git").is_dir():
+                _git_init(str(target))
+                _git_commit(str(target), "Register existing project")
+            return self.add_project(name, str(target), git_type)
+
         safe = sanitize_name(name)
         if not safe:
             raise ValueError("Project name is invalid")
@@ -177,10 +196,15 @@ class ProjectManager:
         if dest.exists():
             raise FileExistsError(f"Destination '{safe}' already exists")
 
-        shutil.copytree(
-            source_dir, str(dest),
-            ignore=shutil.ignore_patterns(".git"),
-        )
+        if mode == "copy":
+            shutil.copytree(
+                source_dir, str(dest),
+                ignore=shutil.ignore_patterns(".git"),
+            )
+        elif mode == "move":
+            shutil.move(source_dir, str(dest))
+        else:
+            raise ValueError(f"Unknown import mode: {mode!r}")
 
         existing = {f.name for f in dest.iterdir() if f.is_file()}
         _write_scaffold_missing(name, str(dest), git_type, existing)

@@ -208,29 +208,92 @@ class TestProjectManager(unittest.TestCase):
                 f"Missing scaffold file: {fname}",
             )
 
-    def test_import_project(self):
-        # Create a source directory with some files
+    # ── import mode: copy (original behaviour) ────────────────────────────────
+
+    def test_import_project_copy_copies_files(self):
         src = os.path.join(self.tmpdir, "source_proj")
         os.makedirs(src)
         with open(os.path.join(src, "README.md"), "w") as f:
             f.write("# Source\n")
 
         pm = self._make_pm()
-        p = pm.import_project(src, "Imported Proj", "private")
+        p = pm.import_project(src, "Imported Proj", "private", mode="copy")
         expected_dir = os.path.join(self.projects_root, "imported-proj")
         self.assertTrue(os.path.isdir(expected_dir))
         self.assertTrue(os.path.exists(os.path.join(expected_dir, "README.md")))
         self.assertEqual(p["name"], "Imported Proj")
+        self.assertEqual(p["directory"], expected_dir)
+        # Source still exists (copy, not move)
+        self.assertTrue(os.path.isdir(src))
 
-    def test_import_project_dest_exists_raises(self):
+    def test_import_project_copy_dest_exists_raises(self):
         src = os.path.join(self.tmpdir, "src2")
         os.makedirs(src)
         pm = self._make_pm()
-        pm.import_project(src, "Clash", "private")
+        pm.import_project(src, "Clash", "private", mode="copy")
         src2 = os.path.join(self.tmpdir, "src3")
         os.makedirs(src2)
         with self.assertRaises(FileExistsError):
-            pm.import_project(src2, "Clash", "private")
+            pm.import_project(src2, "Clash", "private", mode="copy")
+
+    # ── import mode: keep (default) ───────────────────────────────────────────
+
+    def test_import_project_keep_registers_in_place(self):
+        src = os.path.join(self.tmpdir, "source_keep")
+        os.makedirs(src)
+        with open(os.path.join(src, "README.md"), "w") as f:
+            f.write("# Keep\n")
+
+        pm = self._make_pm()
+        p = pm.import_project(src, "Keep Proj", "private", mode="keep")
+        # Directory is the original source; nothing was copied
+        self.assertEqual(p["directory"], src)
+        self.assertTrue(os.path.isdir(src))
+
+    def test_import_project_keep_is_default(self):
+        src = os.path.join(self.tmpdir, "source_default")
+        os.makedirs(src)
+        pm = self._make_pm()
+        p = pm.import_project(src, "Default Mode", "private")
+        self.assertEqual(p["directory"], src)
+
+    def test_import_project_keep_adds_scaffold(self):
+        src = os.path.join(self.tmpdir, "source_scaffold")
+        os.makedirs(src)
+        pm = self._make_pm()
+        pm.import_project(src, "Scaffold Keep", "private", mode="keep")
+        self.assertTrue(os.path.exists(os.path.join(src, "TODO.md")))
+
+    # ── import mode: move ─────────────────────────────────────────────────────
+
+    def test_import_project_move_removes_source(self):
+        src = os.path.join(self.tmpdir, "source_move")
+        os.makedirs(src)
+        with open(os.path.join(src, "README.md"), "w") as f:
+            f.write("# Move\n")
+
+        pm = self._make_pm()
+        p = pm.import_project(src, "Moved Proj", "private", mode="move")
+        expected_dir = os.path.join(self.projects_root, "moved-proj")
+        self.assertEqual(p["directory"], expected_dir)
+        self.assertTrue(os.path.isdir(expected_dir))
+        self.assertTrue(os.path.exists(os.path.join(expected_dir, "README.md")))
+        # Original source should be gone
+        self.assertFalse(os.path.isdir(src))
+
+    def test_import_project_invalid_mode_raises(self):
+        src = os.path.join(self.tmpdir, "source_bad")
+        os.makedirs(src)
+        pm = self._make_pm()
+        with self.assertRaises(ValueError):
+            pm.import_project(src, "Bad Mode", "private", mode="invalid")
+
+    def test_import_project_empty_name_raises(self):
+        src = os.path.join(self.tmpdir, "source_empty")
+        os.makedirs(src)
+        pm = self._make_pm()
+        with self.assertRaises(ValueError):
+            pm.import_project(src, "", "private", mode="keep")
 
     def test_migration_moves_old_project(self):
         import pathlib

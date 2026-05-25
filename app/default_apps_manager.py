@@ -94,10 +94,16 @@ def _mime_for_file(path: str) -> str | None:
         return None
 
 
+def get_mime_for_file(path: str) -> str | None:
+    """Return MIME type for a file using the extension map or xdg-mime."""
+    ext = pathlib.Path(path).suffix.lower()
+    return _EXT_MIME.get(ext) or _mime_for_file(path)
+
+
 def get_installed_apps() -> list[dict]:
     """Scan .desktop files and return installed apps sorted by name.
 
-    Each entry: {name, exec, icon}
+    Each entry: {name, exec, icon, mime_types}
     """
     seen_execs: set[str] = set()
     apps: list[dict] = []
@@ -110,7 +116,7 @@ def get_installed_apps() -> list[dict]:
         if not d.is_dir():
             continue
         for f in sorted(d.glob("*.desktop")):
-            name = exec_cmd = icon = None
+            name = exec_cmd = icon = mime_types = None
             in_entry = False
             no_display = False
             try:
@@ -131,6 +137,8 @@ def get_installed_apps() -> list[dict]:
                                 exec_cmd = parts[0]
                         elif line.startswith("Icon=") and icon is None:
                             icon = line[5:]
+                        elif line.startswith("MimeType=") and mime_types is None:
+                            mime_types = [m.strip() for m in line[9:].split(";") if m.strip()]
                         elif line == "NoDisplay=true":
                             no_display = True
             except OSError:
@@ -144,6 +152,7 @@ def get_installed_apps() -> list[dict]:
                 "name": name,
                 "exec": exec_cmd,
                 "icon": icon or "application-x-executable-symbolic",
+                "mime_types": mime_types or [],
             })
     return sorted(apps, key=lambda x: x["name"].lower())
 

@@ -72,6 +72,23 @@ class ImportProjectDialog(Gtk.Window):
         type_outer.append(self._type_dropdown)
         box.append(type_outer)
 
+        # Import mode
+        mode_outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        mode_outer.append(Gtk.Label(label="Import mode", xalign=0))
+        self._mode_dropdown = Gtk.DropDown.new_from_strings([
+            "Keep location (register in place)",
+            "Copy to ~/eldrun/projects/",
+            "Move to ~/eldrun/projects/",
+        ])
+        self._mode_dropdown.set_selected(0)
+        self._mode_dropdown.set_hexpand(True)
+        self._mode_dropdown.connect(
+            "notify::selected",
+            lambda *_: self._update_state(self._name_entry.get_text()),
+        )
+        mode_outer.append(self._mode_dropdown)
+        box.append(mode_outer)
+
         # Destination preview
         self._path_lbl = Gtk.Label(label="", xalign=0)
         self._path_lbl.add_css_class("dim-label")
@@ -137,7 +154,23 @@ class ImportProjectDialog(Gtk.Window):
     def _on_name_changed(self, entry):
         self._update_state(entry.get_text())
 
+    def _get_mode(self) -> str:
+        return ["keep", "copy", "move"][self._mode_dropdown.get_selected()]
+
     def _update_state(self, name: str):
+        mode = self._get_mode()
+
+        if mode == "keep":
+            if not self._source_dir or not name.strip():
+                self._path_lbl.set_text("")
+                self._warn_lbl.set_visible(False)
+                self._import_btn.set_sensitive(False)
+                return
+            self._path_lbl.set_text(f"Location: {self._source_dir}")
+            self._warn_lbl.set_visible(False)
+            self._import_btn.set_sensitive(True)
+            return
+
         safe = sanitize_name(name) if name.strip() else ""
         if not safe or not self._source_dir:
             self._path_lbl.set_text("")
@@ -161,6 +194,7 @@ class ImportProjectDialog(Gtk.Window):
     def _on_import_clicked(self, _btn):
         name = self._name_entry.get_text().strip()
         git_type = "public" if self._type_dropdown.get_selected() == 1 else "private"
+        mode = self._get_mode()
         source = self._source_dir
 
         self._import_btn.set_sensitive(False)
@@ -172,7 +206,7 @@ class ImportProjectDialog(Gtk.Window):
 
         def worker():
             try:
-                project = self._pm.import_project(source, name, git_type)
+                project = self._pm.import_project(source, name, git_type, mode)
                 GLib.idle_add(self._finish, project, None)
             except Exception as exc:
                 GLib.idle_add(self._finish, None, str(exc))

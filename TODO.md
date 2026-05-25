@@ -165,6 +165,139 @@
 
 ## Next
 
+### Propagate theme toggle to terminals and embedded apps
+
+When the user switches dark mode on/off in the gear settings, the theme change should propagate beyond the UI:
+
+- [ ] **VTE terminals**: update foreground/background colors on the active (and all open) `Vte.Terminal` instances — dark scheme uses current dark palette, light scheme uses a light terminal palette (e.g. white bg, dark fg)
+- [ ] **Embedded apps**: for apps that support a theme flag (e.g. `--dark` / `--light`, `GTK_THEME`, or `prefers-color-scheme` via D-Bus `org.freedesktop.portal.Settings`), send the appropriate signal or relaunch with the new flag where feasible
+- [ ] **Persistence**: save the chosen scheme in settings so terminals and apps open in the correct theme from the start, not just on toggle
+
+---
+
+### Fix double-click file open + improve app picker
+
+Two related issues with the file-open flow in the project file tree:
+
+- [ ] **Fix double-click not opening files**: debug `row-activated` handler in `left_panel.py` — confirm `DefaultAppsManager.get_app_for_file()` resolves correctly and the subprocess launch actually fires; add fallback to `xdg-open` if no app is matched
+- [ ] **App icons in the app picker**: in the searchable `.desktop` app list (`_build_app_picker` in `right_panel.py`), load and show each app's icon (via `Gtk.Image.new_from_icon_name` using the `Icon=` field from the `.desktop` file) alongside the app name
+- [ ] **Suggested apps for the file type**: when the picker is opened from a file context (double-click / right-click "Open With"), pre-populate a "Suggested" section at the top of the list with apps whose `MimeType=` field matches the file's extension; remaining apps follow in the general list
+
+---
+
+### Project list sorting — active project always on top
+
+Sort the project list in the right panel so the currently active project is always pinned to the top, with remaining projects sorted below (e.g. alphabetically or by last-used time).
+
+- [ ] Add a sort function via `Gtk.ListBox.set_sort_func` in `right_panel.py`; active row (`project-row-active`) sorts first, rest fall through
+- [ ] Re-trigger sort on project switch (`set_active_project`) by calling `self._listbox.invalidate_sort()`
+
+---
+
+### Time label beside project timeline bar
+
+Show the number of minutes worked today directly to the right of each project's `ProgressBar` in the right panel, so the time is readable at a glance without hovering for the tooltip.
+
+- [ ] Add a `Gtk.Label` to the right of `self._time_bar` in `ProjectRow`; update it alongside `update_time_bar()` — show `"Xm"` (or `"Xh Ym"` for ≥ 60 min); hide when zero (consistent with bar visibility)
+- [ ] Keep the existing tooltip as-is for full detail
+
+---
+
+### Connection type indicator
+
+Extend the network status area (top-left header bar, beside the ● status lamp) to show the active connection type.
+
+- [ ] Detect connection type: WLAN (wireless), LAN (wired), or disconnected — read from `/sys/class/net/` (check for `wireless/` subdirectory to distinguish wifi from ethernet)
+- [ ] Show a symbolic icon or character next to the lamp: e.g. a wifi symbol for WLAN, an ethernet symbol for LAN, nothing (or a crossed-out icon) when offline
+- [ ] Poll alongside the existing 5 s connectivity probe in `app/network_monitor.py`; fire the same `GLib.idle_add` callback with the additional connection-type info
+
+---
+
+### Panel toggle button polish
+
+Move the hide-left / hide-right panel toggle buttons (`‹` / `›`) out of the header bar and integrate them directly into the panel edges. Give them a more visible/prominent color so they're easier to discover and use.
+
+- [ ] Reposition toggle buttons — embed them at the inner edge of each panel (e.g. centered vertically on the panel border) rather than in the header bar
+- [ ] Style with a more visible color (distinct from the header bar chrome) — consider the active-project blue or a dedicated accent
+
+---
+
+### Right-click: color picker for files and folders in the project tree
+
+Add a "Color…" option to the right-click context menu in the left-panel file tree so users can tint individual files or folders with a custom color for visual organization.
+
+- [ ] Add a "Color…" menu item to `_show_context_menu` in `left_panel.py` (works for both files and dirs)
+- [ ] Clicking it opens a `Gtk.ColorDialog` (GTK 4.10+) or a small popover with a color swatch grid as fallback
+- [ ] Persist the chosen color per path in a sidecar file (e.g. `<project_dir>/.eldrun_colors.json`, `{relative_path: "#rrggbb"}`)
+- [ ] Apply the color in `_populate_dir`: set the `foreground` or `cell-background` property on the `CellRendererText` for colored rows; load `.eldrun_colors.json` once per tree rebuild
+- [ ] Add a "Reset color" option if a color is already set
+- [ ] Hide `.eldrun_colors.json` from the file tree (add to the skip list alongside `.git`)
+
+---
+
+### Settings button in left panel file tree (per-project file-type defaults)
+
+Add a small settings/gear button to the "PROJECT" section header in the left panel so users can manage per-project file-type → default app mappings without going through the global gear popover.
+
+- [ ] Add a gear `Gtk.Button` (flat, symbolic icon) to the right of the "PROJECT" header label in `left_panel.py`
+- [ ] Clicking it opens a window (similar to the existing "File Type Apps…" window in `right_panel.py`) showing a list of `extension → app` rows scoped to the current project (`project_default_apps.json`)
+- [ ] Each row: extension entry, app command entry, "⋯" browse button (reuse `_show_app_picker` with `for_file` mime suggestion), "×" remove button
+- [ ] "＋ Add Entry" button at the bottom to add new rows
+- [ ] Changes write to `<project_dir>/project_default_apps.json` via `DefaultAppsManager.set_project_app()` / `remove_project_app()` (add `remove_project_app()` if missing)
+- [ ] Button is insensitive / hidden when no project is active
+
+---
+
+### Multi-monitor: terminal on main, apps on secondary
+
+On multi-monitor setups, keep the Eldrun terminal on the primary monitor and open project apps (from the open-apps list) on secondary monitors rather than embedding them in the center panel.
+
+- [ ] Detect available monitors via `Gdk.Display.get_monitors()` at startup and on connect/disconnect
+- [ ] When opening an app from the open-apps browser: if a secondary monitor exists, launch the app and allow its window to land on the secondary monitor instead of reparenting it into the center panel
+- [ ] Add a setting to toggle this behaviour (single-monitor users should not be affected)
+
+---
+
+### Fix folder expand/collapse staying open in project file tree
+
+Right-clicking a folder in the project file tree and choosing "Open in File Manager" (or any context-menu action) auto-closes the folder after a few seconds. Remove this behaviour — folders should stay expanded until the user explicitly collapses them.
+
+- [ ] Locate the timer or `collapse_row` call triggered after context-menu actions in `left_panel.py`
+- [ ] Remove or gate the auto-collapse so it only fires on explicit row-activated toggle, not after menu actions
+
+---
+
+### Default app for "Remember globally" should be the default radio selection
+
+When the "Open With" dialog appears and neither radio button is pre-selected, users may miss the "Remember globally" option. The global option should be the default-selected radio so saving the app for all projects is one less click.
+
+- [ ] In `_show_choose_app_dialog` in `left_panel.py`, set `save_global` as the active radio button by default (and keep `save_proj` as the alternative)
+
+---
+
+### Debug: default app for file opening not being stored
+
+Opening a file and choosing "Remember globally" does not persist the app for that extension across sessions. Investigate why `DefaultAppsManager.set_global_app()` is not being called or why the saved value is not read back.
+
+- [ ] Add logging/tracing to `set_global_app` and `get_app_for_file` to confirm writes succeed
+- [ ] Check that `_GLOBAL_FILE` path resolves correctly at runtime and that the JSON is being flushed atomically
+- [ ] Verify `bootstrap_from_system()` doesn't overwrite manually-saved entries on next startup
+
+---
+
+### Project import modes
+
+Change `ImportProjectDialog` + `project_manager.import_project()` to support three modes:
+
+- [ ] **Keep location (default)**: register the project in place; no file copying or moving
+- [ ] **Copy**: copy the folder into `~/eldrun/projects/` and register the copy
+- [ ] **Move**: move the folder into `~/eldrun/projects/` and register the new location
+
+Implementation notes:
+- Add a mode selector (e.g. radio buttons or dropdown) to `ImportProjectDialog`
+- Store each project's `path` explicitly in `projects.json` (meaningful, pretty-printed JSON — `indent=2`); don't assume `~/eldrun/projects/<name>` as the canonical location
+- Update all path lookups in `project_manager.py`, `center_panel.py`, and `left_panel.py` to use `project["path"]` rather than a constructed path
+
 ---
 
 ## Future Goals

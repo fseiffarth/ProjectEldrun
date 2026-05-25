@@ -137,6 +137,7 @@ class LeftPanel(Gtk.Box):
         self._tree_refresh_source: int | None = None
         self._app_cycle_index: int = -1
         self._pending_auto_embed_exe: str | None = None
+        self._path_colors: dict[str, str] = {}  # abs_path → "#rrggbb"
 
         self._build_ui()
         GLib.idle_add(self._connect_display)
@@ -200,6 +201,7 @@ class LeftPanel(Gtk.Box):
         text_r.set_property("ellipsize", Pango.EllipsizeMode.END)
         col.pack_start(text_r, True)
         col.add_attribute(text_r, "text", 1)
+        col.set_cell_data_func(text_r, self._color_data_func)
         self._file_tree.append_column(col)
         self._file_tree.connect("row-activated", self._on_tree_row_activated)
 
@@ -221,6 +223,52 @@ class LeftPanel(Gtk.Box):
         self._proj_stack.set_visible_child_name("placeholder")
         self.append(self._proj_stack)
 
+    # ── file-tree colors ──────────────────────────────────────────────────────
+
+    def _colors_file(self) -> pathlib.Path | None:
+        if self._current_project is None:
+            return None
+        return pathlib.Path(self._current_project["directory"]) / ".eldrun_colors.json"
+
+    def _load_colors(self):
+        self._path_colors = {}
+        cf = self._colors_file()
+        if cf is None or not cf.exists():
+            return
+        project_dir = self._current_project["directory"]
+        try:
+            data = json.loads(cf.read_text())
+            for rel, color in data.items():
+                self._path_colors[os.path.join(project_dir, rel)] = color
+        except Exception:
+            pass
+
+    def _save_colors(self):
+        cf = self._colors_file()
+        if cf is None or self._current_project is None:
+            return
+        project_dir = self._current_project["directory"]
+        rel_map = {}
+        for abs_path, color in self._path_colors.items():
+            try:
+                rel = os.path.relpath(abs_path, project_dir)
+                rel_map[rel] = color
+            except ValueError:
+                pass
+        tmp = str(cf) + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(rel_map, f, indent=2, sort_keys=True)
+        os.replace(tmp, str(cf))
+
+    def _color_data_func(self, column, cell, model, iter_, data):
+        path = model.get_value(iter_, 2)
+        color = self._path_colors.get(path)
+        if color:
+            cell.set_property("foreground", color)
+            cell.set_property("foreground-set", True)
+        else:
+            cell.set_property("foreground-set", False)
+
     # ── project update ────────────────────────────────────────────────────────
 
     def update_project(self, project: dict | None):
@@ -235,6 +283,7 @@ class LeftPanel(Gtk.Box):
             self._oam = OpenAppsManager(project["directory"])
             self._proj_stack.set_visible_child_name("tree")
             self._rebuild_file_tree()
+            self._load_colors()
             self._tree_refresh_source = GLib.timeout_add(5000, self._on_tree_tick)
             GLib.timeout_add(600, self._reopen_missing_apps)
             self._notify_warm()
@@ -303,7 +352,8 @@ class LeftPanel(Gtk.Box):
         except OSError:
             return
         for entry in entries:
-            if entry.name in (".git", "open_apps.json", "project_default_apps.json"):
+            if entry.name in (".git", "open_apps.json", "project_default_apps.json",
+                              ".eldrun_colors.json"):
                 continue
             icon = "folder-symbolic" if entry.is_dir() else "text-x-generic-symbolic"
             it = self._file_store.append(
@@ -377,6 +427,10 @@ class LeftPanel(Gtk.Box):
         box.append(btn("Copy Path", lambda: self._copy_path(path)))
         box.append(btn("Reveal in File Manager", lambda: self._reveal_in_fm(path)))
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        box.append(btn("Color…", lambda: self._color_pick_dialog(path)))
+        if path in self._path_colors:
+            box.append(btn("Reset color", lambda: self._reset_color(path)))
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         box.append(btn("Rename…", lambda: self._rename_dialog(path)))
         box.append(btn("Delete", lambda: self._delete_confirm(path), "destructive-action"))
 
@@ -385,22 +439,67 @@ class LeftPanel(Gtk.Box):
 
     # ── file open ─────────────────────────────────────────────────────────────
 
+    def _resolve_default_handler(self, path: str) -> str | None:
+        """Return the executable for the system's MIME default handler, or None."""
+        from default_apps_manager import get_mime_for_file
+        mime = get_mime_for_file(path)
+        if not mime:
+            return None
+        try:
+            desktop = subprocess.check_output(
+                ["xdg-mime", "query", "default", mime],
+                stderr=subprocess.DEVNULL, text=True,
+            ).strip()
+            if not desktop:
+                return None
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        search_dirs = [
+            pathlib.Path.home() / ".local/share/applications",
+            pathlib.Path("/usr/share/applications"),
+            pathlib.Path("/usr/local/share/applications"),
+        ]
+        for d in search_dirs:
+            df = d / desktop
+            if not df.exists():
+                continue
+            for line in df.read_text(errors="replace").splitlines():
+                if line.startswith("Exec="):
+                    raw = line[5:].split("%")[0].strip().split()[0]
+                    return GLib.find_program_in_path(raw) or raw
+        return None
+
+    def _launch_and_track(self, app: str, path: str, project_dir: str | None):
+        """Launch app with path, record in open-apps list, schedule auto-embed."""
+        subprocess.Popen([app, path], cwd=project_dir or os.path.dirname(path))
+        if self._oam is not None:
+            self._oam.add_or_update(app, os.path.basename(app), [])
+            self._notify_warm()
+        self._pending_auto_embed_exe = GLib.find_program_in_path(app) or app
+
     def _open_file(self, path: str):
         project_dir = self._current_project.get("directory") if self._current_project else None
         app = None
         if self._dam is not None:
             app = self._dam.get_app_for_file(path, project_dir)
+
+        # No user-configured app — try to resolve the system default so we can track it
         if app is None:
-            self._show_choose_app_dialog(path)
+            app = self._resolve_default_handler(path)
+
+        if app is not None:
+            try:
+                self._launch_and_track(app, path, project_dir)
+            except OSError:
+                # Configured / resolved app failed — last resort: xdg-open
+                try:
+                    subprocess.Popen(["xdg-open", path])
+                except OSError:
+                    self._show_choose_app_dialog(path)
             return
-        try:
-            subprocess.Popen([app, path], cwd=project_dir or os.path.dirname(path))
-            if self._oam is not None:
-                self._oam.add_or_update(app, os.path.basename(app), [])
-                self._notify_warm()
-            self._pending_auto_embed_exe = GLib.find_program_in_path(app) or app
-        except OSError:
-            self._show_choose_app_dialog(path)
+
+        # No handler found at all — show Open With dialog
+        self._show_choose_app_dialog(path)
 
     def _show_choose_app_dialog(self, path: str, force: bool = False):
         win = Gtk.Window()
@@ -459,7 +558,7 @@ class LeftPanel(Gtk.Box):
         def on_browse(_btn):
             def cb(cmd):
                 app_entry.set_text(cmd)
-            self._show_app_picker(cb, parent=win)
+            self._show_app_picker(cb, parent=win, for_file=path)
 
         browse_btn.connect("clicked", on_browse)
 
@@ -472,12 +571,7 @@ class LeftPanel(Gtk.Box):
             elif save_global.get_active() and self._dam and ext:
                 self._dam.set_global_app(ext, cmd)
             try:
-                subprocess.Popen([cmd, path],
-                                 cwd=project_dir or os.path.dirname(path))
-                if self._oam is not None:
-                    self._oam.add_or_update(cmd, os.path.basename(cmd), [])
-                    self._notify_warm()
-                self._pending_auto_embed_exe = GLib.find_program_in_path(cmd) or cmd
+                self._launch_and_track(cmd, path, project_dir)
             except OSError:
                 pass
             win.close()
@@ -488,9 +582,19 @@ class LeftPanel(Gtk.Box):
         win.set_child(box)
         win.present()
 
-    def _show_app_picker(self, callback, parent=None):
-        from default_apps_manager import get_installed_apps
+    def _show_app_picker(self, callback, parent=None, for_file: str | None = None):
+        from default_apps_manager import get_installed_apps, get_mime_for_file
         apps = get_installed_apps()
+
+        # Determine suggested apps based on the file's MIME type
+        suggested_execs: set[str] = set()
+        if for_file:
+            mime = get_mime_for_file(for_file)
+            if mime:
+                suggested_execs = {
+                    a["exec"] for a in apps
+                    if mime in a.get("mime_types", [])
+                }
 
         win = Gtk.Window()
         win.set_title("Choose Application")
@@ -523,25 +627,71 @@ class LeftPanel(Gtk.Box):
             q = search.get_text().lower().strip()
             if not q:
                 return True
-            return q in r.app_name.lower() or q in r.app_exec.lower()
+            app_name = getattr(r, "app_name", "")
+            app_exec = getattr(r, "app_exec", "")
+            return q in app_name.lower() or q in app_exec.lower()
 
         listbox.set_filter_func(row_filter)
         search.connect("search-changed", lambda _: listbox.invalidate_filter())
 
-        for a in apps:
+        def make_app_row(a: dict) -> Gtk.ListBoxRow:
             r = Gtk.ListBoxRow()
             r.app_name = a["name"]
             r.app_exec = a["exec"]
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            row_box.set_margin_start(8)
+            row_box.set_margin_top(4)
+            row_box.set_margin_bottom(4)
+            icon = Gtk.Image.new_from_icon_name(
+                a.get("icon", "application-x-executable-symbolic")
+            )
+            icon.set_pixel_size(16)
+            row_box.append(icon)
             lbl = Gtk.Label(label=a["name"], xalign=0)
-            lbl.set_margin_start(8)
-            lbl.set_margin_top(4)
-            lbl.set_margin_bottom(4)
-            r.set_child(lbl)
-            listbox.append(r)
+            lbl.set_hexpand(True)
+            row_box.append(lbl)
+            r.set_child(row_box)
+            return r
+
+        def add_header(text: str):
+            hr = Gtk.ListBoxRow()
+            hr.set_selectable(False)
+            hr.app_name = ""
+            hr.app_exec = ""
+            hl = Gtk.Label(label=text, xalign=0)
+            hl.add_css_class("dim-label")
+            hl.set_margin_start(8)
+            hl.set_margin_top(6)
+            hl.set_margin_bottom(2)
+            hr.set_child(hl)
+            listbox.append(hr)
+
+        def add_separator():
+            sr = Gtk.ListBoxRow()
+            sr.set_selectable(False)
+            sr.app_name = ""
+            sr.app_exec = ""
+            sr.set_child(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+            listbox.append(sr)
+
+        if suggested_execs:
+            suggested = [a for a in apps if a["exec"] in suggested_execs]
+            others = [a for a in apps if a["exec"] not in suggested_execs]
+            add_header("Suggested")
+            for a in suggested:
+                listbox.append(make_app_row(a))
+            add_separator()
+            add_header("All Applications")
+            for a in others:
+                listbox.append(make_app_row(a))
+        else:
+            for a in apps:
+                listbox.append(make_app_row(a))
 
         def on_activated(_lb, r):
-            callback(r.app_exec)
-            win.close()
+            if getattr(r, "app_exec", ""):
+                callback(r.app_exec)
+                win.close()
 
         listbox.connect("row-activated", on_activated)
         scrolled.set_child(listbox)
@@ -551,6 +701,38 @@ class LeftPanel(Gtk.Box):
         win.present()
 
     # ── context menu helpers ──────────────────────────────────────────────────
+
+    def _color_pick_dialog(self, path: str):
+        dialog = Gtk.ColorDialog()
+        dialog.set_title("Choose Color")
+        initial = Gdk.RGBA()
+        current = self._path_colors.get(path)
+        if current:
+            initial.parse(current)
+        else:
+            initial.red = initial.green = initial.blue = initial.alpha = 1.0
+        root = self.get_root()
+        parent = root if isinstance(root, Gtk.Window) else None
+
+        def on_done(dlg, result):
+            try:
+                rgba = dlg.choose_rgba_finish(result)
+                if rgba:
+                    color_hex = "#{:02x}{:02x}{:02x}".format(
+                        int(rgba.red * 255), int(rgba.green * 255), int(rgba.blue * 255)
+                    )
+                    self._path_colors[path] = color_hex
+                    self._save_colors()
+                    self._rebuild_file_tree()
+            except Exception:
+                pass
+
+        dialog.choose_rgba(parent, initial, None, on_done)
+
+    def _reset_color(self, path: str):
+        self._path_colors.pop(path, None)
+        self._save_colors()
+        self._rebuild_file_tree()
 
     def _copy_path(self, path: str):
         display = Gdk.Display.get_default()

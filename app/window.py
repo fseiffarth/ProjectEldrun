@@ -78,13 +78,25 @@ class EldrunWindow(Adw.ApplicationWindow):
         center_box = Gtk.CenterBox()
         center_box.add_css_class("app-header")
 
-        # Left: status lamp
+        # Left: status lamp + connection type icon
+        left_status = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        left_status.set_valign(Gtk.Align.CENTER)
+
         self._status_lamp = Gtk.Label(label="●")
         self._status_lamp.add_css_class("status-lamp")
         self._status_lamp.add_css_class("status-online")
         self._status_lamp.set_tooltip_text("Online")
         self._status_lamp.set_valign(Gtk.Align.CENTER)
-        center_box.set_start_widget(self._status_lamp)
+        left_status.append(self._status_lamp)
+
+        self._conn_icon = Gtk.Image()
+        self._conn_icon.set_pixel_size(14)
+        self._conn_icon.set_valign(Gtk.Align.CENTER)
+        self._conn_icon.add_css_class("conn-type-label")
+        self._conn_icon.set_visible(False)
+        left_status.append(self._conn_icon)
+
+        center_box.set_start_widget(left_status)
 
         # Center: title
         title = Gtk.Label(label="ELDRUN")
@@ -303,6 +315,7 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _on_toggle_theme(self, is_dark: bool):
         set_theme(is_dark)
         self.settings_manager.set("color_scheme", "dark" if is_dark else "light")
+        self._center_panel.apply_theme(is_dark)
 
     # ── project dialog handlers ───────────────────────────────────────────────
 
@@ -335,7 +348,14 @@ class EldrunWindow(Adw.ApplicationWindow):
 
     # ── network status (Phase 14) ─────────────────────────────────────────────
 
-    def _on_network_status_changed(self, is_online: bool, last_success_ts: float | None):
+    _CONN_ICONS = {
+        "wlan": "network-wireless-symbolic",
+        "lan": "network-wired-symbolic",
+    }
+
+    def _on_network_status_changed(self, is_online: bool,
+                                   last_success_ts: float | None,
+                                   connection_type: str = "disconnected"):
         lamp = self._status_lamp
         if is_online:
             lamp.remove_css_class("status-offline")
@@ -352,6 +372,13 @@ class EldrunWindow(Adw.ApplicationWindow):
                 ).strftime("%H:%M:%S")
             lamp.set_tooltip_text(f"Offline{ts_str}")
         self._center_panel.set_offline(not is_online)
+
+        icon_name = self._CONN_ICONS.get(connection_type)
+        if icon_name:
+            self._conn_icon.set_from_icon_name(icon_name)
+            self._conn_icon.set_visible(True)
+        else:
+            self._conn_icon.set_visible(False)
 
     # ── time tracking (Phase 15) ──────────────────────────────────────────────
 

@@ -157,14 +157,14 @@ button.panel-edge-btn {
     min-height: 40px;
     padding: 0 2px;
     font-size: 12px;
-    color: #484f58;
-    background-color: #21262d;
+    color: #388bfd;
+    background-color: #1c2128;
     border-radius: 4px;
-    border: 1px solid #30363d;
+    border: 1px solid #388bfd;
 }
 button.panel-edge-btn:hover {
-    color: #e6edf3;
-    background-color: #30363d;
+    color: #ffffff;
+    background-color: #388bfd;
 }
 
 /* ── status lamp (Phase 14) ──────────────────────────────── */
@@ -176,6 +176,11 @@ button.panel-edge-btn:hover {
 }
 .status-online { color: #3fb950; }
 .status-offline { color: #f85149; }
+.conn-type-label {
+    font-size: 10px;
+    color: #8b949e;
+    margin-end: 4px;
+}
 
 /* ── offline banner (Phase 14) ───────────────────────────── */
 .offline-banner {
@@ -200,6 +205,11 @@ progressbar.project-time-bar progress {
     background-color: rgba(56, 139, 253, 0.65);
     border-radius: 2px;
     min-height: 4px;
+}
+.project-time-label {
+    font-size: 9px;
+    color: #8b949e;
+    min-width: 28px;
 }
 """
 
@@ -273,7 +283,7 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
 .project-row label,
 .project-row:selected label,
 .project-row:focus:selected label {
-    color: #24292f;
+    color: #000000;
 }
 .project-row image,
 .project-row:selected image,
@@ -310,14 +320,14 @@ button.panel-edge-btn {
     min-height: 40px;
     padding: 0 2px;
     font-size: 12px;
-    color: #8c959f;
-    background-color: #d0d7de;
+    color: #0969da;
+    background-color: #ddf4ff;
     border-radius: 4px;
-    border: 1px solid #b9c0c9;
+    border: 1px solid #0969da;
 }
 button.panel-edge-btn:hover {
-    color: #24292f;
-    background-color: #b9c0c9;
+    color: #ffffff;
+    background-color: #0969da;
 }
 
 /* ── status lamp (Phase 14) ──────────────────────────────── */
@@ -329,6 +339,11 @@ button.panel-edge-btn:hover {
 }
 .status-online { color: #2da44e; }
 .status-offline { color: #cf222e; }
+.conn-type-label {
+    font-size: 10px;
+    color: #57606a;
+    margin-end: 4px;
+}
 
 /* ── offline banner (Phase 14) ───────────────────────────── */
 .offline-banner {
@@ -353,6 +368,11 @@ progressbar.project-time-bar progress {
     background-color: rgba(9, 105, 218, 0.65);
     border-radius: 2px;
     min-height: 4px;
+}
+.project-time-label {
+    font-size: 9px;
+    color: #57606a;
+    min-width: 28px;
 }
 """
 
