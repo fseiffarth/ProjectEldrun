@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Eldrun
+Comment=AI-assisted project terminal manager
+Exec=python3 /home/user/Documents/repos/ProjectEldrun/app/eldrun.py
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=Development;Utility;
+StartupNotify=true
