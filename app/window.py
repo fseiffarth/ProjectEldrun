@@ -6,12 +6,13 @@ from gi.repository import Gtk, Adw, Gdk, GLib
 
 from project_manager import ProjectManager
 from settings_manager import SettingsManager
+from default_apps_manager import DefaultAppsManager
 from panels.center_panel import CenterPanel, _MASTER_PAGE
 from panels.left_panel import LeftPanel
 from panels.right_panel import RightPanel
 
 _LEFT_WIDTH = 220
-_RIGHT_WIDTH = 280
+_RIGHT_WIDTH = 220
 
 
 class EldrunWindow(Adw.ApplicationWindow):
@@ -23,10 +24,16 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.set_decorated(False)
 
         self._fullscreen = False
+        self._panels_hidden = False
+        self._left_hidden = False
+        self._right_hidden = False
         self.project_manager = ProjectManager()
         self.settings_manager = SettingsManager()
+        self.default_apps_manager = DefaultAppsManager()
+        GLib.idle_add(self._bootstrap_default_apps)
         self._add_key_controller()
         self._build_layout()
+        self.maximize()
 
         self.connect("notify::maximized", self._on_maximized_notify)
 
@@ -37,7 +44,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         ctrl.connect("key-pressed", self._on_key_pressed)
         self.add_controller(ctrl)
 
-    def _on_key_pressed(self, _ctrl, keyval, _keycode, _state):
+    def _on_key_pressed(self, _ctrl, keyval, keycode, state):
         if keyval == Gdk.KEY_F11:
             if self._fullscreen:
                 self.unfullscreen()
@@ -45,6 +52,15 @@ class EldrunWindow(Adw.ApplicationWindow):
                 self.fullscreen()
             self._fullscreen = not self._fullscreen
             return True
+
+        if keyval in (Gdk.KEY_Super_L, Gdk.KEY_Super_R):
+            self._toggle_panels()
+            return True
+
+        if keyval == Gdk.KEY_Tab and (state & Gdk.ModifierType.SHIFT_MASK):
+            self._left_panel.cycle_next_app()
+            return True
+
         return False
 
     # ── header bar ────────────────────────────────────────────────────────────
@@ -53,11 +69,29 @@ class EldrunWindow(Adw.ApplicationWindow):
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         header_box.add_css_class("app-header")
 
+        self._left_panel_btn = Gtk.Button(label="‹")
+        self._left_panel_btn.add_css_class("flat")
+        self._left_panel_btn.add_css_class("panel-toggle-btn")
+        self._left_panel_btn.set_valign(Gtk.Align.CENTER)
+        self._left_panel_btn.set_margin_start(4)
+        self._left_panel_btn.set_tooltip_text("Hide left panel")
+        self._left_panel_btn.connect("clicked", lambda _: self._toggle_left_panel())
+        header_box.append(self._left_panel_btn)
+
         title = Gtk.Label(label="ELDRUN")
         title.add_css_class("app-title")
         title.set_hexpand(True)
         title.set_halign(Gtk.Align.CENTER)
         header_box.append(title)
+
+        self._right_panel_btn = Gtk.Button(label="›")
+        self._right_panel_btn.add_css_class("flat")
+        self._right_panel_btn.add_css_class("panel-toggle-btn")
+        self._right_panel_btn.set_valign(Gtk.Align.CENTER)
+        self._right_panel_btn.set_margin_end(4)
+        self._right_panel_btn.set_tooltip_text("Hide right panel")
+        self._right_panel_btn.connect("clicked", lambda _: self._toggle_right_panel())
+        header_box.append(self._right_panel_btn)
 
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         btn_box.set_valign(Gtk.Align.CENTER)
@@ -115,13 +149,18 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_page_changed=self._on_center_page_changed,
             settings_manager=self.settings_manager,
         )
-        self._left_panel  = LeftPanel(center_panel=self._center_panel)
+        self._left_panel = LeftPanel(
+            center_panel=self._center_panel,
+            default_apps_manager=self.default_apps_manager,
+            on_warm_changed=self._on_project_warm_changed,
+        )
         self._right_panel = RightPanel(
             self.project_manager,
             self._center_panel,
             on_new_project=self._on_new_project_clicked,
             on_import_project=self._on_import_project_clicked,
             settings_manager=self.settings_manager,
+            default_apps_manager=self.default_apps_manager,
         )
 
         self._inner_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
@@ -153,21 +192,54 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._center_panel.add_project_terminal(p)
             self._right_panel.add_project_row(p)
         self._center_panel.open_master_terminal()
+        self._right_panel.refresh_warm_states(self.project_manager.projects)
 
-    # ── left panel visibility + project context ───────────────────────────────
+    # ── panel toggle (Super key + individual buttons) ─────────────────────────
 
     def _on_center_page_changed(self, page_name: str):
-        show_left = page_name.startswith("project-")
+        self._apply_panel_visibility()
+
+    def _apply_panel_visibility(self):
+        page = self._center_panel._stack.get_visible_child_name() or "empty"
+        show_left = (page.startswith("project-")
+                     and not self._left_hidden
+                     and not self._panels_hidden)
         self._left_panel.set_visible(show_left)
         if show_left:
             self._outer_paned.set_position(_LEFT_WIDTH)
-            project_id = page_name[len("project-"):]
+        if page.startswith("project-"):
+            project_id = page[len("project-"):]
             project = self.project_manager.get_project(project_id)
             self._left_panel.update_project(project)
             self._right_panel.set_active_project(project_id)
         else:
             self._left_panel.update_project(None)
             self._right_panel.set_active_project(None)
+        self._right_panel.set_visible(not self._right_hidden and not self._panels_hidden)
+
+    def _toggle_panels(self):
+        self._panels_hidden = not self._panels_hidden
+        self._apply_panel_visibility()
+
+    def _toggle_left_panel(self):
+        self._left_hidden = not self._left_hidden
+        self._apply_panel_visibility()
+        if self._left_hidden:
+            self._left_panel_btn.set_label("›")
+            self._left_panel_btn.set_tooltip_text("Show left panel")
+        else:
+            self._left_panel_btn.set_label("‹")
+            self._left_panel_btn.set_tooltip_text("Hide left panel")
+
+    def _toggle_right_panel(self):
+        self._right_hidden = not self._right_hidden
+        self._apply_panel_visibility()
+        if self._right_hidden:
+            self._right_panel_btn.set_label("‹")
+            self._right_panel_btn.set_tooltip_text("Show right panel")
+        else:
+            self._right_panel_btn.set_label("›")
+            self._right_panel_btn.set_tooltip_text("Hide right panel")
 
     # ── project dialog handlers ───────────────────────────────────────────────
 
@@ -190,3 +262,10 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _on_project_created(self, project: dict):
         self._center_panel.add_project_terminal(project)
         self._right_panel.add_project_row(project)
+
+    def _on_project_warm_changed(self, project_id: str, warm: bool):
+        self._right_panel.set_project_warm(project_id, warm)
+
+    def _bootstrap_default_apps(self) -> bool:
+        self.default_apps_manager.bootstrap_from_system()
+        return False

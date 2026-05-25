@@ -101,6 +101,15 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
     border-radius: 6px;
     margin: 2px 4px;
 }
+.project-row-warm {
+    background-color: rgba(56, 139, 253, 0.12);
+}
+.project-row-warm.project-row-active {
+    background-color: rgba(56, 139, 253, 0.12);
+    border: 2px solid #f85149;
+    border-radius: 6px;
+    margin: 2px 4px;
+}
 .close-btn {
     font-size: 13px;
     color: #8b949e;
@@ -126,6 +135,20 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
 .placeholder-label {
     color: #484f58;
     font-size: 16px;
+}
+
+/* ── panel toggle buttons (header bar) ───────────────────── */
+button.panel-toggle-btn {
+    min-width: 28px;
+    min-height: 24px;
+    padding: 0 6px;
+    font-size: 14px;
+    color: #8b949e;
+    border-radius: 4px;
+}
+button.panel-toggle-btn:hover {
+    color: #e6edf3;
+    background-color: #21262d;
 }
 """
 

@@ -1,3 +1,6 @@
+import json
+import pathlib
+
 import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, Pango
@@ -33,20 +36,35 @@ class ProjectRow(Gtk.ListBoxRow):
 
         self.set_child(box)
 
+    def set_active(self, active: bool):
+        ctx = self.get_style_context()
+        if active:
+            ctx.add_class("project-row-active")
+        else:
+            ctx.remove_class("project-row-active")
+
+    def set_warm(self, warm: bool):
+        ctx = self.get_style_context()
+        if warm:
+            ctx.add_class("project-row-warm")
+        else:
+            ctx.remove_class("project-row-warm")
+
 
 _TERMINAL_OPTIONS = ["claude", "codex"]
 
 
 class RightPanel(Gtk.Box):
     def __init__(self, project_manager, center_panel, on_new_project, on_import_project,
-                 settings_manager=None):
+                 settings_manager=None, default_apps_manager=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("panel-right")
-        self.set_size_request(280, -1)
+        self.set_size_request(220, -1)
 
         self._pm = project_manager
         self._center = center_panel
         self._settings = settings_manager
+        self._dam = default_apps_manager
         self._on_new_project = on_new_project
         self._on_import_project = on_import_project
         self._project_rows: dict[str, ProjectRow] = {}
@@ -84,6 +102,8 @@ class RightPanel(Gtk.Box):
         self.append(row)
 
     def _on_root_clicked(self, _btn):
+        # Deselect any project row so re-selecting it later works properly
+        self._listbox.select_row(None)
         if hasattr(self._center, "open_master_terminal"):
             self._center.open_master_terminal()
 
@@ -105,7 +125,6 @@ class RightPanel(Gtk.Box):
 
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
-        # Terminal command row
         term_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         term_lbl = Gtk.Label(label="Terminal")
         term_lbl.set_hexpand(True)
@@ -120,6 +139,15 @@ class RightPanel(Gtk.Box):
         term_row.append(term_dropdown)
 
         box.append(term_row)
+
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        ft_btn = Gtk.Button(label="File Type Apps…")
+        ft_btn.add_css_class("flat")
+        ft_btn.set_halign(Gtk.Align.START)
+        ft_btn.connect("clicked", lambda _: (popover.popdown(),
+                                              self._show_filetype_settings()))
+        box.append(ft_btn)
 
         motion = Gtk.EventControllerMotion()
         motion.connect("leave", lambda _: popover.popdown())
@@ -136,6 +164,186 @@ class RightPanel(Gtk.Box):
             self._settings.set("terminal_command", _TERMINAL_OPTIONS[idx])
             if hasattr(self._center, "respawn_all"):
                 self._center.respawn_all()
+
+    # ── filetype settings window ──────────────────────────────────────────────
+
+    def _show_filetype_settings(self):
+        win = Gtk.Window()
+        win.set_title("File Type Apps")
+        win.set_modal(True)
+        win.set_default_size(420, 380)
+        root = self._gear_btn.get_root()
+        if isinstance(root, Gtk.Window):
+            win.set_transient_for(root)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        outer.set_margin_start(16)
+        outer.set_margin_end(16)
+        outer.set_margin_top(16)
+        outer.set_margin_bottom(16)
+
+        hdr = Gtk.Label(label="Default apps for file types")
+        hdr.add_css_class("heading")
+        hdr.set_xalign(0)
+        outer.append(hdr)
+
+        desc = Gtk.Label(
+            label="Double-clicking a project file opens it with the app below."
+        )
+        desc.set_xalign(0)
+        desc.set_wrap(True)
+        desc.add_css_class("dim-label")
+        outer.append(desc)
+
+        outer.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+
+        self._ft_listbox = Gtk.ListBox()
+        self._ft_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        scrolled.set_child(self._ft_listbox)
+        outer.append(scrolled)
+
+        self._ft_win = win
+        self._ft_populate()
+
+        add_btn = Gtk.Button(label="+ Add Entry")
+        add_btn.add_css_class("flat")
+        add_btn.set_halign(Gtk.Align.START)
+        add_btn.connect("clicked", lambda _: self._ft_add_row("", ""))
+        outer.append(add_btn)
+
+        win.set_child(outer)
+        win.present()
+
+    def _ft_populate(self):
+        if self._dam is None:
+            return
+        gmap = self._dam.get_global_map()
+        for ext, app in sorted(gmap.items()):
+            self._ft_add_row(ext, app)
+
+    def _ft_add_row(self, ext: str, app: str):
+        row = Gtk.ListBoxRow()
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.set_margin_start(4)
+        box.set_margin_end(4)
+        box.set_margin_top(4)
+        box.set_margin_bottom(4)
+
+        ext_entry = Gtk.Entry()
+        ext_entry.set_placeholder_text(".ext")
+        ext_entry.set_text(ext)
+        ext_entry.set_max_width_chars(8)
+        ext_entry.set_width_chars(8)
+        box.append(ext_entry)
+
+        app_entry = Gtk.Entry()
+        app_entry.set_placeholder_text("app command")
+        app_entry.set_text(app)
+        app_entry.set_hexpand(True)
+        box.append(app_entry)
+
+        def browse(_btn, ae=app_entry):
+            def cb(cmd):
+                ae.set_text(cmd)
+            self._ft_show_app_picker(cb, self._ft_win)
+
+        browse_btn = Gtk.Button(label="⋯")
+        browse_btn.add_css_class("flat")
+        browse_btn.connect("clicked", browse)
+        box.append(browse_btn)
+
+        def save_row(_w, ee=ext_entry, ae=app_entry, old_ext=ext):
+            new_ext = ee.get_text().strip().lower()
+            new_app = ae.get_text().strip()
+            if not new_ext or not new_app:
+                return
+            if old_ext and old_ext != new_ext and self._dam:
+                self._dam.remove_global_app(old_ext)
+            if self._dam:
+                self._dam.set_global_app(new_ext, new_app)
+
+        ext_entry.connect("activate", save_row)
+        app_entry.connect("activate", save_row)
+        ext_entry.connect("focus-out-event", save_row)
+        app_entry.connect("focus-out-event", save_row)
+
+        def rm_row(_btn, r=row, ee=ext_entry):
+            ext_val = ee.get_text().strip().lower()
+            if ext_val and self._dam:
+                self._dam.remove_global_app(ext_val)
+            self._ft_listbox.remove(r)
+
+        rm_btn = Gtk.Button(label="×")
+        rm_btn.add_css_class("flat")
+        rm_btn.get_style_context().add_class("close-btn")
+        rm_btn.connect("clicked", rm_row)
+        box.append(rm_btn)
+
+        row.set_child(box)
+        self._ft_listbox.append(row)
+
+    def _ft_show_app_picker(self, callback, parent=None):
+        from default_apps_manager import get_installed_apps
+        apps = get_installed_apps()
+
+        win = Gtk.Window()
+        win.set_title("Choose Application")
+        win.set_modal(True)
+        win.set_default_size(360, 440)
+        if parent:
+            win.set_transient_for(parent)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
+        search = Gtk.SearchEntry()
+        search.set_placeholder_text("Search apps…")
+        search.set_margin_start(8)
+        search.set_margin_end(8)
+        search.set_margin_top(8)
+        search.set_margin_bottom(4)
+        box.append(search)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+
+        listbox = Gtk.ListBox()
+        listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+
+        def row_filter(r):
+            q = search.get_text().lower().strip()
+            if not q:
+                return True
+            return q in r.app_name.lower() or q in r.app_exec.lower()
+
+        listbox.set_filter_func(row_filter)
+        search.connect("search-changed", lambda _: listbox.invalidate_filter())
+
+        for a in apps:
+            r = Gtk.ListBoxRow()
+            r.app_name = a["name"]
+            r.app_exec = a["exec"]
+            lbl = Gtk.Label(label=a["name"], xalign=0)
+            lbl.set_margin_start(8)
+            lbl.set_margin_top(4)
+            lbl.set_margin_bottom(4)
+            r.set_child(lbl)
+            listbox.append(r)
+
+        def on_activated(_lb, r):
+            callback(r.app_exec)
+            win.close()
+
+        listbox.connect("row-activated", on_activated)
+        scrolled.set_child(listbox)
+        box.append(scrolled)
+
+        win.set_child(box)
+        win.present()
 
     # ── search entry ──────────────────────────────────────────────────────────
 
@@ -254,10 +462,27 @@ class RightPanel(Gtk.Box):
     def set_active_project(self, project_id: str | None):
         self._active_project_id = project_id
         for pid, row in self._project_rows.items():
-            if pid == project_id:
-                row.get_style_context().add_class("project-row-active")
-            else:
-                row.get_style_context().remove_class("project-row-active")
+            row.set_active(pid == project_id)
+
+    def set_project_warm(self, project_id: str, warm: bool):
+        row = self._project_rows.get(project_id)
+        if row:
+            row.set_warm(warm)
+
+    def refresh_warm_states(self, projects: list):
+        for p in projects:
+            proj_dir = p.get("directory", "")
+            path = pathlib.Path(proj_dir) / "open_apps.json"
+            warm = False
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text())
+                    warm = bool(data)
+                except Exception:
+                    pass
+            row = self._project_rows.get(p["id"])
+            if row:
+                row.set_warm(warm)
 
     # ── callbacks ─────────────────────────────────────────────────────────────
 

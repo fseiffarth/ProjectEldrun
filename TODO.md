@@ -1,13 +1,17 @@
 # ProjectEldrun — TODO
 
+---
+
 ## Completed
 
-### Infrastructure
+### Phase 0 — Foundation
+
+#### Infrastructure
 - [x] Directory structure: `app/`, `app/panels/`, `__init__.py` files
 - [x] Entry point `app/eldrun.py`: `Adw.Application`, CSS, SIGTERM/SIGINT handlers
 - [x] Dependencies: GTK4, Adw, VTE 3.91 (`gir1.2-vte-3.91`), python-xlib all importable
 
-### Main window (`app/window.py`)
+#### Main window (`app/window.py`)
 - [x] `EldrunWindow(Adw.ApplicationWindow)`: undecorated, 1440×900 default
 - [x] Triple-column `Gtk.Paned` layout: left 220px / center flex / right 280px
 - [x] F11 fullscreen toggle
@@ -15,17 +19,17 @@
 - [x] On startup: open Root terminal in center, hide left panel
 - [x] Left panel shown only when a project terminal is active; hidden for Root/empty/app views
 
-### Project Manager (`app/project_manager.py`)
+#### Project Manager (`app/project_manager.py`)
 - [x] JSON persistence at `~/.local/share/eldrun/projects.json`
 - [x] `add_project()`, `remove_project()`, `get_project()`, `set_shell_pid()`
 
-### Right panel (`app/panels/right_panel.py`)
+#### Right panel (`app/panels/right_panel.py`)
 - [x] Red "Root" button (Adwaita `destructive-action`) → calls `center_panel.open_master_terminal()`
 - [x] PROJECTS section: `Gtk.ListBox` with `ProjectRow` (folder icon, name, × close button)
 - [x] Row selection → `center_panel.show_project_terminal(project_id)`
 - [x] Green "+" button at bottom → `_on_new_project_clicked` (currently a no-op stub)
 
-### Center panel (`app/panels/center_panel.py`)
+#### Center panel (`app/panels/center_panel.py`)
 - [x] `Gtk.Stack` (NONE transition) inside `Gtk.Overlay`
 - [x] Placeholder page ("No project selected. Press + to create one.")
 - [x] Root/master terminal page (`__master__`): spawns `claude`/bash in `~/eldrun/`, lazy init, respawns on exit
@@ -36,7 +40,7 @@
 - [x] `show_app_window(xid)`: X11 reparenting via GdkX11 + python-xlib (untested)
 - [x] `_release_app_window()`: reparents embedded window back to root
 
-### Left panel (`app/panels/left_panel.py`)
+#### Left panel (`app/panels/left_panel.py`)
 - [x] Top section "OPEN APPS": polls `_NET_CLIENT_LIST` every 2 s via python-xlib EWMH
 - [x] Filters: `_NET_WM_WINDOW_TYPE_NORMAL` only, skip own PID
 - [x] Diff-based row updates (add/remove/rename without full rebuild)
@@ -44,8 +48,6 @@
 - [x] Bottom section "PROJECT": stub `Gtk.ListBox` (file tree not yet implemented)
 
 ---
-
-## Completed (Phases 1–10)
 
 ### Phase 1 — Projects folder restructure
 
@@ -81,7 +83,7 @@
 - [x] `ImportProjectDialog`: `Gtk.FileChooserNative` folder picker, name entry (pre-filled), visibility dropdown, destination preview, conflict warning
 - [x] `project_manager.import_project()`: `shutil.copytree` (skips `.git/`), scaffold gap-fill, fresh git init + commit, background thread, spinner label
 
-### Phase 6 — Project search field (below Root button)
+### Phase 6 — Project search field
 
 - [x] `Gtk.SearchEntry` between Root button and PROJECTS header
 - [x] Real-time case-insensitive filter via `ListBox.set_filter_func`
@@ -94,7 +96,7 @@
 - [x] Row-activated: expand/collapse dirs; `xdg-open` files
 - [x] Placeholder shown when no project is active
 
-### Phase 8 — Open-apps browser mode (left panel)
+### Phase 8 — Open-apps browser (left panel)
 
 - [x] `OpenAppsManager` class persists `open_apps.json` per project (`{name, exe, args}` entries)
 - [x] `AppRow` shows ● running indicator (green/grey), app name, × remove button
@@ -116,11 +118,60 @@
 - [x] `README.md` updated: new feature list
 - [x] Full syntax check passes: all 8 `.py` files compile clean
 
+### Phase 11 — File-tree interactions + settings
+
+- [x] **Right-click context menu on project files**: Open, Open With…, Copy Path, Reveal in File Manager, Rename…, Delete
+- [x] **Double-click opens file with matched app**: looks up `DefaultAppsManager` (project → global → xdg-mime); launches app, adds to open-apps list
+- [x] **Per-project default app map**: `project_default_apps.json` per project dir; global fallback in `~/.local/share/eldrun/default_apps.json`; new module `app/default_apps_manager.py`
+- [x] **No-match popup**: "Open With" dialog when no app found; option to save as default for this project or globally
+- [x] **Bootstrap from system defaults**: `DefaultAppsManager.bootstrap_from_system()` runs at startup via `GLib.idle_add`
+- [x] **Filetype → default app settings**: "File Type Apps…" button in gear popover opens a dedicated window
+- [x] **Light-blue tint for warm projects**: CSS class `project-row-warm` when `open_apps.json` is non-empty
+- [x] **Consistent Root switch UX**: `_on_root_clicked` deselects current project row before switching
+- [x] **Super/Win key toggles panels**: hides/shows left + right panels; center takes full width
+- [x] **Shift+Tab cycles open apps**: `LeftPanel.cycle_next_app()` rotates through running app rows
+
+### Phase 12 — Polish + app picker
+
+- [x] **Window starts maximized**: `EldrunWindow.__init__` calls `self.maximize()`
+- [x] **App picker for default-app assignment**: "Browse…" button in "Open With" dialog and "⋯" in File Type Apps settings — both open a searchable list from `.desktop` files
+
+### Phase 13 — Panel auto-hide + auto-embed
+
+- [x] **Panel toggle buttons in header bar**: `‹` / `›` buttons flanking the title independently hide/show left and right panels; tooltips update on state change
+- [x] **Right panel width normalized**: right panel is now 220 px (same as left) for a balanced layout
+- [x] **Auto-embed app on file open**: when a file is opened from the project tree, Eldrun waits for the app's X window to appear (EWMH poll) and automatically embeds it in the center panel via `show_app_window`
+
+---
+
+## Next
+
+### Phase 14 — Network status indicator
+
+Add a green/red status lamp in the top-left corner of the header bar that reflects live internet connectivity. When offline the terminal is considered unusable and the lamp signals this clearly.
+
+- [ ] **Status lamp widget**: small circular `Gtk.Label` (●) in the header bar, far left, with CSS classes `status-online` (green) and `status-offline` (red)
+- [ ] **Connectivity probe**: background `GLib.timeout_add` every 5 s — attempt a non-blocking TCP connect to a reliable host (e.g. `1.1.1.1:53`) via a thread; update lamp on the GTK main thread via `GLib.idle_add`
+- [ ] **Offline visual feedback**: when offline, overlay a translucent "No connection" banner or dim the active terminal; block new terminal spawns with a toast/label until connectivity is restored
+- [ ] **Tooltip**: lamp tooltip shows "Online" / "Offline" and the timestamp of the last successful probe
+- [ ] **Graceful fallback**: if the probe thread errors (e.g. no network interface), treat as offline rather than crashing
+
+### Phase 15 — Project time tracking + timeline bar
+
+Track how long each project is the active terminal during the day and surface that information directly in the right panel and in each project's `status.md`.
+
+- [ ] **Session recorder**: when `_on_center_page_changed` switches to a project terminal, start a session timer (`time.monotonic()`); when the project loses focus (switch to Root, another project, or app embed), close the session and append `{project_id, date, start_iso, duration_s}` to `~/.local/share/eldrun/time_log.json`
+- [ ] **Today's totals**: derive per-project totals for the current calendar date from `time_log.json`; recompute on every project switch and every 60 s via `GLib.timeout_add`
+- [ ] **Timeline bar in right panel**: below each `ProjectRow` label, render a thin (`4 px`) horizontal progress bar whose width is proportional to this project's share of total time today across all open projects; tooltip shows `"Xh Ym today"`; bar is hidden when today's total is zero
+- [ ] **CSS**: new class `project-time-bar` (muted blue fill, rounded, no border); bar container always occupies its reserved height so rows don't shift
+- [ ] **status.md sync**: on session close, rewrite the `## Time Log` section in the project's `status.md` — one summary line (`Total: Xh Ym`) and a table of the last 20 sessions (date, start time, duration); create the section if absent, replace it if present
+- [ ] **Startup resume**: on launch, any open project that was active when the app last closed has no matching session-end record; treat its last known start (stored in a `~/.local/share/eldrun/active_session.json` sentinel) as a session to close before displaying totals
+
 ---
 
 ## Future Goals
 
-> These are long-horizon ideas — not scheduled. They require the core phases above to be stable before they make sense to pursue.
+> Long-horizon ideas — not scheduled. Require the core phases above to be stable.
 
 ### Local Ollama integration
 
@@ -129,7 +180,7 @@ Run a local Ollama instance alongside Eldrun to provide lightweight AI assistanc
 - [ ] **Daemon management**: start/stop an `ollama serve` subprocess when Eldrun launches; expose a status indicator (dot in the header bar — green = ready, grey = offline)
 - [ ] **Intelligent project search**: replace the plain substring filter in the search field (Phase 6) with an embedding-based semantic search — query Ollama for sentence embeddings of the project name + `STATUS.md` / `CLAUDE.md` summary, rank results by cosine similarity
 - [ ] **"Suggest projects for today"**: on startup, send recent git activity (`git log --oneline -20` across all projects) + current date/time to Ollama and surface the top 2–3 projects the user likely wants to continue; show as a soft highlight or pinned section at the top of the project list
-- [ ] **App/file suggestions per project**: when a project is activated, ask Ollama which files are most likely relevant given recent commits and `open_apps.json` history; surface suggestions as a "Suggested" section at the top of the open-apps browser (Phase 8)
-- [ ] **Context-aware terminal hints**: optionally pipe the last N lines of the active terminal's scrollback to Ollama and display a short hint strip below the terminal ("looks like a test failure — run `pytest -x`")
-- [ ] **Model selection**: configurable per-project in `CLAUDE.md` or a sidebar setting; default to a small fast model (e.g. `mistral`, `phi3`) for latency-sensitive suggestions
-- [ ] **Privacy boundary**: all inference runs locally; no data leaves the machine; add a visible "local AI" label to any AI-generated suggestion so the user always knows the source
+- [ ] **App/file suggestions per project**: when a project is activated, ask Ollama which files are most likely relevant given recent commits and `open_apps.json` history; surface suggestions as a "Suggested" section at the top of the open-apps browser
+- [ ] **Context-aware terminal hints**: optionally pipe the last N lines of the active terminal's scrollback to Ollama and display a short hint strip below the terminal
+- [ ] **Model selection**: configurable per-project in `CLAUDE.md` or a sidebar setting; default to a small fast model (e.g. `mistral`, `phi3`)
+- [ ] **Privacy boundary**: all inference runs locally; no data leaves the machine; add a visible "local AI" label to any AI-generated suggestion
