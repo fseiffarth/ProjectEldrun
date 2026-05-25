@@ -91,10 +91,24 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
 .project-row {
     border-bottom: 1px solid #21262d;
 }
+/* Prevent Adwaita from forcing white text / blue background on selection.
+   GTK4 requires explicit type selectors (label, image) — the * wildcard
+   does not reliably override per-widget-type Adwaita rules. */
 .project-row:selected,
-.project-row:selected * {
+.project-row:focus:selected {
     background-color: transparent;
+    background: none;
+    box-shadow: none;
+}
+.project-row label,
+.project-row:selected label,
+.project-row:focus:selected label {
     color: #e6edf3;
+}
+.project-row image,
+.project-row:selected image,
+.project-row:focus:selected image {
+    color: #8b949e;
 }
 .project-row-active {
     border: 2px solid #388bfd;
@@ -251,9 +265,20 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
 }
 .project-row { border-bottom: 1px solid #d8dee4; }
 .project-row:selected,
-.project-row:selected * {
+.project-row:focus:selected {
     background-color: transparent;
+    background: none;
+    box-shadow: none;
+}
+.project-row label,
+.project-row:selected label,
+.project-row:focus:selected label {
     color: #24292f;
+}
+.project-row image,
+.project-row:selected image,
+.project-row:focus:selected image {
+    color: #57606a;
 }
 .project-row-active {
     border: 2px solid #0969da;
