@@ -362,9 +362,9 @@ Show the number of minutes worked today directly to the right of each project's 
 
 ### Current time display in header bar
 
-Show the current time at the top-right of the header bar, beside the connection status lamp area.
+Show the current time in the left status area of the header bar, immediately to the right of the connection symbol (● lamp).
 
-- [ ] Add a `Gtk.Label` to the right side of the `Gtk.CenterBox` in `window.py` (or wherever the header bar status area is built) showing the current local time in `HH:MM` format
+- [ ] Place the time `Gtk.Label` in the left status box in `window.py`, directly after the ● network lamp (and connection-type icon if present) — not on the right side of the header
 - [ ] Update it every 30 s via `GLib.timeout_add_seconds(30, ...)` — no need for per-second refresh
 - [ ] Style with a muted/secondary CSS class so it doesn't compete visually with the panel controls
 
