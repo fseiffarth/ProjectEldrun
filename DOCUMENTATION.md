@@ -217,6 +217,80 @@ EldrunApp (Adw.Application)
 `ProjectManager` persists projects to `~/.local/share/eldrun/projects.json`.
 Projects are created under `~/eldrun/` and are full git repos.
 
+## Global data files
+
+All global Eldrun state lives under `~/.local/share/eldrun/`. These files are managed entirely by Eldrun and should not be edited by hand.
+
+| File | Managed by | Purpose |
+|------|-----------|---------|
+| `projects.json` | `ProjectManager` | Registry of every known project — paths, statuses, positions, and metadata. |
+| `time_log.json` | `TimeTracker` | Append-only log of all work sessions across all projects. |
+| `active_session.json` | `TimeTracker` | Sentinel written at session start and deleted on clean close; used to synthesise a closing entry after a crash. |
+| `settings.json` | `SettingsManager` | User-configurable app settings (e.g. `terminal_command`). |
+| `default_apps.json` | `DefaultAppsManager` | Global `extension → app` map, bootstrapped from system MIME defaults and editable via the "File Type Apps" settings window. |
+
+### `projects.json` schema
+
+Array of project objects. Each entry:
+
+```json
+{
+  "id": "<uuid4>",
+  "name": "My Project",
+  "directory": "/home/<user>/eldrun/projects/my-project",
+  "git_type": "private",
+  "created_at": "2025-05-01T10:00:00+00:00",
+  "status": "inactive",
+  "position": 10
+}
+```
+
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `status` | `"current"` | The project whose terminal is shown in the center panel (at most one at a time). |
+| | `"active"` | In the right-panel list with a running terminal, but not the foreground view. |
+| | `"inactive"` | Registered globally but not shown in the panel and has no running terminal. |
+| `position` | integer | Sort weight for ordering rows in the right panel; lower = higher. |
+
+`shell_pid` is tracked in memory only and never written to disk.
+
+### `time_log.json` schema
+
+Array of session records, one per closed session:
+
+```json
+[
+  {
+    "project_id": "<uuid4>",
+    "date": "2025-05-01",
+    "start_iso": "2025-05-01T10:00:00+00:00",
+    "duration_s": 3600
+  }
+]
+```
+
+### `settings.json` schema
+
+```json
+{
+  "terminal_command": "claude"
+}
+```
+
+`terminal_command` is the executable spawned in each project terminal (default: `claude`; fallback: `bash`).
+
+### `default_apps.json` schema
+
+```json
+{
+  ".py": "code",
+  ".md": "marktext",
+  ".pdf": "evince"
+}
+```
+
+Maps file extension (with leading `.`) to the executable name used to open files of that type globally. Per-project overrides live in `<project_dir>/project_default_apps.json` with the same schema.
+
 ## Roadmap
 
 - Wayland support (replace X11 reparenting with a proper compositor protocol)
