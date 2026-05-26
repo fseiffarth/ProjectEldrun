@@ -1,4 +1,4 @@
-"""Phase 15 — Per-project time tracking and status.md sync."""
+"""Phase 15 — Per-project time tracking and project.json sync."""
 
 import json
 import os
@@ -12,7 +12,7 @@ DATA_DIR = os.path.join(GLib.get_user_data_dir(), "eldrun")
 _TIME_LOG_FILE = os.path.join(DATA_DIR, "time_log.json")
 _ACTIVE_SESSION_FILE = os.path.join(DATA_DIR, "active_session.json")
 
-_MAX_STATUS_SESSIONS = 20
+_MAX_PROJECT_SESSIONS = 20
 
 
 def format_duration(seconds: float) -> str:
@@ -90,7 +90,7 @@ class TimeTracker:
         }
         self._append_log(entry)
         if self._project:
-            self._update_status_md(self._project, entry)
+            self._update_project_json(self._project, entry)
 
     # ── orphan-session (startup resume) ───────────────────────────────────────
 
@@ -161,48 +161,42 @@ class TimeTracker:
             json.dump(log, f, indent=2)
         os.replace(tmp, self._time_log_file)
 
-    # ── status.md sync ─────────────────────────────────────────────────────────
+    # ── project.json sync ──────────────────────────────────────────────────────
 
-    def _update_status_md(self, project: dict, _new_entry: dict):
+    def _update_project_json(self, project: dict, _new_entry: dict):
         proj_dir = project.get("directory")
         if not proj_dir:
             return
-        status_path = pathlib.Path(proj_dir) / "STATUS.md"
+        project_json_path = pathlib.Path(proj_dir) / "project.json"
+
         try:
-            old = status_path.read_text(encoding="utf-8") if status_path.exists() else ""
-        except OSError:
-            return
+            data = json.loads(project_json_path.read_text(encoding="utf-8")) if project_json_path.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            data = {}
 
         all_sessions = [
             e for e in self._load_log()
             if e.get("project_id") == project["id"]
         ]
-        recent = all_sessions[-_MAX_STATUS_SESSIONS:]
+        recent = all_sessions[-_MAX_PROJECT_SESSIONS:]
         total_s = sum(e.get("duration_s", 0) for e in all_sessions)
 
-        lines = ["## Time Log\n\n"]
-        lines.append(f"Total: {format_duration(total_s)}\n\n")
-        lines.append("| Date | Start | Duration |\n")
-        lines.append("|------|-------|----------|\n")
-        for e in reversed(recent):
-            d = e.get("date", "")
-            start = e.get("start_iso", "")[:16].replace("T", " ")
-            lines.append(
-                f"| {d} | {start} | {format_duration(e.get('duration_s', 0))} |\n"
-            )
+        data["time"] = {
+            "total_s": total_s,
+            "recent_sessions": [
+                {
+                    "date": e.get("date", ""),
+                    "start": e.get("start_iso", "")[:16].replace("T", " "),
+                    "duration_s": e.get("duration_s", 0),
+                }
+                for e in reversed(recent)
+            ],
+        }
 
-        section = "".join(lines)
-
-        if "## Time Log" in old:
-            parts = old.split("## Time Log", 1)
-            after = parts[1]
-            next_sec = after.find("\n## ")
-            remainder = after[next_sec:] if next_sec >= 0 else ""
-            new_content = parts[0] + section + remainder
-        else:
-            new_content = old.rstrip("\n") + "\n\n" + section
-
+        tmp = str(project_json_path) + ".tmp"
         try:
-            status_path.write_text(new_content, encoding="utf-8")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, str(project_json_path))
         except OSError:
             pass

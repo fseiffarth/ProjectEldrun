@@ -29,7 +29,7 @@ _SCAFFOLD: dict[str, str] = {
     ".gitignore":      ".env\n__pycache__/\n*.pyc\nnode_modules/\n.DS_Store\n*.log\ndist/\nbuild/\n.venv/\n",
     "TODO.md":         "# {name} — TODO\n",
     "ROADMAP.md":      "# {name} — Roadmap\n",
-    "STATUS.md":       "# {name} — Status\n",
+    "project.json":    '{{\n  "name": "{name}",\n  "directory": "{directory}",\n  "git_type": "{git_type}",\n  "time": {{\n    "total_s": 0,\n    "recent_sessions": []\n  }}\n}}\n',
     "DOCUMENTATION.md":"# {name} — Documentation\n",
 }
 
@@ -101,6 +101,11 @@ class ProjectManager:
             self.projects = data if isinstance(data, list) else []
         except (json.JSONDecodeError, OSError):
             self.projects = []
+        for i, p in enumerate(self.projects):
+            if "status" not in p:
+                p["status"] = "inactive"
+            if "position" not in p:
+                p["position"] = i * 10
 
     def _save(self):
         serializable = [
@@ -130,6 +135,11 @@ class ProjectManager:
 
     # ── public API ────────────────────────────────────────────────────────────
 
+    def _next_position(self) -> int:
+        if not self.projects:
+            return 0
+        return max(p.get("position", 0) for p in self.projects) + 10
+
     def add_project(self, name: str, directory: str, git_type: str = "private") -> dict:
         project = {
             "id": str(uuid.uuid4()),
@@ -138,6 +148,8 @@ class ProjectManager:
             "git_type": git_type,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "shell_pid": None,
+            "status": "active",
+            "position": self._next_position(),
         }
         self.projects.append(project)
         self._save()
@@ -145,6 +157,33 @@ class ProjectManager:
 
     def remove_project(self, project_id: str):
         self.projects = [p for p in self.projects if p["id"] != project_id]
+        self._save()
+
+    def set_project_status(self, project_id: str, status: str):
+        project = self.get_project(project_id)
+        if project is not None:
+            project["status"] = status
+            self._save()
+
+    def deactivate_project(self, project_id: str):
+        """Hide a project from the panel but keep it in the registry."""
+        self.set_project_status(project_id, "inactive")
+
+    def get_visible_projects(self) -> list:
+        """Return projects that should appear in the right panel."""
+        return [p for p in self.projects if p.get("status") in ("active", "current")]
+
+    def set_project_position(self, project_id: str, position: int):
+        project = self.get_project(project_id)
+        if project is not None:
+            project["position"] = position
+            self._save()
+
+    def set_all_inactive(self):
+        """Mark every project inactive (called on clean shutdown)."""
+        for p in self.projects:
+            if p.get("status") in ("active", "current"):
+                p["status"] = "inactive"
         self._save()
 
     def get_project(self, project_id: str) -> dict | None:
