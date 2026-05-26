@@ -7,11 +7,13 @@
 ### Phase 0 — Foundation
 
 #### Infrastructure
+
 - [x] Directory structure: `app/`, `app/panels/`, `__init__.py` files
 - [x] Entry point `app/eldrun.py`: `Adw.Application`, CSS, SIGTERM/SIGINT handlers
 - [x] Dependencies: GTK4, Adw, VTE 3.91 (`gir1.2-vte-3.91`), python-xlib all importable
 
 #### Main window (`app/window.py`)
+
 - [x] `EldrunWindow(Adw.ApplicationWindow)`: undecorated, 1440×900 default
 - [x] Triple-column `Gtk.Paned` layout: left 220px / center flex / right 280px
 - [x] F11 fullscreen toggle
@@ -20,16 +22,19 @@
 - [x] Left panel shown only when a project terminal is active; hidden for Root/empty/app views
 
 #### Project Manager (`app/project_manager.py`)
+
 - [x] JSON persistence at `~/.local/share/eldrun/projects.json`
 - [x] `add_project()`, `remove_project()`, `get_project()`, `set_shell_pid()`
 
 #### Right panel (`app/panels/right_panel.py`)
+
 - [x] Red "Root" button (Adwaita `destructive-action`) → calls `center_panel.open_master_terminal()`
 - [x] PROJECTS section: `Gtk.ListBox` with `ProjectRow` (folder icon, name, × close button)
 - [x] Row selection → `center_panel.show_project_terminal(project_id)`
 - [x] Green "+" button at bottom → `_on_new_project_clicked` (currently a no-op stub)
 
 #### Center panel (`app/panels/center_panel.py`)
+
 - [x] `Gtk.Stack` (NONE transition) inside `Gtk.Overlay`
 - [x] Placeholder page ("No project selected. Press + to create one.")
 - [x] Root/master terminal page (`__master__`): spawns `claude`/bash in `~/eldrun/`, lazy init, respawns on exit
@@ -41,6 +46,7 @@
 - [x] `_release_app_window()`: reparents embedded window back to root
 
 #### Left panel (`app/panels/left_panel.py`)
+
 - [x] Top section "OPEN APPS": polls `_NET_CLIENT_LIST` every 2 s via python-xlib EWMH
 - [x] Filters: `_NET_WM_WINDOW_TYPE_NORMAL` only, skip own PID
 - [x] Diff-based row updates (add/remove/rename without full rebuild)
@@ -165,6 +171,40 @@
 
 ## Next
 
+### Agent session permission boundary
+
+Claude/agent sessions opened inside `~/eldrun/projects/<project>` should be allowed to change everything inside that project directory but only read (not write) files outside of it.
+
+- [ ] Define the permission boundary for agent sessions: full write access within the project dir, read-only everywhere outside
+- [ ] Investigate how to enforce this — e.g. via `.claude/settings.json` in the project scaffold, chroot/namespace sandbox, or a custom MCP server that intercepts file writes
+- [ ] Add a `settings.json` template to the project scaffold (written by `create_project()`) that pre-configures the permission rules
+- [ ] Document the boundary in `AGENTS.md` so agents know their scope from the start
+
+---
+
+### Project state model + startup restore
+
+Introduce a formal three-state model for projects and restore the previous session layout on startup.
+
+#### Three-state status field
+
+- [ ] Add `status` field (`"current"` | `"active"` | `"inactive"`) to every entry in `~/.local/share/eldrun/projects.json`; migrate existing entries on load (treat missing field as `"inactive"`)
+- [ ] **`"current"`**: the one project whose terminal is shown in the center panel; at most one at a time; its row carries `project-row-active` CSS class
+- [ ] **`"active"`**: project is in the right-panel list, its terminal page exists, and its apps remain open — but it is not the foreground view
+- [ ] **`"inactive"`**: project is registered globally but absent from the right-panel list and has no running apps; never rendered as a row
+- [ ] `set_active_project(id)`: transitions selected project to `"current"`, demotes previous `"current"` to `"active"` (not `"inactive"`), persists both changes
+- [ ] Clicking `×` on a row: transitions project to `"inactive"`, calls `remove_project_terminal()`, closes its apps, removes the row — entry stays in `projects.json`
+
+#### Startup restore
+
+- [ ] On startup, after the window is realized, read `projects.json` and for each project with `status` `"active"` or `"current"`: add a `ProjectRow` and call `add_project_terminal()`
+- [ ] The Root view (`__master__`) is always opened first; it is the initial `"current"` view
+- [ ] The project that was `"current"` at last shutdown is restored to `"active"` (its row appears and terminal is created) but the Root terminal remains the foreground — the user explicitly switches back to it
+- [ ] All previously `"active"` projects have their apps reopened via the existing `open_apps.json` relaunch path (already triggered on project activation; wire it to run for all restored `"active"` projects during startup)
+- [ ] Write `status = "inactive"` for all projects on clean shutdown (via `app.quit()` / SIGTERM handler) so a crash leaves `"active"` entries intact for the next startup
+
+---
+
 ### Propagate theme toggle to terminals and embedded apps
 
 When the user switches dark mode on/off in the gear settings, the theme change should propagate beyond the UI:
@@ -185,12 +225,129 @@ Two related issues with the file-open flow in the project file tree:
 
 ---
 
-### Project list sorting — active project always on top
+### Global project search with dropdown
 
-Sort the project list in the right panel so the currently active project is always pinned to the top, with remaining projects sorted below (e.g. alphabetically or by last-used time).
+Replace the current right-panel search (which filters only the visible project rows) with a global search across all projects registered in Eldrun. Results appear in a dropdown; selecting one adds the project to the active panel list.
 
-- [ ] Add a sort function via `Gtk.ListBox.set_sort_func` in `right_panel.py`; active row (`project-row-active`) sorts first, rest fall through
-- [ ] Re-trigger sort on project switch (`set_active_project`) by calling `self._listbox.invalidate_sort()`
+#### Data model — three-state project status
+
+- [ ] Replace any `active` boolean in `projects.json` with a `status` field with three values:
+  - `"current"` — the project whose terminal is currently shown in the center panel (at most one at a time)
+  - `"active"` — project is in the right-panel list and its apps are kept running, but its terminal is not the foreground view
+  - `"inactive"` — project is registered globally but not shown in the right panel and its apps are not running
+- [ ] Only projects with `status` `"current"` or `"active"` appear in the right-panel list; `"inactive"` projects are hidden from the list
+- [ ] Clicking `×` on a project row sets `status = "inactive"`, closes the terminal page (`remove_project_terminal()`), closes any open apps for the project, and removes the row — the entry remains in `projects.json` so it can be re-opened via search
+- [ ] `set_active_project(id)` sets the selected project to `"current"` and demotes the previous `"current"` project to `"active"` (not `"inactive"`)
+- [ ] Persist status changes to `projects.json` immediately on every transition
+
+#### Search behaviour
+
+- [ ] On each keystroke in the search field, query `project_manager.get_all_projects()` (all statuses, not just visible rows) and filter by case-insensitive substring match on project name
+- [ ] Display matches in a `Gtk.Popover` dropdown anchored below the search entry; each row shows the project name, its path (smaller, muted text), and a subtle status badge (`active` / `inactive`)
+- [ ] Do **not** filter the existing right-panel list while the search popover is open — the two are now independent
+- [ ] Close the dropdown when the search field loses focus or `Escape` is pressed; clear the search text on close
+
+#### Selecting a result
+
+- [ ] When the user clicks a dropdown row (or presses Enter on the highlighted entry): if `status` is `"inactive"`, set it to `"active"`, add a `ProjectRow`, and open its terminal via `add_project_terminal()` + `add_project_row()`; then make it `"current"` via `set_active_project()`
+- [ ] If already `"active"` or `"current"`, just switch to it (`show_project_terminal()`) without adding a duplicate row
+- [ ] After selection, close the dropdown and clear the search field
+
+#### CSS / UX
+
+- [ ] Style the dropdown popover to match the right-panel background; highlight the focused row with a subtle accent
+- [ ] Show a "No projects found" placeholder row when the query matches nothing
+
+---
+
+### Project list sorting — current project always on top
+
+Sort the right-panel list so the `"current"` project is always pinned first, followed by `"active"` projects, with no `"inactive"` rows ever shown.
+
+- [ ] Add a sort function via `Gtk.ListBox.set_sort_func` in `right_panel.py`; `"current"` row sorts first (weight 0), `"active"` rows follow (weight 1), sorted alphabetically within each group
+- [ ] Re-trigger sort on every status transition by calling `self._listbox.invalidate_sort()`
+
+---
+
+### Project row hover tooltip + right-click stats popover
+
+Show rich project stats on hover and right-click for each project row in the right panel. Stats are pre-computed into a per-project `project.json` cache file so the UI never blocks on disk I/O.
+
+#### `project.json` cache (per project)
+
+- [ ] On startup, spawn a background thread per project that scans the project directory and writes `<project_dir>/project.json` with:
+  - `file_type_stats`: `{extension: {count, bytes}}` map (skip `.git/`, hidden dirs)
+  - `app_icons`: list of `{name, icon}` entries derived from `open_apps.json` — resolve each app's `.desktop` file to get its `Icon=` field
+  - `time_total_s`: lifetime tracked seconds from `time_log.json` for this project
+  - `time_today_s`: today's tracked seconds
+  - `last_updated`: ISO timestamp
+- [ ] Re-scan and rewrite `project.json` whenever the project is activated (debounced, background thread)
+- [ ] `project_manager.py`: expose `get_project_stats(project_id)` that reads and parses `project.json`; returns `None` if not yet generated
+
+#### Hover tooltip (popover on `motion-notify` / `enter-notify`)
+
+- [ ] Attach a `Gtk.Popover` to each `ProjectRow` that opens after a short hover delay (~500 ms via `GLib.timeout_add`) and closes on leave
+- [ ] Popover content:
+  - **Time**: "Xh Ym today · Xh total" (from `time_today_s` / `time_total_s`)
+  - **File type bar**: horizontal proportional bar (like GitHub's language bar) — each segment colored by extension, widths proportional to byte count; a legend below shows `ext — X%` for the top 5 types
+  - **App icons**: a row of `Gtk.Image` widgets (16–24 px) for each app in `app_icons`; use `Gtk.Image.new_from_icon_name` with the resolved icon name
+- [ ] If `project.json` is not yet available, show a "Loading…" label instead
+
+#### Right-click context menu additions
+
+- [ ] Add a **"Stats"** item to the existing right-click menu on project rows (or create one if absent) that opens the same stats popover pinned open (not auto-dismissed on mouse leave)
+
+#### CSS
+
+- [ ] Style the file-type bar segments with auto-assigned muted colors per extension (hash extension name to a hue); keep the bar height at ~6 px with rounded ends
+
+---
+
+### Drag-and-drop reordering of project rows
+
+Allow users to reorder project rows in the right panel by holding (long-press) on a row to initiate a drag, then dropping it at the desired position.
+
+#### Drag initiation (click-and-drag)
+
+- [ ] Initiate drag on regular click-and-drag (not long-press): wire `Gtk.DragSource` directly so dragging a row starts immediately on mouse motion past the drag threshold — no hold delay needed
+- [ ] On drag start, apply a visual "lifted" state to the dragged row (e.g. slight opacity reduction + box-shadow via CSS class `project-row-dragging`)
+
+#### GTK4 drag-and-drop wiring
+
+- [ ] Add a `Gtk.DragSource` to each `ProjectRow`: set `actions = Gdk.DragAction.MOVE`; in `prepare` callback return a `Gdk.ContentProvider` carrying the project ID string
+- [ ] Add a `Gtk.DropTarget` to each `ProjectRow`: accept the same content type; on `drop` signal determine the target row's index and call the reorder logic
+- [ ] Use `Gtk.DropTarget.set_preload(True)` and connect to `motion` to show a live insertion indicator (a highlighted 2 px line above/below the hovered row) as the drag passes over rows
+
+#### Reorder logic
+
+- [ ] Maintain an explicit `order` list (or per-entry `position` integer) in `projects.json` so the custom order survives restarts
+- [ ] On drop: compute the new index from the target row position, update the in-memory order, reinsert the `ProjectRow` widget at the new position via `Gtk.ListBox.remove` + `Gtk.ListBox.insert`, and persist the updated order to `projects.json`
+- [ ] If a `set_sort_func` is active (from the "active project always on top" feature), disable it while a drag is in progress and re-enable on drop
+
+#### CSS
+
+- [ ] `project-row-dragging`: `opacity: 0.5`
+- [ ] Drop insertion indicator: a thin accent-colored horizontal rule rendered above or below the hovered row depending on cursor position (top/bottom half of the row)
+
+---
+
+### Double-click to set current project
+
+Double-clicking a project row in the right panel should activate it as the "current" project (switch the center panel to its terminal). Single-click remains the selection/hover action; double-click is the explicit "make this my active project" gesture.
+
+- [ ] In `ProjectRow` (or the `Gtk.ListBox` row-activated handler in `right_panel.py`), distinguish single-click from double-click — connect to `Gtk.GestureClick` with `n_press == 2` for the double-click action
+- [ ] On double-click: call `set_active_project(project_id)` and `show_project_terminal(project_id)`; apply `project-row-active` CSS class to the row
+- [ ] Ensure drag-and-drop initiation (click-and-drag) does not fire a spurious double-click; cancel the double-click timer on drag start
+
+---
+
+### Project list section dividers
+
+Add a single horizontal separator line in the right-panel project list between the `"current"` project row and the `"active"` rows below it. No separator is needed for inactive projects as they are never shown in the list.
+
+- [ ] Use `Gtk.ListBox.set_header_func` in `right_panel.py`; the callback inserts a separator widget as the header of the first `"active"` row (i.e. whenever the previous row's status is `"current"`)
+- [ ] Call `self._listbox.invalidate_headers()` on every status transition so the separator tracks the current row correctly
+- [ ] CSS: style the separator as a thin (1 px) dark line with a small top/bottom margin
 
 ---
 
@@ -200,6 +357,16 @@ Show the number of minutes worked today directly to the right of each project's 
 
 - [ ] Add a `Gtk.Label` to the right of `self._time_bar` in `ProjectRow`; update it alongside `update_time_bar()` — show `"Xm"` (or `"Xh Ym"` for ≥ 60 min); hide when zero (consistent with bar visibility)
 - [ ] Keep the existing tooltip as-is for full detail
+
+---
+
+### Current time display in header bar
+
+Show the current time at the top-right of the header bar, beside the connection status lamp area.
+
+- [ ] Add a `Gtk.Label` to the right side of the `Gtk.CenterBox` in `window.py` (or wherever the header bar status area is built) showing the current local time in `HH:MM` format
+- [ ] Update it every 30 s via `GLib.timeout_add_seconds(30, ...)` — no need for per-second refresh
+- [ ] Style with a muted/secondary CSS class so it doesn't compete visually with the panel controls
 
 ---
 
@@ -294,9 +461,20 @@ Change `ImportProjectDialog` + `project_manager.import_project()` to support thr
 - [ ] **Move**: move the folder into `~/eldrun/projects/` and register the new location
 
 Implementation notes:
+
 - Add a mode selector (e.g. radio buttons or dropdown) to `ImportProjectDialog`
 - Store each project's `path` explicitly in `projects.json` (meaningful, pretty-printed JSON — `indent=2`); don't assume `~/eldrun/projects/<name>` as the canonical location
 - Update all path lookups in `project_manager.py`, `center_panel.py`, and `left_panel.py` to use `project["path"]` rather than a constructed path
+
+---
+
+### Bug: right panel too wide on first project open after startup
+
+When a project is opened immediately after startup, the right panel renders wider than its configured 220 px. The hide-right-panel toggle button (`›`) remains at its correct position, suggesting the button is anchored independently but the panel itself does not honour the initial width constraint until a resize or toggle cycle.
+
+- [ ] Investigate where the right pane position is set at startup in `window.py` — check if `Gtk.Paned.set_position()` is called before the window is realized/shown, which can cause the paned to ignore the value
+- [ ] Ensure the right-panel width is applied after the window is realized (e.g. connect to `notify::default-width` or use `GLib.idle_add` to defer `set_position()`)
+- [ ] Confirm the fix does not break the panel toggle (`›`) or the stored position on subsequent opens
 
 ---
 
