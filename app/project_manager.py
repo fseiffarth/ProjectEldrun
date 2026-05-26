@@ -97,7 +97,6 @@ Read `~/.local/share/eldrun/projects.json` and filter by name, path, or status.
 **Change a project's status**
 Edit the `status` field in the matching entry in `~/.local/share/eldrun/projects.json`
 to `"current"`, `"active"`, or `"inactive"`. At most one project should be `"current"`.
-Also update the `status` field in that project's own `project.json`.
 
 **Add or import a project**
 Ask the user to use Eldrun's **+** button — this ensures the project is scaffolded
@@ -129,7 +128,7 @@ _SCAFFOLD: dict[str, str] = {
     ".gitignore":      ".env\n__pycache__/\n*.pyc\nnode_modules/\n.DS_Store\n*.log\ndist/\nbuild/\n.venv/\n",
     "TODO.md":         "# {name} — TODO\n",
     "ROADMAP.md":      "# {name} — Roadmap\n",
-    "project.json":    '{{\n  "name": "{name}",\n  "directory": "{directory}",\n  "git_type": "{git_type}",\n  "status": "inactive",\n  "time": {{\n    "total_s": 0,\n    "recent_sessions": []\n  }}\n}}\n',
+    "project.json":    '{{\n  "name": "{name}",\n  "directory": "{directory}",\n  "git_type": "{git_type}",\n  "time": {{\n    "total_s": 0,\n    "recent_sessions": []\n  }}\n}}\n',
     "DOCUMENTATION.md":"# {name} — Documentation\n",
 }
 

@@ -181,7 +181,6 @@ class TimeTracker:
         recent = all_sessions[-_MAX_PROJECT_SESSIONS:]
         total_s = sum(e.get("duration_s", 0) for e in all_sessions)
 
-        data["status"] = project.get("status", "inactive")
         data["time"] = {
             "total_s": total_s,
             "recent_sessions": [
