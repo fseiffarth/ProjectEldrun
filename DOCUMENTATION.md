@@ -61,33 +61,139 @@ Or via the desktop launcher if installed.
 - Left panel is shown only when a project terminal is active.
 - "OPEN APPS" tracks files/apps opened in the current project and restores them on re-activation.
 
-### New project dialog
+### Creating a new project
 
-- Enter a name (auto-sanitized to lowercase-hyphenated form).
-- Choose `private` or `public` visibility (stored in `CLAUDE.md` scaffold).
-- A live path preview shows `~/eldrun/projects/<sanitized-name>`.
-- Eldrun runs `git init`, writes scaffold files, and commits them.
+Click **+** → **New Project** in the right panel to open the dialog.
 
-### Import project dialog
+#### 1 — Fill in the dialog
 
-- Click **+** → **Import Project**, then browse to an existing directory.
-- The folder is copied to `~/eldrun/projects/<name>/` (`.git/` is excluded and re-initialised).
-- Any missing scaffold files are added automatically.
+| Field | Behaviour |
+|-------|-----------|
+| **Name** | Free-text. Shown as-is in the project list. |
+| **Visibility** | `private` or `public`. Stored in `CLAUDE.md` for reference. |
+| **Path preview** | Updates live to `~/eldrun/projects/<sanitized-name>`. |
 
-### Scaffold files
+Name sanitization rules (applied to produce the directory name):
+- Lowercased and stripped of leading/trailing whitespace.
+- Spaces and underscores collapsed to hyphens.
+- Any character that is not `a–z`, `0–9`, or `-` is removed.
+- Consecutive hyphens are collapsed; leading/trailing hyphens are stripped.
 
-Each new project gets:
+Example: `"My New Project!"` → directory name `my-new-project`.
+
+If the sanitized name is empty or the target directory already exists, the dialog shows a conflict warning and the **Create** button is disabled.
+
+#### 2 — What Eldrun does on confirmation
+
+1. **Creates the directory** `~/eldrun/projects/<sanitized-name>/`.
+2. **Runs `git init --initial-branch=main`** (falls back to `git init` on older git).
+3. **Writes all scaffold files** (see below).
+4. **Commits** everything as `"Initial project scaffold"` with author `Eldrun <eldrun@local>`.
+5. **Registers the project** in `~/.local/share/eldrun/projects.json` with a new UUID, the display name, the directory path, visibility, creation timestamp, and `status: "active"`.
+6. **Opens a terminal** for the project in the center panel and adds a row to the right-panel list.
+
+#### 3 — Scaffold files
+
+Every new project directory contains these files after creation:
 
 | File | Purpose |
 |------|---------|
-| `AGENTS.md` | Agent instructions for Claude |
-| `CLAUDE.md` | Project context for Claude |
-| `.gitignore` | Sensible defaults |
-| `TODO.md` | Task list |
-| `ROADMAP.md` | Long-term plans |
-| `STATUS.md` | Current status |
-| `DOCUMENTATION.md` | This file pattern |
-| `open_apps.json` | Auto-managed; tracks open files/apps for this project |
+| `AGENTS.md` | Agent-facing instructions: project purpose and key conventions. Claude reads this to understand scope and rules. |
+| `CLAUDE.md` | Claude Code context: directory path and visibility type. Extend this with architecture notes, commands, and gotchas as the project grows. |
+| `.gitignore` | Sensible defaults covering Python, Node, macOS, and common build artifacts. |
+| `TODO.md` | Task list for the project. |
+| `ROADMAP.md` | Long-term plans and milestones. |
+| `STATUS.md` | Current status summary. Eldrun also writes a `## Time Log` section here automatically as sessions are tracked. |
+| `DOCUMENTATION.md` | Project-level documentation (this file pattern). |
+
+Initial file contents (where `{name}` is the display name, `{directory}` is the absolute path, `{git_type}` is `private` or `public`):
+
+**`AGENTS.md`**
+```markdown
+# {name}
+
+## Purpose
+
+## Key conventions
+```
+
+**`CLAUDE.md`**
+```markdown
+# {name}
+
+- **Directory:** `{directory}`
+- **Type:** {git_type}
+
+## What this project is
+
+```
+
+**`.gitignore`**
+```
+.env
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
+*.log
+dist/
+build/
+.venv/
+```
+
+**`TODO.md`**
+```markdown
+# {name} — TODO
+```
+
+**`ROADMAP.md`**
+```markdown
+# {name} — Roadmap
+```
+
+**`STATUS.md`**
+```markdown
+# {name} — Status
+```
+
+**`DOCUMENTATION.md`**
+```markdown
+# {name} — Documentation
+```
+
+#### 4 — Registry entry
+
+The new project is appended to `~/.local/share/eldrun/projects.json` as:
+
+```json
+{
+  "id": "<uuid4>",
+  "name": "<display name>",
+  "directory": "/home/<user>/eldrun/projects/<sanitized-name>",
+  "git_type": "private",
+  "created_at": "<ISO 8601 UTC timestamp>",
+  "status": "active",
+  "position": <integer ordering weight>
+}
+```
+
+`shell_pid` is held in memory only and never written to disk.
+
+---
+
+### Importing an existing project
+
+Click **+** → **Import Project**, then browse to an existing directory.
+
+Three import modes are available:
+
+| Mode | What happens |
+|------|-------------|
+| **Keep location** (default) | Registers the folder in place — no files are moved or copied. |
+| **Copy** | Copies the folder to `~/eldrun/projects/<sanitized-name>/` (`.git/` is excluded). |
+| **Move** | Moves the folder to `~/eldrun/projects/<sanitized-name>/`. |
+
+In all modes, any scaffold files that are missing from the target directory are created automatically (existing files are never overwritten). If the directory has no `.git/` folder, `git init` is run and the result is committed as `"Register existing project"` (keep mode) or `"Import existing project"` (copy/move).
 
 ## Architecture
 
