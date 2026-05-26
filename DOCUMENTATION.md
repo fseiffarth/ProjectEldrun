@@ -53,7 +53,7 @@ Or via the desktop launcher if installed.
 ```
 
 - **Root** (red) — opens a `claude`/bash terminal in `~/eldrun/` (workspace root).
-- **+** — opens a popover with **New Project** and **Import Project** actions.
+- **+** — opens a popover with **New Project** and **Import Project** actions. Import supports three modes: **Keep location** (register in place), **Copy**, or **Move** — see [Importing an existing project](#importing-an-existing-project).
 - **× on a row** — closes that project's terminal and removes it from the list.
 - **Active project** — marked with a red border on its row in the right panel.
 - **Search field** — type to filter the project list; Enter on a single match opens it.
