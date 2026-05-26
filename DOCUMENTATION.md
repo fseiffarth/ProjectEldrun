@@ -103,7 +103,7 @@ Every new project directory contains these files after creation:
 | `.gitignore` | Sensible defaults covering Python, Node, macOS, and common build artifacts. |
 | `TODO.md` | Task list for the project. |
 | `ROADMAP.md` | Long-term plans and milestones. |
-| `project.json` | Machine-readable project state: name, directory, git type, and time tracking data (total seconds, recent sessions). Updated automatically by Eldrun after each session. |
+| `project.json` | Machine-readable project state: name, directory, git type, status (`current` / `active` / `inactive`), and time tracking data (total seconds, recent sessions). Updated automatically by Eldrun after each session. |
 | `DOCUMENTATION.md` | Project-level documentation (this file pattern). |
 
 Initial file contents (where `{name}` is the display name, `{directory}` is the absolute path, `{git_type}` is `private` or `public`):
@@ -157,6 +157,7 @@ build/
   "name": "{name}",
   "directory": "{directory}",
   "git_type": "{git_type}",
+  "status": "inactive",
   "time": {
     "total_s": 0,
     "recent_sessions": []

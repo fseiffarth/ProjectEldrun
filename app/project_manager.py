@@ -29,7 +29,7 @@ _SCAFFOLD: dict[str, str] = {
     ".gitignore":      ".env\n__pycache__/\n*.pyc\nnode_modules/\n.DS_Store\n*.log\ndist/\nbuild/\n.venv/\n",
     "TODO.md":         "# {name} — TODO\n",
     "ROADMAP.md":      "# {name} — Roadmap\n",
-    "project.json":    '{{\n  "name": "{name}",\n  "directory": "{directory}",\n  "git_type": "{git_type}",\n  "time": {{\n    "total_s": 0,\n    "recent_sessions": []\n  }}\n}}\n',
+    "project.json":    '{{\n  "name": "{name}",\n  "directory": "{directory}",\n  "git_type": "{git_type}",\n  "status": "inactive",\n  "time": {{\n    "total_s": 0,\n    "recent_sessions": []\n  }}\n}}\n',
     "DOCUMENTATION.md":"# {name} — Documentation\n",
 }
 
