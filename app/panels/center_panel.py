@@ -9,7 +9,8 @@ gi.require_version("Vte", "3.91")
 from gi.repository import Gtk, Gdk, GLib, Vte, Pango
 
 _WORKSPACE_ROOT = str(pathlib.Path.home() / "eldrun")
-_ROOT_DIR = str(pathlib.Path.home() / "eldrun" / "root")
+from project_manager import ROOT_DIR as _ROOT_DIR_PATH
+_ROOT_DIR = str(_ROOT_DIR_PATH)
 _MASTER_PAGE   = "__master__"
 _APP_PAGE      = "__app__"
 

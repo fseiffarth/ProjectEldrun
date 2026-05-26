@@ -175,10 +175,10 @@
 
 The root terminal spawns in `~/eldrun/root/` but that directory is created empty — no context files exist, so a `claude` session there has no idea what the workspace is or what it is allowed to do.
 
-- [ ] On first launch (or whenever `~/eldrun/root/` is created), write `CLAUDE.md` and `AGENTS.md` into `~/eldrun/root/` describing the workspace layout, the purpose of the root terminal, and the boundary between workspace-level and project-level work
-- [ ] `CLAUDE.md` content should cover: what `~/eldrun/` is, the `projects/` subdirectory structure, the global data files under `~/.local/share/eldrun/`, and that the root terminal is for workspace-wide tasks (not individual project work)
-- [ ] `AGENTS.md` content should cover: permitted scope (workspace root and global config; read-only into project dirs unless explicitly instructed), and conventions for creating or importing projects via Eldrun rather than by hand
-- [ ] Wire the write into `CenterPanel.open_master_terminal()` (or `ProjectManager.__init__`) so it runs once and skips if the files already exist
+- [x] On first launch (or whenever `~/eldrun/root/` is created), write `CLAUDE.md` and `AGENTS.md` into `~/eldrun/root/` describing the workspace layout, the purpose of the root terminal, and the boundary between workspace-level and project-level work
+- [x] `CLAUDE.md` content should cover: what `~/eldrun/` is, the `projects/` subdirectory structure, the global data files under `~/.local/share/eldrun/`, and that the root terminal is for workspace-wide tasks (not individual project work)
+- [x] `AGENTS.md` content should cover: permitted scope (workspace root and global config; read-only into project dirs unless explicitly instructed), and conventions for creating or importing projects via Eldrun rather than by hand
+- [x] Wire the write into `CenterPanel.open_master_terminal()` (or `ProjectManager.__init__`) so it runs once and skips if the files already exist
 
 ---
 

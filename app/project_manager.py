@@ -13,6 +13,7 @@ DATA_DIR = os.path.join(GLib.get_user_data_dir(), "eldrun")
 PROJECTS_FILE = os.path.join(DATA_DIR, "projects.json")
 WORKSPACE_ROOT = pathlib.Path.home() / "eldrun"
 PROJECTS_ROOT = pathlib.Path.home() / "eldrun" / "projects"
+ROOT_DIR = pathlib.Path.home() / "eldrun" / "root"
 
 
 def sanitize_name(name: str) -> str:
@@ -21,6 +22,70 @@ def sanitize_name(name: str) -> str:
     name = re.sub(r"[^a-z0-9-]", "", name)
     name = re.sub(r"-+", "-", name).strip("-")
     return name
+
+
+_ROOT_CLAUDE_MD = """\
+# Eldrun Workspace Root
+
+This is the root terminal for the Eldrun workspace at `~/eldrun/`.
+
+## Workspace layout
+
+- `~/eldrun/root/` — working directory for this root terminal
+- `~/eldrun/projects/` — all Eldrun-managed project directories; each is a git repo
+
+## Global data files
+
+Eldrun stores its registry and logs under `~/.local/share/eldrun/`:
+- `projects.json` — registry of all known projects (id, name, path, status)
+- `time_log.json` — append-only session time log
+- `settings.json` — user settings (terminal command, color scheme, etc.)
+- `default_apps.json` — global file-type → app map
+
+## What the root terminal is for
+
+Use this terminal for workspace-wide tasks: managing projects at the Eldrun level,
+running cross-project scripts, or configuring the workspace itself.
+For work on a specific project, switch to that project's terminal in the right panel.
+
+## Conventions
+
+- Create new projects via Eldrun's **+** button rather than by hand, so they are
+  properly registered in `projects.json` and receive the correct scaffold files.
+- Do not modify `~/.local/share/eldrun/projects.json` directly; use Eldrun's UI.
+"""
+
+_ROOT_AGENTS_MD = """\
+# Eldrun Root Terminal — Agent Instructions
+
+## Scope
+
+You are running in the Eldrun workspace root terminal (`~/eldrun/root/`).
+
+**Permitted:** read and write anywhere under `~/eldrun/` (workspace root and projects),
+and read/write `~/.local/share/eldrun/` (Eldrun's global data files).
+
+**Avoid:** modifying files outside `~/eldrun/` and `~/.local/share/eldrun/` unless
+explicitly instructed by the user.
+
+## Key conventions
+
+- New projects should be created via Eldrun's UI (+ button), not by manually
+  creating directories — the UI registers them in `projects.json` and writes
+  the correct scaffold files.
+- If you need to work within a specific project, ask the user to switch to that
+  project's terminal instead.
+- The global project registry is at `~/.local/share/eldrun/projects.json`.
+  Read it for project discovery; avoid writing to it directly.
+"""
+
+
+def _write_root_context_files():
+    ROOT_DIR.mkdir(parents=True, exist_ok=True)
+    for filename, content in (("CLAUDE.md", _ROOT_CLAUDE_MD), ("AGENTS.md", _ROOT_AGENTS_MD)):
+        path = ROOT_DIR / filename
+        if not path.exists():
+            path.write_text(content, encoding="utf-8")
 
 
 _SCAFFOLD: dict[str, str] = {
@@ -86,6 +151,7 @@ class ProjectManager:
     def __init__(self):
         os.makedirs(DATA_DIR, exist_ok=True)
         PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
+        _write_root_context_files()
         self.projects: list[dict] = []
         self._load()
         self._migrate()
