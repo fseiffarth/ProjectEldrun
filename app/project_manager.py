@@ -28,6 +28,7 @@ _ROOT_CLAUDE_MD = """\
 # Eldrun Workspace Root
 
 This is the root terminal for the Eldrun workspace at `~/eldrun/`.
+It is the central control terminal for managing Eldrun itself — not for project work.
 
 ## Workspace layout
 
@@ -42,50 +43,84 @@ Eldrun stores its registry and logs under `~/.local/share/eldrun/`:
 - `settings.json` — user settings (terminal command, color scheme, etc.)
 - `default_apps.json` — global file-type → app map
 
-## What the root terminal is for
+## What this terminal is for
 
-Use this terminal for workspace-wide tasks: managing projects at the Eldrun level,
-running cross-project scripts, or configuring the workspace itself.
-For work on a specific project, switch to that project's terminal in the right panel.
+Use this terminal exclusively for Eldrun workspace-level tasks:
 
-## Conventions
+- **Project search** — find projects by name or path across the full registry
+- **Project status changes** — set a project to `current`, `active`, or `inactive`
+  by editing `~/.local/share/eldrun/projects.json`
+- **Adding new projects** — via Eldrun's **+** button (preferred) or by calling
+  `ProjectManager.create_project()` directly
+- **Importing existing projects** — via Eldrun's **Import Project** dialog (keep
+  location, copy, or move modes)
+- **Eldrun settings** — edit `~/.local/share/eldrun/settings.json` to change the
+  terminal command, color scheme, or other app-wide options
+- **Global default apps** — edit `~/.local/share/eldrun/default_apps.json` to set
+  the default application for a file extension across all projects
+- **Installing new applications** — run package manager commands (`apt`, `pip`,
+  `npm`, etc.) to install tools that will be available across all projects
 
-- Create new projects via Eldrun's **+** button rather than by hand, so they are
-  properly registered in `projects.json` and receive the correct scaffold files.
-- Do not modify `~/.local/share/eldrun/projects.json` directly; use Eldrun's UI.
+For work inside a specific project, switch to that project's terminal in the right panel.
 """
 
 _ROOT_AGENTS_MD = """\
 # Eldrun Root Terminal — Agent Instructions
 
-## Scope
+## Role
 
-You are running in the Eldrun workspace root terminal (`~/eldrun/root/`).
+You are the Eldrun workspace manager. Your job in this terminal is to help the user
+control Eldrun itself: projects, settings, default apps, and installed tools.
+You do not do project-level development work here.
 
-**Permitted:** read and write anywhere under `~/eldrun/` (workspace root and projects),
-and read/write `~/.local/share/eldrun/` (Eldrun's global data files).
+## Permitted actions
 
-**Avoid:** modifying files outside `~/eldrun/` and `~/.local/share/eldrun/` unless
-explicitly instructed by the user.
+- Read and write `~/.local/share/eldrun/` (project registry, settings, default apps,
+  time log)
+- Read and write `~/eldrun/root/` (this working directory)
+- Read project directories under `~/eldrun/projects/` for discovery and inspection
+- Run package manager commands (`apt`, `pip`, `npm`, `cargo`, etc.) to install
+  applications system-wide or for the current user
 
-## Key conventions
+## Restricted actions
 
-- New projects should be created via Eldrun's UI (+ button), not by manually
-  creating directories — the UI registers them in `projects.json` and writes
-  the correct scaffold files.
-- If you need to work within a specific project, ask the user to switch to that
-  project's terminal instead.
-- The global project registry is at `~/.local/share/eldrun/projects.json`.
-  Read it for project discovery; avoid writing to it directly.
+- Do not write to project directories under `~/eldrun/projects/` unless the user
+  explicitly asks — project work belongs in each project's own terminal
+- Do not modify files outside `~/eldrun/` and `~/.local/share/eldrun/` without
+  explicit instruction
+
+## Key tasks and how to do them
+
+**Search projects**
+Read `~/.local/share/eldrun/projects.json` and filter by name, path, or status.
+
+**Change a project's status**
+Edit the `status` field in the matching entry in `~/.local/share/eldrun/projects.json`
+to `"current"`, `"active"`, or `"inactive"`. At most one project should be `"current"`.
+Also update the `status` field in that project's own `project.json`.
+
+**Add or import a project**
+Ask the user to use Eldrun's **+** button — this ensures the project is scaffolded
+correctly and registered with the right UUID and metadata.
+
+**Change Eldrun settings**
+Edit `~/.local/share/eldrun/settings.json`. Current keys:
+- `terminal_command` — executable spawned in each terminal (default: `"claude"`)
+- `color_scheme` — `"dark"` or `"light"`
+
+**Set a global default app for a file type**
+Edit `~/.local/share/eldrun/default_apps.json`. Format: `{ ".ext": "app-executable" }`.
+Per-project overrides live in `<project_dir>/project_default_apps.json`.
+
+**Install a new application**
+Run the appropriate package manager command and confirm the binary is on `$PATH`.
 """
 
 
 def _write_root_context_files():
     ROOT_DIR.mkdir(parents=True, exist_ok=True)
     for filename, content in (("CLAUDE.md", _ROOT_CLAUDE_MD), ("AGENTS.md", _ROOT_AGENTS_MD)):
-        path = ROOT_DIR / filename
-        if not path.exists():
-            path.write_text(content, encoding="utf-8")
+        (ROOT_DIR / filename).write_text(content, encoding="utf-8")
 
 
 _SCAFFOLD: dict[str, str] = {
