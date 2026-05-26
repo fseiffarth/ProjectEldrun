@@ -103,7 +103,6 @@ Every new project directory contains these files after creation:
 | `.gitignore` | Sensible defaults covering Python, Node, macOS, and common build artifacts. |
 | `TODO.md` | Task list for the project. |
 | `ROADMAP.md` | Long-term plans and milestones. |
-| `project.json` | Machine-readable project state: name, directory, git type, and time tracking data (total seconds, recent sessions). Updated automatically by Eldrun after each session. Status is kept in the global `projects.json`, not here. |
 | `DOCUMENTATION.md` | Project-level documentation (this file pattern). |
 
 Initial file contents (where `{name}` is the display name, `{directory}` is the absolute path, `{git_type}` is `private` or `public`):
@@ -149,19 +148,6 @@ build/
 **`ROADMAP.md`**
 ```markdown
 # {name} — Roadmap
-```
-
-**`project.json`**
-```json
-{
-  "name": "{name}",
-  "directory": "{directory}",
-  "git_type": "{git_type}",
-  "time": {
-    "total_s": 0,
-    "recent_sessions": []
-  }
-}
 ```
 
 **`DOCUMENTATION.md`**
@@ -240,7 +226,17 @@ Array of project objects. Each entry:
   "git_type": "private",
   "created_at": "2025-05-01T10:00:00+00:00",
   "status": "inactive",
-  "position": 10
+  "position": 10,
+  "time": {
+    "total_s": 3600,
+    "recent_sessions": [
+      { "date": "2025-05-01", "start": "2025-05-01 10:00", "duration_s": 3600 }
+    ]
+  },
+  "file_type_stats": { ".py": { "count": 12, "bytes": 48200 } },
+  "time_today_s": 1800,
+  "time_total_s": 3600,
+  "stats_updated": "2025-05-01T11:00:00"
 }
 ```
 
@@ -250,6 +246,11 @@ Array of project objects. Each entry:
 | | `"active"` | In the right-panel list with a running terminal, but not the foreground view. |
 | | `"inactive"` | Registered globally but not shown in the panel and has no running terminal. |
 | `position` | integer | Sort weight for ordering rows in the right panel; lower = higher. |
+| `time` | object | Time tracking summary written by `TimeTracker` after each session: `total_s` and a list of up to 20 `recent_sessions`. |
+| `file_type_stats` | object | Per-extension `{count, bytes}` map written by the background stats scanner. |
+| `time_today_s` | number | Seconds worked today, written by the stats scanner. |
+| `time_total_s` | number | Lifetime seconds worked, written by the stats scanner. |
+| `stats_updated` | string | ISO timestamp of the last stats scan. |
 
 `shell_pid` is tracked in memory only and never written to disk.
 

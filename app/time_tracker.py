@@ -1,4 +1,4 @@
-"""Phase 15 — Per-project time tracking and project.json sync."""
+"""Phase 15 — Per-project time tracking; syncs time data into global projects.json."""
 
 import json
 import os
@@ -11,6 +11,7 @@ from gi.repository import GLib
 DATA_DIR = os.path.join(GLib.get_user_data_dir(), "eldrun")
 _TIME_LOG_FILE = os.path.join(DATA_DIR, "time_log.json")
 _ACTIVE_SESSION_FILE = os.path.join(DATA_DIR, "active_session.json")
+_PROJECTS_FILE = os.path.join(DATA_DIR, "projects.json")
 
 _MAX_PROJECT_SESSIONS = 20
 
@@ -161,18 +162,18 @@ class TimeTracker:
             json.dump(log, f, indent=2)
         os.replace(tmp, self._time_log_file)
 
-    # ── project.json sync ──────────────────────────────────────────────────────
+    # ── global projects.json time sync ─────────────────────────────────────────
 
     def _update_project_json(self, project: dict, _new_entry: dict):
-        proj_dir = project.get("directory")
-        if not proj_dir:
-            return
-        project_json_path = pathlib.Path(proj_dir) / "project.json"
-
         try:
-            data = json.loads(project_json_path.read_text(encoding="utf-8")) if project_json_path.exists() else {}
+            with open(_PROJECTS_FILE, "r", encoding="utf-8") as f:
+                projects = json.load(f)
         except (OSError, json.JSONDecodeError):
-            data = {}
+            return
+
+        entry = next((p for p in projects if p.get("id") == project["id"]), None)
+        if entry is None:
+            return
 
         all_sessions = [
             e for e in self._load_log()
@@ -181,7 +182,7 @@ class TimeTracker:
         recent = all_sessions[-_MAX_PROJECT_SESSIONS:]
         total_s = sum(e.get("duration_s", 0) for e in all_sessions)
 
-        data["time"] = {
+        entry["time"] = {
             "total_s": total_s,
             "recent_sessions": [
                 {
@@ -193,10 +194,10 @@ class TimeTracker:
             ],
         }
 
-        tmp = str(project_json_path) + ".tmp"
+        tmp = _PROJECTS_FILE + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            os.replace(tmp, str(project_json_path))
+                json.dump(projects, f, indent=2)
+            os.replace(tmp, _PROJECTS_FILE)
         except OSError:
             pass
