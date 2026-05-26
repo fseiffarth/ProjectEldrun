@@ -1,4 +1,4 @@
-"""Background project statistics scanner — writes stats into global projects.json."""
+"""Background project statistics scanner — writes stats into local project.json."""
 
 import colorsys
 import hashlib
@@ -10,7 +10,7 @@ from datetime import date, datetime
 
 DATA_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "eldrun")
 _TIME_LOG = os.path.join(DATA_DIR, "time_log.json")
-_PROJECTS_FILE = os.path.join(DATA_DIR, "projects.json")
+_LOCAL_FILE = "project.json"
 _SKIP_DIR_NAMES = {".git"}
 _SKIP_FILE_NAMES = {".eldrun_colors.json"}
 
@@ -63,53 +63,55 @@ def _write_stats(project: dict) -> None:
     if not directory or not pathlib.Path(directory).is_dir():
         return
 
-    try:
-        with open(_PROJECTS_FILE, "r", encoding="utf-8") as f:
-            projects = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return
+    local_path = pathlib.Path(directory) / _LOCAL_FILE
 
-    entry = next((p for p in projects if p.get("id") == project["id"]), None)
-    if entry is None:
-        return
+    # Read existing local data to preserve all other fields
+    try:
+        with open(local_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {k: v for k, v in project.items() if k != "shell_pid"}
 
     log = _read_time_log()
     today_s, total_s = _compute_time(project["id"], log)
 
-    entry["file_type_stats"] = _scan_file_types(directory)
-    entry["time_today_s"] = today_s
-    entry["time_total_s"] = total_s
-    entry["stats_updated"] = datetime.now().isoformat()
+    data["file_type_stats"] = _scan_file_types(directory)
+    data["time_today_s"] = today_s
+    data["time_total_s"] = total_s
+    data["last_updated"] = datetime.now().isoformat()
 
-    tmp = _PROJECTS_FILE + ".tmp"
+    tmp = str(local_path) + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(projects, f, indent=2)
-        os.replace(tmp, _PROJECTS_FILE)
+            json.dump(data, f, indent=2)
+        os.replace(tmp, str(local_path))
     except OSError:
         pass
 
 
 def scan_project_background(project: dict) -> None:
-    """Start a daemon thread to scan a project and write stats into projects.json."""
+    """Start a daemon thread to scan a project and write stats into its local project.json."""
     threading.Thread(target=_write_stats, args=(project,), daemon=True).start()
 
 
 def get_project_stats(project: dict) -> dict | None:
-    """Read stats fields for the given project from global projects.json."""
+    """Read stats fields from the project's local project.json."""
+    directory = project.get("directory", "")
+    if not directory:
+        return None
+    local_path = pathlib.Path(directory) / _LOCAL_FILE
     try:
-        with open(_PROJECTS_FILE, "r", encoding="utf-8") as f:
-            projects = json.load(f)
+        with open(local_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
-    entry = next((p for p in projects if p.get("id") == project["id"]), None)
-    if entry is None or "file_type_stats" not in entry:
+    if "file_type_stats" not in data:
         return None
     return {
-        "file_type_stats": entry.get("file_type_stats", {}),
-        "time_today_s": entry.get("time_today_s", 0.0),
-        "time_total_s": entry.get("time_total_s", 0.0),
-        "stats_updated": entry.get("stats_updated"),
+        "file_type_stats": data.get("file_type_stats", {}),
+        "time_today_s": data.get("time_today_s", 0.0),
+        "time_total_s": data.get("time_total_s", 0.0),
+        "last_updated": data.get("last_updated"),
     }
 
 

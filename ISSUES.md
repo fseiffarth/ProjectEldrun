@@ -21,15 +21,13 @@ All normal windows appear in "OPEN APPS" regardless of which project is active. 
 
 ---
 
-### ISSUE-003: "+" button is a no-op
-**Phase:** 7 (pending)  
-`_on_new_project_clicked` in `window.py` is an empty stub. Clicking "+" does nothing.
+### ~~ISSUE-003: "+" button is a no-op~~ ✅ Fixed
+`NewProjectDialog` and `ImportProjectDialog` wired via the "+" popover in `right_panel.py`.
 
 ---
 
-### ISSUE-004: Projects not restored on restart
-**Phase:** 7 (pending)  
-`project_manager.projects` is loaded from JSON on startup but `_on_map` does not iterate it to recreate terminals and rows. Restarting Eldrun loses the visible project list (data is persisted but UI is not rebuilt).
+### ~~ISSUE-004: Projects not restored on restart~~ ✅ Fixed
+`_on_map` in `window.py` calls `get_visible_projects()` and restores all `"active"` / `"current"` rows and terminals on startup.
 
 ---
 
@@ -38,6 +36,47 @@ All normal windows appear in "OPEN APPS" regardless of which project is active. 
 
 ---
 
-### ISSUE-006: Project structure bottom section is a stub
-**Phase:** 5.C (future)  
-The "PROJECT" section in the left panel is an empty `Gtk.ListBox` with no content. File tree not yet implemented.
+### ~~ISSUE-006: Project structure bottom section is a stub~~ ✅ Fixed
+`LeftPanel` has a full `Gtk.TreeView` file tree with expand/collapse, right-click context menu, color picker, and 5 s refresh timer.
+
+---
+
+### ~~ISSUE-007: Right panel too wide on first project open after startup~~ ✅ Fixed
+`_init_inner_paned` now returns early and re-defers via `GLib.idle_add` when `outer_w == 0`, eliminating the stale `or 1440` fallback that caused wrong paned positioning before the window was fully allocated.
+
+---
+
+### ISSUE-009: Right panel gets double width after hide-both → show-left → show-right
+**Phase:** Post-Phase 13 (panel toggle polish)  
+**Severity:** Medium — visual layout broken in this specific sequence  
+When both panels are hidden and then revealed one at a time (left first, then right), the right panel takes roughly double the expected width instead of restoring to its original 220 px.
+
+**Suspected cause:** The `Gtk.Paned` position for the outer pane (left/center split) is restored when the left panel is shown, but this shifts the total available width that the inner pane (center/right split) sees. When the right panel is subsequently shown, the inner pane position is recomputed against the now-shifted outer pane, resulting in the wrong right-panel width.
+
+**Reproduction steps:**
+1. Hide both panels (toggle left, then toggle right — or use Super key)
+2. Show left panel only
+3. Show right panel — observe it is ~440 px wide instead of ~220 px
+
+**Fix needed:** When restoring a panel, recompute the paned position relative to the current window/outer-pane allocation rather than using the saved absolute pixel offset.
+
+---
+
+### ISSUE-008: Open-app embedding completely broken
+**Phase:** Post-Phase 13  
+**Severity:** High — current implementation is unusable  
+The entire "open apps" pipeline (launching a file, detecting the window, embedding it in the center panel) has multiple failure modes and needs to be rewritten in stages:
+
+**Stage 1 — Open file in standalone window (baseline)**
+- Remove all X11 reparenting / embedding code from `LeftPanel` and `CenterPanel`
+- `_open_file` should simply `subprocess.Popen([app, path])` and record the entry in `open_apps.json`
+- Verify this works reliably before proceeding
+
+**Stage 2 — Embed app fullscreen in center panel**
+- Once Stage 1 is stable, define the center panel window ID as the embedding target
+- Reimplement `show_app_window(xid)` using `GdkX11.X11Surface.get_xid()` + `XReparentWindow` + `XResizeWindow`; add robust error recovery (restore last terminal page on any exception)
+- Add a 300 ms delay after launch before attempting reparent, retrying up to 5 times
+
+**Stage 3 — Wire to the open-apps panel**
+- Once Stage 2 is stable, reconnect `AppRow` click → `show_app_window(xid)` in `LeftPanel`
+- EWMH poll should track the embedded window's XID and update `AppRow.xid` accordingly

@@ -9,174 +9,60 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gtk, Gdk, GLib, Pango
 
-from Xlib import display as Xdisplay, X
-from Xlib.protocol import event as Xevent
 
-_OWN_PID = os.getpid()
-
-
-class OpenAppsManager:
-    """Persists open-file/app associations for a single project."""
-
-    def __init__(self, project_dir: str):
-        self._path = pathlib.Path(project_dir) / "open_apps.json"
-        self.entries: list[dict] = self._load()
-
-    def _load(self) -> list[dict]:
-        if not self._path.exists():
-            return []
-        try:
-            with open(self._path) as f:
-                data = json.load(f)
-            return data if isinstance(data, list) else []
-        except (json.JSONDecodeError, OSError):
-            return []
-
-    def _save(self):
-        tmp = str(self._path) + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(self.entries, f, indent=2)
-        os.replace(tmp, str(self._path))
-
-    def add_or_update(self, exe: str, name: str, args: list):
-        for e in self.entries:
-            if e.get("exe") == exe:
-                e["name"] = name
-                e["args"] = args
-                self._save()
-                return
-        self.entries.append({"name": name, "exe": exe, "args": args})
-        self._save()
-
-    def remove(self, exe: str):
-        self.entries = [e for e in self.entries if e.get("exe") != exe]
-        self._save()
-
-    def reopen_missing(self, running_exes: set, project_dir: str):
-        for entry in self.entries:
-            exe = entry.get("exe", "")
-            if not exe or exe in running_exes:
-                continue
-            args = entry.get("args", [])
-            try:
-                subprocess.Popen([exe] + args, cwd=project_dir)
-            except OSError:
-                pass
-
-
-class AppRow(Gtk.ListBoxRow):
-    def __init__(self, entry: dict, on_click, on_remove):
-        super().__init__()
-        self.entry = entry
-        self.xid: int | None = None
-        self.get_style_context().add_class("app-row")
-
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        box.set_margin_start(8)
-        box.set_margin_end(4)
-        box.set_margin_top(5)
-        box.set_margin_bottom(5)
-
-        self._indicator = Gtk.Label(label="●")
-        self._indicator.add_css_class("app-stopped")
-        self._indicator.set_valign(Gtk.Align.CENTER)
-        box.append(self._indicator)
-
-        icon = Gtk.Image.new_from_icon_name("application-x-executable-symbolic")
-        box.append(icon)
-
-        name = entry.get("name") or os.path.basename(entry.get("exe", "app"))
-        self._label = Gtk.Label(label=name, xalign=0.0)
-        self._label.set_ellipsize(Pango.EllipsizeMode.END)
-        self._label.set_max_width_chars(14)
-        self._label.set_hexpand(True)
-        box.append(self._label)
-
-        rm_btn = Gtk.Button(label="×")
-        rm_btn.add_css_class("flat")
-        rm_btn.get_style_context().add_class("close-btn")
-        rm_btn.connect("clicked", lambda _: on_remove(entry.get("exe", "")))
-        box.append(rm_btn)
-
-        self.set_child(box)
-
-        gesture = Gtk.GestureClick()
-        gesture.connect("pressed", lambda *_: on_click(self))
-        self.add_controller(gesture)
-
-    def set_running(self, running: bool, xid: int | None = None):
-        self.xid = xid
-        if running:
-            self._indicator.remove_css_class("app-stopped")
-            self._indicator.add_css_class("app-running")
-        else:
-            self._indicator.remove_css_class("app-running")
-            self._indicator.add_css_class("app-stopped")
-
-    def update_name(self, name: str):
-        self._label.set_label(name)
+def _human_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n} {unit}"
+        n //= 1024
+    return f"{n} TB"
 
 
 class LeftPanel(Gtk.Box):
-    def __init__(self, center_panel=None, default_apps_manager=None,
-                 on_warm_changed=None):
+    def __init__(self, center_panel=None, default_apps_manager=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("panel-left")
         self.set_size_request(220, -1)
 
         self._center = center_panel
         self._dam = default_apps_manager
-        self._on_warm_changed = on_warm_changed
-        self._disp = None
-        self._root = None
-        self._atoms: dict[str, int] = {}
-        self._rows: dict[str, AppRow] = {}
-        self._running: dict[str, dict] = {}
-        self._oam: OpenAppsManager | None = None
         self._current_project: dict | None = None
         self._tree_refresh_source: int | None = None
-        self._app_cycle_index: int = -1
-        self._pending_auto_embed_exe: str | None = None
         self._path_colors: dict[str, str] = {}  # abs_path → "#rrggbb"
 
         self._build_ui()
-        GLib.idle_add(self._connect_display)
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        apps_header = Gtk.Label(label="OPEN APPS")
-        apps_header.get_style_context().add_class("panel-header")
-        apps_header.set_xalign(0)
-        apps_header.set_margin_start(8)
-        apps_header.set_margin_top(10)
-        apps_header.set_margin_bottom(4)
-        self.append(apps_header)
-
-        sep_top = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        sep_top.set_margin_bottom(4)
-        self.append(sep_top)
-
-        apps_scrolled = Gtk.ScrolledWindow()
-        apps_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        apps_scrolled.set_vexpand(True)
-
-        self._listbox = Gtk.ListBox()
-        self._listbox.set_selection_mode(Gtk.SelectionMode.NONE)
-        apps_scrolled.set_child(self._listbox)
-        self.append(apps_scrolled)
-
-        sep_mid = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        sep_mid.set_margin_top(4)
-        self.append(sep_mid)
+        proj_header_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        proj_header_row.set_margin_start(8)
+        proj_header_row.set_margin_top(8)
+        proj_header_row.set_margin_bottom(4)
 
         proj_header = Gtk.Label(label="PROJECT")
         proj_header.get_style_context().add_class("panel-header")
         proj_header.set_xalign(0)
-        proj_header.set_margin_start(8)
-        proj_header.set_margin_top(8)
-        proj_header.set_margin_bottom(4)
-        self.append(proj_header)
+        proj_header.set_hexpand(True)
+        proj_header_row.append(proj_header)
+
+        self._show_hidden_btn = Gtk.CheckButton()
+        self._show_hidden_btn.set_tooltip_text("Show hidden files")
+        self._show_hidden_btn.set_valign(Gtk.Align.CENTER)
+        self._show_hidden_btn.set_margin_end(2)
+        self._show_hidden_btn.connect("toggled", lambda _: self._rebuild_file_tree())
+        proj_header_row.append(self._show_hidden_btn)
+
+        self._proj_settings_btn = Gtk.Button()
+        self._proj_settings_btn.set_icon_name("preferences-system-symbolic")
+        self._proj_settings_btn.add_css_class("flat")
+        self._proj_settings_btn.set_tooltip_text("Per-project file type apps")
+        self._proj_settings_btn.set_sensitive(False)
+        self._proj_settings_btn.set_margin_end(4)
+        self._proj_settings_btn.connect("clicked", self._on_proj_settings_clicked)
+        proj_header_row.append(self._proj_settings_btn)
+
+        self.append(proj_header_row)
 
         sep_proj = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         sep_proj.set_margin_bottom(4)
@@ -214,6 +100,12 @@ class LeftPanel(Gtk.Box):
         tree_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         tree_scrolled.set_vexpand(True)
         tree_scrolled.set_child(self._file_tree)
+
+        bg_rc = Gtk.GestureClick()
+        bg_rc.set_button(3)
+        bg_rc.connect("pressed", self._on_tree_bg_right_click)
+        tree_scrolled.add_controller(bg_rc)
+        self._tree_scrolled = tree_scrolled
 
         self._proj_stack = Gtk.Stack()
         self._proj_stack.set_transition_type(Gtk.StackTransitionType.NONE)
@@ -273,60 +165,20 @@ class LeftPanel(Gtk.Box):
 
     def update_project(self, project: dict | None):
         self._current_project = project
-        self._app_cycle_index = -1
+        self._proj_settings_btn.set_sensitive(project is not None)
 
         if self._tree_refresh_source is not None:
             GLib.source_remove(self._tree_refresh_source)
             self._tree_refresh_source = None
 
         if project:
-            self._oam = OpenAppsManager(project["directory"])
             self._proj_stack.set_visible_child_name("tree")
             self._rebuild_file_tree()
             self._load_colors()
             self._tree_refresh_source = GLib.timeout_add(5000, self._on_tree_tick)
-            GLib.timeout_add(600, self._reopen_missing_apps)
-            self._notify_warm()
         else:
-            self._oam = None
             self._file_store.clear()
             self._proj_stack.set_visible_child_name("placeholder")
-
-        self._rebuild_app_rows()
-
-    def _notify_warm(self):
-        if self._on_warm_changed is None or self._current_project is None:
-            return
-        warm = bool(self._oam and self._oam.entries)
-        self._on_warm_changed(self._current_project["id"], warm)
-
-    def _rebuild_app_rows(self):
-        for row in list(self._rows.values()):
-            self._listbox.remove(row)
-        self._rows.clear()
-
-        if self._oam is None:
-            return
-
-        for entry in self._oam.entries:
-            exe = entry.get("exe", "")
-            if not exe:
-                continue
-            row = AppRow(entry, self._on_app_click, self._on_app_remove)
-            running_info = self._running.get(exe)
-            row.set_running(running_info is not None,
-                            running_info.get("xid") if running_info else None)
-            self._listbox.append(row)
-            self._rows[exe] = row
-
-    def _reopen_missing_apps(self) -> bool:
-        if self._oam is None or self._current_project is None:
-            return False
-        self._oam.reopen_missing(
-            set(self._running.keys()),
-            self._current_project.get("directory", ""),
-        )
-        return False
 
     # ── project file tree ─────────────────────────────────────────────────────
 
@@ -335,6 +187,12 @@ class LeftPanel(Gtk.Box):
         return True
 
     def _rebuild_file_tree(self):
+        expanded_paths: set[str] = set()
+        def _collect(store, path, it, _data):
+            if self._file_tree.row_expanded(path):
+                expanded_paths.add(store.get_value(it, 2))
+        self._file_store.foreach(_collect, None)
+
         self._file_store.clear()
         if self._current_project is None:
             return
@@ -343,7 +201,14 @@ class LeftPanel(Gtk.Box):
             return
         self._populate_dir(None, directory)
 
+        if expanded_paths:
+            def _restore(store, path, it, _data):
+                if store.get_value(it, 2) in expanded_paths:
+                    self._file_tree.expand_row(path, False)
+            self._file_store.foreach(_restore, None)
+
     def _populate_dir(self, parent_it, directory: str):
+        show_hidden = self._show_hidden_btn.get_active()
         try:
             entries = sorted(
                 os.scandir(directory),
@@ -351,9 +216,12 @@ class LeftPanel(Gtk.Box):
             )
         except OSError:
             return
+        _always_skip = {".git", "open_apps.json", "project.json",
+                        "project_default_apps.json", ".eldrun_colors.json"}
         for entry in entries:
-            if entry.name in (".git", "open_apps.json", "project_default_apps.json",
-                              ".eldrun_colors.json"):
+            if entry.name in _always_skip:
+                continue
+            if entry.name.startswith(".") and not show_hidden:
                 continue
             icon = "folder-symbolic" if entry.is_dir() else "text-x-generic-symbolic"
             it = self._file_store.append(
@@ -414,6 +282,8 @@ class LeftPanel(Gtk.Box):
             b.connect("clicked", lambda _: (popover.popdown(), cb()))
             return b
 
+        parent_dir = path if is_dir else os.path.dirname(path)
+
         if not is_dir:
             box.append(btn("Open", lambda: self._open_file(path)))
             box.append(btn("Open With…",
@@ -424,6 +294,9 @@ class LeftPanel(Gtk.Box):
                            lambda: self._reveal_in_fm(path, select=False)))
             box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
+        box.append(btn("New File…", lambda: self._new_entry_dialog(parent_dir, is_dir=False)))
+        box.append(btn("New Folder…", lambda: self._new_entry_dialog(parent_dir, is_dir=True)))
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         box.append(btn("Copy Path", lambda: self._copy_path(path)))
         box.append(btn("Reveal in File Manager", lambda: self._reveal_in_fm(path)))
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
@@ -433,6 +306,42 @@ class LeftPanel(Gtk.Box):
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         box.append(btn("Rename…", lambda: self._rename_dialog(path)))
         box.append(btn("Delete", lambda: self._delete_confirm(path), "destructive-action"))
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        box.append(btn("Properties", lambda: self._show_properties(path)))
+
+        popover.set_child(box)
+        popover.popup()
+
+    def _on_tree_bg_right_click(self, gesture, _n, x, y):
+        proj_dir = (self._current_project.get("directory")
+                    if self._current_project else None)
+        if proj_dir is None:
+            return
+        popover = Gtk.Popover()
+        popover.set_parent(self._tree_scrolled)
+        popover.set_has_arrow(False)
+        rect = Gdk.Rectangle()
+        rect.x = int(x)
+        rect.y = int(y)
+        rect.width = 1
+        rect.height = 1
+        popover.set_pointing_to(rect)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.set_margin_start(4)
+        box.set_margin_end(4)
+        box.set_margin_top(4)
+        box.set_margin_bottom(4)
+
+        def btn(label, cb):
+            b = Gtk.Button(label=label)
+            b.add_css_class("flat")
+            b.set_halign(Gtk.Align.FILL)
+            b.connect("clicked", lambda _: (popover.popdown(), cb()))
+            return b
+
+        box.append(btn("New File…", lambda: self._new_entry_dialog(proj_dir, is_dir=False)))
+        box.append(btn("New Folder…", lambda: self._new_entry_dialog(proj_dir, is_dir=True)))
 
         popover.set_child(box)
         popover.popup()
@@ -440,7 +349,6 @@ class LeftPanel(Gtk.Box):
     # ── file open ─────────────────────────────────────────────────────────────
 
     def _resolve_default_handler(self, path: str) -> str | None:
-        """Return the executable for the system's MIME default handler, or None."""
         from default_apps_manager import get_mime_for_file
         mime = get_mime_for_file(path)
         if not mime:
@@ -470,12 +378,11 @@ class LeftPanel(Gtk.Box):
         return None
 
     def _launch_and_track(self, app: str, path: str, project_dir: str | None):
-        """Launch app with path, record in open-apps list, schedule auto-embed."""
-        subprocess.Popen([app, path], cwd=project_dir or os.path.dirname(path))
-        if self._oam is not None:
-            self._oam.add_or_update(app, os.path.basename(app), [])
-            self._notify_warm()
-        self._pending_auto_embed_exe = GLib.find_program_in_path(app) or app
+        proc = subprocess.Popen([app, path], cwd=project_dir or os.path.dirname(path))
+        if self._center is not None:
+            name = os.path.basename(path)
+            project_id = self._current_project["id"] if self._current_project else None
+            self._center.add_app_tab(name, proc, project_id)
 
     def _open_file(self, path: str):
         project_dir = self._current_project.get("directory") if self._current_project else None
@@ -483,7 +390,6 @@ class LeftPanel(Gtk.Box):
         if self._dam is not None:
             app = self._dam.get_app_for_file(path, project_dir)
 
-        # No user-configured app — try to resolve the system default so we can track it
         if app is None:
             app = self._resolve_default_handler(path)
 
@@ -491,14 +397,12 @@ class LeftPanel(Gtk.Box):
             try:
                 self._launch_and_track(app, path, project_dir)
             except OSError:
-                # Configured / resolved app failed — last resort: xdg-open
                 try:
                     subprocess.Popen(["xdg-open", path])
                 except OSError:
                     self._show_choose_app_dialog(path)
             return
 
-        # No handler found at all — show Open With dialog
         self._show_choose_app_dialog(path)
 
     def _show_choose_app_dialog(self, path: str, force: bool = False):
@@ -542,6 +446,7 @@ class LeftPanel(Gtk.Box):
         save_global = Gtk.CheckButton(label="Remember globally (all projects)")
         save_global.set_group(save_proj)
         save_global.set_sensitive(bool(ext))
+        save_global.set_active(True)
         box.append(save_global)
 
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -586,7 +491,6 @@ class LeftPanel(Gtk.Box):
         from default_apps_manager import get_installed_apps, get_mime_for_file
         apps = get_installed_apps()
 
-        # Determine suggested apps based on the file's MIME type
         suggested_execs: set[str] = set()
         if for_file:
             mime = get_mime_for_file(for_file)
@@ -746,6 +650,130 @@ class LeftPanel(Gtk.Box):
         except OSError:
             pass
 
+    def _new_entry_dialog(self, parent_dir: str, is_dir: bool):
+        kind = "Folder" if is_dir else "File"
+        win = Gtk.Window()
+        win.set_title(f"New {kind}")
+        win.set_modal(True)
+        win.set_resizable(False)
+        win.set_default_size(300, 0)
+        root = self.get_root()
+        if isinstance(root, Gtk.Window):
+            win.set_transient_for(root)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+
+        entry = Gtk.Entry()
+        entry.set_placeholder_text(f"{'folder' if is_dir else 'file'}-name")
+        box.append(entry)
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        btn_row.set_halign(Gtk.Align.END)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.add_css_class("flat")
+        cancel.connect("clicked", lambda _: win.close())
+        ok = Gtk.Button(label=f"Create {kind}")
+        ok.add_css_class("suggested-action")
+        btn_row.append(cancel)
+        btn_row.append(ok)
+        box.append(btn_row)
+
+        def do_create(_w):
+            name = entry.get_text().strip()
+            if not name:
+                return
+            target = os.path.join(parent_dir, name)
+            try:
+                if is_dir:
+                    os.makedirs(target, exist_ok=False)
+                else:
+                    open(target, "x").close()
+                self._rebuild_file_tree()
+            except (OSError, FileExistsError):
+                pass
+            win.close()
+
+        ok.connect("clicked", do_create)
+        entry.connect("activate", do_create)
+
+        win.set_child(box)
+        win.present()
+
+    def _show_properties(self, path: str):
+        import datetime as _dt
+        win = Gtk.Window()
+        win.set_title("Properties")
+        win.set_modal(True)
+        win.set_resizable(False)
+        win.set_default_size(320, 0)
+        root = self.get_root()
+        if isinstance(root, Gtk.Window):
+            win.set_transient_for(root)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+
+        def row(label_text, value_text):
+            r = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            lbl = Gtk.Label(label=label_text, xalign=0)
+            lbl.add_css_class("dim-label")
+            lbl.set_width_chars(10)
+            r.append(lbl)
+            val = Gtk.Label(label=value_text, xalign=0)
+            val.set_hexpand(True)
+            val.set_selectable(True)
+            val.set_wrap(True)
+            r.append(val)
+            return r
+
+        try:
+            stat = os.stat(path)
+            is_dir = os.path.isdir(path)
+
+            box.append(row("Name", os.path.basename(path)))
+            box.append(row("Path", path))
+            box.append(row("Type", "Folder" if is_dir else "File"))
+
+            if is_dir:
+                try:
+                    count = sum(len(files) for _, _, files in os.walk(path))
+                    total = sum(
+                        os.path.getsize(os.path.join(dp, f))
+                        for dp, _, files in os.walk(path)
+                        for f in files
+                    )
+                    box.append(row("Contents", f"{count} files"))
+                    box.append(row("Total size", _human_size(total)))
+                except OSError:
+                    pass
+            else:
+                box.append(row("Size", _human_size(stat.st_size)))
+
+            mtime = _dt.datetime.fromtimestamp(stat.st_mtime)
+            box.append(row("Modified", mtime.strftime("%Y-%m-%d %H:%M:%S")))
+
+            import stat as _stat_mod
+            perms = _stat_mod.filemode(stat.st_mode)
+            box.append(row("Permissions", perms))
+        except OSError as e:
+            box.append(Gtk.Label(label=str(e), xalign=0))
+
+        close_btn = Gtk.Button(label="Close")
+        close_btn.add_css_class("flat")
+        close_btn.set_halign(Gtk.Align.END)
+        close_btn.connect("clicked", lambda _: win.close())
+        box.append(close_btn)
+
+        win.set_child(box)
+        win.present()
+
     def _rename_dialog(self, path: str):
         win = Gtk.Window()
         win.set_title("Rename")
@@ -840,224 +868,120 @@ class LeftPanel(Gtk.Box):
         win.set_child(box)
         win.present()
 
-    # ── app-click / app-remove / cycle ────────────────────────────────────────
+    # ── per-project file-type settings ───────────────────────────────────────
 
-    def _on_app_click(self, row: AppRow):
-        if row.xid is not None:
-            if self._center is not None and hasattr(self._center, "show_app_window"):
-                self._center.show_app_window(row.xid)
-            else:
-                self._raise_window(row.xid)
-        else:
-            exe = row.entry.get("exe", "")
-            args = row.entry.get("args", [])
-            cwd = self._current_project.get("directory") if self._current_project else None
-            if exe:
-                try:
-                    subprocess.Popen([exe] + args, cwd=cwd)
-                except OSError:
-                    pass
-
-    def _on_app_remove(self, exe: str):
-        if self._oam is not None:
-            self._oam.remove(exe)
-            self._notify_warm()
-        row = self._rows.pop(exe, None)
-        if row is not None:
-            self._listbox.remove(row)
-
-    def cycle_next_app(self):
-        running_rows = [row for row in self._rows.values() if row.xid is not None]
-        if not running_rows:
-            return
-        self._app_cycle_index = (self._app_cycle_index + 1) % len(running_rows)
-        self._on_app_click(running_rows[self._app_cycle_index])
-
-    # ── X display ─────────────────────────────────────────────────────────────
-
-    def _connect_display(self):
-        try:
-            self._disp = Xdisplay.Display()
-            self._root = self._disp.screen().root
-            GLib.timeout_add(2000, self._refresh)
-            self._refresh()
-        except Exception:
-            pass
-        return False
-
-    def _atom(self, name: str) -> int:
-        if name not in self._atoms:
-            self._atoms[name] = self._disp.intern_atom(name)
-        return self._atoms[name]
-
-    def _get_prop(self, window, atom_name: str):
-        try:
-            return window.get_full_property(self._atom(atom_name), X.AnyPropertyType)
-        except Exception:
-            return None
-
-    # ── window helpers ────────────────────────────────────────────────────────
-
-    def _window_name(self, window) -> str:
-        for prop_name in ("_NET_WM_NAME", "WM_NAME"):
-            prop = self._get_prop(window, prop_name)
-            if prop and prop.value:
-                val = prop.value
-                if isinstance(val, bytes):
-                    return val.rstrip(b"\x00").decode("utf-8", errors="replace")
-                return str(val)
-        return f"0x{window.id:x}"
-
-    def _window_pid(self, window) -> int | None:
-        prop = self._get_prop(window, "_NET_WM_PID")
-        if prop and prop.value and hasattr(prop.value, "__getitem__"):
-            return prop.value[0]
-        return None
-
-    def _is_normal(self, window) -> bool:
-        prop = self._get_prop(window, "_NET_WM_WINDOW_TYPE")
-        if not prop or not prop.value:
-            return False
-        return self._atom("_NET_WM_WINDOW_TYPE_NORMAL") in prop.value
-
-    def _is_in_project(self, window) -> bool:
+    def _on_proj_settings_clicked(self, _btn):
         if self._current_project is None:
-            return False
-        project_dir = self._current_project.get("directory", "")
-        if not project_dir:
-            return False
-        pid = self._window_pid(window)
-        if pid is None:
-            return False
-        try:
-            cwd = os.readlink(f"/proc/{pid}/cwd")
-        except OSError:
-            return False
-        return cwd == project_dir or cwd.startswith(project_dir + "/")
-
-    def _get_process_exe(self, pid: int) -> str:
-        try:
-            return os.readlink(f"/proc/{pid}/exe")
-        except OSError:
-            return ""
-
-    def _get_process_args(self, pid: int) -> list:
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as f:
-                parts = f.read().rstrip(b"\x00").split(b"\x00")
-            return [p.decode("utf-8", errors="replace") for p in parts if p]
-        except OSError:
-            return []
-
-    def _raise_window(self, xid: int):
-        if self._disp is None:
             return
-        try:
-            win = self._disp.create_resource_object("window", xid)
-            ev = Xevent.ClientMessage(
-                window=win,
-                client_type=self._atom("_NET_ACTIVE_WINDOW"),
-                data=(32, [2, X.CurrentTime, 0, 0, 0]),
-            )
-            mask = X.SubstructureRedirectMask | X.SubstructureNotifyMask
-            self._root.send_event(ev, event_mask=mask)
-            self._disp.flush()
-        except Exception:
-            pass
+        project = self._current_project
+        project_dir = project.get("directory", "")
 
-    # ── polling ───────────────────────────────────────────────────────────────
+        win = Gtk.Window()
+        win.set_title(f"File Type Apps — {project['name']}")
+        win.set_modal(True)
+        win.set_default_size(420, 380)
+        root = self.get_root()
+        if isinstance(root, Gtk.Window):
+            win.set_transient_for(root)
 
-    def _refresh(self) -> bool:
-        if self._disp is None:
-            return True
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        outer.set_margin_start(16)
+        outer.set_margin_end(16)
+        outer.set_margin_top(16)
+        outer.set_margin_bottom(16)
 
-        try:
-            prop = self._get_prop(self._root, "_NET_CLIENT_LIST")
-            xids = list(prop.value) if (prop and prop.value) else []
-        except Exception:
-            return True
+        hdr = Gtk.Label(label=f"Default apps for {project['name']}")
+        hdr.add_css_class("heading")
+        hdr.set_xalign(0)
+        outer.append(hdr)
 
-        new_running: dict[str, dict] = {}
+        desc = Gtk.Label(label="Override default apps for this project's file types.")
+        desc.set_xalign(0)
+        desc.set_wrap(True)
+        desc.add_css_class("dim-label")
+        outer.append(desc)
 
-        for xid in xids:
-            try:
-                win = self._disp.create_resource_object("window", xid)
-                if not self._is_normal(win):
-                    continue
-                pid = self._window_pid(win)
-                if pid is None or pid == _OWN_PID:
-                    continue
-                if not self._is_in_project(win):
-                    continue
-                exe = self._get_process_exe(pid)
-                if not exe:
-                    continue
-                cmdline = self._get_process_args(pid)
-                args = cmdline[1:] if len(cmdline) > 1 else []
-                name = self._window_name(win) or os.path.basename(exe)
-                new_running[exe] = {"xid": xid, "pid": pid, "name": name, "args": args}
-            except Exception:
-                continue
+        outer.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
-        self._running = new_running
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+        pft_listbox = Gtk.ListBox()
+        pft_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        scrolled.set_child(pft_listbox)
+        outer.append(scrolled)
 
-        # Auto-embed: scan all normal windows for the pending exe (skip CWD filter)
-        if self._pending_auto_embed_exe is not None:
-            for xid in xids:
-                try:
-                    win = self._disp.create_resource_object("window", xid)
-                    if not self._is_normal(win):
-                        continue
-                    pid = self._window_pid(win)
-                    if pid is None or pid == _OWN_PID:
-                        continue
-                    exe = self._get_process_exe(pid)
-                    if exe == self._pending_auto_embed_exe:
-                        self._pending_auto_embed_exe = None
-                        if self._center is not None and hasattr(self._center, "show_app_window"):
-                            GLib.idle_add(lambda x=xid: self._center.show_app_window(x))
-                        break
-                except Exception:
-                    continue
+        def add_row(ext: str, app: str):
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            box.set_margin_start(4)
+            box.set_margin_end(4)
+            box.set_margin_top(4)
+            box.set_margin_bottom(4)
 
-        # Record newly-seen apps in open_apps.json
-        if self._oam is not None:
-            prev_count = len(self._oam.entries)
-            for exe, info in new_running.items():
-                self._oam.add_or_update(exe, info["name"], info["args"])
-            if len(self._oam.entries) != prev_count:
-                self._notify_warm()
+            ext_entry = Gtk.Entry()
+            ext_entry.set_placeholder_text(".ext")
+            ext_entry.set_text(ext)
+            ext_entry.set_max_width_chars(8)
+            ext_entry.set_width_chars(8)
+            box.append(ext_entry)
 
-        # Sync UI rows with open_apps entries + running state
-        self._sync_rows()
-        return True
+            app_entry = Gtk.Entry()
+            app_entry.set_placeholder_text("app command")
+            app_entry.set_text(app)
+            app_entry.set_hexpand(True)
+            box.append(app_entry)
 
-    def _sync_rows(self):
-        if self._oam is None:
-            for row in list(self._rows.values()):
-                self._listbox.remove(row)
-            self._rows.clear()
-            return
+            def browse(_btn, ae=app_entry):
+                def cb(cmd):
+                    ae.set_text(cmd)
+                self._show_app_picker(cb, parent=win)
 
-        entry_exes = {e.get("exe", "") for e in self._oam.entries if e.get("exe")}
+            browse_btn = Gtk.Button(label="⋯")
+            browse_btn.add_css_class("flat")
+            browse_btn.connect("clicked", browse)
+            box.append(browse_btn)
 
-        for exe in [e for e in list(self._rows) if e not in entry_exes]:
-            self._listbox.remove(self._rows.pop(exe))
+            def save_row(_w, ee=ext_entry, ae=app_entry, old_ext=ext):
+                new_ext = ee.get_text().strip().lower()
+                new_app = ae.get_text().strip()
+                if not new_ext or not new_app:
+                    return
+                if self._dam:
+                    if old_ext and old_ext != new_ext:
+                        self._dam.remove_project_app(project_dir, old_ext)
+                    self._dam.set_project_app(project_dir, new_ext, new_app)
 
-        for entry in self._oam.entries:
-            exe = entry.get("exe", "")
-            if not exe:
-                continue
-            running_info = self._running.get(exe)
-            is_running = running_info is not None
-            xid = running_info.get("xid") if running_info else None
+            ext_entry.connect("activate", save_row)
+            app_entry.connect("activate", save_row)
+            ext_entry.connect("focus-out-event", save_row)
+            app_entry.connect("focus-out-event", save_row)
 
-            if exe in self._rows:
-                self._rows[exe].set_running(is_running, xid)
-                if running_info:
-                    self._rows[exe].update_name(running_info["name"])
-            else:
-                row = AppRow(entry, self._on_app_click, self._on_app_remove)
-                row.set_running(is_running, xid)
-                self._listbox.append(row)
-                self._rows[exe] = row
+            def rm_row(_btn, r=row, ee=ext_entry):
+                ext_val = ee.get_text().strip().lower()
+                if ext_val and self._dam:
+                    self._dam.remove_project_app(project_dir, ext_val)
+                pft_listbox.remove(r)
+
+            rm_btn = Gtk.Button(label="×")
+            rm_btn.add_css_class("flat")
+            rm_btn.get_style_context().add_class("close-btn")
+            rm_btn.connect("clicked", rm_row)
+            box.append(rm_btn)
+
+            row.set_child(box)
+            pft_listbox.append(row)
+
+        if self._dam:
+            pmap = self._dam.get_project_map(project_dir)
+            for e, a in sorted(pmap.items()):
+                add_row(e, a)
+
+        add_btn = Gtk.Button(label="+ Add Entry")
+        add_btn.add_css_class("flat")
+        add_btn.set_halign(Gtk.Align.START)
+        add_btn.connect("clicked", lambda _: add_row("", ""))
+        outer.append(add_btn)
+
+        win.set_child(outer)
+        win.present()

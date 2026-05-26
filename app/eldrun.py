@@ -87,6 +87,13 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
     letter-spacing: 0.5px;
 }
 
+/* Adwaita gives ListBox a white background by default; make it transparent
+   so the panel background shows through and our label colors are readable. */
+listbox {
+    background: transparent;
+    background-color: transparent;
+}
+
 /* ── project rows ────────────────────────────────────────── */
 .project-row {
     border-bottom: 1px solid #21262d;
@@ -103,12 +110,12 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
 .project-row label,
 .project-row:selected label,
 .project-row:focus:selected label {
-    color: #e6edf3;
+    color: #e6edf3 !important;
 }
 .project-row image,
 .project-row:selected image,
 .project-row:focus:selected image {
-    color: #8b949e;
+    color: #8b949e !important;
 }
 .project-row-active {
     border: 2px solid #388bfd;
@@ -133,6 +140,15 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
 }
 .close-btn:hover {
     color: #f85149;
+}
+.project-row-dragging {
+    opacity: 0.45;
+}
+.drag-over-top {
+    border-top: 2px solid #388bfd;
+}
+.drag-over-bottom {
+    border-bottom: 2px solid #388bfd;
 }
 
 /* ── app list rows ───────────────────────────────────────── */
@@ -167,6 +183,14 @@ button.panel-edge-btn:hover {
     background-color: #388bfd;
 }
 
+/* ── header time label ───────────────────────────────────── */
+.header-time-label {
+    font-size: 11px;
+    color: #8b949e;
+    font-weight: 500;
+    margin-end: 4px;
+}
+
 /* ── status lamp (Phase 14) ──────────────────────────────── */
 .status-lamp {
     font-size: 11px;
@@ -194,22 +218,51 @@ button.panel-edge-btn:hover {
 
 /* ── project time bar (Phase 15) ─────────────────────────── */
 progressbar.project-time-bar {
-    min-height: 4px;
+    min-height: 6px;
 }
 progressbar.project-time-bar trough {
-    min-height: 4px;
-    border-radius: 2px;
-    background-color: #21262d;
+    min-height: 6px;
+    border-radius: 3px;
+    background-color: #ffffff;
+    border: 1px solid #000000;
 }
 progressbar.project-time-bar progress {
-    background-color: rgba(56, 139, 253, 0.65);
-    border-radius: 2px;
-    min-height: 4px;
+    background-color: #388bfd;
+    border-radius: 3px;
+    min-height: 6px;
 }
 .project-time-label {
-    font-size: 9px;
+    font-size: 10px;
+    color: #e6edf3 !important;
+    min-width: 32px;
+}
+
+/* ── center panel tab bar ────────────────────────────────── */
+.center-tab-bar-scroll {
+    background-color: #161b22;
+    border-bottom: 1px solid #30363d;
+}
+.center-tab-bar {
+    background-color: #161b22;
+}
+.center-tab {
+    border-radius: 6px 6px 0 0;
+    padding: 4px 10px;
+    background-color: transparent;
     color: #8b949e;
-    min-width: 28px;
+    font-size: 12px;
+    border: 1px solid transparent;
+    border-bottom: none;
+}
+.center-tab:hover {
+    background-color: #21262d;
+    color: #e6edf3;
+}
+.center-tab-active {
+    background-color: #0d1117;
+    color: #e6edf3;
+    border-color: #30363d;
+    border-bottom: 1px solid #0d1117;
 }
 """
 
@@ -273,6 +326,10 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
     font-weight: bold;
     letter-spacing: 0.5px;
 }
+listbox {
+    background: transparent;
+    background-color: transparent;
+}
 .project-row { border-bottom: 1px solid #d8dee4; }
 .project-row:selected,
 .project-row:focus:selected {
@@ -283,12 +340,12 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
 .project-row label,
 .project-row:selected label,
 .project-row:focus:selected label {
-    color: #000000;
+    color: #000000 !important;
 }
 .project-row image,
 .project-row:selected image,
 .project-row:focus:selected image {
-    color: #57606a;
+    color: #57606a !important;
 }
 .project-row-active {
     border: 2px solid #0969da;
@@ -310,6 +367,9 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
     min-height: 20px;
 }
 .close-btn:hover { color: #f85149; }
+.project-row-dragging { opacity: 0.45; }
+.drag-over-top { border-top: 2px solid #0969da; }
+.drag-over-bottom { border-bottom: 2px solid #0969da; }
 .app-row { border-bottom: 1px solid #d8dee4; }
 .app-row:hover { background-color: #f3f4f6; }
 .app-running { color: #2da44e; font-size: 10px; }
@@ -328,6 +388,14 @@ button.panel-edge-btn {
 button.panel-edge-btn:hover {
     color: #ffffff;
     background-color: #0969da;
+}
+
+/* ── header time label ───────────────────────────────────── */
+.header-time-label {
+    font-size: 11px;
+    color: #57606a;
+    font-weight: 500;
+    margin-end: 4px;
 }
 
 /* ── status lamp (Phase 14) ──────────────────────────────── */
@@ -357,22 +425,51 @@ button.panel-edge-btn:hover {
 
 /* ── project time bar (Phase 15) ─────────────────────────── */
 progressbar.project-time-bar {
-    min-height: 4px;
+    min-height: 6px;
 }
 progressbar.project-time-bar trough {
-    min-height: 4px;
-    border-radius: 2px;
-    background-color: #d0d7de;
+    min-height: 6px;
+    border-radius: 3px;
+    background-color: #ffffff;
+    border: 1px solid #000000;
 }
 progressbar.project-time-bar progress {
-    background-color: rgba(9, 105, 218, 0.65);
-    border-radius: 2px;
-    min-height: 4px;
+    background-color: #0969da;
+    border-radius: 3px;
+    min-height: 6px;
 }
 .project-time-label {
-    font-size: 9px;
+    font-size: 10px;
+    color: #24292f !important;
+    min-width: 32px;
+}
+
+/* ── center panel tab bar (light) ────────────────────────── */
+.center-tab-bar-scroll {
+    background-color: #f6f8fa;
+    border-bottom: 1px solid #d0d7de;
+}
+.center-tab-bar {
+    background-color: #f6f8fa;
+}
+.center-tab {
+    border-radius: 6px 6px 0 0;
+    padding: 4px 10px;
+    background-color: transparent;
     color: #57606a;
-    min-width: 28px;
+    font-size: 12px;
+    border: 1px solid transparent;
+    border-bottom: none;
+}
+.center-tab:hover {
+    background-color: #eaeef2;
+    color: #24292f;
+}
+.center-tab-active {
+    background-color: #ffffff;
+    color: #24292f;
+    border-color: #d0d7de;
+    border-bottom: 1px solid #ffffff;
 }
 """
 
@@ -411,6 +508,7 @@ class EldrunApp(Adw.Application):
 
     def do_activate(self):
         _apply_css()
+        Gtk.Window.set_default_icon_name("io.github.fseiffarth.eldrun")
         from window import EldrunWindow
         win = EldrunWindow(application=self)
         win.present()

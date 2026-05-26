@@ -1,3 +1,8 @@
+import atexit
+import datetime as _dt
+import os
+import signal
+import subprocess
 import time
 
 import gi
@@ -18,6 +23,57 @@ from eldrun import set_theme
 
 _LEFT_WIDTH = 220
 _RIGHT_WIDTH = 220
+
+_SUPER_KEY_BINDINGS: list[tuple[str, str]] = [
+    # (schema, key)  — first one whose schema exists wins at runtime
+    ("org.gnome.shell.keybindings",    "overlay-key"),
+    ("org.cinnamon.desktop.keybindings", "panel-main-menu"),
+]
+
+
+def _detect_super_binding() -> tuple[str, str] | None:
+    """Return the (schema, key) pair that controls Super on this desktop, or None."""
+    for schema, key in _SUPER_KEY_BINDINGS:
+        try:
+            r = subprocess.run(
+                ["gsettings", "get", schema, key],
+                capture_output=True, text=True, timeout=2,
+            )
+            if r.returncode == 0:
+                return schema, key
+        except Exception:
+            pass
+    return None
+
+
+_SUPER_BINDING = _detect_super_binding()
+
+
+def _get_super_key_value() -> str:
+    if _SUPER_BINDING is None:
+        return ""
+    schema, key = _SUPER_BINDING
+    try:
+        r = subprocess.run(
+            ["gsettings", "get", schema, key],
+            capture_output=True, text=True, timeout=2,
+        )
+        return r.stdout.strip().strip("'\"")
+    except Exception:
+        return ""
+
+
+def _set_super_key_value(value: str) -> None:
+    if _SUPER_BINDING is None:
+        return
+    schema, key = _SUPER_BINDING
+    try:
+        subprocess.Popen(
+            ["gsettings", "set", schema, key, value],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
 
 class EldrunWindow(Adw.ApplicationWindow):
@@ -43,13 +99,36 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.maximize()
         self._network_monitor = NetworkMonitor(self._on_network_status_changed)
         GLib.timeout_add(60_000, self._on_time_tick)
+        GLib.timeout_add_seconds(30, self._update_clock)
 
+        # Intercept Super key: blank the DE's Super binding while we have focus
+        self._original_super_value = _get_super_key_value()
+        atexit.register(self._restore_super_key)
+        self.connect("notify::is-active", self._on_active_changed)
         self.connect("notify::maximized", self._on_maximized_notify)
+        self.connect("destroy", self._on_destroy)
+
+    # ── Super-key interception (GNOME / Cinnamon) ─────────────────────────────
+
+    def _on_active_changed(self, win, _pspec):
+        if win.is_active():
+            _set_super_key_value("[]" if _SUPER_BINDING and
+                                 _SUPER_BINDING[0].startswith("org.cinnamon") else "")
+        else:
+            self._restore_super_key()
+
+    def _restore_super_key(self):
+        _set_super_key_value(self._original_super_value)
+
+    def _on_destroy(self, _win):
+        self._restore_super_key()
+        self.project_manager.set_all_inactive()
 
     # ── keyboard ──────────────────────────────────────────────────────────────
 
     def _add_key_controller(self):
         ctrl = Gtk.EventControllerKey()
+        ctrl.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         ctrl.connect("key-pressed", self._on_key_pressed)
         self.add_controller(ctrl)
 
@@ -66,8 +145,8 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._toggle_panels()
             return True
 
-        if keyval == Gdk.KEY_Tab and (state & Gdk.ModifierType.SHIFT_MASK):
-            self._left_panel.cycle_next_app()
+        if keyval == Gdk.KEY_ISO_Left_Tab:  # Shift+Tab
+            self._center_panel.cycle_tabs()
             return True
 
         return False
@@ -103,10 +182,19 @@ class EldrunWindow(Adw.ApplicationWindow):
         title.add_css_class("app-title")
         center_box.set_center_widget(title)
 
-        # Right: WM buttons
+        # Right: time label + WM buttons
+        right_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        right_box.set_valign(Gtk.Align.CENTER)
+        right_box.set_margin_end(8)
+
+        self._time_label = Gtk.Label()
+        self._time_label.add_css_class("header-time-label")
+        self._time_label.set_text(_dt.datetime.now().strftime("%H:%M"))
+        self._time_label.set_valign(Gtk.Align.CENTER)
+        right_box.append(self._time_label)
+
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         btn_box.set_valign(Gtk.Align.CENTER)
-        btn_box.set_margin_end(8)
 
         min_btn = Gtk.Button()
         min_btn.add_css_class("flat")
@@ -132,7 +220,8 @@ class EldrunWindow(Adw.ApplicationWindow):
         close_btn.connect("clicked", lambda _: self.get_application().quit())
         btn_box.append(close_btn)
 
-        center_box.set_end_widget(btn_box)
+        right_box.append(btn_box)
+        center_box.set_end_widget(right_box)
 
         handle = Gtk.WindowHandle()
         handle.set_child(center_box)
@@ -164,7 +253,6 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._left_panel = LeftPanel(
             center_panel=self._center_panel,
             default_apps_manager=self.default_apps_manager,
-            on_warm_changed=self._on_project_warm_changed,
         )
         self._right_panel = RightPanel(
             self.project_manager,
@@ -174,6 +262,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             settings_manager=self.settings_manager,
             default_apps_manager=self.default_apps_manager,
             on_toggle_theme=self._on_toggle_theme,
+            on_activate_project=self._on_project_created,
         )
 
         self._inner_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
@@ -221,16 +310,26 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.connect("map", self._on_map)
 
     def _on_map(self, *_):
+        from project_stats import scan_project_background
         self._outer_paned.set_position(_LEFT_WIDTH)
-        for p in self.project_manager.projects:
+        visible = self.project_manager.get_visible_projects()
+        for p in visible:
             self._center_panel.add_project_terminal(p)
             self._right_panel.add_project_row(p)
+            scan_project_background(p)
+        for p in self.project_manager.projects:
+            if p.get("status") == "inactive":
+                scan_project_background(p)
         self._center_panel.open_master_terminal()
-        self._right_panel.refresh_warm_states(self.project_manager.projects)
+        self._right_panel.refresh_warm_states(visible)
         GLib.idle_add(self._init_inner_paned)
 
     def _init_inner_paned(self):
-        outer_w = self._outer_paned.get_allocated_width() or 1440
+        outer_w = self._outer_paned.get_allocated_width()
+        if outer_w <= 0:
+            # Not yet realized — defer until after the window is allocated
+            GLib.idle_add(self._init_inner_paned)
+            return False
         page = self._center_panel._stack.get_visible_child_name() or "empty"
         show_left = (page.startswith("project-")
                      and not self._left_hidden and not self._panels_hidden)
@@ -281,10 +380,13 @@ class EldrunWindow(Adw.ApplicationWindow):
 
         if not show_right:
             self._inner_paned.set_position(9999)  # clamped to paned max
-        elif self._outer_paned.get_allocated_width() > 0:
+        else:
             outer_w = self._outer_paned.get_allocated_width()
-            left_w = _LEFT_WIDTH if show_left else 0
-            self._inner_paned.set_position(max(400, outer_w - left_w - _RIGHT_WIDTH))
+            if outer_w > 0:
+                left_w = _LEFT_WIDTH if show_left else 0
+                self._inner_paned.set_position(max(400, outer_w - left_w - _RIGHT_WIDTH))
+            else:
+                GLib.idle_add(self._init_inner_paned)
 
         if page.startswith("project-"):
             project_id = page[len("project-"):]
@@ -336,11 +438,10 @@ class EldrunWindow(Adw.ApplicationWindow):
         ).present()
 
     def _on_project_created(self, project: dict):
-        self._center_panel.add_project_terminal(project)
+        from project_stats import scan_project_background
         self._right_panel.add_project_row(project)
-
-    def _on_project_warm_changed(self, project_id: str, warm: bool):
-        self._right_panel.set_project_warm(project_id, warm)
+        self._center_panel.add_project_terminal(project)
+        scan_project_background(project)
 
     def _bootstrap_default_apps(self) -> bool:
         self.default_apps_manager.bootstrap_from_system()
@@ -381,6 +482,10 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._conn_icon.set_visible(False)
 
     # ── time tracking (Phase 15) ──────────────────────────────────────────────
+
+    def _update_clock(self) -> bool:
+        self._time_label.set_text(_dt.datetime.now().strftime("%H:%M"))
+        return True
 
     def _on_time_tick(self) -> bool:
         self._refresh_time_bars()

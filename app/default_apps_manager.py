@@ -6,6 +6,7 @@ import subprocess
 from gi.repository import GLib
 
 _GLOBAL_FILE = os.path.join(GLib.get_user_data_dir(), "eldrun", "default_apps.json")
+_LOCAL_PROJECT_FILE = "project.json"
 
 # Common extension → MIME type for bootstrap
 _EXT_MIME = {
@@ -158,15 +159,19 @@ def get_installed_apps() -> list[dict]:
 
 
 class DefaultAppsManager:
-    """Global and per-project filetype → app mappings."""
+    """Global and per-project filetype → app mappings.
+
+    Global map: ~/.local/share/eldrun/default_apps.json
+    Per-project map: <project_dir>/project.json["default_apps"]
+    """
 
     def __init__(self):
         self._path = pathlib.Path(_GLOBAL_FILE)
-        self._map: dict[str, str] = self._load(self._path)
+        self._map: dict[str, str] = self._load_json(self._path)
 
-    # ── persistence ───────────────────────────────────────────────────────────
+    # ── json helpers ──────────────────────────────────────────────────────────
 
-    def _load(self, path: pathlib.Path) -> dict:
+    def _load_json(self, path: pathlib.Path) -> dict:
         if not path.exists():
             return {}
         try:
@@ -183,22 +188,43 @@ class DefaultAppsManager:
             json.dump(self._map, f, indent=2, sort_keys=True)
         os.replace(tmp, str(self._path))
 
-    def _proj_path(self, project_dir: str) -> pathlib.Path:
-        return pathlib.Path(project_dir) / "project_default_apps.json"
+    def _local_project_path(self, project_dir: str) -> pathlib.Path:
+        return pathlib.Path(project_dir) / _LOCAL_PROJECT_FILE
+
+    def _load_local_project(self, project_dir: str) -> dict:
+        return self._load_json(self._local_project_path(project_dir))
+
+    def _save_local_project(self, project_dir: str, data: dict):
+        p = self._local_project_path(project_dir)
+        tmp = str(p) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, str(p))
 
     # ── project-level map ──────────────────────────────────────────────────────
 
     def get_project_map(self, project_dir: str) -> dict:
-        return self._load(self._proj_path(project_dir))
+        data = self._load_local_project(project_dir)
+        if "default_apps" in data:
+            return dict(data["default_apps"])
+        # Fallback: old separate file (pre-migration)
+        old_path = pathlib.Path(project_dir) / "project_default_apps.json"
+        return self._load_json(old_path)
 
     def set_project_app(self, project_dir: str, ext: str, app: str):
-        m = self.get_project_map(project_dir)
-        m[ext.lower()] = app
-        p = self._proj_path(project_dir)
-        tmp = str(p) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(m, f, indent=2, sort_keys=True)
-        os.replace(tmp, str(p))
+        data = self._load_local_project(project_dir)
+        if "default_apps" not in data:
+            # Seed from old file if it exists (migration path)
+            old_path = pathlib.Path(project_dir) / "project_default_apps.json"
+            data["default_apps"] = self._load_json(old_path)
+        data["default_apps"][ext.lower()] = app
+        self._save_local_project(project_dir, data)
+
+    def remove_project_app(self, project_dir: str, ext: str):
+        data = self._load_local_project(project_dir)
+        if "default_apps" in data:
+            data["default_apps"].pop(ext.lower(), None)
+            self._save_local_project(project_dir, data)
 
     # ── global map ────────────────────────────────────────────────────────────
 

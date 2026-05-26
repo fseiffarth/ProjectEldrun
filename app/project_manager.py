@@ -15,6 +15,15 @@ WORKSPACE_ROOT = pathlib.Path.home() / "eldrun"
 PROJECTS_ROOT = pathlib.Path.home() / "eldrun" / "projects"
 ROOT_DIR = pathlib.Path.home() / "eldrun" / "root"
 
+LOCAL_PROJECT_FILE = "project.json"
+
+# Keys kept only in the global index; everything else lives in local project.json
+_GLOBAL_KEYS = {"id", "name", "status", "position", "local_file"}
+# Keys that exist only at runtime and are never persisted
+_RUNTIME_KEYS = {"shell_pid"}
+# Keys managed externally (by OpenAppsManager); _save_local must not overlay them
+_EXTERNAL_KEYS = {"open_apps"}
+
 
 def sanitize_name(name: str) -> str:
     name = name.lower().strip()
@@ -38,10 +47,17 @@ It is the central control terminal for managing Eldrun itself — not for projec
 ## Global data files
 
 Eldrun stores its registry and logs under `~/.local/share/eldrun/`:
-- `projects.json` — registry of all known projects (id, name, path, status)
+- `projects.json` — lightweight index of all known projects (id, name, status, position, local_file)
 - `time_log.json` — append-only session time log
 - `settings.json` — user settings (terminal command, color scheme, etc.)
 - `default_apps.json` — global file-type → app map
+
+## Per-project data files
+
+Each project directory `~/eldrun/projects/<name>/` contains:
+- `project.json` — all project-local data: directory, git_type, created_at,
+  file_type_stats, time data, default_apps (per-project file-type overrides)
+- `open_apps.json` — currently open X11 applications (runtime, EWMH-tracked)
 
 ## What this terminal is for
 
@@ -50,18 +66,11 @@ Use this terminal exclusively for Eldrun workspace-level tasks:
 - **Project search** — find projects by name or path across the full registry
 - **Project status changes** — set a project to `current`, `active`, or `inactive`
   by editing `~/.local/share/eldrun/projects.json`
-- **Adding new projects** — via Eldrun's **+** button (preferred) or by calling
-  `ProjectManager.create_project()` directly
-- **Importing existing projects** — via Eldrun's **Import Project** dialog (keep
-  location, copy, or move modes)
-- **Eldrun settings** — edit `~/.local/share/eldrun/settings.json` to change the
-  terminal command, color scheme, or other app-wide options
-- **Global default apps** — edit `~/.local/share/eldrun/default_apps.json` to set
-  the default application for a file extension across all projects
-- **Installing new applications** — run package manager commands (`apt`, `pip`,
-  `npm`, etc.) to install tools that will be available across all projects
-
-For work inside a specific project, switch to that project's terminal in the right panel.
+- **Adding new projects** — via Eldrun's **+** button (preferred)
+- **Importing existing projects** — via Eldrun's **Import Project** dialog
+- **Eldrun settings** — edit `~/.local/share/eldrun/settings.json`
+- **Global default apps** — edit `~/.local/share/eldrun/default_apps.json`
+- **Installing new applications** — run package manager commands
 """
 
 _ROOT_AGENTS_MD = """\
@@ -73,34 +82,36 @@ You are the Eldrun workspace manager. Your job in this terminal is to help the u
 control Eldrun itself: projects, settings, default apps, and installed tools.
 You do not do project-level development work here.
 
+## Storage layout
+
+- `~/.local/share/eldrun/projects.json` — global index; each entry has only:
+  id, name, status, position, local_file (path to the project's project.json)
+- `<project_dir>/project.json` — per-project data: directory, git_type, created_at,
+  file_type_stats, time_today_s, time_total_s, time sessions, default_apps
+
 ## Permitted actions
 
-- Read and write `~/.local/share/eldrun/` (project registry, settings, default apps,
-  time log)
+- Read and write `~/.local/share/eldrun/` (project index, settings, default apps, time log)
 - Read and write `~/eldrun/root/` (this working directory)
 - Read project directories under `~/eldrun/projects/` for discovery and inspection
-- Run package manager commands (`apt`, `pip`, `npm`, `cargo`, etc.) to install
-  applications system-wide or for the current user
+- Run package manager commands to install applications
 
 ## Restricted actions
 
 - Do not write to project directories under `~/eldrun/projects/` unless the user
   explicitly asks — project work belongs in each project's own terminal
-- Do not modify files outside `~/eldrun/` and `~/.local/share/eldrun/` without
-  explicit instruction
 
-## Key tasks and how to do them
+## Key tasks
 
 **Search projects**
-Read `~/.local/share/eldrun/projects.json` and filter by name, path, or status.
+Read `~/.local/share/eldrun/projects.json` and follow `local_file` links to get details.
 
 **Change a project's status**
-Edit the `status` field in the matching entry in `~/.local/share/eldrun/projects.json`
-to `"current"`, `"active"`, or `"inactive"`. At most one project should be `"current"`.
+Edit the `status` field in the matching entry in `~/.local/share/eldrun/projects.json`.
+At most one project should be `"current"`.
 
 **Add or import a project**
-Ask the user to use Eldrun's **+** button — this ensures the project is scaffolded
-correctly and registered with the right UUID and metadata.
+Ask the user to use Eldrun's **+** button to ensure correct scaffolding and registration.
 
 **Change Eldrun settings**
 Edit `~/.local/share/eldrun/settings.json`. Current keys:
@@ -109,7 +120,7 @@ Edit `~/.local/share/eldrun/settings.json`. Current keys:
 
 **Set a global default app for a file type**
 Edit `~/.local/share/eldrun/default_apps.json`. Format: `{ ".ext": "app-executable" }`.
-Per-project overrides live in `<project_dir>/project_default_apps.json`.
+Per-project overrides live in `<project_dir>/project.json` under the `"default_apps"` key.
 
 **Install a new application**
 Run the appropriate package manager command and confirm the binary is on `$PATH`.
@@ -123,29 +134,73 @@ def _write_root_context_files():
 
 
 _SCAFFOLD: dict[str, str] = {
-    "AGENTS.md":       "# {name}\n\n## Purpose\n\n## Key conventions\n",
-    "CLAUDE.md":       "# {name}\n\n- **Directory:** `{directory}`\n- **Type:** {git_type}\n\n## What this project is\n\n",
-    ".gitignore":      ".env\n__pycache__/\n*.pyc\nnode_modules/\n.DS_Store\n*.log\ndist/\nbuild/\n.venv/\n",
-    "TODO.md":         "# {name} — TODO\n",
-    "ROADMAP.md":      "# {name} — Roadmap\n",
-    "DOCUMENTATION.md":"# {name} — Documentation\n",
+    "AGENTS.md": """\
+# {name}
+
+## Purpose
+
+Describe what this project does and what an agent session here is expected to accomplish.
+
+## Scope and permissions
+
+You are working inside the project directory `{directory}`.
+
+**Full read/write access:**
+- Everything under `{directory}/`
+
+**Read-only (do not write outside your project):**
+- `~/.local/share/eldrun/` — Eldrun global data, managed by Eldrun itself
+- Other project directories under `~/eldrun/projects/`
+- Any path outside `{directory}/`
+
+If you need to change Eldrun settings or project metadata, ask the user to use the Eldrun UI or the root terminal.
+
+## Key conventions
+""",
+    "CLAUDE.md":        "# {name}\n\n- **Directory:** `{directory}`\n- **Type:** {git_type}\n\n## What this project is\n\n",
+    ".gitignore":       ".env\n__pycache__/\n*.pyc\nnode_modules/\n.DS_Store\n*.log\ndist/\nbuild/\n.venv/\n",
+    "TODO.md":          "# {name} — TODO\n",
+    "ROADMAP.md":       "# {name} — Roadmap\n",
+    "DOCUMENTATION.md": "# {name} — Documentation\n",
+    ".claude/settings.json": """\
+{
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Edit({directory}/**)",
+      "Write({directory}/**)"
+    ],
+    "deny": [
+      "Edit(~/.local/share/eldrun/**)",
+      "Write(~/.local/share/eldrun/**)"
+    ]
+  }
+}
+""",
 }
 
 
 def _render_scaffold(template: str, name: str, directory: str, git_type: str) -> str:
-    return template.format(name=name, directory=directory, git_type=git_type)
+    return (template
+            .replace("{name}", name)
+            .replace("{directory}", directory)
+            .replace("{git_type}", git_type))
 
 
 def _write_scaffold(name: str, directory: str, git_type: str):
     for filename, tmpl in _SCAFFOLD.items():
-        with open(os.path.join(directory, filename), "w", encoding="utf-8") as f:
+        full_path = os.path.join(directory, filename)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "w", encoding="utf-8") as f:
             f.write(_render_scaffold(tmpl, name, directory, git_type))
 
 
 def _write_scaffold_missing(name: str, directory: str, git_type: str, existing: set):
     for filename, tmpl in _SCAFFOLD.items():
-        if filename not in existing:
-            with open(os.path.join(directory, filename), "w", encoding="utf-8") as f:
+        full_path = os.path.join(directory, filename)
+        if not os.path.exists(full_path):
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "w", encoding="utf-8") as f:
                 f.write(_render_scaffold(tmpl, name, directory, git_type))
 
 
@@ -197,30 +252,102 @@ class ProjectManager:
         try:
             with open(PROJECTS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self.projects = data if isinstance(data, list) else []
+            raw_entries = data if isinstance(data, list) else []
         except (json.JSONDecodeError, OSError):
-            self.projects = []
-        for i, p in enumerate(self.projects):
-            if "status" not in p:
-                p["status"] = "inactive"
-            if "position" not in p:
-                p["position"] = i * 10
+            raw_entries = []
+
+        self.projects = []
+        for i, entry in enumerate(raw_entries):
+            if "status" not in entry:
+                entry["status"] = "inactive"
+            if "position" not in entry:
+                entry["position"] = i * 10
+
+            # Resolve local_file — derive from directory if missing (old format)
+            local_file = entry.get("local_file")
+            if not local_file:
+                directory = entry.get("directory", "")
+                if directory:
+                    local_file = str(pathlib.Path(directory) / LOCAL_PROJECT_FILE)
+
+            # Load local project.json and merge with global index entry
+            if local_file and os.path.exists(local_file):
+                try:
+                    with open(local_file, "r", encoding="utf-8") as f:
+                        local_data = json.load(f)
+                    project = {**local_data}
+                    # Global index is canonical for these fields
+                    project["id"] = entry["id"]
+                    project["name"] = entry["name"]
+                    project["status"] = entry.get("status", "inactive")
+                    project["position"] = entry.get("position", 0)
+                    project["local_file"] = local_file
+                except (json.JSONDecodeError, OSError):
+                    project = dict(entry)
+                    if local_file:
+                        project["local_file"] = local_file
+            else:
+                # Old format or local file not yet created
+                project = dict(entry)
+                if local_file:
+                    project["local_file"] = local_file
+
+            self.projects.append(project)
 
     def _save(self):
-        serializable = [
-            {k: v for k, v in p.items() if k != "shell_pid"}
-            for p in self.projects
-        ]
+        """Write the global index — lightweight entries only."""
+        index = []
+        for p in self.projects:
+            directory = p.get("directory", "")
+            local_file = p.get("local_file") or (
+                str(pathlib.Path(directory) / LOCAL_PROJECT_FILE) if directory else ""
+            )
+            index.append({
+                "id": p["id"],
+                "name": p["name"],
+                "status": p.get("status", "inactive"),
+                "position": p.get("position", 0),
+                "local_file": local_file,
+            })
         tmp = PROJECTS_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(serializable, f, indent=2)
+            json.dump(index, f, indent=2)
         os.replace(tmp, PROJECTS_FILE)
 
+    def _save_local(self, project: dict):
+        """Write all project-local data to <project_dir>/project.json."""
+        directory = project.get("directory", "")
+        if not directory:
+            return
+        local_path = pathlib.Path(directory) / LOCAL_PROJECT_FILE
+        # Read existing to preserve externally-managed keys (e.g. open_apps)
+        existing = {}
+        if local_path.exists():
+            try:
+                with open(local_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+                if not isinstance(existing, dict):
+                    existing = {}
+            except (json.JSONDecodeError, OSError):
+                existing = {}
+        for k, v in project.items():
+            if k not in _RUNTIME_KEYS and k not in _EXTERNAL_KEYS:
+                existing[k] = v
+        tmp = str(local_path) + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=2)
+            os.replace(tmp, str(local_path))
+        except OSError:
+            pass
+
     def _migrate(self):
-        """Move projects from ~/eldrun/<name>/ to ~/eldrun/projects/<name>/."""
+        """Run one-time migrations to bring data up to the current format."""
         updated = False
+
         for p in self.projects:
-            old_dir = pathlib.Path(p["directory"])
+            # Old migration: move from ~/eldrun/<name>/ to ~/eldrun/projects/<name>/
+            old_dir = pathlib.Path(p.get("directory", ""))
             if (old_dir.parent == WORKSPACE_ROOT
                     and old_dir.name != "projects"
                     and old_dir.is_dir()):
@@ -229,6 +356,57 @@ class ProjectManager:
                     old_dir.rename(new_dir)
                     p["directory"] = str(new_dir)
                     updated = True
+
+            # New migration: ensure local_file is set and local project.json exists
+            directory = p.get("directory", "")
+            if not directory:
+                continue
+            expected_local = str(pathlib.Path(directory) / LOCAL_PROJECT_FILE)
+            if p.get("local_file") != expected_local:
+                p["local_file"] = expected_local
+                updated = True
+
+            # Migrate old project_default_apps.json into project.json["default_apps"]
+            old_dam_path = pathlib.Path(directory) / "project_default_apps.json"
+            local_path = pathlib.Path(expected_local)
+            if old_dam_path.exists() and local_path.exists():
+                try:
+                    with open(old_dam_path, "r", encoding="utf-8") as f:
+                        old_apps = json.load(f)
+                    with open(local_path, "r", encoding="utf-8") as f:
+                        local_data = json.load(f)
+                    if "default_apps" not in local_data and isinstance(old_apps, dict):
+                        local_data["default_apps"] = old_apps
+                        tmp = str(local_path) + ".tmp"
+                        with open(tmp, "w", encoding="utf-8") as f:
+                            json.dump(local_data, f, indent=2)
+                        os.replace(tmp, str(local_path))
+                        old_dam_path.rename(str(old_dam_path) + ".migrated")
+                        updated = True
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+            # Create local project.json if it doesn't exist yet
+            if not pathlib.Path(expected_local).exists():
+                self._save_local(p)
+                updated = True
+
+            # Create .claude/settings.json if missing (permission boundary)
+            settings_path = pathlib.Path(directory) / ".claude" / "settings.json"
+            if not settings_path.exists():
+                settings_path.parent.mkdir(parents=True, exist_ok=True)
+                content = _render_scaffold(
+                    _SCAFFOLD[".claude/settings.json"],
+                    p.get("name", ""),
+                    directory,
+                    p.get("git_type", "private"),
+                )
+                try:
+                    settings_path.write_text(content, encoding="utf-8")
+                    updated = True
+                except OSError:
+                    pass
+
         if updated:
             self._save()
 
@@ -240,6 +418,7 @@ class ProjectManager:
         return max(p.get("position", 0) for p in self.projects) + 10
 
     def add_project(self, name: str, directory: str, git_type: str = "private") -> dict:
+        local_file = str(pathlib.Path(directory) / LOCAL_PROJECT_FILE)
         project = {
             "id": str(uuid.uuid4()),
             "name": name,
@@ -249,8 +428,10 @@ class ProjectManager:
             "shell_pid": None,
             "status": "active",
             "position": self._next_position(),
+            "local_file": local_file,
         }
         self.projects.append(project)
+        self._save_local(project)
         self._save()
         return project
 
@@ -262,7 +443,7 @@ class ProjectManager:
         project = self.get_project(project_id)
         if project is not None:
             project["status"] = status
-            self._save()
+            self._save()  # status is a global-index concern
 
     def deactivate_project(self, project_id: str):
         """Hide a project from the panel but keep it in the registry."""
@@ -276,7 +457,7 @@ class ProjectManager:
         project = self.get_project(project_id)
         if project is not None:
             project["position"] = position
-            self._save()
+            self._save()  # position is a global-index concern
 
     def set_all_inactive(self):
         """Mark every project inactive (called on clean shutdown)."""

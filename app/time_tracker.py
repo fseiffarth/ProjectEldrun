@@ -1,4 +1,4 @@
-"""Phase 15 — Per-project time tracking; syncs time data into global projects.json."""
+"""Phase 15 — Per-project time tracking; syncs time data into local project.json."""
 
 import json
 import os
@@ -11,7 +11,7 @@ from gi.repository import GLib
 DATA_DIR = os.path.join(GLib.get_user_data_dir(), "eldrun")
 _TIME_LOG_FILE = os.path.join(DATA_DIR, "time_log.json")
 _ACTIVE_SESSION_FILE = os.path.join(DATA_DIR, "active_session.json")
-_PROJECTS_FILE = os.path.join(DATA_DIR, "projects.json")
+_LOCAL_FILE = "project.json"
 
 _MAX_PROJECT_SESSIONS = 20
 
@@ -91,7 +91,7 @@ class TimeTracker:
         }
         self._append_log(entry)
         if self._project:
-            self._update_project_json(self._project, entry)
+            self._update_local_project_json(self._project, entry)
 
     # ── orphan-session (startup resume) ───────────────────────────────────────
 
@@ -162,18 +162,20 @@ class TimeTracker:
             json.dump(log, f, indent=2)
         os.replace(tmp, self._time_log_file)
 
-    # ── global projects.json time sync ─────────────────────────────────────────
+    # ── local project.json time sync ───────────────────────────────────────────
 
-    def _update_project_json(self, project: dict, _new_entry: dict):
+    def _update_local_project_json(self, project: dict, _new_entry: dict):
+        directory = project.get("directory", "")
+        if not directory:
+            return
+        local_path = pathlib.Path(directory) / _LOCAL_FILE
+
+        # Read existing local data to preserve all other fields
         try:
-            with open(_PROJECTS_FILE, "r", encoding="utf-8") as f:
-                projects = json.load(f)
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
         except (OSError, json.JSONDecodeError):
-            return
-
-        entry = next((p for p in projects if p.get("id") == project["id"]), None)
-        if entry is None:
-            return
+            data = {k: v for k, v in project.items() if k != "shell_pid"}
 
         all_sessions = [
             e for e in self._load_log()
@@ -182,7 +184,7 @@ class TimeTracker:
         recent = all_sessions[-_MAX_PROJECT_SESSIONS:]
         total_s = sum(e.get("duration_s", 0) for e in all_sessions)
 
-        entry["time"] = {
+        data["time"] = {
             "total_s": total_s,
             "recent_sessions": [
                 {
@@ -194,10 +196,10 @@ class TimeTracker:
             ],
         }
 
-        tmp = _PROJECTS_FILE + ".tmp"
+        tmp = str(local_path) + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(projects, f, indent=2)
-            os.replace(tmp, _PROJECTS_FILE)
+                json.dump(data, f, indent=2)
+            os.replace(tmp, str(local_path))
         except OSError:
             pass

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Edit(/home/user/eldrun/projects/projecteldrun/**)",
+      "Write(/home/user/eldrun/projects/projecteldrun/**)"
+    ],
+    "deny": [
+      "Edit(~/.local/share/eldrun/**)",
+      "Write(~/.local/share/eldrun/**)"
+    ]
+  }
+}

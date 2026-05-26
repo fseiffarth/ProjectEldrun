@@ -8,11 +8,16 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("Vte", "3.91")
 from gi.repository import Gtk, Gdk, GLib, Vte, Pango
 
+from Xlib import display as Xdisplay, X
+from Xlib.protocol import event as Xevent
+
 _WORKSPACE_ROOT = str(pathlib.Path.home() / "eldrun")
 from project_manager import ROOT_DIR as _ROOT_DIR_PATH
 _ROOT_DIR = str(_ROOT_DIR_PATH)
-_MASTER_PAGE   = "__master__"
-_APP_PAGE      = "__app__"
+_MASTER_PAGE = "__master__"
+_TERMINAL_TAB = "__terminal__"
+
+_OWN_PID = os.getpid()
 
 
 def _dark_palette():
@@ -70,37 +75,59 @@ class CenterPanel(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._pm = project_manager
         self._settings = settings_manager
-        self._on_page_changed = on_page_changed  # callable(page_name: str) | None
+        self._on_page_changed = on_page_changed
         scheme = settings_manager.get("color_scheme") if settings_manager else "dark"
         self._is_dark = scheme != "light"
         self._last_terminal_page = "empty"
-        self._embedded_xid: int | None = None
-        self._terminal_pids: dict[str, int] = {}     # page_name -> child PID
-        self._terminals: dict[str, Vte.Terminal] = {}  # page_name -> widget
+        self._terminal_pids: dict[str, int] = {}
+        self._terminals: dict[str, Vte.Terminal] = {}
 
+        # App tab tracking
+        self._app_counter = 0
+        self._app_info: dict[str, dict] = {}  # page_name → {name,pid,xid,project_id,proc}
+        self._tab_widgets: dict[str, Gtk.Box] = {}  # tab_key → tab widget
+        self._current_tab: str = _TERMINAL_TAB
+        self._embedded_xid: int | None = None
+        self._embedded_page: str | None = None
+
+        # Xlib connection (lazy)
+        self._disp = None
+        self._root_win = None
+        self._atoms: dict[str, int] = {}
+
+        # ── tab bar ───────────────────────────────────────────────────────────
+        tab_bar_scroll = Gtk.ScrolledWindow()
+        tab_bar_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        tab_bar_scroll.set_min_content_height(38)
+        tab_bar_scroll.set_hexpand(True)
+        tab_bar_scroll.add_css_class("center-tab-bar-scroll")
+
+        self._tab_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self._tab_bar.add_css_class("center-tab-bar")
+        self._tab_bar.set_margin_start(4)
+        tab_bar_scroll.set_child(self._tab_bar)
+        self.append(tab_bar_scroll)
+
+        # Create the permanent Terminal tab
+        self._add_tab(_TERMINAL_TAB, "Terminal", icon="utilities-terminal-symbolic",
+                      closeable=False)
+
+        # ── stack + offline overlay ───────────────────────────────────────────
         self._stack = Gtk.Stack()
         self._stack.set_transition_type(Gtk.StackTransitionType.NONE)
         self._stack.set_hexpand(True)
         self._stack.set_vexpand(True)
+        self._stack.connect("notify::width", self._on_stack_resize)
+        self._stack.connect("notify::height", self._on_stack_resize)
 
         placeholder = Gtk.Label(label="No project selected.\nPress  +  to create one.")
         placeholder.get_style_context().add_class("placeholder-label")
         self._stack.add_named(placeholder, "empty")
 
-        # ── overlay: stack + "Back to terminal" button ────────────────────────
         overlay = Gtk.Overlay()
         overlay.set_hexpand(True)
         overlay.set_vexpand(True)
         overlay.set_child(self._stack)
-
-        self._back_btn = Gtk.Button(label="⬛  Terminal")
-        self._back_btn.add_css_class("suggested-action")
-        self._back_btn.set_halign(Gtk.Align.CENTER)
-        self._back_btn.set_valign(Gtk.Align.END)
-        self._back_btn.set_margin_bottom(16)
-        self._back_btn.set_visible(False)
-        self._back_btn.connect("clicked", self._on_back_to_terminal)
-        overlay.add_overlay(self._back_btn)
 
         self._offline_banner = Gtk.Label(label="⚠  No internet connection")
         self._offline_banner.add_css_class("offline-banner")
@@ -112,12 +139,96 @@ class CenterPanel(Gtk.Box):
         self.append(overlay)
 
     def set_offline(self, offline: bool):
-        """Show or hide the 'No internet connection' banner overlay."""
         self._offline_banner.set_visible(offline)
 
     def _cmd(self) -> list[str]:
         name = self._settings.get("terminal_command") if self._settings else "claude"
         return _resolve_command(name)
+
+    # ── tab bar ───────────────────────────────────────────────────────────────
+
+    def _add_tab(self, tab_key: str, label: str, icon: str | None = None,
+                 closeable: bool = True) -> Gtk.Box:
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        box.add_css_class("center-tab")
+        box.set_margin_top(4)
+        box.set_margin_bottom(0)
+        box.set_margin_start(2)
+        box.set_margin_end(2)
+
+        if icon:
+            img = Gtk.Image.new_from_icon_name(icon)
+            img.set_pixel_size(14)
+            img.set_valign(Gtk.Align.CENTER)
+            box.append(img)
+
+        lbl = Gtk.Label(label=label, xalign=0)
+        lbl.set_max_width_chars(18)
+        lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        lbl.set_valign(Gtk.Align.CENTER)
+        box.append(lbl)
+
+        if closeable:
+            close_btn = Gtk.Button(label="×")
+            close_btn.add_css_class("flat")
+            close_btn.add_css_class("close-btn")
+            close_btn.set_valign(Gtk.Align.CENTER)
+            close_btn.connect("clicked", lambda _, k=tab_key: self._close_app_tab(k))
+            box.append(close_btn)
+
+        gesture = Gtk.GestureClick()
+        gesture.set_button(1)
+        gesture.connect("pressed", lambda *_, k=tab_key: self._on_tab_clicked(k))
+        box.add_controller(gesture)
+
+        self._tab_widgets[tab_key] = box
+        self._tab_bar.append(box)
+        return box
+
+    def _remove_tab(self, tab_key: str):
+        widget = self._tab_widgets.pop(tab_key, None)
+        if widget is not None:
+            self._tab_bar.remove(widget)
+
+    def _set_active_tab(self, stack_page: str):
+        # Map terminal stack pages to the shared terminal tab key
+        if stack_page in (_MASTER_PAGE, "empty") or stack_page.startswith("project-"):
+            tab_key = _TERMINAL_TAB
+        else:
+            tab_key = stack_page
+        for key, widget in self._tab_widgets.items():
+            if key == tab_key:
+                widget.add_css_class("center-tab-active")
+            else:
+                widget.remove_css_class("center-tab-active")
+        self._current_tab = tab_key
+
+    def _update_terminal_tab_label(self, label: str):
+        widget = self._tab_widgets.get(_TERMINAL_TAB)
+        if widget is None:
+            return
+        for child in list(widget):
+            if isinstance(child, Gtk.Label):
+                child.set_label(label)
+                break
+
+    def _on_tab_clicked(self, tab_key: str):
+        if tab_key == _TERMINAL_TAB:
+            self._release_embedded()
+            self._show_terminal(self._last_terminal_page)
+        elif tab_key in self._app_info:
+            self._show_app_tab(tab_key)
+
+    def cycle_tabs(self):
+        """Advance to the next tab, wrapping around."""
+        keys = list(self._tab_widgets.keys())
+        if len(keys) < 2:
+            return
+        try:
+            idx = keys.index(self._current_tab)
+        except ValueError:
+            idx = -1
+        self._on_tab_clicked(keys[(idx + 1) % len(keys)])
 
     # ── master terminal ───────────────────────────────────────────────────────
 
@@ -133,9 +244,9 @@ class CenterPanel(Gtk.Box):
             _spawn(terminal, _ROOT_DIR, self._cmd(), self._on_master_spawned)
             terminal.connect("child-exited", self._on_master_exited)
 
+        self._update_terminal_tab_label("Root")
         self._last_terminal_page = _MASTER_PAGE
         self._stack.set_visible_child_name(_MASTER_PAGE)
-        self._back_btn.set_visible(False)
         self._notify_page(_MASTER_PAGE)
 
     def _on_master_spawned(self, _term, pid, _error):
@@ -176,6 +287,11 @@ class CenterPanel(Gtk.Box):
             self._show_terminal(name)
 
     def remove_project_terminal(self, project_id: str):
+        # Close any app tabs belonging to this project first
+        for page_name in list(self._app_info.keys()):
+            if self._app_info[page_name].get("project_id") == project_id:
+                self._close_app_tab(page_name)
+
         name = "project-" + project_id
         child = self._stack.get_child_by_name(name)
         if child is None:
@@ -195,92 +311,245 @@ class CenterPanel(Gtk.Box):
         self._terminals.pop(name, None)
         self._stack.remove(child)
 
-    # ── app window embedding (Phase 6.B) ──────────────────────────────────────
+    # ── app tabs ──────────────────────────────────────────────────────────────
 
-    def show_app_window(self, xid: int):
-        """Embed an X window in the center via XReparentWindow."""
+    def add_app_tab(self, name: str, proc, project_id: str | None):
+        """Called by LeftPanel when a file is opened; creates a tab for the app."""
+        self._app_counter += 1
+        page_name = f"app-{self._app_counter}"
+
+        # Stack page: placeholder shown while app window loads
+        placeholder = Gtk.Label(label=f"Opening {name}…")
+        placeholder.add_css_class("placeholder-label")
+        self._stack.add_named(placeholder, page_name)
+
+        # Tab button
+        self._add_tab(page_name, name, icon="application-x-executable-symbolic",
+                      closeable=True)
+
+        pid = proc.pid if proc else None
+        self._app_info[page_name] = {
+            "name": name,
+            "pid": pid,
+            "xid": None,
+            "project_id": project_id,
+            "proc": proc,
+        }
+
+        # Switch to the new tab immediately
+        self._stack.set_visible_child_name(page_name)
+        self._notify_page(page_name)
+
+        # Poll for the app's X11 window
+        if pid is not None:
+            GLib.timeout_add(400, self._poll_for_app_window, page_name, pid, 8)
+
+    def _show_app_tab(self, page_name: str):
+        if page_name not in self._app_info:
+            return
+        # Release any different embedded app first
+        if self._embedded_page and self._embedded_page != page_name:
+            self._release_embedded()
+        self._stack.set_visible_child_name(page_name)
+        self._notify_page(page_name)
+        # Re-embed if we already know the XID
+        xid = self._app_info[page_name].get("xid")
+        if xid and self._embedded_page != page_name:
+            GLib.idle_add(self._try_embed, page_name, xid)
+
+    def _close_app_tab(self, page_name: str):
+        if page_name not in self._app_info:
+            return
+        if self._embedded_page == page_name:
+            self._release_embedded()
+        self._remove_tab(page_name)
+        child = self._stack.get_child_by_name(page_name)
+        if child is not None:
+            self._stack.remove(child)
+        self._app_info.pop(page_name, None)
+        if self._current_tab == page_name:
+            self._show_terminal(self._last_terminal_page)
+
+    # ── X11 window polling + embedding ────────────────────────────────────────
+
+    def _ensure_display(self):
+        if self._disp is not None:
+            return
         try:
-            import gi as _gi
-            _gi.require_version("GdkX11", "4.0")
+            self._disp = Xdisplay.Display()
+            self._root_win = self._disp.screen().root
+        except Exception:
+            pass
+
+    def _atom(self, name: str) -> int:
+        if name not in self._atoms:
+            self._atoms[name] = self._disp.intern_atom(name)
+        return self._atoms[name]
+
+    def _get_win_pid(self, win) -> int | None:
+        try:
+            prop = win.get_full_property(self._atom("_NET_WM_PID"), X.AnyPropertyType)
+            if prop and prop.value and hasattr(prop.value, "__getitem__"):
+                return prop.value[0]
+        except Exception:
+            pass
+        return None
+
+    def _poll_for_app_window(self, page_name: str, pid: int, attempts: int) -> bool:
+        """Polls EWMH client list for the launched PID; schedules next poll if not found."""
+        if page_name not in self._app_info:
+            return False
+
+        self._ensure_display()
+        if self._disp is None:
+            return False
+
+        try:
+            prop = self._root_win.get_full_property(
+                self._atom("_NET_CLIENT_LIST"), X.AnyPropertyType
+            )
+            xids = list(prop.value) if (prop and prop.value) else []
+        except Exception:
+            xids = []
+
+        for xid in xids:
+            try:
+                win = self._disp.create_resource_object("window", xid)
+                win_pid = self._get_win_pid(win)
+                if win_pid == pid:
+                    self._app_info[page_name]["xid"] = xid
+                    GLib.idle_add(self._try_embed, page_name, xid)
+                    return False
+            except Exception:
+                continue
+
+        if attempts > 1:
+            GLib.timeout_add(400, self._poll_for_app_window, page_name, pid, attempts - 1)
+        return False
+
+    def _try_embed(self, page_name: str, xid: int) -> bool:
+        """Attempt XReparentWindow to embed the app inside the Eldrun window."""
+        if page_name not in self._app_info:
+            return False
+        if self._stack.get_visible_child_name() != page_name:
+            # Tab not currently visible; skip until user switches to it
+            return False
+
+        try:
+            gi.require_version("GdkX11", "4.0")
             from gi.repository import GdkX11
-            from Xlib import display as Xdisplay, X
 
-            # Get the GDK native surface and its X11 window ID
-            native = self.get_native()
-            if native is None:
-                return
-            surface = native.get_surface()
+            root_widget = self.get_root()
+            if root_widget is None:
+                raise RuntimeError("no root widget")
+            surface = root_widget.get_surface()
             if not isinstance(surface, GdkX11.X11Surface):
-                return
-            center_xid = GdkX11.X11Surface.get_xid(surface)
+                raise RuntimeError("not an X11 surface")
+            parent_xid = surface.get_xid()
 
-            disp = Xdisplay.Display()
-            app_win  = disp.create_resource_object("window", xid)
-            host_win = disp.create_resource_object("window", center_xid)
-
+            # Position and size of the stack within the root window
+            coords = self._stack.translate_coordinates(root_widget, 0, 0)
+            if coords is None:
+                raise RuntimeError("translate_coordinates failed")
+            # GTK4 returns (dest_x, dest_y) — unpack safely
+            if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                tx, ty = coords[0], coords[1]
+            else:
+                raise RuntimeError("unexpected translate_coordinates result")
             alloc = self._stack.get_allocation()
-            w = max(alloc.width,  400)
-            h = max(alloc.height, 300)
+            w, h = alloc.width, alloc.height
+            if w <= 0 or h <= 0:
+                raise RuntimeError("stack not allocated")
 
-            app_win.unmap()
-            app_win.reparent(host_win, 0, 0)
-            app_win.configure(width=w, height=h)
+            self._ensure_display()
+            if self._disp is None:
+                raise RuntimeError("no Xlib display")
+
+            parent_win = self._disp.create_resource_object("window", parent_xid)
+            app_win = self._disp.create_resource_object("window", xid)
+
+            app_win.reparent(parent_win, int(tx), int(ty))
+            app_win.configure(width=int(w), height=int(h))
             app_win.map()
-            disp.flush()
+            self._disp.flush()
 
             self._embedded_xid = xid
-        except Exception as exc:
-            print(f"[eldrun] show_app_window failed: {exc}")
-            return
+            self._embedded_page = page_name
 
-        # Remember which terminal was last active before switching
-        current = self._stack.get_visible_child_name() or "empty"
-        if current not in (_APP_PAGE,):
-            self._last_terminal_page = current
+        except Exception:
+            # Fallback: raise the window to the foreground
+            self._raise_window_ewmh(xid)
 
-        # Add a placeholder page so the stack has something to show
-        if self._stack.get_child_by_name(_APP_PAGE) is None:
-            placeholder = Gtk.Label(label="")
-            self._stack.add_named(placeholder, _APP_PAGE)
+        return False
 
-        self._stack.set_visible_child_name(_APP_PAGE)
-        self._back_btn.set_visible(True)
-
-    def _release_app_window(self):
+    def _release_embedded(self):
+        """Un-reparent the embedded window back to the root X11 window."""
         if self._embedded_xid is None:
             return
-        try:
-            from Xlib import display as Xdisplay
-            disp = Xdisplay.Display()
-            app_win = disp.create_resource_object("window", self._embedded_xid)
-            app_win.unmap()
-            app_win.reparent(disp.screen().root, 0, 0)
-            app_win.map()
-            disp.flush()
-        except Exception as exc:
-            print(f"[eldrun] _release_app_window failed: {exc}")
+        self._ensure_display()
+        if self._disp is not None:
+            try:
+                app_win = self._disp.create_resource_object("window", self._embedded_xid)
+                root = self._disp.screen().root
+                app_win.reparent(root, 50, 50)
+                app_win.map()
+                self._disp.flush()
+            except Exception:
+                pass
         self._embedded_xid = None
+        self._embedded_page = None
 
-    # ── back to terminal ──────────────────────────────────────────────────────
+    def _on_stack_resize(self, widget, _pspec=None):
+        """Keep an embedded app window sized/positioned to match the stack allocation."""
+        if self._embedded_xid is None or self._embedded_page is None:
+            return
+        if self._stack.get_visible_child_name() != self._embedded_page:
+            return
+        self._ensure_display()
+        if self._disp is None:
+            return
+        try:
+            root_widget = self.get_root()
+            if root_widget is None:
+                return
+            coords = self._stack.translate_coordinates(root_widget, 0, 0)
+            if coords is None:
+                return
+            tx, ty = coords[0], coords[1]
+            app_win = self._disp.create_resource_object("window", self._embedded_xid)
+            app_win.configure(
+                x=int(tx), y=int(ty),
+                width=max(1, self._stack.get_width()), height=max(1, self._stack.get_height()),
+            )
+            self._disp.flush()
+        except Exception:
+            pass
 
-    def _on_back_to_terminal(self, _btn):
-        self._release_app_window()
-        target = self._last_terminal_page
-        if target != "empty" and self._stack.get_child_by_name(target) is not None:
-            self._stack.set_visible_child_name(target)
-        else:
-            target = "empty"
-            self._stack.set_visible_child_name("empty")
-        self._back_btn.set_visible(False)
-        self._notify_page(target)
+    def _raise_window_ewmh(self, xid: int):
+        self._ensure_display()
+        if self._disp is None:
+            return
+        try:
+            win = self._disp.create_resource_object("window", xid)
+            ev = Xevent.ClientMessage(
+                window=win,
+                client_type=self._atom("_NET_ACTIVE_WINDOW"),
+                data=(32, [2, X.CurrentTime, 0, 0, 0]),
+            )
+            mask = X.SubstructureRedirectMask | X.SubstructureNotifyMask
+            self._root_win.send_event(ev, event_mask=mask)
+            self._disp.flush()
+        except Exception:
+            pass
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _show_terminal(self, page_name: str):
-        self._release_app_window()
         self._last_terminal_page = page_name
         self._stack.set_visible_child_name(page_name)
-        self._back_btn.set_visible(False)
+        self._update_terminal_tab_label(
+            "Root" if page_name == _MASTER_PAGE else "Terminal"
+        )
         self._notify_page(page_name)
 
     def _make_terminal(self) -> Vte.Terminal:
@@ -304,12 +573,12 @@ class CenterPanel(Gtk.Box):
         terminal.set_colors(fg, bg, palette)
 
     def apply_theme(self, is_dark: bool):
-        """Update all open terminals to match the given theme."""
         self._is_dark = is_dark
         for terminal in self._terminals.values():
             self._apply_terminal_colors(terminal)
 
     def _notify_page(self, page_name: str):
+        self._set_active_tab(page_name)
         if self._on_page_changed is not None:
             self._on_page_changed(page_name)
 
@@ -325,7 +594,6 @@ class CenterPanel(Gtk.Box):
         _spawn(terminal, directory, self._cmd(), on_respawn)
 
     def respawn_all(self):
-        """Clear and kill all running terminals; child-exited handlers restart with the current command."""
         for page_name, pid in list(self._terminal_pids.items()):
             terminal = self._terminals.get(page_name)
             if terminal:
