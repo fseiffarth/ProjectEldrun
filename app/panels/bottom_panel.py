@@ -329,15 +329,15 @@ class BottomPanel(Gtk.Box):
         self._search_results: list[dict] = []
 
         # Root button
-        root_btn = Gtk.Button(label="Root")
-        root_btn.add_css_class("destructive-action")
-        root_btn.add_css_class("bottom-root-btn")
-        root_btn.set_valign(Gtk.Align.CENTER)
-        root_btn.set_margin_start(6)
-        root_btn.set_margin_top(5)
-        root_btn.set_margin_bottom(5)
-        root_btn.connect("clicked", lambda _: on_root())
-        self.append(root_btn)
+        self._root_btn = Gtk.Button(label="Root")
+        self._root_btn.add_css_class("destructive-action")
+        self._root_btn.add_css_class("bottom-root-btn")
+        self._root_btn.set_valign(Gtk.Align.CENTER)
+        self._root_btn.set_margin_start(6)
+        self._root_btn.set_margin_top(5)
+        self._root_btn.set_margin_bottom(5)
+        self._root_btn.connect("clicked", lambda _: on_root())
+        self.append(self._root_btn)
 
         # Project search
         self._search_entry = Gtk.SearchEntry()
@@ -794,6 +794,12 @@ class BottomPanel(Gtk.Box):
 
     def set_panel_toggle_visible(self, visible: bool):
         self._panel_toggle.set_visible(visible)
+
+    def set_root_active(self, active: bool):
+        if active:
+            self._root_btn.add_css_class("bottom-root-btn-active")
+        else:
+            self._root_btn.remove_css_class("bottom-root-btn-active")
 
     # ── project search ────────────────────────────────────────────────────────
 

@@ -334,6 +334,9 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
     padding: 0 10px;
     border-radius: 6px;
 }
+.bottom-root-btn-active {
+    box-shadow: inset 0 0 0 2px #388bfd;
+}
 .bottom-add-btn {
     font-size: 16px;
     font-weight: bold;
@@ -639,6 +642,9 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
     min-height: 28px;
     padding: 0 10px;
     border-radius: 6px;
+}
+.bottom-root-btn-active {
+    box-shadow: inset 0 0 0 2px #0969da;
 }
 .bottom-add-btn {
     font-size: 16px;

@@ -334,7 +334,7 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _apply_panel_visibility(self):
         page = self._center_panel._stack.get_visible_child_name() or "empty"
         is_project_page = page.startswith("project-")
-        is_agent_page = page.startswith("agent-")
+        is_agent_page = page.startswith("agent-") or page.startswith("term-")
 
         if not is_agent_page:
             if is_project_page:
@@ -343,6 +343,7 @@ class EldrunWindow(Adw.ApplicationWindow):
                 project = self.project_manager.get_project(project_id)
                 self._file_tree_panel.update_project(project)
                 self._bottom_panel.set_active_project(project_id)
+                self._bottom_panel.set_root_active(False)
                 if project:
                     self._time_tracker.on_project_activated(project)
                 self._refresh_time_bars()
@@ -350,6 +351,7 @@ class EldrunWindow(Adw.ApplicationWindow):
                 self._active_project_id = None
                 self._file_tree_panel.update_project(None)
                 self._bottom_panel.set_active_project(None)
+                self._bottom_panel.set_root_active(page == _MASTER_PAGE)
                 self._time_tracker.on_project_deactivated()
                 self._refresh_time_bars()
 
@@ -481,15 +483,16 @@ class EldrunWindow(Adw.ApplicationWindow):
         win.present()
 
     def _do_close_project(self, project_id: str):
+        was_active = (self._active_project_id == project_id)
         self._bottom_panel.remove_project_pill(project_id)
         if hasattr(self._center_panel, "remove_project_terminal"):
             self._center_panel.remove_project_terminal(project_id)
         self.project_manager.deactivate_project(project_id)
         if self._wm_enabled:
             self._workspace_manager.release(project_id)
-        if self._active_project_id == project_id:
+        if was_active:
             self._active_project_id = None
-            self._apply_panel_visibility()
+            self._on_root_clicked()
 
     def _bootstrap_default_apps(self) -> bool:
         self.default_apps_manager.bootstrap_from_system()

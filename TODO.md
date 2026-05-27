@@ -19,17 +19,17 @@ G1.4 [x] **Agent creation stays in current project** (`ISSUE-014`): adding a new
 
 G1.5 [x] **Uniform agent tab behavior**: do not distinguish between the master/default agent and newly added agents. Every agent tab should be renameable and closeable; if all agents are closed, the user must add a new one manually by right-clicking the tab bar.
 
-G1.6 [ ] **Tab bar right-click: agent + terminal rows**: restructure the tab-bar right-click popover into two rows: first row, "New agent" label followed by an inline dropdown (`claude` / `codex`) to pick the command; second row, "New terminal" button that opens a plain `$SHELL` terminal tab. The plain terminal tab must be renameable and closeable like any agent tab.
+G1.6 [x] **Tab bar right-click: agent + terminal rows**: restructure the tab-bar right-click popover into two rows: first row, "New agent" label followed by an inline dropdown (`claude` / `codex`) to pick the command; second row, "New terminal" button that opens a plain `$SHELL` terminal tab. The plain terminal tab must be renameable and closeable like any agent tab.
 
-G1.7 [ ] **Empty state when all tabs are closed** (`ISSUE-017`): do not create an implicit hidden terminal when the final tab is closed. Show an empty center page saying no tab is open and that a new agent or terminal can be created by right-clicking the tab bar.
+G1.7 [x] **Empty state when all tabs are closed** (`ISSUE-017`): do not create an implicit hidden terminal when the final tab is closed. Show an empty center page saying no tab is open and that a new agent or terminal can be created by right-clicking the tab bar.
 
 ### G2 — Project and panel lifecycle
 
 G2.1 [x] **Right panel restore width** (`ISSUE-009`): after hide-both -> show-left -> show-right, recompute the inner paned position from the current allocation so the right panel returns to the expected width instead of doubling.
 
-G2.2 [ ] **Close active project returns to root** (`ISSUE-015`): when the current project is closed with `x`, activate the root session, clear the project-specific bottom-switcher selection, and hide the right project panel.
+G2.2 [x] **Close active project returns to root** (`ISSUE-015`): when the current project is closed with `x`, activate the root session, clear the project-specific bottom-switcher selection, and hide the right project panel.
 
-G2.3 [ ] **Close-project root selection refresh** (`ISSUE-016`): after closing a project, select root with the blue border and show the root agent/terminal instead of leaving an empty "no project selected" agent tab.
+G2.3 [x] **Close-project root selection refresh** (`ISSUE-016`): after closing a project, select root with the blue border and show the root agent/terminal instead of leaving an empty "no project selected" agent tab.
 
 G2.4 [ ] **Tab bar in header frame**: investigate whether the center-panel tab bar can be integrated into the header/title bar area for larger window sizes where the dedicated tab row wastes vertical space.
 
