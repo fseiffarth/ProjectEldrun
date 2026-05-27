@@ -31,7 +31,7 @@ G2.2 [x] **Close active project returns to root** (`ISSUE-015`): when the curren
 
 G2.3 [x] **Close-project root selection refresh** (`ISSUE-016`): after closing a project, select root with the blue border and show the root agent/terminal instead of leaving an empty "no project selected" agent tab.
 
-G2.4 [ ] **Tab bar in header frame**: investigate whether the center-panel tab bar can be integrated into the header/title bar area for larger window sizes where the dedicated tab row wastes vertical space.
+G2.4 [x] **Tab bar in header frame**: the center-panel tab bar scroll widget is now placed as the center widget of the header `CenterBox`; clock moved to the right side; tabs use a top accent bar for the active indicator; header min-height bumped to 40px.
 
 ### G3 — Settings, theme, and monitor support
 
@@ -39,7 +39,7 @@ G3.1 [x] **Settings dropdown stays open**: resolved by commit `fa13e2d` — sett
 
 G3.2 [ ] **Standalone app theme env**: pass `GTK_THEME=Adwaita:dark` or `GTK_THEME=Adwaita` in the `env` dict of `subprocess.Popen` at launch, derived from `settings_manager.get("color_scheme")`.
 
-G3.3 [ ] **Workspace toggle takes effect immediately**: when the "Manage workspaces" setting is turned on mid-session, allocate workspaces for already-active projects without requiring a restart.
+G3.3 [x] **Workspace toggle takes effect immediately**: when the "Manage workspaces" setting is turned on mid-session, allocate workspaces for already-active projects without requiring a restart.
 
 G3.4 [ ] **Secondary-monitor settings toggle**: add "Open apps on secondary monitor" to the settings popover; persist under `"multi_monitor"` in `settings.json`; default `false` so single-monitor users are unaffected.
 
@@ -47,7 +47,7 @@ G3.5 [ ] **Secondary-monitor detection**: at startup and on `Gdk.Display` `monit
 
 G3.6 [ ] **Secondary-monitor app launch**: in the standalone dispatch path, if a secondary monitor exists, set `GDK_MONITOR=1` or pass geometry args where supported in the `subprocess.Popen` environment.
 
-G3.7 [ ] **GNOME workspace support**: use `org.gnome.Shell` `Eval` or `Meta.WorkspaceManager`; fall back to `wmctrl -s <idx>` if DBus is unavailable.
+G3.7 [x] **GNOME workspace support**: use `org.gnome.Shell` `Eval` or `Meta.WorkspaceManager`; fall back to `wmctrl -s <idx>` if DBus is unavailable.
 
 G3.8 [ ] **Embedded app theme propagation**: on theme toggle in `_on_toggle_theme`, iterate open embed tabs and send an XSETTINGS `Net/ThemeName` change via `python-xlib`; fall back to a no-op if the window is gone.
 

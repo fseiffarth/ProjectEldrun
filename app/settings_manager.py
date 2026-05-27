@@ -7,7 +7,8 @@ _SETTINGS_FILE = os.path.join(GLib.get_user_data_dir(), "eldrun", "settings.json
 
 _DEFAULTS: dict = {
     "terminal_command": "claude",
-    "workspace_management": False,
+    "workspace_management": True,
+    "debug": True,
 }
 
 

@@ -8,6 +8,8 @@ from gi.repository import Gtk, Gdk, GLib, GObject, Pango
 
 
 _TERMINAL_OPTIONS = ["claude", "codex"]
+_THEME_OPTIONS = ["Dark", "Bright", "Fancy"]
+_THEME_VALUES = ["dark", "light", "fancy"]
 
 
 def project_matches_query(project: dict, query: str) -> bool:
@@ -63,6 +65,13 @@ class ProjectPill(Gtk.Box):
         lbl.set_margin_end(6)
         self.append(lbl)
 
+        self._ws_badge = Gtk.Label(label="")
+        self._ws_badge.add_css_class("pill-ws-badge")
+        self._ws_badge.set_valign(Gtk.Align.CENTER)
+        self._ws_badge.set_visible(False)
+        self._debug_visible = False
+        self.append(self._ws_badge)
+
         close_btn = Gtk.Button(label="×")
         close_btn.add_css_class("flat")
         close_btn.add_css_class("close-btn")
@@ -87,6 +96,18 @@ class ProjectPill(Gtk.Box):
         self.add_controller(motion)
 
         self._setup_drag_and_drop()
+
+    def set_workspace_id(self, idx: int | None):
+        if idx is None:
+            self._ws_badge.set_label("")
+            self._ws_badge.set_visible(False)
+        else:
+            self._ws_badge.set_label(str(idx))
+            self._ws_badge.set_visible(self._debug_visible)
+
+    def set_debug_visible(self, visible: bool):
+        self._debug_visible = visible
+        self._ws_badge.set_visible(visible and bool(self._ws_badge.get_label()))
 
     # ── drag-and-drop ─────────────────────────────────────────────────────────
 
@@ -305,7 +326,8 @@ class BottomPanel(Gtk.Box):
                  on_activate_project, on_close_project,
                  project_manager=None, settings_manager=None,
                  default_apps_manager=None, on_toggle_theme=None,
-                 on_terminal_changed=None, on_search_project=None):
+                 on_terminal_changed=None, on_search_project=None,
+                 on_workspace_toggled=None, on_debug_toggled=None):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self.add_css_class("bottom-panel")
         self.set_valign(Gtk.Align.END)
@@ -321,6 +343,8 @@ class BottomPanel(Gtk.Box):
         self._on_toggle_theme = on_toggle_theme
         self._on_terminal_changed_ext = on_terminal_changed
         self._on_search_project = on_search_project
+        self._on_workspace_toggled = on_workspace_toggled
+        self._on_debug_toggled = on_debug_toggled
         self._pills: dict[str, ProjectPill] = {}
         self._active_project_id: str | None = None
         self._popover: Gtk.Popover | None = None
@@ -480,17 +504,17 @@ class BottomPanel(Gtk.Box):
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         theme_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        theme_lbl = Gtk.Label(label="Dark mode")
+        theme_lbl = Gtk.Label(label="Theme")
         theme_lbl.set_hexpand(True)
         theme_lbl.set_xalign(0)
         theme_row.append(theme_lbl)
 
-        theme_switch = Gtk.Switch()
+        theme_dropdown = Gtk.DropDown.new_from_strings(_THEME_OPTIONS)
         current_scheme = self._settings.get("color_scheme") if self._settings else "dark"
-        theme_switch.set_active(current_scheme != "light")
-        theme_switch.set_valign(Gtk.Align.CENTER)
-        theme_switch.connect("notify::active", self._on_theme_switched)
-        theme_row.append(theme_switch)
+        idx = _THEME_VALUES.index(current_scheme) if current_scheme in _THEME_VALUES else 0
+        theme_dropdown.set_selected(idx)
+        theme_dropdown.connect("notify::selected", self._on_theme_changed)
+        theme_row.append(theme_dropdown)
 
         box.append(theme_row)
 
@@ -513,6 +537,23 @@ class BottomPanel(Gtk.Box):
 
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
+        dbg_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        dbg_lbl = Gtk.Label(label="Debug mode")
+        dbg_lbl.set_hexpand(True)
+        dbg_lbl.set_xalign(0)
+        dbg_row.append(dbg_lbl)
+
+        dbg_switch = Gtk.Switch()
+        current_dbg = self._settings.get("debug") if self._settings else True
+        dbg_switch.set_active(bool(current_dbg))
+        dbg_switch.set_valign(Gtk.Align.CENTER)
+        dbg_switch.connect("notify::active", self._on_debug_switched)
+        dbg_row.append(dbg_switch)
+
+        box.append(dbg_row)
+
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
         ft_btn = Gtk.Button(label="File Type Apps…")
         ft_btn.add_css_class("flat")
         ft_btn.set_halign(Gtk.Align.START)
@@ -531,16 +572,29 @@ class BottomPanel(Gtk.Box):
             if self._on_terminal_changed_ext:
                 self._on_terminal_changed_ext()
 
-    def _on_theme_switched(self, sw, _pspec):
-        is_dark = sw.get_active()
+    def _on_theme_changed(self, dropdown, _pspec):
+        idx = dropdown.get_selected()
+        if not 0 <= idx < len(_THEME_VALUES):
+            return
+        scheme = _THEME_VALUES[idx]
         if self._settings:
-            self._settings.set("color_scheme", "dark" if is_dark else "light")
+            self._settings.set("color_scheme", scheme)
         if self._on_toggle_theme:
-            self._on_toggle_theme(is_dark)
+            self._on_toggle_theme(scheme)
 
     def _on_workspace_switched(self, sw, _pspec):
+        enabled = sw.get_active()
         if self._settings:
-            self._settings.set("workspace_management", sw.get_active())
+            self._settings.set("workspace_management", enabled)
+        if self._on_workspace_toggled:
+            self._on_workspace_toggled(enabled)
+
+    def _on_debug_switched(self, sw, _pspec):
+        enabled = sw.get_active()
+        if self._settings:
+            self._settings.set("debug", enabled)
+        if self._on_debug_toggled:
+            self._on_debug_toggled(enabled)
 
     # ── filetype settings window ──────────────────────────────────────────────
 
@@ -743,6 +797,17 @@ class BottomPanel(Gtk.Box):
         )
         self._pills_box.append(pill)
         self._pills[project["id"]] = pill
+
+    def update_pill_workspace_id(self, project_id: str, idx: int | None):
+        pill = self._pills.get(project_id)
+        if pill:
+            pill.set_workspace_id(idx)
+            from eldrun import is_debug
+            pill.set_debug_visible(is_debug())
+
+    def set_debug_mode(self, enabled: bool):
+        for pill in self._pills.values():
+            pill.set_debug_visible(enabled)
 
     def has_project_pill(self, project_id: str) -> bool:
         return project_id in self._pills

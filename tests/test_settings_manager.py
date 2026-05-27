@@ -77,6 +77,12 @@ class TestSettingsManager(unittest.TestCase):
             mgr.set("color_scheme", "light")
             self.assertEqual(mgr.get("color_scheme"), "light")
 
+    def test_set_fancy_color_scheme(self):
+        with tempfile.TemporaryDirectory() as d:
+            mgr, _ = self._make_manager(d)
+            mgr.set("color_scheme", "fancy")
+            self.assertEqual(mgr.get("color_scheme"), "fancy")
+
     def test_atomic_write(self):
         """_save() must use a .tmp file and atomically replace the target."""
         with tempfile.TemporaryDirectory() as d:

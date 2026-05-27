@@ -6,7 +6,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Vte", "3.91")
-from gi.repository import Gtk, Gdk, GLib, Vte, Pango
+from gi.repository import Gtk, Gdk, GLib, GObject, Vte, Pango
 
 from Xlib import display as Xdisplay, X
 from Xlib.protocol import event as Xevent
@@ -50,12 +50,50 @@ def _light_palette():
     return palette
 
 
+def _fancy_palette():
+    ansi = [
+        "#101624", "#ff5c8a", "#7ee787", "#ffd166",
+        "#36c5f0", "#b388ff", "#2dd4bf", "#d8e2f3",
+        "#44506a", "#ff7a9f", "#9cffb1", "#ffe08a",
+        "#5edcff", "#c9a7ff", "#5ff0db", "#ffffff",
+    ]
+    palette = []
+    for h in ansi:
+        c = Gdk.RGBA()
+        c.parse(h)
+        palette.append(c)
+    return palette
+
+
+def _normalize_scheme(scheme) -> str:
+    if isinstance(scheme, bool):
+        return "dark" if scheme else "light"
+    if scheme in ("dark", "light", "fancy"):
+        return scheme
+    return "dark"
+
+
 def _resolve_command(name: str) -> list[str]:
     prog = GLib.find_program_in_path(name)
     if prog:
         return [prog]
     shell = GLib.find_program_in_path("bash") or GLib.find_program_in_path("sh") or "/bin/sh"
     return [shell]
+
+
+def _next_numbered_label(base: str, used_indices: set[int]) -> tuple[str, int]:
+    idx = 0
+    while idx in used_indices:
+        idx += 1
+    return (base if idx == 0 else f"{base}{idx}", idx)
+
+
+def _agent_label_base(cmd: str) -> str:
+    if cmd == "claude":
+        return "Claude"
+    if cmd == "codex":
+        return "Codex"
+    return "Agent"
 
 
 def _spawn(terminal: Vte.Terminal, directory: str, cmd: list[str], on_done):
@@ -77,7 +115,7 @@ class CenterPanel(Gtk.Box):
         self._settings = settings_manager
         self._on_page_changed = on_page_changed
         scheme = settings_manager.get("color_scheme") if settings_manager else "dark"
-        self._is_dark = scheme != "light"
+        self._color_scheme = _normalize_scheme(scheme)
         self._last_terminal_page = "empty"
         self._terminal_pids: dict[str, int] = {}
         self._terminals: dict[str, Vte.Terminal] = {}
@@ -101,15 +139,16 @@ class CenterPanel(Gtk.Box):
         # ── tab bar ───────────────────────────────────────────────────────────
         tab_bar_scroll = Gtk.ScrolledWindow()
         tab_bar_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        tab_bar_scroll.set_min_content_height(38)
         tab_bar_scroll.set_hexpand(True)
+        tab_bar_scroll.set_vexpand(True)
         tab_bar_scroll.add_css_class("center-tab-bar-scroll")
 
         self._tab_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self._tab_bar.add_css_class("center-tab-bar")
-        self._tab_bar.set_margin_start(4)
+        self._tab_bar.set_valign(Gtk.Align.FILL)
         tab_bar_scroll.set_child(self._tab_bar)
-        self.append(tab_bar_scroll)
+        self._tab_bar_scroll = tab_bar_scroll
+        # Note: _tab_bar_scroll is NOT appended here; window.py places it in the header
 
         # Create the default Agent tab (closeable and renameable like any other)
         self._add_tab(_TERMINAL_TAB, "Agent", icon="utilities-terminal-symbolic",
@@ -176,8 +215,6 @@ class CenterPanel(Gtk.Box):
                  closeable: bool = True, on_rename=None, on_close=None) -> Gtk.Box:
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         box.add_css_class("center-tab")
-        box.set_margin_top(4)
-        box.set_margin_bottom(0)
         box.set_margin_start(2)
         box.set_margin_end(2)
 
@@ -218,6 +255,24 @@ class CenterPanel(Gtk.Box):
             ))
             box.add_controller(rclick)
 
+        # Drag source: allow dragging this tab to reorder
+        drag_src = Gtk.DragSource()
+        drag_src.set_actions(Gdk.DragAction.MOVE)
+        drag_src.connect("prepare", lambda _s, _x, _y, k=tab_key: Gdk.ContentProvider.new_for_value(k))
+        drag_src.connect("drag-begin", lambda _s, _d, w=box: (
+            w.add_css_class("center-tab-dragging"),
+            _s.set_icon(Gtk.WidgetPaintable.new(w), w.get_width() // 2, w.get_height() // 2),
+        ))
+        drag_src.connect("drag-end", lambda _s, _d, _ok, w=box: w.remove_css_class("center-tab-dragging"))
+        box.add_controller(drag_src)
+
+        # Drop target: accept another tab key and reorder
+        drop_tgt = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE)
+        drop_tgt.connect("drop", lambda _t, val, x, _y, k=tab_key, w=box: self._on_tab_drop(val, k, x < w.get_width() / 2))
+        drop_tgt.connect("motion", lambda _t, x, _y, w=box: self._on_tab_drop_motion(w, x))
+        drop_tgt.connect("leave", lambda _t, w=box: self._on_tab_drop_leave(w))
+        box.add_controller(drop_tgt)
+
         self._tab_widgets[tab_key] = box
         self._tab_bar.append(box)
         return box
@@ -226,6 +281,40 @@ class CenterPanel(Gtk.Box):
         widget = self._tab_widgets.pop(tab_key, None)
         if widget is not None:
             self._tab_bar.remove(widget)
+
+    def _on_tab_drop(self, source_key: str, target_key: str, before: bool) -> bool:
+        self._on_tab_drop_leave(self._tab_widgets.get(target_key))
+        if source_key == target_key or source_key not in self._tab_widgets or target_key not in self._tab_widgets:
+            return False
+        keys = list(self._tab_widgets.keys())
+        keys.pop(keys.index(source_key))
+        tgt_idx = keys.index(target_key)
+        if not before:
+            tgt_idx += 1
+        keys.insert(tgt_idx, source_key)
+        self._tab_widgets = {k: self._tab_widgets[k] for k in keys}
+        child = self._tab_bar.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self._tab_bar.remove(child)
+            child = nxt
+        for w in self._tab_widgets.values():
+            self._tab_bar.append(w)
+        return True
+
+    def _on_tab_drop_motion(self, widget: Gtk.Box, x: float) -> Gdk.DragAction:
+        widget.remove_css_class("tab-drag-over-left")
+        widget.remove_css_class("tab-drag-over-right")
+        if x < widget.get_width() / 2:
+            widget.add_css_class("tab-drag-over-left")
+        else:
+            widget.add_css_class("tab-drag-over-right")
+        return Gdk.DragAction.MOVE
+
+    def _on_tab_drop_leave(self, widget):
+        if widget:
+            widget.remove_css_class("tab-drag-over-left")
+            widget.remove_css_class("tab-drag-over-right")
 
     def _set_active_tab(self, stack_page: str):
         # Map terminal stack pages to the shared Agent tab key
@@ -333,17 +422,31 @@ class CenterPanel(Gtk.Box):
             n += 1
         return n
 
+    def _used_tab_label_indices(self, base: str) -> set[int]:
+        return {
+            info["label_index"]
+            for info in self._agent_info.values()
+            if info.get("label_base") == base and isinstance(info.get("label_index"), int)
+        }
+
     def _add_plain_terminal(self):
         n = self._next_term_number()
         page_key = f"term-{n}"
-        label = f"Terminal{n}"
+        label, label_index = _next_numbered_label(
+            "Terminal", self._used_tab_label_indices("Terminal")
+        )
         directory = self._current_agent_directory()
         shell = "bash" if GLib.find_program_in_path("bash") else "sh"
 
         terminal = self._make_terminal()
         self._terminals[page_key] = terminal
         self._stack.add_named(terminal, page_key)
-        self._agent_info[page_key] = {"cmd": shell, "directory": directory}
+        self._agent_info[page_key] = {
+            "cmd": shell,
+            "directory": directory,
+            "label_base": "Terminal",
+            "label_index": label_index,
+        }
 
         def on_spawned(_term, pid, _error):
             if pid and pid > 0:
@@ -367,6 +470,7 @@ class CenterPanel(Gtk.Box):
 
     def _switch_to_best_tab(self):
         if not self._tab_widgets:
+            self._agent_info.clear()
             self._stack.set_visible_child_name("no-tabs")
             self._notify_page("no-tabs")
         elif _TERMINAL_TAB in self._tab_widgets:
@@ -378,14 +482,22 @@ class CenterPanel(Gtk.Box):
     def _add_agent_terminal(self, cmd: str):
         n = self._next_agent_number()
         page_key = f"agent-{n}"
-        label = f"Agent{n}"
+        label_base = _agent_label_base(cmd)
+        label, label_index = _next_numbered_label(
+            label_base, self._used_tab_label_indices(label_base)
+        )
         directory = self._current_agent_directory()
 
         terminal = self._make_terminal()
         self._terminals[page_key] = terminal
         self._stack.add_named(terminal, page_key)
 
-        self._agent_info[page_key] = {"cmd": cmd, "directory": directory}
+        self._agent_info[page_key] = {
+            "cmd": cmd,
+            "directory": directory,
+            "label_base": label_base,
+            "label_index": label_index,
+        }
 
         def on_spawned(_term, pid, _error):
             if pid and pid > 0:
@@ -873,7 +985,10 @@ class CenterPanel(Gtk.Box):
         return terminal
 
     def _apply_terminal_colors(self, terminal: Vte.Terminal):
-        if self._is_dark:
+        if self._color_scheme == "fancy":
+            bg_str, fg_str = "#101624", "#f4f8ff"
+            palette = _fancy_palette()
+        elif self._color_scheme == "dark":
             bg_str, fg_str = "#0d1117", "#e6edf3"
             palette = _dark_palette()
         else:
@@ -885,8 +1000,8 @@ class CenterPanel(Gtk.Box):
         fg.parse(fg_str)
         terminal.set_colors(fg, bg, palette)
 
-    def apply_theme(self, is_dark: bool):
-        self._is_dark = is_dark
+    def apply_theme(self, scheme):
+        self._color_scheme = _normalize_scheme(scheme)
         for terminal in self._terminals.values():
             self._apply_terminal_colors(terminal)
 

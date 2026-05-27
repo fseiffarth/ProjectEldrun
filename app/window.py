@@ -92,10 +92,13 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.default_apps_manager = DefaultAppsManager()
         self._time_tracker = TimeTracker()
         self._workspace_manager = WorkspaceManager()
-        set_theme(self.settings_manager.get("color_scheme") != "light")
+        set_theme(self.settings_manager.get("color_scheme"))
+        from eldrun import set_debug
+        set_debug(bool(self.settings_manager.get("debug")))
         GLib.idle_add(self._bootstrap_default_apps)
         self._add_key_controller()
         self._build_layout()
+        self._debug_badge.set_visible(bool(self.settings_manager.get("debug")))
         self.maximize()
         self._network_monitor = NetworkMonitor(self._on_network_status_changed)
         GLib.timeout_add(60_000, self._on_time_tick)
@@ -153,9 +156,11 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _build_header(self) -> Gtk.WindowHandle:
         center_box = Gtk.CenterBox()
         center_box.add_css_class("app-header")
+        self._header_center_box = center_box  # tab bar inserted here after center panel is created
 
         left_status = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         left_status.set_valign(Gtk.Align.CENTER)
+        left_status.set_margin_start(4)
 
         self._status_lamp = Gtk.Label(label="●")
         self._status_lamp.add_css_class("status-lamp")
@@ -171,17 +176,31 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._conn_icon.set_visible(False)
         left_status.append(self._conn_icon)
 
+        from eldrun import __version__
+        version_lbl = Gtk.Label(label=f"v{__version__}")
+        version_lbl.add_css_class("app-version-label")
+        version_lbl.set_valign(Gtk.Align.CENTER)
+        version_lbl.set_margin_start(6)
+        left_status.append(version_lbl)
+
+        self._debug_badge = Gtk.Label(label="DEBUG")
+        self._debug_badge.add_css_class("debug-badge")
+        self._debug_badge.set_valign(Gtk.Align.CENTER)
+        left_status.append(self._debug_badge)
+
         center_box.set_start_widget(left_status)
+        # center widget is left empty here; tab bar is wired in after _center_panel is created
+
+        right_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        right_box.set_valign(Gtk.Align.CENTER)
+        right_box.set_margin_end(8)
 
         self._header_clock = Gtk.Label()
         self._header_clock.add_css_class("app-title")
         self._tick_header_clock()
         GLib.timeout_add_seconds(1, self._tick_header_clock)
-        center_box.set_center_widget(self._header_clock)
-
-        right_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        right_box.set_valign(Gtk.Align.CENTER)
-        right_box.set_margin_end(8)
+        self._header_clock.set_margin_end(4)
+        right_box.append(self._header_clock)
 
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         btn_box.set_valign(Gtk.Align.CENTER)
@@ -247,6 +266,9 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._center_panel.set_vexpand(True)
         self._center_panel.set_margin_bottom(_BOTTOM_HEIGHT)
 
+        # Place the tab bar inside the header's center slot
+        self._header_center_box.set_center_widget(self._center_panel._tab_bar_scroll)
+
         self._file_tree_panel = FileTreePanel(
             center_panel=self._center_panel,
             default_apps_manager=self.default_apps_manager,
@@ -268,6 +290,8 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_toggle_theme=self._on_toggle_theme,
             on_terminal_changed=self._on_terminal_changed,
             on_search_project=self._on_search_project_selected,
+            on_workspace_toggled=self._on_workspace_toggled,
+            on_debug_toggled=self._on_debug_toggled,
         )
 
         overlay = Gtk.Overlay()
@@ -309,7 +333,7 @@ class EldrunWindow(Adw.ApplicationWindow):
     # ── workspace management ──────────────────────────────────────────────────
 
     def _setup_workspaces(self) -> bool:
-        """Called once after map: make Eldrun sticky, allocate workspaces for visible projects."""
+        """Make Eldrun sticky and map visible projects to workspaces in pill order."""
         try:
             import gi as _gi
             _gi.require_version("GdkX11", "4.0")
@@ -319,9 +343,34 @@ class EldrunWindow(Adw.ApplicationWindow):
                 self._workspace_manager.make_eldrun_sticky(surface.get_xid())
         except Exception:
             pass
-        for p in self.project_manager.get_visible_projects():
-            self._workspace_manager.allocate(p["id"], p["name"])
+        assignments = self._workspace_manager.reconcile(
+            self.project_manager.get_visible_projects()
+        )
+        self._refresh_workspace_badges(assignments)
+        if self._active_project_id:
+            self._workspace_manager.activate(self._active_project_id)
         return False
+
+    def _refresh_workspace_badges(self, assignments: dict[str, int] | None = None):
+        if assignments is None:
+            assignments = {
+                pid: self._workspace_manager.get_assignment(pid)
+                for pid in self._bottom_panel._pills
+            }
+        for pid in list(self._bottom_panel._pills):
+            idx = assignments.get(pid)
+            self._bottom_panel.update_pill_workspace_id(
+                pid,
+                None if idx is None else idx + 1,
+            )
+
+    def _reconcile_workspaces_now(self):
+        if not self._wm_enabled:
+            return
+        assignments = self._workspace_manager.reconcile(
+            self.project_manager.get_visible_projects()
+        )
+        self._refresh_workspace_badges(assignments)
 
     # ── panel toggle ──────────────────────────────────────────────────────────
 
@@ -370,10 +419,24 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._file_tree_hidden = not self._file_tree_hidden
         self._apply_panel_visibility()
 
-    def _on_toggle_theme(self, is_dark: bool):
-        set_theme(is_dark)
-        self.settings_manager.set("color_scheme", "dark" if is_dark else "light")
-        self._center_panel.apply_theme(is_dark)
+    def _on_toggle_theme(self, scheme: str):
+        set_theme(scheme)
+        self.settings_manager.set("color_scheme", scheme)
+        self._center_panel.apply_theme(scheme)
+
+    def _on_debug_toggled(self, enabled: bool):
+        from eldrun import set_debug
+        set_debug(enabled)
+        self._debug_badge.set_visible(enabled)
+        self._bottom_panel.set_debug_mode(enabled)
+
+    def _on_workspace_toggled(self, enabled: bool):
+        if enabled:
+            GLib.idle_add(self._setup_workspaces)
+        else:
+            self._workspace_manager.release_all()
+            for pid in list(self._bottom_panel._pills):
+                self._bottom_panel.update_pill_workspace_id(pid, None)
 
     def _on_terminal_changed(self):
         if hasattr(self._center_panel, "respawn_all"):
@@ -403,7 +466,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._center_panel.add_project_terminal(project)
         scan_project_background(project)
         if self._wm_enabled:
-            self._workspace_manager.allocate(project["id"], project["name"])
+            self._reconcile_workspaces_now()
 
     def _on_search_project_selected(self, project_id: str):
         project = self.project_manager.get_project(project_id)
@@ -419,7 +482,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._center_panel.add_project_terminal(project)
         self._bottom_panel.refresh_warm_states(self.project_manager.get_visible_projects())
         if self._wm_enabled:
-            self._workspace_manager.allocate(project["id"], project["name"])
+            self._reconcile_workspaces_now()
             self._workspace_manager.activate(project_id)
 
     def _on_root_clicked(self):
@@ -489,7 +552,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._center_panel.remove_project_terminal(project_id)
         self.project_manager.deactivate_project(project_id)
         if self._wm_enabled:
-            self._workspace_manager.release(project_id)
+            self._reconcile_workspaces_now()
         if was_active:
             self._active_project_id = None
             self._on_root_clicked()
