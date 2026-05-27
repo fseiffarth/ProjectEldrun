@@ -92,6 +92,7 @@ class TimeTracker:
         self._append_log(entry)
         if self._project:
             self._update_local_project_json(self._project, entry)
+            self._update_status_md(self._project, entry)
 
     # ── orphan-session (startup resume) ───────────────────────────────────────
 
@@ -105,6 +106,70 @@ class TimeTracker:
                 json.dump(data, f)
         except OSError:
             pass
+
+    # ── STATUS.md time summary ────────────────────────────────────────────────
+
+    def _update_status_md(self, project: dict, _new_entry: dict):
+        directory = project.get("directory", "")
+        if not directory or not os.path.isdir(directory):
+            return
+
+        status_path = pathlib.Path(directory) / "STATUS.md"
+        try:
+            if status_path.exists():
+                content = status_path.read_text(encoding="utf-8")
+            else:
+                content = f"# {project.get('name', 'Project')} — Status\n"
+        except OSError:
+            return
+
+        sessions = [
+            e for e in self._load_log()
+            if e.get("project_id") == project.get("id")
+        ]
+        total_s = sum(e.get("duration_s", 0) for e in sessions)
+
+        section = [
+            "## Time Log",
+            "",
+            f"Total: {format_duration(total_s)}",
+            "",
+            "| Date | Start | Duration |",
+            "|------|-------|----------|",
+        ]
+        for e in reversed(sessions[-_MAX_PROJECT_SESSIONS:]):
+            start = str(e.get("start_iso", ""))[:16].replace("T", " ")
+            section.append(
+                f"| {e.get('date', '')} | {start} | "
+                f"{format_duration(e.get('duration_s', 0))} |"
+            )
+
+        new_content = self._replace_status_time_log(content, section)
+        tmp = str(status_path) + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            os.replace(tmp, str(status_path))
+        except OSError:
+            pass
+
+    @staticmethod
+    def _replace_status_time_log(content: str, section: list[str]) -> str:
+        lines = content.rstrip().splitlines()
+        try:
+            start = lines.index("## Time Log")
+        except ValueError:
+            base = content.rstrip()
+            return (base + "\n\n" if base else "") + "\n".join(section) + "\n"
+
+        end = len(lines)
+        for i in range(start + 1, len(lines)):
+            if lines[i].startswith("## "):
+                end = i
+                break
+
+        merged = lines[:start] + section + [""] + lines[end:]
+        return "\n".join(merged).rstrip() + "\n"
 
     def _clear_active_session(self):
         try:

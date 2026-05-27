@@ -116,7 +116,8 @@ be hidden from the bottom bar. It provides:
 `BottomPanel` in `app/panels/bottom_panel.py` owns the persistent bottom controls:
 
 - **Root** opens the root workspace terminal.
-- **Search** filters currently active project pills only.
+- **Search** opens a result list across all registered projects, including
+  inactive projects.
 - **Project pills** activate, close, show warm/open-app state, show time/file-type
   stats on hover/right click, and support drag-and-drop reordering.
 - **Settings** opens terminal command, theme, workspace management, and global
@@ -133,7 +134,6 @@ If local metadata says the project has open apps, Eldrun asks for confirmation.
 |-----|----------|
 | `F11` | Toggle fullscreen. |
 | `Super` | Toggle panel visibility while Eldrun is focused. Eldrun temporarily disables the desktop Super binding and restores it when focus is lost or the app exits. |
-| `Shift+Tab` | Cycle center tabs. |
 | `Esc` | Closes create/import dialogs. |
 | `Enter` | Confirms create/import when valid; activates a unique bottom-bar search match. |
 
@@ -193,6 +193,7 @@ New and imported projects receive these files when missing:
 | `.gitignore` | Common Python, Node, macOS, log, and build ignores. |
 | `TODO.md` | Project task list. |
 | `ROADMAP.md` | Long-term project roadmap. |
+| `STATUS.md` | Project status and current-state notes. |
 | `DOCUMENTATION.md` | Project documentation stub. |
 
 The root terminal also gets context files in `~/eldrun/root/`:
@@ -318,8 +319,8 @@ Notes:
 - `ProjectManager` treats `id`, `name`, `status`, `position`, and `local_file`
   as global-index-canonical fields and overlays them when loading.
 - `shell_pid` is runtime-only and is not persisted.
-- `open_apps` is preserved by `ProjectManager` but is not fully managed by the
-  current `FileTreePanel` implementation.
+- `open_apps` is the canonical durable location for current open-app state.
+  `ProjectManager` preserves it while other metadata is rewritten.
 - Per-project default app overrides live in `default_apps`.
 - Old `project_default_apps.json` files are migrated into `project.json`.
 
@@ -381,7 +382,7 @@ session and removes the sentinel.
 4. On map, visible projects (`active` or `current`) get terminals and bottom-bar
    pills.
 5. Inactive projects receive background stats scans.
-6. The root terminal is opened.
+6. The project marked `current` is opened; if none exists, the root terminal is opened.
 7. Optional workspace management allocates workspaces for visible projects.
 8. Default app mappings are bootstrapped from system MIME defaults in an idle
    callback.
@@ -447,7 +448,7 @@ no-op except for limited EWMH switching fallback.
 ## Tests and Current Quality Signals
 
 The repository has unit tests for project management, settings, default apps,
-network detection, time tracking, and some legacy right-panel logic.
+network detection, time tracking, open-app metadata, and bottom-panel logic.
 
 Recommended checks:
 
@@ -462,25 +463,17 @@ python3 -m unittest
 
 Important analysis findings:
 
-- `tests/test_open_apps_manager.py` imports `panels.left_panel`, but that module
-  is not present in the current tree. The code now places file/open-window logic
-  in `app/panels/right_panel.py`.
-- `tests/test_right_panel_logic.py` describes old `RightPanel` behavior while the
-  live UI now uses `BottomPanel` project pills and `FileTreePanel`.
-- `tests/test_project_manager.py` expects `STATUS.md` in the scaffold, but the
-  current `_SCAFFOLD` does not include it.
-- Some implementation/doc names still carry historical terms (`right_panel.py`
-  containing `FileTreePanel`, old comments that mention `OpenAppsManager`), so
-  maintenance benefits from either renaming or clearly documenting the transition.
+- `app/panels/right_panel.py` is a historical filename. Its live widget is
+  `FileTreePanel`.
+- Open-app metadata is stored in `project.json["open_apps"]`; standalone restore
+  behavior remains future work.
 
 ## Known Limitations
 
 - X11 app embedding is fragile and should be treated as experimental.
 - Wayland support is not implemented for embedding or workspace control.
-- The bottom search currently filters only active project pills, not every
-  registered project.
-- Open-window/app persistence is partially represented in metadata but not wired
-  as a robust current feature.
+- Open-window/app persistence has a canonical metadata location, but restore
+  behavior is not wired as a robust current feature.
 - Workspace management is Cinnamon-specific.
 - Network status depends on reaching Cloudflare DNS and may show offline on
   networks that block direct TCP/53 even when general internet access works.

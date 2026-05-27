@@ -12,6 +12,9 @@ from gi.repository import Gtk, Gdk, GLib, Pango
 from Xlib import display as Xdisplay, X
 from Xlib.protocol import event as Xevent
 
+# Historical filename: this module now exports the FileTreePanel, not the old
+# project-list right panel.
+
 
 def _get_desktop_icon(app_exe: str) -> str:
     """Return the icon name from the .desktop file matching app_exe, or a fallback."""

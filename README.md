@@ -83,8 +83,7 @@ update-desktop-database ~/.local/share/applications/
 - **Workspace management**: optional Cinnamon integration can allocate one desktop
   workspace per active project and keep Eldrun sticky.
 - **Theme and keyboard controls**: settings include dark/light mode and terminal
-  command. `F11` toggles fullscreen, `Super` toggles panels, and `Shift+Tab`
-  cycles center tabs.
+  command. `F11` toggles fullscreen and `Super` toggles panels.
 
 ## Project Storage
 
@@ -101,8 +100,8 @@ Global Eldrun state lives in `~/.local/share/eldrun/`:
 - `time_log.json` and `active_session.json`: session time tracking.
 
 Project-local state lives in each project's `project.json`, alongside scaffolded
-files such as `AGENTS.md`, `CLAUDE.md`, `TODO.md`, `ROADMAP.md`, and
-`DOCUMENTATION.md`.
+files such as `AGENTS.md`, `CLAUDE.md`, `TODO.md`, `ROADMAP.md`, `STATUS.md`,
+and `DOCUMENTATION.md`.
 
 See [DOCUMENTATION.md](DOCUMENTATION.md) for the detailed architecture, data
 schemas, behavior notes, and known limitations.

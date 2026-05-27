@@ -21,7 +21,7 @@ LOCAL_PROJECT_FILE = "project.json"
 _GLOBAL_KEYS = {"id", "name", "status", "position", "local_file"}
 # Keys that exist only at runtime and are never persisted
 _RUNTIME_KEYS = {"shell_pid"}
-# Keys managed externally (by OpenAppsManager); _save_local must not overlay them
+# Keys managed externally; _save_local must not overlay them
 _EXTERNAL_KEYS = {"open_apps"}
 
 
@@ -57,7 +57,7 @@ Eldrun stores its registry and logs under `~/.local/share/eldrun/`:
 Each project directory `~/eldrun/projects/<name>/` contains:
 - `project.json` — all project-local data: directory, git_type, created_at,
   file_type_stats, time data, default_apps (per-project file-type overrides)
-- `open_apps.json` — currently open X11 applications (runtime, EWMH-tracked)
+- `project.json["open_apps"]` — currently open X11 applications
 
 ## What this terminal is for
 
@@ -161,6 +161,7 @@ If you need to change Eldrun settings or project metadata, ask the user to use t
     ".gitignore":       ".env\n__pycache__/\n*.pyc\nnode_modules/\n.DS_Store\n*.log\ndist/\nbuild/\n.venv/\n",
     "TODO.md":          "# {name} — TODO\n",
     "ROADMAP.md":       "# {name} — Roadmap\n",
+    "STATUS.md":        "# {name} — Status\n",
     "DOCUMENTATION.md": "# {name} — Documentation\n",
     ".claude/settings.json": """\
 {
@@ -348,7 +349,7 @@ class ProjectManager:
         for p in self.projects:
             # Old migration: move from ~/eldrun/<name>/ to ~/eldrun/projects/<name>/
             old_dir = pathlib.Path(p.get("directory", ""))
-            if (old_dir.parent == WORKSPACE_ROOT
+            if (os.path.abspath(str(old_dir.parent)) == os.path.abspath(str(WORKSPACE_ROOT))
                     and old_dir.name != "projects"
                     and old_dir.is_dir()):
                 new_dir = PROJECTS_ROOT / old_dir.name
@@ -450,7 +451,7 @@ class ProjectManager:
         self.set_project_status(project_id, "inactive")
 
     def get_visible_projects(self) -> list:
-        """Return projects that should appear in the right panel."""
+        """Return projects that should appear in the bottom bar."""
         return [p for p in self.projects if p.get("status") in ("active", "current")]
 
     def set_project_position(self, project_id: str, position: int):

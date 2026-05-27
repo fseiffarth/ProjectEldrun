@@ -1,19 +1,20 @@
-"""Tests for OpenAppsManager in panels/left_panel.py — covers Phase 8."""
+"""Tests for project.json open-app metadata behavior."""
 
 import json
 import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-# Stub all GTK-related imports before importing the module
+
 _GTK_MOCKS = {
     "gi": MagicMock(),
     "gi.repository": MagicMock(),
     "gi.repository.Gtk": MagicMock(),
     "gi.repository.Gdk": MagicMock(),
     "gi.repository.GLib": MagicMock(),
+    "gi.repository.GObject": MagicMock(),
     "gi.repository.Pango": MagicMock(),
     "Xlib": MagicMock(),
     "Xlib.display": MagicMock(),
@@ -23,145 +24,73 @@ _GTK_MOCKS = {
 }
 for mod, mock in _GTK_MOCKS.items():
     sys.modules.setdefault(mod, mock)
+for name in ("Gtk", "Gdk", "GLib", "GObject", "Pango"):
+    setattr(_GTK_MOCKS["gi.repository"], name, _GTK_MOCKS[f"gi.repository.{name}"])
+_GTK_MOCKS["gi.repository.GLib"].get_user_data_dir.return_value = "/tmp/eldrun_test"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app", "panels"))
 
-# Import only OpenAppsManager by extracting it from the module source
-# We do this to avoid the GTK widget instantiation at import time
-with patch.dict("sys.modules", _GTK_MOCKS):
-    import importlib
-    import panels.left_panel as lp
+import project_manager as pm_module
+from panels.bottom_panel import project_has_open_apps
 
 
-class TestOpenAppsManager(unittest.TestCase):
+class TestOpenAppsMetadata(unittest.TestCase):
     def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.json_path = os.path.join(self.tmpdir, "open_apps.json")
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project_dir = self.tmpdir.name
+        self.project_json = os.path.join(self.project_dir, "project.json")
 
     def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        self.tmpdir.cleanup()
 
-    def _make_oam(self):
-        return lp.OpenAppsManager(self.tmpdir)
+    def _write_project_json(self, data):
+        with open(self.project_json, "w", encoding="utf-8") as f:
+            json.dump(data, f)
 
-    def test_empty_dir_creates_no_file(self):
-        oam = self._make_oam()
-        self.assertEqual(oam.entries, [])
-        self.assertFalse(os.path.exists(self.json_path))
+    def _project(self):
+        return {
+            "id": "p1",
+            "name": "Example",
+            "directory": self.project_dir,
+            "local_file": self.project_json,
+            "status": "active",
+            "position": 0,
+        }
 
-    def test_add_new_entry(self):
-        oam = self._make_oam()
-        oam.add_or_update("/usr/bin/gedit", "gedit", [])
-        self.assertEqual(len(oam.entries), 1)
-        self.assertEqual(oam.entries[0]["exe"], "/usr/bin/gedit")
-        self.assertEqual(oam.entries[0]["name"], "gedit")
+    def test_save_local_preserves_open_apps(self):
+        self._write_project_json({
+            "directory": self.project_dir,
+            "open_apps": [{"name": "Editor", "exe": "/usr/bin/editor"}],
+        })
 
-    def test_update_existing_entry(self):
-        oam = self._make_oam()
-        oam.add_or_update("/usr/bin/gedit", "gedit", [])
-        oam.add_or_update("/usr/bin/gedit", "GEdit — New Title", ["--no-plugins"])
-        self.assertEqual(len(oam.entries), 1)
-        self.assertEqual(oam.entries[0]["name"], "GEdit — New Title")
-        self.assertEqual(oam.entries[0]["args"], ["--no-plugins"])
+        pm_module.ProjectManager._save_local(object(), {
+            **self._project(),
+            "git_type": "private",
+            "open_apps": [],
+        })
 
-    def test_remove_entry(self):
-        oam = self._make_oam()
-        oam.add_or_update("/usr/bin/app", "App", [])
-        oam.remove("/usr/bin/app")
-        self.assertEqual(oam.entries, [])
+        with open(self.project_json, encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual(saved["open_apps"], [
+            {"name": "Editor", "exe": "/usr/bin/editor"}
+        ])
+        self.assertEqual(saved["name"], "Example")
 
-    def test_remove_nonexistent_no_error(self):
-        oam = self._make_oam()
-        oam.remove("/nonexistent/app")  # must not raise
+    def test_project_has_open_apps_true_for_non_empty_metadata(self):
+        self._write_project_json({"open_apps": [{"name": "Editor"}]})
+        self.assertTrue(project_has_open_apps(self._project()))
 
-    def test_persisted_to_json(self):
-        oam = self._make_oam()
-        oam.add_or_update("/usr/bin/vim", "Vim", ["-n"])
-        self.assertTrue(os.path.exists(self.json_path))
-        with open(self.json_path) as f:
-            data = json.load(f)
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]["exe"], "/usr/bin/vim")
+    def test_project_has_open_apps_false_for_empty_or_missing_metadata(self):
+        self._write_project_json({"open_apps": []})
+        self.assertFalse(project_has_open_apps(self._project()))
 
-    def test_loaded_from_json(self):
-        existing = [{"name": "Firefox", "exe": "/usr/bin/firefox", "args": []}]
-        with open(self.json_path, "w") as f:
-            json.dump(existing, f)
-        oam = self._make_oam()
-        self.assertEqual(len(oam.entries), 1)
-        self.assertEqual(oam.entries[0]["name"], "Firefox")
+        os.remove(self.project_json)
+        self.assertFalse(project_has_open_apps(self._project()))
 
-    def test_corrupt_json_returns_empty(self):
-        with open(self.json_path, "w") as f:
-            f.write("not valid json")
-        oam = self._make_oam()
-        self.assertEqual(oam.entries, [])
-
-    def test_non_list_json_returns_empty(self):
-        with open(self.json_path, "w") as f:
-            json.dump({"not": "a list"}, f)
-        oam = self._make_oam()
-        self.assertEqual(oam.entries, [])
-
-    def test_multiple_entries(self):
-        oam = self._make_oam()
-        oam.add_or_update("/usr/bin/a", "A", [])
-        oam.add_or_update("/usr/bin/b", "B", ["-x"])
-        oam.add_or_update("/usr/bin/c", "C", [])
-        self.assertEqual(len(oam.entries), 3)
-
-    def test_remove_middle_entry(self):
-        oam = self._make_oam()
-        oam.add_or_update("/usr/bin/a", "A", [])
-        oam.add_or_update("/usr/bin/b", "B", [])
-        oam.add_or_update("/usr/bin/c", "C", [])
-        oam.remove("/usr/bin/b")
-        exes = [e["exe"] for e in oam.entries]
-        self.assertNotIn("/usr/bin/b", exes)
-        self.assertIn("/usr/bin/a", exes)
-        self.assertIn("/usr/bin/c", exes)
-
-    def test_reopen_missing_launches_subprocess(self):
-        oam = self._make_oam()
-        oam.add_or_update("/usr/bin/gedit", "gedit", [])
-        running = set()  # gedit is NOT running
-        with patch("subprocess.Popen") as mock_popen:
-            oam.reopen_missing(running, self.tmpdir)
-            mock_popen.assert_called_once_with(
-                ["/usr/bin/gedit"], cwd=self.tmpdir
-            )
-
-    def test_reopen_already_running_not_relaunched(self):
-        oam = self._make_oam()
-        oam.add_or_update("/usr/bin/gedit", "gedit", [])
-        running = {"/usr/bin/gedit"}  # already running
-        with patch("subprocess.Popen") as mock_popen:
-            oam.reopen_missing(running, self.tmpdir)
-            mock_popen.assert_not_called()
-
-    def test_reopen_with_args(self):
-        oam = self._make_oam()
-        oam.add_or_update("/usr/bin/vim", "vim", ["-n", "--noplugin"])
-        with patch("subprocess.Popen") as mock_popen:
-            oam.reopen_missing(set(), self.tmpdir)
-            mock_popen.assert_called_once_with(
-                ["/usr/bin/vim", "-n", "--noplugin"], cwd=self.tmpdir
-            )
-
-    def test_reopen_oserror_silently_ignored(self):
-        oam = self._make_oam()
-        oam.add_or_update("/nonexistent/app", "bad", [])
-        with patch("subprocess.Popen", side_effect=OSError("no such file")):
-            oam.reopen_missing(set(), self.tmpdir)  # must not raise
-
-    def test_atomic_save(self):
-        """_save() must use a .tmp file and replace atomically."""
-        oam = self._make_oam()
-        oam.add_or_update("/usr/bin/test", "test", [])
-        tmp_path = self.json_path + ".tmp"
-        self.assertFalse(os.path.exists(tmp_path))
+    def test_project_has_open_apps_false_for_corrupt_json(self):
+        with open(self.project_json, "w", encoding="utf-8") as f:
+            f.write("not json")
+        self.assertFalse(project_has_open_apps(self._project()))
 
 
 if __name__ == "__main__":

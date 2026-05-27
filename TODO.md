@@ -10,8 +10,8 @@
 - [x] **Panel toggle button position**: moved to the right of the + button
 - [x] **Clock in bottom bar**: `HH:MM` label left of Root button, 1 s tick
 - [x] **Show hidden files in project settings**: toggle moved from PROJECT header into the per-project gear settings window
-- [ ] **Root button left margin**: add a small left margin before the bottom-bar Root button for cleaner edge alignment
-- [ ] **Global project search**: fix bottom-panel search so it searches across *all* Eldrun projects, including inactive projects not currently visible in the bottom bar. Typing should open a results list above the search field; clicking a result should add that project to the bottom bar if needed and make it the current project.
+- [x] **Root button left margin**: add a small left margin before the bottom-bar Root button for cleaner edge alignment
+- [x] **Global project search**: fix bottom-panel search so it searches across *all* Eldrun projects, including inactive projects not currently visible in the bottom bar. Typing should open a results list above the search field; clicking a result should add that project to the bottom bar if needed and make it the current project.
 - [ ] **Tab bar in header frame**: investigate whether the center-panel tab bar can be integrated into the header/title bar area (for larger window sizes where the dedicated tab row wastes vertical space)
 - [ ] **Settings dropdown stays open**: the global settings popover closes when clicking the terminal dropdown (claude/codex); the popover should remain open while interacting with its own child widgets
 
@@ -27,7 +27,7 @@
 
 Standalone open-window entries must survive project deactivation and be restored on re-activation, just like terminal state.
 
-- [ ] Add `"mode": "standalone"` field to `open_apps.json` entries written for standalone windows; existing entries without the field default to `"embed"`
+- [ ] Add `"mode": "standalone"` field to `project.json["open_apps"]` entries written for standalone windows; existing entries without the field default to `"embed"`
 - [ ] On project re-activation: entries with `"mode": "standalone"` are relaunched via `subprocess.Popen` without any embed probe; entries with `"mode": "embed"` (or no field) go through the full two-path probe again
 
 ### Theme propagation to embedded and standalone apps
@@ -39,7 +39,7 @@ Standalone open-window entries must survive project deactivation and be restored
 
 ## Navigation & Built-in Tabs
 
-- [ ] **Startup restores last current project**: on app start, open the project that was last marked `current`; if no current project exists yet (first start or empty registry), open Root.
+- [x] **Startup restores last current project**: on app start, open the project that was last marked `current`; if no current project exists yet (first start or empty registry), open Root.
 
 ### Agent tab + built-in app tabs (Browser, Mail, Calendar)
 
@@ -54,10 +54,10 @@ The permanent terminal tab should be called "Agent". Additionally, offer non-clo
 
 ## Maintenance & Documentation Follow-ups
 
-- [ ] **Panel/module naming cleanup**: either rename `app/panels/right_panel.py` to match its current `FileTreePanel` role or keep the filename and update remaining stale comments/tests that still refer to the old right-panel project list.
-- [ ] **Open-app persistence design pass**: decide whether current open-window state belongs in `project.json["open_apps"]`, a separate `open_apps.json`, or both; then update the code, tests, and docs to one schema.
-- [ ] **Scaffold contract alignment**: decide whether new projects should include `STATUS.md`; update `_SCAFFOLD`, tests, and documentation consistently.
-- [ ] **Headless test refresh**: replace stale `panels.left_panel` and old `RightPanel` test assumptions with tests for `FileTreePanel`, `BottomPanel`, project pill ordering/search, and standalone open-window fallback.
+- [x] **Panel/module naming cleanup**: keep `app/panels/right_panel.py` as a historical filename and update remaining stale comments/tests that still refer to the old right-panel project list.
+- [x] **Open-app persistence design pass**: standardize current open-window state on `project.json["open_apps"]`; update code, tests, and docs to one schema.
+- [x] **Scaffold contract alignment**: new projects include `STATUS.md`; update `_SCAFFOLD`, tests, and documentation consistently.
+- [x] **Headless test refresh**: replace stale `panels.left_panel` and old `RightPanel` test assumptions with tests for `FileTreePanel`, `BottomPanel`, project pill ordering/search, and standalone open-window fallback.
 
 ---
 
@@ -91,7 +91,7 @@ Run a local Ollama instance alongside Eldrun to provide lightweight AI assistanc
 - [ ] **Daemon management**: start/stop an `ollama serve` subprocess when Eldrun launches; expose a status indicator (dot in the header bar — green = ready, grey = offline)
 - [ ] **Intelligent project search**: embedding-based semantic search — query Ollama for sentence embeddings of the project name + `STATUS.md` / `CLAUDE.md` summary, rank results by cosine similarity
 - [ ] **"Suggest projects for today"**: on startup, send recent git activity (`git log --oneline -20` across all projects) + current date/time to Ollama and surface the top 2–3 projects the user likely wants to continue; show as a soft highlight or pinned section at the top of the project list
-- [ ] **App/file suggestions per project**: when a project is activated, ask Ollama which files are most likely relevant given recent commits and `open_apps.json` history; surface suggestions as a "Suggested" section at the top of the open-apps browser
+- [ ] **App/file suggestions per project**: when a project is activated, ask Ollama which files are most likely relevant given recent commits and `project.json["open_apps"]` history; surface suggestions as a "Suggested" section at the top of the open-apps browser
 - [ ] **Context-aware terminal hints**: optionally pipe the last N lines of the active terminal's scrollback to Ollama and display a short hint strip below the terminal
 - [ ] **Model selection**: configurable per-project in `CLAUDE.md` or a sidebar setting; default to a small fast model (e.g. `mistral`, `phi3`)
 - [ ] **Privacy boundary**: all inference runs locally; no data leaves the machine; add a visible "local AI" label to any AI-generated suggestion

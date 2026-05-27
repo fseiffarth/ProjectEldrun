@@ -10,6 +10,33 @@ from gi.repository import Gtk, Gdk, GLib, GObject, Pango
 _TERMINAL_OPTIONS = ["claude", "codex"]
 
 
+def project_matches_query(project: dict, query: str) -> bool:
+    q = query.strip().lower()
+    if not q:
+        return False
+    name = str(project.get("name", "")).lower()
+    directory = str(project.get("directory", "")).lower()
+    return q in name or q in directory
+
+
+def project_search_results(projects: list[dict], query: str) -> list[dict]:
+    matches = [p for p in projects if project_matches_query(p, query)]
+    return sorted(matches, key=lambda p: (p.get("position", 0), p.get("name", "").lower()))
+
+
+def project_has_open_apps(project: dict) -> bool:
+    proj_dir = project.get("directory", "")
+    local_file = project.get("local_file") or str(pathlib.Path(proj_dir) / "project.json")
+    path = pathlib.Path(local_file)
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return False
+    return bool(data.get("open_apps"))
+
+
 class ProjectPill(Gtk.Box):
     """Compact pill widget for a single project in the bottom bar."""
     def __init__(self, project: dict, on_click, on_close, on_drop=None):
@@ -257,7 +284,7 @@ class BottomPanel(Gtk.Box):
                  on_activate_project, on_close_project,
                  project_manager=None, settings_manager=None,
                  default_apps_manager=None, on_toggle_theme=None,
-                 on_terminal_changed=None):
+                 on_terminal_changed=None, on_search_project=None):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self.add_css_class("bottom-panel")
         self.set_valign(Gtk.Align.END)
@@ -272,15 +299,20 @@ class BottomPanel(Gtk.Box):
         self._dam = default_apps_manager
         self._on_toggle_theme = on_toggle_theme
         self._on_terminal_changed_ext = on_terminal_changed
+        self._on_search_project = on_search_project
         self._pills: dict[str, ProjectPill] = {}
         self._active_project_id: str | None = None
         self._popover: Gtk.Popover | None = None
+        self._search_popover: Gtk.Popover | None = None
+        self._search_listbox: Gtk.ListBox | None = None
+        self._search_results: list[dict] = []
 
         # Root button
         root_btn = Gtk.Button(label="Root")
         root_btn.add_css_class("destructive-action")
         root_btn.add_css_class("bottom-root-btn")
         root_btn.set_valign(Gtk.Align.CENTER)
+        root_btn.set_margin_start(6)
         root_btn.set_margin_top(5)
         root_btn.set_margin_bottom(5)
         root_btn.connect("clicked", lambda _: on_root())
@@ -680,6 +712,8 @@ class BottomPanel(Gtk.Box):
     # ── public API ─────────────────────────────────────────────────────────────
 
     def add_project_pill(self, project: dict):
+        if project["id"] in self._pills:
+            return
         pill = ProjectPill(
             project,
             on_click=self._on_activate,
@@ -688,6 +722,9 @@ class BottomPanel(Gtk.Box):
         )
         self._pills_box.append(pill)
         self._pills[project["id"]] = pill
+
+    def has_project_pill(self, project_id: str) -> bool:
+        return project_id in self._pills
 
     def remove_project_pill(self, project_id: str):
         pill = self._pills.pop(project_id, None)
@@ -716,18 +753,7 @@ class BottomPanel(Gtk.Box):
 
     def refresh_warm_states(self, projects: list):
         for p in projects:
-            proj_dir = p.get("directory", "")
-            local_file = p.get("local_file") or str(
-                pathlib.Path(proj_dir) / "project.json"
-            )
-            warm = False
-            path = pathlib.Path(local_file)
-            if path.exists():
-                try:
-                    data = json.loads(path.read_text())
-                    warm = bool(data.get("open_apps"))
-                except Exception:
-                    pass
+            warm = project_has_open_apps(p)
             pill = self._pills.get(p["id"])
             if pill:
                 pill.set_warm(warm)
@@ -750,19 +776,115 @@ class BottomPanel(Gtk.Box):
 
     # ── project search ────────────────────────────────────────────────────────
 
+    def _ensure_search_popover(self):
+        if self._search_popover is not None:
+            return
+        popover = Gtk.Popover()
+        popover.set_parent(self._search_entry)
+        popover.set_position(Gtk.PositionType.TOP)
+        popover.set_autohide(True)
+        popover.set_has_arrow(True)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_min_content_width(260)
+        scrolled.set_max_content_height(260)
+
+        listbox = Gtk.ListBox()
+        listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        listbox.connect("row-activated", self._on_search_row_activated)
+        scrolled.set_child(listbox)
+        popover.set_child(scrolled)
+
+        self._search_popover = popover
+        self._search_listbox = listbox
+
+    def _clear_search_rows(self):
+        if self._search_listbox is None:
+            return
+        child = self._search_listbox.get_first_child()
+        while child is not None:
+            next_child = child.get_next_sibling()
+            self._search_listbox.remove(child)
+            child = next_child
+
+    def _populate_search_rows(self, results: list[dict]):
+        self._ensure_search_popover()
+        self._clear_search_rows()
+        if self._search_listbox is None:
+            return
+
+        if not results:
+            row = Gtk.ListBoxRow()
+            row.set_selectable(False)
+            row.project_id = None
+            lbl = Gtk.Label(label="No projects", xalign=0)
+            lbl.add_css_class("dim-label")
+            lbl.set_margin_start(10)
+            lbl.set_margin_end(10)
+            lbl.set_margin_top(8)
+            lbl.set_margin_bottom(8)
+            row.set_child(lbl)
+            self._search_listbox.append(row)
+            return
+
+        for project in results:
+            row = Gtk.ListBoxRow()
+            row.project_id = project["id"]
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            box.set_margin_start(10)
+            box.set_margin_end(10)
+            box.set_margin_top(6)
+            box.set_margin_bottom(6)
+
+            name = Gtk.Label(label=project.get("name", ""), xalign=0)
+            name.set_ellipsize(Pango.EllipsizeMode.END)
+            box.append(name)
+
+            directory = project.get("directory", "")
+            if directory:
+                detail = Gtk.Label(label=directory, xalign=0)
+                detail.add_css_class("dim-label")
+                detail.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+                box.append(detail)
+
+            row.set_child(box)
+            self._search_listbox.append(row)
+
     def _on_search_changed(self, entry):
         q = entry.get_text().strip().lower()
-        for pill in self._pills.values():
-            pill.set_visible(not q or q in pill.project_name.lower())
+        if not q:
+            self._search_results = []
+            if self._search_popover:
+                self._search_popover.popdown()
+            return
+        projects = self._pm.projects if self._pm else []
+        self._search_results = project_search_results(projects, q)
+        self._populate_search_rows(self._search_results)
+        if self._search_popover:
+            self._search_popover.popup()
 
     def _on_search_activate(self, entry):
         q = entry.get_text().strip().lower()
         if not q:
             return
-        visible = [p for p in self._pills.values() if q in p.project_name.lower()]
-        if len(visible) == 1:
-            entry.set_text("")
-            self._on_activate(visible[0].project_id)
+        if len(self._search_results) == 1:
+            self._activate_search_project(self._search_results[0]["id"])
+
+    def _on_search_row_activated(self, _listbox, row):
+        project_id = getattr(row, "project_id", None)
+        if project_id:
+            self._activate_search_project(project_id)
+
+    def _activate_search_project(self, project_id: str):
+        self._search_entry.set_text("")
+        self._search_results = []
+        if self._search_popover:
+            self._search_popover.popdown()
+        if self._on_search_project:
+            self._on_search_project(project_id)
+        else:
+            self._on_activate(project_id)
 
     # ── drag-and-drop reorder ─────────────────────────────────────────────────
 

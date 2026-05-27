@@ -272,10 +272,11 @@ class CenterPanel(Gtk.Box):
 
     # ── project terminals ─────────────────────────────────────────────────────
 
-    def add_project_terminal(self, project: dict):
+    def add_project_terminal(self, project: dict, show: bool = True):
         child_name = "project-" + project["id"]
         if self._stack.get_child_by_name(child_name) is not None:
-            self._show_terminal(child_name)
+            if show:
+                self._show_terminal(child_name)
             return
 
         terminal = self._make_terminal()
@@ -292,7 +293,8 @@ class CenterPanel(Gtk.Box):
         _spawn(terminal, project["directory"], self._cmd(), on_spawn_done)
         terminal.connect("child-exited", self._on_child_exited,
                          project["id"], project["directory"])
-        self._show_terminal(child_name)
+        if show:
+            self._show_terminal(child_name)
 
     def show_project_terminal(self, project_id: str):
         name = "project-" + project_id

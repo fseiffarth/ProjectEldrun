@@ -85,6 +85,7 @@ class TestProjectManager(unittest.TestCase):
         os.makedirs(self.data_dir)
         self.projects_file = os.path.join(self.data_dir, "projects.json")
         self.projects_root = os.path.join(self.tmpdir, "projects")
+        self.root_dir = os.path.join(self.tmpdir, "root")
         os.makedirs(self.projects_root)
 
         # Patch module-level constants so our temp dirs are used
@@ -97,10 +98,14 @@ class TestProjectManager(unittest.TestCase):
         self._patch_ws_root = patch.object(
             _pm_module, "WORKSPACE_ROOT", pathlib.Path(self.tmpdir)
         )
+        self._patch_root_dir = patch.object(
+            _pm_module, "ROOT_DIR", pathlib.Path(self.root_dir)
+        )
         self._patch_data_dir.start()
         self._patch_proj_file.start()
         self._patch_proj_root.start()
         self._patch_ws_root.start()
+        self._patch_root_dir.start()
 
         # Suppress subprocess calls (git init/commit)
         self._patch_git_init = patch.object(_pm_module, "_git_init")
@@ -113,6 +118,7 @@ class TestProjectManager(unittest.TestCase):
         self._patch_proj_file.stop()
         self._patch_proj_root.stop()
         self._patch_ws_root.stop()
+        self._patch_root_dir.stop()
         self._patch_git_init.stop()
         self._patch_git_commit.stop()
         import shutil

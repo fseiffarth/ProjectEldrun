@@ -181,6 +181,10 @@ class DefaultAppsManager:
         except (json.JSONDecodeError, OSError):
             return {}
 
+    def _load(self, path: pathlib.Path) -> dict:
+        """Compatibility wrapper for older tests and callers."""
+        return self._load_json(path)
+
     def _save_global(self):
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = str(self._path) + ".tmp"

@@ -1,8 +1,6 @@
 import atexit
 import datetime as _dt
-import json as _json
 import os
-import pathlib as _pathlib
 import signal
 import subprocess
 import time
@@ -21,7 +19,7 @@ from time_tracker import TimeTracker
 from workspace_manager import WorkspaceManager
 from panels.center_panel import CenterPanel, _MASTER_PAGE
 from panels.right_panel import FileTreePanel
-from panels.bottom_panel import BottomPanel
+from panels.bottom_panel import BottomPanel, project_has_open_apps
 from eldrun import set_theme
 
 _LEFT_WIDTH = 220
@@ -147,10 +145,6 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._toggle_panels()
             return True
 
-        if keyval == Gdk.KEY_ISO_Left_Tab:  # Shift+Tab
-            self._center_panel.cycle_tabs()
-            return True
-
         return False
 
     # ── header bar ────────────────────────────────────────────────────────────
@@ -272,6 +266,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             default_apps_manager=self.default_apps_manager,
             on_toggle_theme=self._on_toggle_theme,
             on_terminal_changed=self._on_terminal_changed,
+            on_search_project=self._on_search_project_selected,
         )
 
         overlay = Gtk.Overlay()
@@ -291,14 +286,21 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _on_map(self, *_):
         from project_stats import scan_project_background
         visible = self.project_manager.get_visible_projects()
+        current_id = next(
+            (p["id"] for p in visible if p.get("status") == "current"),
+            None,
+        )
         for p in visible:
-            self._center_panel.add_project_terminal(p)
+            self._center_panel.add_project_terminal(p, show=False)
             self._bottom_panel.add_project_pill(p)
             scan_project_background(p)
         for p in self.project_manager.projects:
             if p.get("status") == "inactive":
                 scan_project_background(p)
-        self._center_panel.open_master_terminal()
+        if current_id:
+            self._center_panel.show_project_terminal(current_id)
+        else:
+            self._center_panel.open_master_terminal()
         self._bottom_panel.refresh_warm_states(visible)
         if self._wm_enabled:
             GLib.idle_add(self._setup_workspaces)
@@ -396,6 +398,23 @@ class EldrunWindow(Adw.ApplicationWindow):
         if self._wm_enabled:
             self._workspace_manager.allocate(project["id"], project["name"])
 
+    def _on_search_project_selected(self, project_id: str):
+        project = self.project_manager.get_project(project_id)
+        if project is None:
+            return
+        if project.get("status") == "inactive":
+            self.project_manager.set_project_status(project_id, "active")
+            project["status"] = "active"
+        if not self._bottom_panel.has_project_pill(project_id):
+            from project_stats import scan_project_background
+            self._bottom_panel.add_project_pill(project)
+            scan_project_background(project)
+        self._center_panel.add_project_terminal(project)
+        self._bottom_panel.refresh_warm_states(self.project_manager.get_visible_projects())
+        if self._wm_enabled:
+            self._workspace_manager.allocate(project["id"], project["name"])
+            self._workspace_manager.activate(project_id)
+
     def _on_root_clicked(self):
         self._center_panel.open_master_terminal()
 
@@ -409,18 +428,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         project_name = project["name"] if project else "project"
         project_dir = project.get("directory", "") if project else ""
 
-        has_open_apps = False
-        if project_dir:
-            local_file = (project.get("local_file") if project else None) or str(
-                _pathlib.Path(project_dir) / "project.json"
-            )
-            path = _pathlib.Path(local_file)
-            if path.exists():
-                try:
-                    data = _json.loads(path.read_text())
-                    has_open_apps = bool(data.get("open_apps"))
-                except Exception:
-                    pass
+        has_open_apps = bool(project_dir and project and project_has_open_apps(project))
 
         if has_open_apps:
             self._confirm_close_project(project_id, project_name)
