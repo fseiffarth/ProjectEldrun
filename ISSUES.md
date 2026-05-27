@@ -101,3 +101,23 @@ Stale tests have been replaced with current `FileTreePanel` / `BottomPanel` logi
 **Phase:** Documentation/codebase analysis follow-up  
 **Severity:** Medium — warm project state and restore behavior are unreliable  
 `project.json["open_apps"]` is the durable representation. Full standalone restore behavior remains tracked as future open-app pipeline work.
+
+---
+
+### ISSUE-013: Agent numbering does not reset after adding and closing an agent
+**Phase:** Agent/session lifecycle polish  
+**Severity:** Low to Medium — confusing UI state after normal agent add/close flow  
+When a new agent is added and then closed, the visible agent numbers are not reset. Subsequent agents continue from the previous number instead of renumbering or reusing the expected sequence.
+
+**Fix needed:** Recompute agent display numbers after agent removal, or clarify the intended numbering model if numbers are meant to be persistent session IDs.
+
+---
+
+### ISSUE-014: Adding a new agent clears current project selection and hides right panel
+**Phase:** Agent/session lifecycle polish  
+**Severity:** Medium — adding an agent disrupts the active project workspace  
+When a new agent is added, the active project should remain unchanged. Instead, the bottom project switcher no longer shows the current project as selected and the right panel disappears.
+
+**Expected behavior:** Adding a new agent should always happen inside the current project and should only open a new terminal/tab for that project. It should not change project selection, clear current-project UI state, or hide the right panel.
+
+**Fix needed:** Keep the current project context stable during agent creation, and create the new agent terminal/tab under that project without triggering project-switch or panel-hide side effects.

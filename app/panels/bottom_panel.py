@@ -107,8 +107,29 @@ class ProjectPill(Gtk.Box):
     def _on_drag_prepare(self, _src, _x, _y):
         return Gdk.ContentProvider.new_for_value(self.project_id)
 
-    def _on_drag_begin(self, _src, _drag):
+    def _on_drag_begin(self, src, _drag):
         self.add_css_class("project-row-dragging")
+        self._set_drag_icon(src)
+
+    def _set_drag_icon(self, drag_source):
+        try:
+            paintable = Gtk.WidgetPaintable.new(self)
+            drag_source.set_icon(
+                paintable,
+                max(0, self.get_width() // 2),
+                max(0, self.get_height() // 2),
+            )
+        except Exception:
+            try:
+                placeholder = Gtk.Box()
+                placeholder.add_css_class("project-pill")
+                placeholder.set_size_request(
+                    max(80, self.get_width()),
+                    max(28, self.get_height()),
+                )
+                drag_source.set_icon(Gtk.WidgetPaintable.new(placeholder), 0, 0)
+            except Exception:
+                pass
 
     def _on_drag_end(self, _src, _drag, _success):
         self.remove_css_class("project-row-dragging")
@@ -782,22 +803,27 @@ class BottomPanel(Gtk.Box):
         popover = Gtk.Popover()
         popover.set_parent(self._search_entry)
         popover.set_position(Gtk.PositionType.TOP)
-        popover.set_autohide(True)
+        popover.set_autohide(False)
         popover.set_has_arrow(True)
 
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scrolled.set_min_content_width(260)
-        scrolled.set_max_content_height(260)
+        scrolled.set_propagate_natural_width(True)
+        scrolled.set_min_content_height(160)
+        scrolled.set_max_content_height(420)
 
         listbox = Gtk.ListBox()
-        listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        listbox.set_selection_mode(Gtk.SelectionMode.NONE)
         listbox.connect("row-activated", self._on_search_row_activated)
         scrolled.set_child(listbox)
         popover.set_child(scrolled)
 
         self._search_popover = popover
         self._search_listbox = listbox
+
+        focus_ctrl = Gtk.EventControllerFocus()
+        focus_ctrl.connect("leave", self._on_search_focus_out)
+        self._search_entry.add_controller(focus_ctrl)
 
     def _clear_search_rows(self):
         if self._search_listbox is None:
@@ -817,6 +843,7 @@ class BottomPanel(Gtk.Box):
         if not results:
             row = Gtk.ListBoxRow()
             row.set_selectable(False)
+            row.set_activatable(False)
             row.project_id = None
             lbl = Gtk.Label(label="No projects", xalign=0)
             lbl.add_css_class("dim-label")
@@ -830,15 +857,17 @@ class BottomPanel(Gtk.Box):
 
         for project in results:
             row = Gtk.ListBoxRow()
+            row.set_selectable(False)
+            row.set_activatable(True)
             row.project_id = project["id"]
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             box.set_margin_start(10)
             box.set_margin_end(10)
             box.set_margin_top(6)
             box.set_margin_bottom(6)
+            box.set_size_request(-1, 44)
 
             name = Gtk.Label(label=project.get("name", ""), xalign=0)
-            name.set_ellipsize(Pango.EllipsizeMode.END)
             box.append(name)
 
             directory = project.get("directory", "")
@@ -870,6 +899,14 @@ class BottomPanel(Gtk.Box):
             return
         if len(self._search_results) == 1:
             self._activate_search_project(self._search_results[0]["id"])
+
+    def _on_search_focus_out(self, _ctrl):
+        GLib.timeout_add(150, self._maybe_close_search_popover)
+
+    def _maybe_close_search_popover(self) -> bool:
+        if self._search_popover and self._search_popover.get_visible():
+            self._search_popover.popdown()
+        return False
 
     def _on_search_row_activated(self, _listbox, row):
         project_id = getattr(row, "project_id", None)

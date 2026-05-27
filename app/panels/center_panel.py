@@ -90,6 +90,10 @@ class CenterPanel(Gtk.Box):
         self._embedded_xid: int | None = None
         self._embedded_page: str | None = None
 
+        # Extra agent tab tracking
+        self._agent_counter = 0
+        self._agent_info: dict[str, dict] = {}  # page_key → {cmd, directory}
+
         # Xlib connection (lazy)
         self._disp = None
         self._root_win = None
@@ -108,9 +112,15 @@ class CenterPanel(Gtk.Box):
         tab_bar_scroll.set_child(self._tab_bar)
         self.append(tab_bar_scroll)
 
-        # Create the permanent Terminal tab
-        self._add_tab(_TERMINAL_TAB, "Terminal", icon="utilities-terminal-symbolic",
+        # Create the permanent Agent tab
+        self._add_tab(_TERMINAL_TAB, "Agent", icon="utilities-terminal-symbolic",
                       closeable=False)
+
+        # Right-click on tab bar to add a new agent tab
+        tab_rclick = Gtk.GestureClick()
+        tab_rclick.set_button(3)
+        tab_rclick.connect("pressed", self._on_tabbar_right_click)
+        self._tab_bar.add_controller(tab_rclick)
 
         # ── stack + offline overlay ───────────────────────────────────────────
         self._stack = Gtk.Stack()
@@ -136,7 +146,7 @@ class CenterPanel(Gtk.Box):
         self._offline_banner.set_visible(False)
         overlay.add_overlay(self._offline_banner)
 
-        self._terminal_back_btn = Gtk.Button(label="⬛  Terminal")
+        self._terminal_back_btn = Gtk.Button(label="⬛  Agent")
         self._terminal_back_btn.add_css_class("terminal-back-btn")
         self._terminal_back_btn.set_halign(Gtk.Align.START)
         self._terminal_back_btn.set_valign(Gtk.Align.END)
@@ -156,7 +166,7 @@ class CenterPanel(Gtk.Box):
     # ── tab bar ───────────────────────────────────────────────────────────────
 
     def _add_tab(self, tab_key: str, label: str, icon: str | None = None,
-                 closeable: bool = True) -> Gtk.Box:
+                 closeable: bool = True, on_rename=None, on_close=None) -> Gtk.Box:
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         box.add_css_class("center-tab")
         box.set_margin_top(4)
@@ -181,13 +191,25 @@ class CenterPanel(Gtk.Box):
             close_btn.add_css_class("flat")
             close_btn.add_css_class("close-btn")
             close_btn.set_valign(Gtk.Align.CENTER)
-            close_btn.connect("clicked", lambda _, k=tab_key: self._close_app_tab(k))
+            if on_close:
+                close_btn.connect("clicked", lambda _: on_close())
+            else:
+                close_btn.connect("clicked", lambda _, k=tab_key: self._close_app_tab(k))
             box.append(close_btn)
 
         gesture = Gtk.GestureClick()
         gesture.set_button(1)
         gesture.connect("pressed", lambda *_, k=tab_key: self._on_tab_clicked(k))
         box.add_controller(gesture)
+
+        if on_rename:
+            rclick = Gtk.GestureClick()
+            rclick.set_button(3)
+            rclick.connect("pressed", lambda g, _n, _x, _y, k=tab_key: (
+                g.set_state(Gtk.EventSequenceState.CLAIMED),
+                self._show_agent_rename_popover(k),
+            ))
+            box.add_controller(rclick)
 
         self._tab_widgets[tab_key] = box
         self._tab_bar.append(box)
@@ -199,7 +221,7 @@ class CenterPanel(Gtk.Box):
             self._tab_bar.remove(widget)
 
     def _set_active_tab(self, stack_page: str):
-        # Map terminal stack pages to the shared terminal tab key
+        # Map terminal stack pages to the shared Agent tab key
         if stack_page in (_MASTER_PAGE, "empty") or stack_page.startswith("project-"):
             tab_key = _TERMINAL_TAB
         else:
@@ -210,11 +232,164 @@ class CenterPanel(Gtk.Box):
             else:
                 widget.remove_css_class("center-tab-active")
         self._current_tab = tab_key
-        self._terminal_back_btn.set_visible(tab_key != _TERMINAL_TAB)
+        # Back button only for app tabs, not for agent tabs (which are also terminals)
+        is_app_tab = tab_key != _TERMINAL_TAB and not tab_key.startswith("agent-")
+        self._terminal_back_btn.set_visible(is_app_tab)
 
     def _on_terminal_back_clicked(self, _btn):
         self._release_embedded()
         self._show_terminal(self._last_terminal_page)
+
+    # ── agent tab management ──────────────────────────────────────────────────
+
+    def _on_tabbar_right_click(self, gesture, _n_press, x, y):
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        popover = Gtk.Popover()
+        popover.set_parent(self._tab_bar)
+        popover.set_has_arrow(False)
+        popover.set_autohide(True)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.set_margin_start(4)
+        box.set_margin_end(4)
+        box.set_margin_top(4)
+        box.set_margin_bottom(4)
+
+        for cmd in ["claude", "codex"]:
+            btn = Gtk.Button(label=f"New {cmd} agent")
+            btn.add_css_class("flat")
+            btn.connect("clicked",
+                        lambda _, c=cmd, p=popover: (p.popdown(), self._add_agent_terminal(c)))
+            box.append(btn)
+
+        popover.set_child(box)
+        rect = Gdk.Rectangle()
+        rect.x = int(x)
+        rect.y = int(y)
+        rect.width = 1
+        rect.height = 1
+        popover.set_pointing_to(rect)
+        popover.popup()
+
+    def _current_agent_directory(self) -> str:
+        page = self._last_terminal_page
+        if page.startswith("project-"):
+            project_id = page[len("project-"):]
+            project = self._pm.get_project(project_id)
+            if project and project.get("directory"):
+                return project["directory"]
+        return _ROOT_DIR
+
+    def _add_agent_terminal(self, cmd: str):
+        self._agent_counter += 1
+        n = self._agent_counter
+        page_key = f"agent-{n}"
+        label = f"Agent{n}"
+        directory = self._current_agent_directory()
+
+        terminal = self._make_terminal()
+        self._terminals[page_key] = terminal
+        self._stack.add_named(terminal, page_key)
+
+        self._agent_info[page_key] = {"cmd": cmd, "directory": directory}
+
+        def on_spawned(_term, pid, _error):
+            if pid and pid > 0:
+                self._terminal_pids[page_key] = pid
+
+        _spawn(terminal, directory, _resolve_command(cmd), on_spawned)
+        terminal.connect("child-exited", self._on_agent_exited, page_key)
+
+        self._add_tab(page_key, label, icon="utilities-terminal-symbolic",
+                      closeable=True,
+                      on_rename=self._show_agent_rename_popover,
+                      on_close=lambda k=page_key: self._close_agent_tab(k))
+
+        self._stack.set_visible_child_name(page_key)
+        self._notify_page(page_key)
+
+    def _on_agent_exited(self, terminal, _status, page_key: str):
+        if page_key not in self._agent_info:
+            return
+        self._terminal_pids.pop(page_key, None)
+        info = self._agent_info[page_key]
+
+        def on_respawn(_term, pid, _error):
+            if pid and pid > 0:
+                self._terminal_pids[page_key] = pid
+
+        _spawn(terminal, info["directory"], _resolve_command(info["cmd"]), on_respawn)
+
+    def _close_agent_tab(self, page_key: str):
+        if page_key not in self._agent_info:
+            return
+        pid = self._terminal_pids.pop(page_key, None)
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        self._terminals.pop(page_key, None)
+        self._agent_info.pop(page_key, None)
+        self._remove_tab(page_key)
+        child = self._stack.get_child_by_name(page_key)
+        if child is not None:
+            self._stack.remove(child)
+        if self._current_tab == page_key:
+            self._show_terminal(self._last_terminal_page)
+
+    def _show_agent_rename_popover(self, page_key: str):
+        widget = self._tab_widgets.get(page_key)
+        if widget is None:
+            return
+
+        current_label = ""
+        for child in list(widget):
+            if isinstance(child, Gtk.Label):
+                current_label = child.get_label()
+                break
+
+        popover = Gtk.Popover()
+        popover.set_parent(widget)
+        popover.set_has_arrow(True)
+        popover.set_autohide(True)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.set_margin_start(6)
+        box.set_margin_end(6)
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+
+        entry = Gtk.Entry()
+        entry.set_text(current_label)
+        entry.set_width_chars(12)
+        box.append(entry)
+
+        ok_btn = Gtk.Button(label="OK")
+        ok_btn.add_css_class("suggested-action")
+        box.append(ok_btn)
+
+        def confirm(_=None):
+            new_name = entry.get_text().strip()
+            if new_name:
+                self._rename_agent_tab(page_key, new_name)
+            popover.popdown()
+
+        entry.connect("activate", confirm)
+        ok_btn.connect("clicked", confirm)
+
+        popover.set_child(box)
+        popover.popup()
+        entry.grab_focus()
+
+    def _rename_agent_tab(self, page_key: str, new_label: str):
+        widget = self._tab_widgets.get(page_key)
+        if widget is None:
+            return
+        for child in list(widget):
+            if isinstance(child, Gtk.Label):
+                child.set_label(new_label)
+                break
 
     def _update_terminal_tab_label(self, label: str):
         widget = self._tab_widgets.get(_TERMINAL_TAB)
@@ -229,6 +404,10 @@ class CenterPanel(Gtk.Box):
         if tab_key == _TERMINAL_TAB:
             self._release_embedded()
             self._show_terminal(self._last_terminal_page)
+        elif tab_key.startswith("agent-") and tab_key in self._agent_info:
+            self._release_embedded()
+            self._stack.set_visible_child_name(tab_key)
+            self._notify_page(tab_key)
         elif tab_key in self._app_info:
             self._show_app_tab(tab_key)
 
@@ -579,7 +758,7 @@ class CenterPanel(Gtk.Box):
         self._last_terminal_page = page_name
         self._stack.set_visible_child_name(page_name)
         self._update_terminal_tab_label(
-            "Root" if page_name == _MASTER_PAGE else "Terminal"
+            "Root" if page_name == _MASTER_PAGE else "Agent"
         )
         self._notify_page(page_name)
 
@@ -634,3 +813,11 @@ class CenterPanel(Gtk.Box):
             except ProcessLookupError:
                 pass
         self._terminal_pids.clear()
+        # Re-spawn agent terminals with their original commands
+        for page_key, info in list(self._agent_info.items()):
+            terminal = self._terminals.get(page_key)
+            if terminal:
+                def on_respawn(_term, pid, _error, k=page_key):
+                    if pid and pid > 0:
+                        self._terminal_pids[k] = pid
+                _spawn(terminal, info["directory"], _resolve_command(info["cmd"]), on_respawn)
