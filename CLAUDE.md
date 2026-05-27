@@ -60,6 +60,9 @@ cd /home/user/eldrun/projects/projecteldrun/app && DISPLAY=:0 python3 eldrun.py 
 - New/imported projects receive `AGENTS.md`, `CLAUDE.md`,
   `.claude/settings.json`, `.gitignore`, `TODO.md`, `ROADMAP.md`, `STATUS.md`,
   and `DOCUMENTATION.md` when missing.
+- `TODO.md` uses grouped IDs such as `G1.1`. When adding a TODO, put it in the
+  matching group, create a new group if no current group fits, or merge groups
+  if the TODO depends on distinct areas that should be tracked together.
 
 ## GTK4 Gotchas
 

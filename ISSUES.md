@@ -121,3 +121,36 @@ When a new agent is added, the active project should remain unchanged. Instead, 
 **Expected behavior:** Adding a new agent should always happen inside the current project and should only open a new terminal/tab for that project. It should not change project selection, clear current-project UI state, or hide the right panel.
 
 **Fix needed:** Keep the current project context stable during agent creation, and create the new agent terminal/tab under that project without triggering project-switch or panel-hide side effects.
+
+---
+
+### ISSUE-015: Closing the current project should return to root and close the right panel
+**Phase:** Project lifecycle polish  
+**Severity:** Medium — active project UI can remain inconsistent after closing the current project  
+When the current project is closed with the `x` button, Eldrun should switch back to the root project/session. Because the closed project is no longer active, the right project panel should also close or be hidden.
+
+**Expected behavior:** Closing the active project selects the root project/session, clears the current project selection from the bottom switcher, and hides the right project panel because there is no active project for it to display.
+
+**Fix needed:** Update the project-close path so that closing the active project explicitly activates the root session and tears down project-specific UI state, including the right panel.
+
+---
+
+### ISSUE-016: Closing a project leaves an empty "no project selected" agent tab instead of selecting root
+**Phase:** Project lifecycle polish  
+**Severity:** Medium — project close lands in an invalid workspace state  
+After closing a project, the project panel now closes, but Eldrun does not switch to the root project/session. The root item in the bottom switcher does not receive the blue active border, and the center panel is left on an empty agent tab that says no project is selected.
+
+**Expected behavior:** Closing the current project should activate the root session, select root in the bottom switcher with the blue border, and show the root agent/terminal rather than an empty no-project placeholder.
+
+**Fix needed:** Ensure the close-project flow activates the root session after clearing project-specific UI, and refreshes both the bottom switcher selection state and center panel tab content.
+
+---
+
+### ISSUE-017: Closing all tabs creates a hidden terminal and breaks the tab bar
+**Phase:** Agent/session lifecycle polish  
+**Severity:** Medium — empty tab state is broken and confusing  
+When all tabs are closed, Eldrun currently creates a new terminal implicitly. That terminal appears to be hidden, and the tab bar breaks instead of presenting a clear empty state.
+
+**Expected behavior:** If all tabs are closed, do not create an implicit replacement terminal. Show an empty center page explaining that no tab is open and that a new agent or terminal can be created by right-clicking the tab bar.
+
+**Fix needed:** Replace the implicit terminal fallback with an explicit empty-tab state, and keep the tab bar usable for right-click creation actions while no tabs are open.

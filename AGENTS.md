@@ -23,6 +23,9 @@ launching/embedding, time tracking, and optional Cinnamon workspace integration.
 - New/imported projects are scaffolded with `AGENTS.md`, `CLAUDE.md`,
   `.claude/settings.json`, `.gitignore`, `TODO.md`, `ROADMAP.md`, `STATUS.md`,
   and `DOCUMENTATION.md`.
+- `TODO.md` uses grouped IDs such as `G1.1`. When adding a TODO, place it in
+  the matching group, create a new group if no current group fits, or merge
+  groups if the TODO depends on distinct areas that should be tracked together.
 - X11 embedding and workspace control are best-effort features. Wayland support
   is not implemented for those paths.
 
