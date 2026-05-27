@@ -334,7 +334,7 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _apply_panel_visibility(self):
         page = self._center_panel._stack.get_visible_child_name() or "empty"
         is_project_page = page.startswith("project-")
-        is_agent_page = page.startswith("agent-") or page.startswith("term-")
+        is_agent_page = page.startswith("agent-") or page.startswith("term-") or page == "no-tabs"
 
         if not is_agent_page:
             if is_project_page:

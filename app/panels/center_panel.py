@@ -239,10 +239,11 @@ class CenterPanel(Gtk.Box):
             else:
                 widget.remove_css_class("center-tab-active")
         self._current_tab = tab_key
-        # Back button only for app tabs, not for agent/terminal tabs
+        # Back button only for app tabs, not for agent/terminal/placeholder tabs
         is_app_tab = (tab_key != _TERMINAL_TAB
                       and not tab_key.startswith("agent-")
-                      and not tab_key.startswith("term-"))
+                      and not tab_key.startswith("term-")
+                      and tab_key != "no-tabs")
         self._terminal_back_btn.set_visible(is_app_tab)
 
     def _on_terminal_back_clicked(self, _btn):
@@ -848,7 +849,15 @@ class CenterPanel(Gtk.Box):
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
+    def _ensure_terminal_tab(self):
+        if _TERMINAL_TAB not in self._tab_widgets:
+            self._add_tab(_TERMINAL_TAB, "Agent", icon="utilities-terminal-symbolic",
+                          closeable=True,
+                          on_rename=self._show_agent_rename_popover,
+                          on_close=self._close_default_agent_tab)
+
     def _show_terminal(self, page_name: str):
+        self._ensure_terminal_tab()
         self._last_terminal_page = page_name
         self._stack.set_visible_child_name(page_name)
         self._update_terminal_tab_label(
