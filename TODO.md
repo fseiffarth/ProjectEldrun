@@ -10,7 +10,8 @@
 - [x] **Panel toggle button position**: moved to the right of the + button
 - [x] **Clock in bottom bar**: `HH:MM` label left of Root button, 1 s tick
 - [x] **Show hidden files in project settings**: toggle moved from PROJECT header into the per-project gear settings window
-- [ ] **Global project search**: the search field should search across *all* eldrun projects (including inactive ones not currently in the bottom bar), not just the active pills; selecting an inactive result adds it to the active projects in the bottom bar and opens its terminal
+- [ ] **Root button left margin**: add a small left margin before the bottom-bar Root button for cleaner edge alignment
+- [ ] **Global project search**: fix bottom-panel search so it searches across *all* Eldrun projects, including inactive projects not currently visible in the bottom bar. Typing should open a results list above the search field; clicking a result should add that project to the bottom bar if needed and make it the current project.
 - [ ] **Tab bar in header frame**: investigate whether the center-panel tab bar can be integrated into the header/title bar area (for larger window sizes where the dedicated tab row wastes vertical space)
 - [ ] **Settings dropdown stays open**: the global settings popover closes when clicking the terminal dropdown (claude/codex); the popover should remain open while interacting with its own child widgets
 
@@ -38,14 +39,25 @@ Standalone open-window entries must survive project deactivation and be restored
 
 ## Navigation & Built-in Tabs
 
+- [ ] **Startup restores last current project**: on app start, open the project that was last marked `current`; if no current project exists yet (first start or empty registry), open Root.
+
 ### Agent tab + built-in app tabs (Browser, Mail, Calendar)
 
 The permanent terminal tab should be called "Agent". Additionally, offer non-closeable built-in tabs for the system's default browser, email client, and calendar — embedded frameless where possible.
 
-- [ ] Rename the permanent tab from "Terminal" to "Agent" everywhere (`_TERMINAL_TAB` label, `_update_terminal_tab_label`, `_terminal_back_btn` label)
+- [ ] **Agent tab rename**: rename the permanent terminal tab from "Terminal" to "Agent" everywhere (`_TERMINAL_TAB` label, `_update_terminal_tab_label`, `_terminal_back_btn` label)
 - [ ] At startup, resolve the system defaults: `xdg-settings get default-web-browser`, `xdg-mime query default x-scheme-handler/mailto`, and the default calendar `.desktop` file; skip silently if not found
 - [ ] Each resolved app goes through the two-strategy dispatch: embed frameless if viable, else open standalone and add to the open-windows list
 - [ ] Add permanent (non-closeable) icon tabs for Browser (`web-browser-symbolic`), Mail (`mail-client-symbolic`), Calendar (`x-office-calendar-symbolic`) in the tab bar; grey out any whose default app is not found
+
+---
+
+## Maintenance & Documentation Follow-ups
+
+- [ ] **Panel/module naming cleanup**: either rename `app/panels/right_panel.py` to match its current `FileTreePanel` role or keep the filename and update remaining stale comments/tests that still refer to the old right-panel project list.
+- [ ] **Open-app persistence design pass**: decide whether current open-window state belongs in `project.json["open_apps"]`, a separate `open_apps.json`, or both; then update the code, tests, and docs to one schema.
+- [ ] **Scaffold contract alignment**: decide whether new projects should include `STATUS.md`; update `_SCAFFOLD`, tests, and documentation consistently.
+- [ ] **Headless test refresh**: replace stale `panels.left_panel` and old `RightPanel` test assumptions with tests for `FileTreePanel`, `BottomPanel`, project pill ordering/search, and standalone open-window fallback.
 
 ---
 

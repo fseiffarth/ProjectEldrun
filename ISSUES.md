@@ -80,3 +80,30 @@ The entire "open apps" pipeline (launching a file, detecting the window, embeddi
 **Stage 3 — Wire to the open-apps panel**
 - Once Stage 2 is stable, reconnect `AppRow` click → `show_app_window(xid)` in `LeftPanel`
 - EWMH poll should track the embedded window's XID and update `AppRow.xid` accordingly
+
+---
+
+### ISSUE-010: Test suite references removed/renamed panel modules
+**Phase:** Documentation/codebase analysis follow-up  
+**Severity:** Medium — tests can fail or validate stale behavior instead of current behavior  
+`tests/test_open_apps_manager.py` imports `panels.left_panel`, but there is no `app/panels/left_panel.py` in the current tree. Current file/open-window behavior lives in `app/panels/right_panel.py` as `FileTreePanel`. `tests/test_right_panel_logic.py` also documents old `RightPanel` sorting/time-bar behavior while the live project switcher is now `BottomPanel` project pills.
+
+**Fix needed:** Replace stale tests with current `FileTreePanel` and `BottomPanel` tests, or add compatibility helpers only if the old APIs are intentionally preserved.
+
+---
+
+### ISSUE-011: Scaffold contract disagrees with tests and docs
+**Phase:** Documentation/codebase analysis follow-up  
+**Severity:** Low to Medium — new project contents are ambiguous  
+`tests/test_project_manager.py` expects `STATUS.md` to be created for new projects, while `ProjectManager._SCAFFOLD` currently creates `AGENTS.md`, `CLAUDE.md`, `.gitignore`, `TODO.md`, `ROADMAP.md`, `DOCUMENTATION.md`, and `.claude/settings.json`, but not `STATUS.md`.
+
+**Fix needed:** Decide whether `STATUS.md` is part of the project scaffold. Then update `_SCAFFOLD`, tests, README, and `DOCUMENTATION.md` consistently.
+
+---
+
+### ISSUE-012: Open-app persistence schema is inconsistent
+**Phase:** Documentation/codebase analysis follow-up  
+**Severity:** Medium — warm project state and restore behavior are unreliable  
+Several code paths look for `project.json["open_apps"]`, TODO items refer to `open_apps.json`, and historical tests refer to an `OpenAppsManager` in a removed `left_panel.py`. The current `FileTreePanel` tracks standalone fallback windows in memory, but a single durable schema and restore path are not clearly implemented.
+
+**Fix needed:** Pick one durable representation for open app/window state, migrate old files if needed, and update `FileTreePanel`, project close confirmation, warm pill state, tests, and documentation to match.

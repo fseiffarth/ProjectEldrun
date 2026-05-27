@@ -1,12 +1,15 @@
-# ProjectEldrun — Documentation
+# ProjectEldrun - Documentation
 
-Eldrun is a GTK4 terminal manager for AI-assisted development. It provides a
-three-column layout — project file tree, terminal(s), and project list — so
-you can run `claude` in each project directory without leaving the window.
+Eldrun is a Python/GTK4 desktop workspace for AI-assisted development. Its core
+job is to keep many project-specific agent terminals available without losing the
+surrounding project context: file tree, default app choices, time tracking,
+network state, and optional desktop workspace routing.
 
-## Install
+This document reflects the code in `app/` as of May 27, 2026.
 
-### Dependencies
+## Installation
+
+### Runtime Dependencies
 
 ```bash
 # Debian / Ubuntu
@@ -15,285 +18,484 @@ sudo apt install python3 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 \
 pip3 install --user python-xlib
 ```
 
-> **Note:** GTK ≥ 4.10 is required for `Gtk.FileChooserNative` used in the Import dialog.
-> On older GTK the import button will open a native OS folder chooser that may look different.
+Eldrun uses:
 
-### Desktop launcher
+- GTK 4 and Libadwaita for windows and controls.
+- VTE 3.91 for embedded terminals.
+- `python-xlib` and GDK X11 bindings for X11 window tracking, app embedding, and
+  Cinnamon workspace integration.
+- `xdg-mime`, `.desktop` files, and `xdg-open` for file handler discovery.
+- `git` for new/imported project initialization.
+
+### Launching
 
 ```bash
-cp eldrun.desktop ~/.local/share/applications/
-update-desktop-database ~/.local/share/applications/
+./start-eldrun.sh
 ```
 
-Adjust the `Exec=` path in `eldrun.desktop` if you cloned to a different
-location.
-
-## Usage
-
-Launch with:
+or:
 
 ```bash
 cd app && python3 eldrun.py
 ```
 
-Or via the desktop launcher if installed.
+The desktop launcher is `Eldrun.app.desktop`. Its `Exec=` path is absolute in the
+current checkout, so update that path before installing it elsewhere:
 
-### Layout
-
-```
-┌────────────┬───────────────────────────┬────────────┐
-│  OPEN APPS │  terminal / app view       │  Root btn  │
-│  (filtered │                            │  ────────  │
-│   by proj) │                            │  PROJECTS  │
-│  ──────────│                            │  proj-a  × │
-│  PROJECT   │                            │  proj-b  × │
-│  file tree │                            │  ────────  │
-│            │                            │     +      │
-└────────────┴───────────────────────────┴────────────┘
+```bash
+cp Eldrun.app.desktop ~/.local/share/applications/
+update-desktop-database ~/.local/share/applications/
 ```
 
-- **Root** (red) — opens a `claude`/bash terminal in `~/eldrun/` (workspace root).
-- **+** — opens a popover with **New Project** and **Import Project** actions. Import supports three modes: **Keep location** (register in place), **Copy**, or **Move** — see [Importing an existing project](#importing-an-existing-project).
-- **× on a row** — closes that project's terminal and removes it from the list.
-- **Active project** — marked with a red border on its row in the right panel.
-- **Search field** — type to filter the project list; Enter on a single match opens it.
-- **F11** — toggle fullscreen. Window chrome provides minimize / maximize / close.
-- Left panel is shown only when a project terminal is active.
-- "OPEN APPS" tracks files/apps opened in the current project and restores them on re-activation.
+## User Interface
 
-### Creating a new project
+The current app is no longer the older three-column layout. The active layout is:
 
-Click **+** → **New Project** in the right panel to open the dialog.
+```text
++--------------------------------------------------------------+
+| status lamp + network icon        clock             wm dots   |
++--------------------------------------------------------------+
+| center tab bar: Terminal/Root/project/app tabs                |
++--------------------------------------------------------------+
+|                                                              ||
+| VTE terminal, app loading placeholder, or embedded X11 app   || right overlay
+|                                                              || PROJECT tree
+|                                                              || OPEN WINDOWS
++--------------------------------------------------------------+
+| Root | Search... | project pills...        | settings | + | > |
++--------------------------------------------------------------+
+```
 
-#### 1 — Fill in the dialog
+### Header
 
-| Field | Behaviour |
-|-------|-----------|
-| **Name** | Free-text. Shown as-is in the project list. |
-| **Visibility** | `private` or `public`. Stored in `CLAUDE.md` for reference. |
-| **Path preview** | Updates live to `~/eldrun/projects/<sanitized-name>`. |
+- Shows online/offline status and wired/wireless type.
+- Shows a clock in the center.
+- Provides custom minimize, maximize/restore, and close buttons.
+- The window is undecorated and uses `Gtk.WindowHandle` so the header can be
+  dragged.
 
-Name sanitization rules (applied to produce the directory name):
-- Lowercased and stripped of leading/trailing whitespace.
-- Spaces and underscores collapsed to hyphens.
-- Any character that is not `a–z`, `0–9`, or `-` is removed.
-- Consecutive hyphens are collapsed; leading/trailing hyphens are stripped.
+### Center Panel
 
-Example: `"My New Project!"` → directory name `my-new-project`.
+The center panel is a `Gtk.Stack` with a horizontal tab bar.
 
-If the sanitized name is empty or the target directory already exists, the dialog shows a conflict warning and the **Create** button is disabled.
+- The permanent terminal tab points to either Root or the last active project
+  terminal.
+- Each active project has one VTE terminal page named `project-<id>`.
+- File opens can create temporary app tabs. Eldrun tries to find the launched
+  process' X11 window and reparent it into the center panel.
+- If embedding fails, the app tab is removed and the app is tracked as a
+  standalone open window in the right overlay.
+- An offline banner is displayed over the stack when the network probe reports
+  offline.
+- The terminal command comes from `settings.json` key `terminal_command`;
+  supported UI choices are currently `claude` and `codex`, with shell fallback if
+  the configured command is missing.
 
-#### 2 — What Eldrun does on confirmation
+### Right File Tree Overlay
 
-1. **Creates the directory** `~/eldrun/projects/<sanitized-name>/`.
-2. **Runs `git init --initial-branch=main`** (falls back to `git init` on older git).
-3. **Writes all scaffold files** (see below).
-4. **Commits** everything as `"Initial project scaffold"` with author `Eldrun <eldrun@local>`.
-5. **Registers the project** in `~/.local/share/eldrun/projects.json` with a new UUID, the display name, the directory path, visibility, creation timestamp, and `status: "active"`.
-6. **Opens a terminal** for the project in the center panel and adds a row to the right-panel list.
+`FileTreePanel` lives in `app/panels/right_panel.py`. Despite the filename, it is
+the current project file browser, not the old project-list panel.
 
-#### 3 — Scaffold files
+The panel appears only while a project terminal is the active center page and can
+be hidden from the bottom bar. It provides:
 
-Every new project directory contains these files after creation:
+- Recursive project file tree with folders first.
+- Hidden files toggle in per-project settings.
+- Ignored internal files: `.git`, `open_apps.json`, `project.json`,
+  `project_default_apps.json`, and `.eldrun_colors.json`.
+- Double-click folder expand/collapse.
+- Double-click file open through per-project defaults, global defaults, system
+  MIME defaults, or a manual "Open With" dialog.
+- Right-click actions: open, open with, new file, new folder, copy path, reveal in
+  file manager, color label, reset color, rename, delete, and properties.
+- Per-path color labels stored as `.eldrun_colors.json` in the project.
+- An `OPEN WINDOWS` section for standalone app windows that could not be embedded.
+
+### Bottom Project Bar
+
+`BottomPanel` in `app/panels/bottom_panel.py` owns the persistent bottom controls:
+
+- **Root** opens the root workspace terminal.
+- **Search** filters currently active project pills only.
+- **Project pills** activate, close, show warm/open-app state, show time/file-type
+  stats on hover/right click, and support drag-and-drop reordering.
+- **Settings** opens terminal command, theme, workspace management, and global
+  file-type app settings.
+- **+** opens a popover for new project or import project.
+- **> / <** hides or shows the right file tree overlay.
+
+Closing a project removes its terminal and marks it inactive in the global index.
+If local metadata says the project has open apps, Eldrun asks for confirmation.
+
+### Keyboard Shortcuts
+
+| Key | Behavior |
+|-----|----------|
+| `F11` | Toggle fullscreen. |
+| `Super` | Toggle panel visibility while Eldrun is focused. Eldrun temporarily disables the desktop Super binding and restores it when focus is lost or the app exits. |
+| `Shift+Tab` | Cycle center tabs. |
+| `Esc` | Closes create/import dialogs. |
+| `Enter` | Confirms create/import when valid; activates a unique bottom-bar search match. |
+
+## Project Lifecycle
+
+### Creating a Project
+
+Click `+` -> `New Project`.
+
+Name sanitization for the directory:
+
+- Lowercase and trim.
+- Spaces and underscores become hyphens.
+- Characters outside `a-z`, `0-9`, and `-` are removed.
+- Repeated hyphens collapse and leading/trailing hyphens are stripped.
+
+Example: `My New Project!` -> `my-new-project`.
+
+On confirmation Eldrun:
+
+1. Creates `~/eldrun/projects/<sanitized-name>/`.
+2. Runs `git init --initial-branch=main`, falling back to plain `git init`.
+3. Writes scaffold files.
+4. Commits them as `Initial project scaffold` with author
+   `Eldrun <eldrun@local>`.
+5. Creates project-local `project.json`.
+6. Adds a lightweight global index entry to
+   `~/.local/share/eldrun/projects.json`.
+7. Opens the project terminal and adds a project pill.
+8. Starts a background stats scan.
+
+### Importing a Project
+
+Click `+` -> `Import Project`.
+
+Import modes:
+
+| Mode | Behavior |
+|------|----------|
+| Keep location | Registers the selected directory in place. |
+| Copy | Copies the source into `~/eldrun/projects/<sanitized-name>/`, excluding `.git/`. |
+| Move | Moves the source into `~/eldrun/projects/<sanitized-name>/`. |
+
+Missing scaffold files are created without overwriting existing files. If the
+target has no `.git/`, Eldrun initializes git and commits the registration or
+import.
+
+### Scaffold Files
+
+New and imported projects receive these files when missing:
 
 | File | Purpose |
 |------|---------|
-| `AGENTS.md` | Agent-facing instructions: project purpose and key conventions. Claude reads this to understand scope and rules. |
-| `CLAUDE.md` | Claude Code context: directory path and visibility type. Extend this with architecture notes, commands, and gotchas as the project grows. |
-| `.gitignore` | Sensible defaults covering Python, Node, macOS, and common build artifacts. |
-| `TODO.md` | Task list for the project. |
-| `ROADMAP.md` | Long-term plans and milestones. |
-| `DOCUMENTATION.md` | Project-level documentation (this file pattern). |
+| `AGENTS.md` | Agent instructions, scope, and permission boundary. |
+| `CLAUDE.md` | Claude Code context: path, visibility, and project notes. |
+| `.claude/settings.json` | Claude permission allow/deny rules scoped to the project directory. |
+| `.gitignore` | Common Python, Node, macOS, log, and build ignores. |
+| `TODO.md` | Project task list. |
+| `ROADMAP.md` | Long-term project roadmap. |
+| `DOCUMENTATION.md` | Project documentation stub. |
 
-Initial file contents (where `{name}` is the display name, `{directory}` is the absolute path, `{git_type}` is `private` or `public`):
+The root terminal also gets context files in `~/eldrun/root/`:
 
-**`AGENTS.md`**
-```markdown
-# {name}
-
-## Purpose
-
-## Key conventions
-```
-
-**`CLAUDE.md`**
-```markdown
-# {name}
-
-- **Directory:** `{directory}`
-- **Type:** {git_type}
-
-## What this project is
-
-```
-
-**`.gitignore`**
-```
-.env
-__pycache__/
-*.pyc
-node_modules/
-.DS_Store
-*.log
-dist/
-build/
-.venv/
-```
-
-**`TODO.md`**
-```markdown
-# {name} — TODO
-```
-
-**`ROADMAP.md`**
-```markdown
-# {name} — Roadmap
-```
-
-**`DOCUMENTATION.md`**
-```markdown
-# {name} — Documentation
-```
-
-#### 4 — Registry entry
-
-The new project is appended to `~/.local/share/eldrun/projects.json` as:
-
-```json
-{
-  "id": "<uuid4>",
-  "name": "<display name>",
-  "directory": "/home/<user>/eldrun/projects/<sanitized-name>",
-  "git_type": "private",
-  "created_at": "<ISO 8601 UTC timestamp>",
-  "status": "active",
-  "position": <integer ordering weight>
-}
-```
-
-`shell_pid` is held in memory only and never written to disk.
-
----
-
-### Importing an existing project
-
-Click **+** → **Import Project**, then browse to an existing directory.
-
-Three import modes are available:
-
-| Mode | What happens |
-|------|-------------|
-| **Keep location** (default) | Registers the folder in place — no files are moved or copied. |
-| **Copy** | Copies the folder to `~/eldrun/projects/<sanitized-name>/` (`.git/` is excluded). |
-| **Move** | Moves the folder to `~/eldrun/projects/<sanitized-name>/`. |
-
-In all modes, any scaffold files that are missing from the target directory are created automatically (existing files are never overwritten). If the directory has no `.git/` folder, `git init` is run and the result is committed as `"Register existing project"` (keep mode) or `"Import existing project"` (copy/move).
+- `CLAUDE.md`: explains the Eldrun workspace root and global data files.
+- `AGENTS.md`: tells agents that root-terminal work is for Eldrun/workspace
+  management, not project implementation.
 
 ## Architecture
 
-```
+```text
 EldrunApp (Adw.Application)
 └── EldrunWindow (Adw.ApplicationWindow)
-    ├── LeftPanel  — EWMH app list + project file tree
-    ├── CenterPanel — Gtk.Stack of Vte.Terminal pages
-    └── RightPanel — Root button + project list
+    ├── header: status lamp, network icon, clock, custom window controls
+    ├── CenterPanel: VTE terminals, app tabs, X11 embedding attempt
+    ├── FileTreePanel: project file tree and standalone open-window list
+    └── BottomPanel: Root, search, project pills, settings, add/import, panel toggle
 ```
 
-`ProjectManager` persists projects to `~/.local/share/eldrun/projects.json`.
-Projects are created under `~/eldrun/` and are full git repos.
+### Module Map
 
-## Global data files
+| File | Responsibility |
+|------|----------------|
+| `app/eldrun.py` | Application entry point, CSS themes, signal handlers, `EldrunApp`. |
+| `app/window.py` | Main window composition, key handling, startup restore, project activation, time tracking hooks, network callbacks, workspace integration. |
+| `app/project_manager.py` | Project registry, project creation/import, scaffold writing, migrations, root context files. |
+| `app/new_project_dialog.py` | Modal project creation UI and validation. |
+| `app/import_project_dialog.py` | Modal import UI, folder chooser, mode selection. |
+| `app/settings_manager.py` | JSON-backed user settings. |
+| `app/default_apps_manager.py` | Global and per-project file-extension app mappings; system MIME bootstrap. |
+| `app/time_tracker.py` | Active project session tracking and crash/orphan session closure. |
+| `app/project_stats.py` | Background file-type and time summary scanner. |
+| `app/network_monitor.py` | Background 1.1.1.1:53 probe and network interface type detection. |
+| `app/workspace_manager.py` | Cinnamon workspace creation/switch/removal and sticky Eldrun window support. |
+| `app/panels/center_panel.py` | Terminal stack, tab bar, app tab lifecycle, X11 embedding/fallback. |
+| `app/panels/right_panel.py` | Current `FileTreePanel`: file operations, default app dialogs, open-window list. |
+| `app/panels/bottom_panel.py` | Bottom bar, project pills, settings windows, search, drag/drop ordering. |
 
-All global Eldrun state lives under `~/.local/share/eldrun/`. These files are managed entirely by Eldrun and should not be edited by hand.
+## Persistence Model
+
+Eldrun intentionally splits global index data from project-local metadata.
+
+### Global Directory
+
+All global data is under `~/.local/share/eldrun/`.
 
 | File | Managed by | Purpose |
-|------|-----------|---------|
-| `projects.json` | `ProjectManager` | Registry of every known project — paths, statuses, positions, and metadata. |
-| `time_log.json` | `TimeTracker` | Append-only log of all work sessions across all projects. |
-| `active_session.json` | `TimeTracker` | Sentinel written at session start and deleted on clean close; used to synthesise a closing entry after a crash. |
-| `settings.json` | `SettingsManager` | User-configurable app settings (e.g. `terminal_command`). |
-| `default_apps.json` | `DefaultAppsManager` | Global `extension → app` map, bootstrapped from system MIME defaults and editable via the "File Type Apps" settings window. |
+|------|------------|---------|
+| `projects.json` | `ProjectManager` | Lightweight index of known projects. |
+| `settings.json` | `SettingsManager` | User settings. |
+| `default_apps.json` | `DefaultAppsManager` | Global file-extension app map. |
+| `time_log.json` | `TimeTracker` | Append-only session records. |
+| `active_session.json` | `TimeTracker` | Crash/orphan-session sentinel. |
 
-### `projects.json` schema
+### `projects.json`
 
-Array of project objects. Each entry:
+Current global index entries contain only:
 
 ```json
 {
   "id": "<uuid4>",
   "name": "My Project",
-  "directory": "/home/<user>/eldrun/projects/my-project",
-  "git_type": "private",
-  "created_at": "2025-05-01T10:00:00+00:00",
-  "status": "inactive",
+  "status": "current",
   "position": 10,
-  "time": {
-    "total_s": 3600,
-    "recent_sessions": [
-      { "date": "2025-05-01", "start": "2025-05-01 10:00", "duration_s": 3600 }
-    ]
-  },
-  "file_type_stats": { ".py": { "count": 12, "bytes": 48200 } },
-  "time_today_s": 1800,
-  "time_total_s": 3600,
-  "stats_updated": "2025-05-01T11:00:00"
+  "local_file": "/home/user/eldrun/projects/my-project/project.json"
 }
 ```
 
-| Field | Values | Meaning |
-|-------|--------|---------|
-| `status` | `"current"` | The project whose terminal is shown in the center panel (at most one at a time). |
-| | `"active"` | In the right-panel list with a running terminal, but not the foreground view. |
-| | `"inactive"` | Registered globally but not shown in the panel and has no running terminal. |
-| `position` | integer | Sort weight for ordering rows in the right panel; lower = higher. |
-| `time` | object | Time tracking summary written by `TimeTracker` after each session: `total_s` and a list of up to 20 `recent_sessions`. |
-| `file_type_stats` | object | Per-extension `{count, bytes}` map written by the background stats scanner. |
-| `time_today_s` | number | Seconds worked today, written by the stats scanner. |
-| `time_total_s` | number | Lifetime seconds worked, written by the stats scanner. |
-| `stats_updated` | string | ISO timestamp of the last stats scan. |
+Global fields:
 
-`shell_pid` is tracked in memory only and never written to disk.
+| Field | Meaning |
+|-------|---------|
+| `id` | Stable UUID for UI state, logs, and references. |
+| `name` | Display name. |
+| `status` | `current`, `active`, or `inactive`. At most one should be `current`. |
+| `position` | Bottom-bar ordering weight; lower appears earlier. |
+| `local_file` | Path to project-local metadata. |
 
-### `time_log.json` schema
+Older entries that stored full project data in `projects.json` are migrated on
+load by deriving or writing `project.json`.
 
-Array of session records, one per closed session:
+### Project-Local `project.json`
+
+Each project stores durable local metadata in `<project_dir>/project.json`.
+
+Example:
+
+```json
+{
+  "id": "<uuid4>",
+  "name": "My Project",
+  "directory": "/home/user/eldrun/projects/my-project",
+  "git_type": "private",
+  "created_at": "2026-05-27T10:00:00+00:00",
+  "status": "current",
+  "position": 10,
+  "local_file": "/home/user/eldrun/projects/my-project/project.json",
+  "default_apps": {
+    ".md": "gnome-text-editor"
+  },
+  "file_type_stats": {
+    ".py": { "count": 12, "bytes": 48200 }
+  },
+  "time_today_s": 1800.0,
+  "time_total_s": 3600.0,
+  "last_updated": "2026-05-27T11:00:00",
+  "time": {
+    "total_s": 3600.0,
+    "recent_sessions": [
+      {
+        "date": "2026-05-27",
+        "start": "2026-05-27 10:00",
+        "duration_s": 3600.0
+      }
+    ]
+  },
+  "open_apps": []
+}
+```
+
+Notes:
+
+- `ProjectManager` treats `id`, `name`, `status`, `position`, and `local_file`
+  as global-index-canonical fields and overlays them when loading.
+- `shell_pid` is runtime-only and is not persisted.
+- `open_apps` is preserved by `ProjectManager` but is not fully managed by the
+  current `FileTreePanel` implementation.
+- Per-project default app overrides live in `default_apps`.
+- Old `project_default_apps.json` files are migrated into `project.json`.
+
+### `settings.json`
+
+Defaults:
+
+```json
+{
+  "terminal_command": "claude",
+  "workspace_management": false
+}
+```
+
+The UI can also persist `color_scheme` as `"dark"` or `"light"`.
+
+### `default_apps.json`
+
+```json
+{
+  ".py": "code",
+  ".md": "gnome-text-editor",
+  ".pdf": "evince"
+}
+```
+
+Lookup order for file opens:
+
+1. Project-local `project.json["default_apps"]`.
+2. Global `default_apps.json`.
+3. System MIME default from `xdg-mime`.
+4. Manual "Open With" dialog.
+
+### `time_log.json`
 
 ```json
 [
   {
     "project_id": "<uuid4>",
-    "date": "2025-05-01",
-    "start_iso": "2025-05-01T10:00:00+00:00",
-    "duration_s": 3600
+    "date": "2026-05-27",
+    "start_iso": "2026-05-27T10:00:00+00:00",
+    "duration_s": 3600.0
   }
 ]
 ```
 
-### `settings.json` schema
+`active_session.json` stores the active project id and start time while a session
+is open. On next startup, `TimeTracker` closes a leftover sentinel as an orphaned
+session and removes the sentinel.
 
-```json
-{
-  "terminal_command": "claude"
-}
+## Runtime Behavior
+
+### Startup
+
+1. `EldrunApp` applies CSS and creates `EldrunWindow`.
+2. `ProjectManager` creates required global directories and root context files,
+   then loads and migrates the project registry.
+3. Settings, default apps, time tracker, and workspace manager are initialized.
+4. On map, visible projects (`active` or `current`) get terminals and bottom-bar
+   pills.
+5. Inactive projects receive background stats scans.
+6. The root terminal is opened.
+7. Optional workspace management allocates workspaces for visible projects.
+8. Default app mappings are bootstrapped from system MIME defaults in an idle
+   callback.
+
+### Project Activation
+
+Activating a project pill:
+
+- Shows the project terminal page.
+- Marks the previous current project `active`.
+- Marks the new one `current`.
+- Updates the file tree overlay.
+- Starts a time-tracking session for the project.
+- Refreshes time tooltips.
+- Switches to the assigned Cinnamon workspace if workspace management is enabled.
+
+Switching away from a project terminal closes the active time-tracking session.
+
+### Terminal Respawn
+
+Project and root terminals respawn automatically when their child exits. Changing
+the terminal command from settings resets active terminal widgets and terminates
+recorded child PIDs so they respawn with the new command.
+
+### File Opening and App Embedding
+
+When a file is opened:
+
+1. Eldrun resolves an app command.
+2. It launches `subprocess.Popen([app, path], cwd=project_dir)`.
+3. `CenterPanel` creates an app tab and polls `_NET_CLIENT_LIST` for a window with
+   `_NET_WM_PID` matching the launched process.
+4. If found, Eldrun attempts to strip decorations and reparent the X11 window into
+   the center stack.
+5. If embedding fails, it closes the app tab and records a standalone open-window
+   row in the right overlay.
+
+This is best-effort and X11-specific. Wayland compositors do not support this
+model.
+
+### Network Monitoring
+
+`NetworkMonitor` runs a daemon thread every 5 seconds:
+
+- TCP connect probe to `1.1.1.1:53` with a 3 second timeout.
+- Interface scan under `/sys/class/net` to classify `wlan`, `lan`, or
+  `disconnected`.
+- UI callbacks are delivered through `GLib.idle_add`.
+
+### Workspace Management
+
+When enabled, `WorkspaceManager` targets Cinnamon:
+
+- Eldrun's window is marked sticky using `_NET_WM_STATE_STICKY`.
+- Each active project gets an appended workspace.
+- Activating a project switches to its assigned workspace.
+- Closing a project removes its assigned workspace and reindexes assignments.
+- Assignments are in memory and rebuilt every launch.
+
+If Cinnamon DBus Eval is unavailable, workspace management effectively becomes a
+no-op except for limited EWMH switching fallback.
+
+## Tests and Current Quality Signals
+
+The repository has unit tests for project management, settings, default apps,
+network detection, time tracking, and some legacy right-panel logic.
+
+Recommended checks:
+
+```bash
+python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py \
+  app/new_project_dialog.py app/import_project_dialog.py app/settings_manager.py \
+  app/default_apps_manager.py app/network_monitor.py app/time_tracker.py \
+  app/project_stats.py app/workspace_manager.py app/panels/*.py
+
+python3 -m unittest
 ```
 
-`terminal_command` is the executable spawned in each project terminal (default: `claude`; fallback: `bash`).
+Important analysis findings:
 
-### `default_apps.json` schema
+- `tests/test_open_apps_manager.py` imports `panels.left_panel`, but that module
+  is not present in the current tree. The code now places file/open-window logic
+  in `app/panels/right_panel.py`.
+- `tests/test_right_panel_logic.py` describes old `RightPanel` behavior while the
+  live UI now uses `BottomPanel` project pills and `FileTreePanel`.
+- `tests/test_project_manager.py` expects `STATUS.md` in the scaffold, but the
+  current `_SCAFFOLD` does not include it.
+- Some implementation/doc names still carry historical terms (`right_panel.py`
+  containing `FileTreePanel`, old comments that mention `OpenAppsManager`), so
+  maintenance benefits from either renaming or clearly documenting the transition.
 
-```json
-{
-  ".py": "code",
-  ".md": "marktext",
-  ".pdf": "evince"
-}
-```
+## Known Limitations
 
-Maps file extension (with leading `.`) to the executable name used to open files of that type globally. Per-project overrides live in `<project_dir>/project_default_apps.json` with the same schema.
+- X11 app embedding is fragile and should be treated as experimental.
+- Wayland support is not implemented for embedding or workspace control.
+- The bottom search currently filters only active project pills, not every
+  registered project.
+- Open-window/app persistence is partially represented in metadata but not wired
+  as a robust current feature.
+- Workspace management is Cinnamon-specific.
+- Network status depends on reaching Cloudflare DNS and may show offline on
+  networks that block direct TCP/53 even when general internet access works.
+- The app uses several GTK widgets and X11 techniques that require live-session
+  testing beyond headless unit tests.
 
-## Roadmap
+## Practical Development Notes
 
-- Wayland support (replace X11 reparenting with a proper compositor protocol)
-- GitHub integration: push `public` projects on creation
-- Multi-window support
-- Per-project Claude model selection
+- Prefer editing under `app/`; generated global/runtime data lives under
+  `~/.local/share/eldrun/` and project-local runtime files.
+- Use `GLib.idle_add` for GTK updates from threads and return `False` from one-shot
+  callbacks.
+- Keep `ProjectManager._save()` as a lightweight index write and
+  `_save_local()` as project-local metadata write.
+- Be careful with terminal command changes: active terminals are reset and child
+  PIDs are killed so VTE `child-exited` handlers respawn them.
+- Treat X11 window IDs as volatile. Any embedding path needs recovery that returns
+  to a valid terminal page on failure.
