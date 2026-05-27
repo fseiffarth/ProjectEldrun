@@ -86,6 +86,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._fullscreen = False
         self._panels_hidden = False
         self._file_tree_hidden = False
+        self._active_project_id: str | None = None
         self.project_manager = ProjectManager()
         self.settings_manager = SettingsManager()
         self.default_apps_manager = DefaultAppsManager()
@@ -332,28 +333,32 @@ class EldrunWindow(Adw.ApplicationWindow):
 
     def _apply_panel_visibility(self):
         page = self._center_panel._stack.get_visible_child_name() or "empty"
-        is_project = page.startswith("project-")
-        show_panel = (is_project
+        is_project_page = page.startswith("project-")
+        is_agent_page = page.startswith("agent-")
+
+        if not is_agent_page:
+            if is_project_page:
+                project_id = page[len("project-"):]
+                self._active_project_id = project_id
+                project = self.project_manager.get_project(project_id)
+                self._file_tree_panel.update_project(project)
+                self._bottom_panel.set_active_project(project_id)
+                if project:
+                    self._time_tracker.on_project_activated(project)
+                self._refresh_time_bars()
+            else:
+                self._active_project_id = None
+                self._file_tree_panel.update_project(None)
+                self._bottom_panel.set_active_project(None)
+                self._time_tracker.on_project_deactivated()
+                self._refresh_time_bars()
+
+        show_panel = (self._active_project_id is not None
                       and not self._file_tree_hidden
                       and not self._panels_hidden)
-
         self._file_tree_panel.set_visible(show_panel)
         self._update_toggle_btn(show_panel)
-        self._bottom_panel.set_panel_toggle_visible(is_project)
-
-        if page.startswith("project-"):
-            project_id = page[len("project-"):]
-            project = self.project_manager.get_project(project_id)
-            self._file_tree_panel.update_project(project)
-            self._bottom_panel.set_active_project(project_id)
-            if project:
-                self._time_tracker.on_project_activated(project)
-            self._refresh_time_bars()
-        else:
-            self._file_tree_panel.update_project(None)
-            self._bottom_panel.set_active_project(None)
-            self._time_tracker.on_project_deactivated()
-            self._refresh_time_bars()
+        self._bottom_panel.set_panel_toggle_visible(self._active_project_id is not None)
 
     def _toggle_panels(self):
         self._panels_hidden = not self._panels_hidden
@@ -482,6 +487,9 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.project_manager.deactivate_project(project_id)
         if self._wm_enabled:
             self._workspace_manager.release(project_id)
+        if self._active_project_id == project_id:
+            self._active_project_id = None
+            self._apply_panel_visibility()
 
     def _bootstrap_default_apps(self) -> bool:
         self.default_apps_manager.bootstrap_from_system()

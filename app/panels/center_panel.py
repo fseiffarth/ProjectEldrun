@@ -91,7 +91,6 @@ class CenterPanel(Gtk.Box):
         self._embedded_page: str | None = None
 
         # Extra agent tab tracking
-        self._agent_counter = 0
         self._agent_info: dict[str, dict] = {}  # page_key → {cmd, directory}
 
         # Xlib connection (lazy)
@@ -112,9 +111,11 @@ class CenterPanel(Gtk.Box):
         tab_bar_scroll.set_child(self._tab_bar)
         self.append(tab_bar_scroll)
 
-        # Create the permanent Agent tab
+        # Create the default Agent tab (closeable and renameable like any other)
         self._add_tab(_TERMINAL_TAB, "Agent", icon="utilities-terminal-symbolic",
-                      closeable=False)
+                      closeable=True,
+                      on_rename=self._show_agent_rename_popover,
+                      on_close=lambda: self._remove_tab(_TERMINAL_TAB))
 
         # Right-click on tab bar to add a new agent tab
         tab_rclick = Gtk.GestureClick()
@@ -280,9 +281,16 @@ class CenterPanel(Gtk.Box):
                 return project["directory"]
         return _ROOT_DIR
 
+    def _next_agent_number(self) -> int:
+        used = {int(k[len("agent-"):]) for k in self._agent_info if k.startswith("agent-")
+                and k[len("agent-"):].isdigit()}
+        n = 1
+        while n in used:
+            n += 1
+        return n
+
     def _add_agent_terminal(self, cmd: str):
-        self._agent_counter += 1
-        n = self._agent_counter
+        n = self._next_agent_number()
         page_key = f"agent-{n}"
         label = f"Agent{n}"
         directory = self._current_agent_directory()

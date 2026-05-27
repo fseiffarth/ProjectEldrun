@@ -11,11 +11,11 @@
 
 2. [x] **Multiple agent tabs**: in addition to switching the default terminal command between `claude` and `codex`, right-clicking the tab bar should open a popover for adding a new `claude` or `codex` agent from a dropdown. Additional agents are named `Agent1`, `Agent2`, etc.; right-clicking an agent tab should open a rename popover except for the default Agent tab; additional agent tabs get an `x` close button, but the default Agent tab does not.
 
-3. [ ] **Agent numbering reset after close** (`ISSUE-013`): after an additional agent is closed, recompute visible agent display numbers or intentionally reuse the expected sequence so the next added agent does not continue from a stale number.
+3. [x] **Agent numbering reset after close** (`ISSUE-013`): after an additional agent is closed, recompute visible agent display numbers or intentionally reuse the expected sequence so the next added agent does not continue from a stale number.
 
-4. [ ] **Agent creation stays in current project** (`ISSUE-014`): adding a new agent should keep the bottom project switcher selection, keep the right panel visible, and only open a new terminal/tab inside the current project.
+4. [x] **Agent creation stays in current project** (`ISSUE-014`): adding a new agent should keep the bottom project switcher selection, keep the right panel visible, and only open a new terminal/tab inside the current project.
 
-5. [ ] **Uniform agent tab behavior**: do not distinguish between the master/default agent and newly added agents. Every agent tab should be renameable and closeable; if all agents are closed, the user must add a new one manually by right-clicking the tab bar.
+5. [x] **Uniform agent tab behavior**: do not distinguish between the master/default agent and newly added agents. Every agent tab should be renameable and closeable; if all agents are closed, the user must add a new one manually by right-clicking the tab bar.
 
 6. [x] **Settings dropdown stays open**: resolved by commit `fa13e2d` — settings was converted from `Gtk.Popover` (which autohides on outside clicks) to `Gtk.Window` with `modal=True`, so the dropdown interaction no longer dismisses it.
 
