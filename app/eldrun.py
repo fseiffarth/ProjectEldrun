@@ -24,6 +24,21 @@ import signal
 import sys
 import os
 
+
+def _should_use_cairo_renderer(environ=os.environ) -> bool:
+    """Cinnamon/X11 can flicker on rapid VTE redraws with GTK's GL renderer."""
+    if environ.get("GSK_RENDERER"):
+        return False
+    if environ.get("ELDRUN_DISABLE_RENDERER_WORKAROUND") == "1":
+        return False
+    session_type = environ.get("XDG_SESSION_TYPE", "").lower()
+    desktop = environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    return session_type == "x11" and "cinnamon" in desktop
+
+
+if _should_use_cairo_renderer():
+    os.environ["GSK_RENDERER"] = "cairo"
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import gi
@@ -96,9 +111,59 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
     border-right: 1px solid #30363d;
 }
 .panel-right {
-    background-color: #161b22;
-    border-left: 1px solid #30363d;
-    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.5);
+    background: linear-gradient(90deg, #0f1724 0%, #161b22 9%, #161b22 100%);
+    border-left: 2px solid #3d4654;
+    box-shadow: inset 4px 0 0 rgba(56, 139, 253, 0.2),
+                -8px 0 22px rgba(0, 0, 0, 0.52);
+}
+.panel-right separator {
+    background-color: rgba(139, 148, 158, 0.2);
+}
+.panel-right button.flat {
+    color: #8b949e;
+}
+.panel-right button.flat:hover {
+    background-color: rgba(56, 139, 253, 0.14);
+    color: #e6edf3;
+}
+.panel-right .right-panel-surface {
+    margin: 0 8px 8px 8px;
+    border: 1px solid rgba(139, 148, 158, 0.16);
+    border-radius: 7px;
+    background-color: rgba(13, 17, 23, 0.34);
+    box-shadow: inset 0 1px 0 rgba(240, 246, 252, 0.04);
+}
+.panel-right .right-tree-surface {
+    margin-top: 2px;
+}
+.panel-right .right-file-tree.view {
+    background-color: transparent;
+    color: #e6edf3;
+    padding: 3px 2px;
+}
+.panel-right .right-file-tree.view:hover {
+    background-color: rgba(56, 139, 253, 0.1);
+}
+.panel-right .right-file-tree.view:selected,
+.panel-right .right-file-tree.view:focus:selected {
+    background-color: rgba(56, 139, 253, 0.24);
+    color: #ffffff;
+}
+.panel-right .right-open-windows-section {
+    margin-bottom: 6px;
+}
+.panel-right .right-open-windows-list row {
+    border-radius: 6px;
+    margin: 2px 4px;
+}
+.panel-right .right-open-windows-list row:hover {
+    background-color: rgba(56, 139, 253, 0.14);
+}
+.panel-right .right-open-windows-list label {
+    color: #e6edf3;
+}
+.panel-right .right-open-windows-list image {
+    color: #8b949e;
 }
 .panel-header {
     font-size: 11px;
@@ -360,7 +425,7 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
 .project-pill {
     border-radius: 12px;
     padding: 0;
-    min-height: 28px;
+    min-height: 40px;
     background-color: #21262d;
     color: #8b949e;
     border: 1px solid #30363d;
@@ -386,7 +451,7 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
 .project-pill-warm .pill-dot { color: #58a6ff; }
 .bottom-root-btn {
     font-size: 12px;
-    min-height: 28px;
+    min-height: 40px;
     padding: 0 10px;
     border-radius: 6px;
 }
@@ -397,7 +462,7 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
     font-size: 16px;
     font-weight: bold;
     min-width: 32px;
-    min-height: 28px;
+    min-height: 40px;
     background-color: #238636;
     color: #ffffff;
     border-radius: 6px;
@@ -410,18 +475,22 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
     font-size: 13px;
     color: #8b949e;
     min-width: 20px;
-    min-height: 28px;
+    min-height: 40px;
     padding: 0 4px;
     border-radius: 4px;
 }
 .bottom-toggle-btn:hover { color: #e6edf3; }
 .bottom-panel searchentry {
-    min-height: 28px;
+    min-height: 40px;
     font-size: 12px;
     border-radius: 6px;
     background-color: #21262d;
     color: #e6edf3;
     border: 1px solid #30363d;
+}
+.bottom-panel searchentry entry {
+    min-height: 40px;
+    border-radius: 6px;
 }
 .bottom-panel searchentry:focus {
     border-color: #388bfd;
@@ -479,9 +548,59 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
     border-right: 1px solid #d0d7de;
 }
 .panel-right {
-    background-color: #f6f8fa;
-    border-left: 1px solid #d0d7de;
-    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.18);
+    background: linear-gradient(90deg, #e9eef5 0%, #f6f8fa 9%, #f6f8fa 100%);
+    border-left: 2px solid #b9c4d0;
+    box-shadow: inset 4px 0 0 rgba(9, 105, 218, 0.16),
+                -8px 0 22px rgba(27, 31, 36, 0.18);
+}
+.panel-right separator {
+    background-color: rgba(87, 96, 106, 0.2);
+}
+.panel-right button.flat {
+    color: #57606a;
+}
+.panel-right button.flat:hover {
+    background-color: rgba(9, 105, 218, 0.1);
+    color: #24292f;
+}
+.panel-right .right-panel-surface {
+    margin: 0 8px 8px 8px;
+    border: 1px solid rgba(87, 96, 106, 0.16);
+    border-radius: 7px;
+    background-color: rgba(255, 255, 255, 0.74);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+.panel-right .right-tree-surface {
+    margin-top: 2px;
+}
+.panel-right .right-file-tree.view {
+    background-color: transparent;
+    color: #24292f;
+    padding: 3px 2px;
+}
+.panel-right .right-file-tree.view:hover {
+    background-color: rgba(9, 105, 218, 0.08);
+}
+.panel-right .right-file-tree.view:selected,
+.panel-right .right-file-tree.view:focus:selected {
+    background-color: rgba(9, 105, 218, 0.18);
+    color: #24292f;
+}
+.panel-right .right-open-windows-section {
+    margin-bottom: 6px;
+}
+.panel-right .right-open-windows-list row {
+    border-radius: 6px;
+    margin: 2px 4px;
+}
+.panel-right .right-open-windows-list row:hover {
+    background-color: rgba(9, 105, 218, 0.1);
+}
+.panel-right .right-open-windows-list label {
+    color: #24292f;
+}
+.panel-right .right-open-windows-list image {
+    color: #57606a;
 }
 .panel-header {
     font-size: 11px;
@@ -706,7 +825,7 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 .project-pill {
     border-radius: 12px;
     padding: 0;
-    min-height: 28px;
+    min-height: 40px;
     background-color: #eaeef2;
     color: #57606a;
     border: 1px solid #d0d7de;
@@ -732,7 +851,7 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 .project-pill-warm .pill-dot { color: #0550ae; }
 .bottom-root-btn {
     font-size: 12px;
-    min-height: 28px;
+    min-height: 40px;
     padding: 0 10px;
     border-radius: 6px;
 }
@@ -743,7 +862,7 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
     font-size: 16px;
     font-weight: bold;
     min-width: 32px;
-    min-height: 28px;
+    min-height: 40px;
     background-color: #2da44e;
     color: #ffffff;
     border-radius: 6px;
@@ -756,25 +875,29 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
     font-size: 13px;
     color: #57606a;
     min-width: 20px;
-    min-height: 28px;
+    min-height: 40px;
     padding: 0 4px;
     border-radius: 4px;
 }
 .bottom-toggle-btn:hover { color: #24292f; }
 .bottom-panel searchentry {
-    min-height: 28px;
+    min-height: 40px;
     font-size: 12px;
     border-radius: 6px;
     background-color: #eaeef2;
     color: #24292f;
     border: 1px solid #d0d7de;
 }
+.bottom-panel searchentry entry {
+    min-height: 40px;
+    border-radius: 6px;
+}
 .bottom-panel searchentry:focus {
     border-color: #0969da;
 }
 """
 
-_CSS_FANCY = _CSS + """
+_CSS_FANCY_DARK = _CSS + """
 /* ── fancy modern theme overrides ───────────────────────── */
 window {
     background-color: #101624;
@@ -805,6 +928,7 @@ button.terminal-back-btn,
 .bottom-add-btn,
 .bottom-toggle-btn,
 .bottom-panel searchentry,
+.bottom-panel searchentry entry,
 .debug-badge,
 .offline-banner,
 progressbar.project-time-bar trough,
@@ -830,7 +954,38 @@ progressbar.project-time-bar progress {
     border-color: rgba(94, 220, 255, 0.22);
 }
 .panel-right {
-    box-shadow: -4px 0 18px rgba(45, 212, 191, 0.14);
+    background: linear-gradient(90deg, #091827 0%, #121a2b 12%, #121a2b 100%);
+    border-left: 2px solid rgba(94, 220, 255, 0.4);
+    box-shadow: inset 4px 0 0 rgba(45, 212, 191, 0.22),
+                -8px 0 24px rgba(45, 212, 191, 0.14);
+}
+.panel-right separator {
+    background-color: rgba(94, 220, 255, 0.18);
+}
+.panel-right button.flat:hover {
+    background-color: rgba(45, 212, 191, 0.14);
+    color: #f4f8ff;
+}
+.panel-right .right-panel-surface {
+    border-color: rgba(94, 220, 255, 0.16);
+    border-radius: 0;
+    background-color: rgba(7, 19, 31, 0.34);
+    box-shadow: inset 0 1px 0 rgba(139, 233, 255, 0.06);
+}
+.panel-right .right-file-tree.view:hover,
+.panel-right .right-open-windows-list row:hover {
+    background-color: rgba(45, 212, 191, 0.12);
+}
+.panel-right .right-file-tree.view:selected,
+.panel-right .right-file-tree.view:focus:selected {
+    background-color: rgba(45, 212, 191, 0.22);
+    color: #f4f8ff;
+}
+.panel-right .right-open-windows-list label {
+    color: #f4f8ff;
+}
+.panel-right .right-open-windows-list image {
+    color: #8ca3c7;
 }
 .panel-header,
 .conn-type-label,
@@ -930,6 +1085,9 @@ button.terminal-back-btn:hover {
 }
 .center-tab {
     color: #8ca3c7;
+    margin-top: 0;
+    margin-start: 0;
+    margin-end: 0;
 }
 .center-tab:hover {
     background-color: rgba(54, 197, 240, 0.1);
@@ -944,6 +1102,9 @@ button.terminal-back-btn:hover {
     border-right-color: rgba(179, 136, 255, 0.35);
     border-bottom-color: #121a2b;
     box-shadow: 0 -1px 10px rgba(54, 197, 240, 0.16);
+    margin-top: 0;
+    margin-start: 0;
+    margin-end: 0;
 }
 .tab-drag-over-left,
 .tab-drag-over-right {
@@ -993,8 +1154,283 @@ button.terminal-back-btn:hover {
     color: #f4f8ff;
     border-color: #293852;
 }
+.bottom-panel .project-search-entry,
+.bottom-panel entry.project-search-entry,
+.bottom-panel .project-search-entry text,
+.bottom-panel entry.project-search-entry text {
+    border-radius: 0;
+}
 .bottom-panel searchentry:focus {
     border-color: #36c5f0;
+}
+"""
+
+
+_CSS_FANCY_LIGHT = _CSS_LIGHT + """
+/* ── fancy bright theme overrides ───────────────────────── */
+window {
+    background-color: #f7fbff;
+    color: #172033;
+}
+.app-header {
+    background: linear-gradient(90deg, #f7fbff 0%, #e8f7ff 48%, #f5ecff 100%);
+    border-bottom: 1px solid rgba(9, 105, 218, 0.24);
+}
+.app-title {
+    color: #0969da;
+}
+button.wm-btn.wm-close { background-color: #ff5c8a; }
+button.wm-btn.wm-close:hover { background-color: #d7256f; }
+button.wm-btn.wm-minimize { background-color: #ffd166; }
+button.wm-btn.wm-minimize:hover { background-color: #b7791f; }
+button.wm-btn.wm-maximize { background-color: #7ee787; }
+button.wm-btn.wm-maximize:hover { background-color: #1f883d; }
+button,
+button.wm-btn,
+.new-project-btn,
+button.panel-edge-btn,
+button.panel-toggle-inline,
+button.terminal-back-btn,
+.center-tab,
+.project-pill,
+.bottom-root-btn,
+.bottom-add-btn,
+.bottom-toggle-btn,
+.bottom-panel searchentry,
+.bottom-panel searchentry entry,
+.debug-badge,
+.offline-banner,
+progressbar.project-time-bar trough,
+progressbar.project-time-bar progress {
+    border-radius: 0;
+}
+.new-project-btn,
+.bottom-add-btn {
+    background-color: #2dd4bf;
+    color: #07131f;
+}
+.new-project-btn:hover,
+.bottom-add-btn:hover {
+    background-color: #14b8a6;
+}
+.new-project-btn:active,
+.bottom-add-btn:active {
+    background-color: #0d9488;
+}
+.panel-left,
+.panel-right {
+    background-color: #eef7ff;
+    border-color: rgba(9, 105, 218, 0.18);
+}
+.panel-right {
+    background: linear-gradient(90deg, #dff4ff 0%, #eef7ff 12%, #eef7ff 100%);
+    border-left: 2px solid rgba(9, 105, 218, 0.28);
+    box-shadow: inset 4px 0 0 rgba(20, 184, 166, 0.16),
+                -8px 0 24px rgba(9, 105, 218, 0.11);
+}
+.panel-right separator {
+    background-color: rgba(9, 105, 218, 0.16);
+}
+.panel-right button.flat:hover {
+    background-color: rgba(20, 184, 166, 0.12);
+    color: #172033;
+}
+.panel-right .right-panel-surface {
+    border-color: rgba(9, 105, 218, 0.14);
+    border-radius: 0;
+    background-color: rgba(255, 255, 255, 0.62);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+.panel-right .right-file-tree.view:hover,
+.panel-right .right-open-windows-list row:hover {
+    background-color: rgba(20, 184, 166, 0.1);
+}
+.panel-right .right-file-tree.view:selected,
+.panel-right .right-file-tree.view:focus:selected {
+    background-color: rgba(20, 184, 166, 0.18);
+    color: #172033;
+}
+.panel-right .right-open-windows-list label {
+    color: #172033;
+}
+.panel-right .right-open-windows-list image {
+    color: #5b6f91;
+}
+.panel-header,
+.conn-type-label,
+.header-time-label {
+    color: #5b6f91;
+}
+.project-row {
+    border-bottom-color: #d8e8f8;
+}
+.project-row label,
+.project-row:selected label,
+.project-row:focus:selected label {
+    color: #172033 !important;
+}
+.project-row image,
+.project-row:selected image,
+.project-row:focus:selected image {
+    color: #0969da !important;
+}
+.project-row-active,
+.project-row-warm.project-row-active {
+    border-color: #0969da;
+}
+.project-row-warm {
+    background-color: rgba(9, 105, 218, 0.1);
+}
+.close-btn:hover {
+    color: #d7256f;
+}
+.drag-over-top,
+.drag-over-bottom,
+.drag-over-left,
+.drag-over-right {
+    border-color: #8250df;
+}
+.app-row {
+    border-bottom-color: #d8e8f8;
+}
+.app-row:hover {
+    background-color: #e8f7ff;
+}
+.app-running,
+.status-online {
+    color: #1f883d;
+}
+.app-stopped,
+.placeholder-label,
+.app-version-label {
+    color: #7b8da8;
+}
+button.panel-edge-btn {
+    color: #0969da;
+    background-color: #e8f7ff;
+    border-color: #0969da;
+}
+button.panel-edge-btn:hover {
+    color: #ffffff;
+    background-color: #0969da;
+}
+.status-offline {
+    color: #d7256f;
+}
+.debug-badge {
+    color: #9a6700;
+    background-color: rgba(255, 209, 102, 0.25);
+    border-color: rgba(154, 103, 0, 0.35);
+}
+.pill-ws-badge {
+    color: #d7256f;
+}
+.offline-banner {
+    background-color: rgba(215, 37, 111, 0.88);
+}
+progressbar.project-time-bar trough {
+    background-color: #edf4fb;
+    border-color: #c9dff3;
+}
+progressbar.project-time-bar progress {
+    background: linear-gradient(90deg, #0969da 0%, #8250df 100%);
+}
+.project-time-label {
+    color: #172033 !important;
+}
+button.panel-toggle-inline {
+    color: #5b6f91;
+}
+button.panel-toggle-inline:hover {
+    color: #172033;
+}
+button.terminal-back-btn {
+    background-color: rgba(247, 251, 255, 0.94);
+    color: #172033;
+    border-color: rgba(9, 105, 218, 0.28);
+}
+button.terminal-back-btn:hover {
+    background-color: rgba(232, 247, 255, 0.98);
+}
+.center-tab {
+    color: #5b6f91;
+    margin-top: 0;
+    margin-start: 0;
+    margin-end: 0;
+}
+.center-tab:hover {
+    background-color: rgba(9, 105, 218, 0.08);
+    color: #172033;
+    border-top-color: rgba(9, 105, 218, 0.45);
+}
+.center-tab-active {
+    background: linear-gradient(180deg, #eef7ff 0%, #f7fbff 100%);
+    color: #172033;
+    border-top-color: #0969da;
+    border-left-color: rgba(9, 105, 218, 0.28);
+    border-right-color: rgba(130, 80, 223, 0.28);
+    border-bottom-color: #f7fbff;
+    box-shadow: 0 -1px 10px rgba(9, 105, 218, 0.12);
+    margin-top: 0;
+    margin-start: 0;
+    margin-end: 0;
+}
+.tab-drag-over-left,
+.tab-drag-over-right {
+    border-color: #8250df;
+}
+.bottom-panel {
+    background-color: #eef7ff;
+    border-top-color: rgba(9, 105, 218, 0.2);
+}
+.project-pill {
+    background-color: #ffffff;
+    color: #2f3a4f;
+    border-color: #c9dff3;
+}
+.project-pill:hover {
+    background-color: #e8f7ff;
+    color: #172033;
+}
+.project-pill-active {
+    background-color: rgba(9, 105, 218, 0.1);
+    color: #172033;
+    border-color: #0969da;
+}
+.project-pill-warm {
+    border-color: rgba(130, 80, 223, 0.45);
+}
+.pill-dot {
+    color: #8ca3bd;
+}
+.project-pill-active .pill-dot {
+    color: #0969da;
+}
+.project-pill-warm .pill-dot {
+    color: #8250df;
+}
+.bottom-root-btn-active {
+    box-shadow: inset 0 0 0 2px #0969da;
+}
+.bottom-toggle-btn {
+    color: #5b6f91;
+}
+.bottom-toggle-btn:hover {
+    color: #172033;
+}
+.bottom-panel searchentry {
+    background-color: #ffffff;
+    color: #172033;
+    border-color: #c9dff3;
+}
+.bottom-panel .project-search-entry,
+.bottom-panel entry.project-search-entry,
+.bottom-panel .project-search-entry text,
+.bottom-panel entry.project-search-entry text {
+    border-radius: 0;
+}
+.bottom-panel searchentry:focus {
+    border-color: #0969da;
 }
 """
 
@@ -1005,7 +1441,9 @@ _css_provider: Gtk.CssProvider | None = None
 def _normalize_theme(scheme) -> str:
     if isinstance(scheme, bool):
         return "dark" if scheme else "light"
-    if scheme in ("dark", "light", "fancy"):
+    if scheme == "fancy":
+        return "fancy_dark"
+    if scheme in ("dark", "light", "fancy_dark", "fancy_light"):
         return scheme
     return "dark"
 
@@ -1017,7 +1455,12 @@ def set_theme(scheme):
         Gtk.StyleContext.remove_provider_for_display(display, _css_provider)
     _css_provider = Gtk.CssProvider()
     scheme = _normalize_theme(scheme)
-    css = {"dark": _CSS, "light": _CSS_LIGHT, "fancy": _CSS_FANCY}[scheme]
+    css = {
+        "dark": _CSS,
+        "light": _CSS_LIGHT,
+        "fancy_dark": _CSS_FANCY_DARK,
+        "fancy_light": _CSS_FANCY_LIGHT,
+    }[scheme]
     _css_provider.load_from_data(css, -1)
     Gtk.StyleContext.add_provider_for_display(
         display,

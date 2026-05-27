@@ -9,9 +9,9 @@
 
 ### G1 — Agents and tabs
 
-G1.1 [x] **Agent tab rename**: rename the permanent terminal tab from "Terminal" to "Agent" everywhere (`_TERMINAL_TAB` label, `_update_terminal_tab_label`, `_terminal_back_btn` label).
+G1.1 [x] **Agent tab rename**: rename the permanent terminal tab from "Terminal" to the configured agent name (`Claude` or `Codex`) everywhere (`_TERMINAL_TAB` label, `_update_terminal_tab_label`, `_terminal_back_btn` label).
 
-G1.2 [x] **Multiple agent tabs**: in addition to switching the default terminal command between `claude` and `codex`, right-clicking the tab bar should open a popover for adding a new `claude` or `codex` agent from a dropdown. Additional agents are named `Agent1`, `Agent2`, etc.; right-clicking an agent tab should open a rename popover except for the default Agent tab; additional agent tabs get an `x` close button, but the default Agent tab does not.
+G1.2 [x] **Multiple agent tabs**: in addition to switching the default terminal command between `claude` and `codex`, right-clicking the tab bar should open a popover for adding a new `claude` or `codex` agent from a dropdown. Additional agents use command-specific names like `Claude1` or `Codex1`; right-clicking an agent tab should open a rename popover except for the default agent tab; additional agent tabs get an `x` close button, but the default agent tab does not.
 
 G1.3 [x] **Agent numbering reset after close** (`ISSUE-013`): after an additional agent is closed, recompute visible agent display numbers or intentionally reuse the expected sequence so the next added agent does not continue from a stale number.
 
@@ -50,6 +50,8 @@ G3.6 [ ] **Secondary-monitor app launch**: in the standalone dispatch path, if a
 G3.7 [x] **GNOME workspace support**: use `org.gnome.Shell` `Eval` or `Meta.WorkspaceManager`; fall back to `wmctrl -s <idx>` if DBus is unavailable.
 
 G3.8 [ ] **Embedded app theme propagation**: on theme toggle in `_on_toggle_theme`, iterate open embed tabs and send an XSETTINGS `Net/ThemeName` change via `python-xlib`; fall back to a no-op if the window is gone.
+
+G3.9 [x] **Fancy bright/dark split**: expose separate `Fancy Dark` and `Fancy Bright` settings values while keeping legacy `fancy` as a `fancy_dark` alias.
 
 ### G4 — Open apps and embedding
 

@@ -8,8 +8,9 @@ from gi.repository import Gtk, Gdk, GLib, GObject, Pango
 
 
 _TERMINAL_OPTIONS = ["claude", "codex"]
-_THEME_OPTIONS = ["Dark", "Bright", "Fancy"]
-_THEME_VALUES = ["dark", "light", "fancy"]
+_THEME_OPTIONS = ["Dark", "Bright", "Fancy Dark", "Fancy Bright"]
+_THEME_VALUES = ["dark", "light", "fancy_dark", "fancy_light"]
+_LEGACY_THEME_VALUES = {"fancy": "fancy_dark"}
 
 
 def project_matches_query(project: dict, query: str) -> bool:
@@ -50,6 +51,8 @@ class ProjectPill(Gtk.Box):
         self._on_drop_cb = on_drop
         self._stats_popover: Gtk.Popover | None = None
         self._hover_timer_id: int | None = None
+        self.set_valign(Gtk.Align.FILL)
+        self.set_size_request(-1, 40)
         self.add_css_class("project-pill")
 
         self._dot = Gtk.Label(label="●")
@@ -356,20 +359,19 @@ class BottomPanel(Gtk.Box):
         self._root_btn = Gtk.Button(label="Root")
         self._root_btn.add_css_class("destructive-action")
         self._root_btn.add_css_class("bottom-root-btn")
-        self._root_btn.set_valign(Gtk.Align.CENTER)
+        self._root_btn.set_valign(Gtk.Align.FILL)
+        self._root_btn.set_size_request(-1, 40)
         self._root_btn.set_margin_start(6)
-        self._root_btn.set_margin_top(5)
-        self._root_btn.set_margin_bottom(5)
         self._root_btn.connect("clicked", lambda _: on_root())
         self.append(self._root_btn)
 
         # Project search
         self._search_entry = Gtk.SearchEntry()
+        self._search_entry.add_css_class("project-search-entry")
         self._search_entry.set_placeholder_text("Search…")
-        self._search_entry.set_valign(Gtk.Align.CENTER)
+        self._search_entry.set_valign(Gtk.Align.FILL)
+        self._search_entry.set_size_request(-1, 40)
         self._search_entry.set_margin_start(6)
-        self._search_entry.set_margin_top(5)
-        self._search_entry.set_margin_bottom(5)
         self._search_entry.set_max_width_chars(14)
         self._search_entry.connect("search-changed", self._on_search_changed)
         self._search_entry.connect("activate", self._on_search_activate)
@@ -387,12 +389,10 @@ class BottomPanel(Gtk.Box):
         scroll.set_hexpand(True)
         scroll.set_valign(Gtk.Align.FILL)
 
-        self._pills_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self._pills_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self._pills_box.set_margin_start(6)
         self._pills_box.set_margin_end(6)
-        self._pills_box.set_margin_top(5)
-        self._pills_box.set_margin_bottom(5)
-        self._pills_box.set_valign(Gtk.Align.CENTER)
+        self._pills_box.set_valign(Gtk.Align.FILL)
         scroll.set_child(self._pills_box)
         self.append(scroll)
 
@@ -408,7 +408,8 @@ class BottomPanel(Gtk.Box):
         self._gear_btn.add_css_class("flat")
         self._gear_btn.add_css_class("bottom-toggle-btn")
         self._gear_btn.set_tooltip_text("Settings")
-        self._gear_btn.set_valign(Gtk.Align.CENTER)
+        self._gear_btn.set_valign(Gtk.Align.FILL)
+        self._gear_btn.set_size_request(-1, 40)
         self._gear_btn.set_margin_end(4)
         self._gear_btn.connect("clicked", self._on_settings_clicked)
         self.append(self._gear_btn)
@@ -416,9 +417,8 @@ class BottomPanel(Gtk.Box):
         # + button
         self._add_btn = Gtk.Button(label="+")
         self._add_btn.add_css_class("bottom-add-btn")
-        self._add_btn.set_valign(Gtk.Align.CENTER)
-        self._add_btn.set_margin_top(5)
-        self._add_btn.set_margin_bottom(5)
+        self._add_btn.set_valign(Gtk.Align.FILL)
+        self._add_btn.set_size_request(-1, 40)
         self._add_btn.connect("clicked", self._on_add_clicked)
         self.append(self._add_btn)
 
@@ -427,7 +427,8 @@ class BottomPanel(Gtk.Box):
         self._panel_toggle.add_css_class("flat")
         self._panel_toggle.add_css_class("bottom-toggle-btn")
         self._panel_toggle.set_tooltip_text("Hide panel")
-        self._panel_toggle.set_valign(Gtk.Align.CENTER)
+        self._panel_toggle.set_valign(Gtk.Align.FILL)
+        self._panel_toggle.set_size_request(-1, 40)
         self._panel_toggle.set_margin_start(2)
         self._panel_toggle.set_margin_end(8)
         self._panel_toggle.connect("clicked", lambda _: on_toggle_file_tree_panel())
@@ -511,6 +512,7 @@ class BottomPanel(Gtk.Box):
 
         theme_dropdown = Gtk.DropDown.new_from_strings(_THEME_OPTIONS)
         current_scheme = self._settings.get("color_scheme") if self._settings else "dark"
+        current_scheme = _LEGACY_THEME_VALUES.get(current_scheme, current_scheme)
         idx = _THEME_VALUES.index(current_scheme) if current_scheme in _THEME_VALUES else 0
         theme_dropdown.set_selected(idx)
         theme_dropdown.connect("notify::selected", self._on_theme_changed)

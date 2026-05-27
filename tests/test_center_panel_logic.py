@@ -32,7 +32,12 @@ sys.modules.setdefault("Xlib.protocol.event", event_mock)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
-from panels.center_panel import _agent_label_base, _next_numbered_label
+from panels.center_panel import (
+    _agent_label_base,
+    _next_numbered_label,
+    _normalize_scheme,
+    _terminal_command_name,
+)
 
 
 class TestCenterPanelTabNaming(unittest.TestCase):
@@ -51,6 +56,22 @@ class TestCenterPanelTabNaming(unittest.TestCase):
     def test_agent_label_base_follows_command(self):
         self.assertEqual(_agent_label_base("claude"), "Claude")
         self.assertEqual(_agent_label_base("codex"), "Codex")
+
+    def test_terminal_command_defaults_to_claude(self):
+        self.assertEqual(_terminal_command_name(None), "claude")
+
+    def test_terminal_command_uses_settings_value(self):
+        settings = MagicMock()
+        settings.get.return_value = "codex"
+        self.assertEqual(_terminal_command_name(settings), "codex")
+        settings.get.assert_called_once_with("terminal_command")
+
+    def test_theme_normalization_accepts_fancy_variants(self):
+        self.assertEqual(_normalize_scheme("fancy_dark"), "fancy_dark")
+        self.assertEqual(_normalize_scheme("fancy_light"), "fancy_light")
+
+    def test_theme_normalization_maps_legacy_fancy_to_dark(self):
+        self.assertEqual(_normalize_scheme("fancy"), "fancy_dark")
 
 
 if __name__ == "__main__":

@@ -50,7 +50,7 @@ def _light_palette():
     return palette
 
 
-def _fancy_palette():
+def _fancy_dark_palette():
     ansi = [
         "#101624", "#ff5c8a", "#7ee787", "#ffd166",
         "#36c5f0", "#b388ff", "#2dd4bf", "#d8e2f3",
@@ -65,10 +65,27 @@ def _fancy_palette():
     return palette
 
 
+def _fancy_light_palette():
+    ansi = [
+        "#f7fbff", "#d7256f", "#22863a", "#b7791f",
+        "#0969da", "#8250df", "#008b8b", "#2f3a4f",
+        "#8c9bb3", "#bf1d5a", "#1f883d", "#9a6700",
+        "#218bff", "#a475f9", "#179c9c", "#0f172a",
+    ]
+    palette = []
+    for h in ansi:
+        c = Gdk.RGBA()
+        c.parse(h)
+        palette.append(c)
+    return palette
+
+
 def _normalize_scheme(scheme) -> str:
     if isinstance(scheme, bool):
         return "dark" if scheme else "light"
-    if scheme in ("dark", "light", "fancy"):
+    if scheme == "fancy":
+        return "fancy_dark"
+    if scheme in ("dark", "light", "fancy_dark", "fancy_light"):
         return scheme
     return "dark"
 
@@ -94,6 +111,10 @@ def _agent_label_base(cmd: str) -> str:
     if cmd == "codex":
         return "Codex"
     return "Agent"
+
+
+def _terminal_command_name(settings_manager) -> str:
+    return settings_manager.get("terminal_command") if settings_manager else "claude"
 
 
 def _spawn(terminal: Vte.Terminal, directory: str, cmd: list[str], on_done):
@@ -150,8 +171,8 @@ class CenterPanel(Gtk.Box):
         self._tab_bar_scroll = tab_bar_scroll
         # Note: _tab_bar_scroll is NOT appended here; window.py places it in the header
 
-        # Create the default Agent tab (closeable and renameable like any other)
-        self._add_tab(_TERMINAL_TAB, "Agent", icon="utilities-terminal-symbolic",
+        # Create the default agent tab (closeable and renameable like any other)
+        self._add_tab(_TERMINAL_TAB, self._default_agent_label(), icon="utilities-terminal-symbolic",
                       closeable=True,
                       on_rename=self._show_agent_rename_popover,
                       on_close=self._close_default_agent_tab)
@@ -192,7 +213,7 @@ class CenterPanel(Gtk.Box):
         self._offline_banner.set_visible(False)
         overlay.add_overlay(self._offline_banner)
 
-        self._terminal_back_btn = Gtk.Button(label="⬛  Agent")
+        self._terminal_back_btn = Gtk.Button(label=f"⬛  {self._default_agent_label()}")
         self._terminal_back_btn.add_css_class("terminal-back-btn")
         self._terminal_back_btn.set_halign(Gtk.Align.START)
         self._terminal_back_btn.set_valign(Gtk.Align.END)
@@ -206,8 +227,10 @@ class CenterPanel(Gtk.Box):
         self._offline_banner.set_visible(offline)
 
     def _cmd(self) -> list[str]:
-        name = self._settings.get("terminal_command") if self._settings else "claude"
-        return _resolve_command(name)
+        return _resolve_command(_terminal_command_name(self._settings))
+
+    def _default_agent_label(self) -> str:
+        return _agent_label_base(_terminal_command_name(self._settings))
 
     # ── tab bar ───────────────────────────────────────────────────────────────
 
@@ -215,8 +238,6 @@ class CenterPanel(Gtk.Box):
                  closeable: bool = True, on_rename=None, on_close=None) -> Gtk.Box:
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         box.add_css_class("center-tab")
-        box.set_margin_start(2)
-        box.set_margin_end(2)
 
         if icon:
             img = Gtk.Image.new_from_icon_name(icon)
@@ -333,6 +354,9 @@ class CenterPanel(Gtk.Box):
                       and not tab_key.startswith("agent-")
                       and not tab_key.startswith("term-")
                       and tab_key != "no-tabs")
+        if is_app_tab:
+            label = "Root" if self._last_terminal_page == _MASTER_PAGE else self._default_agent_label()
+            self._terminal_back_btn.set_label(f"⬛  {label}")
         self._terminal_back_btn.set_visible(is_app_tab)
 
     def _on_terminal_back_clicked(self, _btn):
@@ -963,7 +987,7 @@ class CenterPanel(Gtk.Box):
 
     def _ensure_terminal_tab(self):
         if _TERMINAL_TAB not in self._tab_widgets:
-            self._add_tab(_TERMINAL_TAB, "Agent", icon="utilities-terminal-symbolic",
+            self._add_tab(_TERMINAL_TAB, self._default_agent_label(), icon="utilities-terminal-symbolic",
                           closeable=True,
                           on_rename=self._show_agent_rename_popover,
                           on_close=self._close_default_agent_tab)
@@ -973,7 +997,7 @@ class CenterPanel(Gtk.Box):
         self._last_terminal_page = page_name
         self._stack.set_visible_child_name(page_name)
         self._update_terminal_tab_label(
-            "Root" if page_name == _MASTER_PAGE else "Agent"
+            "Root" if page_name == _MASTER_PAGE else self._default_agent_label()
         )
         self._notify_page(page_name)
 
@@ -985,9 +1009,12 @@ class CenterPanel(Gtk.Box):
         return terminal
 
     def _apply_terminal_colors(self, terminal: Vte.Terminal):
-        if self._color_scheme == "fancy":
+        if self._color_scheme == "fancy_dark":
             bg_str, fg_str = "#101624", "#f4f8ff"
-            palette = _fancy_palette()
+            palette = _fancy_dark_palette()
+        elif self._color_scheme == "fancy_light":
+            bg_str, fg_str = "#f7fbff", "#172033"
+            palette = _fancy_light_palette()
         elif self._color_scheme == "dark":
             bg_str, fg_str = "#0d1117", "#e6edf3"
             palette = _dark_palette()
@@ -1022,6 +1049,9 @@ class CenterPanel(Gtk.Box):
         _spawn(terminal, directory, self._cmd(), on_respawn)
 
     def respawn_all(self):
+        if _TERMINAL_TAB in self._tab_widgets:
+            label = "Root" if self._last_terminal_page == _MASTER_PAGE else self._default_agent_label()
+            self._update_terminal_tab_label(label)
         for page_name, pid in list(self._terminal_pids.items()):
             terminal = self._terminals.get(page_name)
             if terminal:

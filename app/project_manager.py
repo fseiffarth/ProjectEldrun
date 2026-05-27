@@ -116,7 +116,7 @@ Ask the user to use Eldrun's **+** button to ensure correct scaffolding and regi
 **Change Eldrun settings**
 Edit `~/.local/share/eldrun/settings.json`. Current keys:
 - `terminal_command` — executable spawned in each terminal (default: `"claude"`)
-- `color_scheme` — `"dark"`, `"light"`, or `"fancy"`
+- `color_scheme` — `"dark"`, `"light"`, `"fancy_dark"`, or `"fancy_light"`
 
 **Set a global default app for a file type**
 Edit `~/.local/share/eldrun/default_apps.json`. Format: `{ ".ext": "app-executable" }`.

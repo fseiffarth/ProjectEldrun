@@ -75,6 +75,7 @@ class FileTreePanel(Gtk.Box):
 
     def _build_ui(self):
         proj_header_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        proj_header_row.add_css_class("right-panel-header-row")
         proj_header_row.set_margin_start(8)
         proj_header_row.set_margin_top(8)
         proj_header_row.set_margin_bottom(4)
@@ -110,6 +111,7 @@ class FileTreePanel(Gtk.Box):
         self._file_store = Gtk.TreeStore(str, str, str, bool)  # icon, name, path, is_dir
 
         self._file_tree = Gtk.TreeView(model=self._file_store)
+        self._file_tree.add_css_class("right-file-tree")
         self._file_tree.set_headers_visible(False)
         self._file_tree.set_enable_tree_lines(True)
 
@@ -131,6 +133,8 @@ class FileTreePanel(Gtk.Box):
         self._file_tree.add_controller(rc)
 
         tree_scrolled = Gtk.ScrolledWindow()
+        tree_scrolled.add_css_class("right-panel-surface")
+        tree_scrolled.add_css_class("right-tree-surface")
         tree_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         tree_scrolled.set_vexpand(True)
         tree_scrolled.set_child(self._file_tree)
@@ -153,6 +157,7 @@ class FileTreePanel(Gtk.Box):
         self._open_windows_section = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=0
         )
+        self._open_windows_section.add_css_class("right-open-windows-section")
         self._open_windows_section.set_visible(False)
 
         ow_sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
@@ -168,11 +173,14 @@ class FileTreePanel(Gtk.Box):
         self._open_windows_section.append(ow_header)
 
         ow_scrolled = Gtk.ScrolledWindow()
+        ow_scrolled.add_css_class("right-panel-surface")
+        ow_scrolled.add_css_class("right-open-windows-surface")
         ow_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         ow_scrolled.set_max_content_height(120)
         ow_scrolled.set_propagate_natural_height(True)
 
         self._open_windows_list = Gtk.ListBox()
+        self._open_windows_list.add_css_class("right-open-windows-list")
         self._open_windows_list.set_selection_mode(Gtk.SelectionMode.NONE)
         ow_scrolled.set_child(self._open_windows_list)
         self._open_windows_section.append(ow_scrolled)
@@ -954,6 +962,7 @@ class FileTreePanel(Gtk.Box):
         if xid in self._open_windows:
             return
         row = Gtk.ListBoxRow()
+        row.add_css_class("right-open-window-row")
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         box.set_margin_start(8)
         box.set_margin_end(8)
