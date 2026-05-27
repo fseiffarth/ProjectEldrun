@@ -1,4 +1,3 @@
-import datetime
 import json
 import pathlib
 
@@ -277,16 +276,6 @@ class BottomPanel(Gtk.Box):
         self._active_project_id: str | None = None
         self._popover: Gtk.Popover | None = None
 
-        # Clock
-        self._clock_lbl = Gtk.Label()
-        self._clock_lbl.add_css_class("bottom-clock")
-        self._clock_lbl.set_valign(Gtk.Align.CENTER)
-        self._clock_lbl.set_margin_start(8)
-        self._clock_lbl.set_margin_end(4)
-        self._tick_clock()
-        self.append(self._clock_lbl)
-        GLib.timeout_add_seconds(1, self._tick_clock)
-
         # Root button
         root_btn = Gtk.Button(label="Root")
         root_btn.add_css_class("destructive-action")
@@ -367,10 +356,6 @@ class BottomPanel(Gtk.Box):
         self._panel_toggle.connect("clicked", lambda _: on_toggle_file_tree_panel())
         self.append(self._panel_toggle)
 
-    def _tick_clock(self) -> bool:
-        self._clock_lbl.set_label(datetime.datetime.now().strftime("%H:%M"))
-        return True
-
     def _on_add_clicked(self, btn):
         if self._popover is None:
             popover = Gtk.Popover()
@@ -402,15 +387,20 @@ class BottomPanel(Gtk.Box):
     # ── settings ──────────────────────────────────────────────────────────────
 
     def _on_settings_clicked(self, _btn):
-        popover = Gtk.Popover()
-        popover.set_autohide(True)
-        popover.set_parent(self._gear_btn)
+        win = Gtk.Window()
+        win.set_title("Settings")
+        win.set_modal(True)
+        win.set_resizable(False)
+        win.set_default_size(320, -1)
+        root = self._gear_btn.get_root()
+        if isinstance(root, Gtk.Window):
+            win.set_transient_for(root)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
 
         title = Gtk.Label(label="Settings")
         title.add_css_class("heading")
@@ -473,16 +463,11 @@ class BottomPanel(Gtk.Box):
         ft_btn = Gtk.Button(label="File Type Apps…")
         ft_btn.add_css_class("flat")
         ft_btn.set_halign(Gtk.Align.START)
-        ft_btn.connect("clicked", lambda _: (popover.popdown(),
-                                              self._show_filetype_settings()))
+        ft_btn.connect("clicked", lambda _: (win.close(), self._show_filetype_settings()))
         box.append(ft_btn)
 
-        motion = Gtk.EventControllerMotion()
-        motion.connect("leave", lambda _: popover.popdown())
-        box.add_controller(motion)
-
-        popover.set_child(box)
-        popover.popup()
+        win.set_child(box)
+        win.present()
 
     def _on_terminal_changed(self, dropdown, _pspec):
         if self._settings is None:
@@ -759,6 +744,9 @@ class BottomPanel(Gtk.Box):
 
     def set_left_panel_shown(self, shown: bool):
         self.set_panel_shown(shown)
+
+    def set_panel_toggle_visible(self, visible: bool):
+        self._panel_toggle.set_visible(visible)
 
     # ── project search ────────────────────────────────────────────────────────
 

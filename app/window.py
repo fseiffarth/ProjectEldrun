@@ -178,9 +178,11 @@ class EldrunWindow(Adw.ApplicationWindow):
 
         center_box.set_start_widget(left_status)
 
-        title = Gtk.Label(label="ELDRUN")
-        title.add_css_class("app-title")
-        center_box.set_center_widget(title)
+        self._header_clock = Gtk.Label()
+        self._header_clock.add_css_class("app-title")
+        self._tick_header_clock()
+        GLib.timeout_add_seconds(1, self._tick_header_clock)
+        center_box.set_center_widget(self._header_clock)
 
         right_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         right_box.set_valign(Gtk.Align.CENTER)
@@ -228,6 +230,10 @@ class EldrunWindow(Adw.ApplicationWindow):
 
     def _on_maximized_notify(self, win, _pspec):
         self._max_btn.set_tooltip_text("Restore" if win.is_maximized() else "Maximize")
+
+    def _tick_header_clock(self) -> bool:
+        self._header_clock.set_label(_dt.datetime.now().strftime("%H:%M"))
+        return True
 
     # ── layout ────────────────────────────────────────────────────────────────
 
@@ -324,12 +330,14 @@ class EldrunWindow(Adw.ApplicationWindow):
 
     def _apply_panel_visibility(self):
         page = self._center_panel._stack.get_visible_child_name() or "empty"
-        show_panel = (page.startswith("project-")
+        is_project = page.startswith("project-")
+        show_panel = (is_project
                       and not self._file_tree_hidden
                       and not self._panels_hidden)
 
         self._file_tree_panel.set_visible(show_panel)
         self._update_toggle_btn(show_panel)
+        self._bottom_panel.set_panel_toggle_visible(is_project)
 
         if page.startswith("project-"):
             project_id = page[len("project-"):]
