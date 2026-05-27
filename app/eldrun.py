@@ -274,6 +274,7 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
 }
 .center-tab-bar {
     background-color: #161b22;
+    min-height: 30px;
 }
 .center-tab {
     border-radius: 6px 6px 0 0;
@@ -583,6 +584,7 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 }
 .center-tab-bar {
     background-color: #f6f8fa;
+    min-height: 30px;
 }
 .center-tab {
     border-radius: 6px 6px 0 0;
