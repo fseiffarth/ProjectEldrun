@@ -254,7 +254,7 @@ class ProjectPill(Gtk.Box):
 
 class BottomPanel(Gtk.Box):
     def __init__(self, on_root, on_new_project, on_import_project,
-                 on_toggle_left_panel,
+                 on_toggle_file_tree_panel,
                  on_activate_project, on_close_project,
                  project_manager=None, settings_manager=None,
                  default_apps_manager=None, on_toggle_theme=None,
@@ -364,7 +364,7 @@ class BottomPanel(Gtk.Box):
         self._panel_toggle.set_valign(Gtk.Align.CENTER)
         self._panel_toggle.set_margin_start(2)
         self._panel_toggle.set_margin_end(8)
-        self._panel_toggle.connect("clicked", lambda _: on_toggle_left_panel())
+        self._panel_toggle.connect("clicked", lambda _: on_toggle_file_tree_panel())
         self.append(self._panel_toggle)
 
     def _tick_clock(self) -> bool:
