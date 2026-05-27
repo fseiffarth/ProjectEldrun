@@ -24,9 +24,10 @@ cd /home/user/eldrun/projects/projecteldrun/app && DISPLAY=:0 python3 eldrun.py 
 | `app/new_project_dialog.py` | Modal dialog for creating new projects |
 | `app/import_project_dialog.py` | Modal dialog for importing an existing folder as a project |
 | `app/default_apps_manager.py` | Per-project + global default app map; `bootstrap_from_system()`, `get_app_for_file()` |
-| `app/panels/left_panel.py` | Open-apps browser (`open_apps.json`) + project file tree (EWMH poll) + right-click context menu |
 | `app/panels/center_panel.py` | `Gtk.Stack` of VTE terminals + X11 app embedding |
-| `app/panels/right_panel.py` | Root button, search field, project list with active/warm indicators, +/Import popover, filetype settings |
+| `app/panels/right_panel.py` | `FileTreePanel`: file tree overlay (right side), open-windows list, per-project settings, right-click context menu |
+| `app/panels/bottom_panel.py` | `BottomPanel`: clock, Root button, search, project pills, gear settings, +/Import popover, panel toggle |
+| `app/workspace_manager.py` | Per-project Cinnamon workspace allocation via DBus Eval; sticky window; in-memory assignments |
 
 Projects are stored as git repos under `~/eldrun/projects/<sanitized-name>/`.
 The root terminal spawns in `~/eldrun/root/` (dedicated root working dir, not the workspace root itself).
@@ -45,6 +46,6 @@ The root terminal spawns in `~/eldrun/root/` (dedicated root working dir, not th
 ## Dev workflow
 
 1. Edit files in `app/`.
-2. Syntax check: `python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py app/new_project_dialog.py app/import_project_dialog.py app/default_apps_manager.py app/panels/*.py`
+2. Syntax check: `python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py app/new_project_dialog.py app/import_project_dialog.py app/default_apps_manager.py app/workspace_manager.py app/panels/*.py`
 3. Run: `cd app && python3 eldrun.py`
 4. F11 toggles fullscreen. Custom header close button calls `app.quit()`.

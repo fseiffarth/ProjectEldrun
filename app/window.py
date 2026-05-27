@@ -20,7 +20,7 @@ from network_monitor import NetworkMonitor
 from time_tracker import TimeTracker
 from workspace_manager import WorkspaceManager
 from panels.center_panel import CenterPanel, _MASTER_PAGE
-from panels.left_panel import LeftPanel
+from panels.right_panel import FileTreePanel
 from panels.bottom_panel import BottomPanel
 from eldrun import set_theme
 
@@ -87,7 +87,7 @@ class EldrunWindow(Adw.ApplicationWindow):
 
         self._fullscreen = False
         self._panels_hidden = False
-        self._left_hidden = False
+        self._file_tree_hidden = False
         self.project_manager = ProjectManager()
         self.settings_manager = SettingsManager()
         self.default_apps_manager = DefaultAppsManager()
@@ -246,19 +246,19 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._center_panel.set_vexpand(True)
         self._center_panel.set_margin_bottom(_BOTTOM_HEIGHT)
 
-        self._left_panel = LeftPanel(
+        self._file_tree_panel = FileTreePanel(
             center_panel=self._center_panel,
             default_apps_manager=self.default_apps_manager,
         )
-        self._left_panel.set_halign(Gtk.Align.END)
-        self._left_panel.set_valign(Gtk.Align.FILL)
-        self._left_panel.set_margin_bottom(_BOTTOM_HEIGHT)
+        self._file_tree_panel.set_halign(Gtk.Align.END)
+        self._file_tree_panel.set_valign(Gtk.Align.FILL)
+        self._file_tree_panel.set_margin_bottom(_BOTTOM_HEIGHT)
 
         self._bottom_panel = BottomPanel(
             on_root=self._on_root_clicked,
             on_new_project=self._on_new_project_clicked,
             on_import_project=self._on_import_project_clicked,
-            on_toggle_left_panel=self._toggle_left_panel,
+            on_toggle_file_tree_panel=self._toggle_file_tree_panel,
             on_activate_project=self._on_pill_activate,
             on_close_project=self._on_pill_close,
             project_manager=self.project_manager,
@@ -270,7 +270,7 @@ class EldrunWindow(Adw.ApplicationWindow):
 
         overlay = Gtk.Overlay()
         overlay.set_child(self._center_panel)
-        overlay.add_overlay(self._left_panel)
+        overlay.add_overlay(self._file_tree_panel)
         overlay.add_overlay(self._bottom_panel)
         overlay.set_hexpand(True)
         overlay.set_vexpand(True)
@@ -325,22 +325,22 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _apply_panel_visibility(self):
         page = self._center_panel._stack.get_visible_child_name() or "empty"
         show_panel = (page.startswith("project-")
-                      and not self._left_hidden
+                      and not self._file_tree_hidden
                       and not self._panels_hidden)
 
-        self._left_panel.set_visible(show_panel)
+        self._file_tree_panel.set_visible(show_panel)
         self._update_toggle_btn(show_panel)
 
         if page.startswith("project-"):
             project_id = page[len("project-"):]
             project = self.project_manager.get_project(project_id)
-            self._left_panel.update_project(project)
+            self._file_tree_panel.update_project(project)
             self._bottom_panel.set_active_project(project_id)
             if project:
                 self._time_tracker.on_project_activated(project)
             self._refresh_time_bars()
         else:
-            self._left_panel.update_project(None)
+            self._file_tree_panel.update_project(None)
             self._bottom_panel.set_active_project(None)
             self._time_tracker.on_project_deactivated()
             self._refresh_time_bars()
@@ -349,8 +349,8 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._panels_hidden = not self._panels_hidden
         self._apply_panel_visibility()
 
-    def _toggle_left_panel(self):
-        self._left_hidden = not self._left_hidden
+    def _toggle_file_tree_panel(self):
+        self._file_tree_hidden = not self._file_tree_hidden
         self._apply_panel_visibility()
 
     def _on_toggle_theme(self, is_dark: bool):
