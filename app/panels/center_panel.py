@@ -136,6 +136,14 @@ class CenterPanel(Gtk.Box):
         self._offline_banner.set_visible(False)
         overlay.add_overlay(self._offline_banner)
 
+        self._terminal_back_btn = Gtk.Button(label="⬛  Terminal")
+        self._terminal_back_btn.add_css_class("terminal-back-btn")
+        self._terminal_back_btn.set_halign(Gtk.Align.START)
+        self._terminal_back_btn.set_valign(Gtk.Align.END)
+        self._terminal_back_btn.set_visible(False)
+        self._terminal_back_btn.connect("clicked", self._on_terminal_back_clicked)
+        overlay.add_overlay(self._terminal_back_btn)
+
         self.append(overlay)
 
     def set_offline(self, offline: bool):
@@ -202,6 +210,11 @@ class CenterPanel(Gtk.Box):
             else:
                 widget.remove_css_class("center-tab-active")
         self._current_tab = tab_key
+        self._terminal_back_btn.set_visible(tab_key != _TERMINAL_TAB)
+
+    def _on_terminal_back_clicked(self, _btn):
+        self._release_embedded()
+        self._show_terminal(self._last_terminal_page)
 
     def _update_terminal_tab_label(self, label: str):
         widget = self._tab_widgets.get(_TERMINAL_TAB)
@@ -313,7 +326,8 @@ class CenterPanel(Gtk.Box):
 
     # ── app tabs ──────────────────────────────────────────────────────────────
 
-    def add_app_tab(self, name: str, proc, project_id: str | None):
+    def add_app_tab(self, name: str, proc, project_id: str | None,
+                    on_standalone=None):
         """Called by LeftPanel when a file is opened; creates a tab for the app."""
         self._app_counter += 1
         page_name = f"app-{self._app_counter}"
@@ -334,6 +348,7 @@ class CenterPanel(Gtk.Box):
             "xid": None,
             "project_id": project_id,
             "proc": proc,
+            "on_standalone": on_standalone,
         }
 
         # Switch to the new tab immediately
@@ -428,13 +443,13 @@ class CenterPanel(Gtk.Box):
         return False
 
     def _try_embed(self, page_name: str, xid: int) -> bool:
-        """Attempt XReparentWindow to embed the app inside the Eldrun window."""
+        """Attempt to embed the app window. Falls back to standalone on failure."""
         if page_name not in self._app_info:
             return False
         if self._stack.get_visible_child_name() != page_name:
-            # Tab not currently visible; skip until user switches to it
             return False
 
+        embed_ok = False
         try:
             gi.require_version("GdkX11", "4.0")
             from gi.repository import GdkX11
@@ -447,11 +462,9 @@ class CenterPanel(Gtk.Box):
                 raise RuntimeError("not an X11 surface")
             parent_xid = surface.get_xid()
 
-            # Position and size of the stack within the root window
             coords = self._stack.translate_coordinates(root_widget, 0, 0)
             if coords is None:
                 raise RuntimeError("translate_coordinates failed")
-            # GTK4 returns (dest_x, dest_y) — unpack safely
             if isinstance(coords, (list, tuple)) and len(coords) >= 2:
                 tx, ty = coords[0], coords[1]
             else:
@@ -468,6 +481,12 @@ class CenterPanel(Gtk.Box):
             parent_win = self._disp.create_resource_object("window", parent_xid)
             app_win = self._disp.create_resource_object("window", xid)
 
+            # Strip decorations before reparenting; treat any exception as
+            # "embed not viable" and route to the standalone path instead.
+            mwm_atom = self._atom("_MOTIF_WM_HINTS")
+            app_win.change_property(mwm_atom, mwm_atom, 32, [2, 0, 0, 0, 0])
+            self._disp.flush()
+
             app_win.reparent(parent_win, int(tx), int(ty))
             app_win.configure(width=int(w), height=int(h))
             app_win.map()
@@ -475,10 +494,20 @@ class CenterPanel(Gtk.Box):
 
             self._embedded_xid = xid
             self._embedded_page = page_name
+            embed_ok = True
 
         except Exception:
-            # Fallback: raise the window to the foreground
-            self._raise_window_ewmh(xid)
+            pass
+
+        if not embed_ok:
+            # Standalone path: remove the loading tab, notify left panel
+            info = self._app_info.get(page_name, {})
+            on_standalone = info.get("on_standalone")
+            self._close_app_tab(page_name)
+            if on_standalone:
+                GLib.idle_add(on_standalone, xid)
+            else:
+                self._raise_window_ewmh(xid)
 
         return False
 

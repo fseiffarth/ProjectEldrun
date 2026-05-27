@@ -291,9 +291,9 @@ _TERMINAL_OPTIONS = ["claude", "codex"]
 
 
 class RightPanel(Gtk.Box):
-    def __init__(self, project_manager, center_panel, on_new_project, on_import_project,
+    def __init__(self, project_manager, center_panel,
                  settings_manager=None, default_apps_manager=None, on_toggle_theme=None,
-                 on_activate_project=None):
+                 on_activate_project=None, on_project_removed=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("panel-right")
         self.set_size_request(220, -1)
@@ -302,50 +302,15 @@ class RightPanel(Gtk.Box):
         self._center = center_panel
         self._settings = settings_manager
         self._dam = default_apps_manager
-        self._on_new_project = on_new_project
-        self._on_import_project = on_import_project
         self._on_toggle_theme = on_toggle_theme
         self._on_activate_project = on_activate_project
+        self._on_project_removed = on_project_removed
         self._project_rows: dict[str, ProjectRow] = {}
         self._active_project_id: str | None = None
-        self._popover: Gtk.Popover | None = None
-        self._search_popover: Gtk.Popover | None = None
 
-        self._build_root_btn()
-        self._build_search()
         self._build_project_list()
-        self._build_add_btn()
 
-    # ── root button ───────────────────────────────────────────────────────────
-
-    def _build_root_btn(self):
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        row.set_margin_start(8)
-        row.set_margin_end(8)
-        row.set_margin_top(10)
-        row.set_margin_bottom(4)
-
-        btn = Gtk.Button(label="Root")
-        btn.add_css_class("destructive-action")
-        btn.set_hexpand(True)
-        btn.connect("clicked", self._on_root_clicked)
-        row.append(btn)
-
-        gear_btn = Gtk.Button()
-        gear_btn.set_icon_name("preferences-system-symbolic")
-        gear_btn.add_css_class("flat")
-        gear_btn.set_tooltip_text("Settings")
-        gear_btn.connect("clicked", self._on_settings_clicked)
-        row.append(gear_btn)
-
-        self._gear_btn = gear_btn
-        self.append(row)
-
-    def _on_root_clicked(self, _btn):
-        # Deselect any project row so re-selecting it later works properly
-        self._listbox.select_row(None)
-        if hasattr(self._center, "open_master_terminal"):
-            self._center.open_master_terminal()
+    # ── settings ──────────────────────────────────────────────────────────────
 
     def _on_settings_clicked(self, _btn):
         popover = Gtk.Popover()
@@ -617,114 +582,30 @@ class RightPanel(Gtk.Box):
         win.set_child(box)
         win.present()
 
-    # ── search entry (global, all projects) ───────────────────────────────────
-
-    def _build_search(self):
-        self._search_entry = Gtk.SearchEntry()
-        self._search_entry.set_placeholder_text("Search all projects…")
-        self._search_entry.set_margin_start(8)
-        self._search_entry.set_margin_end(8)
-        self._search_entry.set_margin_top(4)
-        self._search_entry.set_margin_bottom(4)
-        self._search_entry.connect("search-changed", self._on_search_changed)
-        self.append(self._search_entry)
-
-        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        sep.set_margin_top(2)
-        sep.set_margin_bottom(4)
-        self.append(sep)
-
-        results_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        results_box.set_size_request(198, -1)
-
-        self._search_results = Gtk.ListBox()
-        self._search_results.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        self._search_results.connect("row-activated", self._on_search_result_activated)
-        results_box.append(self._search_results)
-
-        self._search_popover = Gtk.Popover()
-        self._search_popover.set_parent(self._search_entry)
-        self._search_popover.set_autohide(True)
-        self._search_popover.set_has_arrow(False)
-        self._search_popover.set_child(results_box)
-
-    def _on_search_changed(self, entry):
-        query = entry.get_text().lower().strip()
-        child = self._search_results.get_first_child()
-        while child is not None:
-            nxt = child.get_next_sibling()
-            self._search_results.remove(child)
-            child = nxt
-
-        if not query:
-            self._search_popover.popdown()
-            return
-
-        matches = [p for p in self._pm.projects if query in p["name"].lower()]
-        if not matches:
-            row = Gtk.ListBoxRow()
-            row.set_selectable(False)
-            lbl = Gtk.Label(label="No projects found")
-            lbl.add_css_class("dim-label")
-            lbl.set_margin_start(8)
-            lbl.set_margin_top(6)
-            lbl.set_margin_bottom(6)
-            row.set_child(lbl)
-            self._search_results.append(row)
-        else:
-            for p in matches:
-                row = Gtk.ListBoxRow()
-                row.project_id = p["id"]
-                row.project_status = p.get("status", "inactive")
-                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-                box.set_margin_start(8)
-                box.set_margin_end(8)
-                box.set_margin_top(6)
-                box.set_margin_bottom(4)
-                name_lbl = Gtk.Label(label=p["name"], xalign=0)
-                path_lbl = Gtk.Label(label=p.get("directory", ""), xalign=0)
-                path_lbl.add_css_class("dim-label")
-                path_lbl.set_ellipsize(Pango.EllipsizeMode.START)
-                path_lbl.set_max_width_chars(22)
-                box.append(name_lbl)
-                box.append(path_lbl)
-                row.set_child(box)
-                self._search_results.append(row)
-
-        self._search_popover.popup()
-        GLib.idle_add(self._reclaim_search_focus)
-
-    def _reclaim_search_focus(self) -> bool:
-        self._search_entry.grab_focus()
-        return False
-
-    def _on_search_result_activated(self, _lb, row):
-        if not hasattr(row, "project_id"):
-            return
-        pid = row.project_id
-        self._search_popover.popdown()
-        self._search_entry.set_text("")
-
-        if pid in self._project_rows:
-            if hasattr(self._center, "show_project_terminal"):
-                self._center.show_project_terminal(pid)
-        else:
-            project = self._pm.get_project(pid)
-            if project and self._on_activate_project:
-                self._pm.set_project_status(pid, "active")
-                project["status"] = "active"
-                self._on_activate_project(project)
-
     # ── project list ──────────────────────────────────────────────────────────
 
     def _build_project_list(self):
+        header_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        header_row.set_margin_start(8)
+        header_row.set_margin_end(4)
+        header_row.set_margin_top(8)
+        header_row.set_margin_bottom(4)
+
         header = Gtk.Label(label="PROJECTS")
-        header.get_style_context().add_class("panel-header")
+        header.add_css_class("panel-header")
         header.set_xalign(0)
-        header.set_margin_start(8)
-        header.set_margin_top(4)
-        header.set_margin_bottom(4)
-        self.append(header)
+        header.set_hexpand(True)
+        header_row.append(header)
+
+        gear_btn = Gtk.Button()
+        gear_btn.set_icon_name("preferences-system-symbolic")
+        gear_btn.add_css_class("flat")
+        gear_btn.set_tooltip_text("Settings")
+        gear_btn.connect("clicked", self._on_settings_clicked)
+        self._gear_btn = gear_btn
+        header_row.append(gear_btn)
+
+        self.append(header_row)
 
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -763,45 +644,15 @@ class RightPanel(Gtk.Box):
         else:
             row.set_header(None)
 
-    # ── add button (popover) ──────────────────────────────────────────────────
-
-    def _build_add_btn(self):
-        self._add_btn = Gtk.Button(label="+")
-        self._add_btn.get_style_context().add_class("new-project-btn")
-        self._add_btn.set_margin_start(8)
-        self._add_btn.set_margin_end(8)
-        self._add_btn.set_margin_top(8)
-        self._add_btn.set_margin_bottom(8)
-        self._add_btn.connect("clicked", self._on_add_clicked)
-        self.append(self._add_btn)
-
-    def _on_add_clicked(self, btn):
-        if self._popover is None:
-            popover = Gtk.Popover()
-            popover.set_parent(btn)
-
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            box.set_margin_start(4)
-            box.set_margin_end(4)
-            box.set_margin_top(4)
-            box.set_margin_bottom(4)
-
-            new_item = Gtk.Button(label="New Project")
-            new_item.add_css_class("flat")
-            new_item.connect("clicked", lambda _: (popover.popdown(), self._on_new_project()))
-
-            import_item = Gtk.Button(label="Import Project")
-            import_item.add_css_class("flat")
-            import_item.connect("clicked", lambda _: (popover.popdown(), self._on_import_project()))
-
-            box.append(new_item)
-            box.append(import_item)
-            popover.set_child(box)
-            self._popover = popover
-
-        self._popover.popup()
-
     # ── public API ────────────────────────────────────────────────────────────
+
+    def deselect_all(self):
+        self._listbox.select_row(None)
+
+    def select_project(self, project_id: str):
+        row = self._project_rows.get(project_id)
+        if row:
+            self._listbox.select_row(row)
 
     def add_project_row(self, project: dict):
         row = ProjectRow(project, on_close=self._on_project_close,
@@ -940,7 +791,7 @@ class RightPanel(Gtk.Box):
         win.set_title("Close Project")
         win.set_modal(True)
         win.set_resizable(False)
-        root = self._gear_btn.get_root()
+        root = self.get_root()
         if isinstance(root, Gtk.Window):
             win.set_transient_for(root)
 
@@ -982,3 +833,5 @@ class RightPanel(Gtk.Box):
         if hasattr(self._center, "remove_project_terminal"):
             self._center.remove_project_terminal(project_id)
         self._pm.deactivate_project(project_id)
+        if self._on_project_removed:
+            self._on_project_removed(project_id)

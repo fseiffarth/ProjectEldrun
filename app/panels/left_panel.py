@@ -9,6 +9,36 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gtk, Gdk, GLib, Pango
 
+from Xlib import display as Xdisplay, X
+from Xlib.protocol import event as Xevent
+
+
+def _get_desktop_icon(app_exe: str) -> str:
+    """Return the icon name from the .desktop file matching app_exe, or a fallback."""
+    app_name = os.path.basename(app_exe)
+    search_dirs = [
+        pathlib.Path.home() / ".local/share/applications",
+        pathlib.Path("/usr/share/applications"),
+        pathlib.Path("/usr/local/share/applications"),
+    ]
+    for d in search_dirs:
+        try:
+            for df in d.glob("*.desktop"):
+                try:
+                    lines = df.read_text(errors="replace").splitlines()
+                    if not any(
+                        ln.startswith("Exec=") and app_name in ln for ln in lines
+                    ):
+                        continue
+                    for ln in lines:
+                        if ln.startswith("Icon="):
+                            return ln[5:].strip()
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return "application-x-executable-symbolic"
+
 
 def _human_size(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
@@ -21,7 +51,7 @@ def _human_size(n: int) -> str:
 class LeftPanel(Gtk.Box):
     def __init__(self, center_panel=None, default_apps_manager=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self.get_style_context().add_class("panel-left")
+        self.get_style_context().add_class("panel-right")
         self.set_size_request(220, -1)
 
         self._center = center_panel
@@ -29,6 +59,12 @@ class LeftPanel(Gtk.Box):
         self._current_project: dict | None = None
         self._tree_refresh_source: int | None = None
         self._path_colors: dict[str, str] = {}  # abs_path → "#rrggbb"
+
+        # Open-windows tracking
+        self._open_windows: dict[int, dict] = {}   # xid → {app_name, filename, icon_name, row}
+        self._ewmh_poll_source: int | None = None
+        self._ewmh_disp = None
+        self._ewmh_root = None
 
         self._build_ui()
 
@@ -46,17 +82,12 @@ class LeftPanel(Gtk.Box):
         proj_header.set_hexpand(True)
         proj_header_row.append(proj_header)
 
-        self._show_hidden_btn = Gtk.CheckButton()
-        self._show_hidden_btn.set_tooltip_text("Show hidden files")
-        self._show_hidden_btn.set_valign(Gtk.Align.CENTER)
-        self._show_hidden_btn.set_margin_end(2)
-        self._show_hidden_btn.connect("toggled", lambda _: self._rebuild_file_tree())
-        proj_header_row.append(self._show_hidden_btn)
+        self._show_hidden = False
 
         self._proj_settings_btn = Gtk.Button()
         self._proj_settings_btn.set_icon_name("preferences-system-symbolic")
         self._proj_settings_btn.add_css_class("flat")
-        self._proj_settings_btn.set_tooltip_text("Per-project file type apps")
+        self._proj_settings_btn.set_tooltip_text("Project settings")
         self._proj_settings_btn.set_sensitive(False)
         self._proj_settings_btn.set_margin_end(4)
         self._proj_settings_btn.connect("clicked", self._on_proj_settings_clicked)
@@ -115,6 +146,36 @@ class LeftPanel(Gtk.Box):
         self._proj_stack.set_visible_child_name("placeholder")
         self.append(self._proj_stack)
 
+        # ── open-windows section ──────────────────────────────────────────────
+        self._open_windows_section = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=0
+        )
+        self._open_windows_section.set_visible(False)
+
+        ow_sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        ow_sep.set_margin_top(4)
+        self._open_windows_section.append(ow_sep)
+
+        ow_header = Gtk.Label(label="OPEN WINDOWS")
+        ow_header.add_css_class("panel-header")
+        ow_header.set_xalign(0)
+        ow_header.set_margin_start(8)
+        ow_header.set_margin_top(4)
+        ow_header.set_margin_bottom(4)
+        self._open_windows_section.append(ow_header)
+
+        ow_scrolled = Gtk.ScrolledWindow()
+        ow_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        ow_scrolled.set_max_content_height(120)
+        ow_scrolled.set_propagate_natural_height(True)
+
+        self._open_windows_list = Gtk.ListBox()
+        self._open_windows_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        ow_scrolled.set_child(self._open_windows_list)
+        self._open_windows_section.append(ow_scrolled)
+
+        self.append(self._open_windows_section)
+
     # ── file-tree colors ──────────────────────────────────────────────────────
 
     def _colors_file(self) -> pathlib.Path | None:
@@ -164,6 +225,7 @@ class LeftPanel(Gtk.Box):
     # ── project update ────────────────────────────────────────────────────────
 
     def update_project(self, project: dict | None):
+        self._clear_open_windows()
         self._current_project = project
         self._proj_settings_btn.set_sensitive(project is not None)
 
@@ -208,7 +270,7 @@ class LeftPanel(Gtk.Box):
             self._file_store.foreach(_restore, None)
 
     def _populate_dir(self, parent_it, directory: str):
-        show_hidden = self._show_hidden_btn.get_active()
+        show_hidden = self._show_hidden
         try:
             entries = sorted(
                 os.scandir(directory),
@@ -380,9 +442,16 @@ class LeftPanel(Gtk.Box):
     def _launch_and_track(self, app: str, path: str, project_dir: str | None):
         proc = subprocess.Popen([app, path], cwd=project_dir or os.path.dirname(path))
         if self._center is not None:
-            name = os.path.basename(path)
+            filename = os.path.basename(path)
             project_id = self._current_project["id"] if self._current_project else None
-            self._center.add_app_tab(name, proc, project_id)
+            icon_name = _get_desktop_icon(app)
+            app_display = os.path.basename(app)
+            self._center.add_app_tab(
+                filename, proc, project_id,
+                on_standalone=lambda xid: self.add_open_window(
+                    xid, app_display, filename, icon_name
+                ),
+            )
 
     def _open_file(self, path: str):
         project_dir = self._current_project.get("directory") if self._current_project else None
@@ -868,6 +937,112 @@ class LeftPanel(Gtk.Box):
         win.set_child(box)
         win.present()
 
+    # ── open-windows section ─────────────────────────────────────────────────
+
+    def _clear_open_windows(self):
+        self._stop_ewmh_poll()
+        for info in list(self._open_windows.values()):
+            self._open_windows_list.remove(info["row"])
+        self._open_windows.clear()
+        self._open_windows_section.set_visible(False)
+
+    def add_open_window(self, xid: int, app_name: str, filename: str,
+                        icon_name: str) -> None:
+        if xid in self._open_windows:
+            return
+        row = Gtk.ListBoxRow()
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+        box.set_margin_top(4)
+        box.set_margin_bottom(4)
+
+        icon = Gtk.Image.new_from_icon_name(
+            icon_name or "application-x-executable-symbolic"
+        )
+        icon.set_pixel_size(16)
+        box.append(icon)
+
+        lbl = Gtk.Label(label=f"{app_name} — {filename}", xalign=0)
+        lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        lbl.set_hexpand(True)
+        box.append(lbl)
+
+        row.set_child(box)
+
+        gesture = Gtk.GestureClick()
+        gesture.connect("pressed", lambda *_: self._raise_window_ewmh(xid))
+        row.add_controller(gesture)
+
+        self._open_windows_list.append(row)
+        self._open_windows[xid] = {
+            "app_name": app_name,
+            "filename": filename,
+            "icon_name": icon_name,
+            "row": row,
+        }
+        self._open_windows_section.set_visible(True)
+        self._start_ewmh_poll()
+
+    def remove_open_window(self, xid: int) -> None:
+        info = self._open_windows.pop(xid, None)
+        if info is not None:
+            self._open_windows_list.remove(info["row"])
+        if not self._open_windows:
+            self._open_windows_section.set_visible(False)
+
+    def _start_ewmh_poll(self):
+        if self._ewmh_poll_source is not None:
+            return
+        self._ewmh_poll_source = GLib.timeout_add(2000, self._poll_open_windows)
+
+    def _stop_ewmh_poll(self):
+        if self._ewmh_poll_source is not None:
+            GLib.source_remove(self._ewmh_poll_source)
+            self._ewmh_poll_source = None
+
+    def _poll_open_windows(self) -> bool:
+        if not self._open_windows:
+            self._ewmh_poll_source = None
+            return False
+        try:
+            self._ensure_ewmh_disp()
+            if self._ewmh_root is None:
+                return True
+            atom = self._ewmh_disp.intern_atom("_NET_CLIENT_LIST")
+            prop = self._ewmh_root.get_full_property(atom, X.AnyPropertyType)
+            current = set(prop.value) if (prop and prop.value) else set()
+            for xid in list(self._open_windows):
+                if xid not in current:
+                    self.remove_open_window(xid)
+        except Exception:
+            pass
+        if not self._open_windows:
+            self._ewmh_poll_source = None
+            return False
+        return True
+
+    def _ensure_ewmh_disp(self):
+        if self._ewmh_disp is None:
+            self._ewmh_disp = Xdisplay.Display()
+            self._ewmh_root = self._ewmh_disp.screen().root
+
+    def _raise_window_ewmh(self, xid: int):
+        try:
+            self._ensure_ewmh_disp()
+            win = self._ewmh_disp.create_resource_object("window", xid)
+            atom = self._ewmh_disp.intern_atom("_NET_ACTIVE_WINDOW")
+            ev = Xevent.ClientMessage(
+                window=win,
+                client_type=atom,
+                data=(32, [2, X.CurrentTime, 0, 0, 0]),
+            )
+            mask = X.SubstructureRedirectMask | X.SubstructureNotifyMask
+            self._ewmh_root.send_event(ev, event_mask=mask)
+            self._ewmh_disp.flush()
+        except Exception:
+            pass
+
     # ── per-project file-type settings ───────────────────────────────────────
 
     def _on_proj_settings_clicked(self, _btn):
@@ -890,10 +1065,37 @@ class LeftPanel(Gtk.Box):
         outer.set_margin_top(16)
         outer.set_margin_bottom(16)
 
-        hdr = Gtk.Label(label=f"Default apps for {project['name']}")
+        hdr = Gtk.Label(label=project["name"])
         hdr.add_css_class("heading")
         hdr.set_xalign(0)
         outer.append(hdr)
+
+        outer.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # Show hidden files toggle
+        hidden_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        hidden_lbl = Gtk.Label(label="Show hidden files")
+        hidden_lbl.set_hexpand(True)
+        hidden_lbl.set_xalign(0)
+        hidden_row.append(hidden_lbl)
+        hidden_sw = Gtk.Switch()
+        hidden_sw.set_active(self._show_hidden)
+        hidden_sw.set_valign(Gtk.Align.CENTER)
+
+        def _on_hidden_toggled(sw, _pspec):
+            self._show_hidden = sw.get_active()
+            self._rebuild_file_tree()
+
+        hidden_sw.connect("notify::active", _on_hidden_toggled)
+        hidden_row.append(hidden_sw)
+        outer.append(hidden_row)
+
+        outer.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        ft_hdr = Gtk.Label(label="Default apps for file types")
+        ft_hdr.add_css_class("heading")
+        ft_hdr.set_xalign(0)
+        outer.append(ft_hdr)
 
         desc = Gtk.Label(label="Override default apps for this project's file types.")
         desc.set_xalign(0)

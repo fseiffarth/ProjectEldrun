@@ -79,6 +79,7 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
 .panel-right {
     background-color: #161b22;
     border-left: 1px solid #30363d;
+    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.5);
 }
 .panel-header {
     font-size: 11px;
@@ -149,6 +150,12 @@ listbox {
 }
 .drag-over-bottom {
     border-bottom: 2px solid #388bfd;
+}
+.drag-over-left {
+    border-left: 2px solid #388bfd;
+}
+.drag-over-right {
+    border-right: 2px solid #388bfd;
 }
 
 /* ── app list rows ───────────────────────────────────────── */
@@ -237,6 +244,29 @@ progressbar.project-time-bar progress {
     min-width: 32px;
 }
 
+/* ── inline panel toggle button (in PROJECTS header) ────── */
+button.panel-toggle-inline {
+    min-width: 18px;
+    min-height: 18px;
+    padding: 0 3px;
+    font-size: 13px;
+    color: #8b949e;
+    border-radius: 4px;
+}
+button.panel-toggle-inline:hover { color: #e6edf3; }
+
+/* ── terminal back button (overlay on center panel) ──────── */
+button.terminal-back-btn {
+    background-color: rgba(22, 27, 34, 0.88);
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    margin: 8px;
+}
+button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
+
 /* ── center panel tab bar ────────────────────────────────── */
 .center-tab-bar-scroll {
     background-color: #161b22;
@@ -263,6 +293,79 @@ progressbar.project-time-bar progress {
     color: #e6edf3;
     border-color: #30363d;
     border-bottom: 1px solid #0d1117;
+}
+
+/* ── bottom panel ────────────────────────────────────────── */
+.bottom-panel {
+    background-color: #161b22;
+    border-top: 1px solid #30363d;
+    min-height: 40px;
+}
+.project-pill {
+    border-radius: 12px;
+    padding: 0;
+    min-height: 28px;
+    background-color: #21262d;
+    color: #8b949e;
+    border: 1px solid #30363d;
+}
+.project-pill:hover {
+    background-color: #30363d;
+    color: #e6edf3;
+}
+.project-pill-active {
+    background-color: rgba(56, 139, 253, 0.2);
+    color: #e6edf3;
+    border-color: #388bfd;
+}
+.project-pill-warm {
+    border-color: rgba(56, 139, 253, 0.5);
+}
+.project-pill label { color: inherit; }
+.pill-dot {
+    font-size: 8px;
+    color: #484f58;
+}
+.project-pill-active .pill-dot { color: #388bfd; }
+.project-pill-warm .pill-dot { color: #58a6ff; }
+.bottom-root-btn {
+    font-size: 12px;
+    min-height: 28px;
+    padding: 0 10px;
+    border-radius: 6px;
+}
+.bottom-add-btn {
+    font-size: 16px;
+    font-weight: bold;
+    min-width: 32px;
+    min-height: 28px;
+    background-color: #238636;
+    color: #ffffff;
+    border-radius: 6px;
+    border: none;
+    padding: 0 10px;
+}
+.bottom-add-btn:hover { background-color: #2ea043; }
+.bottom-add-btn:active { background-color: #1a7f37; }
+.bottom-toggle-btn {
+    font-size: 13px;
+    color: #8b949e;
+    min-width: 20px;
+    min-height: 28px;
+    padding: 0 4px;
+    border-radius: 4px;
+}
+.bottom-toggle-btn:hover { color: #e6edf3; }
+.bottom-panel searchentry {
+    min-height: 28px;
+    font-size: 12px;
+    border-radius: 6px;
+    background-color: #21262d;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+}
+.bottom-panel searchentry:focus {
+    border-color: #388bfd;
 }
 """
 
@@ -319,6 +422,7 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
 .panel-right {
     background-color: #f6f8fa;
     border-left: 1px solid #d0d7de;
+    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.18);
 }
 .panel-header {
     font-size: 11px;
@@ -370,6 +474,8 @@ listbox {
 .project-row-dragging { opacity: 0.45; }
 .drag-over-top { border-top: 2px solid #0969da; }
 .drag-over-bottom { border-bottom: 2px solid #0969da; }
+.drag-over-left { border-left: 2px solid #0969da; }
+.drag-over-right { border-right: 2px solid #0969da; }
 .app-row { border-bottom: 1px solid #d8dee4; }
 .app-row:hover { background-color: #f3f4f6; }
 .app-running { color: #2da44e; font-size: 10px; }
@@ -444,6 +550,29 @@ progressbar.project-time-bar progress {
     min-width: 32px;
 }
 
+/* ── inline panel toggle button (light) ─────────────────── */
+button.panel-toggle-inline {
+    min-width: 18px;
+    min-height: 18px;
+    padding: 0 3px;
+    font-size: 13px;
+    color: #57606a;
+    border-radius: 4px;
+}
+button.panel-toggle-inline:hover { color: #24292f; }
+
+/* ── terminal back button (light) ───────────────────────── */
+button.terminal-back-btn {
+    background-color: rgba(246, 248, 250, 0.88);
+    color: #24292f;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    margin: 8px;
+}
+button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
+
 /* ── center panel tab bar (light) ────────────────────────── */
 .center-tab-bar-scroll {
     background-color: #f6f8fa;
@@ -470,6 +599,79 @@ progressbar.project-time-bar progress {
     color: #24292f;
     border-color: #d0d7de;
     border-bottom: 1px solid #ffffff;
+}
+
+/* ── bottom panel (light) ────────────────────────────────── */
+.bottom-panel {
+    background-color: #f6f8fa;
+    border-top: 1px solid #d0d7de;
+    min-height: 40px;
+}
+.project-pill {
+    border-radius: 12px;
+    padding: 0;
+    min-height: 28px;
+    background-color: #eaeef2;
+    color: #57606a;
+    border: 1px solid #d0d7de;
+}
+.project-pill:hover {
+    background-color: #d0d7de;
+    color: #24292f;
+}
+.project-pill-active {
+    background-color: rgba(9, 105, 218, 0.12);
+    color: #24292f;
+    border-color: #0969da;
+}
+.project-pill-warm {
+    border-color: rgba(9, 105, 218, 0.5);
+}
+.project-pill label { color: inherit; }
+.pill-dot {
+    font-size: 8px;
+    color: #8c959f;
+}
+.project-pill-active .pill-dot { color: #0969da; }
+.project-pill-warm .pill-dot { color: #0550ae; }
+.bottom-root-btn {
+    font-size: 12px;
+    min-height: 28px;
+    padding: 0 10px;
+    border-radius: 6px;
+}
+.bottom-add-btn {
+    font-size: 16px;
+    font-weight: bold;
+    min-width: 32px;
+    min-height: 28px;
+    background-color: #2da44e;
+    color: #ffffff;
+    border-radius: 6px;
+    border: none;
+    padding: 0 10px;
+}
+.bottom-add-btn:hover { background-color: #2c974b; }
+.bottom-add-btn:active { background-color: #26843f; }
+.bottom-toggle-btn {
+    font-size: 13px;
+    color: #57606a;
+    min-width: 20px;
+    min-height: 28px;
+    padding: 0 4px;
+    border-radius: 4px;
+}
+.bottom-toggle-btn:hover { color: #24292f; }
+.bottom-panel searchentry {
+    min-height: 28px;
+    font-size: 12px;
+    border-radius: 6px;
+    background-color: #eaeef2;
+    color: #24292f;
+    border: 1px solid #d0d7de;
+}
+.bottom-panel searchentry:focus {
+    border-color: #0969da;
 }
 """
 
