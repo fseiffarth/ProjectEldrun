@@ -13,8 +13,22 @@ from gi.repository import GLib
 # ── role definitions ──────────────────────────────────────────────────────────
 
 ROLES = [
-    {"key": "browser",          "label": "Browser",          "icon": "web-browser-symbolic"},
-    {"key": "mail",             "label": "Mail",             "icon": "mail-symbolic"},
+    {
+        "key": "browser",
+        "label": "Browser",
+        "icon": "internet-web-browser-symbolic",
+        "icons": ["internet-web-browser-symbolic", "web-browser-symbolic"],
+    },
+    {
+        "key": "mail",
+        "label": "Mail",
+        "icon": "internet-mail-symbolic",
+        "icons": [
+            "internet-mail-symbolic",
+            "mail-unread-symbolic",
+            "mail-message-new-symbolic",
+        ],
+    },
     {"key": "calendar",         "label": "Calendar",         "icon": "x-office-calendar-symbolic"},
     {"key": "print_manager",    "label": "Print Manager",    "icon": "printer-symbolic"},
     {"key": "file_manager",     "label": "File Manager",     "icon": "system-file-manager-symbolic"},
@@ -41,6 +55,32 @@ _RESOLVE: dict[str, tuple] = {
     "screenshot":       ("path",         ["flameshot", "gnome-screenshot"]),
     "screen_recorder":  ("path",         ["obs", "kazam", "simplescreenrecorder"]),
 }
+
+
+# ── role icon helpers ────────────────────────────────────────────────────────
+
+def role_icon_names(role: dict) -> list[str]:
+    icons = role.get("icons")
+    if isinstance(icons, (list, tuple)):
+        names = [str(icon) for icon in icons if icon]
+        if names:
+            return names
+    icon = role.get("icon")
+    if icon:
+        return [str(icon)]
+    return ["application-x-executable-symbolic"]
+
+
+def select_role_icon(role: dict, has_icon=None) -> str:
+    names = role_icon_names(role)
+    if has_icon is not None:
+        for name in names:
+            try:
+                if has_icon(name):
+                    return name
+            except Exception:
+                continue
+    return names[0]
 
 
 # ── desktop file helpers ──────────────────────────────────────────────────────

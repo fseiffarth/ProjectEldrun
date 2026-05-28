@@ -16,8 +16,8 @@ from Xlib.protocol import event as Xevent
 # project-list right panel.
 
 
-def _get_desktop_icon(app_exe: str) -> str:
-    """Return the icon name from the .desktop file matching app_exe, or a fallback."""
+def _lookup_desktop_icon(app_exe: str) -> str | None:
+    """Return the icon name from the .desktop file matching app_exe."""
     app_name = os.path.basename(app_exe)
     search_dirs = [
         pathlib.Path.home() / ".local/share/applications",
@@ -40,13 +40,41 @@ def _get_desktop_icon(app_exe: str) -> str:
                     continue
         except Exception:
             continue
+    return None
+
+
+def _get_desktop_icon(app_exe: str) -> str:
+    """Return the icon name from the .desktop file matching app_exe, or a fallback."""
+    icon = _lookup_desktop_icon(app_exe)
+    if icon:
+        return icon
     return "application-x-executable-symbolic"
 
+
+_FOLDER_ICON = "folder-symbolic"
+_FILE_ICON = "text-x-generic-symbolic"
 
 _STANDARD_PROJECT_FILES = frozenset({
     "AGENTS.md", "CLAUDE.md", "TODO.md", "ROADMAP.md",
     "STATUS.md", "DOCUMENTATION.md", ".gitignore", ".claude",
 })
+
+_TREE_COLORS = {
+    "dark": {"directory": "#d29922", "file": "#8b949e"},
+    "light": {"directory": "#bf8700", "file": "#57606a"},
+    "fancy_dark": {"directory": "#ffd166", "file": "#8ca3c7"},
+    "fancy_light": {"directory": "#b7791f", "file": "#5b6f91"},
+}
+_LEGACY_THEME_VALUES = {"fancy": "fancy_dark"}
+
+
+def _normalize_theme(scheme) -> str:
+    if isinstance(scheme, bool):
+        return "dark" if scheme else "light"
+    scheme = _LEGACY_THEME_VALUES.get(scheme, scheme)
+    if scheme in _TREE_COLORS:
+        return scheme
+    return "dark"
 
 
 def _human_size(n: int) -> str:
@@ -59,7 +87,7 @@ def _human_size(n: int) -> str:
 
 class FileTreePanel(Gtk.Box):
     def __init__(self, center_panel=None, default_apps_manager=None,
-                 workspace_manager=None):
+                 workspace_manager=None, settings_manager=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("panel-right")
         self.set_size_request(220, -1)
@@ -67,11 +95,15 @@ class FileTreePanel(Gtk.Box):
         self._center = center_panel
         self._dam = default_apps_manager
         self._wm = workspace_manager
+        self._color_scheme = _normalize_theme(
+            settings_manager.get("color_scheme") if settings_manager else "dark"
+        )
         self._current_project: dict | None = None
         self._tree_refresh_source: int | None = None
         self._hover_scroll_source: int | None = None
         self._hover_scroll_path: Gtk.TreePath | None = None
         self._path_colors: dict[str, str] = {}  # abs_path → "#rrggbb"
+        self._default_icon_cache: dict[tuple[str, str], str] = {}
 
         # Open-windows tracking
         self._open_windows: dict[int, dict] = {}   # xid → {app_name, filename, icon_name, row}
@@ -243,11 +275,16 @@ class FileTreePanel(Gtk.Box):
     def _color_data_func(self, column, cell, model, iter_, data):
         path = model.get_value(iter_, 2)
         color = self._path_colors.get(path)
-        if color:
-            cell.set_property("foreground", color)
-            cell.set_property("foreground-set", True)
-        else:
-            cell.set_property("foreground-set", False)
+        if not color:
+            colors = _TREE_COLORS[self._color_scheme]
+            is_dir = model.get_value(iter_, 3)
+            color = colors["directory"] if is_dir else colors["file"]
+        cell.set_property("foreground", color)
+        cell.set_property("foreground-set", True)
+
+    def apply_theme(self, scheme):
+        self._color_scheme = _normalize_theme(scheme)
+        self._file_tree.queue_draw()
 
     # ── long filename hover reveal ───────────────────────────────────────────
 
@@ -310,11 +347,44 @@ class FileTreePanel(Gtk.Box):
         icon_and_padding = 46
         return row_indent + icon_and_padding + text_width > visible_width
 
+    def _clear_default_icon_cache(self):
+        self._default_icon_cache = {}
+
+    def _refresh_default_app_icons(self):
+        self._clear_default_icon_cache()
+        if self._current_project is not None:
+            self._rebuild_file_tree()
+
+    def _icon_for_tree_entry(self, path: str, is_dir: bool) -> str:
+        if is_dir:
+            return _FOLDER_ICON
+        return self._default_icon_for_file(path)
+
+    def _default_icon_for_file(self, path: str) -> str:
+        ext = pathlib.Path(path).suffix.lower()
+        if not ext or self._dam is None or self._current_project is None:
+            return _FILE_ICON
+
+        project_dir = self._current_project.get("directory", "")
+        cache = getattr(self, "_default_icon_cache", None)
+        if cache is None:
+            self._default_icon_cache = {}
+            cache = self._default_icon_cache
+        key = (project_dir, ext)
+        if key in cache:
+            return cache[key]
+
+        app = self._dam.get_app_for_file(path, project_dir)
+        icon = (_lookup_desktop_icon(app) if app else None) or _FILE_ICON
+        cache[key] = icon
+        return icon
+
     # ── project update ────────────────────────────────────────────────────────
 
     def update_project(self, project: dict | None):
         self._reset_tree_hover_scroll()
         self._clear_open_windows()
+        self._clear_default_icon_cache()
         self._current_project = project
         self._proj_settings_btn.set_sensitive(project is not None)
 
@@ -383,11 +453,12 @@ class FileTreePanel(Gtk.Box):
                 continue
             if entry.name.startswith(".") and not show_hidden:
                 continue
-            icon = "folder-symbolic" if entry.is_dir() else "text-x-generic-symbolic"
+            is_dir = entry.is_dir()
+            icon = self._icon_for_tree_entry(entry.path, is_dir)
             it = self._file_store.append(
-                parent_it, [icon, entry.name, entry.path, entry.is_dir()]
+                parent_it, [icon, entry.name, entry.path, is_dir]
             )
-            if entry.is_dir():
+            if is_dir:
                 self._populate_dir(it, entry.path)
 
     def _on_tree_row_activated(self, tree, path, _column):
@@ -694,8 +765,10 @@ class FileTreePanel(Gtk.Box):
                 return
             if save_proj.get_active() and self._dam and project_dir and ext:
                 self._dam.set_project_app(project_dir, ext, cmd)
+                self._refresh_default_app_icons()
             elif save_global.get_active() and self._dam and ext:
                 self._dam.set_global_app(ext, cmd)
+                self._refresh_default_app_icons()
             try:
                 self._launch_and_track(cmd, path, project_dir)
             except OSError:
@@ -1324,6 +1397,7 @@ class FileTreePanel(Gtk.Box):
                     if old_ext and old_ext != new_ext:
                         self._dam.remove_project_app(project_dir, old_ext)
                     self._dam.set_project_app(project_dir, new_ext, new_app)
+                    self._refresh_default_app_icons()
 
             ext_entry.connect("activate", save_row)
             app_entry.connect("activate", save_row)
@@ -1334,6 +1408,7 @@ class FileTreePanel(Gtk.Box):
                 ext_val = ee.get_text().strip().lower()
                 if ext_val and self._dam:
                     self._dam.remove_project_app(project_dir, ext_val)
+                    self._refresh_default_app_icons()
                 pft_listbox.remove(r)
 
             rm_btn = Gtk.Button(label="×")

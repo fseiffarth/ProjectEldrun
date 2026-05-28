@@ -14,7 +14,7 @@ from gi.repository import Gtk, Adw, Gdk, GLib
 from project_manager import ProjectManager
 from settings_manager import SettingsManager
 from default_apps_manager import DefaultAppsManager
-from global_apps_manager import GlobalAppsManager, ROLES
+from global_apps_manager import GlobalAppsManager, ROLES, select_role_icon
 from network_monitor import NetworkMonitor
 from time_tracker import TimeTracker
 from workspace_manager import WorkspaceManager
@@ -94,6 +94,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.default_apps_manager = DefaultAppsManager()
         self._time_tracker = TimeTracker()
         self._workspace_manager = WorkspaceManager()
+        atexit.register(self._workspace_manager.release_all)
         self._global_apps_manager = GlobalAppsManager(self.settings_manager)
         set_theme(self.settings_manager.get("color_scheme"))
         from eldrun import set_debug
@@ -188,12 +189,14 @@ class EldrunWindow(Adw.ApplicationWindow):
 
         version_lbl = Gtk.Label(label=f"v{__version__}")
         version_lbl.add_css_class("app-version-label")
-        version_lbl.set_xalign(0)
+        version_lbl.set_xalign(0.5)
+        version_lbl.set_halign(Gtk.Align.CENTER)
         version_stack.append(version_lbl)
 
         self._debug_badge = Gtk.Label(label="DEBUG")
         self._debug_badge.add_css_class("debug-badge")
-        self._debug_badge.set_halign(Gtk.Align.START)
+        self._debug_badge.set_xalign(0.5)
+        self._debug_badge.set_halign(Gtk.Align.CENTER)
         version_stack.append(self._debug_badge)
         left_status.append(version_stack)
 
@@ -273,8 +276,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             orientation=Gtk.Orientation.HORIZONTAL, spacing=2
         )
         self._global_apps_toolbar_box.add_css_class("global-apps-toolbar")
-        self._global_apps_toolbar_box.set_margin_start(6)
-        self._global_apps_toolbar_box.set_margin_end(6)
+        self._global_apps_toolbar_box.set_halign(Gtk.Align.CENTER)
         root.append(self._global_apps_toolbar_box)
         self._refresh_global_apps_toolbar()
 
@@ -294,6 +296,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             center_panel=self._center_panel,
             default_apps_manager=self.default_apps_manager,
             workspace_manager=self._workspace_manager,
+            settings_manager=self.settings_manager,
         )
         self._file_tree_panel.set_halign(Gtk.Align.END)
         self._file_tree_panel.set_valign(Gtk.Align.FILL)
@@ -316,6 +319,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_workspace_toggled=self._on_workspace_toggled,
             on_debug_toggled=self._on_debug_toggled,
             on_global_apps_changed=self._refresh_global_apps_toolbar,
+            on_default_apps_changed=self._file_tree_panel._refresh_default_app_icons,
         )
 
         overlay = Gtk.Overlay()
@@ -467,6 +471,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         set_theme(scheme)
         self.settings_manager.set("color_scheme", scheme)
         self._center_panel.apply_theme(scheme)
+        self._file_tree_panel.apply_theme(scheme)
 
     def _on_debug_toggled(self, enabled: bool):
         from eldrun import set_debug
@@ -629,7 +634,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             any_visible = True
             exec_cmd = entry.get("exec")
             btn = Gtk.Button()
-            btn.set_icon_name(role["icon"])
+            btn.set_icon_name(select_role_icon(role, self._icon_theme_has_icon))
             btn.add_css_class("flat")
             btn.add_css_class("global-app-btn")
             btn.set_tooltip_text(role["label"])
@@ -638,9 +643,80 @@ class EldrunWindow(Adw.ApplicationWindow):
                 btn.connect("clicked", lambda _, k=key: gam.launch_or_raise(k))
             else:
                 btn.set_sensitive(False)
+
+            rclick = Gtk.GestureClick()
+            rclick.set_button(3)
+            rclick.connect(
+                "pressed",
+                lambda g, _n, _x, _y, k=key, r=role, e=exec_cmd: (
+                    g.set_state(Gtk.EventSequenceState.CLAIMED),
+                    self._show_global_app_edit_popover(g.get_widget(), k, r["label"], e),
+                ),
+            )
+            btn.add_controller(rclick)
             toolbar.append(btn)
 
         toolbar.set_visible(any_visible)
+
+    def _icon_theme_has_icon(self, icon_name: str) -> bool:
+        display = Gdk.Display.get_default()
+        if display is None:
+            return False
+        return Gtk.IconTheme.get_for_display(display).has_icon(icon_name)
+
+    def _show_global_app_edit_popover(self, widget, key: str, label: str, current_exec: str | None):
+        popover = Gtk.Popover()
+        popover.set_parent(widget)
+        popover.set_has_arrow(True)
+        popover.set_autohide(True)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_start(10)
+        box.set_margin_end(10)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+
+        title = Gtk.Label(label=label)
+        title.add_css_class("heading")
+        title.set_xalign(0)
+        box.append(title)
+
+        entry = Gtk.Entry()
+        entry.set_text(current_exec or "")
+        entry.set_placeholder_text("Command path, e.g. /usr/bin/firefox")
+        entry.set_width_chars(30)
+        box.append(entry)
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        btn_row.set_halign(Gtk.Align.END)
+
+        clear_btn = Gtk.Button(label="Clear")
+        clear_btn.add_css_class("flat")
+        btn_row.append(clear_btn)
+
+        ok_btn = Gtk.Button(label="Set")
+        ok_btn.add_css_class("suggested-action")
+        btn_row.append(ok_btn)
+        box.append(btn_row)
+
+        def _apply(_=None):
+            new_cmd = entry.get_text().strip() or None
+            self._global_apps_manager.set_exec(key, new_cmd)
+            self._refresh_global_apps_toolbar()
+            popover.popdown()
+
+        def _clear(_):
+            self._global_apps_manager.set_exec(key, None)
+            self._refresh_global_apps_toolbar()
+            popover.popdown()
+
+        entry.connect("activate", _apply)
+        ok_btn.connect("clicked", _apply)
+        clear_btn.connect("clicked", _clear)
+
+        popover.set_child(box)
+        popover.popup()
+        entry.grab_focus()
 
     # ── network status ────────────────────────────────────────────────────────
 

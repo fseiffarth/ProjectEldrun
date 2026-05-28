@@ -10,6 +10,7 @@ Design:
   - Assignments are in-memory only (no persistence) — rebuilt fresh each launch.
 """
 
+import ast
 import json
 import subprocess
 
@@ -175,6 +176,91 @@ def _wmctrl_switch(idx: int):
         pass
 
 
+# ── GNOME gsettings helpers ───────────────────────────────────────────────────
+
+def _gnome_gsettings_available() -> bool:
+    try:
+        r = subprocess.run(
+            ["gsettings", "get", "org.gnome.mutter", "dynamic-workspaces"],
+            capture_output=True, text=True, timeout=3,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _gnome_get_dynamic_workspaces() -> bool:
+    try:
+        r = subprocess.run(
+            ["gsettings", "get", "org.gnome.mutter", "dynamic-workspaces"],
+            capture_output=True, text=True, timeout=3,
+        )
+        return r.returncode == 0 and r.stdout.strip() == "true"
+    except Exception:
+        return True
+
+
+def _gnome_set_dynamic_workspaces(enabled: bool):
+    try:
+        subprocess.run(
+            ["gsettings", "set", "org.gnome.mutter", "dynamic-workspaces",
+             "true" if enabled else "false"],
+            capture_output=True, timeout=3,
+        )
+    except Exception:
+        pass
+
+
+def _gnome_get_workspace_count() -> int:
+    try:
+        r = subprocess.run(
+            ["gsettings", "get", "org.gnome.desktop.wm.preferences", "num-workspaces"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode == 0:
+            return max(1, int(r.stdout.strip()))
+    except Exception:
+        pass
+    return _ewmh_get_count()
+
+
+def _gnome_set_workspace_count(n: int):
+    try:
+        subprocess.run(
+            ["gsettings", "set", "org.gnome.desktop.wm.preferences", "num-workspaces", str(n)],
+            capture_output=True, timeout=3,
+        )
+    except Exception:
+        pass
+
+
+def _gnome_get_workspace_names() -> list[str]:
+    try:
+        r = subprocess.run(
+            ["gsettings", "get", "org.gnome.desktop.wm.preferences", "workspace-names"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode == 0:
+            result = ast.literal_eval(r.stdout.strip())
+            if isinstance(result, list):
+                return [str(x) for x in result]
+    except Exception:
+        pass
+    return []
+
+
+def _gnome_set_workspace_names(names: list[str]):
+    escaped = [n.replace("\\", "\\\\").replace("'", "\\'") for n in names]
+    value = "[" + ", ".join(f"'{n}'" for n in escaped) + "]"
+    try:
+        subprocess.run(
+            ["gsettings", "set", "org.gnome.desktop.wm.preferences", "workspace-names", value],
+            capture_output=True, timeout=3,
+        )
+    except Exception:
+        pass
+
+
 # ── WorkspaceManager ──────────────────────────────────────────────────────────
 
 class WorkspaceManager:
@@ -182,11 +268,12 @@ class WorkspaceManager:
         self._assignments: dict[str, int] = {}   # project_id → cached workspace_idx
         self._names: dict[str, str] = {}          # project_id → workspace name
         self._backend: str | None = None          # "cinnamon" | "gnome" | "wmctrl" | "none"
+        self._gnome_original: dict | None = None  # saved before first gsettings change
 
     def _detect_backend(self) -> str:
         if _cinnamon_eval("String(global.workspace_manager.get_n_workspaces())") is not None:
             return "cinnamon"
-        if _gnome_eval("String(global.workspace_manager.get_n_workspaces())") is not None:
+        if _gnome_gsettings_available():
             return "gnome"
         if _wmctrl_available():
             return "wmctrl"
@@ -239,13 +326,15 @@ class WorkspaceManager:
         return name.strip() or f"eldrun-{project_id[:8]}"
 
     def _workspace_count(self) -> int:
-        if self._backend in ("cinnamon", "gnome"):
+        if self._backend == "cinnamon":
             result = self._wm_eval("String(global.workspace_manager.get_n_workspaces())")
             try:
                 if result is not None:
                     return max(1, int(result))
             except ValueError:
                 pass
+        if self._backend == "gnome":
+            return _gnome_get_workspace_count()
         return _ewmh_get_count()
 
     def _ensure_workspace_count(self, desired: int):
@@ -253,7 +342,7 @@ class WorkspaceManager:
         if not self.is_available():
             return
 
-        if self._backend in ("cinnamon", "gnome"):
+        if self._backend == "cinnamon":
             current = self._workspace_count()
             while current < desired:
                 self._wm_eval(
@@ -269,6 +358,18 @@ class WorkspaceManager:
                 current -= 1
             return
 
+        if self._backend == "gnome":
+            if self._gnome_original is None:
+                self._gnome_original = {
+                    "dynamic": _gnome_get_dynamic_workspaces(),
+                    "count": _gnome_get_workspace_count(),
+                    "names": _gnome_get_workspace_names(),
+                }
+            if self._gnome_original["dynamic"]:
+                _gnome_set_dynamic_workspaces(False)
+            _gnome_set_workspace_count(desired)
+            return
+
         current = self._workspace_count()
         if current != desired:
             _wmctrl_set_n_desktops(desired)
@@ -280,6 +381,10 @@ class WorkspaceManager:
                     "const Main = imports.ui.main;"
                     f"Main.setWorkspaceName({idx}, {_js_string(name)})"
                 )
+            return
+
+        if self._backend == "gnome":
+            _gnome_set_workspace_names(names)
             return
 
         _xlib_set_desktop_names(names)
@@ -328,13 +433,15 @@ class WorkspaceManager:
         idx = self._assignments.get(project_id)
         if idx is None:
             return
-        if self._backend in ("cinnamon", "gnome"):
+        if self._backend == "cinnamon":
             result = self._wm_eval(
                 f"global.workspace_manager.get_workspace_by_index({idx})"
                 f".activate(global.get_current_time())"
             )
             if result is None:
                 _ewmh_switch(idx)
+        elif self._backend == "gnome":
+            _ewmh_switch(idx)
         else:
             _wmctrl_switch(idx)
 
@@ -347,22 +454,32 @@ class WorkspaceManager:
         """Switch to workspace index 0 regardless of current position."""
         if not self.is_available():
             return
-        if self._backend in ("cinnamon", "gnome"):
+        if self._backend == "cinnamon":
             result = self._wm_eval(
                 "global.workspace_manager.get_workspace_by_index(0)"
                 ".activate(global.get_current_time())"
             )
             if result is None:
                 _ewmh_switch(0)
+        elif self._backend == "gnome":
+            _ewmh_switch(0)
         else:
             _wmctrl_switch(0)
 
     def release_all(self):
-        """Clear project assignments and leave a single workspace behind."""
+        """Clear project assignments and restore workspace state."""
         self.switch_to_first()
         self._assignments.clear()
         self._names.clear()
-        if self.is_available():
+        if self._backend == "gnome":
+            if self._gnome_original is not None:
+                orig = self._gnome_original
+                self._gnome_original = None
+                _gnome_set_workspace_count(max(1, orig["count"]))
+                _gnome_set_workspace_names(orig["names"])
+                if orig["dynamic"]:
+                    _gnome_set_dynamic_workspaces(True)
+        elif self.is_available():
             self._ensure_workspace_count(1)
 
     def get_assignment(self, project_id: str) -> int | None:

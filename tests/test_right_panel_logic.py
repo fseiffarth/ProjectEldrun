@@ -3,7 +3,7 @@
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 _GTK_MOCKS = {
@@ -117,6 +117,71 @@ class TestFileTreeHoverScrollLogic(unittest.TestCase):
         self.assertTrue(
             panel._tree_row_needs_horizontal_scroll(self._path(depth=2), "nested.py")
         )
+
+
+class TestFileTreeDefaultIconLogic(unittest.TestCase):
+    def _panel(self, app: str | None = "code"):
+        panel = FileTreePanel.__new__(FileTreePanel)
+        panel._current_project = {"directory": "/work/project"}
+        panel._default_icon_cache = {}
+        panel._dam = MagicMock()
+        panel._dam.get_app_for_file.return_value = app
+        return panel
+
+    def test_directory_uses_folder_icon(self):
+        panel = self._panel()
+
+        self.assertEqual(
+            panel._icon_for_tree_entry("/work/project/src", True),
+            "folder-symbolic",
+        )
+        panel._dam.get_app_for_file.assert_not_called()
+
+    def test_file_with_default_app_uses_app_icon(self):
+        panel = self._panel(app="code")
+
+        with patch("panels.right_panel._lookup_desktop_icon", return_value="code-icon"):
+            self.assertEqual(
+                panel._icon_for_tree_entry("/work/project/main.py", False),
+                "code-icon",
+            )
+
+        panel._dam.get_app_for_file.assert_called_once_with(
+            "/work/project/main.py", "/work/project"
+        )
+
+    def test_file_without_default_app_uses_generic_icon(self):
+        panel = self._panel(app=None)
+
+        self.assertEqual(
+            panel._icon_for_tree_entry("/work/project/notes.txt", False),
+            "text-x-generic-symbolic",
+        )
+
+    def test_file_with_default_app_but_no_icon_uses_generic_icon(self):
+        panel = self._panel(app="unknown-editor")
+
+        with patch("panels.right_panel._lookup_desktop_icon", return_value=None):
+            self.assertEqual(
+                panel._icon_for_tree_entry("/work/project/notes.txt", False),
+                "text-x-generic-symbolic",
+            )
+
+    def test_files_with_same_extension_use_cache(self):
+        panel = self._panel(app="code")
+
+        with patch("panels.right_panel._lookup_desktop_icon", return_value="code-icon") as icon:
+            self.assertEqual(
+                panel._default_icon_for_file("/work/project/a.py"), "code-icon"
+            )
+            self.assertEqual(
+                panel._default_icon_for_file("/work/project/b.py"), "code-icon"
+            )
+
+        panel._dam.get_app_for_file.assert_called_once_with(
+            "/work/project/a.py", "/work/project"
+        )
+        icon.assert_called_once_with("code")
 
 
 if __name__ == "__main__":

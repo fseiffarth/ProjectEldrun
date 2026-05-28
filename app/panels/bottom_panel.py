@@ -48,9 +48,12 @@ class ProjectPill(Gtk.Box):
         self.project_name = project["name"]
         self._project_dir = project.get("directory", "")
         self.position = project.get("position", 0)
+        self._on_click_cb = on_click
         self._on_drop_cb = on_drop
         self._stats_popover: Gtk.Popover | None = None
         self._hover_timer_id: int | None = None
+        self._drag_ready = False
+        self._drag_started = False
         self.set_valign(Gtk.Align.CENTER)
         self.set_size_request(-1, 40)
         self.add_css_class("project-pill")
@@ -86,7 +89,7 @@ class ProjectPill(Gtk.Box):
 
         click = Gtk.GestureClick()
         click.set_button(1)
-        click.connect("released", lambda _g, _n, _x, _y: on_click(self.project_id))
+        click.connect("pressed", self._on_pill_pressed)
         self.add_controller(click)
 
         rclick = Gtk.GestureClick()
@@ -113,9 +116,18 @@ class ProjectPill(Gtk.Box):
         self._debug_visible = visible
         self._ws_badge.set_visible(visible and bool(self._ws_badge.get_label()))
 
-    # ── drag-and-drop ─────────────────────────────────────────────────────────
+    def _on_pill_pressed(self, _gesture, _n_press, _x, _y):
+        self._on_click_cb(self.project_id)
+
+    # ── drag-and-drop (hold to drag) ──────────────────────────────────────────
 
     def _setup_drag_and_drop(self):
+        # Long-press gates dragging so normal clicks are never blocked
+        long_press = Gtk.GestureLongPress()
+        long_press.connect("pressed", self._on_long_press_begin)
+        long_press.connect("cancelled", self._on_long_press_cancel)
+        self.add_controller(long_press)
+
         drag_source = Gtk.DragSource()
         drag_source.set_actions(Gdk.DragAction.MOVE)
         drag_source.connect("prepare", self._on_drag_prepare)
@@ -129,10 +141,22 @@ class ProjectPill(Gtk.Box):
         drop_target.connect("leave", self._on_drop_leave)
         self.add_controller(drop_target)
 
+    def _on_long_press_begin(self, _gesture, _x, _y):
+        self._drag_ready = True
+        self.add_css_class("project-pill-draggable")
+
+    def _on_long_press_cancel(self, _gesture):
+        self._drag_ready = False
+        self.remove_css_class("project-pill-draggable")
+
     def _on_drag_prepare(self, _src, _x, _y):
+        if not self._drag_ready:
+            return None
         return Gdk.ContentProvider.new_for_value(self.project_id)
 
     def _on_drag_begin(self, src, _drag):
+        self._drag_started = True
+        self.remove_css_class("project-pill-draggable")
         self.add_css_class("project-row-dragging")
         self._set_drag_icon(src)
 
@@ -157,6 +181,8 @@ class ProjectPill(Gtk.Box):
                 pass
 
     def _on_drag_end(self, _src, _drag, _success):
+        self._drag_started = False
+        self._drag_ready = False
         self.remove_css_class("project-row-dragging")
         self.remove_css_class("drag-over-left")
         self.remove_css_class("drag-over-right")
@@ -332,7 +358,8 @@ class BottomPanel(Gtk.Box):
                  default_apps_manager=None, global_apps_manager=None,
                  on_toggle_theme=None, on_terminal_changed=None,
                  on_search_project=None, on_workspace_toggled=None,
-                 on_debug_toggled=None, on_global_apps_changed=None):
+                 on_debug_toggled=None, on_global_apps_changed=None,
+                 on_default_apps_changed=None):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self.add_css_class("bottom-panel")
         self.set_valign(Gtk.Align.END)
@@ -352,6 +379,7 @@ class BottomPanel(Gtk.Box):
         self._on_workspace_toggled = on_workspace_toggled
         self._on_debug_toggled = on_debug_toggled
         self._on_global_apps_changed = on_global_apps_changed
+        self._on_default_apps_changed = on_default_apps_changed
         self._pills: dict[str, ProjectPill] = {}
         self._active_project_id: str | None = None
         self._popover: Gtk.Popover | None = None
@@ -361,7 +389,6 @@ class BottomPanel(Gtk.Box):
 
         # Root button
         self._root_btn = Gtk.Button(label="Root")
-        self._root_btn.add_css_class("destructive-action")
         self._root_btn.add_css_class("bottom-root-btn")
         self._root_btn.set_valign(Gtk.Align.FILL)
         self._root_btn.set_size_request(-1, 40)
@@ -611,7 +638,7 @@ class BottomPanel(Gtk.Box):
     # ── global apps settings window (G6.3) ───────────────────────────────────
 
     def _show_global_apps_settings(self):
-        from global_apps_manager import ROLES
+        from global_apps_manager import ROLES, select_role_icon
         gam = self._gam
 
         win = Gtk.Window()
@@ -675,7 +702,9 @@ class BottomPanel(Gtk.Box):
             cb.set_valign(Gtk.Align.CENTER)
             box.append(cb)
 
-            icon = Gtk.Image.new_from_icon_name(role["icon"])
+            icon = Gtk.Image.new_from_icon_name(
+                select_role_icon(role, self._icon_theme_has_icon)
+            )
             icon.set_pixel_size(16)
             icon.set_valign(Gtk.Align.CENTER)
             box.append(icon)
@@ -735,6 +764,12 @@ class BottomPanel(Gtk.Box):
 
         win.set_child(outer)
         win.present()
+
+    def _icon_theme_has_icon(self, icon_name: str) -> bool:
+        display = Gdk.Display.get_default()
+        if display is None:
+            return False
+        return Gtk.IconTheme.get_for_display(display).has_icon(icon_name)
 
     # ── filetype settings window ──────────────────────────────────────────────
 
@@ -836,6 +871,8 @@ class BottomPanel(Gtk.Box):
                 self._dam.remove_global_app(old_ext)
             if self._dam:
                 self._dam.set_global_app(new_ext, new_app)
+                if self._on_default_apps_changed:
+                    self._on_default_apps_changed()
 
         ext_entry.connect("activate", save_row)
         app_entry.connect("activate", save_row)
@@ -846,6 +883,8 @@ class BottomPanel(Gtk.Box):
             ext_val = ee.get_text().strip().lower()
             if ext_val and self._dam:
                 self._dam.remove_global_app(ext_val)
+                if self._on_default_apps_changed:
+                    self._on_default_apps_changed()
             self._ft_listbox.remove(r)
 
         rm_btn = Gtk.Button(label="×")

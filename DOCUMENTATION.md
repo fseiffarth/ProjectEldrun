@@ -227,7 +227,7 @@ EldrunApp (Adw.Application)
 | `app/time_tracker.py` | Active project session tracking and crash/orphan session closure. |
 | `app/project_stats.py` | Background file-type and time summary scanner. |
 | `app/network_monitor.py` | Background 1.1.1.1:53 probe and network interface type detection. |
-| `app/workspace_manager.py` | Cinnamon workspace creation/switch/removal and sticky Eldrun window support. |
+| `app/workspace_manager.py` | Workspace creation/switch/removal for Cinnamon, GNOME, and wmctrl backends; sticky Eldrun window support. |
 | `app/panels/center_panel.py` | Terminal stack, tab bar, app tab lifecycle, X11 embedding/fallback. |
 | `app/panels/right_panel.py` | Current `FileTreePanel`: file operations, default app dialogs, open-window list. |
 | `app/panels/bottom_panel.py` | Bottom bar, project pills, settings windows, search, drag/drop ordering. |
@@ -434,16 +434,38 @@ model.
 
 ### Workspace Management
 
-When enabled, `WorkspaceManager` targets Cinnamon:
+`WorkspaceManager` auto-detects the backend on startup:
 
-- Eldrun's window is marked sticky using `_NET_WM_STATE_STICKY`.
-- Each active project gets an appended workspace.
-- Activating a project switches to its assigned workspace.
-- Closing a project removes its assigned workspace and reindexes assignments.
+| Backend | Detection | Workspace create/name | Workspace switch |
+|---|---|---|---|
+| Cinnamon | `org.Cinnamon` DBus Eval | JS via `global.workspace_manager` | JS activate |
+| GNOME | `gsettings get org.gnome.mutter dynamic-workspaces` succeeds | `gsettings` (`org.gnome.desktop.wm.preferences`) | EWMH `_NET_CURRENT_DESKTOP` |
+| wmctrl | `wmctrl -l` exits 0 | `wmctrl -n` (count only, no names) | `wmctrl -s` |
+| none | fallthrough | no-op | no-op |
+
+Behaviour common to all backends:
+
+- Eldrun's window is marked sticky via `_NET_WM_STATE_STICKY` EWMH.
+- Each active project gets a workspace; activating a project switches to it.
 - Assignments are in memory and rebuilt every launch.
 
-If Cinnamon DBus Eval is unavailable, workspace management effectively becomes a
-no-op except for limited EWMH switching fallback.
+GNOME-specific notes:
+
+- Dynamic workspaces (`org.gnome.mutter dynamic-workspaces`) are temporarily
+  disabled while Eldrun is running so a fixed workspace count can be held.
+- On clean exit (or Python crash via `atexit`), the original workspace count,
+  names, and dynamic-workspaces setting are restored.
+- SIGKILL cannot be caught; if the process is killed hard the `gsettings` state
+  remains changed and must be restored manually:
+  `gsettings reset org.gnome.mutter dynamic-workspaces`
+
+**Wayland limitations:** `gsettings` calls (count, names, dynamic toggle) work
+on Wayland. However, workspace *switching* uses EWMH (`_NET_CURRENT_DESKTOP`)
+which Wayland compositors do not honour — switching silently does nothing.
+Sticky-window state also relies on EWMH and may not propagate under Wayland.
+There is no public API for workspace switching on GNOME Wayland without a Shell
+extension or re-enabling `org.gnome.Shell.Eval` unsafe mode; this is a known
+limitation and out of scope until Wayland embedding is tackled more broadly.
 
 ## Tests and Current Quality Signals
 
@@ -471,10 +493,11 @@ Important analysis findings:
 ## Known Limitations
 
 - X11 app embedding is fragile and should be treated as experimental.
-- Wayland support is not implemented for embedding or workspace control.
+- Wayland: workspace switching and sticky-window state are no-ops (EWMH not
+  honoured by Wayland compositors). Workspace creation and naming via `gsettings`
+  do work. App window embedding is impossible on Wayland.
 - Open-window/app persistence has a canonical metadata location, but restore
   behavior is not wired as a robust current feature.
-- Workspace management is Cinnamon-specific.
 - Network status depends on reaching Cloudflare DNS and may show offline on
   networks that block direct TCP/53 even when general internet access works.
 - The app uses several GTK widgets and X11 techniques that require live-session

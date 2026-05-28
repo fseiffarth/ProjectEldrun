@@ -84,6 +84,39 @@ class TestGlobalAppsRegistry(unittest.TestCase):
         self.assertEqual(stored["notes"], {"exec": "/usr/bin/notes", "visible": True})
 
 
+class TestGlobalAppRoleIcons(unittest.TestCase):
+    def _role(self, key: str) -> dict:
+        return next(role for role in gam.ROLES if role["key"] == key)
+
+    def test_browser_prefers_standard_internet_icon_when_available(self):
+        role = self._role("browser")
+
+        self.assertEqual(
+            gam.select_role_icon(role, lambda name: name == "internet-web-browser-symbolic"),
+            "internet-web-browser-symbolic",
+        )
+
+    def test_browser_falls_back_to_web_browser_icon(self):
+        role = self._role("browser")
+
+        self.assertEqual(
+            gam.select_role_icon(role, lambda name: name == "web-browser-symbolic"),
+            "web-browser-symbolic",
+        )
+
+    def test_mail_does_not_use_nonstandard_mail_symbolic(self):
+        role = self._role("mail")
+
+        self.assertNotIn("mail-symbolic", gam.role_icon_names(role))
+        self.assertEqual(role["icon"], "internet-mail-symbolic")
+
+    def test_single_icon_roles_remain_compatible(self):
+        role = {"icon": "printer-symbolic"}
+
+        self.assertEqual(gam.role_icon_names(role), ["printer-symbolic"])
+        self.assertEqual(gam.select_role_icon(role), "printer-symbolic")
+
+
 class TestGlobalAppsLaunch(unittest.TestCase):
     def test_launch_or_raise_no_exec_does_nothing(self):
         manager = gam.GlobalAppsManager(MemorySettings())

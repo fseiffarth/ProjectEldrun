@@ -263,6 +263,10 @@ listbox {
 .project-row-dragging {
     opacity: 0.45;
 }
+.project-pill-draggable {
+    box-shadow: inset 0 3px 0 #58a6ff;
+    border-color: #58a6ff;
+}
 .drag-over-top {
     border-top: 2px solid #388bfd;
 }
@@ -514,23 +518,35 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
     min-height: 40px;
     padding: 0 10px;
     border-radius: 6px;
+    background-color: #1c2128;
+    color: #c9d1d9;
+    border: 1px solid #30363d;
+    box-shadow: inset 0 3px 0 #d29922;
+}
+.bottom-root-btn:hover {
+    background-color: #262d36;
+    color: #e6edf3;
+    border-color: #484f58;
 }
 .bottom-root-btn-active {
-    box-shadow: inset 0 0 0 2px #388bfd;
+    background-color: rgba(56, 139, 253, 0.18);
+    color: #e6edf3;
+    border-color: #388bfd;
+    box-shadow: inset 0 3px 0 #388bfd;
 }
 .bottom-add-btn {
     font-size: 16px;
     font-weight: bold;
     min-width: 32px;
     min-height: 40px;
-    background-color: #238636;
+    background-color: #388bfd;
     color: #ffffff;
     border-radius: 6px;
     border: none;
     padding: 0 10px;
 }
-.bottom-add-btn:hover { background-color: #2ea043; }
-.bottom-add-btn:active { background-color: #1a7f37; }
+.bottom-add-btn:hover { background-color: #58a6ff; }
+.bottom-add-btn:active { background-color: #1f6feb; }
 .bottom-toggle-btn {
     font-size: 13px;
     color: #8b949e;
@@ -711,6 +727,7 @@ listbox {
 }
 .close-btn:hover { color: #f85149; }
 .project-row-dragging { opacity: 0.45; }
+.project-pill-draggable { box-shadow: inset 0 3px 0 #0969da; border-color: #0969da; }
 .drag-over-top { border-top: 2px solid #0969da; }
 .drag-over-bottom { border-bottom: 2px solid #0969da; }
 .drag-over-left { border-left: 2px solid #0969da; }
@@ -941,23 +958,35 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
     min-height: 40px;
     padding: 0 10px;
     border-radius: 6px;
+    background-color: #ffffff;
+    color: #24292f;
+    border: 1px solid #d0d7de;
+    box-shadow: inset 0 3px 0 #bf8700;
+}
+.bottom-root-btn:hover {
+    background-color: #f6f8fa;
+    color: #24292f;
+    border-color: #8c959f;
 }
 .bottom-root-btn-active {
-    box-shadow: inset 0 0 0 2px #0969da;
+    background-color: rgba(9, 105, 218, 0.10);
+    color: #24292f;
+    border-color: #0969da;
+    box-shadow: inset 0 3px 0 #0969da;
 }
 .bottom-add-btn {
     font-size: 16px;
     font-weight: bold;
     min-width: 32px;
     min-height: 40px;
-    background-color: #2da44e;
+    background-color: #0969da;
     color: #ffffff;
     border-radius: 6px;
     border: none;
     padding: 0 10px;
 }
-.bottom-add-btn:hover { background-color: #2c974b; }
-.bottom-add-btn:active { background-color: #26843f; }
+.bottom-add-btn:hover { background-color: #0550ae; }
+.bottom-add-btn:active { background-color: #054da7; }
 .bottom-toggle-btn {
     font-size: 13px;
     color: #57606a;
@@ -1021,18 +1050,25 @@ progressbar.project-time-bar trough,
 progressbar.project-time-bar progress {
     border-radius: 0;
 }
-.new-project-btn,
-.bottom-add-btn {
+.new-project-btn {
     background-color: #2dd4bf;
     color: #07131f;
 }
-.new-project-btn:hover,
-.bottom-add-btn:hover {
+.new-project-btn:hover {
     background-color: #5ff0db;
 }
-.new-project-btn:active,
-.bottom-add-btn:active {
+.new-project-btn:active {
     background-color: #1fb8a8;
+}
+.bottom-add-btn {
+    background-color: #36c5f0;
+    color: #07131f;
+}
+.bottom-add-btn:hover {
+    background-color: #5edcff;
+}
+.bottom-add-btn:active {
+    background-color: #1ca7d8;
 }
 .panel-left,
 .panel-right {
@@ -1230,8 +1266,22 @@ button.terminal-back-btn:hover {
 .project-pill-warm .pill-folder-icon {
     color: #b388ff;
 }
+.bottom-root-btn {
+    background-color: #18243b;
+    color: #d8e2f3;
+    border-color: #293852;
+    box-shadow: inset 0 3px 0 #ffd166;
+}
+.bottom-root-btn:hover {
+    background-color: #22304a;
+    color: #f4f8ff;
+    border-color: rgba(94, 220, 255, 0.38);
+}
 .bottom-root-btn-active {
-    box-shadow: inset 0 0 0 2px #36c5f0;
+    background-color: rgba(54, 197, 240, 0.16);
+    color: #f4f8ff;
+    border-color: #36c5f0;
+    box-shadow: inset 0 3px 0 #36c5f0;
 }
 .bottom-toggle-btn {
     color: #8ca3c7;
@@ -1293,18 +1343,27 @@ progressbar.project-time-bar trough,
 progressbar.project-time-bar progress {
     border-radius: 0;
 }
-.new-project-btn,
-.bottom-add-btn {
+.new-project-btn {
     background-color: #2dd4bf;
     color: #07131f;
 }
-.new-project-btn:hover,
-.bottom-add-btn:hover {
+.new-project-btn:hover {
     background-color: #14b8a6;
 }
-.new-project-btn:active,
-.bottom-add-btn:active {
+.new-project-btn:active {
     background-color: #0d9488;
+}
+.bottom-add-btn {
+    background-color: #0969da;
+    color: #ffffff;
+}
+.bottom-add-btn:hover {
+    background-color: #0550ae;
+    color: #ffffff;
+}
+.bottom-add-btn:active {
+    background-color: #054da7;
+    color: #ffffff;
 }
 .panel-left,
 .panel-right {
@@ -1502,8 +1561,22 @@ button.terminal-back-btn:hover {
 .project-pill-warm .pill-folder-icon {
     color: #8250df;
 }
+.bottom-root-btn {
+    background-color: #ffffff;
+    color: #2f3a4f;
+    border-color: #c9dff3;
+    box-shadow: inset 0 3px 0 #b7791f;
+}
+.bottom-root-btn:hover {
+    background-color: #e8f7ff;
+    color: #172033;
+    border-color: rgba(9, 105, 218, 0.35);
+}
 .bottom-root-btn-active {
-    box-shadow: inset 0 0 0 2px #0969da;
+    background-color: rgba(9, 105, 218, 0.1);
+    color: #172033;
+    border-color: #0969da;
+    box-shadow: inset 0 3px 0 #0969da;
 }
 .bottom-toggle-btn {
     color: #5b6f91;
