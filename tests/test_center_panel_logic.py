@@ -16,20 +16,6 @@ for name in ("Gtk", "Gdk", "GLib", "GObject", "Vte", "Pango"):
     setattr(repo_mock, name, mod)
     sys.modules.setdefault(f"gi.repository.{name}", mod)
 
-xlib_mock = MagicMock()
-display_mock = MagicMock()
-x_mock = MagicMock()
-protocol_mock = MagicMock()
-event_mock = MagicMock()
-xlib_mock.display = display_mock
-xlib_mock.X = x_mock
-protocol_mock.event = event_mock
-sys.modules.setdefault("Xlib", xlib_mock)
-sys.modules.setdefault("Xlib.display", display_mock)
-sys.modules.setdefault("Xlib.X", x_mock)
-sys.modules.setdefault("Xlib.protocol", protocol_mock)
-sys.modules.setdefault("Xlib.protocol.event", event_mock)
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 from panels.center_panel import (

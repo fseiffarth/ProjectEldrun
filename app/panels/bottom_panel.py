@@ -27,18 +27,6 @@ def project_search_results(projects: list[dict], query: str) -> list[dict]:
     return sorted(matches, key=lambda p: (p.get("position", 0), p.get("name", "").lower()))
 
 
-def project_has_open_apps(project: dict) -> bool:
-    proj_dir = project.get("directory", "")
-    local_file = project.get("local_file") or str(pathlib.Path(proj_dir) / "project.json")
-    path = pathlib.Path(local_file)
-    if not path.exists():
-        return False
-    try:
-        data = json.loads(path.read_text())
-    except Exception:
-        return False
-    return bool(data.get("open_apps"))
-
 
 class ProjectPill(Gtk.Box):
     """Compact folder-card widget for a single project in the bottom bar."""
@@ -333,12 +321,6 @@ class ProjectPill(Gtk.Box):
             self.add_css_class("project-pill-active")
         else:
             self.remove_css_class("project-pill-active")
-
-    def set_warm(self, warm: bool):
-        if warm:
-            self.add_css_class("project-pill-warm")
-        else:
-            self.remove_css_class("project-pill-warm")
 
     def update_time(self, secs: float):
         if secs > 0:
@@ -1010,18 +992,6 @@ class BottomPanel(Gtk.Box):
 
     def deselect_all(self):
         self.set_active_project(None)
-
-    def set_project_warm(self, project_id: str, warm: bool):
-        pill = self._pills.get(project_id)
-        if pill:
-            pill.set_warm(warm)
-
-    def refresh_warm_states(self, projects: list):
-        for p in projects:
-            warm = project_has_open_apps(p)
-            pill = self._pills.get(p["id"])
-            if pill:
-                pill.set_warm(warm)
 
     def update_time_bars(self, totals: dict):
         for pid, pill in self._pills.items():

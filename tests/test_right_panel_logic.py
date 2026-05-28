@@ -14,11 +14,6 @@ _GTK_MOCKS = {
     "gi.repository.GLib": MagicMock(),
     "gi.repository.GObject": MagicMock(),
     "gi.repository.Pango": MagicMock(),
-    "Xlib": MagicMock(),
-    "Xlib.display": MagicMock(),
-    "Xlib.X": MagicMock(),
-    "Xlib.protocol": MagicMock(),
-    "Xlib.protocol.event": MagicMock(),
 }
 _GTK_MOCKS["gi.repository.Gtk"].Box = object
 for mod, mock in _GTK_MOCKS.items():

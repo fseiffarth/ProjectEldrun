@@ -20,7 +20,7 @@ from time_tracker import TimeTracker
 from workspace_manager import WorkspaceManager
 from panels.center_panel import CenterPanel, _MASTER_PAGE
 from panels.right_panel import FileTreePanel
-from panels.bottom_panel import BottomPanel, project_has_open_apps
+from panels.bottom_panel import BottomPanel
 from eldrun import set_theme
 
 _LEFT_WIDTH = 220
@@ -295,7 +295,6 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._file_tree_panel = FileTreePanel(
             center_panel=self._center_panel,
             default_apps_manager=self.default_apps_manager,
-            workspace_manager=self._workspace_manager,
             settings_manager=self.settings_manager,
         )
         self._file_tree_panel.set_halign(Gtk.Align.END)
@@ -362,7 +361,6 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._center_panel.show_project_terminal(current_id)
         else:
             self._center_panel.open_master_terminal()
-        self._bottom_panel.refresh_warm_states(visible)
         if self._wm_enabled:
             GLib.idle_add(self._setup_workspaces)
 
@@ -529,7 +527,6 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._bottom_panel.add_project_pill(project)
             scan_project_background(project)
         self._center_panel.add_project_terminal(project)
-        self._bottom_panel.refresh_warm_states(self.project_manager.get_visible_projects())
         if self._wm_enabled:
             self._reconcile_workspaces_now()
             self._workspace_manager.activate(project_id)
@@ -543,56 +540,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._workspace_manager.activate(project_id)
 
     def _on_pill_close(self, project_id: str):
-        project = self.project_manager.get_project(project_id)
-        project_name = project["name"] if project else "project"
-        project_dir = project.get("directory", "") if project else ""
-
-        has_open_apps = bool(project_dir and project and project_has_open_apps(project))
-
-        if has_open_apps:
-            self._confirm_close_project(project_id, project_name)
-        else:
-            self._do_close_project(project_id)
-
-    def _confirm_close_project(self, project_id: str, project_name: str):
-        win = Gtk.Window()
-        win.set_title("Close Project")
-        win.set_modal(True)
-        win.set_resizable(False)
-        win.set_transient_for(self)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        box.set_margin_start(20)
-        box.set_margin_end(20)
-        box.set_margin_top(20)
-        box.set_margin_bottom(16)
-
-        lbl = Gtk.Label(
-            label=f"Close {project_name}?\n\nAny unsaved work in open applications may be lost.",
-            xalign=0,
-        )
-        lbl.set_wrap(True)
-        box.append(lbl)
-
-        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        btn_row.set_halign(Gtk.Align.END)
-
-        cancel_btn = Gtk.Button(label="Cancel")
-        cancel_btn.add_css_class("flat")
-        cancel_btn.connect("clicked", lambda _: win.close())
-
-        close_btn = Gtk.Button(label="Close Project")
-        close_btn.add_css_class("destructive-action")
-        close_btn.connect(
-            "clicked", lambda _: (win.close(), self._do_close_project(project_id))
-        )
-
-        btn_row.append(cancel_btn)
-        btn_row.append(close_btn)
-        box.append(btn_row)
-
-        win.set_child(box)
-        win.present()
+        self._do_close_project(project_id)
 
     def _do_close_project(self, project_id: str):
         was_active = (self._active_project_id == project_id)

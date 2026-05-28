@@ -504,15 +504,11 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
     border-color: #388bfd;
     box-shadow: inset 0 3px 0 #388bfd;
 }
-.project-pill-warm {
-    border-color: rgba(56, 139, 253, 0.5);
-}
 .project-pill label { color: inherit; }
 .pill-folder-icon {
     color: #d29922;
 }
 .project-pill-active .pill-folder-icon { color: #58a6ff; }
-.project-pill-warm .pill-folder-icon { color: #79c0ff; }
 .bottom-root-btn {
     font-size: 12px;
     min-height: 40px;
@@ -944,15 +940,11 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
     border-color: #0969da;
     box-shadow: inset 0 3px 0 #0969da;
 }
-.project-pill-warm {
-    border-color: rgba(9, 105, 218, 0.5);
-}
 .project-pill label { color: inherit; }
 .pill-folder-icon {
     color: #bf8700;
 }
 .project-pill-active .pill-folder-icon { color: #0969da; }
-.project-pill-warm .pill-folder-icon { color: #0550ae; }
 .bottom-root-btn {
     font-size: 12px;
     min-height: 40px;
@@ -1254,17 +1246,11 @@ button.terminal-back-btn:hover {
     border-color: #36c5f0;
     box-shadow: inset 0 3px 0 #36c5f0;
 }
-.project-pill-warm {
-    border-color: rgba(179, 136, 255, 0.62);
-}
 .pill-folder-icon {
     color: #ffd166;
 }
 .project-pill-active .pill-folder-icon {
     color: #36c5f0;
-}
-.project-pill-warm .pill-folder-icon {
-    color: #b388ff;
 }
 .bottom-root-btn {
     background-color: #18243b;
@@ -1549,17 +1535,11 @@ button.terminal-back-btn:hover {
     border-color: #0969da;
     box-shadow: inset 0 3px 0 #0969da;
 }
-.project-pill-warm {
-    border-color: rgba(130, 80, 223, 0.45);
-}
 .pill-folder-icon {
     color: #b7791f;
 }
 .project-pill-active .pill-folder-icon {
     color: #0969da;
-}
-.project-pill-warm .pill-folder-icon {
-    color: #8250df;
 }
 .bottom-root-btn {
     background-color: #ffffff;

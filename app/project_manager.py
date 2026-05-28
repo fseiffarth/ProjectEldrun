@@ -21,8 +21,7 @@ LOCAL_PROJECT_FILE = "project.json"
 _GLOBAL_KEYS = {"id", "name", "status", "position", "local_file"}
 # Keys that exist only at runtime and are never persisted
 _RUNTIME_KEYS = {"shell_pid"}
-# Keys managed externally; _save_local must not overlay them
-_EXTERNAL_KEYS = {"open_apps"}
+_EXTERNAL_KEYS: set = set()
 
 
 def sanitize_name(name: str) -> str:
@@ -57,7 +56,6 @@ Eldrun stores its registry and logs under `~/.local/share/eldrun/`:
 Each project directory `~/eldrun/projects/<name>/` contains:
 - `project.json` — all project-local data: directory, git_type, created_at,
   file_type_stats, time data, default_apps (per-project file-type overrides)
-- `project.json["open_apps"]` — currently open X11 applications
 
 ## What this terminal is for
 
@@ -321,7 +319,7 @@ class ProjectManager:
         if not directory:
             return
         local_path = pathlib.Path(directory) / LOCAL_PROJECT_FILE
-        # Read existing to preserve externally-managed keys (e.g. open_apps)
+        # Read existing to preserve any externally-managed keys
         existing = {}
         if local_path.exists():
             try:

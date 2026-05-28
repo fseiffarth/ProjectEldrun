@@ -9,8 +9,6 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gtk, Gdk, GLib, Pango
 
-from Xlib import display as Xdisplay, X
-from Xlib.protocol import event as Xevent
 
 # Historical filename: this module now exports the FileTreePanel, not the old
 # project-list right panel.
@@ -87,14 +85,13 @@ def _human_size(n: int) -> str:
 
 class FileTreePanel(Gtk.Box):
     def __init__(self, center_panel=None, default_apps_manager=None,
-                 workspace_manager=None, settings_manager=None):
+                 settings_manager=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("panel-right")
         self.set_size_request(220, -1)
 
         self._center = center_panel
         self._dam = default_apps_manager
-        self._wm = workspace_manager
         self._color_scheme = _normalize_theme(
             settings_manager.get("color_scheme") if settings_manager else "dark"
         )
@@ -104,12 +101,6 @@ class FileTreePanel(Gtk.Box):
         self._hover_scroll_path: Gtk.TreePath | None = None
         self._path_colors: dict[str, str] = {}  # abs_path → "#rrggbb"
         self._default_icon_cache: dict[tuple[str, str], str] = {}
-
-        # Open-windows tracking
-        self._open_windows: dict[int, dict] = {}   # xid → {app_name, filename, icon_name, row}
-        self._ewmh_poll_source: int | None = None
-        self._ewmh_disp = None
-        self._ewmh_root = None
 
         self._build_ui()
 
@@ -200,40 +191,6 @@ class FileTreePanel(Gtk.Box):
         self._proj_stack.add_named(tree_scrolled, "tree")
         self._proj_stack.set_visible_child_name("placeholder")
         self.append(self._proj_stack)
-
-        # ── open-windows section ──────────────────────────────────────────────
-        self._open_windows_section = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, spacing=0
-        )
-        self._open_windows_section.add_css_class("right-open-windows-section")
-        self._open_windows_section.set_visible(False)
-
-        ow_sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        ow_sep.set_margin_top(4)
-        self._open_windows_section.append(ow_sep)
-
-        ow_header = Gtk.Label(label="OPEN WINDOWS")
-        ow_header.add_css_class("panel-header")
-        ow_header.set_xalign(0)
-        ow_header.set_margin_start(8)
-        ow_header.set_margin_top(4)
-        ow_header.set_margin_bottom(4)
-        self._open_windows_section.append(ow_header)
-
-        ow_scrolled = Gtk.ScrolledWindow()
-        ow_scrolled.add_css_class("right-panel-surface")
-        ow_scrolled.add_css_class("right-open-windows-surface")
-        ow_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        ow_scrolled.set_max_content_height(120)
-        ow_scrolled.set_propagate_natural_height(True)
-
-        self._open_windows_list = Gtk.ListBox()
-        self._open_windows_list.add_css_class("right-open-windows-list")
-        self._open_windows_list.set_selection_mode(Gtk.SelectionMode.NONE)
-        ow_scrolled.set_child(self._open_windows_list)
-        self._open_windows_section.append(ow_scrolled)
-
-        self.append(self._open_windows_section)
 
     # ── file-tree colors ──────────────────────────────────────────────────────
 
@@ -383,7 +340,6 @@ class FileTreePanel(Gtk.Box):
 
     def update_project(self, project: dict | None):
         self._reset_tree_hover_scroll()
-        self._clear_open_windows()
         self._clear_default_icon_cache()
         self._current_project = project
         self._proj_settings_btn.set_sensitive(project is not None)
@@ -609,72 +565,7 @@ class FileTreePanel(Gtk.Box):
         return None
 
     def _launch_and_track(self, app: str, path: str, project_dir: str | None):
-        proc = subprocess.Popen([app, path], cwd=project_dir or os.path.dirname(path))
-        filename = os.path.basename(path)
-        icon_name = _get_desktop_icon(app)
-        app_display = os.path.basename(app)
-        GLib.timeout_add(400, self._poll_for_standalone,
-                         proc.pid, app_display, filename, icon_name, 10)
-
-    def _poll_for_standalone(self, pid: int, app_display: str, filename: str,
-                              icon_name: str, attempts: int) -> bool:
-        try:
-            self._ensure_ewmh_disp()
-            if self._ewmh_root is None:
-                return False
-            client_atom = self._ewmh_disp.intern_atom("_NET_CLIENT_LIST")
-            pid_atom = self._ewmh_disp.intern_atom("_NET_WM_PID")
-            prop = self._ewmh_root.get_full_property(client_atom, X.AnyPropertyType)
-            xids = list(prop.value) if (prop and prop.value) else []
-            for xid in xids:
-                try:
-                    win = self._ewmh_disp.create_resource_object("window", xid)
-                    p = win.get_full_property(pid_atom, X.AnyPropertyType)
-                    if p and p.value and p.value[0] == pid:
-                        GLib.idle_add(self._on_standalone_window_found,
-                                      xid, app_display, filename, icon_name)
-                        return False
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        if attempts > 1:
-            GLib.timeout_add(400, self._poll_for_standalone,
-                             pid, app_display, filename, icon_name, attempts - 1)
-        return False
-
-    def _on_standalone_window_found(self, xid: int, app_display: str,
-                                     filename: str, icon_name: str) -> bool:
-        self._move_to_project_workspace(xid)
-        self.add_open_window(xid, app_display, filename, icon_name)
-        self._raise_window_ewmh(xid)
-        return False
-
-    def _move_to_project_workspace(self, xid: int):
-        if self._wm is None or self._current_project is None:
-            return
-        project_id = self._current_project.get("id")
-        if not project_id:
-            return
-        desktop_idx = self._wm.get_assignment(project_id)
-        if desktop_idx is None:
-            return
-        try:
-            from Xlib.protocol import event as _Xev
-            d = Xdisplay.Display()
-            root = d.screen().root
-            win = d.create_resource_object("window", xid)
-            atom = d.intern_atom("_NET_WM_DESKTOP")
-            ev = _Xev.ClientMessage(
-                window=win,
-                client_type=atom,
-                data=(32, [desktop_idx, X.CurrentTime, 0, 0, 0]),
-            )
-            root.send_event(ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
-            d.flush()
-            d.close()
-        except Exception:
-            pass
+        subprocess.Popen([app, path], cwd=project_dir or os.path.dirname(path))
 
     def _open_file(self, path: str):
         project_dir = self._current_project.get("directory") if self._current_project else None
@@ -1161,113 +1052,6 @@ class FileTreePanel(Gtk.Box):
 
         win.set_child(box)
         win.present()
-
-    # ── open-windows section ─────────────────────────────────────────────────
-
-    def _clear_open_windows(self):
-        self._stop_ewmh_poll()
-        for info in list(self._open_windows.values()):
-            self._open_windows_list.remove(info["row"])
-        self._open_windows.clear()
-        self._open_windows_section.set_visible(False)
-
-    def add_open_window(self, xid: int, app_name: str, filename: str,
-                        icon_name: str) -> None:
-        if xid in self._open_windows:
-            return
-        row = Gtk.ListBoxRow()
-        row.add_css_class("right-open-window-row")
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        box.set_margin_start(8)
-        box.set_margin_end(8)
-        box.set_margin_top(4)
-        box.set_margin_bottom(4)
-
-        icon = Gtk.Image.new_from_icon_name(
-            icon_name or "application-x-executable-symbolic"
-        )
-        icon.set_pixel_size(16)
-        box.append(icon)
-
-        lbl = Gtk.Label(label=f"{app_name} — {filename}", xalign=0)
-        lbl.set_ellipsize(Pango.EllipsizeMode.END)
-        lbl.set_hexpand(True)
-        box.append(lbl)
-
-        row.set_child(box)
-
-        gesture = Gtk.GestureClick()
-        gesture.connect("pressed", lambda *_: self._raise_window_ewmh(xid))
-        row.add_controller(gesture)
-
-        self._open_windows_list.append(row)
-        self._open_windows[xid] = {
-            "app_name": app_name,
-            "filename": filename,
-            "icon_name": icon_name,
-            "row": row,
-        }
-        self._open_windows_section.set_visible(True)
-        self._start_ewmh_poll()
-
-    def remove_open_window(self, xid: int) -> None:
-        info = self._open_windows.pop(xid, None)
-        if info is not None:
-            self._open_windows_list.remove(info["row"])
-        if not self._open_windows:
-            self._open_windows_section.set_visible(False)
-
-    def _start_ewmh_poll(self):
-        if self._ewmh_poll_source is not None:
-            return
-        self._ewmh_poll_source = GLib.timeout_add(2000, self._poll_open_windows)
-
-    def _stop_ewmh_poll(self):
-        if self._ewmh_poll_source is not None:
-            GLib.source_remove(self._ewmh_poll_source)
-            self._ewmh_poll_source = None
-
-    def _poll_open_windows(self) -> bool:
-        if not self._open_windows:
-            self._ewmh_poll_source = None
-            return False
-        try:
-            self._ensure_ewmh_disp()
-            if self._ewmh_root is None:
-                return True
-            atom = self._ewmh_disp.intern_atom("_NET_CLIENT_LIST")
-            prop = self._ewmh_root.get_full_property(atom, X.AnyPropertyType)
-            current = set(prop.value) if (prop and prop.value) else set()
-            for xid in list(self._open_windows):
-                if xid not in current:
-                    self.remove_open_window(xid)
-        except Exception:
-            pass
-        if not self._open_windows:
-            self._ewmh_poll_source = None
-            return False
-        return True
-
-    def _ensure_ewmh_disp(self):
-        if self._ewmh_disp is None:
-            self._ewmh_disp = Xdisplay.Display()
-            self._ewmh_root = self._ewmh_disp.screen().root
-
-    def _raise_window_ewmh(self, xid: int):
-        try:
-            self._ensure_ewmh_disp()
-            win = self._ewmh_disp.create_resource_object("window", xid)
-            atom = self._ewmh_disp.intern_atom("_NET_ACTIVE_WINDOW")
-            ev = Xevent.ClientMessage(
-                window=win,
-                client_type=atom,
-                data=(32, [2, X.CurrentTime, 0, 0, 0]),
-            )
-            mask = X.SubstructureRedirectMask | X.SubstructureNotifyMask
-            self._ewmh_root.send_event(ev, event_mask=mask)
-            self._ewmh_disp.flush()
-        except Exception:
-            pass
 
     # ── per-project file-type settings ───────────────────────────────────────
 
