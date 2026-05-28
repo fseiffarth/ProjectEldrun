@@ -343,8 +343,23 @@ class WorkspaceManager:
         self._assignments.pop(project_id, None)
         self._names.pop(project_id, None)
 
+    def switch_to_first(self):
+        """Switch to workspace index 0 regardless of current position."""
+        if not self.is_available():
+            return
+        if self._backend in ("cinnamon", "gnome"):
+            result = self._wm_eval(
+                "global.workspace_manager.get_workspace_by_index(0)"
+                ".activate(global.get_current_time())"
+            )
+            if result is None:
+                _ewmh_switch(0)
+        else:
+            _wmctrl_switch(0)
+
     def release_all(self):
         """Clear project assignments and leave a single workspace behind."""
+        self.switch_to_first()
         self._assignments.clear()
         self._names.clear()
         if self.is_available():

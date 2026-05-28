@@ -33,7 +33,7 @@ G2.3 [x] **Close-project root selection refresh** (`ISSUE-016`): after closing a
 
 G2.4 [x] **Tab bar in header frame**: the center-panel tab bar scroll widget is now placed as the center widget of the header `CenterBox`; clock moved to the right side; tabs use a top accent bar for the active indicator; header min-height bumped to 40px.
 
-### G3 — Settings, theme, and monitor support
+### G3 — Settings, theme, and workspace support
 
 G3.1 [x] **Settings dropdown stays open**: resolved by commit `fa13e2d` — settings was converted from `Gtk.Popover` (which autohides on outside clicks) to `Gtk.Window` with `modal=True`, so the dropdown interaction no longer dismisses it.
 
@@ -41,17 +41,11 @@ G3.2 [ ] **Standalone app theme env**: pass `GTK_THEME=Adwaita:dark` or `GTK_THE
 
 G3.3 [x] **Workspace toggle takes effect immediately**: when the "Manage workspaces" setting is turned on mid-session, allocate workspaces for already-active projects without requiring a restart.
 
-G3.4 [ ] **Secondary-monitor settings toggle**: add "Open apps on secondary monitor" to the settings popover; persist under `"multi_monitor"` in `settings.json`; default `false` so single-monitor users are unaffected.
+G3.4 [x] **GNOME workspace support**: use `org.gnome.Shell` `Eval` or `Meta.WorkspaceManager`; fall back to `wmctrl -s <idx>` if DBus is unavailable.
 
-G3.5 [ ] **Secondary-monitor detection**: at startup and on `Gdk.Display` `monitors-changed`, read `Gdk.Display.get_monitors()` and store the list; expose `window.get_secondary_monitor() -> Gdk.Monitor | None`.
+G3.5 [ ] **Embedded app theme propagation**: on theme toggle in `_on_toggle_theme`, iterate open embed tabs and send an XSETTINGS `Net/ThemeName` change via `python-xlib`; fall back to a no-op if the window is gone.
 
-G3.6 [ ] **Secondary-monitor app launch**: in the standalone dispatch path, if a secondary monitor exists, set `GDK_MONITOR=1` or pass geometry args where supported in the `subprocess.Popen` environment.
-
-G3.7 [x] **GNOME workspace support**: use `org.gnome.Shell` `Eval` or `Meta.WorkspaceManager`; fall back to `wmctrl -s <idx>` if DBus is unavailable.
-
-G3.8 [ ] **Embedded app theme propagation**: on theme toggle in `_on_toggle_theme`, iterate open embed tabs and send an XSETTINGS `Net/ThemeName` change via `python-xlib`; fall back to a no-op if the window is gone.
-
-G3.9 [x] **Fancy bright/dark split**: expose separate `Fancy Dark` and `Fancy Bright` settings values while keeping legacy `fancy` as a `fancy_dark` alias.
+G3.6 [x] **Fancy bright/dark split**: expose separate `Fancy Dark` and `Fancy Bright` settings values while keeping legacy `fancy` as a `fancy_dark` alias.
 
 ### G4 — Open apps and embedding
 
@@ -86,3 +80,36 @@ G5.5 [ ] **Intelligent project search**: embedding-based semantic search; query 
 G5.6 [ ] **Suggest projects for today**: on startup, send recent git activity (`git log --oneline -20` across all projects) plus current date/time to Ollama and surface the top 2-3 projects the user likely wants to continue; show as a soft highlight or pinned section at the top of the project list.
 
 G5.7 [ ] **App/file suggestions per project**: when a project is activated, ask Ollama which files are most likely relevant given recent commits and `project.json["open_apps"]` history; surface suggestions as a "Suggested" section at the top of the open-apps browser.
+
+### G6 — Global cross-project apps
+
+These roles are not owned by any single project. They must remain visible across workspaces and must never be moved to a project workspace. Each role can be individually shown or hidden in the header toolbar via the Settings window. G4.2, G4.3, and G4.7 are superseded by this group.
+
+| Role | Key | System resolution | Typical app |
+|------|-----|------------------|-------------|
+| Browser | `browser` | `xdg-settings get default-web-browser` | `firefox`, `chromium` |
+| Mail | `mail` | `xdg-mime query default x-scheme-handler/mailto` | `thunderbird`, `evolution` |
+| Calendar | `calendar` | `xdg-mime query default text/calendar` | `gnome-calendar`, `evolution` |
+| Print Manager | `print_manager` | `system-config-printer` in `$PATH` or CUPS at `localhost:631` | `system-config-printer` |
+| File Manager | `file_manager` | `xdg-mime query default inode/directory` | `nautilus`, `thunar`, `nemo` |
+| Password Manager | `password_manager` | check `$PATH` for `keepassxc`, `bitwarden-desktop`, `1password` | `keepassxc`, `bitwarden` |
+| Video Conferencing | `video_conf` | check `$PATH` for `zoom`, `teams`, `webex` | `zoom`, `teams` |
+| Media Player | `media_player` | `xdg-mime query default audio/mpeg` | `rhythmbox`, `vlc` |
+| System Monitor | `system_monitor` | check `$PATH` for `gnome-system-monitor`, `ksysguard` | `gnome-system-monitor` |
+| Note-taking | `notes` | check `$PATH` for `obsidian`, `zettlr`, `gedit` | `obsidian`, `zettlr` |
+| Screenshot | `screenshot` | check `$PATH` for `flameshot`, `gnome-screenshot` | `flameshot` |
+| Screen Recorder | `screen_recorder` | check `$PATH` for `obs`, `kazam`, `simplescreenrecorder` | `obs` |
+
+G6.1 [x] **Global app registry**: add `settings.json["global_apps"]` as an object with one entry per role containing `exec` (resolved or user-set command) and `visible` (bool, default `true`); entirely separate from the file-extension `DefaultAppsManager` map.
+
+G6.2 [x] **Startup resolution from system defaults**: at startup populate any missing `exec` fields using the system resolution method per role (see table above); use `xdg-settings`, `xdg-mime`, and `$PATH` probes; fall back to `xdg-open` for the browser role only; skip silently for unresolvable roles without touching their `visible` flag. Supersedes G4.2.
+
+G6.3 [x] **Settings UI for global apps**: add a "Global Apps" section in the Settings window; one row per role with: a checkbox controlling `visible`, the role label, the resolved executable (editable inline or via "Choose…" app-picker), and a "not found" dim label when unresolved; toggling the checkbox immediately updates `settings.json` and refreshes the header toolbar. The checkbox is enabled regardless of whether the app was resolved so users can pre-configure roles before installing the app.
+
+G6.4 [x] **Launch-or-raise (singleton)**: when a global app is triggered, scan `_NET_CLIENT_LIST` for an existing window matching `_NET_WM_PID` or `WM_CLASS`; raise it with `_NET_ACTIVE_WINDOW` if found; otherwise launch a fresh instance via `subprocess.Popen` and poll for its window as in `_poll_for_standalone`.
+
+G6.5 [x] **Sticky window after launch**: after a global app window is found or launched, set `_NET_WM_DESKTOP = 0xFFFFFFFF` (all-desktops) via Xlib so it stays visible on every workspace; explicitly skip `_move_to_project_workspace` for global app windows.
+
+G6.6 [x] **Global-app toolbar row**: add a slim `Gtk.Box` row between the header bar and the center panel (inside `EldrunWindow`'s main vertical layout); render one `Gtk.Button` per role whose `visible` flag is `true`, each carrying only a symbolic icon (`web-browser-symbolic`, `mail-symbolic`, `x-office-calendar-symbolic`, `printer-symbolic`, `system-file-manager-symbolic`, `dialog-password-symbolic`, `camera-web-symbolic`, `audio-x-generic-symbolic`, `utilities-system-monitor-symbolic`, `accessories-text-editor-symbolic`, `applets-screenshooter-symbolic`, `video-display-symbolic`); set `flat` CSS class and a tooltip with the role name; grey out (insensitive) buttons whose `exec` is unresolved; hide the entire row when no roles are visible; clicking any button triggers the G6.4 launch-or-raise flow; toolbar rebuilds live when `visible` flags change in Settings. Supersedes G4.3.
+
+G6.7 [ ] **URI scheme routing**: intercept `http://`, `https://`, `mailto:`, and `webcal:` links opened from within terminals or the file tree and route them through the G6.4 global app launcher instead of a bare `xdg-open` call. Supersedes G4.7.

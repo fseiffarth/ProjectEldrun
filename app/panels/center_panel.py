@@ -151,6 +151,7 @@ class CenterPanel(Gtk.Box):
 
         # Extra agent tab tracking
         self._agent_info: dict[str, dict] = {}  # page_key → {cmd, directory}
+        self._tab_project: dict[str, str | None] = {}  # page_key → project_id (None = root)
 
         # Xlib connection (lazy)
         self._disp = None
@@ -421,6 +422,12 @@ class CenterPanel(Gtk.Box):
         popover.set_pointing_to(rect)
         popover.popup()
 
+    def _current_project_id(self) -> str | None:
+        page = self._last_terminal_page
+        if page.startswith("project-"):
+            return page[len("project-"):]
+        return None
+
     def _current_agent_directory(self) -> str:
         page = self._last_terminal_page
         if page.startswith("project-"):
@@ -460,6 +467,7 @@ class CenterPanel(Gtk.Box):
             "Terminal", self._used_tab_label_indices("Terminal")
         )
         directory = self._current_agent_directory()
+        self._tab_project[page_key] = self._current_project_id()
         shell = "bash" if GLib.find_program_in_path("bash") else "sh"
 
         terminal = self._make_terminal()
@@ -493,15 +501,14 @@ class CenterPanel(Gtk.Box):
             self._switch_to_best_tab()
 
     def _switch_to_best_tab(self):
-        if not self._tab_widgets:
-            self._agent_info.clear()
+        visible_keys = [k for k, w in self._tab_widgets.items() if w.get_visible()]
+        if not visible_keys:
             self._stack.set_visible_child_name("no-tabs")
             self._notify_page("no-tabs")
-        elif _TERMINAL_TAB in self._tab_widgets:
+        elif _TERMINAL_TAB in visible_keys:
             self._show_terminal(self._last_terminal_page)
         else:
-            first_key = next(iter(self._tab_widgets))
-            self._on_tab_clicked(first_key)
+            self._on_tab_clicked(visible_keys[0])
 
     def _add_agent_terminal(self, cmd: str):
         n = self._next_agent_number()
@@ -511,6 +518,7 @@ class CenterPanel(Gtk.Box):
             label_base, self._used_tab_label_indices(label_base)
         )
         directory = self._current_agent_directory()
+        self._tab_project[page_key] = self._current_project_id()
 
         terminal = self._make_terminal()
         self._terminals[page_key] = terminal
@@ -553,6 +561,7 @@ class CenterPanel(Gtk.Box):
     def _close_agent_tab(self, page_key: str):
         if page_key not in self._agent_info:
             return
+        self._tab_project.pop(page_key, None)
         pid = self._terminal_pids.pop(page_key, None)
         if pid:
             try:
@@ -644,7 +653,7 @@ class CenterPanel(Gtk.Box):
 
     def cycle_tabs(self):
         """Advance to the next tab, wrapping around."""
-        keys = list(self._tab_widgets.keys())
+        keys = [k for k, w in self._tab_widgets.items() if w.get_visible()]
         if len(keys) < 2:
             return
         try:
@@ -712,6 +721,9 @@ class CenterPanel(Gtk.Box):
             self._show_terminal(name)
 
     def remove_project_terminal(self, project_id: str):
+        # Close agent/terminal tabs belonging to this project
+        for page_key in [k for k, v in self._tab_project.items() if v == project_id]:
+            self._close_agent_tab(page_key)
         # Close any app tabs belonging to this project first
         for page_name in list(self._app_info.keys()):
             if self._app_info[page_name].get("project_id") == project_id:
@@ -992,6 +1004,20 @@ class CenterPanel(Gtk.Box):
                           on_rename=self._show_agent_rename_popover,
                           on_close=self._close_default_agent_tab)
 
+    def _update_tab_visibility(self, project_id: str | None):
+        for key, widget in self._tab_widgets.items():
+            if key == _TERMINAL_TAB:
+                widget.set_visible(True)
+            elif key.startswith("agent-") or key.startswith("term-"):
+                widget.set_visible(self._tab_project.get(key) == project_id)
+            elif key.startswith("app-"):
+                widget.set_visible(
+                    self._app_info.get(key, {}).get("project_id") == project_id
+                )
+        current_widget = self._tab_widgets.get(self._current_tab)
+        if current_widget is not None and not current_widget.get_visible():
+            self._set_active_tab(_TERMINAL_TAB)
+
     def _show_terminal(self, page_name: str):
         self._ensure_terminal_tab()
         self._last_terminal_page = page_name
@@ -999,6 +1025,10 @@ class CenterPanel(Gtk.Box):
         self._update_terminal_tab_label(
             "Root" if page_name == _MASTER_PAGE else self._default_agent_label()
         )
+        if page_name.startswith("project-"):
+            self._update_tab_visibility(page_name[len("project-"):])
+        else:
+            self._update_tab_visibility(None)
         self._notify_page(page_name)
 
     def _make_terminal(self) -> Vte.Terminal:

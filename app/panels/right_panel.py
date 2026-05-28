@@ -43,6 +43,12 @@ def _get_desktop_icon(app_exe: str) -> str:
     return "application-x-executable-symbolic"
 
 
+_STANDARD_PROJECT_FILES = frozenset({
+    "AGENTS.md", "CLAUDE.md", "TODO.md", "ROADMAP.md",
+    "STATUS.md", "DOCUMENTATION.md", ".gitignore", ".claude",
+})
+
+
 def _human_size(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024:
@@ -52,15 +58,19 @@ def _human_size(n: int) -> str:
 
 
 class FileTreePanel(Gtk.Box):
-    def __init__(self, center_panel=None, default_apps_manager=None):
+    def __init__(self, center_panel=None, default_apps_manager=None,
+                 workspace_manager=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("panel-right")
         self.set_size_request(220, -1)
 
         self._center = center_panel
         self._dam = default_apps_manager
+        self._wm = workspace_manager
         self._current_project: dict | None = None
         self._tree_refresh_source: int | None = None
+        self._hover_scroll_source: int | None = None
+        self._hover_scroll_path: Gtk.TreePath | None = None
         self._path_colors: dict[str, str] = {}  # abs_path → "#rrggbb"
 
         # Open-windows tracking
@@ -87,6 +97,7 @@ class FileTreePanel(Gtk.Box):
         proj_header_row.append(proj_header)
 
         self._show_hidden = False
+        self._show_standard_files = False
 
         self._proj_settings_btn = Gtk.Button()
         self._proj_settings_btn.set_icon_name("preferences-system-symbolic")
@@ -131,6 +142,11 @@ class FileTreePanel(Gtk.Box):
         rc.set_button(3)
         rc.connect("pressed", self._on_tree_right_click)
         self._file_tree.add_controller(rc)
+
+        hover_motion = Gtk.EventControllerMotion()
+        hover_motion.connect("motion", self._on_tree_hover_motion)
+        hover_motion.connect("leave", self._on_tree_hover_leave)
+        self._file_tree.add_controller(hover_motion)
 
         tree_scrolled = Gtk.ScrolledWindow()
         tree_scrolled.add_css_class("right-panel-surface")
@@ -233,9 +249,71 @@ class FileTreePanel(Gtk.Box):
         else:
             cell.set_property("foreground-set", False)
 
+    # ── long filename hover reveal ───────────────────────────────────────────
+
+    def _on_tree_hover_motion(self, _ctrl, x, y):
+        hit = self._file_tree.get_path_at_pos(int(x), int(y))
+        path = hit[0] if hit else None
+        if path is None:
+            self._reset_tree_hover_scroll()
+            return
+        if (self._hover_scroll_path is not None
+                and path.compare(self._hover_scroll_path) == 0):
+            return
+
+        self._reset_tree_hover_scroll(clear_path=False)
+        self._hover_scroll_path = path.copy()
+        self._hover_scroll_source = GLib.timeout_add(
+            350, self._scroll_hovered_tree_row_right
+        )
+
+    def _on_tree_hover_leave(self, _ctrl):
+        self._reset_tree_hover_scroll()
+
+    def _reset_tree_hover_scroll(self, clear_path: bool = True):
+        if self._hover_scroll_source is not None:
+            GLib.source_remove(self._hover_scroll_source)
+            self._hover_scroll_source = None
+        if clear_path:
+            self._hover_scroll_path = None
+        try:
+            self._tree_scrolled.get_hadjustment().set_value(0)
+        except Exception:
+            pass
+
+    def _scroll_hovered_tree_row_right(self) -> bool:
+        self._hover_scroll_source = None
+        path = self._hover_scroll_path
+        if path is None:
+            return False
+        try:
+            it = self._file_store.get_iter(path)
+            name = self._file_store.get_value(it, 1)
+        except Exception:
+            return False
+        if not self._tree_row_needs_horizontal_scroll(path, name):
+            return False
+        hadj = self._tree_scrolled.get_hadjustment()
+        max_scroll = max(0, hadj.get_upper() - hadj.get_page_size())
+        if max_scroll > 0:
+            hadj.set_value(max_scroll)
+        return False
+
+    def _tree_row_needs_horizontal_scroll(self, path, name: str) -> bool:
+        layout = self._file_tree.create_pango_layout(name)
+        text_width, _height = layout.get_pixel_size()
+        visible_width = self._tree_scrolled.get_hadjustment().get_page_size()
+        if visible_width <= 0:
+            visible_width = self._tree_scrolled.get_width()
+        depth = path.get_depth() if hasattr(path, "get_depth") else 1
+        row_indent = max(0, depth - 1) * 18
+        icon_and_padding = 46
+        return row_indent + icon_and_padding + text_width > visible_width
+
     # ── project update ────────────────────────────────────────────────────────
 
     def update_project(self, project: dict | None):
+        self._reset_tree_hover_scroll()
         self._clear_open_windows()
         self._current_project = project
         self._proj_settings_btn.set_sensitive(project is not None)
@@ -260,19 +338,25 @@ class FileTreePanel(Gtk.Box):
         return True
 
     def _rebuild_file_tree(self):
+        self._reset_tree_hover_scroll()
         expanded_paths: set[str] = set()
         def _collect(store, path, it, _data):
             if self._file_tree.row_expanded(path):
                 expanded_paths.add(store.get_value(it, 2))
         self._file_store.foreach(_collect, None)
 
+        # Detach model before clearing to suppress per-row view redraws.
+        self._file_tree.set_model(None)
         self._file_store.clear()
         if self._current_project is None:
+            self._file_tree.set_model(self._file_store)
             return
         directory = self._current_project.get("directory", "")
         if not os.path.isdir(directory):
+            self._file_tree.set_model(self._file_store)
             return
-        self._populate_dir(None, directory)
+        self._populate_dir(None, directory, at_root=True)
+        self._file_tree.set_model(self._file_store)
 
         if expanded_paths:
             def _restore(store, path, it, _data):
@@ -280,8 +364,9 @@ class FileTreePanel(Gtk.Box):
                     self._file_tree.expand_row(path, False)
             self._file_store.foreach(_restore, None)
 
-    def _populate_dir(self, parent_it, directory: str):
+    def _populate_dir(self, parent_it, directory: str, at_root: bool = False):
         show_hidden = self._show_hidden
+        show_standard = self._show_standard_files
         try:
             entries = sorted(
                 os.scandir(directory),
@@ -293,6 +378,8 @@ class FileTreePanel(Gtk.Box):
                         "project_default_apps.json", ".eldrun_colors.json"}
         for entry in entries:
             if entry.name in _always_skip:
+                continue
+            if at_root and not show_standard and entry.name in _STANDARD_PROJECT_FILES:
                 continue
             if entry.name.startswith(".") and not show_hidden:
                 continue
@@ -452,17 +539,71 @@ class FileTreePanel(Gtk.Box):
 
     def _launch_and_track(self, app: str, path: str, project_dir: str | None):
         proc = subprocess.Popen([app, path], cwd=project_dir or os.path.dirname(path))
-        if self._center is not None:
-            filename = os.path.basename(path)
-            project_id = self._current_project["id"] if self._current_project else None
-            icon_name = _get_desktop_icon(app)
-            app_display = os.path.basename(app)
-            self._center.add_app_tab(
-                filename, proc, project_id,
-                on_standalone=lambda xid: self.add_open_window(
-                    xid, app_display, filename, icon_name
-                ),
+        filename = os.path.basename(path)
+        icon_name = _get_desktop_icon(app)
+        app_display = os.path.basename(app)
+        GLib.timeout_add(400, self._poll_for_standalone,
+                         proc.pid, app_display, filename, icon_name, 10)
+
+    def _poll_for_standalone(self, pid: int, app_display: str, filename: str,
+                              icon_name: str, attempts: int) -> bool:
+        try:
+            self._ensure_ewmh_disp()
+            if self._ewmh_root is None:
+                return False
+            client_atom = self._ewmh_disp.intern_atom("_NET_CLIENT_LIST")
+            pid_atom = self._ewmh_disp.intern_atom("_NET_WM_PID")
+            prop = self._ewmh_root.get_full_property(client_atom, X.AnyPropertyType)
+            xids = list(prop.value) if (prop and prop.value) else []
+            for xid in xids:
+                try:
+                    win = self._ewmh_disp.create_resource_object("window", xid)
+                    p = win.get_full_property(pid_atom, X.AnyPropertyType)
+                    if p and p.value and p.value[0] == pid:
+                        GLib.idle_add(self._on_standalone_window_found,
+                                      xid, app_display, filename, icon_name)
+                        return False
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        if attempts > 1:
+            GLib.timeout_add(400, self._poll_for_standalone,
+                             pid, app_display, filename, icon_name, attempts - 1)
+        return False
+
+    def _on_standalone_window_found(self, xid: int, app_display: str,
+                                     filename: str, icon_name: str) -> bool:
+        self._move_to_project_workspace(xid)
+        self.add_open_window(xid, app_display, filename, icon_name)
+        self._raise_window_ewmh(xid)
+        return False
+
+    def _move_to_project_workspace(self, xid: int):
+        if self._wm is None or self._current_project is None:
+            return
+        project_id = self._current_project.get("id")
+        if not project_id:
+            return
+        desktop_idx = self._wm.get_assignment(project_id)
+        if desktop_idx is None:
+            return
+        try:
+            from Xlib.protocol import event as _Xev
+            d = Xdisplay.Display()
+            root = d.screen().root
+            win = d.create_resource_object("window", xid)
+            atom = d.intern_atom("_NET_WM_DESKTOP")
+            ev = _Xev.ClientMessage(
+                window=win,
+                client_type=atom,
+                data=(32, [desktop_idx, X.CurrentTime, 0, 0, 0]),
             )
+            root.send_event(ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+            d.flush()
+            d.close()
+        except Exception:
+            pass
 
     def _open_file(self, path: str):
         project_dir = self._current_project.get("directory") if self._current_project else None
@@ -1083,6 +1224,24 @@ class FileTreePanel(Gtk.Box):
         outer.append(hdr)
 
         outer.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # Show standard project files toggle
+        standard_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        standard_lbl = Gtk.Label(label="Show standard project files")
+        standard_lbl.set_hexpand(True)
+        standard_lbl.set_xalign(0)
+        standard_row.append(standard_lbl)
+        standard_sw = Gtk.Switch()
+        standard_sw.set_active(self._show_standard_files)
+        standard_sw.set_valign(Gtk.Align.CENTER)
+
+        def _on_standard_toggled(sw, _pspec):
+            self._show_standard_files = sw.get_active()
+            self._rebuild_file_tree()
+
+        standard_sw.connect("notify::active", _on_standard_toggled)
+        standard_row.append(standard_sw)
+        outer.append(standard_row)
 
         # Show hidden files toggle
         hidden_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)

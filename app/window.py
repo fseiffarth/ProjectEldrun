@@ -14,6 +14,7 @@ from gi.repository import Gtk, Adw, Gdk, GLib
 from project_manager import ProjectManager
 from settings_manager import SettingsManager
 from default_apps_manager import DefaultAppsManager
+from global_apps_manager import GlobalAppsManager, ROLES
 from network_monitor import NetworkMonitor
 from time_tracker import TimeTracker
 from workspace_manager import WorkspaceManager
@@ -23,7 +24,7 @@ from panels.bottom_panel import BottomPanel, project_has_open_apps
 from eldrun import set_theme
 
 _LEFT_WIDTH = 220
-_BOTTOM_HEIGHT = 40
+_BOTTOM_HEIGHT = 48
 
 _SUPER_KEY_BINDINGS: list[tuple[str, str]] = [
     ("org.gnome.shell.keybindings",    "overlay-key"),
@@ -85,17 +86,20 @@ class EldrunWindow(Adw.ApplicationWindow):
 
         self._fullscreen = False
         self._panels_hidden = False
-        self._file_tree_hidden = False
+        self._file_tree_hidden = True
+        self._file_tree_auto_shown = False
         self._active_project_id: str | None = None
         self.project_manager = ProjectManager()
         self.settings_manager = SettingsManager()
         self.default_apps_manager = DefaultAppsManager()
         self._time_tracker = TimeTracker()
         self._workspace_manager = WorkspaceManager()
+        self._global_apps_manager = GlobalAppsManager(self.settings_manager)
         set_theme(self.settings_manager.get("color_scheme"))
         from eldrun import set_debug
         set_debug(bool(self.settings_manager.get("debug")))
         GLib.idle_add(self._bootstrap_default_apps)
+        GLib.idle_add(self._bootstrap_global_apps)
         self._add_key_controller()
         self._build_layout()
         self._debug_badge.set_visible(bool(self.settings_manager.get("debug")))
@@ -158,9 +162,10 @@ class EldrunWindow(Adw.ApplicationWindow):
         center_box.add_css_class("app-header")
         self._header_center_box = center_box  # tab bar inserted here after center panel is created
 
-        left_status = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        left_status = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         left_status.set_valign(Gtk.Align.CENTER)
-        left_status.set_margin_start(4)
+        left_status.set_margin_start(12)
+        left_status.set_margin_end(14)
 
         self._status_lamp = Gtk.Label(label="●")
         self._status_lamp.add_css_class("status-lamp")
@@ -177,16 +182,20 @@ class EldrunWindow(Adw.ApplicationWindow):
         left_status.append(self._conn_icon)
 
         from eldrun import __version__
+        version_stack = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        version_stack.set_valign(Gtk.Align.CENTER)
+        version_stack.set_margin_start(6)
+
         version_lbl = Gtk.Label(label=f"v{__version__}")
         version_lbl.add_css_class("app-version-label")
-        version_lbl.set_valign(Gtk.Align.CENTER)
-        version_lbl.set_margin_start(6)
-        left_status.append(version_lbl)
+        version_lbl.set_xalign(0)
+        version_stack.append(version_lbl)
 
         self._debug_badge = Gtk.Label(label="DEBUG")
         self._debug_badge.add_css_class("debug-badge")
-        self._debug_badge.set_valign(Gtk.Align.CENTER)
-        left_status.append(self._debug_badge)
+        self._debug_badge.set_halign(Gtk.Align.START)
+        version_stack.append(self._debug_badge)
+        left_status.append(version_stack)
 
         center_box.set_start_widget(left_status)
         # center widget is left empty here; tab bar is wired in after _center_panel is created
@@ -246,7 +255,9 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._max_btn.set_tooltip_text("Restore" if win.is_maximized() else "Maximize")
 
     def _tick_header_clock(self) -> bool:
-        self._header_clock.set_label(_dt.datetime.now().strftime("%H:%M"))
+        new_label = _dt.datetime.now().strftime("%H:%M")
+        if self._header_clock.get_label() != new_label:
+            self._header_clock.set_label(new_label)
         return True
 
     # ── layout ────────────────────────────────────────────────────────────────
@@ -256,6 +267,16 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.set_content(root)
 
         root.append(self._build_header())
+
+        # G6.6: slim toolbar row between header and center panel
+        self._global_apps_toolbar_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=2
+        )
+        self._global_apps_toolbar_box.add_css_class("global-apps-toolbar")
+        self._global_apps_toolbar_box.set_margin_start(6)
+        self._global_apps_toolbar_box.set_margin_end(6)
+        root.append(self._global_apps_toolbar_box)
+        self._refresh_global_apps_toolbar()
 
         self._center_panel = CenterPanel(
             self.project_manager,
@@ -272,6 +293,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._file_tree_panel = FileTreePanel(
             center_panel=self._center_panel,
             default_apps_manager=self.default_apps_manager,
+            workspace_manager=self._workspace_manager,
         )
         self._file_tree_panel.set_halign(Gtk.Align.END)
         self._file_tree_panel.set_valign(Gtk.Align.FILL)
@@ -287,11 +309,13 @@ class EldrunWindow(Adw.ApplicationWindow):
             project_manager=self.project_manager,
             settings_manager=self.settings_manager,
             default_apps_manager=self.default_apps_manager,
+            global_apps_manager=self._global_apps_manager,
             on_toggle_theme=self._on_toggle_theme,
             on_terminal_changed=self._on_terminal_changed,
             on_search_project=self._on_search_project_selected,
             on_workspace_toggled=self._on_workspace_toggled,
             on_debug_toggled=self._on_debug_toggled,
+            on_global_apps_changed=self._refresh_global_apps_toolbar,
         )
 
         overlay = Gtk.Overlay()
@@ -300,6 +324,14 @@ class EldrunWindow(Adw.ApplicationWindow):
         overlay.add_overlay(self._bottom_panel)
         overlay.set_hexpand(True)
         overlay.set_vexpand(True)
+
+        overlay_motion = Gtk.EventControllerMotion()
+        overlay_motion.connect("motion", self._on_overlay_motion)
+        overlay.add_controller(overlay_motion)
+
+        panel_motion = Gtk.EventControllerMotion()
+        panel_motion.connect("leave", self._on_file_tree_panel_leave)
+        self._file_tree_panel.add_controller(panel_motion)
 
         root.append(overlay)
         self.connect("map", self._on_map)
@@ -405,11 +437,23 @@ class EldrunWindow(Adw.ApplicationWindow):
                 self._refresh_time_bars()
 
         show_panel = (self._active_project_id is not None
-                      and not self._file_tree_hidden
-                      and not self._panels_hidden)
+                      and not self._panels_hidden
+                      and (not self._file_tree_hidden or self._file_tree_auto_shown))
         self._file_tree_panel.set_visible(show_panel)
         self._update_toggle_btn(show_panel)
         self._bottom_panel.set_panel_toggle_visible(self._active_project_id is not None)
+
+    def _on_overlay_motion(self, ctrl, x, _y):
+        width = ctrl.get_widget().get_width()
+        if x >= width - 4 and not self._file_tree_auto_shown:
+            if self._active_project_id is not None and not self._panels_hidden:
+                self._file_tree_auto_shown = True
+                self._apply_panel_visibility()
+
+    def _on_file_tree_panel_leave(self, _ctrl):
+        if self._file_tree_auto_shown:
+            self._file_tree_auto_shown = False
+            self._apply_panel_visibility()
 
     def _toggle_panels(self):
         self._panels_hidden = not self._panels_hidden
@@ -560,6 +604,43 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _bootstrap_default_apps(self) -> bool:
         self.default_apps_manager.bootstrap_from_system()
         return False
+
+    def _bootstrap_global_apps(self) -> bool:
+        self._global_apps_manager.populate_missing()
+        self._refresh_global_apps_toolbar()
+        return False
+
+    def _refresh_global_apps_toolbar(self):
+        """Rebuild the global-apps toolbar from current registry (G6.6)."""
+        toolbar = self._global_apps_toolbar_box
+        child = toolbar.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            toolbar.remove(child)
+            child = nxt
+
+        registry = self._global_apps_manager.get_registry()
+        any_visible = False
+        for role in ROLES:
+            key = role["key"]
+            entry = registry.get(key, {})
+            if not entry.get("visible", True):
+                continue
+            any_visible = True
+            exec_cmd = entry.get("exec")
+            btn = Gtk.Button()
+            btn.set_icon_name(role["icon"])
+            btn.add_css_class("flat")
+            btn.add_css_class("global-app-btn")
+            btn.set_tooltip_text(role["label"])
+            if exec_cmd:
+                gam = self._global_apps_manager
+                btn.connect("clicked", lambda _, k=key: gam.launch_or_raise(k))
+            else:
+                btn.set_sensitive(False)
+            toolbar.append(btn)
+
+        toolbar.set_visible(any_visible)
 
     # ── network status ────────────────────────────────────────────────────────
 

@@ -41,7 +41,7 @@ def project_has_open_apps(project: dict) -> bool:
 
 
 class ProjectPill(Gtk.Box):
-    """Compact pill widget for a single project in the bottom bar."""
+    """Compact folder-card widget for a single project in the bottom bar."""
     def __init__(self, project: dict, on_click, on_close, on_drop=None):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self.project_id = project["id"]
@@ -51,16 +51,17 @@ class ProjectPill(Gtk.Box):
         self._on_drop_cb = on_drop
         self._stats_popover: Gtk.Popover | None = None
         self._hover_timer_id: int | None = None
-        self.set_valign(Gtk.Align.FILL)
+        self.set_valign(Gtk.Align.CENTER)
         self.set_size_request(-1, 40)
         self.add_css_class("project-pill")
 
-        self._dot = Gtk.Label(label="●")
-        self._dot.add_css_class("pill-dot")
-        self._dot.set_valign(Gtk.Align.CENTER)
-        self._dot.set_margin_start(6)
-        self._dot.set_margin_end(4)
-        self.append(self._dot)
+        folder_icon = Gtk.Image.new_from_icon_name("folder-symbolic")
+        folder_icon.add_css_class("pill-folder-icon")
+        folder_icon.set_pixel_size(18)
+        folder_icon.set_valign(Gtk.Align.CENTER)
+        folder_icon.set_margin_start(8)
+        folder_icon.set_margin_end(6)
+        self.append(folder_icon)
 
         lbl = Gtk.Label(label=project["name"])
         lbl.set_ellipsize(Pango.EllipsizeMode.END)
@@ -328,9 +329,10 @@ class BottomPanel(Gtk.Box):
                  on_toggle_file_tree_panel,
                  on_activate_project, on_close_project,
                  project_manager=None, settings_manager=None,
-                 default_apps_manager=None, on_toggle_theme=None,
-                 on_terminal_changed=None, on_search_project=None,
-                 on_workspace_toggled=None, on_debug_toggled=None):
+                 default_apps_manager=None, global_apps_manager=None,
+                 on_toggle_theme=None, on_terminal_changed=None,
+                 on_search_project=None, on_workspace_toggled=None,
+                 on_debug_toggled=None, on_global_apps_changed=None):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self.add_css_class("bottom-panel")
         self.set_valign(Gtk.Align.END)
@@ -343,11 +345,13 @@ class BottomPanel(Gtk.Box):
         self._pm = project_manager
         self._settings = settings_manager
         self._dam = default_apps_manager
+        self._gam = global_apps_manager
         self._on_toggle_theme = on_toggle_theme
         self._on_terminal_changed_ext = on_terminal_changed
         self._on_search_project = on_search_project
         self._on_workspace_toggled = on_workspace_toggled
         self._on_debug_toggled = on_debug_toggled
+        self._on_global_apps_changed = on_global_apps_changed
         self._pills: dict[str, ProjectPill] = {}
         self._active_project_id: str | None = None
         self._popover: Gtk.Popover | None = None
@@ -389,7 +393,7 @@ class BottomPanel(Gtk.Box):
         scroll.set_hexpand(True)
         scroll.set_valign(Gtk.Align.FILL)
 
-        self._pills_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self._pills_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self._pills_box.set_margin_start(6)
         self._pills_box.set_margin_end(6)
         self._pills_box.set_valign(Gtk.Align.FILL)
@@ -556,6 +560,12 @@ class BottomPanel(Gtk.Box):
 
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
+        ga_btn = Gtk.Button(label="Global Apps…")
+        ga_btn.add_css_class("flat")
+        ga_btn.set_halign(Gtk.Align.START)
+        ga_btn.connect("clicked", lambda _: (win.close(), self._show_global_apps_settings()))
+        box.append(ga_btn)
+
         ft_btn = Gtk.Button(label="File Type Apps…")
         ft_btn.add_css_class("flat")
         ft_btn.set_halign(Gtk.Align.START)
@@ -597,6 +607,134 @@ class BottomPanel(Gtk.Box):
             self._settings.set("debug", enabled)
         if self._on_debug_toggled:
             self._on_debug_toggled(enabled)
+
+    # ── global apps settings window (G6.3) ───────────────────────────────────
+
+    def _show_global_apps_settings(self):
+        from global_apps_manager import ROLES
+        gam = self._gam
+
+        win = Gtk.Window()
+        win.set_title("Global Apps")
+        win.set_modal(True)
+        win.set_default_size(520, 520)
+        root = self._gear_btn.get_root()
+        if isinstance(root, Gtk.Window):
+            win.set_transient_for(root)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
+        hdr_lbl = Gtk.Label(label="Global Apps")
+        hdr_lbl.add_css_class("heading")
+        hdr_lbl.set_xalign(0)
+        hdr_lbl.set_margin_start(16)
+        hdr_lbl.set_margin_top(16)
+        hdr_lbl.set_margin_bottom(4)
+        outer.append(hdr_lbl)
+
+        desc = Gtk.Label(
+            label="Apps that stay visible across all workspaces. "
+                  "Check the box to show the button in the toolbar."
+        )
+        desc.set_xalign(0)
+        desc.set_wrap(True)
+        desc.add_css_class("dim-label")
+        desc.set_margin_start(16)
+        desc.set_margin_end(16)
+        desc.set_margin_bottom(10)
+        outer.append(desc)
+
+        outer.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+
+        listbox = Gtk.ListBox()
+        listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        scrolled.set_child(listbox)
+        outer.append(scrolled)
+
+        registry = gam.get_registry() if gam else {}
+
+        for role in ROLES:
+            key = role["key"]
+            entry = registry.get(key, {})
+            exec_cmd = entry.get("exec") or ""
+            visible = entry.get("visible", True)
+
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            box.set_margin_start(12)
+            box.set_margin_end(12)
+            box.set_margin_top(5)
+            box.set_margin_bottom(5)
+
+            cb = Gtk.CheckButton()
+            cb.set_active(visible)
+            cb.set_valign(Gtk.Align.CENTER)
+            box.append(cb)
+
+            icon = Gtk.Image.new_from_icon_name(role["icon"])
+            icon.set_pixel_size(16)
+            icon.set_valign(Gtk.Align.CENTER)
+            box.append(icon)
+
+            lbl = Gtk.Label(label=role["label"])
+            lbl.set_xalign(0)
+            lbl.set_width_chars(16)
+            box.append(lbl)
+
+            exec_entry = Gtk.Entry()
+            exec_entry.set_hexpand(True)
+            if exec_cmd:
+                exec_entry.set_text(exec_cmd)
+            else:
+                exec_entry.set_placeholder_text("not found")
+            box.append(exec_entry)
+
+            def _make_browse(ae, k):
+                def _on_browse(_btn):
+                    def _pick(cmd):
+                        ae.set_text(cmd)
+                        if gam:
+                            gam.set_exec(k, cmd)
+                            if self._on_global_apps_changed:
+                                self._on_global_apps_changed()
+                    self._ft_show_app_picker(_pick, parent=win)
+                return _on_browse
+
+            browse_btn = Gtk.Button(label="⋯")
+            browse_btn.add_css_class("flat")
+            browse_btn.connect("clicked", _make_browse(exec_entry, key))
+            box.append(browse_btn)
+
+            def _make_cb_handler(k):
+                def _on_toggled(cb_w):
+                    if gam:
+                        gam.set_visible(k, cb_w.get_active())
+                        if self._on_global_apps_changed:
+                            self._on_global_apps_changed()
+                return _on_toggled
+
+            cb.connect("toggled", _make_cb_handler(key))
+
+            def _make_entry_handler(k, ae):
+                def _on_activate(_w=None):
+                    cmd = ae.get_text().strip()
+                    if gam and cmd:
+                        gam.set_exec(k, cmd)
+                        if self._on_global_apps_changed:
+                            self._on_global_apps_changed()
+                return _on_activate
+
+            exec_entry.connect("activate", _make_entry_handler(key, exec_entry))
+
+            row.set_child(box)
+            listbox.append(row)
+
+        win.set_child(outer)
+        win.present()
 
     # ── filetype settings window ──────────────────────────────────────────────
 

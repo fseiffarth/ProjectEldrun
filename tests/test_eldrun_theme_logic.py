@@ -18,7 +18,7 @@ for name in ("Gtk", "Adw", "Gdk", "GLib", "Vte"):
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
-from eldrun import _normalize_theme, _should_use_cairo_renderer
+from eldrun import _normalize_theme, _preferred_gsk_renderer
 
 
 class TestEldrunThemeNormalization(unittest.TestCase):
@@ -33,29 +33,33 @@ class TestEldrunThemeNormalization(unittest.TestCase):
         self.assertEqual(_normalize_theme(True), "dark")
         self.assertEqual(_normalize_theme(False), "light")
 
-    def test_cairo_renderer_workaround_targets_cinnamon_x11(self):
+    def test_renderer_workaround_targets_cinnamon_x11(self):
         env = {"XDG_SESSION_TYPE": "x11", "XDG_CURRENT_DESKTOP": "X-Cinnamon"}
-        self.assertTrue(_should_use_cairo_renderer(env))
+        self.assertEqual(_preferred_gsk_renderer(env), "ngl")
 
-    def test_cairo_renderer_workaround_honors_existing_renderer(self):
+    def test_renderer_workaround_honors_existing_renderer(self):
         env = {
             "XDG_SESSION_TYPE": "x11",
             "XDG_CURRENT_DESKTOP": "X-Cinnamon",
             "GSK_RENDERER": "gl",
         }
-        self.assertFalse(_should_use_cairo_renderer(env))
+        self.assertIsNone(_preferred_gsk_renderer(env))
 
-    def test_cairo_renderer_workaround_can_be_disabled(self):
+    def test_renderer_workaround_can_be_disabled(self):
         env = {
             "XDG_SESSION_TYPE": "x11",
             "XDG_CURRENT_DESKTOP": "X-Cinnamon",
             "ELDRUN_DISABLE_RENDERER_WORKAROUND": "1",
         }
-        self.assertFalse(_should_use_cairo_renderer(env))
+        self.assertIsNone(_preferred_gsk_renderer(env))
 
-    def test_cairo_renderer_workaround_does_not_target_wayland(self):
+    def test_renderer_workaround_does_not_target_wayland(self):
         env = {"XDG_SESSION_TYPE": "wayland", "XDG_CURRENT_DESKTOP": "X-Cinnamon"}
-        self.assertFalse(_should_use_cairo_renderer(env))
+        self.assertIsNone(_preferred_gsk_renderer(env))
+
+    def test_renderer_workaround_is_case_insensitive(self):
+        env = {"XDG_SESSION_TYPE": "X11", "XDG_CURRENT_DESKTOP": "cInNaMoN"}
+        self.assertEqual(_preferred_gsk_renderer(env), "ngl")
 
 
 if __name__ == "__main__":

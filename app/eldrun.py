@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Entry point for ProjectEldrun."""
 
-__version__ = "0.0.4"
+__version__ = "0.0.5"
 
 _debug_enabled: bool = True
 
@@ -25,19 +25,52 @@ import sys
 import os
 
 
-def _should_use_cairo_renderer(environ=os.environ) -> bool:
-    """Cinnamon/X11 can flicker on rapid VTE redraws with GTK's GL renderer."""
+def _preferred_gsk_renderer(environ=os.environ) -> str | None:
+    """Return the GSK_RENDERER value to set, or None to leave it alone.
+
+    On Cinnamon/X11 the cairo renderer avoids one class of VTE flicker but
+    writes frames via XPutImage without vsync, causing horizontal tearing
+    artifacts (reddish bands spanning the full screen width) especially at
+    high refresh rates.  The ngl renderer uses OpenGL with a proper swap-sync
+    path so the compositor always scans out a complete frame.
+
+    We only act when the caller has not already set GSK_RENDERER, so an
+    explicit override in the environment is always respected.  Set
+    ELDRUN_DISABLE_RENDERER_WORKAROUND=1 to skip this logic entirely.
+    """
     if environ.get("GSK_RENDERER"):
-        return False
+        return None
     if environ.get("ELDRUN_DISABLE_RENDERER_WORKAROUND") == "1":
-        return False
+        return None
     session_type = environ.get("XDG_SESSION_TYPE", "").lower()
     desktop = environ.get("XDG_CURRENT_DESKTOP", "").lower()
-    return session_type == "x11" and "cinnamon" in desktop
+    if session_type == "x11" and "cinnamon" in desktop:
+        return "ngl"
+    return None
 
 
-if _should_use_cairo_renderer():
-    os.environ["GSK_RENDERER"] = "cairo"
+def _log_renderer_selection(
+    environ=os.environ,
+    existing_renderer: str | None = None,
+    selected_renderer: str | None = None,
+) -> None:
+    if environ.get("ELDRUN_RENDERER_DEBUG") != "1":
+        return
+    print(
+        "[renderer]",
+        f"session_type={environ.get('XDG_SESSION_TYPE', '') or '<unset>'}",
+        f"desktop={environ.get('XDG_CURRENT_DESKTOP', '') or '<unset>'}",
+        f"existing={existing_renderer or '<unset>'}",
+        f"selected={selected_renderer or '<none>'}",
+        f"effective={environ.get('GSK_RENDERER', '') or '<unset>'}",
+    )
+
+
+_existing_renderer = os.environ.get("GSK_RENDERER")
+_renderer = _preferred_gsk_renderer()
+if _renderer is not None:
+    os.environ["GSK_RENDERER"] = _renderer
+_log_renderer_selection(os.environ, _existing_renderer, _renderer)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -61,7 +94,7 @@ window {
     background-color: #161b22;
     border-bottom: 1px solid #30363d;
     min-height: 40px;
-    padding: 0 6px;
+    padding: 0 10px;
 }
 .app-title {
     font-size: 12px;
@@ -155,6 +188,7 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
 .panel-right .right-open-windows-list row {
     border-radius: 6px;
     margin: 2px 4px;
+    background-color: transparent;
 }
 .panel-right .right-open-windows-list row:hover {
     background-color: rgba(56, 139, 253, 0.14);
@@ -286,15 +320,15 @@ button.panel-edge-btn:hover {
 .status-lamp {
     font-size: 11px;
     min-width: 12px;
-    margin-start: 6px;
-    margin-end: 2px;
+    margin-start: 0;
+    margin-end: 0;
 }
 .status-online { color: #3fb950; }
 .status-offline { color: #f85149; }
 .conn-type-label {
     font-size: 10px;
     color: #8b949e;
-    margin-end: 4px;
+    margin-end: 0;
 }
 .app-version-label {
     font-size: 10px;
@@ -307,9 +341,9 @@ button.panel-edge-btn:hover {
     color: #e3b341;
     background-color: rgba(227, 179, 65, 0.12);
     border: 1px solid rgba(227, 179, 65, 0.35);
-    border-radius: 3px;
-    padding: 0 4px;
-    margin-start: 4px;
+    border-radius: 5px;
+    padding: 1px 7px;
+    margin-start: 0;
 }
 .pill-ws-badge {
     font-size: 9px;
@@ -416,39 +450,65 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
 .tab-drag-over-left  { border-left:  2px solid #388bfd; }
 .tab-drag-over-right { border-right: 2px solid #388bfd; }
 
+/* ── global apps toolbar (G6.6) ──────────────────────────── */
+.global-apps-toolbar {
+    background-color: #1a1f28;
+    border-bottom: 1px solid #21262d;
+    min-height: 30px;
+    padding: 2px 0;
+}
+.global-apps-toolbar button.global-app-btn {
+    min-width: 28px;
+    min-height: 26px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    color: #8b949e;
+}
+.global-apps-toolbar button.global-app-btn:hover {
+    background-color: rgba(56, 139, 253, 0.14);
+    color: #e6edf3;
+}
+.global-apps-toolbar button.global-app-btn:disabled {
+    color: #484f58;
+}
+
 /* ── bottom panel ────────────────────────────────────────── */
 .bottom-panel {
     background-color: #161b22;
     border-top: 1px solid #30363d;
-    min-height: 40px;
+    min-height: 48px;
 }
 .project-pill {
-    border-radius: 12px;
-    padding: 0;
+    border-radius: 0;
+    padding: 0 6px 0 0;
     min-height: 40px;
-    background-color: #21262d;
-    color: #8b949e;
+    margin-top: 3px;
+    margin-bottom: 3px;
+    background-color: #1c2128;
+    color: #c9d1d9;
     border: 1px solid #30363d;
+    box-shadow: inset 0 3px 0 #d29922;
 }
 .project-pill:hover {
-    background-color: #30363d;
+    background-color: #262d36;
     color: #e6edf3;
+    border-color: #484f58;
 }
 .project-pill-active {
-    background-color: rgba(56, 139, 253, 0.2);
+    background-color: rgba(56, 139, 253, 0.18);
     color: #e6edf3;
     border-color: #388bfd;
+    box-shadow: inset 0 3px 0 #388bfd;
 }
 .project-pill-warm {
     border-color: rgba(56, 139, 253, 0.5);
 }
 .project-pill label { color: inherit; }
-.pill-dot {
-    font-size: 8px;
-    color: #484f58;
+.pill-folder-icon {
+    color: #d29922;
 }
-.project-pill-active .pill-dot { color: #388bfd; }
-.project-pill-warm .pill-dot { color: #58a6ff; }
+.project-pill-active .pill-folder-icon { color: #58a6ff; }
+.project-pill-warm .pill-folder-icon { color: #79c0ff; }
 .bottom-root-btn {
     font-size: 12px;
     min-height: 40px;
@@ -506,7 +566,7 @@ window {
     background-color: #f6f8fa;
     border-bottom: 1px solid #d0d7de;
     min-height: 40px;
-    padding: 0 6px;
+    padding: 0 10px;
 }
 .app-title {
     font-size: 12px;
@@ -592,6 +652,7 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
 .panel-right .right-open-windows-list row {
     border-radius: 6px;
     margin: 2px 4px;
+    background-color: transparent;
 }
 .panel-right .right-open-windows-list row:hover {
     background-color: rgba(9, 105, 218, 0.1);
@@ -686,15 +747,15 @@ button.panel-edge-btn:hover {
 .status-lamp {
     font-size: 11px;
     min-width: 12px;
-    margin-start: 6px;
-    margin-end: 2px;
+    margin-start: 0;
+    margin-end: 0;
 }
 .status-online { color: #2da44e; }
 .status-offline { color: #cf222e; }
 .conn-type-label {
     font-size: 10px;
     color: #57606a;
-    margin-end: 4px;
+    margin-end: 0;
 }
 .app-version-label {
     font-size: 10px;
@@ -707,9 +768,9 @@ button.panel-edge-btn:hover {
     color: #9a6700;
     background-color: rgba(154, 103, 0, 0.08);
     border: 1px solid rgba(154, 103, 0, 0.3);
-    border-radius: 3px;
-    padding: 0 4px;
-    margin-start: 4px;
+    border-radius: 5px;
+    padding: 1px 7px;
+    margin-start: 0;
 }
 .pill-ws-badge {
     font-size: 9px;
@@ -816,39 +877,65 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 .tab-drag-over-left  { border-left:  2px solid #0969da; }
 .tab-drag-over-right { border-right: 2px solid #0969da; }
 
+/* ── global apps toolbar (light, G6.6) ───────────────────── */
+.global-apps-toolbar {
+    background-color: #eaeef2;
+    border-bottom: 1px solid #d0d7de;
+    min-height: 30px;
+    padding: 2px 0;
+}
+.global-apps-toolbar button.global-app-btn {
+    min-width: 28px;
+    min-height: 26px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    color: #57606a;
+}
+.global-apps-toolbar button.global-app-btn:hover {
+    background-color: rgba(9, 105, 218, 0.1);
+    color: #24292f;
+}
+.global-apps-toolbar button.global-app-btn:disabled {
+    color: #8c959f;
+}
+
 /* ── bottom panel (light) ────────────────────────────────── */
 .bottom-panel {
     background-color: #f6f8fa;
     border-top: 1px solid #d0d7de;
-    min-height: 40px;
+    min-height: 48px;
 }
 .project-pill {
-    border-radius: 12px;
-    padding: 0;
+    border-radius: 0;
+    padding: 0 6px 0 0;
     min-height: 40px;
-    background-color: #eaeef2;
-    color: #57606a;
+    margin-top: 3px;
+    margin-bottom: 3px;
+    background-color: #ffffff;
+    color: #24292f;
     border: 1px solid #d0d7de;
+    box-shadow: inset 0 3px 0 #bf8700;
 }
 .project-pill:hover {
-    background-color: #d0d7de;
+    background-color: #f6f8fa;
     color: #24292f;
+    border-color: #8c959f;
 }
 .project-pill-active {
-    background-color: rgba(9, 105, 218, 0.12);
+    background-color: rgba(9, 105, 218, 0.10);
     color: #24292f;
     border-color: #0969da;
+    box-shadow: inset 0 3px 0 #0969da;
 }
 .project-pill-warm {
     border-color: rgba(9, 105, 218, 0.5);
 }
 .project-pill label { color: inherit; }
-.pill-dot {
-    font-size: 8px;
-    color: #8c959f;
+.pill-folder-icon {
+    color: #bf8700;
 }
-.project-pill-active .pill-dot { color: #0969da; }
-.project-pill-warm .pill-dot { color: #0550ae; }
+.project-pill-active .pill-folder-icon { color: #0969da; }
+.project-pill-warm .pill-folder-icon { color: #0550ae; }
 .bottom-root-btn {
     font-size: 12px;
     min-height: 40px;
@@ -923,7 +1010,6 @@ button.panel-edge-btn,
 button.panel-toggle-inline,
 button.terminal-back-btn,
 .center-tab,
-.project-pill,
 .bottom-root-btn,
 .bottom-add-btn,
 .bottom-toggle-btn,
@@ -1052,6 +1138,7 @@ button.panel-edge-btn:hover {
     color: #ffd166;
     background-color: rgba(255, 209, 102, 0.13);
     border-color: rgba(255, 209, 102, 0.38);
+    border-radius: 5px;
 }
 .pill-ws-badge {
     color: #ff5c8a;
@@ -1118,26 +1205,29 @@ button.terminal-back-btn:hover {
     background-color: #18243b;
     color: #d8e2f3;
     border-color: #293852;
+    box-shadow: inset 0 3px 0 #ffd166;
 }
 .project-pill:hover {
     background-color: #22304a;
     color: #f4f8ff;
+    border-color: rgba(94, 220, 255, 0.38);
 }
 .project-pill-active {
     background-color: rgba(54, 197, 240, 0.16);
     color: #f4f8ff;
     border-color: #36c5f0;
+    box-shadow: inset 0 3px 0 #36c5f0;
 }
 .project-pill-warm {
     border-color: rgba(179, 136, 255, 0.62);
 }
-.pill-dot {
-    color: #687899;
+.pill-folder-icon {
+    color: #ffd166;
 }
-.project-pill-active .pill-dot {
+.project-pill-active .pill-folder-icon {
     color: #36c5f0;
 }
-.project-pill-warm .pill-dot {
+.project-pill-warm .pill-folder-icon {
     color: #b388ff;
 }
 .bottom-root-btn-active {
@@ -1192,7 +1282,6 @@ button.panel-edge-btn,
 button.panel-toggle-inline,
 button.terminal-back-btn,
 .center-tab,
-.project-pill,
 .bottom-root-btn,
 .bottom-add-btn,
 .bottom-toggle-btn,
@@ -1321,6 +1410,7 @@ button.panel-edge-btn:hover {
     color: #9a6700;
     background-color: rgba(255, 209, 102, 0.25);
     border-color: rgba(154, 103, 0, 0.35);
+    border-radius: 5px;
 }
 .pill-ws-badge {
     color: #d7256f;
@@ -1387,26 +1477,29 @@ button.terminal-back-btn:hover {
     background-color: #ffffff;
     color: #2f3a4f;
     border-color: #c9dff3;
+    box-shadow: inset 0 3px 0 #b7791f;
 }
 .project-pill:hover {
     background-color: #e8f7ff;
     color: #172033;
+    border-color: rgba(9, 105, 218, 0.35);
 }
 .project-pill-active {
     background-color: rgba(9, 105, 218, 0.1);
     color: #172033;
     border-color: #0969da;
+    box-shadow: inset 0 3px 0 #0969da;
 }
 .project-pill-warm {
     border-color: rgba(130, 80, 223, 0.45);
 }
-.pill-dot {
-    color: #8ca3bd;
+.pill-folder-icon {
+    color: #b7791f;
 }
-.project-pill-active .pill-dot {
+.project-pill-active .pill-folder-icon {
     color: #0969da;
 }
-.project-pill-warm .pill-dot {
+.project-pill-warm .pill-folder-icon {
     color: #8250df;
 }
 .bottom-root-btn-active {

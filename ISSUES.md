@@ -154,3 +154,25 @@ When all tabs are closed, Eldrun currently creates a new terminal implicitly. Th
 **Expected behavior:** If all tabs are closed, do not create an implicit replacement terminal. Show an empty center page explaining that no tab is open and that a new agent or terminal can be created by right-clicking the tab bar.
 
 **Fix needed:** Replace the implicit terminal fallback with an explicit empty-tab state, and keep the tab bar usable for right-click creation actions while no tabs are open.
+
+---
+
+### ISSUE-018: Reddish full-width flicker under high CPU load
+**Phase:** Rendering/compositor diagnostics  
+**Severity:** Medium — visually disruptive and may indicate a renderer/compositor sync issue  
+Under high CPU load, a reddish flicker can appear as a short-height band spanning the full screen width. The symptom sounds like a frame presentation or compositor artifact rather than a normal widget repaint, especially because it is height-restricted but screen-wide.
+
+**Possible causes:**
+- `GSK_RENDERER=cairo` or another non-synced renderer path may still be active. `app/eldrun.py` already prefers `ngl` on Cinnamon/X11 because cairo can produce reddish horizontal tearing bands via XPutImage without vsync.
+- The renderer workaround only applies when `XDG_SESSION_TYPE=x11` and `XDG_CURRENT_DESKTOP` contains `cinnamon`. Other X11 desktops, missing environment values, explicit `GSK_RENDERER`, or `ELDRUN_DISABLE_RENDERER_WORKAROUND=1` skip it.
+- Cinnamon/X11 compositing may be missing frames when the CPU is saturated, especially with an undecorated, maximized GTK window and continuous VTE terminal updates.
+- VTE output bursts may invalidate large areas of the center panel; if GTK/GSK cannot finish the render before scanout, a partially presented frame can look like a full-width colored strip.
+- Full-width overlays and fixed-height surfaces such as the header/bottom panel/offline banner could expose stale themed pixels during delayed redraws, making the artifact appear red or pink depending on the active theme.
+
+**Diagnostics needed:**
+- Record `GSK_RENDERER`, `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`, GPU/driver, refresh rate, compositor settings, and active Eldrun theme when it happens.
+- Try `GSK_RENDERER=ngl`, `GSK_RENDERER=gl`, and `GSK_RENDERER=cairo` explicitly to confirm whether the artifact follows the renderer.
+- Check whether the flicker occurs only during heavy terminal output, only while maximized/fullscreen, or also when the window is restored.
+- Capture a phone video or compositor screencast to identify whether the band aligns with the VTE area, header, bottom panel, or the monitor scanout.
+
+**Fix needed:** Harden renderer selection beyond Cinnamon/X11 if confirmed, document a safe override, and consider throttling high-frequency UI updates or reducing full-width overlay redraws if the artifact is tied to VTE/output bursts.
