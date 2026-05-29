@@ -1,6 +1,7 @@
 import atexit
 import datetime as _dt
 import os
+import pathlib
 import signal
 import subprocess
 import time
@@ -220,6 +221,39 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._workspace_manager.close_workspace_apps(self._get_own_xid())
         self.get_application().quit()
 
+    # ── screenshot helpers ────────────────────────────────────────────────────
+
+    def _get_active_screenshots_dir(self) -> str:
+        if self._active_project_id:
+            project = self.project_manager.get_project(self._active_project_id)
+            if project and project.get("directory"):
+                return os.path.join(project["directory"], "tmp", "screenshots")
+        return str(pathlib.Path.home() / "eldrun" / "root" / "tmp" / "screenshots")
+
+    def _show_screenshot_toast(self, filepath: str):
+        short = os.path.basename(filepath)
+
+        icon = Gtk.Image.new_from_icon_name("camera-photo-symbolic")
+        icon.set_pixel_size(16)
+
+        lbl = Gtk.Label(label=f"Screenshot saved: {short}")
+
+        toast = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        toast.add_css_class("screenshot-toast")
+        toast.set_halign(Gtk.Align.CENTER)
+        toast.set_valign(Gtk.Align.END)
+        toast.set_margin_bottom(_BOTTOM_HEIGHT + 12)
+        toast.append(icon)
+        toast.append(lbl)
+
+        self._overlay.add_overlay(toast)
+
+        def _remove():
+            self._overlay.remove_overlay(toast)
+            return False
+
+        GLib.timeout_add(3000, _remove)
+
     # ── keyboard ──────────────────────────────────────────────────────────────
 
     def _add_key_controller(self):
@@ -422,6 +456,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._file_tree_toggle_btn.add_controller(toggle_motion)
 
         overlay = Gtk.Overlay()
+        self._overlay = overlay
         overlay.set_child(self._center_panel)
         overlay.add_overlay(self._file_tree_panel)
         overlay.add_overlay(self._file_tree_toggle_btn)
@@ -707,7 +742,10 @@ class EldrunWindow(Adw.ApplicationWindow):
             if exec_cmd:
                 gam = self._global_apps_manager
                 if key == "screenshot":
-                    btn.connect("clicked", lambda _: gam.launch_screenshot_region())
+                    btn.connect("clicked", lambda _: gam.launch_screenshot_region(
+                        output_dir=self._get_active_screenshots_dir(),
+                        on_saved=self._show_screenshot_toast,
+                    ))
                 else:
                     btn.connect("clicked", lambda _, k=key: gam.launch_or_raise(k))
             else:

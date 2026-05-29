@@ -570,6 +570,15 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
 .bottom-panel searchentry:focus {
     border-color: #388bfd;
 }
+/* ── screenshot toast ────────────────────────────────────── */
+.screenshot-toast {
+    background-color: rgba(22, 27, 34, 0.92);
+    color: #e6edf3;
+    border-radius: 20px;
+    border: 1px solid #30363d;
+    padding: 8px 16px;
+    font-size: 13px;
+}
 """
 
 _CSS_LIGHT = """
@@ -1008,6 +1017,15 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 }
 .bottom-panel searchentry:focus {
     border-color: #0969da;
+}
+/* ── screenshot toast ────────────────────────────────────── */
+.screenshot-toast {
+    background-color: rgba(255, 255, 255, 0.92);
+    color: #24292f;
+    border-radius: 20px;
+    border: 1px solid #d0d7de;
+    padding: 8px 16px;
+    font-size: 13px;
 }
 """
 

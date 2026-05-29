@@ -213,22 +213,78 @@ class GlobalAppsManager:
         "import":              [],   # ImageMagick — interactive by default
     }
 
-    def launch_screenshot_region(self):
-        """Launch the screenshot tool in interactive region-selection mode."""
+    # Per-tool output path arguments: lambda(filepath, dirpath) -> extra args.
+    # flameshot uses -p <dir> (auto-names the file); others write to a filepath.
+    _SCREENSHOT_OUT: dict[str, object] = {
+        "flameshot":        lambda f, d: ["-p", d],
+        "gnome-screenshot": lambda f, d: ["-f", f],
+        "scrot":            lambda f, d: [f],
+        "spectacle":        lambda f, d: ["-b", "-o", f],
+        "maim":             lambda f, d: [f],
+        "import":           lambda f, d: [f],
+    }
+
+    def launch_screenshot_region(self, output_dir: str | None = None,
+                                 on_saved=None):
+        """Launch the screenshot tool in interactive region-selection mode.
+
+        If output_dir is given, the screenshot is saved there and on_saved(path)
+        is called on the GLib main thread after the tool exits successfully.
+        """
+        import datetime
+        import threading
+        import time as _time
+
         registry = self.get_registry()
         entry = registry.get("screenshot", {})
         exec_cmd = entry.get("exec")
         if not exec_cmd:
             return
         tool = os.path.basename(exec_cmd).lower()
-        extra = self._SCREENSHOT_REGION_ARGS.get(tool)
-        if extra is None:
-            # Unknown tool — launch as-is and hope it supports selection natively
-            extra = []
+        region_args = list(self._SCREENSHOT_REGION_ARGS.get(tool) or [])
+
+        out_args: list[str] = []
+        target_file: str | None = None
+        use_dir_watch = False
+
+        if output_dir and on_saved:
+            os.makedirs(output_dir, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            target_file = os.path.join(output_dir, f"screenshot_{ts}.png")
+            out_fn = self._SCREENSHOT_OUT.get(tool)
+            if out_fn is not None:
+                out_args = out_fn(target_file, output_dir)
+                use_dir_watch = (tool == "flameshot")
+
         try:
-            subprocess.Popen([exec_cmd] + extra)
+            start_ts = _time.time()
+            proc = subprocess.Popen([exec_cmd] + region_args + out_args)
         except OSError:
-            pass
+            return
+
+        if not (output_dir and on_saved):
+            return
+
+        def _wait():
+            proc.wait()
+            if proc.returncode != 0:
+                return
+            if use_dir_watch:
+                import glob
+                pngs = sorted(
+                    glob.glob(os.path.join(output_dir, "*.png")),
+                    key=os.path.getmtime,
+                )
+                saved = next(
+                    (p for p in reversed(pngs) if os.path.getmtime(p) >= start_ts),
+                    None,
+                )
+            else:
+                saved = target_file if (target_file and os.path.exists(target_file)) else None
+            if saved:
+                GLib.idle_add(on_saved, saved)
+
+        threading.Thread(target=_wait, daemon=True).start()
 
     # ── launch-or-raise (G6.4 + G6.5) ────────────────────────────────────────
 
