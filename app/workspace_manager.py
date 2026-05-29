@@ -482,5 +482,47 @@ class WorkspaceManager:
         elif self.is_available():
             self._ensure_workspace_count(1)
 
+    def close_workspace_apps(self, eldrun_xid: int | None = None):
+        """Send _NET_CLOSE_WINDOW to all windows on Eldrun-managed workspaces."""
+        if not self._assignments:
+            return
+        managed_indices = set(self._assignments.values())
+        try:
+            from Xlib.protocol import event as XEv
+            d = XD.Display()
+            root = d.screen().root
+            client_atom = d.intern_atom("_NET_CLIENT_LIST")
+            desktop_atom = d.intern_atom("_NET_WM_DESKTOP")
+            close_atom = d.intern_atom("_NET_CLOSE_WINDOW")
+            prop = root.get_full_property(client_atom, X.AnyPropertyType)
+            xids = list(prop.value) if (prop and prop.value) else []
+            for xid in xids:
+                if eldrun_xid is not None and xid == eldrun_xid:
+                    continue
+                try:
+                    win = d.create_resource_object("window", xid)
+                    dp = win.get_full_property(desktop_atom, X.AnyPropertyType)
+                    if dp and dp.value:
+                        win_desktop = int(dp.value[0])
+                        if win_desktop == 0xFFFFFFFF:  # sticky — skip
+                            continue
+                        if win_desktop in managed_indices:
+                            ev = XEv.ClientMessage(
+                                window=win,
+                                client_type=close_atom,
+                                data=(32, [X.CurrentTime, 2, 0, 0, 0]),
+                            )
+                            root.send_event(
+                                ev,
+                                event_mask=X.SubstructureRedirectMask
+                                | X.SubstructureNotifyMask,
+                            )
+                except Exception:
+                    continue
+            d.flush()
+            d.close()
+        except Exception:
+            pass
+
     def get_assignment(self, project_id: str) -> int | None:
         return self._assignments.get(project_id)

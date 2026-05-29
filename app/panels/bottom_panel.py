@@ -334,7 +334,6 @@ class ProjectPill(Gtk.Box):
 
 class BottomPanel(Gtk.Box):
     def __init__(self, on_root, on_new_project, on_import_project,
-                 on_toggle_file_tree_panel,
                  on_activate_project, on_close_project,
                  project_manager=None, settings_manager=None,
                  default_apps_manager=None, global_apps_manager=None,
@@ -369,11 +368,13 @@ class BottomPanel(Gtk.Box):
         self._search_listbox: Gtk.ListBox | None = None
         self._search_results: list[dict] = []
 
-        # Root button
-        self._root_btn = Gtk.Button(label="Root")
+        # Root terminal button
+        self._root_btn = Gtk.Button()
+        self._root_btn.set_icon_name("utilities-terminal-symbolic")
         self._root_btn.add_css_class("bottom-root-btn")
+        self._root_btn.set_tooltip_text("Root terminal")
         self._root_btn.set_valign(Gtk.Align.FILL)
-        self._root_btn.set_size_request(-1, 40)
+        self._root_btn.set_size_request(40, 40)
         self._root_btn.set_margin_start(6)
         self._root_btn.connect("clicked", lambda _: on_root())
         self.append(self._root_btn)
@@ -434,18 +435,6 @@ class BottomPanel(Gtk.Box):
         self._add_btn.set_size_request(-1, 40)
         self._add_btn.connect("clicked", self._on_add_clicked)
         self.append(self._add_btn)
-
-        # Panel toggle — rightmost, controls file-tree overlay
-        self._panel_toggle = Gtk.Button(label="›")
-        self._panel_toggle.add_css_class("flat")
-        self._panel_toggle.add_css_class("bottom-toggle-btn")
-        self._panel_toggle.set_tooltip_text("Hide panel")
-        self._panel_toggle.set_valign(Gtk.Align.FILL)
-        self._panel_toggle.set_size_request(-1, 40)
-        self._panel_toggle.set_margin_start(2)
-        self._panel_toggle.set_margin_end(8)
-        self._panel_toggle.connect("clicked", lambda _: on_toggle_file_tree_panel())
-        self.append(self._panel_toggle)
 
     def _on_add_clicked(self, btn):
         if self._popover is None:
@@ -566,6 +555,58 @@ class BottomPanel(Gtk.Box):
         dbg_row.append(dbg_switch)
 
         box.append(dbg_row)
+
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # Git hosting section
+        git_hdr = Gtk.Label(label="Git Hosting")
+        git_hdr.add_css_class("heading")
+        git_hdr.set_xalign(0)
+        box.append(git_hdr)
+
+        git_url_lbl = Gtk.Label(label="Profile URL", xalign=0)
+        git_url_lbl.add_css_class("dim-label")
+        box.append(git_url_lbl)
+
+        git_url_entry = Gtk.Entry()
+        git_url_entry.set_placeholder_text("https://github.com/username")
+        git_url_entry.set_hexpand(True)
+        current_url = self._settings.get("git_profile_url") if self._settings else ""
+        if current_url:
+            git_url_entry.set_text(current_url)
+        box.append(git_url_entry)
+
+        git_tok_lbl = Gtk.Label(label="Access token", xalign=0)
+        git_tok_lbl.add_css_class("dim-label")
+        box.append(git_tok_lbl)
+
+        git_tok_entry = Gtk.Entry()
+        git_tok_entry.set_placeholder_text("ghp_… / glpat-…")
+        git_tok_entry.set_visibility(False)
+        git_tok_entry.set_hexpand(True)
+        current_tok = self._settings.get("git_token") if self._settings else ""
+        if current_tok:
+            git_tok_entry.set_text(current_tok)
+        box.append(git_tok_entry)
+
+        def _save_git_url(entry):
+            if self._settings:
+                self._settings.set("git_profile_url", entry.get_text().strip())
+
+        def _save_git_tok(entry):
+            if self._settings:
+                self._settings.set("git_token", entry.get_text().strip())
+
+        git_url_entry.connect("activate", _save_git_url)
+        git_tok_entry.connect("activate", _save_git_tok)
+
+        url_focus = Gtk.EventControllerFocus()
+        url_focus.connect("leave", lambda _: _save_git_url(git_url_entry))
+        git_url_entry.add_controller(url_focus)
+
+        tok_focus = Gtk.EventControllerFocus()
+        tok_focus.connect("leave", lambda _: _save_git_tok(git_tok_entry))
+        git_tok_entry.add_controller(tok_focus)
 
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -996,18 +1037,6 @@ class BottomPanel(Gtk.Box):
     def update_time_bars(self, totals: dict):
         for pid, pill in self._pills.items():
             pill.update_time(totals.get(pid, 0.0))
-
-    def set_panel_shown(self, shown: bool):
-        self._panel_toggle.set_label("›" if shown else "‹")
-        self._panel_toggle.set_tooltip_text(
-            "Hide panel" if shown else "Show panel"
-        )
-
-    def set_left_panel_shown(self, shown: bool):
-        self.set_panel_shown(shown)
-
-    def set_panel_toggle_visible(self, visible: bool):
-        self._panel_toggle.set_visible(visible)
 
     def set_root_active(self, active: bool):
         if active:

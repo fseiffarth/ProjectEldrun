@@ -197,6 +197,39 @@ class GlobalAppsManager:
         if changed:
             self._settings.set("global_apps", stored)
 
+    # ── screenshot region selection ───────────────────────────────────────────
+
+    # Extra arguments that trigger interactive region/area selection per tool.
+    # The list is appended to [exec_cmd]; an empty list means the tool is
+    # already interactive by default.
+    _SCREENSHOT_REGION_ARGS: dict[str, list] = {
+        "flameshot":           ["gui"],
+        "gnome-screenshot":    ["-a"],
+        "scrot":               ["-s"],
+        "spectacle":           ["-r"],
+        "xfce4-screenshooter": ["-r"],
+        "maim":                ["-s"],
+        "shutter":             ["-s"],
+        "import":              [],   # ImageMagick — interactive by default
+    }
+
+    def launch_screenshot_region(self):
+        """Launch the screenshot tool in interactive region-selection mode."""
+        registry = self.get_registry()
+        entry = registry.get("screenshot", {})
+        exec_cmd = entry.get("exec")
+        if not exec_cmd:
+            return
+        tool = os.path.basename(exec_cmd).lower()
+        extra = self._SCREENSHOT_REGION_ARGS.get(tool)
+        if extra is None:
+            # Unknown tool — launch as-is and hope it supports selection natively
+            extra = []
+        try:
+            subprocess.Popen([exec_cmd] + extra)
+        except OSError:
+            pass
+
     # ── launch-or-raise (G6.4 + G6.5) ────────────────────────────────────────
 
     def launch_or_raise(self, key: str):

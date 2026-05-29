@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Entry point for ProjectEldrun."""
 
-__version__ = "0.0.5"
+__version__ = "0.0.6"
 
 _debug_enabled: bool = True
 
@@ -298,9 +298,9 @@ listbox {
 
 /* ── panel edge toggle buttons ───────────────────────────── */
 button.panel-edge-btn {
-    min-width: 16px;
+    min-width: 12px;
     min-height: 40px;
-    padding: 0 2px;
+    padding: 0 1px;
     font-size: 12px;
     color: #388bfd;
     background-color: #1c2128;
@@ -511,8 +511,9 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
 .project-pill-active .pill-folder-icon { color: #58a6ff; }
 .bottom-root-btn {
     font-size: 12px;
+    min-width: 40px;
     min-height: 40px;
-    padding: 0 10px;
+    padding: 0;
     border-radius: 6px;
     background-color: #1c2128;
     color: #c9d1d9;
@@ -530,6 +531,8 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
     border-color: #388bfd;
     box-shadow: inset 0 3px 0 #388bfd;
 }
+.bottom-root-btn image { color: inherit; }
+.bottom-root-btn-active image { color: #58a6ff; }
 .bottom-add-btn {
     font-size: 16px;
     font-weight: bold;
@@ -734,9 +737,9 @@ listbox {
 .app-stopped { color: #8c959f; font-size: 10px; }
 .placeholder-label { color: #8c959f; font-size: 16px; }
 button.panel-edge-btn {
-    min-width: 16px;
+    min-width: 12px;
     min-height: 40px;
-    padding: 0 2px;
+    padding: 0 1px;
     font-size: 12px;
     color: #0969da;
     background-color: #ddf4ff;
@@ -947,8 +950,9 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 .project-pill-active .pill-folder-icon { color: #0969da; }
 .bottom-root-btn {
     font-size: 12px;
+    min-width: 40px;
     min-height: 40px;
-    padding: 0 10px;
+    padding: 0;
     border-radius: 6px;
     background-color: #ffffff;
     color: #24292f;
@@ -966,6 +970,8 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
     border-color: #0969da;
     box-shadow: inset 0 3px 0 #0969da;
 }
+.bottom-root-btn image { color: inherit; }
+.bottom-root-btn-active image { color: #0969da; }
 .bottom-add-btn {
     font-size: 16px;
     font-weight: bold;
@@ -1269,6 +1275,9 @@ button.terminal-back-btn:hover {
     border-color: #36c5f0;
     box-shadow: inset 0 3px 0 #36c5f0;
 }
+.bottom-root-btn-active image {
+    color: #36c5f0;
+}
 .bottom-toggle-btn {
     color: #8ca3c7;
 }
@@ -1557,6 +1566,9 @@ button.terminal-back-btn:hover {
     color: #172033;
     border-color: #0969da;
     box-shadow: inset 0 3px 0 #0969da;
+}
+.bottom-root-btn-active image {
+    color: #0969da;
 }
 .bottom-toggle-btn {
     color: #5b6f91;

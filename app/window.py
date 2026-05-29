@@ -114,6 +114,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.connect("notify::is-active", self._on_active_changed)
         self.connect("notify::maximized", self._on_maximized_notify)
         self.connect("destroy", self._on_destroy)
+        self.connect("close-request", self._on_close_request)
 
     # ── Super-key interception ────────────────────────────────────────────────
 
@@ -132,6 +133,92 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.project_manager.set_all_inactive()
         if self._wm_enabled:
             self._workspace_manager.release_all()
+
+    # ── close / quit flow ─────────────────────────────────────────────────────
+
+    def _on_close_request(self, _win) -> bool:
+        self._confirm_quit()
+        return True  # suppress default destroy
+
+    def _get_own_xid(self) -> int | None:
+        try:
+            import gi as _gi
+            _gi.require_version("GdkX11", "4.0")
+            from gi.repository import GdkX11
+            surface = self.get_surface()
+            if isinstance(surface, GdkX11.X11Surface):
+                return surface.get_xid()
+        except Exception:
+            pass
+        return None
+
+    def _confirm_quit(self):
+        dlg = Gtk.Window()
+        dlg.set_title("Close Eldrun?")
+        dlg.set_modal(True)
+        dlg.set_transient_for(self)
+        dlg.set_resizable(False)
+        dlg.set_default_size(400, -1)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_start(28)
+        box.set_margin_end(28)
+        box.set_margin_top(28)
+        box.set_margin_bottom(22)
+
+        icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        icon.set_pixel_size(48)
+        icon.set_halign(Gtk.Align.CENTER)
+        box.append(icon)
+
+        heading = Gtk.Label(label="Close Eldrun?")
+        heading.add_css_class("title-2")
+        heading.set_halign(Gtk.Align.CENTER)
+        heading.set_margin_top(4)
+        box.append(heading)
+
+        lines = ["All open project terminals will be closed."]
+        if self._wm_enabled and self._workspace_manager._assignments:
+            n = len(self._workspace_manager._assignments)
+            ws_word = "workspaces" if n != 1 else "workspace"
+            lines.append(
+                f"{n} project {ws_word} and any apps running on "
+                f"{'them' if n != 1 else 'it'} will be closed."
+            )
+        lines.append("Make sure your work is saved before continuing.")
+
+        body = Gtk.Label(label="\n".join(lines))
+        body.set_wrap(True)
+        body.set_halign(Gtk.Align.CENTER)
+        body.set_justify(Gtk.Justification.CENTER)
+        body.set_margin_top(4)
+        box.append(body)
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        btn_row.set_halign(Gtk.Align.CENTER)
+        btn_row.set_margin_top(10)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.add_css_class("pill")
+        cancel_btn.connect("clicked", lambda _: dlg.destroy())
+        btn_row.append(cancel_btn)
+
+        quit_btn = Gtk.Button(label="Close Eldrun")
+        quit_btn.add_css_class("pill")
+        quit_btn.add_css_class("destructive-action")
+        quit_btn.connect("clicked", lambda _: self._do_quit(dlg))
+        btn_row.append(quit_btn)
+
+        box.append(btn_row)
+
+        dlg.set_child(box)
+        dlg.present()
+
+    def _do_quit(self, dlg: Gtk.Window):
+        dlg.destroy()
+        if self._wm_enabled:
+            self._workspace_manager.close_workspace_apps(self._get_own_xid())
+        self.get_application().quit()
 
     # ── keyboard ──────────────────────────────────────────────────────────────
 
@@ -238,7 +325,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         close_btn.add_css_class("wm-btn")
         close_btn.add_css_class("wm-close")
         close_btn.set_tooltip_text("Close")
-        close_btn.connect("clicked", lambda _: self.get_application().quit())
+        close_btn.connect("clicked", lambda _: self._confirm_quit())
         btn_box.append(close_btn)
 
         right_box.append(btn_box)
@@ -305,7 +392,6 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_root=self._on_root_clicked,
             on_new_project=self._on_new_project_clicked,
             on_import_project=self._on_import_project_clicked,
-            on_toggle_file_tree_panel=self._toggle_file_tree_panel,
             on_activate_project=self._on_pill_activate,
             on_close_project=self._on_pill_close,
             project_manager=self.project_manager,
@@ -321,9 +407,24 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_default_apps_changed=self._file_tree_panel._refresh_default_app_icons,
         )
 
+        self._file_tree_toggle_btn = Gtk.Button(label="‹")
+        self._file_tree_toggle_btn.add_css_class("flat")
+        self._file_tree_toggle_btn.add_css_class("panel-edge-btn")
+        self._file_tree_toggle_btn.set_tooltip_text("Show panel")
+        self._file_tree_toggle_btn.set_halign(Gtk.Align.END)
+        self._file_tree_toggle_btn.set_valign(Gtk.Align.START)
+        self._file_tree_toggle_btn.set_size_request(12, 40)
+        self._file_tree_toggle_btn.set_margin_top(96)
+        self._file_tree_toggle_btn.set_visible(False)
+
+        toggle_motion = Gtk.EventControllerMotion()
+        toggle_motion.connect("enter", self._on_file_tree_toggle_enter)
+        self._file_tree_toggle_btn.add_controller(toggle_motion)
+
         overlay = Gtk.Overlay()
         overlay.set_child(self._center_panel)
         overlay.add_overlay(self._file_tree_panel)
+        overlay.add_overlay(self._file_tree_toggle_btn)
         overlay.add_overlay(self._bottom_panel)
         overlay.set_hexpand(True)
         overlay.set_vexpand(True)
@@ -409,7 +510,10 @@ class EldrunWindow(Adw.ApplicationWindow):
     # ── panel toggle ──────────────────────────────────────────────────────────
 
     def _update_toggle_btn(self, show_panel: bool):
-        self._bottom_panel.set_left_panel_shown(show_panel)
+        self._file_tree_toggle_btn.set_label("›" if show_panel else "‹")
+        self._file_tree_toggle_btn.set_tooltip_text(
+            "Hide panel" if show_panel else "Show panel"
+        )
 
     def _on_center_page_changed(self, page_name: str):
         self._apply_panel_visibility()
@@ -443,7 +547,11 @@ class EldrunWindow(Adw.ApplicationWindow):
                       and (not self._file_tree_hidden or self._file_tree_auto_shown))
         self._file_tree_panel.set_visible(show_panel)
         self._update_toggle_btn(show_panel)
-        self._bottom_panel.set_panel_toggle_visible(self._active_project_id is not None)
+        show_toggle = (self._active_project_id is not None
+                       and not self._panels_hidden
+                       and self._file_tree_hidden
+                       and not show_panel)
+        self._file_tree_toggle_btn.set_visible(show_toggle)
 
     def _on_overlay_motion(self, ctrl, x, _y):
         width = ctrl.get_widget().get_width()
@@ -451,6 +559,14 @@ class EldrunWindow(Adw.ApplicationWindow):
             if self._active_project_id is not None and not self._panels_hidden:
                 self._file_tree_auto_shown = True
                 self._apply_panel_visibility()
+
+    def _on_file_tree_toggle_enter(self, _ctrl, _x, _y):
+        if self._active_project_id is None or self._panels_hidden:
+            return
+        if not self._file_tree_hidden or self._file_tree_auto_shown:
+            return
+        self._file_tree_auto_shown = True
+        self._apply_panel_visibility()
 
     def _on_file_tree_panel_leave(self, _ctrl):
         if self._file_tree_auto_shown:
@@ -497,6 +613,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             parent=self,
             project_manager=self.project_manager,
             on_created=self._on_project_created,
+            settings_manager=self.settings_manager,
         ).present()
 
     def _on_import_project_clicked(self):
@@ -505,6 +622,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             parent=self,
             project_manager=self.project_manager,
             on_imported=self._on_project_created,
+            settings_manager=self.settings_manager,
         ).present()
 
     def _on_project_created(self, project: dict):
@@ -588,7 +706,10 @@ class EldrunWindow(Adw.ApplicationWindow):
             btn.set_tooltip_text(role["label"])
             if exec_cmd:
                 gam = self._global_apps_manager
-                btn.connect("clicked", lambda _, k=key: gam.launch_or_raise(k))
+                if key == "screenshot":
+                    btn.connect("clicked", lambda _: gam.launch_screenshot_region())
+                else:
+                    btn.connect("clicked", lambda _, k=key: gam.launch_or_raise(k))
             else:
                 btn.set_sensitive(False)
 

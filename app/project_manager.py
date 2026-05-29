@@ -216,6 +216,88 @@ def _git_init(directory: str):
         )
 
 
+def _git_has_remote(directory: str) -> bool:
+    """Return True if the git repo at directory has a remote named 'origin'."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=directory, capture_output=True,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def create_remote_repo(directory: str, repo_name: str, git_type: str,
+                       profile_url: str, token: str) -> str:
+    """Create a remote repository on GitHub/GitLab and add it as git remote origin.
+
+    Detects host from profile_url (e.g. https://github.com/user or
+    https://gitlab.example.com/user).  Returns the clone URL added as origin.
+    """
+    import urllib.request
+    from urllib.parse import urlparse
+
+    profile_url = profile_url.rstrip("/")
+    parsed = urlparse(profile_url)
+    host = parsed.netloc.lower()
+
+    if "github.com" in host:
+        api_url = "https://api.github.com/user/repos"
+        payload = json.dumps({
+            "name": repo_name,
+            "private": git_type == "private",
+            "auto_init": False,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            api_url,
+            data=payload,
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json",
+                "Content-Type": "application/json",
+                "User-Agent": "Eldrun/1.0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        clone_url = data["clone_url"]
+    else:
+        # GitLab (gitlab.com or self-hosted) — also used as fallback
+        scheme = parsed.scheme or "https"
+        api_host = f"{scheme}://{parsed.netloc}"
+        api_url = f"{api_host}/api/v4/projects"
+        visibility = "private" if git_type == "private" else "public"
+        payload = json.dumps({
+            "name": repo_name,
+            "visibility": visibility,
+            "initialize_with_readme": False,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            api_url,
+            data=payload,
+            headers={
+                "PRIVATE-TOKEN": token,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        clone_url = data["http_url_to_repo"]
+
+    subprocess.run(
+        ["git", "remote", "add", "origin", clone_url],
+        cwd=directory, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "push", "-u", "origin", "HEAD"],
+        cwd=directory, capture_output=True,
+    )
+    return clone_url
+
+
 def _git_commit(directory: str, message: str):
     env = {
         **os.environ,

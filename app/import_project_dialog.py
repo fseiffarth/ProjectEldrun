@@ -6,11 +6,11 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gtk, Gdk, GLib, Pango
 
-from project_manager import sanitize_name, PROJECTS_ROOT
+from project_manager import sanitize_name, PROJECTS_ROOT, create_remote_repo, _git_has_remote
 
 
 class ImportProjectDialog(Gtk.Window):
-    def __init__(self, parent, project_manager, on_imported):
+    def __init__(self, parent, project_manager, on_imported, settings_manager=None):
         super().__init__()
         self.set_title("Import Project")
         self.set_transient_for(parent)
@@ -20,7 +20,9 @@ class ImportProjectDialog(Gtk.Window):
 
         self._pm = project_manager
         self._on_imported = on_imported
+        self._settings = settings_manager
         self._source_dir: str | None = None
+        self._imported_project = None  # set on partial success (remote failed)
 
         self._build_ui()
 
@@ -89,6 +91,17 @@ class ImportProjectDialog(Gtk.Window):
         mode_outer.append(self._mode_dropdown)
         box.append(mode_outer)
 
+        # Remote repository checkbox
+        remote_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._remote_check = Gtk.CheckButton(label="Create remote repository")
+        self._remote_check.set_active(False)
+        self._remote_check.set_sensitive(False)
+        self._remote_check.set_tooltip_text(
+            "Select a folder first, or set a Git hosting account in Settings"
+        )
+        remote_row.append(self._remote_check)
+        box.append(remote_row)
+
         # Destination preview
         self._path_lbl = Gtk.Label(label="", xalign=0)
         self._path_lbl.add_css_class("dim-label")
@@ -150,6 +163,25 @@ class ImportProjectDialog(Gtk.Window):
                 if not self._name_entry.get_text().strip():
                     self._name_entry.set_text(os.path.basename(path))
                 self._update_state(self._name_entry.get_text())
+                self._refresh_remote_checkbox()
+
+    def _refresh_remote_checkbox(self):
+        has_hosting = bool(
+            self._settings and self._settings.get("git_profile_url")
+            and self._settings.get("git_token")
+        )
+        if not has_hosting:
+            self._remote_check.set_sensitive(False)
+            self._remote_check.set_tooltip_text(
+                "Set a Git hosting account in Settings to enable this"
+            )
+            return
+        if self._source_dir and _git_has_remote(self._source_dir):
+            self._remote_check.set_sensitive(False)
+            self._remote_check.set_tooltip_text("Project already has a remote repository")
+        else:
+            self._remote_check.set_sensitive(True)
+            self._remote_check.set_tooltip_text("")
 
     def _on_name_changed(self, entry):
         self._update_state(entry.get_text())
@@ -192,10 +224,19 @@ class ImportProjectDialog(Gtk.Window):
             self._import_btn.set_sensitive(True)
 
     def _on_import_clicked(self, _btn):
+        # "Close" mode after partial success (remote failed)
+        if self._imported_project is not None:
+            self.close()
+            self._on_imported(self._imported_project)
+            return
+
         name = self._name_entry.get_text().strip()
         git_type = "public" if self._type_dropdown.get_selected() == 1 else "private"
         mode = self._get_mode()
         source = self._source_dir
+        want_remote = self._remote_check.get_active()
+        profile_url = self._settings.get("git_profile_url") if self._settings else ""
+        token = self._settings.get("git_token") if self._settings else ""
 
         self._import_btn.set_sensitive(False)
         self._name_entry.set_sensitive(False)
@@ -207,13 +248,29 @@ class ImportProjectDialog(Gtk.Window):
         def worker():
             try:
                 project = self._pm.import_project(source, name, git_type, mode)
-                GLib.idle_add(self._finish, project, None)
             except Exception as exc:
-                GLib.idle_add(self._finish, None, str(exc))
+                GLib.idle_add(self._finish, None, str(exc), None)
+                return
+
+            remote_warning = None
+            if want_remote and profile_url and token:
+                try:
+                    from project_manager import sanitize_name as _san
+                    create_remote_repo(
+                        project["directory"],
+                        _san(name),
+                        git_type,
+                        profile_url,
+                        token,
+                    )
+                except Exception as exc:
+                    remote_warning = str(exc)
+
+            GLib.idle_add(self._finish, project, None, remote_warning)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _finish(self, project, error):
+    def _finish(self, project, error, remote_warning=None):
         if error:
             self._warn_lbl.set_text(f"Error: {error}")
             self._warn_lbl.add_css_class("error")
@@ -221,6 +278,14 @@ class ImportProjectDialog(Gtk.Window):
             self._warn_lbl.set_visible(True)
             self._import_btn.set_sensitive(True)
             self._name_entry.set_sensitive(True)
+        elif remote_warning:
+            self._warn_lbl.set_text(f"Project imported locally.\nRemote failed: {remote_warning}")
+            self._warn_lbl.add_css_class("error")
+            self._warn_lbl.remove_css_class("dim-label")
+            self._warn_lbl.set_visible(True)
+            self._import_btn.set_label("Close")
+            self._import_btn.set_sensitive(True)
+            self._imported_project = project
         else:
             self.close()
             self._on_imported(project)

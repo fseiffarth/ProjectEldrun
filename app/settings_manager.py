@@ -9,6 +9,8 @@ _DEFAULTS: dict = {
     "terminal_command": "claude",
     "workspace_management": True,
     "debug": True,
+    "git_profile_url": "",
+    "git_token": "",
 }
 
 
