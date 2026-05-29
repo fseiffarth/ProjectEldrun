@@ -10,23 +10,11 @@ required for app-window embedding and Cinnamon workspace management.
 
 ## Running
 
-Preferred launcher:
+Do not launch Eldrun from Claude or any other agent terminal for verification.
+Opening a second Eldrun instance can corrupt workspace state. Ask the user to
+run or restart the existing instance when runtime validation is needed.
 
-```bash
-./start-eldrun.sh
-```
-
-Direct run:
-
-```bash
-cd app && python3 eldrun.py
-```
-
-Direct run with explicit display and log capture:
-
-```bash
-cd /home/user/eldrun/projects/projecteldrun/app && DISPLAY=:0 python3 eldrun.py &> /tmp/eldrun.log &
-```
+Runtime launch commands are intentionally omitted from this Claude context.
 
 ## File Map
 
@@ -98,7 +86,8 @@ python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py \
 python3 -m unittest
 ```
 
-4. Run locally with `./start-eldrun.sh` or `cd app && python3 eldrun.py`.
+4. Do not start Eldrun from Claude. Ask the user to restart the existing
+   instance for runtime verification.
 
 Useful keys: `F11` toggles fullscreen; `Super` toggles panels while Eldrun is
 focused. The custom header close button calls `app.quit()`.

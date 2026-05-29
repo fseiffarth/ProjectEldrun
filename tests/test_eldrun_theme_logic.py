@@ -18,7 +18,11 @@ for name in ("Gtk", "Adw", "Gdk", "GLib", "Vte"):
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
-from eldrun import _normalize_theme, _preferred_gsk_renderer
+from eldrun import (
+    _application_init_kwargs,
+    _normalize_theme,
+    _preferred_gsk_renderer,
+)
 
 
 class TestEldrunThemeNormalization(unittest.TestCase):
@@ -60,6 +64,11 @@ class TestEldrunThemeNormalization(unittest.TestCase):
     def test_renderer_workaround_is_case_insensitive(self):
         env = {"XDG_SESSION_TYPE": "X11", "XDG_CURRENT_DESKTOP": "cInNaMoN"}
         self.assertEqual(_preferred_gsk_renderer(env), "ngl")
+
+    def test_application_is_single_instance(self):
+        kwargs = _application_init_kwargs()
+        self.assertEqual(kwargs["application_id"], "io.github.fseiffarth.eldrun")
+        self.assertNotIn("flags", kwargs)
 
 
 if __name__ == "__main__":

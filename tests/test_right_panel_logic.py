@@ -2,6 +2,7 @@
 
 import os
 import sys
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -177,6 +178,79 @@ class TestFileTreeDefaultIconLogic(unittest.TestCase):
             "/work/project/a.py", "/work/project"
         )
         icon.assert_called_once_with("code")
+
+
+class TestFileTreeContextMenuState(unittest.TestCase):
+    def _panel(self):
+        panel = FileTreePanel.__new__(FileTreePanel)
+        panel._context_popover = None
+        panel._context_menu_open = False
+        panel._context_events = []
+        panel._on_context_menu_open_changed = panel._context_events.append
+        return panel
+
+    def test_context_menu_open_callback_only_fires_on_state_change(self):
+        panel = self._panel()
+
+        panel._set_context_menu_open(True)
+        panel._set_context_menu_open(True)
+        panel._set_context_menu_open(False)
+
+        self.assertEqual(panel._context_events, [True, False])
+
+    def test_context_popover_close_reports_menu_closed(self):
+        panel = self._panel()
+        popover = object()
+        panel._context_popover = popover
+        panel._context_menu_open = True
+
+        panel._on_context_popover_closed(popover)
+
+        self.assertIsNone(panel._context_popover)
+        self.assertEqual(panel._context_events, [False])
+
+    def test_replacing_context_popover_does_not_report_closed_between_menus(self):
+        class FakePopover:
+            def __init__(self):
+                self.closed_cb = None
+                self.popdown_called = False
+
+            def set_parent(self, _parent):
+                pass
+
+            def set_has_arrow(self, _has_arrow):
+                pass
+
+            def set_pointing_to(self, _rect):
+                pass
+
+            def connect(self, signal, callback):
+                if signal == "closed":
+                    self.closed_cb = callback
+
+            def popdown(self):
+                self.popdown_called = True
+                if self.closed_cb:
+                    self.closed_cb(self)
+
+        panel = self._panel()
+
+        with patch("panels.right_panel.Gtk.Popover", side_effect=FakePopover), \
+                patch(
+                    "panels.right_panel.Gdk.Rectangle",
+                    side_effect=lambda: types.SimpleNamespace(),
+                ):
+            first = panel._new_context_popover(object(), 1, 2)
+            second = panel._new_context_popover(object(), 3, 4)
+
+        self.assertTrue(first.popdown_called)
+        self.assertIs(panel._context_popover, second)
+        self.assertEqual(panel._context_events, [True])
+
+        second.closed_cb(second)
+
+        self.assertIsNone(panel._context_popover)
+        self.assertEqual(panel._context_events, [True, False])
 
 
 if __name__ == "__main__":

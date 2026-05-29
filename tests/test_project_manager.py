@@ -185,6 +185,43 @@ class TestProjectManager(unittest.TestCase):
         p2 = pm.get_project(p["id"])
         self.assertEqual(p2["shell_pid"], 9999)
 
+    def test_set_agent_task_persists_to_local_project_json(self):
+        pm = self._make_pm()
+        project_dir = os.path.join(self.tmpdir, "agent-project")
+        os.makedirs(project_dir)
+        p = pm.add_project("Agent Project", project_dir, "private")
+        task = {
+            "task_key": "project-" + p["id"],
+            "task_title": "Fix the task tooltip",
+            "task_status": "active",
+            "task_updated_at": "2026-05-29T10:00:00+00:00",
+        }
+
+        pm.set_agent_task(p["id"], task)
+
+        with open(os.path.join(project_dir, "project.json"), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["agent_tasks"], [task])
+
+    def test_clear_agent_task_removes_matching_record(self):
+        pm = self._make_pm()
+        project_dir = os.path.join(self.tmpdir, "agent-project")
+        os.makedirs(project_dir)
+        p = pm.add_project("Agent Project", project_dir, "private")
+        task = {
+            "task_key": "project-" + p["id"],
+            "task_title": "Fix the task tooltip",
+            "task_status": "active",
+            "task_updated_at": "2026-05-29T10:00:00+00:00",
+        }
+        pm.set_agent_task(p["id"], task)
+
+        pm.clear_agent_task(p["id"], task["task_key"])
+
+        with open(os.path.join(project_dir, "project.json"), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["agent_tasks"], [])
+
     def test_create_project_makes_dir(self):
         pm = self._make_pm()
         p = pm.create_project("My App", "private")

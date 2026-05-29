@@ -19,6 +19,9 @@ workspace.
 - Project terminals are for implementation work inside a specific project
   directory.
 - Agent tabs run `claude` or `codex`; plain terminal tabs run the user's shell.
+  Local Ollama models open a built-in dialog instead of a VTE tab.
+  Other agents (Mistral, Qwen, Grok, etc.) are not integrated and can only be
+  used manually in a plain shell tab.
 - The right file panel, default app mappings, open-window list, stats, and time
   tracking follow the active project.
 - Global app shortcuts are intentionally cross-project. They launch or raise
@@ -139,6 +142,9 @@ tab bar.
   `codex`.
 - Right-clicking the tab bar opens controls for adding a new Claude/Codex agent
   or a plain shell terminal.
+- New agent creation can include an optional task prompt. Eldrun stores it as
+  the tab task and sends it to the spawned Claude/Codex process as initial
+  terminal input.
 - Agent and plain terminal tabs can be renamed, closed, and reordered by drag and
   drop.
 - If all tabs are closed, the stack shows an empty state explaining that a new
@@ -153,9 +159,15 @@ tab bar.
 - An offline banner is displayed over the stack when the network probe reports
   offline.
 
-The terminal command comes from `settings.json["terminal_command"]`. If the
-configured command is not found in `$PATH`, Eldrun falls back to the system
-shell.
+The terminal command comes from `settings.json["terminal_command"]`. UI choices
+are `claude` and `codex`. If the configured command is not found in `$PATH`,
+Eldrun falls back to the system shell.
+
+Other AI agents — Mistral, Qwen, Grok, Gemini CLI, Llama.cpp, and similar
+tools — are not integrated as first-class tab types. They can be used in a
+plain shell tab, but Eldrun has no dedicated lifecycle, task metadata, or
+command discovery for them. Ollama is the only non-CLI-terminal AI integration;
+see [Local AI — Ollama](#local-ai--ollama).
 
 ### Right File Tree Overlay
 
@@ -384,6 +396,16 @@ Example:
       }
     ]
   },
+  "agent_tasks": [
+    {
+      "task_key": "project-<uuid4>",
+      "task_title": "Review the parser error handling",
+      "task_status": "active",
+      "task_updated_at": "2026-05-27T11:15:00+00:00",
+      "tab_label": "Claude",
+      "command": "claude"
+    }
+  ],
   "open_apps": []
 }
 ```
@@ -395,6 +417,8 @@ Notes:
 - `shell_pid` is runtime-only and is not persisted.
 - `open_apps` is the canonical durable location for current open-app state.
   `ProjectManager` preserves it while other metadata is rewritten.
+- `agent_tasks` stores lightweight current/recent task metadata for project
+  agent tabs. Runtime tab layout is still not persisted.
 - Per-project default app overrides live in `default_apps`.
 - Old `project_default_apps.json` files are migrated into `project.json`.
 
@@ -502,6 +526,12 @@ Additional agent and plain terminal tabs are runtime UI state. They can be
 renamed, closed, and reordered, but the current implementation does not persist
 custom tab layouts across application restarts.
 
+Agent and terminal tabs can also carry explicit task metadata. Supplying a task
+when creating a new agent sets it automatically and sends the same prompt to the
+agent. Right-click a tab to set, mark done, or clear its task; hovering the tab
+shows the current task preview. Project tasks are written to
+`project.json["agent_tasks"]`.
+
 ### File Opening and App Embedding
 
 When a file is opened:
@@ -579,6 +609,80 @@ Wayland limitations:
   compositors do not honor.
 - Sticky-window state also relies on EWMH and may not propagate under Wayland.
 - App window embedding is not implemented on Wayland.
+
+## Local AI — Ollama
+
+Eldrun has a built-in Ollama client separate from the VTE agent-terminal path.
+It does not run Ollama inside a terminal tab; instead it opens a GTK dialog that
+streams responses directly from the Ollama HTTP API.
+
+### Entry Points
+
+| Trigger | Behavior |
+|---------|----------|
+| `Ctrl+K` | Opens the Ask Ollama dialog with the configured model. |
+| Center inline prompt bar | Text entered in the center bar opens the dialog pre-filled with that prompt. |
+| File-tree → Ask Ollama | Right-click a file in the tree and choose Ask Ollama to open the dialog with a file-oriented prompt. |
+| Agent picker (local model) | Selecting a local model from the new-agent popover opens the Ollama dialog for that model instead of spawning a VTE tab. |
+
+### Ollama Dialog
+
+- Shows the initial prompt if one was supplied by the entry point.
+- Displays the model name in the title.
+- Send button starts the stream and is disabled while a request is in flight.
+- Spinner runs while streaming; stops on completion or error.
+- Streamed text appears incrementally in the response view.
+- Escape closes the dialog.
+
+### Model Discovery
+
+Eldrun fetches the model list from `<ollama_host>/api/tags` when the agent
+picker is opened. Models that are returned appear as `(local)` entries in the
+list. If the fetch fails the list is empty and the UI does not block.
+
+### Ollama Settings
+
+Settings → Ollama:
+
+| Field | Purpose |
+|-------|---------|
+| Host | Base URL for the Ollama server, e.g. `http://localhost:11434`. |
+| Default model | Model name used when no explicit model is selected. |
+| Autostart | If enabled and the host is `localhost`, Eldrun runs `ollama serve` on startup and stops it on quit. Autostart state is partial — verify daemon cleanup manually. |
+
+### Current Limitations
+
+- Local models open the Ollama dialog, not a persistent VTE terminal session.
+- The local/private label (G5.3) is not shown in the UI yet.
+- Scrollback-to-Ollama hint strip (G5.4) is not implemented.
+- Embedding-based project search (G5.5) and startup suggestions (G5.6) are not
+  implemented.
+
+## Download Routing
+
+Eldrun manages a `~/eldrun/downloads` symlink that always points to the active
+project's `tmp/downloads/` directory:
+
+- When a project is active, the symlink points to `<project_dir>/tmp/downloads/`.
+- When no project is active (root terminal), the symlink points to
+  `~/eldrun/root/tmp/downloads/`.
+
+This lets browser download directories be set once to `~/eldrun/downloads` and
+automatically follow the active project.
+
+Browser preference bootstrapping:
+
+- Firefox: Eldrun writes download path into the detected Firefox profile `prefs.js`.
+- Chromium/Chrome: Eldrun writes into the detected Chromium preferences file.
+
+Both browser paths are partial — profile detection and the assumption that the
+browser is not running when preferences are written need manual verification.
+
+## Single-Instance Protection
+
+Eldrun uses GTK application ID uniqueness to prevent a second instance from
+starting. Starting Eldrun while an instance is already running focuses the
+existing window instead of creating a second workspace-mutating instance.
 
 ## Tests and Current Quality Signals
 

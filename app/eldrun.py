@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Entry point for ProjectEldrun."""
 
-__version__ = "0.0.6"
+__version__ = "0.0.7"
 
 _debug_enabled: bool = True
 
@@ -311,6 +311,11 @@ button.panel-edge-btn:hover {
     color: #ffffff;
     background-color: #388bfd;
 }
+button.bottom-edge-btn {
+    min-width: 60px;
+    min-height: 12px;
+    padding: 1px 0;
+}
 
 /* ── header time label ───────────────────────────────────── */
 .header-time-label {
@@ -455,11 +460,13 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
 .tab-drag-over-right { border-right: 2px solid #388bfd; }
 
 /* ── global apps toolbar (G6.6) ──────────────────────────── */
-.global-apps-strip {
-    background-color: #161b22;
-    border-bottom: 1px solid #21262d;
-    min-height: 40px;
-    padding: 4px 0;
+.global-apps-toggle-bar {
+    min-height: 5px;
+    background: linear-gradient(90deg, transparent 0%, rgba(56,139,253,0.35) 15%, rgba(56,139,253,0.6) 50%, rgba(56,139,253,0.35) 85%, transparent 100%);
+    transition: background 150ms ease;
+}
+.global-apps-toggle-bar:hover {
+    background: linear-gradient(90deg, transparent 0%, rgba(56,139,253,0.55) 15%, rgba(56,139,253,0.9) 50%, rgba(56,139,253,0.55) 85%, transparent 100%);
 }
 .global-apps-toolbar {
     background-color: #0d1117;
@@ -574,6 +581,21 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
     border-radius: 6px;
 }
 .bottom-panel searchentry:focus {
+    border-color: #388bfd;
+}
+.bottom-panel entry.bottom-ollama-entry {
+    min-height: 40px;
+    font-size: 12px;
+    border-radius: 6px;
+    background-color: #21262d;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    padding: 0 8px;
+}
+.bottom-panel entry.bottom-ollama-entry text {
+    color: #e6edf3;
+}
+.bottom-panel entry.bottom-ollama-entry:focus {
     border-color: #388bfd;
 }
 /* ── screenshot toast ────────────────────────────────────── */
@@ -765,6 +787,11 @@ button.panel-edge-btn:hover {
     color: #ffffff;
     background-color: #0969da;
 }
+button.bottom-edge-btn {
+    min-width: 60px;
+    min-height: 12px;
+    padding: 1px 0;
+}
 
 /* ── header time label ───────────────────────────────────── */
 .header-time-label {
@@ -909,11 +936,13 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 .tab-drag-over-right { border-right: 2px solid #0969da; }
 
 /* ── global apps toolbar (light, G6.6) ───────────────────── */
-.global-apps-strip {
-    background-color: #f6f8fa;
-    border-bottom: 1px solid #d0d7de;
-    min-height: 40px;
-    padding: 4px 0;
+.global-apps-toggle-bar {
+    min-height: 5px;
+    background: linear-gradient(90deg, transparent 0%, rgba(9,105,218,0.3) 15%, rgba(9,105,218,0.55) 50%, rgba(9,105,218,0.3) 85%, transparent 100%);
+    transition: background 150ms ease;
+}
+.global-apps-toggle-bar:hover {
+    background: linear-gradient(90deg, transparent 0%, rgba(9,105,218,0.5) 15%, rgba(9,105,218,0.82) 50%, rgba(9,105,218,0.5) 85%, transparent 100%);
 }
 .global-apps-toolbar {
     background-color: #ffffff;
@@ -1030,6 +1059,21 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 .bottom-panel searchentry:focus {
     border-color: #0969da;
 }
+.bottom-panel entry.bottom-ollama-entry {
+    min-height: 40px;
+    font-size: 12px;
+    border-radius: 6px;
+    background-color: #eaeef2;
+    color: #24292f;
+    border: 1px solid #d0d7de;
+    padding: 0 8px;
+}
+.bottom-panel entry.bottom-ollama-entry text {
+    color: #24292f;
+}
+.bottom-panel entry.bottom-ollama-entry:focus {
+    border-color: #0969da;
+}
 /* ── screenshot toast ────────────────────────────────────── */
 .screenshot-toast {
     background-color: rgba(255, 255, 255, 0.92);
@@ -1072,6 +1116,7 @@ button.terminal-back-btn,
 .bottom-toggle-btn,
 .bottom-panel searchentry,
 .bottom-panel searchentry entry,
+.bottom-panel entry.bottom-ollama-entry,
 .debug-badge,
 .offline-banner,
 progressbar.project-time-bar trough,
@@ -1100,14 +1145,12 @@ progressbar.project-time-bar progress {
 }
 .panel-left,
 .panel-right {
-    background-color: #121a2b;
+    background: linear-gradient(180deg, #101624 0%, #16213a 48%, #241735 100%);
     border-color: rgba(94, 220, 255, 0.22);
 }
 .panel-right {
-    background: linear-gradient(90deg, #091827 0%, #121a2b 12%, #121a2b 100%);
-    border-left: 2px solid rgba(94, 220, 255, 0.4);
-    box-shadow: inset 4px 0 0 rgba(45, 212, 191, 0.22),
-                -8px 0 24px rgba(45, 212, 191, 0.14);
+    background: linear-gradient(90deg, #101624 0%, #16213a 48%, #241735 100%);
+    border-left: 1px solid rgba(94, 220, 255, 0.35);
 }
 .panel-right separator {
     background-color: rgba(94, 220, 255, 0.18);
@@ -1195,6 +1238,11 @@ button.panel-edge-btn:hover {
     color: #07131f;
     background-color: #36c5f0;
 }
+button.bottom-edge-btn {
+    min-width: 60px;
+    min-height: 12px;
+    padding: 1px 0;
+}
 .status-offline {
     color: #ff5c8a;
 }
@@ -1262,8 +1310,8 @@ button.terminal-back-btn:hover {
     border-color: #b388ff;
 }
 .bottom-panel {
-    background-color: #121a2b;
-    border-top-color: rgba(94, 220, 255, 0.25);
+    background: linear-gradient(90deg, #101624 0%, #16213a 48%, #241735 100%);
+    border-top-color: rgba(94, 220, 255, 0.35);
 }
 .project-pill {
     background-color: #18243b;
@@ -1319,18 +1367,32 @@ button.terminal-back-btn:hover {
     color: #f4f8ff;
     border-color: #293852;
 }
+.bottom-panel entry.bottom-ollama-entry {
+    background-color: #18243b;
+    color: #f4f8ff;
+    border-color: #293852;
+}
+.bottom-panel entry.bottom-ollama-entry text {
+    color: #f4f8ff;
+}
 .bottom-panel .project-search-entry,
 .bottom-panel entry.project-search-entry,
 .bottom-panel .project-search-entry text,
-.bottom-panel entry.project-search-entry text {
+.bottom-panel entry.project-search-entry text,
+.bottom-panel entry.bottom-ollama-entry {
     border-radius: 0;
 }
 .bottom-panel searchentry:focus {
     border-color: #36c5f0;
 }
-.global-apps-strip {
-    background-color: #0c111d;
-    border-bottom-color: #1e2d45;
+.bottom-panel entry.bottom-ollama-entry:focus {
+    border-color: #36c5f0;
+}
+.global-apps-toggle-bar {
+    background: linear-gradient(90deg, transparent 0%, rgba(54,197,240,0.3) 15%, rgba(54,197,240,0.55) 50%, rgba(54,197,240,0.3) 85%, transparent 100%);
+}
+.global-apps-toggle-bar:hover {
+    background: linear-gradient(90deg, transparent 0%, rgba(54,197,240,0.5) 15%, rgba(54,197,240,0.82) 50%, rgba(54,197,240,0.5) 85%, transparent 100%);
 }
 .global-apps-toolbar {
     background-color: #101624;
@@ -1380,6 +1442,7 @@ button.terminal-back-btn,
 .bottom-toggle-btn,
 .bottom-panel searchentry,
 .bottom-panel searchentry entry,
+.bottom-panel entry.bottom-ollama-entry,
 .debug-badge,
 .offline-banner,
 progressbar.project-time-bar trough,
@@ -1410,14 +1473,12 @@ progressbar.project-time-bar progress {
 }
 .panel-left,
 .panel-right {
-    background-color: #eef7ff;
+    background: linear-gradient(180deg, #f7fbff 0%, #e8f7ff 48%, #f5ecff 100%);
     border-color: rgba(9, 105, 218, 0.18);
 }
 .panel-right {
-    background: linear-gradient(90deg, #dff4ff 0%, #eef7ff 12%, #eef7ff 100%);
-    border-left: 2px solid rgba(9, 105, 218, 0.28);
-    box-shadow: inset 4px 0 0 rgba(20, 184, 166, 0.16),
-                -8px 0 24px rgba(9, 105, 218, 0.11);
+    background: linear-gradient(90deg, #f7fbff 0%, #e8f7ff 48%, #f5ecff 100%);
+    border-left: 1px solid rgba(9, 105, 218, 0.24);
 }
 .panel-right separator {
     background-color: rgba(9, 105, 218, 0.16);
@@ -1505,6 +1566,11 @@ button.panel-edge-btn:hover {
     color: #ffffff;
     background-color: #0969da;
 }
+button.bottom-edge-btn {
+    min-width: 60px;
+    min-height: 12px;
+    padding: 1px 0;
+}
 .status-offline {
     color: #d7256f;
 }
@@ -1572,8 +1638,8 @@ button.terminal-back-btn:hover {
     border-color: #8250df;
 }
 .bottom-panel {
-    background-color: #eef7ff;
-    border-top-color: rgba(9, 105, 218, 0.2);
+    background: linear-gradient(90deg, #f7fbff 0%, #e8f7ff 48%, #f5ecff 100%);
+    border-top-color: rgba(9, 105, 218, 0.24);
 }
 .project-pill {
     background-color: #ffffff;
@@ -1629,18 +1695,32 @@ button.terminal-back-btn:hover {
     color: #172033;
     border-color: #c9dff3;
 }
+.bottom-panel entry.bottom-ollama-entry {
+    background-color: #ffffff;
+    color: #172033;
+    border-color: #c9dff3;
+}
+.bottom-panel entry.bottom-ollama-entry text {
+    color: #172033;
+}
 .bottom-panel .project-search-entry,
 .bottom-panel entry.project-search-entry,
 .bottom-panel .project-search-entry text,
-.bottom-panel entry.project-search-entry text {
+.bottom-panel entry.project-search-entry text,
+.bottom-panel entry.bottom-ollama-entry {
     border-radius: 0;
 }
 .bottom-panel searchentry:focus {
     border-color: #0969da;
 }
-.global-apps-strip {
-    background-color: #eef4fc;
-    border-bottom-color: #c9dff3;
+.bottom-panel entry.bottom-ollama-entry:focus {
+    border-color: #0969da;
+}
+.global-apps-toggle-bar {
+    background: linear-gradient(90deg, transparent 0%, rgba(9,105,218,0.22) 15%, rgba(9,105,218,0.48) 50%, rgba(9,105,218,0.22) 85%, transparent 100%);
+}
+.global-apps-toggle-bar:hover {
+    background: linear-gradient(90deg, transparent 0%, rgba(9,105,218,0.42) 15%, rgba(9,105,218,0.72) 50%, rgba(9,105,218,0.42) 85%, transparent 100%);
 }
 .global-apps-toolbar {
     background-color: #f7fbff;
@@ -1694,18 +1774,19 @@ def _apply_css():
     set_theme("dark")
 
 
+def _application_init_kwargs() -> dict[str, str]:
+    return {"application_id": "io.github.fseiffarth.eldrun"}
+
+
 class EldrunApp(Adw.Application):
     def __init__(self):
-        import gi as _gi
-        _gi.require_version("Gio", "2.0")
-        from gi.repository import Gio as _Gio
-        # NON_UNIQUE lets multiple dev instances run simultaneously.
-        super().__init__(
-            application_id="io.github.fseiffarth.eldrun",
-            flags=_Gio.ApplicationFlags.NON_UNIQUE,
-        )
+        super().__init__(**_application_init_kwargs())
 
     def do_activate(self):
+        win = self.props.active_window
+        if win is not None:
+            win.present()
+            return
         _apply_css()
         Gtk.Window.set_default_icon_name("io.github.fseiffarth.eldrun")
         from window import EldrunWindow

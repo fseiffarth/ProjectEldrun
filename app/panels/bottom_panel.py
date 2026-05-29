@@ -30,7 +30,8 @@ def project_search_results(projects: list[dict], query: str) -> list[dict]:
 
 class ProjectPill(Gtk.Box):
     """Compact folder-card widget for a single project in the bottom bar."""
-    def __init__(self, project: dict, on_click, on_close, on_drop=None):
+    def __init__(self, project: dict, on_click, on_close, on_drop=None,
+                 on_popover_state_changed=None):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self.project_id = project["id"]
         self.project_name = project["name"]
@@ -38,6 +39,7 @@ class ProjectPill(Gtk.Box):
         self.position = project.get("position", 0)
         self._on_click_cb = on_click
         self._on_drop_cb = on_drop
+        self._on_popover_state_changed = on_popover_state_changed
         self._stats_popover: Gtk.Popover | None = None
         self._hover_timer_id: int | None = None
         self._drag_ready = False
@@ -228,7 +230,12 @@ class ProjectPill(Gtk.Box):
         popover.set_parent(self)
         popover.set_autohide(True)
         popover.set_has_arrow(True)
+        popover.connect("closed", self._on_popover_closed)
         self._stats_popover = popover
+
+    def _on_popover_closed(self, _popover):
+        if self._on_popover_state_changed:
+            self._on_popover_state_changed(False)
 
     def _open_stats_popover(self):
         self._ensure_popover()
@@ -299,6 +306,8 @@ class ProjectPill(Gtk.Box):
                     box.append(legend_lbl)
 
         popover.set_child(box)
+        if self._on_popover_state_changed:
+            self._on_popover_state_changed(True)
         popover.popup()
 
     @staticmethod
@@ -340,7 +349,9 @@ class BottomPanel(Gtk.Box):
                  on_toggle_theme=None, on_terminal_changed=None,
                  on_search_project=None, on_workspace_toggled=None,
                  on_debug_toggled=None, on_global_apps_changed=None,
-                 on_default_apps_changed=None):
+                 on_default_apps_changed=None,
+                 on_context_menu_open_changed=None,
+                 ollama_client=None):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self.add_css_class("bottom-panel")
         self.set_valign(Gtk.Align.END)
@@ -361,6 +372,8 @@ class BottomPanel(Gtk.Box):
         self._on_debug_toggled = on_debug_toggled
         self._on_global_apps_changed = on_global_apps_changed
         self._on_default_apps_changed = on_default_apps_changed
+        self._on_context_menu_open_changed = on_context_menu_open_changed
+        self._ollama_client = ollama_client
         self._pills: dict[str, ProjectPill] = {}
         self._active_project_id: str | None = None
         self._popover: Gtk.Popover | None = None
@@ -427,6 +440,37 @@ class BottomPanel(Gtk.Box):
         self._gear_btn.set_margin_end(4)
         self._gear_btn.connect("clicked", self._on_settings_clicked)
         self.append(self._gear_btn)
+
+        # Ask Ollama prompt
+        self._ollama_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self._ollama_box.add_css_class("bottom-ollama-box")
+        self._ollama_box.set_valign(Gtk.Align.FILL)
+        self._ollama_box.set_margin_end(4)
+
+        self._ollama_entry = Gtk.Entry()
+        self._ollama_entry.add_css_class("bottom-ollama-entry")
+        self._ollama_entry.set_placeholder_text("Ask Ollama...")
+        self._ollama_entry.set_tooltip_text("Ask Ollama")
+        self._ollama_entry.set_valign(Gtk.Align.FILL)
+        self._ollama_entry.set_size_request(210, 40)
+        self._ollama_entry.set_width_chars(18)
+        self._ollama_entry.set_max_width_chars(24)
+        self._ollama_entry.set_sensitive(ollama_client is not None)
+        self._ollama_entry.connect("activate", self._on_ollama_send)
+        self._ollama_box.append(self._ollama_entry)
+
+        self._ollama_btn = Gtk.Button()
+        self._ollama_btn.set_icon_name("brain-augmented-symbolic")
+        self._ollama_btn.add_css_class("flat")
+        self._ollama_btn.add_css_class("bottom-toggle-btn")
+        self._ollama_btn.set_tooltip_text("Send Ollama prompt")
+        self._ollama_btn.set_valign(Gtk.Align.FILL)
+        self._ollama_btn.set_size_request(-1, 40)
+        self._ollama_btn.set_sensitive(ollama_client is not None)
+        self._ollama_btn.connect("clicked", self._on_ollama_send)
+        self._ollama_box.append(self._ollama_btn)
+
+        self.append(self._ollama_box)
 
         # + button
         self._add_btn = Gtk.Button(label="+")
@@ -610,6 +654,74 @@ class BottomPanel(Gtk.Box):
 
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
+        ollama_hdr = Gtk.Label(label="Ollama")
+        ollama_hdr.add_css_class("heading")
+        ollama_hdr.set_xalign(0)
+        box.append(ollama_hdr)
+
+        ollama_host_lbl = Gtk.Label(label="Host URL", xalign=0)
+        ollama_host_lbl.add_css_class("dim-label")
+        box.append(ollama_host_lbl)
+
+        ollama_host_entry = Gtk.Entry()
+        ollama_host_entry.set_placeholder_text("http://localhost:11434")
+        ollama_host_entry.set_hexpand(True)
+        current_host = self._settings.get("ollama_host") if self._settings else ""
+        if current_host:
+            ollama_host_entry.set_text(current_host)
+        box.append(ollama_host_entry)
+
+        ollama_model_lbl = Gtk.Label(label="Model", xalign=0)
+        ollama_model_lbl.add_css_class("dim-label")
+        box.append(ollama_model_lbl)
+
+        ollama_model_entry = Gtk.Entry()
+        ollama_model_entry.set_placeholder_text("mistral")
+        ollama_model_entry.set_hexpand(True)
+        current_model = self._settings.get("ollama_model") if self._settings else ""
+        if current_model:
+            ollama_model_entry.set_text(current_model)
+        box.append(ollama_model_entry)
+
+        def _save_ollama_host(entry):
+            if self._settings:
+                self._settings.set("ollama_host", entry.get_text().strip())
+
+        def _save_ollama_model(entry):
+            if self._settings:
+                self._settings.set("ollama_model", entry.get_text().strip())
+
+        ollama_host_entry.connect("activate", _save_ollama_host)
+        ollama_model_entry.connect("activate", _save_ollama_model)
+
+        host_focus = Gtk.EventControllerFocus()
+        host_focus.connect("leave", lambda _: _save_ollama_host(ollama_host_entry))
+        ollama_host_entry.add_controller(host_focus)
+
+        model_focus = Gtk.EventControllerFocus()
+        model_focus.connect("leave", lambda _: _save_ollama_model(ollama_model_entry))
+        ollama_model_entry.add_controller(model_focus)
+
+        autostart_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        autostart_lbl = Gtk.Label(label="Start on launch")
+        autostart_lbl.set_hexpand(True)
+        autostart_lbl.set_xalign(0)
+        autostart_row.append(autostart_lbl)
+
+        autostart_switch = Gtk.Switch()
+        autostart_switch.set_active(bool(
+            self._settings.get("ollama_autostart") if self._settings else False
+        ))
+        autostart_switch.set_valign(Gtk.Align.CENTER)
+        autostart_switch.connect("notify::active", lambda sw, _: (
+            self._settings.set("ollama_autostart", sw.get_active())
+            if self._settings else None
+        ))
+        autostart_row.append(autostart_switch)
+        box.append(autostart_row)
+
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
         ga_btn = Gtk.Button(label="Global Apps…")
         ga_btn.add_css_class("flat")
         ga_btn.set_halign(Gtk.Align.START)
@@ -624,6 +736,17 @@ class BottomPanel(Gtk.Box):
 
         win.set_child(box)
         win.present()
+
+    def _on_ollama_send(self, _widget):
+        if self._ollama_client is None:
+            return
+        prompt = self._ollama_entry.get_text().strip()
+        if not prompt:
+            return
+        self._ollama_entry.set_text("")
+        from ollama_dialog import OllamaDialog
+        root = self._ollama_btn.get_root()
+        OllamaDialog(root, self._ollama_client, initial_prompt=prompt).present()
 
     def _on_terminal_changed(self, dropdown, _pspec):
         if self._settings is None:
@@ -988,6 +1111,10 @@ class BottomPanel(Gtk.Box):
 
     # ── public API ─────────────────────────────────────────────────────────────
 
+    def _on_pill_popover_state_changed(self, is_open: bool):
+        if self._on_context_menu_open_changed:
+            self._on_context_menu_open_changed(is_open)
+
     def add_project_pill(self, project: dict):
         if project["id"] in self._pills:
             return
@@ -996,6 +1123,7 @@ class BottomPanel(Gtk.Box):
             on_click=self._on_activate,
             on_close=self._on_close,
             on_drop=self._on_pill_dropped,
+            on_popover_state_changed=self._on_pill_popover_state_changed,
         )
         self._pills_box.append(pill)
         self._pills[project["id"]] = pill

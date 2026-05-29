@@ -3,7 +3,6 @@ import datetime as _dt
 import os
 import pathlib
 import signal
-import subprocess
 import time
 
 import gi
@@ -22,60 +21,15 @@ from workspace_manager import WorkspaceManager
 from panels.center_panel import CenterPanel, _MASTER_PAGE
 from panels.right_panel import FileTreePanel
 from panels.bottom_panel import BottomPanel
+from ollama_client import OllamaClient
 from eldrun import set_theme
+from downloads_manager import apply_browser_download_dir, update_project_downloads
 
 _LEFT_WIDTH = 220
+_HEADER_HEIGHT = 40
 _BOTTOM_HEIGHT = 48
-
-_SUPER_KEY_BINDINGS: list[tuple[str, str]] = [
-    ("org.gnome.shell.keybindings",    "overlay-key"),
-    ("org.cinnamon.desktop.keybindings", "panel-main-menu"),
-]
-
-
-def _detect_super_binding() -> tuple[str, str] | None:
-    for schema, key in _SUPER_KEY_BINDINGS:
-        try:
-            r = subprocess.run(
-                ["gsettings", "get", schema, key],
-                capture_output=True, text=True, timeout=2,
-            )
-            if r.returncode == 0:
-                return schema, key
-        except Exception:
-            pass
-    return None
-
-
-_SUPER_BINDING = _detect_super_binding()
-
-
-def _get_super_key_value() -> str:
-    if _SUPER_BINDING is None:
-        return ""
-    schema, key = _SUPER_BINDING
-    try:
-        r = subprocess.run(
-            ["gsettings", "get", schema, key],
-            capture_output=True, text=True, timeout=2,
-        )
-        return r.stdout.strip().strip("'\"")
-    except Exception:
-        return ""
-
-
-def _set_super_key_value(value: str) -> None:
-    if _SUPER_BINDING is None:
-        return
-    schema, key = _SUPER_BINDING
-    try:
-        subprocess.Popen(
-            ["gsettings", "set", schema, key, value],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
-
+_FILE_TREE_TOGGLE_WIDTH = 12
+_FILE_TREE_TOGGLE_HEIGHT = 120
 
 class EldrunWindow(Adw.ApplicationWindow):
     def __init__(self, **kwargs):
@@ -85,11 +39,19 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.set_default_size(1440, 900)
         self.set_decorated(False)
 
-        self._fullscreen = False
+        self._fullscreen = True
         self._panels_hidden = False
         self._file_tree_hidden = True
         self._file_tree_auto_shown = False
+        self._file_tree_pointer_inside = False
+        self._file_tree_context_menu_open = False
+        self._bottom_auto_shown = False
+        self._bottom_pointer_inside = False
+        self._bottom_context_menu_open = False
+        self._toolbar_ptr_inside = False
+        self._toolbar_hide_source: int | None = None
         self._active_project_id: str | None = None
+        self._downloads_active_dir: object = object()  # sentinel: force first update
         self.project_manager = ProjectManager()
         self.settings_manager = SettingsManager()
         self.default_apps_manager = DefaultAppsManager()
@@ -97,43 +59,64 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._workspace_manager = WorkspaceManager()
         atexit.register(self._workspace_manager.release_all)
         self._global_apps_manager = GlobalAppsManager(self.settings_manager)
+        self._ollama_client = OllamaClient(self.settings_manager)
+        self._ollama_proc = None
         set_theme(self.settings_manager.get("color_scheme"))
         from eldrun import set_debug
         set_debug(bool(self.settings_manager.get("debug")))
         GLib.idle_add(self._bootstrap_default_apps)
         GLib.idle_add(self._bootstrap_global_apps)
+        if self.settings_manager.get("ollama_autostart"):
+            GLib.idle_add(self._maybe_start_ollama)
         self._add_key_controller()
         self._build_layout()
         self._debug_badge.set_visible(bool(self.settings_manager.get("debug")))
-        self.maximize()
+        apply_browser_download_dir()
+        self.fullscreen()
         self._network_monitor = NetworkMonitor(self._on_network_status_changed)
         GLib.timeout_add(60_000, self._on_time_tick)
         GLib.timeout_add_seconds(30, self._update_clock)
 
-        self._original_super_value = _get_super_key_value()
-        atexit.register(self._restore_super_key)
-        self.connect("notify::is-active", self._on_active_changed)
-        self.connect("notify::maximized", self._on_maximized_notify)
         self.connect("destroy", self._on_destroy)
         self.connect("close-request", self._on_close_request)
 
-    # ── Super-key interception ────────────────────────────────────────────────
-
-    def _on_active_changed(self, win, _pspec):
-        if win.is_active():
-            _set_super_key_value("[]" if _SUPER_BINDING and
-                                 _SUPER_BINDING[0].startswith("org.cinnamon") else "")
-        else:
-            self._restore_super_key()
-
-    def _restore_super_key(self):
-        _set_super_key_value(self._original_super_value)
-
     def _on_destroy(self, _win):
-        self._restore_super_key()
         self.project_manager.set_all_inactive()
         if self._wm_enabled:
             self._workspace_manager.release_all()
+        if self._ollama_proc is not None:
+            try:
+                self._ollama_proc.terminate()
+            except OSError:
+                pass
+
+    # ── ollama autostart ──────────────────────────────────────────────────────
+
+    def _maybe_start_ollama(self) -> bool:
+        import socket
+        import subprocess
+        import urllib.parse
+        host = self.settings_manager.get("ollama_host") or "http://localhost:11434"
+        parsed = urllib.parse.urlparse(host)
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        hostname = parsed.hostname or "localhost"
+        try:
+            with socket.create_connection((hostname, port), timeout=1):
+                return False  # already running
+        except OSError:
+            pass
+        ollama_bin = GLib.find_program_in_path("ollama")
+        if not ollama_bin:
+            return False
+        try:
+            self._ollama_proc = subprocess.Popen(
+                [ollama_bin, "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            pass
+        return False
 
     # ── close / quit flow ─────────────────────────────────────────────────────
 
@@ -269,10 +252,16 @@ class EldrunWindow(Adw.ApplicationWindow):
             else:
                 self.fullscreen()
             self._fullscreen = not self._fullscreen
+            self._max_btn.set_tooltip_text("Restore" if self._fullscreen else "Fullscreen")
             return True
 
         if keyval in (Gdk.KEY_Super_L, Gdk.KEY_Super_R):
             self._toggle_panels()
+            return True
+
+        if keyval == Gdk.KEY_k and (state & Gdk.ModifierType.CONTROL_MASK):
+            from ollama_dialog import OllamaDialog
+            OllamaDialog(self, self._ollama_client).present()
             return True
 
         return False
@@ -282,6 +271,7 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _build_header(self) -> Gtk.WindowHandle:
         center_box = Gtk.CenterBox()
         center_box.add_css_class("app-header")
+        center_box.set_size_request(-1, _HEADER_HEIGHT)
         self._header_center_box = center_box  # tab bar inserted here after center panel is created
 
         left_status = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -350,8 +340,8 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._max_btn.add_css_class("flat")
         self._max_btn.add_css_class("wm-btn")
         self._max_btn.add_css_class("wm-maximize")
-        self._max_btn.set_tooltip_text("Maximize")
-        self._max_btn.connect("clicked", self._on_maximize_clicked)
+        self._max_btn.set_tooltip_text("Restore")
+        self._max_btn.connect("clicked", self._on_fullscreen_clicked)
         btn_box.append(self._max_btn)
 
         close_btn = Gtk.Button()
@@ -369,14 +359,13 @@ class EldrunWindow(Adw.ApplicationWindow):
         handle.set_child(center_box)
         return handle
 
-    def _on_maximize_clicked(self, _btn):
-        if self.is_maximized():
-            self.unmaximize()
+    def _on_fullscreen_clicked(self, _btn):
+        if self._fullscreen:
+            self.unfullscreen()
         else:
-            self.maximize()
-
-    def _on_maximized_notify(self, win, _pspec):
-        self._max_btn.set_tooltip_text("Restore" if win.is_maximized() else "Maximize")
+            self.fullscreen()
+        self._fullscreen = not self._fullscreen
+        self._max_btn.set_tooltip_text("Restore" if self._fullscreen else "Fullscreen")
 
     def _tick_header_clock(self) -> bool:
         new_label = _dt.datetime.now().strftime("%H:%M")
@@ -387,16 +376,30 @@ class EldrunWindow(Adw.ApplicationWindow):
     # ── layout ────────────────────────────────────────────────────────────────
 
     def _build_layout(self):
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.set_content(root)
-
-        root.append(self._build_header())
+        header = self._build_header()
+        header.set_halign(Gtk.Align.FILL)
+        header.set_valign(Gtk.Align.START)
+        header.set_hexpand(True)
 
         # G6.6: slim toolbar strip between header and center panel
-        self._global_apps_toolbar_strip = Gtk.Box(
-            orientation=Gtk.Orientation.HORIZONTAL
+        self._global_apps_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._global_apps_area.set_halign(Gtk.Align.FILL)
+        self._global_apps_area.set_valign(Gtk.Align.START)
+        self._global_apps_area.set_margin_top(_HEADER_HEIGHT)
+        self._global_apps_area.set_hexpand(True)
+        self._global_apps_area.set_visible(False)
+
+        self._global_apps_toggle_bar = Gtk.Box()
+        self._global_apps_toggle_bar.add_css_class("global-apps-toggle-bar")
+        self._global_apps_toggle_bar.set_size_request(-1, 5)
+        self._global_apps_area.append(self._global_apps_toggle_bar)
+
+        self._global_apps_revealer = Gtk.Revealer()
+        self._global_apps_revealer.set_transition_type(
+            Gtk.RevealerTransitionType.SLIDE_DOWN
         )
-        self._global_apps_toolbar_strip.add_css_class("global-apps-strip")
+        self._global_apps_revealer.set_transition_duration(150)
+        self._global_apps_revealer.set_reveal_child(False)
 
         self._global_apps_toolbar_box = Gtk.Box(
             orientation=Gtk.Orientation.HORIZONTAL, spacing=0
@@ -404,18 +407,51 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._global_apps_toolbar_box.add_css_class("global-apps-toolbar")
         self._global_apps_toolbar_box.set_halign(Gtk.Align.CENTER)
         self._global_apps_toolbar_box.set_valign(Gtk.Align.CENTER)
-        self._global_apps_toolbar_strip.append(self._global_apps_toolbar_box)
-        root.append(self._global_apps_toolbar_strip)
+        self._global_apps_toolbar_box.set_margin_top(4)
+        self._global_apps_toolbar_box.set_margin_bottom(4)
+
+        self._global_apps_revealer.set_child(self._global_apps_toolbar_box)
+        self._global_apps_area.append(self._global_apps_revealer)
+
         self._refresh_global_apps_toolbar()
+
+        def _toolbar_enter(_ctrl, _x, _y):
+            self._toolbar_ptr_inside = True
+            if self._toolbar_hide_source is not None:
+                GLib.source_remove(self._toolbar_hide_source)
+                self._toolbar_hide_source = None
+            self._global_apps_revealer.set_reveal_child(True)
+
+        def _toolbar_leave(_ctrl):
+            self._toolbar_ptr_inside = False
+            def _hide():
+                if not self._toolbar_ptr_inside:
+                    self._global_apps_revealer.set_reveal_child(False)
+                self._toolbar_hide_source = None
+                return False
+            if self._toolbar_hide_source is not None:
+                GLib.source_remove(self._toolbar_hide_source)
+            self._toolbar_hide_source = GLib.timeout_add(250, _hide)
+
+        bar_motion = Gtk.EventControllerMotion()
+        bar_motion.connect("enter", _toolbar_enter)
+        bar_motion.connect("leave", _toolbar_leave)
+        self._global_apps_toggle_bar.add_controller(bar_motion)
+
+        tb_motion = Gtk.EventControllerMotion()
+        tb_motion.connect("enter", _toolbar_enter)
+        tb_motion.connect("leave", _toolbar_leave)
+        self._global_apps_toolbar_box.add_controller(tb_motion)
 
         self._center_panel = CenterPanel(
             self.project_manager,
             on_page_changed=self._on_center_page_changed,
             settings_manager=self.settings_manager,
+            ollama_client=self._ollama_client,
         )
         self._center_panel.set_hexpand(True)
         self._center_panel.set_vexpand(True)
-        self._center_panel.set_margin_bottom(_BOTTOM_HEIGHT)
+        self._center_panel.set_margin_bottom(0)
 
         # Place the tab bar inside the header's center slot
         self._header_center_box.set_center_widget(self._center_panel._tab_bar_scroll)
@@ -424,10 +460,12 @@ class EldrunWindow(Adw.ApplicationWindow):
             center_panel=self._center_panel,
             default_apps_manager=self.default_apps_manager,
             settings_manager=self.settings_manager,
+            on_context_menu_open_changed=self._on_file_tree_context_menu_open_changed,
+            ollama_client=self._ollama_client,
         )
         self._file_tree_panel.set_halign(Gtk.Align.END)
         self._file_tree_panel.set_valign(Gtk.Align.FILL)
-        self._file_tree_panel.set_margin_bottom(_BOTTOM_HEIGHT)
+        self._file_tree_panel.set_margin_bottom(0)
 
         self._bottom_panel = BottomPanel(
             on_root=self._on_root_clicked,
@@ -446,28 +484,54 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_debug_toggled=self._on_debug_toggled,
             on_global_apps_changed=self._refresh_global_apps_toolbar,
             on_default_apps_changed=self._file_tree_panel._refresh_default_app_icons,
+            on_context_menu_open_changed=self._on_bottom_context_menu_open_changed,
+            ollama_client=self._ollama_client,
         )
+        self._bottom_panel.set_visible(False)
 
         self._file_tree_toggle_btn = Gtk.Button(label="‹")
         self._file_tree_toggle_btn.add_css_class("flat")
         self._file_tree_toggle_btn.add_css_class("panel-edge-btn")
         self._file_tree_toggle_btn.set_tooltip_text("Show panel")
         self._file_tree_toggle_btn.set_halign(Gtk.Align.END)
-        self._file_tree_toggle_btn.set_valign(Gtk.Align.START)
-        self._file_tree_toggle_btn.set_size_request(12, 40)
-        self._file_tree_toggle_btn.set_margin_top(96)
+        self._file_tree_toggle_btn.set_valign(Gtk.Align.CENTER)
+        self._file_tree_toggle_btn.set_size_request(
+            _FILE_TREE_TOGGLE_WIDTH,
+            _FILE_TREE_TOGGLE_HEIGHT,
+        )
         self._file_tree_toggle_btn.set_visible(False)
 
         toggle_motion = Gtk.EventControllerMotion()
         toggle_motion.connect("enter", self._on_file_tree_toggle_enter)
         self._file_tree_toggle_btn.add_controller(toggle_motion)
 
+        self._bottom_edge_btn = Gtk.Button(label="˄")
+        self._bottom_edge_btn.add_css_class("flat")
+        self._bottom_edge_btn.add_css_class("panel-edge-btn")
+        self._bottom_edge_btn.add_css_class("bottom-edge-btn")
+        self._bottom_edge_btn.set_tooltip_text("Show bottom bar")
+        self._bottom_edge_btn.set_halign(Gtk.Align.CENTER)
+        self._bottom_edge_btn.set_valign(Gtk.Align.END)
+        self._bottom_edge_btn.set_size_request(
+            _FILE_TREE_TOGGLE_HEIGHT,
+            _FILE_TREE_TOGGLE_WIDTH,
+        )
+        self._bottom_edge_btn.set_visible(False)
+
+        bottom_edge_motion = Gtk.EventControllerMotion()
+        bottom_edge_motion.connect("enter", self._on_bottom_edge_btn_enter)
+        self._bottom_edge_btn.add_controller(bottom_edge_motion)
+
         overlay = Gtk.Overlay()
         self._overlay = overlay
+        self.set_content(overlay)
         overlay.set_child(self._center_panel)
         overlay.add_overlay(self._file_tree_panel)
         overlay.add_overlay(self._file_tree_toggle_btn)
         overlay.add_overlay(self._bottom_panel)
+        overlay.add_overlay(self._bottom_edge_btn)
+        overlay.add_overlay(self._global_apps_area)
+        overlay.add_overlay(header)
         overlay.set_hexpand(True)
         overlay.set_vexpand(True)
 
@@ -476,10 +540,15 @@ class EldrunWindow(Adw.ApplicationWindow):
         overlay.add_controller(overlay_motion)
 
         panel_motion = Gtk.EventControllerMotion()
+        panel_motion.connect("enter", self._on_file_tree_panel_enter)
         panel_motion.connect("leave", self._on_file_tree_panel_leave)
         self._file_tree_panel.add_controller(panel_motion)
 
-        root.append(overlay)
+        bottom_panel_motion = Gtk.EventControllerMotion()
+        bottom_panel_motion.connect("enter", self._on_bottom_panel_enter)
+        bottom_panel_motion.connect("leave", self._on_bottom_panel_leave)
+        self._bottom_panel.add_controller(bottom_panel_motion)
+
         self.connect("map", self._on_map)
 
     @property
@@ -576,6 +645,7 @@ class EldrunWindow(Adw.ApplicationWindow):
                 if project:
                     self._time_tracker.on_project_activated(project)
                 self._refresh_time_bars()
+                new_dl_dir = project.get("directory") if project else None
             else:
                 self._active_project_id = None
                 self._file_tree_panel.update_project(None)
@@ -583,6 +653,10 @@ class EldrunWindow(Adw.ApplicationWindow):
                 self._bottom_panel.set_root_active(page == _MASTER_PAGE)
                 self._time_tracker.on_project_deactivated()
                 self._refresh_time_bars()
+                new_dl_dir = None
+            if new_dl_dir != self._downloads_active_dir:
+                self._downloads_active_dir = new_dl_dir
+                update_project_downloads(new_dl_dir)
 
         show_panel = (self._active_project_id is not None
                       and not self._panels_hidden
@@ -595,24 +669,77 @@ class EldrunWindow(Adw.ApplicationWindow):
                        and not show_panel)
         self._file_tree_toggle_btn.set_visible(show_toggle)
 
-    def _on_overlay_motion(self, ctrl, x, _y):
-        width = ctrl.get_widget().get_width()
+        show_bottom = not self._panels_hidden and self._bottom_auto_shown
+        self._bottom_panel.set_visible(show_bottom)
+        self._center_panel.set_margin_bottom(0)
+        self._file_tree_panel.set_margin_bottom(0)
+        self._bottom_edge_btn.set_visible(not self._panels_hidden and not show_bottom)
+
+    def _on_overlay_motion(self, ctrl, x, y):
+        widget = ctrl.get_widget()
+        width = widget.get_width()
+        height = widget.get_height()
         if x >= width - 4 and not self._file_tree_auto_shown:
             if self._active_project_id is not None and not self._panels_hidden:
+                self._file_tree_pointer_inside = True
                 self._file_tree_auto_shown = True
                 self._apply_panel_visibility()
+        if y >= height - 4 and not self._bottom_auto_shown and not self._panels_hidden:
+            self._bottom_auto_shown = True
+            self._apply_panel_visibility()
 
     def _on_file_tree_toggle_enter(self, _ctrl, _x, _y):
         if self._active_project_id is None or self._panels_hidden:
             return
         if not self._file_tree_hidden or self._file_tree_auto_shown:
             return
+        self._file_tree_pointer_inside = True
         self._file_tree_auto_shown = True
         self._apply_panel_visibility()
 
+    def _on_file_tree_panel_enter(self, _ctrl, _x, _y):
+        self._file_tree_pointer_inside = True
+
     def _on_file_tree_panel_leave(self, _ctrl):
+        self._file_tree_pointer_inside = False
+        if self._file_tree_context_menu_open:
+            return
         if self._file_tree_auto_shown:
             self._file_tree_auto_shown = False
+            self._apply_panel_visibility()
+
+    def _on_file_tree_context_menu_open_changed(self, is_open: bool):
+        self._file_tree_context_menu_open = is_open
+        if is_open:
+            return
+        if self._file_tree_auto_shown and not self._file_tree_pointer_inside:
+            self._file_tree_auto_shown = False
+            self._apply_panel_visibility()
+
+    def _on_bottom_edge_btn_enter(self, _ctrl, _x, _y):
+        if self._panels_hidden or self._bottom_auto_shown:
+            return
+        self._bottom_pointer_inside = True
+        self._bottom_auto_shown = True
+        self._apply_panel_visibility()
+
+    def _on_bottom_panel_enter(self, _ctrl, _x, _y):
+        self._bottom_pointer_inside = True
+
+    def _on_bottom_panel_leave(self, _ctrl):
+        self._bottom_pointer_inside = False
+        if self._bottom_context_menu_open:
+            return
+        if self._bottom_auto_shown:
+            self._bottom_auto_shown = False
+            self._apply_panel_visibility()
+
+    def _on_bottom_context_menu_open_changed(self, is_open: bool):
+        self._bottom_context_menu_open = is_open
+        if is_open:
+            return
+        if self._bottom_auto_shown and not self._bottom_pointer_inside:
+            self._bottom_auto_shown = False
             self._apply_panel_visibility()
 
     def _toggle_panels(self):
@@ -770,8 +897,9 @@ class EldrunWindow(Adw.ApplicationWindow):
             btn.add_controller(rclick)
             toolbar.append(btn)
 
-        toolbar.set_visible(any_visible)
-        self._global_apps_toolbar_strip.set_visible(any_visible)
+        self._global_apps_area.set_visible(any_visible)
+        if not any_visible:
+            self._global_apps_revealer.set_reveal_child(False)
 
     def _icon_theme_has_icon(self, icon_name: str) -> bool:
         display = Gdk.Display.get_default()
@@ -849,23 +977,8 @@ class EldrunWindow(Adw.ApplicationWindow):
             popover.popdown()
 
         def _browse(_):
-            chooser = Gtk.FileChooserNative.new(
-                f"Select {label} Executable",
-                self,
-                Gtk.FileChooserAction.OPEN,
-                "Select",
-                "Cancel",
-            )
-
-            def _on_response(c, resp):
-                if resp == Gtk.ResponseType.ACCEPT:
-                    f = c.get_file()
-                    if f:
-                        entry.set_text(f.get_path() or "")
-                c.destroy()
-
-            chooser.connect("response", _on_response)
-            chooser.show()
+            from app_picker import show_app_picker
+            show_app_picker(lambda cmd: entry.set_text(cmd), parent=self)
 
         entry.connect("activate", _apply)
         ok_btn.connect("clicked", _apply)

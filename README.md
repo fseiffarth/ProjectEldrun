@@ -63,6 +63,54 @@ cp Eldrun.app.desktop ~/.local/share/applications/
 update-desktop-database ~/.local/share/applications/
 ```
 
+## Agent Support
+
+Eldrun launches agents in VTE terminals (or, for Ollama, via a built-in HTTP
+dialog). The table below describes the current integration state.
+
+### CLI agents (VTE terminal tabs)
+
+| Agent | Integrated | Tested | Notes |
+|-------|-----------|--------|-------|
+| **Claude** (`claude`) | Yes | Yes | Default agent command. Full tab lifecycle, task metadata, prompt auto-send. |
+| **Codex** (`codex`) | Yes | Yes | Selectable as default agent command in Settings. Same tab lifecycle as Claude. |
+| **Ollama** (local models) | Partial | Partial | Local models appear in the agent picker; selecting one opens the built-in Ollama dialog instead of a VTE tab. See [Local AI](#local-ai-ollama) below. |
+| Mistral CLI | No | No | Not integrated. Would work as a plain shell tab if a CLI exists. |
+| Qwen CLI | No | No | Not integrated. |
+| Grok CLI | No | No | Not integrated. |
+| Other CLI agents | No | No | Any agent with a CLI can be run in a plain shell tab, but Eldrun has no first-class support for it. |
+
+The active agent command (`claude` or `codex`) is set in Settings. If the
+configured command is not found in `$PATH`, Eldrun falls back to the system
+shell.
+
+### Local AI — Ollama
+
+Eldrun has a built-in Ollama HTTP client (streamed responses, model picker from
+`/api/tags`, configurable host and default model). It does **not** run Ollama
+models inside a VTE terminal tab — instead it opens a lightweight GTK dialog.
+Entry points: `Ctrl+K`, the center inline prompt bar, and the file-tree "Ask
+Ollama" context action.
+
+See the [Ollama settings](#settings) section in the documentation for
+configuration details.
+
+### Agents not yet integrated
+
+The following cloud APIs and local runtimes are not currently wired into
+Eldrun: Mistral, Qwen, Grok, Gemini CLI, Llama.cpp, and similar tools. They
+can always be used manually in a plain shell tab.
+
+## Platform Support
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| **Linux — X11 / Cinnamon** | Yes | Fully supported and primary development target. |
+| **Linux — X11 / GNOME** | Untested | Expected to work; workspace integration may behave differently. |
+| **Linux — Wayland** | No | X11 is required for app-window embedding, launch-or-raise, sticky windows, and workspace control. |
+| **Windows** | No | GTK4/VTE stack not supported. |
+| **macOS** | No | GTK4/VTE stack not supported. |
+
 ## Main Features
 
 - **Agent-terminal orchestration**: create Claude or Codex tabs from the tab bar,

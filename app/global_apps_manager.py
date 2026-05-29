@@ -39,6 +39,12 @@ ROLES = [
     {"key": "notes",            "label": "Notes",            "icon": "accessories-text-editor-symbolic"},
     {"key": "screenshot",       "label": "Screenshot",       "icon": "applets-screenshooter-symbolic"},
     {"key": "screen_recorder",  "label": "Screen Recorder",  "icon": "video-display-symbolic"},
+    {
+        "key": "chat",
+        "label": "Chat",
+        "icon": "internet-chat-symbolic",
+        "icons": ["internet-chat-symbolic", "user-available-symbolic", "mail-send-symbolic"],
+    },
 ]
 
 _RESOLVE: dict[str, tuple] = {
@@ -54,6 +60,7 @@ _RESOLVE: dict[str, tuple] = {
     "notes":            ("path",         ["obsidian", "zettlr", "gedit"]),
     "screenshot":       ("path",         ["flameshot", "gnome-screenshot"]),
     "screen_recorder":  ("path",         ["obs", "kazam", "simplescreenrecorder"]),
+    "chat":             ("path",         ["signal-desktop", "whatsapp-for-linux", "telegram-desktop", "discord", "slack", "element-desktop"]),
 }
 
 
@@ -320,6 +327,7 @@ class GlobalAppsManager:
                             parts = [p.lower() for p in str(raw).split("\x00") if p]
                         if any(p == app_name or p.startswith(app_name + "-")
                                for p in parts):
+                            self._make_sticky(win, root, d)
                             ev = _Xev.ClientMessage(
                                 window=win,
                                 client_type=active_atom,
@@ -378,12 +386,23 @@ class GlobalAppsManager:
         from Xlib import X as _X
         from Xlib.protocol import event as _Xev
         desktop_atom = d.intern_atom("_NET_WM_DESKTOP")
-        ev = _Xev.ClientMessage(
+        atom_state = d.intern_atom("_NET_WM_STATE")
+        atom_sticky = d.intern_atom("_NET_WM_STATE_STICKY")
+        desktop_ev = _Xev.ClientMessage(
             window=win,
             client_type=desktop_atom,
             data=(32, [0xFFFFFFFF, _X.CurrentTime, 0, 0, 0]),
         )
         root.send_event(
-            ev,
+            desktop_ev,
+            event_mask=_X.SubstructureRedirectMask | _X.SubstructureNotifyMask,
+        )
+        state_ev = _Xev.ClientMessage(
+            window=win,
+            client_type=atom_state,
+            data=(32, [1, atom_sticky, 0, 0, 0]),  # 1 = _NET_WM_STATE_ADD
+        )
+        root.send_event(
+            state_ev,
             event_mask=_X.SubstructureRedirectMask | _X.SubstructureNotifyMask,
         )

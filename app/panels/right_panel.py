@@ -85,13 +85,16 @@ def _human_size(n: int) -> str:
 
 class FileTreePanel(Gtk.Box):
     def __init__(self, center_panel=None, default_apps_manager=None,
-                 settings_manager=None):
+                 settings_manager=None, on_context_menu_open_changed=None,
+                 ollama_client=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("panel-right")
         self.set_size_request(220, -1)
 
         self._center = center_panel
         self._dam = default_apps_manager
+        self._on_context_menu_open_changed = on_context_menu_open_changed
+        self._ollama_client = ollama_client
         self._color_scheme = _normalize_theme(
             settings_manager.get("color_scheme") if settings_manager else "dark"
         )
@@ -101,6 +104,8 @@ class FileTreePanel(Gtk.Box):
         self._hover_scroll_path: Gtk.TreePath | None = None
         self._path_colors: dict[str, str] = {}  # abs_path → "#rrggbb"
         self._default_icon_cache: dict[tuple[str, str], str] = {}
+        self._context_popover: Gtk.Popover | None = None
+        self._context_menu_open = False
 
         self._build_ui()
 
@@ -431,6 +436,41 @@ class FileTreePanel(Gtk.Box):
 
     # ── right-click context menu ──────────────────────────────────────────────
 
+    def _set_context_menu_open(self, is_open: bool):
+        if self._context_menu_open == is_open:
+            return
+        self._context_menu_open = is_open
+        if self._on_context_menu_open_changed:
+            self._on_context_menu_open_changed(is_open)
+
+    def _on_context_popover_closed(self, popover):
+        if self._context_popover is not popover:
+            return
+        self._context_popover = None
+        self._set_context_menu_open(False)
+
+    def _new_context_popover(self, parent, x, y):
+        if self._context_popover is not None:
+            previous = self._context_popover
+            self._context_popover = None
+            previous.popdown()
+
+        popover = Gtk.Popover()
+        popover.set_parent(parent)
+        popover.set_has_arrow(False)
+
+        rect = Gdk.Rectangle()
+        rect.x = int(x)
+        rect.y = int(y)
+        rect.width = 1
+        rect.height = 1
+        popover.set_pointing_to(rect)
+
+        popover.connect("closed", self._on_context_popover_closed)
+        self._context_popover = popover
+        self._set_context_menu_open(True)
+        return popover
+
     def _on_tree_right_click(self, gesture, _n, x, y):
         path_info = self._file_tree.get_path_at_pos(int(x), int(y))
         if path_info is None:
@@ -443,16 +483,7 @@ class FileTreePanel(Gtk.Box):
         self._show_context_menu(x, y, full_path, is_dir)
 
     def _show_context_menu(self, x, y, path, is_dir):
-        popover = Gtk.Popover()
-        popover.set_parent(self._file_tree)
-        popover.set_has_arrow(False)
-
-        rect = Gdk.Rectangle()
-        rect.x = int(x)
-        rect.y = int(y)
-        rect.width = 1
-        rect.height = 1
-        popover.set_pointing_to(rect)
+        popover = self._new_context_popover(self._file_tree, x, y)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         box.set_margin_start(4)
@@ -496,6 +527,10 @@ class FileTreePanel(Gtk.Box):
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         box.append(btn("Properties", lambda: self._show_properties(path)))
 
+        if self._ollama_client is not None:
+            box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+            box.append(btn("Ask Ollama…", lambda: self._ask_ollama_about(path)))
+
         popover.set_child(box)
         popover.popup()
 
@@ -504,15 +539,7 @@ class FileTreePanel(Gtk.Box):
                     if self._current_project else None)
         if proj_dir is None:
             return
-        popover = Gtk.Popover()
-        popover.set_parent(self._tree_scrolled)
-        popover.set_has_arrow(False)
-        rect = Gdk.Rectangle()
-        rect.x = int(x)
-        rect.y = int(y)
-        rect.width = 1
-        rect.height = 1
-        popover.set_pointing_to(rect)
+        popover = self._new_context_popover(self._tree_scrolled, x, y)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         box.set_margin_start(4)
@@ -673,121 +700,11 @@ class FileTreePanel(Gtk.Box):
         win.present()
 
     def _show_app_picker(self, callback, parent=None, for_file: str | None = None):
-        from default_apps_manager import get_installed_apps, get_mime_for_file
-        apps = get_installed_apps()
-
-        suggested_execs: set[str] = set()
-        if for_file:
-            mime = get_mime_for_file(for_file)
-            if mime:
-                suggested_execs = {
-                    a["exec"] for a in apps
-                    if mime in a.get("mime_types", [])
-                }
-
-        win = Gtk.Window()
-        win.set_title("Choose Application")
-        win.set_modal(True)
-        win.set_default_size(360, 440)
         if parent is None:
             root = self.get_root()
             parent = root if isinstance(root, Gtk.Window) else None
-        if parent:
-            win.set_transient_for(parent)
-
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-
-        search = Gtk.SearchEntry()
-        search.set_placeholder_text("Search apps…")
-        search.set_margin_start(8)
-        search.set_margin_end(8)
-        search.set_margin_top(8)
-        search.set_margin_bottom(4)
-        vbox.append(search)
-
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scrolled.set_vexpand(True)
-
-        listbox = Gtk.ListBox()
-        listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
-
-        def row_filter(r):
-            q = search.get_text().lower().strip()
-            if not q:
-                return True
-            app_name = getattr(r, "app_name", "")
-            app_exec = getattr(r, "app_exec", "")
-            return q in app_name.lower() or q in app_exec.lower()
-
-        listbox.set_filter_func(row_filter)
-        search.connect("search-changed", lambda _: listbox.invalidate_filter())
-
-        def make_app_row(a: dict) -> Gtk.ListBoxRow:
-            r = Gtk.ListBoxRow()
-            r.app_name = a["name"]
-            r.app_exec = a["exec"]
-            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            row_box.set_margin_start(8)
-            row_box.set_margin_top(4)
-            row_box.set_margin_bottom(4)
-            icon = Gtk.Image.new_from_icon_name(
-                a.get("icon", "application-x-executable-symbolic")
-            )
-            icon.set_pixel_size(16)
-            row_box.append(icon)
-            lbl = Gtk.Label(label=a["name"], xalign=0)
-            lbl.set_hexpand(True)
-            row_box.append(lbl)
-            r.set_child(row_box)
-            return r
-
-        def add_header(text: str):
-            hr = Gtk.ListBoxRow()
-            hr.set_selectable(False)
-            hr.app_name = ""
-            hr.app_exec = ""
-            hl = Gtk.Label(label=text, xalign=0)
-            hl.add_css_class("dim-label")
-            hl.set_margin_start(8)
-            hl.set_margin_top(6)
-            hl.set_margin_bottom(2)
-            hr.set_child(hl)
-            listbox.append(hr)
-
-        def add_separator():
-            sr = Gtk.ListBoxRow()
-            sr.set_selectable(False)
-            sr.app_name = ""
-            sr.app_exec = ""
-            sr.set_child(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-            listbox.append(sr)
-
-        if suggested_execs:
-            suggested = [a for a in apps if a["exec"] in suggested_execs]
-            others = [a for a in apps if a["exec"] not in suggested_execs]
-            add_header("Suggested")
-            for a in suggested:
-                listbox.append(make_app_row(a))
-            add_separator()
-            add_header("All Applications")
-            for a in others:
-                listbox.append(make_app_row(a))
-        else:
-            for a in apps:
-                listbox.append(make_app_row(a))
-
-        def on_activated(_lb, r):
-            if getattr(r, "app_exec", ""):
-                callback(r.app_exec)
-                win.close()
-
-        listbox.connect("row-activated", on_activated)
-        scrolled.set_child(listbox)
-        vbox.append(scrolled)
-
-        win.set_child(vbox)
-        win.present()
+        from app_picker import show_app_picker
+        show_app_picker(callback, parent=parent, for_file=for_file)
 
     # ── context menu helpers ──────────────────────────────────────────────────
 
@@ -958,6 +875,16 @@ class FileTreePanel(Gtk.Box):
 
         win.set_child(box)
         win.present()
+
+    def _ask_ollama_about(self, path: str):
+        if self._ollama_client is None:
+            return
+        filename = os.path.basename(path)
+        root = self.get_root()
+        from ollama_dialog import OllamaDialog
+        dlg = OllamaDialog(root, self._ollama_client,
+                           initial_prompt=f"About {filename}: ")
+        dlg.present()
 
     def _rename_dialog(self, path: str):
         win = Gtk.Window()

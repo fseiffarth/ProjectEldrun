@@ -1,6 +1,7 @@
 import os
 import signal
 import pathlib
+from datetime import datetime, timezone
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -14,6 +15,7 @@ from project_manager import ROOT_DIR as _ROOT_DIR_PATH
 _ROOT_DIR = str(_ROOT_DIR_PATH)
 _MASTER_PAGE = "__master__"
 _TERMINAL_TAB = "__terminal__"
+_TASK_PREVIEW_WORDS = 50
 
 _OWN_PID = os.getpid()
 
@@ -115,6 +117,26 @@ def _terminal_command_name(settings_manager) -> str:
     return settings_manager.get("terminal_command") if settings_manager else "claude"
 
 
+def _normalize_task_title(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _task_preview(text: str, word_limit: int = _TASK_PREVIEW_WORDS) -> str:
+    words = _normalize_task_title(text).split()
+    if len(words) <= word_limit:
+        return " ".join(words)
+    return " ".join(words[:word_limit]) + "..."
+
+
+def _task_stdin_text(text: str) -> str:
+    title = _normalize_task_title(text)
+    return f"{title}\n" if title else ""
+
+
+def _task_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def _spawn(terminal: Vte.Terminal, directory: str, cmd: list[str], on_done):
     terminal.spawn_async(
         Vte.PtyFlags.DEFAULT,
@@ -128,10 +150,12 @@ def _spawn(terminal: Vte.Terminal, directory: str, cmd: list[str], on_done):
 
 
 class CenterPanel(Gtk.Box):
-    def __init__(self, project_manager, on_page_changed=None, settings_manager=None):
+    def __init__(self, project_manager, on_page_changed=None, settings_manager=None,
+                 ollama_client=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._pm = project_manager
         self._settings = settings_manager
+        self._ollama_client = ollama_client
         self._on_page_changed = on_page_changed
         scheme = settings_manager.get("color_scheme") if settings_manager else "dark"
         self._color_scheme = _normalize_scheme(scheme)
@@ -145,6 +169,7 @@ class CenterPanel(Gtk.Box):
         # Extra agent tab tracking
         self._agent_info: dict[str, dict] = {}  # page_key → {cmd, directory}
         self._tab_project: dict[str, str | None] = {}  # page_key → project_id (None = root)
+        self._task_state: dict[str, dict] = {}  # page_key → task metadata
 
         # ── tab bar ───────────────────────────────────────────────────────────
         tab_bar_scroll = Gtk.ScrolledWindow()
@@ -251,7 +276,7 @@ class CenterPanel(Gtk.Box):
             rclick.set_button(3)
             rclick.connect("pressed", lambda g, _n, _x, _y, k=tab_key: (
                 g.set_state(Gtk.EventSequenceState.CLAIMED),
-                self._show_agent_rename_popover(k),
+                self._show_agent_tab_menu(k),
             ))
             box.add_controller(rclick)
 
@@ -275,6 +300,7 @@ class CenterPanel(Gtk.Box):
 
         self._tab_widgets[tab_key] = box
         self._tab_bar.append(box)
+        self._refresh_tab_tooltip(tab_key)
         return box
 
     def _remove_tab(self, tab_key: str):
@@ -329,6 +355,108 @@ class CenterPanel(Gtk.Box):
                 widget.remove_css_class("center-tab-active")
         self._current_tab = tab_key
 
+    # ── agent task metadata ───────────────────────────────────────────────────
+
+    def _task_page_for_tab(self, tab_key: str) -> str:
+        return self._last_terminal_page if tab_key == _TERMINAL_TAB else tab_key
+
+    def _project_id_for_task_page(self, page_key: str) -> str | None:
+        if page_key.startswith("project-"):
+            return page_key[len("project-"):]
+        return self._tab_project.get(page_key)
+
+    def _tab_label(self, tab_key: str) -> str:
+        widget = self._tab_widgets.get(tab_key)
+        if widget is None:
+            return ""
+        for child in list(widget):
+            if isinstance(child, Gtk.Label):
+                return child.get_label()
+        return ""
+
+    def _load_project_task_state(self, page_key: str):
+        if not page_key.startswith("project-") or page_key in self._task_state:
+            return
+        project_id = self._project_id_for_task_page(page_key)
+        project = self._pm.get_project(project_id) if project_id else None
+        tasks = project.get("agent_tasks", []) if project else []
+        if not isinstance(tasks, list):
+            return
+        for task in tasks:
+            if isinstance(task, dict) and task.get("task_key") == page_key:
+                if _normalize_task_title(task.get("task_title", "")):
+                    self._task_state[page_key] = dict(task)
+                return
+
+    def _task_for_tab(self, tab_key: str) -> dict | None:
+        page_key = self._task_page_for_tab(tab_key)
+        self._load_project_task_state(page_key)
+        return self._task_state.get(page_key)
+
+    def _refresh_tab_tooltip(self, tab_key: str):
+        widget = self._tab_widgets.get(tab_key)
+        if widget is None:
+            return
+        task = self._task_for_tab(tab_key)
+        title = _normalize_task_title(task.get("task_title", "")) if task else ""
+        if not title:
+            widget.set_tooltip_text("No task set")
+            return
+        status = task.get("task_status", "active").title()
+        tooltip = f"{status} task: {_task_preview(title)}"
+        updated = task.get("task_updated_at")
+        if updated:
+            tooltip += f"\nUpdated: {updated}"
+        widget.set_tooltip_text(tooltip)
+
+    def _persist_task_state(self, page_key: str):
+        project_id = self._project_id_for_task_page(page_key)
+        task = self._task_state.get(page_key)
+        if project_id and task and hasattr(self._pm, "set_agent_task"):
+            self._pm.set_agent_task(project_id, dict(task))
+
+    def _clear_persisted_task_state(self, page_key: str):
+        project_id = self._project_id_for_task_page(page_key)
+        if project_id and hasattr(self._pm, "clear_agent_task"):
+            self._pm.clear_agent_task(project_id, page_key)
+
+    def _set_agent_task(self, tab_key: str, title: str, status: str = "active"):
+        title = _normalize_task_title(title)
+        page_key = self._task_page_for_tab(tab_key)
+        if not title or page_key == "empty":
+            self._clear_agent_task(tab_key)
+            return
+        info = self._agent_info.get(page_key, {})
+        self._task_state[page_key] = {
+            "task_key": page_key,
+            "task_title": title,
+            "task_status": status,
+            "task_updated_at": _task_timestamp(),
+            "tab_label": self._tab_label(tab_key),
+            "command": info.get("cmd") or (
+                "root" if page_key == _MASTER_PAGE else _terminal_command_name(self._settings)
+            ),
+        }
+        self._persist_task_state(page_key)
+        self._refresh_tab_tooltip(tab_key)
+
+    def _mark_agent_task_done(self, tab_key: str):
+        page_key = self._task_page_for_tab(tab_key)
+        task = self._task_state.get(page_key)
+        if not task:
+            return
+        task["task_status"] = "done"
+        task["task_updated_at"] = _task_timestamp()
+        task["tab_label"] = self._tab_label(tab_key)
+        self._persist_task_state(page_key)
+        self._refresh_tab_tooltip(tab_key)
+
+    def _clear_agent_task(self, tab_key: str):
+        page_key = self._task_page_for_tab(tab_key)
+        self._task_state.pop(page_key, None)
+        self._clear_persisted_task_state(page_key)
+        self._refresh_tab_tooltip(tab_key)
+
     # ── agent tab management ──────────────────────────────────────────────────
 
     def _on_tabbar_right_click(self, gesture, _n_press, x, y):
@@ -344,7 +472,13 @@ class CenterPanel(Gtk.Box):
         box.set_margin_top(6)
         box.set_margin_bottom(6)
 
-        # Row 1: New agent + inline command dropdown
+        # Row 1: New agent + inline command dropdown (claude, codex, + local Ollama models)
+        ollama_models: list[str] = (
+            self._ollama_client.list_models() if self._ollama_client is not None else []
+        )
+        cli_agents = ["claude", "codex"]
+        agent_labels = cli_agents + [f"{m} (local)" for m in ollama_models]
+
         agent_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         agent_row.set_valign(Gtk.Align.CENTER)
 
@@ -353,7 +487,7 @@ class CenterPanel(Gtk.Box):
         agent_lbl.set_hexpand(True)
         agent_row.append(agent_lbl)
 
-        cmd_dropdown = Gtk.DropDown.new_from_strings(["claude", "codex"])
+        cmd_dropdown = Gtk.DropDown.new_from_strings(agent_labels)
         cmd_dropdown.set_valign(Gtk.Align.CENTER)
         agent_row.append(cmd_dropdown)
 
@@ -361,15 +495,36 @@ class CenterPanel(Gtk.Box):
         add_btn.add_css_class("suggested-action")
         add_btn.set_valign(Gtk.Align.CENTER)
 
-        def _on_add_agent(_b):
-            idx = cmd_dropdown.get_selected()
-            cmd = ["claude", "codex"][idx if 0 <= idx <= 1 else 0]
+        task_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        task_row.set_valign(Gtk.Align.CENTER)
+
+        task_lbl = Gtk.Label(label="Task")
+        task_lbl.set_xalign(0)
+        task_row.append(task_lbl)
+
+        task_entry = Gtk.Entry()
+        task_entry.set_placeholder_text("Optional prompt")
+        task_entry.set_width_chars(30)
+        task_entry.set_hexpand(True)
+        task_row.append(task_entry)
+
+        def _on_add_agent(_b, _om=ollama_models, _cli=cli_agents, _dd=cmd_dropdown):
+            idx = _dd.get_selected()
+            task_title = task_entry.get_text()
             popover.popdown()
-            self._add_agent_terminal(cmd)
+            if idx < len(_cli):
+                self._add_agent_terminal(_cli[idx], task_title=task_title)
+            else:
+                model = _om[idx - len(_cli)]
+                from ollama_dialog import OllamaDialog
+                OllamaDialog(self.get_root(), self._ollama_client,
+                             initial_prompt=task_title, model=model).present()
 
         add_btn.connect("clicked", _on_add_agent)
+        task_entry.connect("activate", _on_add_agent)
         agent_row.append(add_btn)
         box.append(agent_row)
+        box.append(task_row)
 
         # Row 2: New plain terminal
         term_btn = Gtk.Button(label="New terminal")
@@ -418,21 +573,24 @@ class CenterPanel(Gtk.Box):
             n += 1
         return n
 
-    def _used_tab_label_indices(self, base: str) -> set[int]:
+    def _used_tab_label_indices(self, base: str, project_id: str | None = "__all__") -> set[int]:
         return {
             info["label_index"]
-            for info in self._agent_info.values()
-            if info.get("label_base") == base and isinstance(info.get("label_index"), int)
+            for key, info in self._agent_info.items()
+            if info.get("label_base") == base
+            and isinstance(info.get("label_index"), int)
+            and (project_id == "__all__" or self._tab_project.get(key) == project_id)
         }
 
     def _add_plain_terminal(self):
         n = self._next_term_number()
         page_key = f"term-{n}"
+        project_id = self._current_project_id()
         label, label_index = _next_numbered_label(
-            "Terminal", self._used_tab_label_indices("Terminal")
+            "Terminal", self._used_tab_label_indices("Terminal", project_id)
         )
         directory = self._current_agent_directory()
-        self._tab_project[page_key] = self._current_project_id()
+        self._tab_project[page_key] = project_id
         shell = "bash" if GLib.find_program_in_path("bash") else "sh"
 
         terminal = self._make_terminal()
@@ -475,15 +633,22 @@ class CenterPanel(Gtk.Box):
         else:
             self._on_tab_clicked(visible_keys[0])
 
-    def _add_agent_terminal(self, cmd: str):
+    def _feed_agent_task(self, terminal: Vte.Terminal, text: str) -> bool:
+        stdin_text = _task_stdin_text(text)
+        if stdin_text:
+            terminal.feed_child(stdin_text.encode("utf-8"))
+        return False
+
+    def _add_agent_terminal(self, cmd: str, task_title: str = ""):
         n = self._next_agent_number()
         page_key = f"agent-{n}"
         label_base = _agent_label_base(cmd)
+        project_id = self._current_project_id()
         label, label_index = _next_numbered_label(
-            label_base, self._used_tab_label_indices(label_base)
+            label_base, self._used_tab_label_indices(label_base, project_id)
         )
         directory = self._current_agent_directory()
-        self._tab_project[page_key] = self._current_project_id()
+        self._tab_project[page_key] = project_id
 
         terminal = self._make_terminal()
         self._terminals[page_key] = terminal
@@ -496,9 +661,18 @@ class CenterPanel(Gtk.Box):
             "label_index": label_index,
         }
 
+        normalized_task = _normalize_task_title(task_title)
+
         def on_spawned(_term, pid, _error):
             if pid and pid > 0:
                 self._terminal_pids[page_key] = pid
+                if normalized_task:
+                    GLib.timeout_add(
+                        350,
+                        self._feed_agent_task,
+                        terminal,
+                        normalized_task,
+                    )
 
         _spawn(terminal, directory, _resolve_command(cmd), on_spawned)
         terminal.connect("child-exited", self._on_agent_exited, page_key)
@@ -507,6 +681,8 @@ class CenterPanel(Gtk.Box):
                       closeable=True,
                       on_rename=self._show_agent_rename_popover,
                       on_close=lambda k=page_key: self._close_agent_tab(k))
+        if normalized_task:
+            self._set_agent_task(page_key, normalized_task, "active")
 
         self._stack.set_visible_child_name(page_key)
         self._notify_page(page_key)
@@ -526,6 +702,8 @@ class CenterPanel(Gtk.Box):
     def _close_agent_tab(self, page_key: str):
         if page_key not in self._agent_info:
             return
+        self._task_state.pop(page_key, None)
+        self._clear_persisted_task_state(page_key)
         self._tab_project.pop(page_key, None)
         pid = self._terminal_pids.pop(page_key, None)
         if pid:
@@ -541,6 +719,42 @@ class CenterPanel(Gtk.Box):
             self._stack.remove(child)
         if self._current_tab == page_key:
             self._switch_to_best_tab()
+
+    def _show_agent_tab_menu(self, page_key: str):
+        widget = self._tab_widgets.get(page_key)
+        if widget is None:
+            return
+
+        popover = Gtk.Popover()
+        popover.set_parent(widget)
+        popover.set_has_arrow(True)
+        popover.set_autohide(True)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_start(6)
+        box.set_margin_end(6)
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+
+        def add_button(label, callback, sensitive=True):
+            btn = Gtk.Button(label=label)
+            btn.add_css_class("flat")
+            btn.set_halign(Gtk.Align.FILL)
+            btn.set_sensitive(sensitive)
+            btn.connect("clicked", lambda _: (popover.popdown(), callback()))
+            box.append(btn)
+
+        task = self._task_for_tab(page_key)
+        has_task = bool(task and _normalize_task_title(task.get("task_title", "")))
+        is_done = bool(task and task.get("task_status") == "done")
+
+        add_button("Rename tab", lambda: self._show_agent_rename_popover(page_key))
+        add_button("Set task", lambda: self._show_agent_task_popover(page_key))
+        add_button("Mark task done", lambda: self._mark_agent_task_done(page_key), has_task and not is_done)
+        add_button("Clear task", lambda: self._clear_agent_task(page_key), has_task)
+
+        popover.set_child(box)
+        popover.popup()
 
     def _show_agent_rename_popover(self, page_key: str):
         widget = self._tab_widgets.get(page_key)
@@ -586,6 +800,45 @@ class CenterPanel(Gtk.Box):
         popover.popup()
         entry.grab_focus()
 
+    def _show_agent_task_popover(self, page_key: str):
+        widget = self._tab_widgets.get(page_key)
+        if widget is None:
+            return
+
+        task = self._task_for_tab(page_key)
+        current_title = task.get("task_title", "") if task else ""
+
+        popover = Gtk.Popover()
+        popover.set_parent(widget)
+        popover.set_has_arrow(True)
+        popover.set_autohide(True)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.set_margin_start(6)
+        box.set_margin_end(6)
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+
+        entry = Gtk.Entry()
+        entry.set_text(current_title)
+        entry.set_width_chars(32)
+        box.append(entry)
+
+        ok_btn = Gtk.Button(label="OK")
+        ok_btn.add_css_class("suggested-action")
+        box.append(ok_btn)
+
+        def confirm(_=None):
+            self._set_agent_task(page_key, entry.get_text(), "active")
+            popover.popdown()
+
+        entry.connect("activate", confirm)
+        ok_btn.connect("clicked", confirm)
+
+        popover.set_child(box)
+        popover.popup()
+        entry.grab_focus()
+
     def _rename_agent_tab(self, page_key: str, new_label: str):
         widget = self._tab_widgets.get(page_key)
         if widget is None:
@@ -594,6 +847,13 @@ class CenterPanel(Gtk.Box):
             if isinstance(child, Gtk.Label):
                 child.set_label(new_label)
                 break
+        task_page = self._task_page_for_tab(page_key)
+        task = self._task_state.get(task_page)
+        if task:
+            task["tab_label"] = new_label
+            task["task_updated_at"] = _task_timestamp()
+            self._persist_task_state(task_page)
+        self._refresh_tab_tooltip(page_key)
 
     def _update_terminal_tab_label(self, label: str):
         widget = self._tab_widgets.get(_TERMINAL_TAB)
@@ -603,6 +863,7 @@ class CenterPanel(Gtk.Box):
             if isinstance(child, Gtk.Label):
                 child.set_label(label)
                 break
+        self._refresh_tab_tooltip(_TERMINAL_TAB)
 
     def _on_tab_clicked(self, tab_key: str):
         if tab_key == _TERMINAL_TAB:
@@ -637,8 +898,8 @@ class CenterPanel(Gtk.Box):
             _spawn(terminal, _ROOT_DIR, self._cmd(), self._on_master_spawned)
             terminal.connect("child-exited", self._on_master_exited)
 
-        self._update_terminal_tab_label("Root")
         self._last_terminal_page = _MASTER_PAGE
+        self._update_terminal_tab_label("Root")
         self._stack.set_visible_child_name(_MASTER_PAGE)
         self._notify_page(_MASTER_PAGE)
 

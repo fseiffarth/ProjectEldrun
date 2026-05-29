@@ -16,6 +16,7 @@ PROJECTS_ROOT = pathlib.Path.home() / "eldrun" / "projects"
 ROOT_DIR = pathlib.Path.home() / "eldrun" / "root"
 
 LOCAL_PROJECT_FILE = "project.json"
+MAX_AGENT_TASKS = 20
 
 # Keys kept only in the global index; everything else lives in local project.json
 _GLOBAL_KEYS = {"id", "name", "status", "position", "local_file"}
@@ -555,6 +556,40 @@ class ProjectManager:
         project = self.get_project(project_id)
         if project is not None:
             project["shell_pid"] = pid
+
+    def set_agent_task(self, project_id: str, task: dict):
+        """Persist the current task metadata for one project agent tab."""
+        project = self.get_project(project_id)
+        if project is None:
+            return
+        task_key = task.get("task_key")
+        if not task_key:
+            return
+        existing = project.get("agent_tasks", [])
+        if not isinstance(existing, list):
+            existing = []
+        tasks = [
+            t for t in existing
+            if isinstance(t, dict) and t.get("task_key") != task_key
+        ]
+        tasks.insert(0, task)
+        project["agent_tasks"] = tasks[:MAX_AGENT_TASKS]
+        self._save_local(project)
+
+    def clear_agent_task(self, project_id: str, task_key: str):
+        """Remove persisted task metadata for one project agent tab."""
+        project = self.get_project(project_id)
+        if project is None or not task_key:
+            return
+        existing = project.get("agent_tasks", [])
+        if not isinstance(existing, list):
+            return
+        tasks = [
+            t for t in existing
+            if isinstance(t, dict) and t.get("task_key") != task_key
+        ]
+        project["agent_tasks"] = tasks
+        self._save_local(project)
 
     def create_project(self, name: str, git_type: str) -> dict:
         safe = sanitize_name(name)

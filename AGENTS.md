@@ -33,6 +33,9 @@ launching/embedding, time tracking, and optional Cinnamon workspace integration.
 
 - Prefer small, focused changes that match the existing GTK4/Python style.
 - Use `rg` for code search.
+- Do not launch Eldrun from an agent terminal for verification. Opening a
+  second Eldrun instance can corrupt workspace state; ask the user to run or
+  restart the existing instance when runtime validation is needed.
 - Do not rename `app/panels/right_panel.py` casually; it is documented as a
   historical filename whose live widget is `FileTreePanel`.
 - Avoid unrelated rewrites in docs, generated state, or project metadata.
@@ -52,6 +55,9 @@ python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py \
 ```
 
 ## Running locally
+
+Human-only. Agents must not run these commands while an Eldrun instance may
+already be active.
 
 Preferred launcher:
 
