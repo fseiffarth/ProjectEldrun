@@ -58,10 +58,10 @@ _STANDARD_PROJECT_FILES = frozenset({
 })
 
 _TREE_COLORS = {
-    "dark": {"directory": "#d29922", "file": "#8b949e"},
-    "light": {"directory": "#bf8700", "file": "#57606a"},
-    "fancy_dark": {"directory": "#ffd166", "file": "#8ca3c7"},
-    "fancy_light": {"directory": "#b7791f", "file": "#5b6f91"},
+    "dark":        {"directory": "#c9d1d9", "file": "#8b949e"},
+    "light":       {"directory": "#24292f",  "file": "#57606a"},
+    "fancy_dark":  {"directory": "#d8e2f3",  "file": "#8ca3c7"},
+    "fancy_light": {"directory": "#2f3a4f",  "file": "#5b6f91"},
 }
 _LEGACY_THEME_VALUES = {"fancy": "fancy_dark"}
 

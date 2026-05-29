@@ -392,13 +392,20 @@ class EldrunWindow(Adw.ApplicationWindow):
 
         root.append(self._build_header())
 
-        # G6.6: slim toolbar row between header and center panel
+        # G6.6: slim toolbar strip between header and center panel
+        self._global_apps_toolbar_strip = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL
+        )
+        self._global_apps_toolbar_strip.add_css_class("global-apps-strip")
+
         self._global_apps_toolbar_box = Gtk.Box(
-            orientation=Gtk.Orientation.HORIZONTAL, spacing=2
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=0
         )
         self._global_apps_toolbar_box.add_css_class("global-apps-toolbar")
         self._global_apps_toolbar_box.set_halign(Gtk.Align.CENTER)
-        root.append(self._global_apps_toolbar_box)
+        self._global_apps_toolbar_box.set_valign(Gtk.Align.CENTER)
+        self._global_apps_toolbar_strip.append(self._global_apps_toolbar_box)
+        root.append(self._global_apps_toolbar_strip)
         self._refresh_global_apps_toolbar()
 
         self._center_panel = CenterPanel(
@@ -738,7 +745,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             btn.set_icon_name(select_role_icon(role, self._icon_theme_has_icon))
             btn.add_css_class("flat")
             btn.add_css_class("global-app-btn")
-            btn.set_tooltip_text(role["label"])
+            btn.set_tooltip_text(f"{role['label']} · Right-click to configure")
             if exec_cmd:
                 gam = self._global_apps_manager
                 if key == "screenshot":
@@ -764,6 +771,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             toolbar.append(btn)
 
         toolbar.set_visible(any_visible)
+        self._global_apps_toolbar_strip.set_visible(any_visible)
 
     def _icon_theme_has_icon(self, icon_name: str) -> bool:
         display = Gdk.Display.get_default()
@@ -777,22 +785,45 @@ class EldrunWindow(Adw.ApplicationWindow):
         popover.set_has_arrow(True)
         popover.set_autohide(True)
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        box.set_margin_start(10)
-        box.set_margin_end(10)
-        box.set_margin_top(8)
-        box.set_margin_bottom(8)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
 
-        title = Gtk.Label(label=label)
-        title.add_css_class("heading")
-        title.set_xalign(0)
-        box.append(title)
+        # Title row: icon + role name
+        title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        title_row.set_valign(Gtk.Align.CENTER)
+        title_icon = Gtk.Image.new_from_icon_name(
+            widget.get_icon_name() or "application-x-executable-symbolic"
+        )
+        title_icon.set_pixel_size(18)
+        title_row.append(title_icon)
+        title_lbl = Gtk.Label(label=label)
+        title_lbl.add_css_class("heading")
+        title_lbl.set_xalign(0)
+        title_row.append(title_lbl)
+        box.append(title_row)
 
+        if current_exec:
+            cur_lbl = Gtk.Label(label=os.path.basename(current_exec))
+            cur_lbl.add_css_class("dim-label")
+            cur_lbl.set_xalign(0)
+            box.append(cur_lbl)
+
+        # Command entry + browse button
+        cmd_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         entry = Gtk.Entry()
         entry.set_text(current_exec or "")
         entry.set_placeholder_text("Command path, e.g. /usr/bin/firefox")
-        entry.set_width_chars(30)
-        box.append(entry)
+        entry.set_width_chars(28)
+        entry.set_hexpand(True)
+        cmd_row.append(entry)
+
+        browse_btn = Gtk.Button(label="…")
+        browse_btn.set_tooltip_text("Browse for executable")
+        cmd_row.append(browse_btn)
+        box.append(cmd_row)
 
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         btn_row.set_halign(Gtk.Align.END)
@@ -817,9 +848,29 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._refresh_global_apps_toolbar()
             popover.popdown()
 
+        def _browse(_):
+            chooser = Gtk.FileChooserNative.new(
+                f"Select {label} Executable",
+                self,
+                Gtk.FileChooserAction.OPEN,
+                "Select",
+                "Cancel",
+            )
+
+            def _on_response(c, resp):
+                if resp == Gtk.ResponseType.ACCEPT:
+                    f = c.get_file()
+                    if f:
+                        entry.set_text(f.get_path() or "")
+                c.destroy()
+
+            chooser.connect("response", _on_response)
+            chooser.show()
+
         entry.connect("activate", _apply)
         ok_btn.connect("clicked", _apply)
         clear_btn.connect("clicked", _clear)
+        browse_btn.connect("clicked", _browse)
 
         popover.set_child(box)
         popover.popup()

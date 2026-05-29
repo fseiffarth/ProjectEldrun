@@ -455,25 +455,31 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
 .tab-drag-over-right { border-right: 2px solid #388bfd; }
 
 /* ── global apps toolbar (G6.6) ──────────────────────────── */
-.global-apps-toolbar {
-    background-color: #1a1f28;
+.global-apps-strip {
+    background-color: #161b22;
     border-bottom: 1px solid #21262d;
-    min-height: 30px;
-    padding: 2px 0;
+    min-height: 40px;
+    padding: 4px 0;
+}
+.global-apps-toolbar {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 2px 6px;
 }
 .global-apps-toolbar button.global-app-btn {
-    min-width: 28px;
-    min-height: 26px;
-    padding: 2px 4px;
-    border-radius: 4px;
+    min-width: 30px;
+    min-height: 28px;
+    padding: 3px 5px;
+    border-radius: 6px;
     color: #8b949e;
 }
 .global-apps-toolbar button.global-app-btn:hover {
-    background-color: rgba(56, 139, 253, 0.14);
+    background-color: rgba(56, 139, 253, 0.16);
     color: #e6edf3;
 }
 .global-apps-toolbar button.global-app-btn:disabled {
-    color: #484f58;
+    color: #3d444d;
 }
 
 /* ── bottom panel ────────────────────────────────────────── */
@@ -903,17 +909,23 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 .tab-drag-over-right { border-right: 2px solid #0969da; }
 
 /* ── global apps toolbar (light, G6.6) ───────────────────── */
-.global-apps-toolbar {
-    background-color: #eaeef2;
+.global-apps-strip {
+    background-color: #f6f8fa;
     border-bottom: 1px solid #d0d7de;
-    min-height: 30px;
-    padding: 2px 0;
+    min-height: 40px;
+    padding: 4px 0;
+}
+.global-apps-toolbar {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 10px;
+    padding: 2px 6px;
 }
 .global-apps-toolbar button.global-app-btn {
-    min-width: 28px;
-    min-height: 26px;
-    padding: 2px 4px;
-    border-radius: 4px;
+    min-width: 30px;
+    min-height: 28px;
+    padding: 3px 5px;
+    border-radius: 6px;
     color: #57606a;
 }
 .global-apps-toolbar button.global-app-btn:hover {
@@ -1316,6 +1328,24 @@ button.terminal-back-btn:hover {
 .bottom-panel searchentry:focus {
     border-color: #36c5f0;
 }
+.global-apps-strip {
+    background-color: #0c111d;
+    border-bottom-color: #1e2d45;
+}
+.global-apps-toolbar {
+    background-color: #101624;
+    border-color: #1e2d45;
+}
+.global-apps-toolbar button.global-app-btn {
+    color: #8ca3c7;
+}
+.global-apps-toolbar button.global-app-btn:hover {
+    background-color: rgba(54, 197, 240, 0.14);
+    color: #d8e2f3;
+}
+.global-apps-toolbar button.global-app-btn:disabled {
+    color: #2d3a50;
+}
 """
 
 
@@ -1608,6 +1638,21 @@ button.terminal-back-btn:hover {
 .bottom-panel searchentry:focus {
     border-color: #0969da;
 }
+.global-apps-strip {
+    background-color: #eef4fc;
+    border-bottom-color: #c9dff3;
+}
+.global-apps-toolbar {
+    background-color: #f7fbff;
+    border-color: #c9dff3;
+}
+.global-apps-toolbar button.global-app-btn {
+    color: #5b6f91;
+}
+.global-apps-toolbar button.global-app-btn:hover {
+    background-color: rgba(9, 105, 218, 0.1);
+    color: #172033;
+}
 """
 
 
@@ -1621,7 +1666,7 @@ def _normalize_theme(scheme) -> str:
         return "fancy_dark"
     if scheme in ("dark", "light", "fancy_dark", "fancy_light"):
         return scheme
-    return "dark"
+    return "fancy_dark"
 
 
 def set_theme(scheme):

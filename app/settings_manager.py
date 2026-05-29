@@ -11,6 +11,7 @@ _DEFAULTS: dict = {
     "debug": True,
     "git_profile_url": "",
     "git_token": "",
+    "color_scheme": "fancy_dark",
 }
 
 
