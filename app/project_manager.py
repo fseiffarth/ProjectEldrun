@@ -531,8 +531,9 @@ class ProjectManager:
         self.set_project_status(project_id, "inactive")
 
     def get_visible_projects(self) -> list:
-        """Return projects that should appear in the bottom bar."""
-        return [p for p in self.projects if p.get("status") in ("active", "current")]
+        """Return active/current projects sorted by position, matching pill bar order."""
+        visible = [p for p in self.projects if p.get("status") in ("active", "current")]
+        return sorted(visible, key=lambda p: p.get("position", 0))
 
     def set_project_position(self, project_id: str, position: int):
         project = self.get_project(project_id)

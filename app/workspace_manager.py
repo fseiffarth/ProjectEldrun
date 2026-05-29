@@ -290,11 +290,9 @@ class WorkspaceManager:
             self._wm_eval(
                 "const xid = " + str(int(xid)) + ";"
                 "for (const actor of global.get_window_actors()) {"
-                "  const win = actor.meta_window || "
-                "    (actor.get_meta_window ? actor.get_meta_window() : null);"
+                "  const win = actor.get_meta_window ? actor.get_meta_window() : null;"
                 "  if (!win) continue;"
-                "  const wxid = global.screen.get_xwindow_for_window(win);"
-                "  if (wxid === xid) { win.stick(); break; }"
+                "  if (win.get_xwindow() === xid) { win.stick(); break; }"
                 "}"
             )
         try:
