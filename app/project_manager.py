@@ -126,9 +126,67 @@ Run the appropriate package manager command and confirm the binary is on `$PATH`
 """
 
 
+_ROOT_GEMINI_MD = """\
+# Eldrun Root Terminal — Gemini Instructions
+
+## Role
+
+You are the Eldrun workspace manager. Your job in this terminal is to help the user
+control Eldrun itself: projects, settings, default apps, and installed tools.
+You do not do project-level development work here.
+
+## Storage layout
+
+- `~/.local/share/eldrun/projects.json` — global index; each entry has only:
+  id, name, status, position, local_file (path to the project's project.json)
+- `<project_dir>/project.json` — per-project data: directory, git_type, created_at,
+  file_type_stats, time_today_s, time_total_s, time sessions, default_apps
+
+## Permitted actions
+
+- Read and write `~/.local/share/eldrun/` (project index, settings, default apps, time log)
+- Read and write `~/eldrun/root/` (this working directory)
+- Read project directories under `~/eldrun/projects/` for discovery and inspection
+- Run package manager commands to install applications
+
+## Restricted actions
+
+- Do not write to project directories under `~/eldrun/projects/` unless the user
+  explicitly asks — project work belongs in each project's own terminal
+
+## Key tasks
+
+**Search projects**
+Read `~/.local/share/eldrun/projects.json` and follow `local_file` links to get details.
+
+**Change a project's status**
+Edit the `status` field in the matching entry in `~/.local/share/eldrun/projects.json`.
+At most one project should be `"current"`.
+
+**Add or import a project**
+Ask the user to use Eldrun's **+** button to ensure correct scaffolding and registration.
+
+**Change Eldrun settings**
+Edit `~/.local/share/eldrun/settings.json`. Current keys:
+- `terminal_command` — executable spawned in each terminal (default: `"claude"`)
+- `color_scheme` — `"dark"`, `"light"`, `"fancy_dark"`, or `"fancy_light"`
+
+**Set a global default app for a file type**
+Edit `~/.local/share/eldrun/default_apps.json`. Format: `{ ".ext": "app-executable" }`.
+Per-project overrides live in `<project_dir>/project.json` under the `"default_apps"` key.
+
+**Install a new application**
+Run the appropriate package manager command and confirm the binary is on `$PATH`.
+"""
+
+
 def _write_root_context_files():
     ROOT_DIR.mkdir(parents=True, exist_ok=True)
-    for filename, content in (("CLAUDE.md", _ROOT_CLAUDE_MD), ("AGENTS.md", _ROOT_AGENTS_MD)):
+    for filename, content in (
+        ("CLAUDE.md", _ROOT_CLAUDE_MD),
+        ("AGENTS.md", _ROOT_AGENTS_MD),
+        ("GEMINI.md", _ROOT_GEMINI_MD),
+    ):
         (ROOT_DIR / filename).write_text(content, encoding="utf-8")
 
 
@@ -157,6 +215,7 @@ If you need to change Eldrun settings or project metadata, ask the user to use t
 ## Key conventions
 """,
     "CLAUDE.md":        "# {name}\n\n- **Directory:** `{directory}`\n- **Type:** {git_type}\n\n## What this project is\n\n",
+    "GEMINI.md":        "# {name}\n\n- **Directory:** `{directory}`\n- **Type:** {git_type}\n\n## What this project is\n\n",
     ".gitignore":       ".env\n__pycache__/\n*.pyc\nnode_modules/\n.DS_Store\n*.log\ndist/\nbuild/\n.venv/\n",
     "TODO.md":          "# {name} — TODO\n",
     "ROADMAP.md":       "# {name} — Roadmap\n",

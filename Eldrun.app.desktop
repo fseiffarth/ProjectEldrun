@@ -2,7 +2,7 @@
 Type=Application
 Name=Eldrun
 Comment=Terminal manager
-Exec=/home/user/eldrun/projects/projecteldrun/start-eldrun.sh
+Exec=/path/to/projecteldrun/start-eldrun.sh
 Icon=io.github.fseiffarth.eldrun
 Terminal=false
 Categories=Utility;TerminalEmulator;

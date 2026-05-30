@@ -45,7 +45,7 @@ Runtime launch commands are intentionally omitted from this Claude context.
 - Project-local state lives in each project's `project.json`.
 - Open-app metadata is stored in `project.json["open_apps"]`; standalone restore
   behavior is still future work.
-- New/imported projects receive `AGENTS.md`, `CLAUDE.md`,
+- New/imported projects receive `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
   `.claude/settings.json`, `.gitignore`, `TODO.md`, `ROADMAP.md`, `STATUS.md`,
   and `DOCUMENTATION.md` when missing.
 - `TODO.md` uses grouped IDs such as `G1.1`. When adding a TODO, put it in the

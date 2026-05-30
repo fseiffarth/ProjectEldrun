@@ -8,6 +8,15 @@ optional desktop workspace routing.
 
 This document reflects the code in `app/` as of May 29, 2026.
 
+## Document Boundaries
+
+- `DOCUMENTATION.md` describes how Eldrun works now: architecture, behavior,
+  persistence, and operational notes.
+- `STATUS.md` is the short current-state snapshot: readiness, validation, and
+  known rough edges.
+- `ROADMAP.md` captures product direction and sequencing.
+- `TODO.md` tracks concrete implementation tasks with grouped IDs.
+
 ## Eldrun's Model
 
 Eldrun treats development work as a set of active projects, each with its own
@@ -17,7 +26,9 @@ workspace.
 - The root terminal is for orchestration: managing Eldrun itself and the broader
   workspace under `~/eldrun/root/`.
 - Project terminals are for implementation work inside a specific project
-  directory.
+  directory. They launch with a best-effort project sandbox that keeps XDG
+  config/cache/data/state and temp writes under `<project>/.eldrun/sandbox/`.
+  The root terminal keeps the normal workspace environment.
 - Agent tabs run `claude` or `codex`; plain terminal tabs run the user's shell.
   Local Ollama models open a built-in dialog instead of a VTE tab.
   Other agents (Mistral, Qwen, Grok, etc.) are not integrated and can only be
@@ -145,6 +156,8 @@ tab bar.
 - New agent creation can include an optional task prompt. Eldrun stores it as
   the tab task and sends it to the spawned Claude/Codex process as initial
   terminal input.
+- Project-bound agent and plain terminal tabs inherit the same project sandbox
+  env as project terminals.
 - Agent and plain terminal tabs can be renamed, closed, and reordered by drag and
   drop.
 - If all tabs are closed, the stack shows an empty state explaining that a new
@@ -160,14 +173,14 @@ tab bar.
   offline.
 
 The terminal command comes from `settings.json["terminal_command"]`. UI choices
-are `claude` and `codex`. If the configured command is not found in `$PATH`,
-Eldrun falls back to the system shell.
+are `claude`, `codex`, and `gemini`. If the configured command is not found in
+`$PATH`, Eldrun falls back to the system shell.
 
-Other AI agents — Mistral, Qwen, Grok, Gemini CLI, Llama.cpp, and similar
-tools — are not integrated as first-class tab types. They can be used in a
-plain shell tab, but Eldrun has no dedicated lifecycle, task metadata, or
-command discovery for them. Ollama is the only non-CLI-terminal AI integration;
-see [Local AI — Ollama](#local-ai--ollama).
+Other AI agents — Mistral, Qwen, Grok, Llama.cpp, and similar tools — are not
+integrated as first-class tab types. They can be used in a plain shell tab, but
+Eldrun has no dedicated lifecycle, task metadata, or command discovery for them.
+Ollama is the only non-CLI-terminal AI integration; see
+[Local AI — Ollama](#local-ai--ollama).
 
 ### Right File Tree Overlay
 
@@ -273,18 +286,20 @@ New and imported projects receive these files when missing:
 |------|---------|
 | `AGENTS.md` | Agent instructions, scope, and permission boundary. |
 | `CLAUDE.md` | Claude Code context: path, visibility, and project notes. |
+| `GEMINI.md` | Gemini CLI context: path, visibility, and project notes. |
 | `.claude/settings.json` | Claude permission allow/deny rules scoped to the project directory. |
 | `.gitignore` | Common Python, Node, macOS, log, and build ignores. |
-| `TODO.md` | Project task list. |
-| `ROADMAP.md` | Long-term project roadmap. |
-| `STATUS.md` | Project status and current-state notes. |
-| `DOCUMENTATION.md` | Project documentation stub. |
+| `TODO.md` | Concrete task backlog with grouped IDs. |
+| `ROADMAP.md` | High-level project direction and sequencing. |
+| `STATUS.md` | Short current-state and validation snapshot. |
+| `DOCUMENTATION.md` | Current architecture, behavior, and persistence notes. |
 
 The root terminal also gets context files in `~/eldrun/root/`:
 
 - `CLAUDE.md`: explains the Eldrun workspace root and global data files.
 - `AGENTS.md`: tells agents that root-terminal work is for Eldrun/workspace
   management, not project implementation.
+- `GEMINI.md`: same scope as `AGENTS.md`, written for the Gemini CLI.
 
 ## Architecture
 

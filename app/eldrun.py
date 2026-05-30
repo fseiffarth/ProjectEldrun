@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Entry point for ProjectEldrun."""
 
-__version__ = "0.0.7"
+__version__ = "0.0.8"
 
 _debug_enabled: bool = True
 
@@ -88,6 +88,15 @@ window {
     background-color: #0d1117;
     color: #e6edf3;
 }
+window.csd {
+    box-shadow: none;
+    border-radius: 0;
+}
+windowcontents {
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+}
 
 /* ── custom header bar ───────────────────────────────────── */
 .app-header {
@@ -144,10 +153,8 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
     border-right: 1px solid #30363d;
 }
 .panel-right {
-    background: linear-gradient(90deg, #0f1724 0%, #161b22 9%, #161b22 100%);
-    border-left: 2px solid #3d4654;
-    box-shadow: inset 4px 0 0 rgba(56, 139, 253, 0.2),
-                -8px 0 22px rgba(0, 0, 0, 0.52);
+    background-color: #161b22;
+    border-left: 1px solid #30363d;
 }
 .panel-right separator {
     background-color: rgba(139, 148, 158, 0.2);
@@ -160,7 +167,7 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
     color: #e6edf3;
 }
 .panel-right .right-panel-surface {
-    margin: 0 8px 8px 8px;
+    margin: 0 0 0 8px;
     border: 1px solid rgba(139, 148, 158, 0.16);
     border-radius: 7px;
     background-color: rgba(13, 17, 23, 0.34);
@@ -294,27 +301,6 @@ listbox {
 .placeholder-label {
     color: #484f58;
     font-size: 16px;
-}
-
-/* ── panel edge toggle buttons ───────────────────────────── */
-button.panel-edge-btn {
-    min-width: 12px;
-    min-height: 40px;
-    padding: 0 1px;
-    font-size: 12px;
-    color: #388bfd;
-    background-color: #1c2128;
-    border-radius: 4px;
-    border: 1px solid #388bfd;
-}
-button.panel-edge-btn:hover {
-    color: #ffffff;
-    background-color: #388bfd;
-}
-button.bottom-edge-btn {
-    min-width: 60px;
-    min-height: 12px;
-    padding: 1px 0;
 }
 
 /* ── header time label ───────────────────────────────────── */
@@ -461,12 +447,28 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
 
 /* ── global apps toolbar (G6.6) ──────────────────────────── */
 .global-apps-toggle-bar {
-    min-height: 5px;
-    background: linear-gradient(90deg, transparent 0%, rgba(56,139,253,0.35) 15%, rgba(56,139,253,0.6) 50%, rgba(56,139,253,0.35) 85%, transparent 100%);
+    min-height: 8px;
+    background: radial-gradient(ellipse 55% 100% at 50% 0%, rgba(56,139,253,0.65) 0%, rgba(56,139,253,0.25) 65%, transparent 100%);
     transition: background 150ms ease;
 }
 .global-apps-toggle-bar:hover {
-    background: linear-gradient(90deg, transparent 0%, rgba(56,139,253,0.55) 15%, rgba(56,139,253,0.9) 50%, rgba(56,139,253,0.55) 85%, transparent 100%);
+    background: radial-gradient(ellipse 55% 100% at 50% 0%, rgba(56,139,253,0.9) 0%, rgba(56,139,253,0.4) 65%, transparent 100%);
+}
+.file-tree-toggle-strip {
+    min-width: 8px;
+    background: radial-gradient(ellipse 100% 55% at 100% 50%, rgba(56,139,253,0.65) 0%, rgba(56,139,253,0.25) 65%, transparent 100%);
+    transition: background 150ms ease;
+}
+.file-tree-toggle-strip:hover {
+    background: radial-gradient(ellipse 100% 55% at 100% 50%, rgba(56,139,253,0.9) 0%, rgba(56,139,253,0.4) 65%, transparent 100%);
+}
+.bottom-toggle-strip {
+    min-height: 16px;
+    background: radial-gradient(ellipse 55% 100% at 50% 100%, rgba(56,139,253,0.65) 0%, rgba(56,139,253,0.25) 65%, transparent 100%);
+    transition: background 150ms ease;
+}
+.bottom-toggle-strip:hover {
+    background: radial-gradient(ellipse 55% 100% at 50% 100%, rgba(56,139,253,0.9) 0%, rgba(56,139,253,0.4) 65%, transparent 100%);
 }
 .global-apps-toolbar {
     background-color: #0d1117;
@@ -614,6 +616,15 @@ window {
     background-color: #ffffff;
     color: #24292f;
 }
+window.csd {
+    box-shadow: none;
+    border-radius: 0;
+}
+windowcontents {
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+}
 .app-header {
     background-color: #f6f8fa;
     border-bottom: 1px solid #d0d7de;
@@ -660,10 +671,8 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
     border-right: 1px solid #d0d7de;
 }
 .panel-right {
-    background: linear-gradient(90deg, #e9eef5 0%, #f6f8fa 9%, #f6f8fa 100%);
-    border-left: 2px solid #b9c4d0;
-    box-shadow: inset 4px 0 0 rgba(9, 105, 218, 0.16),
-                -8px 0 22px rgba(27, 31, 36, 0.18);
+    background-color: #f6f8fa;
+    border-left: 1px solid #d0d7de;
 }
 .panel-right separator {
     background-color: rgba(87, 96, 106, 0.2);
@@ -676,7 +685,7 @@ button.wm-btn.wm-maximize:hover { background-color: #56d364; }
     color: #24292f;
 }
 .panel-right .right-panel-surface {
-    margin: 0 8px 8px 8px;
+    margin: 0 0 0 8px;
     border: 1px solid rgba(87, 96, 106, 0.16);
     border-radius: 7px;
     background-color: rgba(255, 255, 255, 0.74);
@@ -773,26 +782,6 @@ listbox {
 .app-running { color: #2da44e; font-size: 10px; }
 .app-stopped { color: #8c959f; font-size: 10px; }
 .placeholder-label { color: #8c959f; font-size: 16px; }
-button.panel-edge-btn {
-    min-width: 12px;
-    min-height: 40px;
-    padding: 0 1px;
-    font-size: 12px;
-    color: #0969da;
-    background-color: #ddf4ff;
-    border-radius: 4px;
-    border: 1px solid #0969da;
-}
-button.panel-edge-btn:hover {
-    color: #ffffff;
-    background-color: #0969da;
-}
-button.bottom-edge-btn {
-    min-width: 60px;
-    min-height: 12px;
-    padding: 1px 0;
-}
-
 /* ── header time label ───────────────────────────────────── */
 .header-time-label {
     font-size: 11px;
@@ -937,12 +926,28 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 
 /* ── global apps toolbar (light, G6.6) ───────────────────── */
 .global-apps-toggle-bar {
-    min-height: 5px;
-    background: linear-gradient(90deg, transparent 0%, rgba(9,105,218,0.3) 15%, rgba(9,105,218,0.55) 50%, rgba(9,105,218,0.3) 85%, transparent 100%);
+    min-height: 8px;
+    background: radial-gradient(ellipse 55% 100% at 50% 0%, rgba(9,105,218,0.6) 0%, rgba(9,105,218,0.22) 65%, transparent 100%);
     transition: background 150ms ease;
 }
 .global-apps-toggle-bar:hover {
-    background: linear-gradient(90deg, transparent 0%, rgba(9,105,218,0.5) 15%, rgba(9,105,218,0.82) 50%, rgba(9,105,218,0.5) 85%, transparent 100%);
+    background: radial-gradient(ellipse 55% 100% at 50% 0%, rgba(9,105,218,0.85) 0%, rgba(9,105,218,0.38) 65%, transparent 100%);
+}
+.file-tree-toggle-strip {
+    min-width: 8px;
+    background: radial-gradient(ellipse 100% 55% at 100% 50%, rgba(9,105,218,0.6) 0%, rgba(9,105,218,0.22) 65%, transparent 100%);
+    transition: background 150ms ease;
+}
+.file-tree-toggle-strip:hover {
+    background: radial-gradient(ellipse 100% 55% at 100% 50%, rgba(9,105,218,0.85) 0%, rgba(9,105,218,0.38) 65%, transparent 100%);
+}
+.bottom-toggle-strip {
+    min-height: 8px;
+    background: radial-gradient(ellipse 55% 100% at 50% 100%, rgba(9,105,218,0.6) 0%, rgba(9,105,218,0.22) 65%, transparent 100%);
+    transition: background 150ms ease;
+}
+.bottom-toggle-strip:hover {
+    background: radial-gradient(ellipse 55% 100% at 50% 100%, rgba(9,105,218,0.85) 0%, rgba(9,105,218,0.38) 65%, transparent 100%);
 }
 .global-apps-toolbar {
     background-color: #ffffff;
@@ -1107,7 +1112,6 @@ button.wm-btn.wm-maximize:hover { background-color: #9cffb1; }
 button,
 button.wm-btn,
 .new-project-btn,
-button.panel-edge-btn,
 button.panel-toggle-inline,
 button.terminal-back-btn,
 .center-tab,
@@ -1228,20 +1232,6 @@ progressbar.project-time-bar progress {
 .placeholder-label,
 .app-version-label {
     color: #687899;
-}
-button.panel-edge-btn {
-    color: #36c5f0;
-    background-color: #152039;
-    border-color: #36c5f0;
-}
-button.panel-edge-btn:hover {
-    color: #07131f;
-    background-color: #36c5f0;
-}
-button.bottom-edge-btn {
-    min-width: 60px;
-    min-height: 12px;
-    padding: 1px 0;
 }
 .status-offline {
     color: #ff5c8a;
@@ -1389,10 +1379,22 @@ button.terminal-back-btn:hover {
     border-color: #36c5f0;
 }
 .global-apps-toggle-bar {
-    background: linear-gradient(90deg, transparent 0%, rgba(54,197,240,0.3) 15%, rgba(54,197,240,0.55) 50%, rgba(54,197,240,0.3) 85%, transparent 100%);
+    background: radial-gradient(ellipse 55% 100% at 50% 0%, rgba(54,197,240,0.65) 0%, rgba(54,197,240,0.22) 65%, transparent 100%);
 }
 .global-apps-toggle-bar:hover {
-    background: linear-gradient(90deg, transparent 0%, rgba(54,197,240,0.5) 15%, rgba(54,197,240,0.82) 50%, rgba(54,197,240,0.5) 85%, transparent 100%);
+    background: radial-gradient(ellipse 55% 100% at 50% 0%, rgba(54,197,240,0.9) 0%, rgba(54,197,240,0.38) 65%, transparent 100%);
+}
+.file-tree-toggle-strip {
+    background: radial-gradient(ellipse 100% 55% at 100% 50%, rgba(54,197,240,0.65) 0%, rgba(54,197,240,0.22) 65%, transparent 100%);
+}
+.file-tree-toggle-strip:hover {
+    background: radial-gradient(ellipse 100% 55% at 100% 50%, rgba(54,197,240,0.9) 0%, rgba(54,197,240,0.38) 65%, transparent 100%);
+}
+.bottom-toggle-strip {
+    background: radial-gradient(ellipse 55% 100% at 50% 100%, rgba(54,197,240,0.65) 0%, rgba(54,197,240,0.22) 65%, transparent 100%);
+}
+.bottom-toggle-strip:hover {
+    background: radial-gradient(ellipse 55% 100% at 50% 100%, rgba(54,197,240,0.9) 0%, rgba(54,197,240,0.38) 65%, transparent 100%);
 }
 .global-apps-toolbar {
     background-color: #101624;
@@ -1433,7 +1435,6 @@ button.wm-btn.wm-maximize:hover { background-color: #1f883d; }
 button,
 button.wm-btn,
 .new-project-btn,
-button.panel-edge-btn,
 button.panel-toggle-inline,
 button.terminal-back-btn,
 .center-tab,
@@ -1556,20 +1557,6 @@ progressbar.project-time-bar progress {
 .placeholder-label,
 .app-version-label {
     color: #7b8da8;
-}
-button.panel-edge-btn {
-    color: #0969da;
-    background-color: #e8f7ff;
-    border-color: #0969da;
-}
-button.panel-edge-btn:hover {
-    color: #ffffff;
-    background-color: #0969da;
-}
-button.bottom-edge-btn {
-    min-width: 60px;
-    min-height: 12px;
-    padding: 1px 0;
 }
 .status-offline {
     color: #d7256f;
@@ -1717,10 +1704,22 @@ button.terminal-back-btn:hover {
     border-color: #0969da;
 }
 .global-apps-toggle-bar {
-    background: linear-gradient(90deg, transparent 0%, rgba(9,105,218,0.22) 15%, rgba(9,105,218,0.48) 50%, rgba(9,105,218,0.22) 85%, transparent 100%);
+    background: radial-gradient(ellipse 55% 100% at 50% 0%, rgba(9,105,218,0.5) 0%, rgba(9,105,218,0.18) 65%, transparent 100%);
 }
 .global-apps-toggle-bar:hover {
-    background: linear-gradient(90deg, transparent 0%, rgba(9,105,218,0.42) 15%, rgba(9,105,218,0.72) 50%, rgba(9,105,218,0.42) 85%, transparent 100%);
+    background: radial-gradient(ellipse 55% 100% at 50% 0%, rgba(9,105,218,0.75) 0%, rgba(9,105,218,0.32) 65%, transparent 100%);
+}
+.file-tree-toggle-strip {
+    background: radial-gradient(ellipse 100% 55% at 100% 50%, rgba(9,105,218,0.5) 0%, rgba(9,105,218,0.18) 65%, transparent 100%);
+}
+.file-tree-toggle-strip:hover {
+    background: radial-gradient(ellipse 100% 55% at 100% 50%, rgba(9,105,218,0.75) 0%, rgba(9,105,218,0.32) 65%, transparent 100%);
+}
+.bottom-toggle-strip {
+    background: radial-gradient(ellipse 55% 100% at 50% 100%, rgba(9,105,218,0.5) 0%, rgba(9,105,218,0.18) 65%, transparent 100%);
+}
+.bottom-toggle-strip:hover {
+    background: radial-gradient(ellipse 55% 100% at 50% 100%, rgba(9,105,218,0.75) 0%, rgba(9,105,218,0.32) 65%, transparent 100%);
 }
 .global-apps-toolbar {
     background-color: #f7fbff;

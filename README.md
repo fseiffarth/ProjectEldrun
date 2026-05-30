@@ -72,17 +72,21 @@ dialog). The table below describes the current integration state.
 
 | Agent | Integrated | Tested | Notes |
 |-------|-----------|--------|-------|
-| **Claude** (`claude`) | Yes | Yes | Default agent command. Full tab lifecycle, task metadata, prompt auto-send. |
-| **Codex** (`codex`) | Yes | Yes | Selectable as default agent command in Settings. Same tab lifecycle as Claude. |
+| **Claude** (`claude`) | Yes | Yes | Default agent command. Full tab lifecycle, task metadata, prompt auto-send, project-scoped sandbox env. |
+| **Codex** (`codex`) | Yes | Yes | Selectable as default agent command in Settings. Same tab lifecycle as Claude, including project-scoped sandbox env. |
+| **Gemini** (`gemini`) | Yes | Yes | Selectable as default agent command in Settings. Same tab lifecycle as Claude and Codex, including project-scoped sandbox env. |
 | **Ollama** (local models) | Partial | Partial | Local models appear in the agent picker; selecting one opens the built-in Ollama dialog instead of a VTE tab. See [Local AI](#local-ai-ollama) below. |
 | Mistral CLI | No | No | Not integrated. Would work as a plain shell tab if a CLI exists. |
 | Qwen CLI | No | No | Not integrated. |
 | Grok CLI | No | No | Not integrated. |
 | Other CLI agents | No | No | Any agent with a CLI can be run in a plain shell tab, but Eldrun has no first-class support for it. |
 
-The active agent command (`claude` or `codex`) is set in Settings. If the
+The active agent command (`claude`, `codex`, or `gemini`) is set in Settings. If the
 configured command is not found in `$PATH`, Eldrun falls back to the system
-shell.
+shell. Project-bound terminals also receive a best-effort project sandbox: the
+child process runs in the project directory with project-local XDG config,
+cache, data, state, and temp locations under `<project>/.eldrun/sandbox/`.
+The root orchestration terminal keeps the normal Eldrun workspace environment.
 
 ### Local AI — Ollama
 
@@ -98,7 +102,7 @@ configuration details.
 ### Agents not yet integrated
 
 The following cloud APIs and local runtimes are not currently wired into
-Eldrun: Mistral, Qwen, Grok, Gemini CLI, Llama.cpp, and similar tools. They
+Eldrun: Mistral, Qwen, Grok, Llama.cpp, and similar tools. They
 can always be used manually in a plain shell tab.
 
 ## Platform Support
@@ -119,8 +123,10 @@ can always be used manually in a plain shell tab.
 - **Root control terminal**: opens in `~/eldrun/root/` with workspace-level
   context files for managing Eldrun and the broader project set.
 - **Project terminals**: each active project gets a project-scoped terminal in
-  its directory. The default agent command is configurable as `claude` or
-  `codex`, with shell fallback if the command is missing.
+  its directory, with best-effort project-local sandbox paths for config,
+  cache, data, state, and temp files. The default agent command is
+  configurable as `claude` or `codex`, with shell fallback if the command is
+  missing.
 - **Project creation and import**: the `+` button creates a new git-backed
   project or imports an existing directory by keeping, copying, or moving it.
 - **Bottom project bar**: project pills activate, close, search, and reorder
@@ -170,8 +176,8 @@ Global Eldrun state lives in `~/.local/share/eldrun/`:
 - `time_log.json` and `active_session.json`: session time tracking.
 
 Project-local state lives in each project's `project.json`, alongside scaffolded
-files such as `AGENTS.md`, `CLAUDE.md`, `TODO.md`, `ROADMAP.md`, `STATUS.md`,
-and `DOCUMENTATION.md`. Current open-app metadata is stored in
+files such as `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `TODO.md`, `ROADMAP.md`,
+`STATUS.md`, and `DOCUMENTATION.md`. Current open-app metadata is stored in
 `project.json["open_apps"]`.
 
 See [DOCUMENTATION.md](DOCUMENTATION.md) for the detailed architecture, data

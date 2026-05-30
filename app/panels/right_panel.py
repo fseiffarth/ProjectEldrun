@@ -9,6 +9,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gtk, Gdk, GLib, Pango
 
+from launch_helpers import launch_on_other_monitor
+
 
 # Historical filename: this module now exports the FileTreePanel, not the old
 # project-list right panel.
@@ -53,7 +55,7 @@ _FOLDER_ICON = "folder-symbolic"
 _FILE_ICON = "text-x-generic-symbolic"
 
 _STANDARD_PROJECT_FILES = frozenset({
-    "AGENTS.md", "CLAUDE.md", "TODO.md", "ROADMAP.md",
+    "AGENTS.md", "CLAUDE.md", "GEMINI.md", "TODO.md", "ROADMAP.md",
     "STATUS.md", "DOCUMENTATION.md", ".gitignore", ".claude",
 })
 
@@ -401,7 +403,7 @@ class FileTreePanel(Gtk.Box):
         try:
             entries = sorted(
                 os.scandir(directory),
-                key=lambda e: (not e.is_dir(), e.name.lower()),
+                key=lambda e: (not e.is_dir(), pathlib.Path(e.name).suffix.lower(), e.name.lower()),
             )
         except OSError:
             return
@@ -591,8 +593,10 @@ class FileTreePanel(Gtk.Box):
                     return GLib.find_program_in_path(raw) or raw
         return None
 
-    def _launch_and_track(self, app: str, path: str, project_dir: str | None):
-        subprocess.Popen([app, path], cwd=project_dir or os.path.dirname(path))
+    def _launch_and_track(self, argv: list[str], cwd: str | None):
+        root = self.get_root()
+        anchor_window = root if isinstance(root, Gtk.Window) else None
+        return launch_on_other_monitor(argv, cwd=cwd, anchor_window=anchor_window)
 
     def _open_file(self, path: str):
         project_dir = self._current_project.get("directory") if self._current_project else None
@@ -604,13 +608,11 @@ class FileTreePanel(Gtk.Box):
             app = self._resolve_default_handler(path)
 
         if app is not None:
-            try:
-                self._launch_and_track(app, path, project_dir)
-            except OSError:
-                try:
-                    subprocess.Popen(["xdg-open", path])
-                except OSError:
-                    self._show_choose_app_dialog(path)
+            launched = self._launch_and_track([app, path], project_dir or os.path.dirname(path))
+            if launched is None:
+                launched = self._launch_and_track(["xdg-open", path], None)
+            if launched is None:
+                self._show_choose_app_dialog(path)
             return
 
         self._show_choose_app_dialog(path)
@@ -687,10 +689,7 @@ class FileTreePanel(Gtk.Box):
             elif save_global.get_active() and self._dam and ext:
                 self._dam.set_global_app(ext, cmd)
                 self._refresh_default_app_icons()
-            try:
-                self._launch_and_track(cmd, path, project_dir)
-            except OSError:
-                pass
+            self._launch_and_track([cmd, path], project_dir or os.path.dirname(path))
             win.close()
 
         open_btn.connect("clicked", on_open)
@@ -747,10 +746,7 @@ class FileTreePanel(Gtk.Box):
 
     def _reveal_in_fm(self, path: str, select: bool = True):
         target = os.path.dirname(path) if select else path
-        try:
-            subprocess.Popen(["xdg-open", target])
-        except OSError:
-            pass
+        self._launch_and_track(["xdg-open", target], None)
 
     def _new_entry_dialog(self, parent_dir: str, is_dir: bool):
         kind = "Folder" if is_dir else "File"
