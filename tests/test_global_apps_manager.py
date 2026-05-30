@@ -83,6 +83,14 @@ class TestGlobalAppsRegistry(unittest.TestCase):
         self.assertEqual(stored["browser"]["exec"], "/custom/browser")
         self.assertEqual(stored["notes"], {"exec": "/usr/bin/notes", "visible": True})
 
+    def test_chat_role_can_be_resolved_from_installed_chat_app(self):
+        with patch.object(
+            gam.GLib,
+            "find_program_in_path",
+            side_effect=lambda name: f"/usr/bin/{name}" if name == "discord" else None,
+        ):
+            self.assertEqual(gam._resolve_exec("chat"), "/usr/bin/discord")
+
 
 class TestGlobalAppRoleIcons(unittest.TestCase):
     def _role(self, key: str) -> dict:
@@ -116,6 +124,18 @@ class TestGlobalAppRoleIcons(unittest.TestCase):
         self.assertEqual(gam.role_icon_names(role), ["printer-symbolic"])
         self.assertEqual(gam.select_role_icon(role), "printer-symbolic")
 
+    def test_chat_role_uses_chat_icon_fallback_order(self):
+        role = self._role("chat")
+
+        self.assertEqual(
+            gam.role_icon_names(role),
+            ["internet-chat-symbolic", "user-available-symbolic", "mail-send-symbolic"],
+        )
+        self.assertEqual(
+            gam.select_role_icon(role, lambda name: name == "user-available-symbolic"),
+            "user-available-symbolic",
+        )
+
 
 class TestGlobalAppsLaunch(unittest.TestCase):
     def test_launch_or_raise_no_exec_does_nothing(self):
@@ -136,12 +156,12 @@ class TestGlobalAppsLaunch(unittest.TestCase):
 
         with (
             patch.dict(sys.modules, {"Xlib": None}),
-            patch.object(gam.subprocess, "Popen", return_value=proc) as popen,
+            patch.object(gam, "launch_on_other_monitor", return_value=proc) as launch,
             patch.object(gam.GLib, "timeout_add") as timeout_add,
         ):
             manager.launch_or_raise("browser")
 
-        popen.assert_called_once_with(["/usr/bin/firefox"])
+        launch.assert_called_once_with(["/usr/bin/firefox"], anchor_window=None)
         timeout_add.assert_called_once_with(500, manager._poll_and_sticky, 1234, 10)
 
 

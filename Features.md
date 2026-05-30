@@ -236,6 +236,7 @@ independently before marking the broader feature in later sections as done.
 |---|---:|---|---|---|---|
 | Root orchestration terminal | Implemented | [ ] | [ ] | [ ] | Root opens in `~/eldrun/root/`, respawns on process exit, and is selected by Root control. |
 | Per-project terminal | Implemented | [ ] | [ ] | [ ] | Activating a project opens/spawns an agent terminal in the project directory. |
+| Project sandbox env | Implemented | [ ] | [ ] | [ ] | Project-bound terminals inherit project-local XDG config/cache/data/state/tmp paths under `<project>/.eldrun/sandbox/`; root stays unsandboxed. |
 | Configurable default agent command | Implemented | [ ] | [ ] | [ ] | Settings switch between `claude` and `codex`; terminals respawn with selected command. |
 | Shell fallback | Implemented | [ ] | [ ] | [ ] | If configured command is missing, terminal falls back to a shell. |
 | Header tab strip | Implemented | [ ] | [ ] | [ ] | Agent/terminal tabs remain visible in the header, scroll horizontally, and show active styling. |

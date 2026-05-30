@@ -132,6 +132,57 @@ class TestOllamaClientStreaming(unittest.TestCase):
 
         self.assertTrue(any("myhost" in url for url in calls))
 
+    def test_explicit_model_overrides_settings_model_in_request_payload(self):
+        requests = []
+        body = _make_ndjson_response({"response": "x", "done": True})
+
+        def capturing_urlopen(req, **kw):
+            requests.append(req)
+            return body
+
+        with patch("urllib.request.urlopen", side_effect=capturing_urlopen):
+            self.client.ask(
+                "hi",
+                lambda _chunk: None,
+                lambda: None,
+                lambda _error: None,
+                model="llama3.1",
+            )
+            import threading
+            for t in threading.enumerate():
+                if t.daemon and t != threading.main_thread():
+                    t.join(timeout=2)
+
+        payload = json.loads(requests[0].data.decode())
+        self.assertEqual(payload["model"], "llama3.1")
+        self.assertEqual(payload["prompt"], "hi")
+        self.assertIs(payload["stream"], True)
+
+    def test_list_models_returns_ollama_model_names(self):
+        body = io.BytesIO(json.dumps({
+            "models": [
+                {"name": "mistral:latest"},
+                {"name": "llama3.1:8b"},
+            ],
+        }).encode())
+
+        with patch("urllib.request.urlopen", return_value=body) as urlopen:
+            self.assertEqual(
+                self.client.list_models(),
+                ["mistral:latest", "llama3.1:8b"],
+            )
+
+        urlopen.assert_called_once_with("http://localhost:11434/api/tags", timeout=1)
+
+    def test_list_models_returns_empty_list_when_server_unavailable(self):
+        import urllib.error
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError("Connection refused"),
+        ):
+            self.assertEqual(self.client.list_models(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ from panels.center_panel import (
     _next_numbered_label,
     _normalize_scheme,
     _normalize_task_title,
+    _project_sandbox_envv,
     _task_preview,
     _task_stdin_text,
     _terminal_command_name,
@@ -84,6 +85,19 @@ class TestCenterPanelTabNaming(unittest.TestCase):
     def test_task_stdin_text_is_empty_for_blank_input(self):
         self.assertEqual(_task_stdin_text(" \n\t "), "")
 
+    def test_project_sandbox_envv_scopes_runtime_dirs_to_project(self):
+        envv = _project_sandbox_envv("/work/project")
+        self.assertIsNotNone(envv)
+        env = dict(item.split("=", 1) for item in envv)
+        self.assertEqual(env["ELDRUN_PROJECT_DIR"], "/work/project")
+        self.assertEqual(env["ELDRUN_SANDBOX_MODE"], "project")
+        self.assertEqual(env["XDG_CONFIG_HOME"], "/work/project/.eldrun/sandbox/config")
+        self.assertEqual(env["XDG_CACHE_HOME"], "/work/project/.eldrun/sandbox/cache")
+        self.assertEqual(env["XDG_DATA_HOME"], "/work/project/.eldrun/sandbox/data")
+        self.assertEqual(env["XDG_STATE_HOME"], "/work/project/.eldrun/sandbox/state")
+        self.assertEqual(env["TMPDIR"], "/work/project/.eldrun/sandbox/tmp")
+        self.assertEqual(env["PYTHONPYCACHEPREFIX"], "/work/project/.eldrun/sandbox/cache/pycache")
+
 
 class TestCenterPanelAgentTaskFlow(unittest.TestCase):
     def test_feed_agent_task_writes_normalized_task_to_terminal(self):
@@ -123,7 +137,12 @@ class TestCenterPanelAgentTaskFlow(unittest.TestCase):
         panel._notify_page = MagicMock()
         panel._on_agent_exited = MagicMock()
 
-        def fake_spawn(_terminal, _directory, _cmd, callback):
+        def fake_spawn(_terminal, _directory, _cmd, callback, envv=None):
+            self.assertIsNotNone(envv)
+            env = dict(item.split("=", 1) for item in envv)
+            self.assertEqual(env["ELDRUN_PROJECT_DIR"], "/work/project")
+            self.assertEqual(env["ELDRUN_SANDBOX_MODE"], "project")
+            self.assertEqual(env["XDG_CONFIG_HOME"], "/work/project/.eldrun/sandbox/config")
             callback(_terminal, 1234, None)
 
         with patch.object(cp, "_spawn", side_effect=fake_spawn), \
@@ -149,6 +168,55 @@ class TestCenterPanelAgentTaskFlow(unittest.TestCase):
             terminal,
             "Review tests",
         )
+
+    def test_notify_page_schedules_focus_for_visible_terminal(self):
+        import panels.center_panel as cp
+
+        panel = CenterPanel.__new__(CenterPanel)
+        terminal = MagicMock()
+        panel._tab_widgets = {"agent-1": MagicMock()}
+        panel._terminals = {"agent-1": terminal}
+        panel._stack = MagicMock()
+        panel._stack.get_visible_child_name.return_value = "agent-1"
+        panel._focus_request_serial = 0
+        panel._on_page_changed = MagicMock()
+
+        with patch.object(cp.GLib, "idle_add", side_effect=lambda cb: cb()) as idle_add:
+            panel._notify_page("agent-1")
+
+        idle_add.assert_called_once()
+        terminal.grab_focus.assert_called_once()
+        panel._on_page_changed.assert_called_once_with("agent-1")
+
+    def test_late_focus_request_does_not_steal_focus_from_new_tab(self):
+        import panels.center_panel as cp
+
+        panel = CenterPanel.__new__(CenterPanel)
+        first_terminal = MagicMock()
+        second_terminal = MagicMock()
+        panel._tab_widgets = {"agent-1": MagicMock(), "agent-2": MagicMock()}
+        panel._terminals = {"agent-1": first_terminal, "agent-2": second_terminal}
+        panel._stack = MagicMock()
+        panel._stack.get_visible_child_name.return_value = "agent-2"
+        panel._focus_request_serial = 0
+        panel._on_page_changed = MagicMock()
+
+        callbacks = []
+
+        def _idle_add(cb):
+            callbacks.append(cb)
+            return len(callbacks)
+
+        with patch.object(cp.GLib, "idle_add", side_effect=_idle_add):
+            panel._notify_page("agent-1")
+            panel._notify_page("agent-2")
+
+        callbacks[0]()
+        first_terminal.grab_focus.assert_not_called()
+        second_terminal.grab_focus.assert_not_called()
+
+        callbacks[1]()
+        second_terminal.grab_focus.assert_called_once()
 
 
 if __name__ == "__main__":

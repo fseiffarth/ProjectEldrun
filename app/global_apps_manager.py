@@ -10,6 +10,8 @@ import pathlib
 
 from gi.repository import GLib
 
+from launch_helpers import launch_on_other_monitor
+
 # ── role definitions ──────────────────────────────────────────────────────────
 
 ROLES = [
@@ -185,6 +187,15 @@ class GlobalAppsManager:
 
     # ── startup resolution (G6.2) ─────────────────────────────────────────────
 
+    def get_exec_names(self) -> set[str]:
+        """Return lowercase base names of all configured global app executables."""
+        names: set[str] = set()
+        for entry in self.get_registry().values():
+            exec_cmd = entry.get("exec")
+            if exec_cmd:
+                names.add(os.path.basename(exec_cmd).lower())
+        return names
+
     def populate_missing(self):
         """Probe system defaults for roles whose exec is unset. Called at startup."""
         stored = dict(self._settings.get("global_apps") or {})
@@ -232,7 +243,7 @@ class GlobalAppsManager:
     }
 
     def launch_screenshot_region(self, output_dir: str | None = None,
-                                 on_saved=None):
+                                 on_saved=None, anchor_window=None):
         """Launch the screenshot tool in interactive region-selection mode.
 
         If output_dir is given, the screenshot is saved there and on_saved(path)
@@ -263,10 +274,12 @@ class GlobalAppsManager:
                 out_args = out_fn(target_file, output_dir)
                 use_dir_watch = (tool == "flameshot")
 
-        try:
-            start_ts = _time.time()
-            proc = subprocess.Popen([exec_cmd] + region_args + out_args)
-        except OSError:
+        start_ts = _time.time()
+        proc = launch_on_other_monitor(
+            [exec_cmd] + region_args + out_args,
+            anchor_window=anchor_window,
+        )
+        if proc is None:
             return
 
         if not (output_dir and on_saved):
@@ -295,7 +308,7 @@ class GlobalAppsManager:
 
     # ── launch-or-raise (G6.4 + G6.5) ────────────────────────────────────────
 
-    def launch_or_raise(self, key: str):
+    def launch_or_raise(self, key: str, anchor_window=None, path: str | None = None):
         """Raise an existing window for the role, or launch a fresh sticky instance."""
         registry = self.get_registry()
         entry = registry.get(key, {})
@@ -348,11 +361,10 @@ class GlobalAppsManager:
             pass
 
         # Not found — launch fresh; make sticky once window appears
-        try:
-            proc = subprocess.Popen([exec_cmd])
+        argv = [exec_cmd, path] if path else [exec_cmd]
+        proc = launch_on_other_monitor(argv, anchor_window=anchor_window)
+        if proc is not None:
             GLib.timeout_add(500, self._poll_and_sticky, proc.pid, 10)
-        except OSError:
-            pass
 
     def _poll_and_sticky(self, pid: int, attempts: int) -> bool:
         try:

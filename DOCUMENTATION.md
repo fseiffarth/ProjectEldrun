@@ -6,7 +6,7 @@ sessions available without losing the surrounding project context: files,
 default app choices, global app shortcuts, time tracking, network state, and
 optional desktop workspace routing.
 
-This document reflects the code in `app/` as of May 29, 2026.
+This document reflects the code in `app/` as of May 30, 2026.
 
 ## Document Boundaries
 
@@ -20,8 +20,9 @@ This document reflects the code in `app/` as of May 29, 2026.
 ## Eldrun's Model
 
 Eldrun treats development work as a set of active projects, each with its own
-directory, metadata, terminal state, file context, and optional desktop
-workspace.
+directory, metadata, terminal state, file context, and optional project-space
+state. On X11, the current implementation represents project spaces with a
+visible workspace and a hidden parking workspace.
 
 - The root terminal is for orchestration: managing Eldrun itself and the broader
   workspace under `~/eldrun/root/`.
@@ -37,8 +38,8 @@ workspace.
   tracking follow the active project.
 - Global app shortcuts are intentionally cross-project. They launch or raise
   tools such as a browser, mail client, notes app, screenshot tool, or system
-  monitor and keep those windows sticky across project workspaces when X11
-  allows it.
+  monitor and keep those windows visible across project switches when X11
+  allows it. They are not owned by a single project.
 
 ## Installation
 
@@ -328,7 +329,7 @@ EldrunApp (Adw.Application)
 | `app/time_tracker.py` | Active project session tracking and crash/orphan session closure. |
 | `app/project_stats.py` | Background file-type and time summary scanner. |
 | `app/network_monitor.py` | Background 1.1.1.1:53 probe and network interface type detection. |
-| `app/workspace_manager.py` | Workspace creation/switch/removal for Cinnamon, GNOME, and wmctrl backends; sticky Eldrun window support. |
+| `app/workspace_manager.py` | Two-workspace parking model for Cinnamon, GNOME, and wmctrl backends; moves project windows between visible and hidden workspaces. |
 | `app/panels/center_panel.py` | Terminal stack, tab bar, agent/plain terminal lifecycle, app tab lifecycle, X11 embedding/fallback. |
 | `app/panels/right_panel.py` | Current `FileTreePanel`: file operations, default app dialogs, open-window list. |
 | `app/panels/bottom_panel.py` | Bottom bar, project pills, settings windows, search, drag/drop ordering. |
@@ -527,7 +528,8 @@ Activating a project pill:
 - Updates the file tree overlay.
 - Starts a time-tracking session for the project.
 - Refreshes time tooltips.
-- Switches to the assigned workspace if workspace management is enabled.
+- Moves tracked project windows between the visible workspace and hidden parking
+  workspace if workspace management is enabled.
 
 Switching away from a project terminal closes the active time-tracking session.
 
@@ -563,6 +565,11 @@ When a file is opened:
 This is best-effort and X11-specific. Wayland compositors do not support this
 embedding model.
 
+On startup, Eldrun can relaunch saved open-app entries from
+`project.json["open_apps"]` when the recorded executable and file still exist.
+This is a basic relaunch path; it does not yet restore window geometry, layout,
+focus order, or a durable window identity across restarts.
+
 ### Global App Launching
 
 Global app buttons are separate from project file opening:
@@ -574,8 +581,8 @@ Global app buttons are separate from project file opening:
 5. When a launched or found global app window is available, Eldrun marks it
    sticky across all workspaces on X11.
 
-Global apps are not moved to project workspaces and are not owned by any single
-project.
+Global apps are not moved into the hidden project parking workspace and are not
+owned by any single project.
 
 ### Network Monitoring
 
@@ -597,11 +604,22 @@ project.
 | wmctrl | `wmctrl -l` exits 0 | `wmctrl -n` (count only, no names) | `wmctrl -s` |
 | none | fallthrough | no-op | no-op |
 
-Behavior common to all backends:
+Current parking model:
 
-- Eldrun's window is marked sticky via `_NET_WM_STATE_STICKY` EWMH.
-- Each active project gets a workspace; activating a project switches to it.
-- Assignments are in memory and rebuilt every launch.
+- Workspace 0, named `Eldrun`, is the visible workspace for the current project
+  and the Eldrun window itself.
+- Workspace 1, named `Eldrun-Hidden`, is the parking workspace for inactive
+  project windows.
+- When the user switches projects, non-sticky, non-Eldrun, non-global-app
+  windows from workspace 0 are moved to workspace 1 and recorded against the
+  old project id.
+- Previously recorded windows for the new project are moved from workspace 1
+  back to workspace 0.
+- Global app windows are excluded from project parking and are kept
+  cross-project when X11 sticky-window handling is available.
+- Assignments are in memory only. X11 window ids do not survive restarts, so
+  durable restart restore relies on `project.json["open_apps"]` relaunch
+  metadata rather than saved XIDs.
 - Turning workspace management on mid-session reconciles already-active
   projects without requiring a restart.
 - Normal quit restores managed workspace state where the backend supports it.

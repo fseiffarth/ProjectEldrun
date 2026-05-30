@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Entry point for ProjectEldrun."""
 
-__version__ = "0.0.9"
+__version__ = "0.0.10"
 
 _debug_enabled: bool = True
 
@@ -92,7 +92,8 @@ window.csd {
     box-shadow: none;
     border-radius: 0;
 }
-windowcontents {
+windowcontents,
+windowcontents > * {
     margin: 0;
     padding: 0;
     border-radius: 0;
@@ -470,6 +471,9 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
 .bottom-toggle-strip:hover {
     background: radial-gradient(ellipse 55% 100% at 50% 100%, rgba(56,139,253,0.9) 0%, rgba(56,139,253,0.4) 65%, transparent 100%);
 }
+.global-apps-toggle-bar.panel-open:hover,
+.file-tree-toggle-strip.panel-open:hover,
+.bottom-toggle-strip.panel-open:hover { background: transparent; }
 .global-apps-toolbar {
     background-color: #0d1117;
     border: 1px solid #30363d;
@@ -620,7 +624,8 @@ window.csd {
     box-shadow: none;
     border-radius: 0;
 }
-windowcontents {
+windowcontents,
+windowcontents > * {
     margin: 0;
     padding: 0;
     border-radius: 0;
@@ -949,6 +954,9 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 .bottom-toggle-strip:hover {
     background: radial-gradient(ellipse 55% 100% at 50% 100%, rgba(9,105,218,0.85) 0%, rgba(9,105,218,0.38) 65%, transparent 100%);
 }
+.global-apps-toggle-bar.panel-open:hover,
+.file-tree-toggle-strip.panel-open:hover,
+.bottom-toggle-strip.panel-open:hover { background: transparent; }
 .global-apps-toolbar {
     background-color: #ffffff;
     border: 1px solid #d0d7de;

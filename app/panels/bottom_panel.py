@@ -484,6 +484,9 @@ class BottomPanel(Gtk.Box):
         if self._popover is None:
             popover = Gtk.Popover()
             popover.set_parent(btn)
+            popover.set_autohide(True)
+            popover.set_has_arrow(True)
+            popover.connect("closed", self._on_add_popover_closed)
 
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             box.set_margin_start(4)
@@ -506,7 +509,13 @@ class BottomPanel(Gtk.Box):
             popover.set_child(box)
             self._popover = popover
 
+        if self._on_context_menu_open_changed is not None:
+            self._on_context_menu_open_changed(True)
         self._popover.popup()
+
+    def _on_add_popover_closed(self, _popover):
+        if self._on_context_menu_open_changed is not None:
+            self._on_context_menu_open_changed(False)
 
     # ── settings ──────────────────────────────────────────────────────────────
 
@@ -1112,7 +1121,7 @@ class BottomPanel(Gtk.Box):
     # ── public API ─────────────────────────────────────────────────────────────
 
     def _on_pill_popover_state_changed(self, is_open: bool):
-        if self._on_context_menu_open_changed:
+        if self._on_context_menu_open_changed is not None:
             self._on_context_menu_open_changed(is_open)
 
     def add_project_pill(self, project: dict):

@@ -203,6 +203,49 @@ class TestProjectManager(unittest.TestCase):
             data = json.load(f)
         self.assertEqual(data["agent_tasks"], [task])
 
+    def test_set_agent_task_replaces_existing_task_with_same_key(self):
+        pm = self._make_pm()
+        project_dir = os.path.join(self.tmpdir, "agent-project")
+        os.makedirs(project_dir)
+        p = pm.add_project("Agent Project", project_dir, "private")
+
+        pm.set_agent_task(p["id"], {"task_key": "agent-1", "task_title": "Old"})
+        pm.set_agent_task(p["id"], {"task_key": "agent-1", "task_title": "New"})
+
+        with open(os.path.join(project_dir, "project.json"), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["agent_tasks"], [{"task_key": "agent-1", "task_title": "New"}])
+
+    def test_set_agent_task_limits_persisted_history_to_max_tasks(self):
+        pm = self._make_pm()
+        project_dir = os.path.join(self.tmpdir, "agent-project")
+        os.makedirs(project_dir)
+        p = pm.add_project("Agent Project", project_dir, "private")
+
+        for idx in range(_pm_module.MAX_AGENT_TASKS + 5):
+            pm.set_agent_task(
+                p["id"],
+                {"task_key": f"agent-{idx}", "task_title": f"Task {idx}"},
+            )
+
+        with open(os.path.join(project_dir, "project.json"), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(len(data["agent_tasks"]), _pm_module.MAX_AGENT_TASKS)
+        self.assertEqual(data["agent_tasks"][0]["task_key"], "agent-24")
+        self.assertEqual(data["agent_tasks"][-1]["task_key"], "agent-5")
+
+    def test_set_agent_task_ignores_missing_task_key(self):
+        pm = self._make_pm()
+        project_dir = os.path.join(self.tmpdir, "agent-project")
+        os.makedirs(project_dir)
+        p = pm.add_project("Agent Project", project_dir, "private")
+
+        pm.set_agent_task(p["id"], {"task_title": "No key"})
+
+        with open(os.path.join(project_dir, "project.json"), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertNotIn("agent_tasks", data)
+
     def test_clear_agent_task_removes_matching_record(self):
         pm = self._make_pm()
         project_dir = os.path.join(self.tmpdir, "agent-project")

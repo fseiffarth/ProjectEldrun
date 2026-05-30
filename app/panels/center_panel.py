@@ -15,6 +15,8 @@ from project_manager import ROOT_DIR as _ROOT_DIR_PATH
 _ROOT_DIR = str(_ROOT_DIR_PATH)
 _MASTER_PAGE = "__master__"
 _TERMINAL_TAB = "__terminal__"
+_PROJECT_SANDBOX_DIRNAME = ".eldrun"
+_PROJECT_SANDBOX_SUBDIRS = ("config", "cache", "data", "state", "tmp")
 _TASK_PREVIEW_WORDS = 50
 
 _OWN_PID = os.getpid()
@@ -139,12 +141,42 @@ def _task_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _spawn(terminal: Vte.Terminal, directory: str, cmd: list[str], on_done):
+def _project_sandbox_envv(directory: str) -> list[str] | None:
+    """Return a project-scoped child environment for best-effort sandboxing."""
+    if os.path.abspath(directory) == os.path.abspath(_ROOT_DIR):
+        return None
+
+    sandbox_root = pathlib.Path(directory) / _PROJECT_SANDBOX_DIRNAME / "sandbox"
+    for name in _PROJECT_SANDBOX_SUBDIRS:
+        try:
+            (sandbox_root / name).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            # Best-effort: the terminal should still launch even if sandbox
+            # directories cannot be created yet.
+            pass
+
+    env = os.environ.copy()
+    env.update({
+        "ELDRUN_PROJECT_DIR": directory,
+        "ELDRUN_SANDBOX_MODE": "project",
+        "XDG_CONFIG_HOME": str(sandbox_root / "config"),
+        "XDG_CACHE_HOME": str(sandbox_root / "cache"),
+        "XDG_DATA_HOME": str(sandbox_root / "data"),
+        "XDG_STATE_HOME": str(sandbox_root / "state"),
+        "TMPDIR": str(sandbox_root / "tmp"),
+        "TEMP": str(sandbox_root / "tmp"),
+        "TMP": str(sandbox_root / "tmp"),
+        "PYTHONPYCACHEPREFIX": str(sandbox_root / "cache" / "pycache"),
+    })
+    return [f"{key}={value}" for key, value in env.items()]
+
+
+def _spawn(terminal: Vte.Terminal, directory: str, cmd: list[str], on_done, envv=None):
     terminal.spawn_async(
         Vte.PtyFlags.DEFAULT,
         directory,
         cmd,
-        None,
+        envv,
         GLib.SpawnFlags.DEFAULT,
         None, None, -1, None,
         on_done,
@@ -162,6 +194,7 @@ class CenterPanel(Gtk.Box):
         scheme = settings_manager.get("color_scheme") if settings_manager else "dark"
         self._color_scheme = _normalize_scheme(scheme)
         self._last_terminal_page = "empty"
+        self._focus_request_serial = 0
         self._terminal_pids: dict[str, int] = {}
         self._terminals: dict[str, Vte.Terminal] = {}
 
@@ -350,12 +383,33 @@ class CenterPanel(Gtk.Box):
             tab_key = _TERMINAL_TAB
         else:
             tab_key = stack_page
-        for key, widget in self._tab_widgets.items():
+        tab_widgets = getattr(self, "_tab_widgets", {})
+        for key, widget in tab_widgets.items():
             if key == tab_key:
                 widget.add_css_class("center-tab-active")
             else:
                 widget.remove_css_class("center-tab-active")
         self._current_tab = tab_key
+
+    def _focus_visible_terminal(self, stack_page: str):
+        terminal = self._terminals.get(stack_page)
+        if terminal is None:
+            return
+
+        if not hasattr(self, "_focus_request_serial"):
+            self._focus_request_serial = 0
+        self._focus_request_serial += 1
+        request_serial = self._focus_request_serial
+
+        def _do_focus():
+            if request_serial != self._focus_request_serial:
+                return False
+            if self._stack.get_visible_child_name() != stack_page:
+                return False
+            terminal.grab_focus()
+            return False
+
+        GLib.idle_add(_do_focus)
 
     # ── agent task metadata ───────────────────────────────────────────────────
 
@@ -474,11 +528,35 @@ class CenterPanel(Gtk.Box):
         box.set_margin_top(6)
         box.set_margin_bottom(6)
 
-        # Row 1: New agent + inline command dropdown (claude, codex, + local Ollama models)
+        # Timer-based fallback autohide — guards against the DropDown child
+        # stealing/losing focus in ways that leave the popover stuck open.
+        _hide_src: list[int | None] = [None]
+
+        def _arm_hide(delay_ms=4000):
+            if _hide_src[0] is not None:
+                GLib.source_remove(_hide_src[0])
+            def _do_hide():
+                _hide_src[0] = None
+                popover.popdown()
+                return False
+            _hide_src[0] = GLib.timeout_add(delay_ms, _do_hide)
+
+        def _disarm_hide():
+            if _hide_src[0] is not None:
+                GLib.source_remove(_hide_src[0])
+                _hide_src[0] = None
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect("enter", lambda *_: _disarm_hide())
+        motion.connect("leave", lambda *_: _arm_hide())
+        box.add_controller(motion)
+        popover.connect("closed", lambda *_: _disarm_hide())
+
+        # Row 1: New agent + inline command dropdown (claude, codex, gemini, + local Ollama models)
         ollama_models: list[str] = (
             self._ollama_client.list_models() if self._ollama_client is not None else []
         )
-        cli_agents = ["claude", "codex"]
+        cli_agents = ["claude", "codex", "gemini"]
         agent_labels = cli_agents + [f"{m} (local)" for m in ollama_models]
 
         agent_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -543,6 +621,7 @@ class CenterPanel(Gtk.Box):
         rect.height = 1
         popover.set_pointing_to(rect)
         popover.popup()
+        _arm_hide()
 
     def _current_project_id(self) -> str | None:
         page = self._last_terminal_page
@@ -609,7 +688,7 @@ class CenterPanel(Gtk.Box):
             if pid and pid > 0:
                 self._terminal_pids[page_key] = pid
 
-        _spawn(terminal, directory, _resolve_command(shell), on_spawned)
+        _spawn(terminal, directory, _resolve_command(shell), on_spawned, envv=_project_sandbox_envv(directory))
         terminal.connect("child-exited", self._on_agent_exited, page_key)
 
         self._add_tab(page_key, label, icon="utilities-terminal-symbolic",
@@ -676,7 +755,7 @@ class CenterPanel(Gtk.Box):
                         normalized_task,
                     )
 
-        _spawn(terminal, directory, _resolve_command(cmd), on_spawned)
+        _spawn(terminal, directory, _resolve_command(cmd), on_spawned, envv=_project_sandbox_envv(directory))
         terminal.connect("child-exited", self._on_agent_exited, page_key)
 
         self._add_tab(page_key, label, icon="utilities-terminal-symbolic",
@@ -699,7 +778,13 @@ class CenterPanel(Gtk.Box):
             if pid and pid > 0:
                 self._terminal_pids[page_key] = pid
 
-        _spawn(terminal, info["directory"], _resolve_command(info["cmd"]), on_respawn)
+        _spawn(
+            terminal,
+            info["directory"],
+            _resolve_command(info["cmd"]),
+            on_respawn,
+            envv=_project_sandbox_envv(info["directory"]),
+        )
 
     def _close_agent_tab(self, page_key: str):
         if page_key not in self._agent_info:
@@ -933,7 +1018,13 @@ class CenterPanel(Gtk.Box):
                 self._pm.set_shell_pid(project["id"], pid)
                 self._terminal_pids[page] = pid
 
-        _spawn(terminal, project["directory"], self._cmd(), on_spawn_done)
+        _spawn(
+            terminal,
+            project["directory"],
+            self._cmd(),
+            on_spawn_done,
+            envv=_project_sandbox_envv(project["directory"]),
+        )
         terminal.connect("child-exited", self._on_child_exited,
                          project["id"], project["directory"])
         if show:
@@ -1033,6 +1124,7 @@ class CenterPanel(Gtk.Box):
 
     def _notify_page(self, page_name: str):
         self._set_active_tab(page_name)
+        self._focus_visible_terminal(page_name)
         if self._on_page_changed is not None:
             self._on_page_changed(page_name)
 
@@ -1045,7 +1137,13 @@ class CenterPanel(Gtk.Box):
                 self._pm.set_shell_pid(project_id, pid)
                 self._terminal_pids[page] = pid
 
-        _spawn(terminal, directory, self._cmd(), on_respawn)
+        _spawn(
+            terminal,
+            directory,
+            self._cmd(),
+            on_respawn,
+            envv=_project_sandbox_envv(directory),
+        )
 
     def respawn_all(self):
         if _TERMINAL_TAB in self._tab_widgets:
@@ -1067,4 +1165,10 @@ class CenterPanel(Gtk.Box):
                 def on_respawn(_term, pid, _error, k=page_key):
                     if pid and pid > 0:
                         self._terminal_pids[k] = pid
-                _spawn(terminal, info["directory"], _resolve_command(info["cmd"]), on_respawn)
+                _spawn(
+                    terminal,
+                    info["directory"],
+                    _resolve_command(info["cmd"]),
+                    on_respawn,
+                    envv=_project_sandbox_envv(info["directory"]),
+                )

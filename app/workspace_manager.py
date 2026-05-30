@@ -392,6 +392,42 @@ class WorkspaceManager:
         except Exception:
             return False
 
+    # ── WM_CLASS helpers ─────────────────────────────────────────────────────
+
+    def _batch_get_wm_class(self, xids: list[int]) -> dict[int, list[str]]:
+        """Return {xid: [lowercase WM_CLASS parts]} for the given XIDs."""
+        result: dict[int, list[str]] = {}
+        if not xids:
+            return result
+        try:
+            d = XD.Display()
+            atom = d.intern_atom("WM_CLASS")
+            for xid in xids:
+                try:
+                    win = d.create_resource_object("window", xid)
+                    prop = win.get_full_property(atom, X.AnyPropertyType)
+                    if prop and prop.value:
+                        raw = prop.value
+                        if isinstance(raw, bytes):
+                            parts = [p.decode("utf-8", errors="replace").lower()
+                                     for p in raw.split(b"\x00") if p]
+                        else:
+                            parts = [p.lower() for p in str(raw).split("\x00") if p]
+                        result[xid] = parts
+                except Exception:
+                    continue
+            d.close()
+        except Exception:
+            pass
+        return result
+
+    @staticmethod
+    def _matches_protected(parts: list[str], protected_names: set[str]) -> bool:
+        return any(
+            any(p == name or p.startswith(name + "-") for p in parts)
+            for name in protected_names
+        )
+
     # ── two-workspace model ───────────────────────────────────────────────────
 
     def setup_two_workspaces(self) -> bool:
@@ -409,12 +445,15 @@ class WorkspaceManager:
         old_project_id: str | None,
         new_project_id: str,
         eldrun_xid: int | None,
+        protected_names: set[str] | None = None,
     ) -> None:
         """Move windows between workspace 0 (current) and workspace 1 (hidden).
 
-        All non-sticky, non-Eldrun windows on workspace 0 are moved to workspace 1
-        and recorded as old_project_id's windows.  Previously recorded windows for
-        new_project_id that still exist on workspace 1 are restored to workspace 0.
+        All non-sticky, non-Eldrun, non-protected windows on workspace 0 are moved
+        to workspace 1 and recorded as old_project_id's windows.  Previously recorded
+        windows for new_project_id that still exist on workspace 1 are restored to
+        workspace 0.  Any protected global-app windows that ended up on workspace 1
+        are rescued back to workspace 0 regardless of which project is switching.
         """
         if not self.is_available():
             return
@@ -423,17 +462,38 @@ class WorkspaceManager:
         if eldrun_xid is not None:
             exclude.add(eldrun_xid)
 
-        # Collect and hide current project's windows
-        ws0_windows = [x for x in self._get_windows_on_desktop(_CURRENT_WS) if x not in exclude]
+        # Collect ws0 windows, skipping Eldrun and global apps
+        ws0_all = self._get_windows_on_desktop(_CURRENT_WS)
+        if protected_names:
+            class_map0 = self._batch_get_wm_class(ws0_all)
+        ws0_windows = []
+        for xid in ws0_all:
+            if xid in exclude:
+                continue
+            if protected_names:
+                parts = class_map0.get(xid, [])
+                if self._matches_protected(parts, protected_names):
+                    continue
+            ws0_windows.append(xid)
+
         for xid in ws0_windows:
             self._move_window_to_desktop(xid, _HIDDEN_WS)
         if old_project_id is not None:
             self._project_windows[old_project_id] = ws0_windows
 
-        # Restore new project's windows from hidden workspace
+        # Restore new project's windows from hidden workspace;
+        # also rescue any global-app windows that drifted to ws1
+        ws1_windows = set(self._get_windows_on_desktop(_HIDDEN_WS))
+
+        if protected_names and ws1_windows:
+            class_map1 = self._batch_get_wm_class(list(ws1_windows))
+            for xid in list(ws1_windows):
+                if self._matches_protected(class_map1.get(xid, []), protected_names):
+                    self._move_window_to_desktop(xid, _CURRENT_WS)
+                    ws1_windows.discard(xid)
+
         target_xids = set(self._project_windows.get(new_project_id, []))
         if target_xids:
-            ws1_windows = set(self._get_windows_on_desktop(_HIDDEN_WS))
             to_restore = target_xids & ws1_windows
             for xid in to_restore:
                 self._move_window_to_desktop(xid, _CURRENT_WS)

@@ -36,6 +36,13 @@ class TestSettingsManager(unittest.TestCase):
             mgr, _ = self._make_manager(d)
             self.assertEqual(mgr.get("terminal_command"), "claude")
 
+    def test_ollama_defaults(self):
+        with tempfile.TemporaryDirectory() as d:
+            mgr, _ = self._make_manager(d)
+            self.assertEqual(mgr.get("ollama_host"), "http://localhost:11434")
+            self.assertEqual(mgr.get("ollama_model"), "mistral")
+            self.assertIs(mgr.get("ollama_autostart"), False)
+
     def test_missing_key_returns_none(self):
         with tempfile.TemporaryDirectory() as d:
             mgr, _ = self._make_manager(d)

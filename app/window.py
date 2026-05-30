@@ -166,7 +166,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         lines = ["All open project terminals will be closed."]
         if self._wm_enabled and self._workspace_manager._project_windows:
             lines.append(
-                "Apps on the hidden workspace will be closed."
+                "Apps on the hidden workspace will be moved to the default workspace."
             )
         lines.append("Make sure your work is saved before continuing.")
 
@@ -199,11 +199,16 @@ class EldrunWindow(Adw.ApplicationWindow):
 
     def _do_quit(self, dlg: Gtk.Window):
         dlg.destroy()
-        if self._wm_enabled:
-            self._workspace_manager.close_workspace_apps(self._get_own_xid())
         self.get_application().quit()
 
     # ── screenshot helpers ────────────────────────────────────────────────────
+
+    def _get_active_project_dir(self) -> str | None:
+        if self._active_project_id:
+            project = self.project_manager.get_project(self._active_project_id)
+            if project and project.get("directory"):
+                return project["directory"]
+        return None
 
     def _get_active_screenshots_dir(self) -> str:
         if self._active_project_id:
@@ -420,12 +425,14 @@ class EldrunWindow(Adw.ApplicationWindow):
                 GLib.source_remove(self._toolbar_hide_source)
                 self._toolbar_hide_source = None
             self._global_apps_revealer.set_reveal_child(True)
+            self._global_apps_toggle_bar.add_css_class("panel-open")
 
         def _toolbar_leave(_ctrl):
             self._toolbar_ptr_inside = False
             def _hide():
                 if not self._toolbar_ptr_inside and not self._toolbar_popover_open:
                     self._global_apps_revealer.set_reveal_child(False)
+                    self._global_apps_toggle_bar.remove_css_class("panel-open")
                 self._toolbar_hide_source = None
                 return False
             if self._toolbar_hide_source is not None:
@@ -479,16 +486,20 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._file_tree_strip.set_size_request(8, -1)
 
         self._file_tree_revealer.set_halign(Gtk.Align.END)
-        self._file_tree_container = Gtk.Overlay()
-        self._file_tree_container.set_hexpand(True)
+        self._file_tree_revealer.set_hexpand(False)
+        # Keep the right panel overlay only as wide as the panel/hover strip.
+        # A full-window overlay here intercepts terminal wheel events.
+        self._file_tree_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self._file_tree_container.set_halign(Gtk.Align.END)
         self._file_tree_container.set_vexpand(True)
         self._file_tree_container.set_margin_top(_HEADER_HEIGHT)
-        self._file_tree_container.set_child(self._file_tree_revealer)
+        self._file_tree_container.set_margin_bottom(0)
         self._file_tree_strip.set_halign(Gtk.Align.END)
         self._file_tree_strip.set_valign(Gtk.Align.FILL)
         self._file_tree_strip.set_hexpand(False)
         self._file_tree_strip.set_vexpand(True)
-        self._file_tree_container.add_overlay(self._file_tree_strip)
+        self._file_tree_container.append(self._file_tree_revealer)
+        self._file_tree_container.append(self._file_tree_strip)
 
         self._bottom_panel = BottomPanel(
             on_root=self._on_root_clicked,
@@ -515,7 +526,6 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._bottom_revealer.set_transition_duration(200)
         self._bottom_revealer.set_reveal_child(False)
         self._bottom_revealer.set_hexpand(True)
-        self._bottom_revealer.set_valign(Gtk.Align.END)
         self._bottom_revealer.set_child(self._bottom_panel)
 
         self._bottom_strip = Gtk.Box()
@@ -523,14 +533,17 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._bottom_strip.set_size_request(-1, 16)
         self._bottom_strip.set_hexpand(True)
         self._bottom_strip.set_halign(Gtk.Align.FILL)
-        self._bottom_strip.set_valign(Gtk.Align.END)
         self._bottom_strip.set_vexpand(False)
 
-        self._bottom_container = Gtk.Overlay()
+        # A bottom-only Box (not a full-height Overlay) so it does not intercept
+        # pointer events at mid-window height, which would block the right-side
+        # file-tree strip from receiving its hover events.
+        self._bottom_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._bottom_container.set_hexpand(True)
-        self._bottom_container.set_vexpand(True)
-        self._bottom_container.set_child(self._bottom_revealer)
-        self._bottom_container.add_overlay(self._bottom_strip)
+        self._bottom_container.set_valign(Gtk.Align.END)
+        self._bottom_container.set_margin_bottom(0)
+        self._bottom_container.append(self._bottom_revealer)
+        self._bottom_container.append(self._bottom_strip)
 
         overlay = Gtk.Overlay()
         self._overlay = overlay
@@ -647,7 +660,8 @@ class EldrunWindow(Adw.ApplicationWindow):
         if not self._wm_enabled:
             return
         xid = self._get_own_xid()
-        self._workspace_manager.switch_project(old_project_id, new_project_id, xid)
+        protected = self._global_apps_manager.get_exec_names()
+        self._workspace_manager.switch_project(old_project_id, new_project_id, xid, protected)
 
     # ── open apps (per-project file tracking) ────────────────────────────────
 
@@ -707,10 +721,18 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._file_tree_strip.set_visible(
             self._active_project_id is not None and not self._panels_hidden
         )
+        if reveal_file_tree:
+            self._file_tree_strip.add_css_class("panel-open")
+        else:
+            self._file_tree_strip.remove_css_class("panel-open")
 
         reveal_bottom = not self._panels_hidden and self._bottom_auto_shown
         self._bottom_revealer.set_reveal_child(reveal_bottom)
         self._bottom_strip.set_visible(not self._panels_hidden)
+        if reveal_bottom:
+            self._bottom_strip.add_css_class("panel-open")
+        else:
+            self._bottom_strip.remove_css_class("panel-open")
         self._center_panel.set_margin_bottom(0)
         self._file_tree_panel.set_margin_bottom(0)
 
@@ -906,6 +928,12 @@ class EldrunWindow(Adw.ApplicationWindow):
                     btn.connect("clicked", lambda _: gam.launch_screenshot_region(
                         output_dir=self._get_active_screenshots_dir(),
                         on_saved=self._show_screenshot_toast,
+                        anchor_window=self,
+                    ))
+                elif key == "file_manager":
+                    btn.connect("clicked", lambda _, k=key: gam.launch_or_raise(
+                        k,
+                        path=self._get_active_project_dir(),
                         anchor_window=self,
                     ))
                 else:

@@ -12,6 +12,22 @@ workspace, one or more agent terminals per project, a persistent project bar, a
 hover-revealed file panel, and cross-project app controls that stay available
 while you move between projects.
 
+## Vision
+
+Eldrun is intended to become a project-centric desktop layer, not just an app
+that launches or embeds other apps. The user-facing model is:
+
+> Select a project -> Eldrun restores that project's working context.
+
+That context should eventually include terminals, files, apps, windows, Git
+state, notes, AI/task metadata, layout, and workflow state. The current MVP is
+focused on Linux Mint/Cinnamon on X11 because it provides the fastest path to
+reliable window control. The longer-term direction is a stable Eldrun core with
+desktop/compositor backends for Cinnamon X11, KDE/KWin, Hyprland, GNOME Shell,
+i3, Sway, and other Wayland environments.
+
+See [VISION.md](VISION.md) for the full strategy and platform rationale.
+
 ![Current Eldrun screen](screenshots/eldrun-current.png)
 
 ```text
@@ -154,12 +170,23 @@ can always be used manually in a plain shell tab.
 - **Network indicator**: probes connectivity and shows online/offline plus wired
   or wireless state.
 - **Workspace management**: optional Cinnamon, GNOME, or `wmctrl` integration can
-  allocate one desktop workspace per active project and keep Eldrun sticky.
+  maintain a visible project workspace plus a hidden parking workspace; project
+  windows are moved between them on switch, while global app windows stay
+  cross-project.
 - **Themes and keyboard controls**: settings include Dark, Bright, Fancy Dark,
   Fancy Bright, terminal command, global apps, file-type defaults, and workspace
   management. `F11` toggles fullscreen and `Super` toggles panel visibility.
 - **Safer quit flow**: closing Eldrun shows a confirmation dialog and cleans up
   managed workspace state on normal exit.
+
+## Current Limits
+
+- X11 app embedding, launch-or-raise, sticky global windows, and workspace
+  control are best-effort and need live desktop-session validation.
+- Open-app metadata is stored per project, but robust restart restore,
+  geometry/layout restore, and primary-window focus are not complete.
+- Wayland does not support the current window manipulation and embedding paths;
+  compositor-specific backends are future work.
 
 ## Project Storage
 

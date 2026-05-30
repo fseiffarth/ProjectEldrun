@@ -157,6 +157,8 @@ class TestEldrunWindowWorkspaceActivation(unittest.TestCase):
         win.settings_manager.get.return_value = enabled
         win._workspace_manager = MagicMock()
         win._get_own_xid = MagicMock(return_value=123)
+        win._global_apps_manager = MagicMock()
+        win._global_apps_manager.get_exec_names.return_value = set()
         win._center_panel = MagicMock()
         win._bottom_panel = MagicMock()
         win.project_manager = MagicMock()
@@ -196,7 +198,12 @@ class TestEldrunWindowWorkspaceActivation(unittest.TestCase):
 
         win._switch_project_workspace("old", "new")
 
-        win._workspace_manager.switch_project.assert_called_once_with("old", "new", 123)
+        win._workspace_manager.switch_project.assert_called_once_with(
+            "old",
+            "new",
+            123,
+            set(),
+        )
 
     def test_switch_project_workspace_noop_when_disabled(self):
         win = self._window(enabled=False)
