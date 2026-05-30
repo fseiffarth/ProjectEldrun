@@ -47,6 +47,7 @@ class TestCenterPanelTabNaming(unittest.TestCase):
     def test_agent_label_base_follows_command(self):
         self.assertEqual(_agent_label_base("claude"), "Claude")
         self.assertEqual(_agent_label_base("codex"), "Codex")
+        self.assertEqual(_agent_label_base("gemini"), "Gemini")
 
     def test_terminal_command_defaults_to_claude(self):
         self.assertEqual(_terminal_command_name(None), "claude")

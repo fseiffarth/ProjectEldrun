@@ -110,6 +110,8 @@ def _agent_label_base(cmd: str) -> str:
         return "Claude"
     if cmd == "codex":
         return "Codex"
+    if cmd == "gemini":
+        return "Gemini"
     return "Agent"
 
 

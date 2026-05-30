@@ -7,7 +7,7 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Gtk, Gdk, GLib, GObject, Pango
 
 
-_TERMINAL_OPTIONS = ["claude", "codex"]
+_TERMINAL_OPTIONS = ["claude", "codex", "gemini"]
 _THEME_OPTIONS = ["Dark", "Bright", "Fancy Dark", "Fancy Bright"]
 _THEME_VALUES = ["dark", "light", "fancy_dark", "fancy_light"]
 _LEGACY_THEME_VALUES = {"fancy": "fancy_dark"}
@@ -460,7 +460,7 @@ class BottomPanel(Gtk.Box):
         self._ollama_box.append(self._ollama_entry)
 
         self._ollama_btn = Gtk.Button()
-        self._ollama_btn.set_icon_name("brain-augmented-symbolic")
+        self._ollama_btn.set_icon_name("go-next-symbolic")
         self._ollama_btn.add_css_class("flat")
         self._ollama_btn.add_css_class("bottom-toggle-btn")
         self._ollama_btn.set_tooltip_text("Send Ollama prompt")
