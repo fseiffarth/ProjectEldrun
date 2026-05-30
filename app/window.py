@@ -24,6 +24,7 @@ from panels.bottom_panel import BottomPanel
 from ollama_client import OllamaClient
 from eldrun import set_theme
 from downloads_manager import apply_browser_download_dir, update_project_downloads
+import launch_helpers as _launch_helpers
 
 _LEFT_WIDTH = 220
 _HEADER_HEIGHT = 40
@@ -63,7 +64,9 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._global_apps_manager = GlobalAppsManager(self.settings_manager)
         self._ollama_client = OllamaClient(self.settings_manager)
         self._ollama_proc = None
-        set_theme(self.settings_manager.get("color_scheme"))
+        initial_scheme = self.settings_manager.get("color_scheme") or "dark"
+        set_theme(initial_scheme)
+        _launch_helpers.set_dark_mode("dark" in str(initial_scheme))
         from eldrun import set_debug
         set_debug(bool(self.settings_manager.get("debug")))
         GLib.idle_add(self._bootstrap_default_apps)
@@ -809,6 +812,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.settings_manager.set("color_scheme", scheme)
         self._center_panel.apply_theme(scheme)
         self._file_tree_panel.apply_theme(scheme)
+        _launch_helpers.set_dark_mode("dark" in scheme)
 
     def _on_debug_toggled(self, enabled: bool):
         from eldrun import set_debug

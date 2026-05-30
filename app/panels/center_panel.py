@@ -209,6 +209,10 @@ class CenterPanel(Gtk.Box):
         # X11 embedding tracking (G4.8 Stage 2)
         self._embedded_pages: dict[str, int] = {}  # page_key → xid
 
+        # Tab layout persistence (G2a / G2b)
+        self._restored_tab_layouts: set[str] = set()  # project_ids already restored
+        self._restoring_tab_layout: bool = False
+
         # ── tab bar ───────────────────────────────────────────────────────────
         tab_bar_scroll = Gtk.ScrolledWindow()
         tab_bar_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
@@ -364,6 +368,7 @@ class CenterPanel(Gtk.Box):
             child = nxt
         for w in self._tab_widgets.values():
             self._tab_bar.append(w)
+        self._save_tab_layout()
         return True
 
     def _on_tab_drop_motion(self, widget: Gtk.Box, x: float) -> Gdk.DragAction:
@@ -666,16 +671,21 @@ class CenterPanel(Gtk.Box):
             and (project_id == "__all__" or self._tab_project.get(key) == project_id)
         }
 
-    def _add_plain_terminal(self):
+    def _add_plain_terminal(self, _show: bool = True, _restore_cmd: str = "",
+                             _restore_dir: str = "", _restore_label: str = ""):
         n = self._next_term_number()
         page_key = f"term-{n}"
         project_id = self._current_project_id()
-        label, label_index = _next_numbered_label(
-            "Terminal", self._used_tab_label_indices("Terminal", project_id)
-        )
-        directory = self._current_agent_directory()
+        if _restore_label:
+            label = _restore_label
+            label_index = n
+        else:
+            label, label_index = _next_numbered_label(
+                "Terminal", self._used_tab_label_indices("Terminal", project_id)
+            )
+        directory = _restore_dir or self._current_agent_directory()
         self._tab_project[page_key] = project_id
-        shell = "bash" if GLib.find_program_in_path("bash") else "sh"
+        shell = _restore_cmd or ("bash" if GLib.find_program_in_path("bash") else "sh")
 
         terminal = self._make_terminal()
         self._terminals[page_key] = terminal
@@ -699,8 +709,10 @@ class CenterPanel(Gtk.Box):
                       on_rename=self._show_agent_rename_popover,
                       on_close=lambda k=page_key: self._close_agent_tab(k))
 
-        self._stack.set_visible_child_name(page_key)
-        self._notify_page(page_key)
+        if _show:
+            self._stack.set_visible_child_name(page_key)
+            self._notify_page(page_key)
+        self._save_tab_layout()
 
     def _close_default_agent_tab(self):
         self._remove_tab(_TERMINAL_TAB)
@@ -723,15 +735,20 @@ class CenterPanel(Gtk.Box):
             terminal.feed_child(stdin_text.encode("utf-8"))
         return False
 
-    def _add_agent_terminal(self, cmd: str, task_title: str = ""):
+    def _add_agent_terminal(self, cmd: str, task_title: str = "", _show: bool = True,
+                             _restore_dir: str = "", _restore_label: str = ""):
         n = self._next_agent_number()
         page_key = f"agent-{n}"
         label_base = _agent_label_base(cmd)
         project_id = self._current_project_id()
-        label, label_index = _next_numbered_label(
-            label_base, self._used_tab_label_indices(label_base, project_id)
-        )
-        directory = self._current_agent_directory()
+        if _restore_label:
+            label = _restore_label
+            label_index = n
+        else:
+            label, label_index = _next_numbered_label(
+                label_base, self._used_tab_label_indices(label_base, project_id)
+            )
+        directory = _restore_dir or self._current_agent_directory()
         self._tab_project[page_key] = project_id
 
         terminal = self._make_terminal()
@@ -768,8 +785,10 @@ class CenterPanel(Gtk.Box):
         if normalized_task:
             self._set_agent_task(page_key, normalized_task, "active")
 
-        self._stack.set_visible_child_name(page_key)
-        self._notify_page(page_key)
+        if _show:
+            self._stack.set_visible_child_name(page_key)
+            self._notify_page(page_key)
+        self._save_tab_layout()
 
     def _on_agent_exited(self, terminal, _status, page_key: str):
         if page_key not in self._agent_info:
@@ -792,6 +811,7 @@ class CenterPanel(Gtk.Box):
     def _close_agent_tab(self, page_key: str):
         if page_key not in self._agent_info:
             return
+        project_id = self._tab_project.get(page_key)
         self._task_state.pop(page_key, None)
         self._clear_persisted_task_state(page_key)
         self._tab_project.pop(page_key, None)
@@ -809,6 +829,7 @@ class CenterPanel(Gtk.Box):
             self._stack.remove(child)
         if self._current_tab == page_key:
             self._switch_to_best_tab()
+        self._save_tab_layout(project_id)
 
     def _show_agent_tab_menu(self, page_key: str):
         widget = self._tab_widgets.get(page_key)
@@ -944,6 +965,7 @@ class CenterPanel(Gtk.Box):
             task["task_updated_at"] = _task_timestamp()
             self._persist_task_state(task_page)
         self._refresh_tab_tooltip(page_key)
+        self._save_tab_layout()
 
     def _update_terminal_tab_label(self, label: str):
         widget = self._tab_widgets.get(_TERMINAL_TAB)
@@ -1037,6 +1059,82 @@ class CenterPanel(Gtk.Box):
         name = "project-" + project_id
         if self._stack.get_child_by_name(name) is not None:
             self._show_terminal(name)
+        if project_id not in self._restored_tab_layouts:
+            self._restored_tab_layouts.add(project_id)
+            GLib.idle_add(self._restore_tab_layout, project_id)
+
+    # ── tab layout persistence (G2a / G2b) ───────────────────────────────────
+
+    def _save_tab_layout(self, project_id: str | None = None):
+        """Persist the current extra-tab set for the given (or current) project."""
+        if getattr(self, "_restoring_tab_layout", False):
+            return
+        pm = getattr(self, "_pm", None)
+        if pm is None:
+            return
+        if project_id is None:
+            project_id = self._current_project_id()
+        if project_id is None:
+            return
+        project = pm.get_project(project_id)
+        if project is None:
+            return
+
+        layout = []
+        for key in self._tab_widgets.keys():
+            if key == _TERMINAL_TAB:
+                continue
+            if not (key.startswith("agent-") or key.startswith("term-")):
+                continue
+            if self._tab_project.get(key) != project_id:
+                continue
+            info = self._agent_info.get(key)
+            if info is None:
+                continue
+            label = self._tab_label(key)
+            layout.append({
+                "key": key,
+                "label": label,
+                "cmd": info.get("cmd", ""),
+                "cwd": info.get("directory", ""),
+            })
+
+        project["tab_layout"] = layout
+        pm._save_local(project)
+
+    def _restore_tab_layout(self, project_id: str) -> bool:
+        """Recreate saved agent/terminal tabs for the given project (called once per project)."""
+        project = self._pm.get_project(project_id)
+        if project is None:
+            return False
+        layout = project.get("tab_layout")
+        if not isinstance(layout, list) or not layout:
+            return False
+
+        self._restoring_tab_layout = True
+        try:
+            for entry in layout:
+                if not isinstance(entry, dict):
+                    continue
+                key = entry.get("key", "")
+                cmd = entry.get("cmd", "")
+                label = entry.get("label", "")
+                cwd = entry.get("cwd", "")
+                if not cmd:
+                    continue
+                if key.startswith("agent-"):
+                    self._add_agent_terminal(
+                        cmd, _show=False,
+                        _restore_dir=cwd, _restore_label=label,
+                    )
+                elif key.startswith("term-"):
+                    self._add_plain_terminal(
+                        _show=False, _restore_cmd=cmd,
+                        _restore_dir=cwd, _restore_label=label,
+                    )
+        finally:
+            self._restoring_tab_layout = False
+        return False
 
     def remove_project_terminal(self, project_id: str):
         # Close agent/terminal tabs belonging to this project
@@ -1124,6 +1222,7 @@ class CenterPanel(Gtk.Box):
         self._color_scheme = _normalize_scheme(scheme)
         for terminal in self._terminals.values():
             self._apply_terminal_colors(terminal)
+        self.propagate_theme(scheme)
 
     def _notify_page(self, page_name: str):
         self._set_active_tab(page_name)
@@ -1187,6 +1286,14 @@ class CenterPanel(Gtk.Box):
         until the embedding infrastructure is wired up and live-session validated.
         """
         raise NotImplementedError
+
+    def propagate_theme(self, scheme: str):
+        """Propagate theme to embedded app windows via XSETTINGS (G3.5 stub).
+
+        Iterates open embed pages and sends Net/ThemeName via python-xlib.
+        No-op until X11 embedding is live-session validated (Phase 2d).
+        """
+        pass  # Stage 3: iterate _embedded_pages, send XSETTINGS Net/ThemeName
 
     def respawn_all(self):
         if _TERMINAL_TAB in self._tab_widgets:

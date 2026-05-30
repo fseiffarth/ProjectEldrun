@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Entry point for ProjectEldrun."""
 
-__version__ = "0.0.11"
+__version__ = "0.0.12"
 
 _debug_enabled: bool = True
 

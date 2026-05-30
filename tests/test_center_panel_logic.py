@@ -219,6 +219,131 @@ class TestCenterPanelAgentTaskFlow(unittest.TestCase):
         second_terminal.grab_focus.assert_called_once()
 
 
+class TestTabLayoutPersistence(unittest.TestCase):
+    """Phase 2 (G2a / G2b) — tab layout save and restore."""
+
+    def _panel(self, project=None):
+        panel = CenterPanel.__new__(CenterPanel)
+        panel._pm = MagicMock()
+        panel._restoring_tab_layout = False
+        panel._restored_tab_layouts = set()
+        panel._tab_widgets = {}
+        panel._agent_info = {}
+        panel._tab_project = {}
+        panel._task_state = {}
+        panel._last_terminal_page = "project-p1"
+        panel._settings = None
+        panel._stack = MagicMock()
+        if project is None:
+            project = {"id": "p1", "directory": "/work/p1", "tab_layout": []}
+        panel._pm.get_project.return_value = project
+        return panel, project
+
+    def test_save_tab_layout_captures_agent_tabs(self):
+        panel, project = self._panel()
+        panel._tab_widgets["agent-1"] = MagicMock()
+        panel._tab_project["agent-1"] = "p1"
+        panel._agent_info["agent-1"] = {"cmd": "claude", "directory": "/work/p1",
+                                         "label_base": "Claude", "label_index": 0}
+
+        with patch.object(panel, "_tab_label", return_value="Claude"):
+            panel._save_tab_layout()
+
+        self.assertEqual(len(project["tab_layout"]), 1)
+        entry = project["tab_layout"][0]
+        self.assertEqual(entry["key"], "agent-1")
+        self.assertEqual(entry["cmd"], "claude")
+        self.assertEqual(entry["label"], "Claude")
+        panel._pm._save_local.assert_called_once_with(project)
+
+    def test_save_tab_layout_excludes_default_terminal_tab(self):
+        from panels.center_panel import _TERMINAL_TAB
+        panel, project = self._panel()
+        panel._tab_widgets[_TERMINAL_TAB] = MagicMock()
+        panel._tab_project[_TERMINAL_TAB] = None
+
+        panel._save_tab_layout()
+
+        self.assertEqual(project["tab_layout"], [])
+
+    def test_save_tab_layout_excludes_other_project_tabs(self):
+        panel, project = self._panel()
+        panel._tab_widgets["agent-2"] = MagicMock()
+        panel._tab_project["agent-2"] = "other-project"
+        panel._agent_info["agent-2"] = {"cmd": "claude", "directory": "/work/other",
+                                         "label_base": "Claude", "label_index": 0}
+
+        panel._save_tab_layout()
+
+        self.assertEqual(project["tab_layout"], [])
+
+    def test_save_tab_layout_skips_when_restoring(self):
+        panel, project = self._panel()
+        panel._restoring_tab_layout = True
+        panel._tab_widgets["agent-1"] = MagicMock()
+        panel._tab_project["agent-1"] = "p1"
+        panel._agent_info["agent-1"] = {"cmd": "claude", "directory": "/work/p1",
+                                         "label_base": "Claude", "label_index": 0}
+
+        panel._save_tab_layout()
+
+        panel._pm._save_local.assert_not_called()
+
+    def test_restore_tab_layout_creates_agent_tabs(self):
+        import panels.center_panel as cp
+
+        project = {
+            "id": "p1", "directory": "/work/p1",
+            "tab_layout": [{"key": "agent-1", "cmd": "claude", "label": "Claude", "cwd": "/work/p1"}],
+        }
+        panel, _ = self._panel(project=project)
+        panel._next_agent_number = MagicMock(return_value=1)
+        panel._current_project_id = MagicMock(return_value="p1")
+        panel._current_agent_directory = MagicMock(return_value="/work/p1")
+        panel._used_tab_label_indices = MagicMock(return_value=set())
+        panel._make_terminal = MagicMock(return_value=MagicMock())
+        panel._add_tab = MagicMock()
+        panel._set_agent_task = MagicMock()
+        panel._notify_page = MagicMock()
+        panel._terminal_pids = {}
+        panel._terminals = {}
+        panel._task_state = {}
+        panel._tab_project = {}
+        panel._agent_info = {}
+        panel._tab_widgets = {}
+
+        with patch.object(cp, "_spawn"), \
+                patch.object(cp.GLib, "timeout_add"):
+            result = panel._restore_tab_layout("p1")
+
+        self.assertFalse(result)
+        self.assertIn("agent-1", panel._agent_info)
+        self.assertEqual(panel._agent_info["agent-1"]["cmd"], "claude")
+        # _save_tab_layout is suppressed during restore (restoring_tab_layout flag)
+        panel._pm._save_local.assert_not_called()
+
+    def test_restore_tab_layout_returns_false_on_empty_layout(self):
+        project = {"id": "p1", "directory": "/work/p1", "tab_layout": []}
+        panel, _ = self._panel(project=project)
+
+        result = panel._restore_tab_layout("p1")
+
+        self.assertFalse(result)
+
+    def test_show_project_terminal_triggers_restore_once(self):
+        import panels.center_panel as cp
+        panel, _ = self._panel()
+        panel._stack.get_child_by_name.return_value = MagicMock()
+        panel._show_terminal = MagicMock()
+
+        with patch.object(cp.GLib, "idle_add") as idle_add:
+            panel.show_project_terminal("p1")
+            panel.show_project_terminal("p1")  # second call should not re-schedule
+
+        idle_add.assert_called_once_with(panel._restore_tab_layout, "p1")
+        self.assertIn("p1", panel._restored_tab_layouts)
+
+
 class TestCenterPanelEmbedRetry(unittest.TestCase):
     """Phase 1 (G4.8 Stage 2) — X11 embedding retry scaffold."""
 
