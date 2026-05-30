@@ -665,15 +665,19 @@ class EldrunWindow(Adw.ApplicationWindow):
 
     # ── open apps (per-project file tracking) ────────────────────────────────
 
-    def _on_file_opened(self, project_id: str, exec_cmd: str, file_path: str):
+    def _on_file_opened(self, project_id: str, exec_cmd: str, file_path: str,
+                        pid: int | None = None):
         """Callback from the file tree when a file is opened with an external app."""
-        self.project_manager.add_open_app(project_id, exec_cmd, file_path)
+        self.project_manager.add_open_app(project_id, exec_cmd, file_path, pid=pid)
 
     def _restore_project_apps(self, project_id: str) -> bool:
-        """Re-launch saved open apps for the given project at startup."""
+        """Re-launch saved standalone open apps for the given project at startup."""
         from launch_helpers import launch_on_other_monitor
         apps = self.project_manager.get_open_apps(project_id)
         for app in apps:
+            mode = app.get("mode") or "standalone"
+            if mode != "standalone":
+                continue
             exec_cmd = app.get("exec")
             file_path = app.get("file")
             if exec_cmd and file_path and os.path.exists(file_path):

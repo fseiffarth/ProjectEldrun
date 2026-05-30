@@ -227,5 +227,100 @@ class TestEldrunWindowWorkspaceActivation(unittest.TestCase):
         win._center_panel.show_project_terminal.assert_called_once_with("alpha")
 
 
+class TestRestoreProjectApps(unittest.TestCase):
+    """Phase 1 (G4.6) — mode-aware standalone app restore."""
+
+    def _window(self, open_apps):
+        win = EldrunWindow.__new__(EldrunWindow)
+        win.project_manager = MagicMock()
+        win.project_manager.get_open_apps.return_value = open_apps
+        return win
+
+    def test_restore_launches_standalone_entries(self):
+        apps = [{"exec": "code", "file": "/work/main.py", "mode": "standalone"}]
+        win = self._window(apps)
+
+        with patch("launch_helpers.launch_on_other_monitor") as launch, \
+                patch("os.path.exists", return_value=True):
+            win._restore_project_apps("proj1")
+
+        launch.assert_called_once_with(["code", "/work/main.py"], anchor_window=win)
+
+    def test_restore_skips_embed_mode_entries(self):
+        apps = [{"exec": "code", "file": "/work/main.py", "mode": "embed"}]
+        win = self._window(apps)
+
+        with patch("launch_helpers.launch_on_other_monitor") as launch, \
+                patch("os.path.exists", return_value=True):
+            win._restore_project_apps("proj1")
+
+        launch.assert_not_called()
+
+    def test_restore_defaults_missing_mode_to_standalone(self):
+        # Legacy entries without mode field should be treated as standalone
+        apps = [{"exec": "code", "file": "/work/main.py"}]
+        win = self._window(apps)
+
+        with patch("launch_helpers.launch_on_other_monitor") as launch, \
+                patch("os.path.exists", return_value=True):
+            win._restore_project_apps("proj1")
+
+        launch.assert_called_once()
+
+    def test_restore_skips_missing_file(self):
+        apps = [{"exec": "code", "file": "/work/missing.py", "mode": "standalone"}]
+        win = self._window(apps)
+
+        with patch("launch_helpers.launch_on_other_monitor") as launch, \
+                patch("os.path.exists", return_value=False):
+            win._restore_project_apps("proj1")
+
+        launch.assert_not_called()
+
+    def test_restore_skips_entries_without_exec(self):
+        apps = [{"file": "/work/main.py", "mode": "standalone"}]
+        win = self._window(apps)
+
+        with patch("launch_helpers.launch_on_other_monitor") as launch, \
+                patch("os.path.exists", return_value=True):
+            win._restore_project_apps("proj1")
+
+        launch.assert_not_called()
+
+    def test_restore_skips_entries_without_file(self):
+        apps = [{"exec": "code", "mode": "standalone"}]
+        win = self._window(apps)
+
+        with patch("launch_helpers.launch_on_other_monitor") as launch:
+            win._restore_project_apps("proj1")
+
+        launch.assert_not_called()
+
+    def test_restore_returns_false_for_glib_one_shot(self):
+        win = self._window([])
+        result = win._restore_project_apps("proj1")
+        self.assertFalse(result)
+
+    def test_on_file_opened_passes_pid_to_project_manager(self):
+        win = EldrunWindow.__new__(EldrunWindow)
+        win.project_manager = MagicMock()
+
+        win._on_file_opened("proj1", "code", "/work/main.py", pid=4242)
+
+        win.project_manager.add_open_app.assert_called_once_with(
+            "proj1", "code", "/work/main.py", pid=4242
+        )
+
+    def test_on_file_opened_passes_none_pid_by_default(self):
+        win = EldrunWindow.__new__(EldrunWindow)
+        win.project_manager = MagicMock()
+
+        win._on_file_opened("proj1", "code", "/work/main.py")
+
+        win.project_manager.add_open_app.assert_called_once_with(
+            "proj1", "code", "/work/main.py", pid=None
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

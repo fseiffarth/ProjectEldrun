@@ -206,6 +206,9 @@ class CenterPanel(Gtk.Box):
         self._tab_project: dict[str, str | None] = {}  # page_key → project_id (None = root)
         self._task_state: dict[str, dict] = {}  # page_key → task metadata
 
+        # X11 embedding tracking (G4.8 Stage 2)
+        self._embedded_pages: dict[str, int] = {}  # page_key → xid
+
         # ── tab bar ───────────────────────────────────────────────────────────
         tab_bar_scroll = Gtk.ScrolledWindow()
         tab_bar_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
@@ -1144,6 +1147,46 @@ class CenterPanel(Gtk.Box):
             on_respawn,
             envv=_project_sandbox_envv(directory),
         )
+
+    # ── X11 window embedding (G4.8) ───────────────────────────────────────────
+
+    def _try_embed_window(self, xid: int, page_key: str, _attempt: int = 0) -> bool:
+        """Retry embedding X11 window xid into page_key up to 5×, 300 ms apart.
+
+        Always leaves the panel in a valid state: on exhausted retries it restores
+        the last known terminal page.  Returns False (GLib callback: do not repeat).
+        """
+        _MAX_ATTEMPTS = 5
+        _RETRY_MS = 300
+
+        if page_key not in self._embedded_pages:
+            return False  # embedding was cancelled externally
+
+        try:
+            success = self._do_embed_window(xid, page_key)
+        except Exception:
+            success = False
+
+        if success:
+            return False
+
+        if _attempt + 1 < _MAX_ATTEMPTS:
+            GLib.timeout_add(
+                _RETRY_MS, self._try_embed_window, xid, page_key, _attempt + 1
+            )
+        else:
+            self._embedded_pages.pop(page_key, None)
+            self._show_terminal(self._last_terminal_page)
+        return False
+
+    def _do_embed_window(self, xid: int, page_key: str) -> bool:
+        """Embed X11 window xid into the named stack page. Returns True on success.
+
+        Stage 2 placeholder (G4.8): implement via Gtk.Socket.add_id(xid) once the
+        socket is mapped and xid is confirmed valid.  Raises NotImplementedError
+        until the embedding infrastructure is wired up and live-session validated.
+        """
+        raise NotImplementedError
 
     def respawn_all(self):
         if _TERMINAL_TAB in self._tab_widgets:

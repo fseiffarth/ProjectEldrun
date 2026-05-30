@@ -398,6 +398,99 @@ class TestProjectManager(unittest.TestCase):
         self.assertTrue(os.path.isdir(new_expected))
 
 
+class TestOpenAppOwnership(unittest.TestCase):
+    """Phase 1 (G4.5 / G4.1) — open_apps metadata: mode, pid, opened_at."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.data_dir = os.path.join(self.tmpdir, "eldrun")
+        os.makedirs(self.data_dir)
+        self.projects_file = os.path.join(self.data_dir, "projects.json")
+        self.projects_root = os.path.join(self.tmpdir, "projects")
+        self.root_dir = os.path.join(self.tmpdir, "root")
+        os.makedirs(self.projects_root)
+        import pathlib
+        self._patches = [
+            patch.object(_pm_module, "DATA_DIR", self.data_dir),
+            patch.object(_pm_module, "PROJECTS_FILE", self.projects_file),
+            patch.object(_pm_module, "PROJECTS_ROOT", pathlib.Path(self.projects_root)),
+            patch.object(_pm_module, "WORKSPACE_ROOT", pathlib.Path(self.tmpdir)),
+            patch.object(_pm_module, "ROOT_DIR", pathlib.Path(self.root_dir)),
+            patch.object(_pm_module, "_git_init"),
+            patch.object(_pm_module, "_git_commit"),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_pm_with_project(self):
+        pm = _pm_module.ProjectManager()
+        project_dir = os.path.join(self.tmpdir, "proj")
+        os.makedirs(project_dir)
+        p = pm.add_project("Proj", project_dir, "private")
+        return pm, p
+
+    def test_add_open_app_includes_mode_standalone_by_default(self):
+        pm, p = self._make_pm_with_project()
+        pm.add_open_app(p["id"], "code", "/proj/main.py")
+        apps = pm.get_open_apps(p["id"])
+        self.assertEqual(apps[0]["mode"], "standalone")
+
+    def test_add_open_app_accepts_custom_mode(self):
+        pm, p = self._make_pm_with_project()
+        pm.add_open_app(p["id"], "code", "/proj/main.py", mode="embed")
+        self.assertEqual(pm.get_open_apps(p["id"])[0]["mode"], "embed")
+
+    def test_add_open_app_includes_opened_at_timestamp(self):
+        import time as _time
+        pm, p = self._make_pm_with_project()
+        before = _time.time()
+        pm.add_open_app(p["id"], "code", "/proj/main.py")
+        after = _time.time()
+        ts = pm.get_open_apps(p["id"])[0]["opened_at"]
+        self.assertGreaterEqual(ts, before)
+        self.assertLessEqual(ts, after)
+
+    def test_add_open_app_includes_pid_when_provided(self):
+        pm, p = self._make_pm_with_project()
+        pm.add_open_app(p["id"], "code", "/proj/main.py", pid=1234)
+        self.assertEqual(pm.get_open_apps(p["id"])[0]["pid"], 1234)
+
+    def test_add_open_app_omits_pid_key_when_none(self):
+        pm, p = self._make_pm_with_project()
+        pm.add_open_app(p["id"], "code", "/proj/main.py", pid=None)
+        self.assertNotIn("pid", pm.get_open_apps(p["id"])[0])
+
+    def test_add_open_app_deduplicates_by_exec_and_file(self):
+        pm, p = self._make_pm_with_project()
+        pm.add_open_app(p["id"], "code", "/proj/main.py", pid=100)
+        pm.add_open_app(p["id"], "code", "/proj/main.py", pid=200)
+        apps = pm.get_open_apps(p["id"])
+        self.assertEqual(len(apps), 1)
+        self.assertEqual(apps[0]["pid"], 200)
+
+    def test_add_open_app_persisted_to_local_project_json(self):
+        pm, p = self._make_pm_with_project()
+        pm.add_open_app(p["id"], "code", "/proj/main.py", pid=42)
+        local = os.path.join(p["directory"], "project.json")
+        with open(local) as f:
+            data = json.load(f)
+        self.assertEqual(len(data["open_apps"]), 1)
+        entry = data["open_apps"][0]
+        self.assertEqual(entry["exec"], "code")
+        self.assertEqual(entry["mode"], "standalone")
+        self.assertEqual(entry["pid"], 42)
+
+    def test_add_open_app_unknown_project_is_noop(self):
+        pm, _ = self._make_pm_with_project()
+        pm.add_open_app("nonexistent-id", "code", "/proj/main.py")  # must not raise
+
+
 class TestWriteScaffoldMissing(unittest.TestCase):
     def test_only_missing_files_written(self):
         with tempfile.TemporaryDirectory() as d:

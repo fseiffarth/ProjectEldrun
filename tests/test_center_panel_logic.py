@@ -219,5 +219,81 @@ class TestCenterPanelAgentTaskFlow(unittest.TestCase):
         second_terminal.grab_focus.assert_called_once()
 
 
+class TestCenterPanelEmbedRetry(unittest.TestCase):
+    """Phase 1 (G4.8 Stage 2) — X11 embedding retry scaffold."""
+
+    def _panel(self):
+        panel = CenterPanel.__new__(CenterPanel)
+        panel._embedded_pages = {}
+        panel._last_terminal_page = "project-abc"
+        panel._show_terminal = MagicMock()
+        return panel
+
+    def test_successful_embed_does_not_retry(self):
+        import panels.center_panel as cp
+
+        panel = self._panel()
+        panel._embedded_pages["embed-1"] = 12345
+
+        with patch.object(panel, "_do_embed_window", return_value=True):
+            with patch.object(cp.GLib, "timeout_add") as timeout_add:
+                result = panel._try_embed_window(12345, "embed-1")
+
+        self.assertFalse(result)
+        timeout_add.assert_not_called()
+        panel._show_terminal.assert_not_called()
+
+    def test_failed_embed_schedules_retry_within_max_attempts(self):
+        import panels.center_panel as cp
+
+        panel = self._panel()
+        panel._embedded_pages["embed-1"] = 12345
+
+        with patch.object(panel, "_do_embed_window", side_effect=RuntimeError):
+            with patch.object(cp.GLib, "timeout_add") as timeout_add:
+                result = panel._try_embed_window(12345, "embed-1", _attempt=0)
+
+        self.assertFalse(result)
+        timeout_add.assert_called_once_with(
+            300, panel._try_embed_window, 12345, "embed-1", 1
+        )
+        panel._show_terminal.assert_not_called()
+
+    def test_last_attempt_exhausted_restores_terminal_and_removes_page(self):
+        import panels.center_panel as cp
+
+        panel = self._panel()
+        panel._embedded_pages["embed-1"] = 12345
+
+        with patch.object(panel, "_do_embed_window", side_effect=RuntimeError):
+            with patch.object(cp.GLib, "timeout_add") as timeout_add:
+                result = panel._try_embed_window(12345, "embed-1", _attempt=4)
+
+        self.assertFalse(result)
+        timeout_add.assert_not_called()
+        panel._show_terminal.assert_called_once_with("project-abc")
+        self.assertNotIn("embed-1", panel._embedded_pages)
+
+    def test_embed_cancelled_externally_is_noop(self):
+        """If embed-page key is removed before retry fires, skip silently."""
+        import panels.center_panel as cp
+
+        panel = self._panel()
+        # _embedded_pages does NOT contain "embed-1"
+
+        with patch.object(panel, "_do_embed_window") as do_embed:
+            with patch.object(cp.GLib, "timeout_add"):
+                result = panel._try_embed_window(12345, "embed-1")
+
+        self.assertFalse(result)
+        do_embed.assert_not_called()
+        panel._show_terminal.assert_not_called()
+
+    def test_do_embed_window_raises_not_implemented(self):
+        panel = self._panel()
+        with self.assertRaises(NotImplementedError):
+            panel._do_embed_window(12345, "embed-1")
+
+
 if __name__ == "__main__":
     unittest.main()
