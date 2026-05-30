@@ -88,7 +88,7 @@ def _human_size(n: int) -> str:
 class FileTreePanel(Gtk.Box):
     def __init__(self, center_panel=None, default_apps_manager=None,
                  settings_manager=None, on_context_menu_open_changed=None,
-                 ollama_client=None):
+                 ollama_client=None, on_file_opened=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("panel-right")
         self.set_size_request(220, -1)
@@ -97,6 +97,7 @@ class FileTreePanel(Gtk.Box):
         self._dam = default_apps_manager
         self._on_context_menu_open_changed = on_context_menu_open_changed
         self._ollama_client = ollama_client
+        self._on_file_opened = on_file_opened  # callback(project_id, exec_cmd, file_path)
         self._color_scheme = _normalize_theme(
             settings_manager.get("color_scheme") if settings_manager else "dark"
         )
@@ -600,6 +601,7 @@ class FileTreePanel(Gtk.Box):
 
     def _open_file(self, path: str):
         project_dir = self._current_project.get("directory") if self._current_project else None
+        project_id = self._current_project.get("id") if self._current_project else None
         app = None
         if self._dam is not None:
             app = self._dam.get_app_for_file(path, project_dir)
@@ -609,10 +611,16 @@ class FileTreePanel(Gtk.Box):
 
         if app is not None:
             launched = self._launch_and_track([app, path], project_dir or os.path.dirname(path))
-            if launched is None:
-                launched = self._launch_and_track(["xdg-open", path], None)
-            if launched is None:
-                self._show_choose_app_dialog(path)
+            if launched is not None:
+                if self._on_file_opened and project_id:
+                    self._on_file_opened(project_id, app, path)
+                return
+            launched = self._launch_and_track(["xdg-open", path], None)
+            if launched is not None:
+                if self._on_file_opened and project_id:
+                    self._on_file_opened(project_id, "xdg-open", path)
+                return
+            self._show_choose_app_dialog(path)
             return
 
         self._show_choose_app_dialog(path)

@@ -28,8 +28,6 @@ from downloads_manager import apply_browser_download_dir, update_project_downloa
 _LEFT_WIDTH = 220
 _HEADER_HEIGHT = 40
 _BOTTOM_HEIGHT = 48
-_FILE_TREE_TOGGLE_WIDTH = 12
-_FILE_TREE_TOGGLE_HEIGHT = 120
 
 class EldrunWindow(Adw.ApplicationWindow):
     def __init__(self, **kwargs):
@@ -48,8 +46,12 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._bottom_auto_shown = False
         self._bottom_pointer_inside = False
         self._bottom_context_menu_open = False
+        self._bottom_panel_motion = None
         self._toolbar_ptr_inside = False
+        self._toolbar_popover_open = False
         self._toolbar_hide_source: int | None = None
+        self._file_tree_strip_hide_src: int | None = None
+        self._bottom_strip_hide_src: int | None = None
         self._active_project_id: str | None = None
         self._downloads_active_dir: object = object()  # sentinel: force first update
         self.project_manager = ProjectManager()
@@ -162,12 +164,9 @@ class EldrunWindow(Adw.ApplicationWindow):
         box.append(heading)
 
         lines = ["All open project terminals will be closed."]
-        if self._wm_enabled and self._workspace_manager._assignments:
-            n = len(self._workspace_manager._assignments)
-            ws_word = "workspaces" if n != 1 else "workspace"
+        if self._wm_enabled and self._workspace_manager._project_windows:
             lines.append(
-                f"{n} project {ws_word} and any apps running on "
-                f"{'them' if n != 1 else 'it'} will be closed."
+                "Apps on the hidden workspace will be closed."
             )
         lines.append("Make sure your work is saved before continuing.")
 
@@ -425,7 +424,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         def _toolbar_leave(_ctrl):
             self._toolbar_ptr_inside = False
             def _hide():
-                if not self._toolbar_ptr_inside:
+                if not self._toolbar_ptr_inside and not self._toolbar_popover_open:
                     self._global_apps_revealer.set_reveal_child(False)
                 self._toolbar_hide_source = None
                 return False
@@ -451,6 +450,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         )
         self._center_panel.set_hexpand(True)
         self._center_panel.set_vexpand(True)
+        self._center_panel.set_margin_top(_HEADER_HEIGHT)
         self._center_panel.set_margin_bottom(0)
 
         # Place the tab bar inside the header's center slot
@@ -462,10 +462,33 @@ class EldrunWindow(Adw.ApplicationWindow):
             settings_manager=self.settings_manager,
             on_context_menu_open_changed=self._on_file_tree_context_menu_open_changed,
             ollama_client=self._ollama_client,
+            on_file_opened=self._on_file_opened,
         )
-        self._file_tree_panel.set_halign(Gtk.Align.END)
         self._file_tree_panel.set_valign(Gtk.Align.FILL)
         self._file_tree_panel.set_margin_bottom(0)
+
+        self._file_tree_revealer = Gtk.Revealer()
+        self._file_tree_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_LEFT)
+        self._file_tree_revealer.set_transition_duration(200)
+        self._file_tree_revealer.set_reveal_child(False)
+        self._file_tree_revealer.set_vexpand(True)
+        self._file_tree_revealer.set_child(self._file_tree_panel)
+
+        self._file_tree_strip = Gtk.Box()
+        self._file_tree_strip.add_css_class("file-tree-toggle-strip")
+        self._file_tree_strip.set_size_request(8, -1)
+
+        self._file_tree_revealer.set_halign(Gtk.Align.END)
+        self._file_tree_container = Gtk.Overlay()
+        self._file_tree_container.set_hexpand(True)
+        self._file_tree_container.set_vexpand(True)
+        self._file_tree_container.set_margin_top(_HEADER_HEIGHT)
+        self._file_tree_container.set_child(self._file_tree_revealer)
+        self._file_tree_strip.set_halign(Gtk.Align.END)
+        self._file_tree_strip.set_valign(Gtk.Align.FILL)
+        self._file_tree_strip.set_hexpand(False)
+        self._file_tree_strip.set_vexpand(True)
+        self._file_tree_container.add_overlay(self._file_tree_strip)
 
         self._bottom_panel = BottomPanel(
             on_root=self._on_root_clicked,
@@ -487,57 +510,90 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_context_menu_open_changed=self._on_bottom_context_menu_open_changed,
             ollama_client=self._ollama_client,
         )
-        self._bottom_panel.set_visible(False)
+        self._bottom_revealer = Gtk.Revealer()
+        self._bottom_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
+        self._bottom_revealer.set_transition_duration(200)
+        self._bottom_revealer.set_reveal_child(False)
+        self._bottom_revealer.set_hexpand(True)
+        self._bottom_revealer.set_valign(Gtk.Align.END)
+        self._bottom_revealer.set_child(self._bottom_panel)
 
-        self._file_tree_toggle_btn = Gtk.Button(label="‹")
-        self._file_tree_toggle_btn.add_css_class("flat")
-        self._file_tree_toggle_btn.add_css_class("panel-edge-btn")
-        self._file_tree_toggle_btn.set_tooltip_text("Show panel")
-        self._file_tree_toggle_btn.set_halign(Gtk.Align.END)
-        self._file_tree_toggle_btn.set_valign(Gtk.Align.CENTER)
-        self._file_tree_toggle_btn.set_size_request(
-            _FILE_TREE_TOGGLE_WIDTH,
-            _FILE_TREE_TOGGLE_HEIGHT,
-        )
-        self._file_tree_toggle_btn.set_visible(False)
+        self._bottom_strip = Gtk.Box()
+        self._bottom_strip.add_css_class("bottom-toggle-strip")
+        self._bottom_strip.set_size_request(-1, 16)
+        self._bottom_strip.set_hexpand(True)
+        self._bottom_strip.set_halign(Gtk.Align.FILL)
+        self._bottom_strip.set_valign(Gtk.Align.END)
+        self._bottom_strip.set_vexpand(False)
 
-        toggle_motion = Gtk.EventControllerMotion()
-        toggle_motion.connect("enter", self._on_file_tree_toggle_enter)
-        self._file_tree_toggle_btn.add_controller(toggle_motion)
-
-        self._bottom_edge_btn = Gtk.Button(label="˄")
-        self._bottom_edge_btn.add_css_class("flat")
-        self._bottom_edge_btn.add_css_class("panel-edge-btn")
-        self._bottom_edge_btn.add_css_class("bottom-edge-btn")
-        self._bottom_edge_btn.set_tooltip_text("Show bottom bar")
-        self._bottom_edge_btn.set_halign(Gtk.Align.CENTER)
-        self._bottom_edge_btn.set_valign(Gtk.Align.END)
-        self._bottom_edge_btn.set_size_request(
-            _FILE_TREE_TOGGLE_HEIGHT,
-            _FILE_TREE_TOGGLE_WIDTH,
-        )
-        self._bottom_edge_btn.set_visible(False)
-
-        bottom_edge_motion = Gtk.EventControllerMotion()
-        bottom_edge_motion.connect("enter", self._on_bottom_edge_btn_enter)
-        self._bottom_edge_btn.add_controller(bottom_edge_motion)
+        self._bottom_container = Gtk.Overlay()
+        self._bottom_container.set_hexpand(True)
+        self._bottom_container.set_vexpand(True)
+        self._bottom_container.set_child(self._bottom_revealer)
+        self._bottom_container.add_overlay(self._bottom_strip)
 
         overlay = Gtk.Overlay()
         self._overlay = overlay
         self.set_content(overlay)
         overlay.set_child(self._center_panel)
-        overlay.add_overlay(self._file_tree_panel)
-        overlay.add_overlay(self._file_tree_toggle_btn)
-        overlay.add_overlay(self._bottom_panel)
-        overlay.add_overlay(self._bottom_edge_btn)
+        overlay.add_overlay(self._file_tree_container)
+        overlay.add_overlay(self._bottom_container)
         overlay.add_overlay(self._global_apps_area)
         overlay.add_overlay(header)
         overlay.set_hexpand(True)
         overlay.set_vexpand(True)
 
-        overlay_motion = Gtk.EventControllerMotion()
-        overlay_motion.connect("motion", self._on_overlay_motion)
-        overlay.add_controller(overlay_motion)
+        def _on_file_tree_strip_enter(_ctrl, _x, _y):
+            if self._file_tree_strip_hide_src is not None:
+                GLib.source_remove(self._file_tree_strip_hide_src)
+                self._file_tree_strip_hide_src = None
+            if self._active_project_id is None or self._panels_hidden:
+                return
+            self._file_tree_pointer_inside = True
+            self._file_tree_auto_shown = True
+            self._apply_panel_visibility()
+
+        def _on_file_tree_strip_leave(_ctrl):
+            def _hide():
+                self._file_tree_strip_hide_src = None
+                if not self._file_tree_pointer_inside:
+                    self._file_tree_auto_shown = False
+                    self._apply_panel_visibility()
+                return False
+            if self._file_tree_strip_hide_src is not None:
+                GLib.source_remove(self._file_tree_strip_hide_src)
+            self._file_tree_strip_hide_src = GLib.timeout_add(250, _hide)
+
+        file_tree_strip_motion = Gtk.EventControllerMotion()
+        file_tree_strip_motion.connect("enter", _on_file_tree_strip_enter)
+        file_tree_strip_motion.connect("leave", _on_file_tree_strip_leave)
+        self._file_tree_strip.add_controller(file_tree_strip_motion)
+
+        def _on_bottom_strip_enter(_ctrl, _x, _y):
+            if self._bottom_strip_hide_src is not None:
+                GLib.source_remove(self._bottom_strip_hide_src)
+                self._bottom_strip_hide_src = None
+            if self._panels_hidden:
+                return
+            self._bottom_pointer_inside = True
+            self._bottom_auto_shown = True
+            self._apply_panel_visibility()
+
+        def _on_bottom_strip_leave(_ctrl):
+            def _hide():
+                self._bottom_strip_hide_src = None
+                if not self._bottom_pointer_inside:
+                    self._bottom_auto_shown = False
+                    self._apply_panel_visibility()
+                return False
+            if self._bottom_strip_hide_src is not None:
+                GLib.source_remove(self._bottom_strip_hide_src)
+            self._bottom_strip_hide_src = GLib.timeout_add(250, _hide)
+
+        bottom_strip_motion = Gtk.EventControllerMotion()
+        bottom_strip_motion.connect("enter", _on_bottom_strip_enter)
+        bottom_strip_motion.connect("leave", _on_bottom_strip_leave)
+        self._bottom_strip.add_controller(bottom_strip_motion)
 
         panel_motion = Gtk.EventControllerMotion()
         panel_motion.connect("enter", self._on_file_tree_panel_enter)
@@ -547,6 +603,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         bottom_panel_motion = Gtk.EventControllerMotion()
         bottom_panel_motion.connect("enter", self._on_bottom_panel_enter)
         bottom_panel_motion.connect("leave", self._on_bottom_panel_leave)
+        self._bottom_panel_motion = bottom_panel_motion
         self._bottom_panel.add_controller(bottom_panel_motion)
 
         self.connect("map", self._on_map)
@@ -575,56 +632,41 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._center_panel.open_master_terminal()
         if self._wm_enabled:
             GLib.idle_add(self._setup_workspaces)
+        if current_id:
+            GLib.idle_add(self._restore_project_apps, current_id)
 
     # ── workspace management ──────────────────────────────────────────────────
 
     def _setup_workspaces(self) -> bool:
-        """Make Eldrun sticky and map visible projects to workspaces in pill order."""
-        try:
-            import gi as _gi
-            _gi.require_version("GdkX11", "4.0")
-            from gi.repository import GdkX11
-            surface = self.get_surface()
-            if isinstance(surface, GdkX11.X11Surface):
-                self._workspace_manager.make_eldrun_sticky(surface.get_xid())
-        except Exception:
-            pass
-        assignments = self._workspace_manager.reconcile(
-            self.project_manager.get_visible_projects()
-        )
-        self._refresh_workspace_badges(assignments)
-        if self._active_project_id:
-            self._workspace_manager.activate(self._active_project_id)
+        """Ensure two named workspaces exist: workspace 0 (current) and 1 (hidden)."""
+        self._workspace_manager.setup_two_workspaces()
         return False
 
-    def _refresh_workspace_badges(self, assignments: dict[str, int] | None = None):
-        if assignments is None:
-            assignments = {
-                pid: self._workspace_manager.get_assignment(pid)
-                for pid in self._bottom_panel._pills
-            }
-        for pid in list(self._bottom_panel._pills):
-            idx = assignments.get(pid)
-            self._bottom_panel.update_pill_workspace_id(
-                pid,
-                None if idx is None else idx + 1,
-            )
-
-    def _reconcile_workspaces_now(self):
+    def _switch_project_workspace(self, old_project_id: str | None, new_project_id: str):
+        """Move app windows between workspace 0 and 1 when the current project changes."""
         if not self._wm_enabled:
             return
-        assignments = self._workspace_manager.reconcile(
-            self.project_manager.get_visible_projects()
-        )
-        self._refresh_workspace_badges(assignments)
+        xid = self._get_own_xid()
+        self._workspace_manager.switch_project(old_project_id, new_project_id, xid)
+
+    # ── open apps (per-project file tracking) ────────────────────────────────
+
+    def _on_file_opened(self, project_id: str, exec_cmd: str, file_path: str):
+        """Callback from the file tree when a file is opened with an external app."""
+        self.project_manager.add_open_app(project_id, exec_cmd, file_path)
+
+    def _restore_project_apps(self, project_id: str) -> bool:
+        """Re-launch saved open apps for the given project at startup."""
+        from launch_helpers import launch_on_other_monitor
+        apps = self.project_manager.get_open_apps(project_id)
+        for app in apps:
+            exec_cmd = app.get("exec")
+            file_path = app.get("file")
+            if exec_cmd and file_path and os.path.exists(file_path):
+                launch_on_other_monitor([exec_cmd, file_path], anchor_window=self)
+        return False
 
     # ── panel toggle ──────────────────────────────────────────────────────────
-
-    def _update_toggle_btn(self, show_panel: bool):
-        self._file_tree_toggle_btn.set_label("›" if show_panel else "‹")
-        self._file_tree_toggle_btn.set_tooltip_text(
-            "Hide panel" if show_panel else "Show panel"
-        )
 
     def _on_center_page_changed(self, page_name: str):
         self._apply_panel_visibility()
@@ -658,46 +700,24 @@ class EldrunWindow(Adw.ApplicationWindow):
                 self._downloads_active_dir = new_dl_dir
                 update_project_downloads(new_dl_dir)
 
-        show_panel = (self._active_project_id is not None
-                      and not self._panels_hidden
-                      and (not self._file_tree_hidden or self._file_tree_auto_shown))
-        self._file_tree_panel.set_visible(show_panel)
-        self._update_toggle_btn(show_panel)
-        show_toggle = (self._active_project_id is not None
-                       and not self._panels_hidden
-                       and self._file_tree_hidden
-                       and not show_panel)
-        self._file_tree_toggle_btn.set_visible(show_toggle)
+        reveal_file_tree = (self._active_project_id is not None
+                            and not self._panels_hidden
+                            and (not self._file_tree_hidden or self._file_tree_auto_shown))
+        self._file_tree_revealer.set_reveal_child(reveal_file_tree)
+        self._file_tree_strip.set_visible(
+            self._active_project_id is not None and not self._panels_hidden
+        )
 
-        show_bottom = not self._panels_hidden and self._bottom_auto_shown
-        self._bottom_panel.set_visible(show_bottom)
+        reveal_bottom = not self._panels_hidden and self._bottom_auto_shown
+        self._bottom_revealer.set_reveal_child(reveal_bottom)
+        self._bottom_strip.set_visible(not self._panels_hidden)
         self._center_panel.set_margin_bottom(0)
         self._file_tree_panel.set_margin_bottom(0)
-        self._bottom_edge_btn.set_visible(not self._panels_hidden and not show_bottom)
-
-    def _on_overlay_motion(self, ctrl, x, y):
-        widget = ctrl.get_widget()
-        width = widget.get_width()
-        height = widget.get_height()
-        if x >= width - 4 and not self._file_tree_auto_shown:
-            if self._active_project_id is not None and not self._panels_hidden:
-                self._file_tree_pointer_inside = True
-                self._file_tree_auto_shown = True
-                self._apply_panel_visibility()
-        if y >= height - 4 and not self._bottom_auto_shown and not self._panels_hidden:
-            self._bottom_auto_shown = True
-            self._apply_panel_visibility()
-
-    def _on_file_tree_toggle_enter(self, _ctrl, _x, _y):
-        if self._active_project_id is None or self._panels_hidden:
-            return
-        if not self._file_tree_hidden or self._file_tree_auto_shown:
-            return
-        self._file_tree_pointer_inside = True
-        self._file_tree_auto_shown = True
-        self._apply_panel_visibility()
 
     def _on_file_tree_panel_enter(self, _ctrl, _x, _y):
+        if self._file_tree_strip_hide_src is not None:
+            GLib.source_remove(self._file_tree_strip_hide_src)
+            self._file_tree_strip_hide_src = None
         self._file_tree_pointer_inside = True
 
     def _on_file_tree_panel_leave(self, _ctrl):
@@ -716,15 +736,20 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._file_tree_auto_shown = False
             self._apply_panel_visibility()
 
-    def _on_bottom_edge_btn_enter(self, _ctrl, _x, _y):
-        if self._panels_hidden or self._bottom_auto_shown:
-            return
-        self._bottom_pointer_inside = True
-        self._bottom_auto_shown = True
-        self._apply_panel_visibility()
-
     def _on_bottom_panel_enter(self, _ctrl, _x, _y):
+        if self._bottom_strip_hide_src is not None:
+            GLib.source_remove(self._bottom_strip_hide_src)
+            self._bottom_strip_hide_src = None
         self._bottom_pointer_inside = True
+
+    def _bottom_panel_contains_pointer(self) -> bool:
+        motion = getattr(self, "_bottom_panel_motion", None)
+        if motion is None:
+            return False
+        contains_pointer = getattr(motion, "contains_pointer", None)
+        if contains_pointer is None:
+            return False
+        return bool(contains_pointer())
 
     def _on_bottom_panel_leave(self, _ctrl):
         self._bottom_pointer_inside = False
@@ -737,6 +762,9 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _on_bottom_context_menu_open_changed(self, is_open: bool):
         self._bottom_context_menu_open = is_open
         if is_open:
+            return
+        if self._bottom_panel_contains_pointer():
+            self._bottom_pointer_inside = True
             return
         if self._bottom_auto_shown and not self._bottom_pointer_inside:
             self._bottom_auto_shown = False
@@ -767,8 +795,6 @@ class EldrunWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._setup_workspaces)
         else:
             self._workspace_manager.release_all()
-            for pid in list(self._bottom_panel._pills):
-                self._bottom_panel.update_pill_workspace_id(pid, None)
 
     def _on_terminal_changed(self):
         if hasattr(self._center_panel, "respawn_all"):
@@ -797,10 +823,11 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _on_project_created(self, project: dict):
         from project_stats import scan_project_background
         self._bottom_panel.add_project_pill(project)
-        self._center_panel.add_project_terminal(project)
+        self._center_panel.add_project_terminal(project, show=False)
         scan_project_background(project)
-        if self._wm_enabled:
-            self._reconcile_workspaces_now()
+        old_id = self._active_project_id
+        self._switch_project_workspace(old_id, project["id"])
+        self._center_panel.show_project_terminal(project["id"])
 
     def _on_search_project_selected(self, project_id: str):
         project = self.project_manager.get_project(project_id)
@@ -813,18 +840,18 @@ class EldrunWindow(Adw.ApplicationWindow):
             from project_stats import scan_project_background
             self._bottom_panel.add_project_pill(project)
             scan_project_background(project)
-        self._center_panel.add_project_terminal(project)
-        if self._wm_enabled:
-            self._reconcile_workspaces_now()
-            self._workspace_manager.activate(project_id)
+        self._center_panel.add_project_terminal(project, show=False)
+        old_id = self._active_project_id
+        self._switch_project_workspace(old_id, project_id)
+        self._center_panel.show_project_terminal(project_id)
 
     def _on_root_clicked(self):
         self._center_panel.open_master_terminal()
 
     def _on_pill_activate(self, project_id: str):
+        old_id = self._active_project_id
+        self._switch_project_workspace(old_id, project_id)
         self._center_panel.show_project_terminal(project_id)
-        if self._wm_enabled:
-            self._workspace_manager.activate(project_id)
 
     def _on_pill_close(self, project_id: str):
         self._do_close_project(project_id)
@@ -836,7 +863,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._center_panel.remove_project_terminal(project_id)
         self.project_manager.deactivate_project(project_id)
         if self._wm_enabled:
-            self._reconcile_workspaces_now()
+            self._workspace_manager.on_project_closed(project_id)
         if was_active:
             self._active_project_id = None
             self._on_root_clicked()
@@ -879,9 +906,13 @@ class EldrunWindow(Adw.ApplicationWindow):
                     btn.connect("clicked", lambda _: gam.launch_screenshot_region(
                         output_dir=self._get_active_screenshots_dir(),
                         on_saved=self._show_screenshot_toast,
+                        anchor_window=self,
                     ))
                 else:
-                    btn.connect("clicked", lambda _, k=key: gam.launch_or_raise(k))
+                    btn.connect("clicked", lambda _, k=key: gam.launch_or_raise(
+                        k,
+                        anchor_window=self,
+                    ))
             else:
                 btn.set_sensitive(False)
 
@@ -985,7 +1016,14 @@ class EldrunWindow(Adw.ApplicationWindow):
         clear_btn.connect("clicked", _clear)
         browse_btn.connect("clicked", _browse)
 
+        def _on_popover_closed(_p):
+            self._toolbar_popover_open = False
+            if not self._toolbar_ptr_inside:
+                self._global_apps_revealer.set_reveal_child(False)
+
+        popover.connect("closed", _on_popover_closed)
         popover.set_child(box)
+        self._toolbar_popover_open = True
         popover.popup()
         entry.grab_focus()
 

@@ -253,5 +253,45 @@ class TestFileTreeContextMenuState(unittest.TestCase):
         self.assertEqual(panel._context_events, [True, False])
 
 
+class TestFileTreeLaunchRouting(unittest.TestCase):
+    def _panel(self):
+        panel = FileTreePanel.__new__(FileTreePanel)
+        panel._current_project = {"id": "proj1", "directory": "/work/project"}
+        panel._dam = MagicMock()
+        panel._refresh_default_app_icons = MagicMock()
+        panel._show_choose_app_dialog = MagicMock()
+        panel._on_file_opened = None
+        panel.get_root = MagicMock(return_value=MagicMock())
+        return panel
+
+    def test_open_file_uses_shared_launch_helper(self):
+        panel = self._panel()
+        panel._dam.get_app_for_file.return_value = "code"
+
+        with patch("panels.right_panel.Gtk.Window", object), \
+                patch("panels.right_panel.launch_on_other_monitor", return_value=MagicMock()) as launch:
+            panel._open_file("/work/project/main.py")
+
+        launch.assert_called_once_with(
+            ["code", "/work/project/main.py"],
+            cwd="/work/project",
+            anchor_window=panel.get_root.return_value,
+        )
+        panel._show_choose_app_dialog.assert_not_called()
+
+    def test_reveal_in_fm_uses_shared_launch_helper(self):
+        panel = self._panel()
+
+        with patch("panels.right_panel.Gtk.Window", object), \
+                patch("panels.right_panel.launch_on_other_monitor", return_value=MagicMock()) as launch:
+            panel._reveal_in_fm("/work/project/src/main.py")
+
+        launch.assert_called_once_with(
+            ["xdg-open", "/work/project/src"],
+            cwd=None,
+            anchor_window=panel.get_root.return_value,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -650,6 +650,37 @@ class ProjectManager:
         project["agent_tasks"] = tasks
         self._save_local(project)
 
+    def add_open_app(self, project_id: str, exec_cmd: str, file_path: str):
+        """Record that a file was opened with exec_cmd for this project."""
+        project = self.get_project(project_id)
+        if project is None or not exec_cmd or not file_path:
+            return
+        apps = project.get("open_apps", [])
+        if not isinstance(apps, list):
+            apps = []
+        # De-duplicate by (exec, file) pair; keep the most recent at the front
+        apps = [a for a in apps
+                if not (a.get("exec") == exec_cmd and a.get("file") == file_path)]
+        apps.insert(0, {"exec": exec_cmd, "file": file_path})
+        project["open_apps"] = apps[:50]
+        self._save_local(project)
+
+    def get_open_apps(self, project_id: str) -> list[dict]:
+        """Return the list of open app entries for this project."""
+        project = self.get_project(project_id)
+        if project is None:
+            return []
+        apps = project.get("open_apps", [])
+        return apps if isinstance(apps, list) else []
+
+    def clear_open_apps(self, project_id: str):
+        """Clear all open app entries for this project."""
+        project = self.get_project(project_id)
+        if project is None:
+            return
+        project["open_apps"] = []
+        self._save_local(project)
+
     def create_project(self, name: str, git_type: str) -> dict:
         safe = sanitize_name(name)
         if not safe:
