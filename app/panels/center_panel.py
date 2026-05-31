@@ -267,10 +267,118 @@ class CenterPanel(Gtk.Box):
         self._offline_banner.set_visible(False)
         overlay.add_overlay(self._offline_banner)
 
+        # Terminal hint strip (G5.4)
+        hint_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        hint_box.add_css_class("terminal-hint-strip")
+        hint_box.set_margin_start(8)
+        hint_box.set_margin_end(8)
+        hint_box.set_margin_bottom(4)
+
+        hint_lock = Gtk.Image.new_from_icon_name("security-high-symbolic")
+        hint_lock.set_pixel_size(12)
+        hint_lock.set_valign(Gtk.Align.CENTER)
+        hint_box.append(hint_lock)
+
+        self._hint_label = Gtk.Label()
+        self._hint_label.set_hexpand(True)
+        self._hint_label.set_xalign(0)
+        self._hint_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self._hint_label.set_max_width_chars(80)
+        self._hint_label.add_css_class("dim-label")
+        hint_box.append(self._hint_label)
+
+        hint_close = Gtk.Button(label="×")
+        hint_close.add_css_class("flat")
+        hint_close.add_css_class("close-btn")
+        hint_close.set_valign(Gtk.Align.CENTER)
+        hint_close.connect("clicked", lambda _: self._hide_hint_strip())
+        hint_box.append(hint_close)
+
+        self._hint_revealer = Gtk.Revealer()
+        self._hint_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
+        self._hint_revealer.set_transition_duration(150)
+        self._hint_revealer.set_reveal_child(False)
+        self._hint_revealer.set_halign(Gtk.Align.FILL)
+        self._hint_revealer.set_valign(Gtk.Align.END)
+        self._hint_revealer.set_child(hint_box)
+        overlay.add_overlay(self._hint_revealer)
+
+        self._hint_idle_source: int | None = None
+
         self.append(overlay)
 
     def set_offline(self, offline: bool):
         self._offline_banner.set_visible(offline)
+
+    # ── terminal hint strip (G5.4) ────────────────────────────────────────────
+
+    def _hide_hint_strip(self):
+        self._hint_revealer.set_reveal_child(False)
+        if self._hint_idle_source is not None:
+            GLib.source_remove(self._hint_idle_source)
+            self._hint_idle_source = None
+
+    def _show_hint(self, text: str):
+        self._hint_label.set_label(text)
+        self._hint_revealer.set_reveal_child(True)
+
+    def _schedule_hint_check(self):
+        """Schedule an Ollama hint check after 5 s of terminal idle."""
+        if self._hint_idle_source is not None:
+            GLib.source_remove(self._hint_idle_source)
+        self._hint_idle_source = GLib.timeout_add(5_000, self._check_terminal_hints)
+
+    def _check_terminal_hints(self) -> bool:
+        """Read terminal scrollback and ask Ollama for a hint if errors detected."""
+        self._hint_idle_source = None
+        if self._ollama_client is None:
+            return False
+
+        terminal = self._terminals.get(self._last_terminal_page)
+        if terminal is None:
+            return False
+
+        text = self._read_terminal_scrollback(terminal, lines=50)
+        if not text or not self._has_error_pattern(text):
+            return False
+
+        def on_chunk(chunk):
+            current = self._hint_label.get_label()
+            if not current:
+                self._show_hint(chunk.split("\n")[0])
+            return False
+
+        def on_done():
+            return False
+
+        def on_error(_msg):
+            return False
+
+        self._ollama_client.ask(
+            f"In one sentence, suggest what's wrong with this terminal output:\n\n{text[-1000:]}",
+            on_chunk, on_done, on_error,
+        )
+        return False
+
+    @staticmethod
+    def _read_terminal_scrollback(terminal, lines: int = 50) -> str:
+        """Best-effort read of VTE terminal scrollback text."""
+        try:
+            row_count = terminal.get_row_count()
+            start = max(0, row_count - lines)
+            text = terminal.get_text_range(start, 0, row_count - 1, -1, None, None)
+            if isinstance(text, tuple):
+                text = text[0]
+            return text or ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _has_error_pattern(text: str) -> bool:
+        """Return True if text contains common error/warning keywords."""
+        lower = text.lower()
+        return any(kw in lower for kw in ("error", "traceback", "exception",
+                                           "failed", "fatal", "warning:"))
 
     def _cmd(self) -> list[str]:
         return _resolve_command(_terminal_command_name(self._settings))

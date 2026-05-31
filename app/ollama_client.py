@@ -20,6 +20,21 @@ class OllamaClient:
         )
         t.start()
 
+    def is_ready(self, callback) -> None:
+        """Async Ollama availability check; calls callback(bool) on the GLib main loop."""
+        host = self._settings.get("ollama_host") or "http://localhost:11434"
+        url = f"{host.rstrip('/')}/api/tags"
+
+        def _check():
+            try:
+                with urllib.request.urlopen(url, timeout=2):
+                    ok = True
+            except Exception:
+                ok = False
+            GLib.idle_add(callback, ok)
+
+        threading.Thread(target=_check, daemon=True).start()
+
     def list_models(self) -> list[str]:
         host = self._settings.get("ollama_host") or "http://localhost:11434"
         url = f"{host.rstrip('/')}/api/tags"
