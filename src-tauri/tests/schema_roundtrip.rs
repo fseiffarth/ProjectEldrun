@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use eldrun::schema::{
+use eldrun_lib::schema::{
     ActiveSession, DefaultApps, Project, ProjectEntry, Settings, TimeLogEntry,
 };
 use serde_json::Value;
@@ -248,8 +248,8 @@ fn project_python_rollback_shape() {
 
 #[test]
 fn write_json_creates_backup() {
-    use eldrun::storage::{read_json, write_json};
-    use eldrun::schema::ProjectEntry;
+    use eldrun_lib::storage::{read_json, write_json};
+    use eldrun_lib::schema::ProjectEntry;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("test.json");
@@ -288,8 +288,8 @@ fn write_json_creates_backup() {
 
 #[test]
 fn write_json_backup_preserves_original() {
-    use eldrun::storage::{read_json, write_json};
-    use eldrun::schema::ActiveSession;
+    use eldrun_lib::storage::{read_json, write_json};
+    use eldrun_lib::schema::ActiveSession;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("active_session.json");

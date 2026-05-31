@@ -1,0 +1,9 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema/capability.json",
+  "identifier": "default",
+  "description": "Eldrun default capabilities — commands and window management",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}
