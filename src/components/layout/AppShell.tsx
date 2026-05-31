@@ -5,6 +5,7 @@ import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
+import { useKeyboard } from "../../hooks/useKeyboard";
 
 export function AppShell() {
   const loadSettings = useSettingsStore((s) => s.load);
@@ -16,6 +17,10 @@ export function AppShell() {
     loadProjects();
   }, [loadSettings, loadProjects]);
 
+  const toggleRight = () => setRightOpen((v) => !v);
+
+  useKeyboard({ onToggleRightPanel: toggleRight });
+
   return (
     <div className="app-shell">
       <HeaderBar />
@@ -23,7 +28,7 @@ export function AppShell() {
         <CenterPanel />
         <RightPanel open={rightOpen} />
       </div>
-      <BottomBar onToggleRight={() => setRightOpen((v) => !v)} />
+      <BottomBar onToggleRight={toggleRight} />
     </div>
   );
 }

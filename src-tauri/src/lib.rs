@@ -10,8 +10,41 @@ use commands::terminal::RegistryState;
 use commands::workspace::{WorkspaceState, WorkspaceStateArc};
 use terminal::PtyRegistry;
 
+/// Install a panic hook that writes a crash log under the pinned state dir.
+fn install_crash_logger() {
+    let state_dir = storage::state_dir();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = format!(
+            "{}\nbacktrace: {:?}\n",
+            info,
+            std::backtrace::Backtrace::capture()
+        );
+        let path = state_dir.join("crash.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "=== {} ===\n{}", chrono_utc_now(), msg);
+        }
+        eprintln!("{msg}");
+    }));
+}
+
+fn chrono_utc_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{secs}")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_crash_logger();
+
     let pty_registry: RegistryState = Arc::new(Mutex::new(PtyRegistry::default()));
     let win_registry: WindowRegistryState = Arc::new(Mutex::new(WindowRegistry::default()));
     let workspace: WorkspaceStateArc = Arc::new(Mutex::new(WorkspaceState::new()));
@@ -53,6 +86,9 @@ pub fn run() {
             commands::workspace::workspace_info,
             commands::workspace::workspace_switch,
             commands::workspace::workspace_name,
+            // Downloads
+            commands::downloads::update_downloads_symlink,
+            commands::downloads::configure_browser_downloads,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
