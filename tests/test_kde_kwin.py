@@ -45,6 +45,8 @@ def _backend(kde_version: int = 6, session: str = "x11") -> KDEKWinBackend:
     b._desktop_uuids = []
     b._created_hidden_desktop = False
     b._original_desktop_count = 1
+    b._project_desktops = {}
+    b._root_desktop_uuid = ""
     return b
 
 
@@ -1049,21 +1051,42 @@ class TestEnumerateWindowsKDE6DBus(unittest.TestCase):
 
         self.assertEqual(result["windows"][0]["cls"], "firefox")
 
-    def test_get_desktop_uuids_kde6_reads_each_child_id(self):
+    def test_get_desktop_uuids_kde6_delegates_to_get_all(self):
         b = self._backend6()
-
-        def fake_dbus(path, method, *args):
-            if any("string:id" in a for a in args):
-                return f'   string "{path.split("/")[-1]}"\n'
-            # introspect
-            return '<node><node name="D1"/><node name="D2"/></node>'
-
-        with patch.object(b, "_kwin_dbus", side_effect=fake_dbus), \
-             patch.object(KDEKWinBackend, "_parse_introspect_children",
-                          return_value=["D1", "D2"]):
+        expected = ["uuid-1", "uuid-2"]
+        with patch.object(b, "_get_all_desktop_uuids", return_value=expected):
             uuids = b._get_desktop_uuids_kde6_dbus()
+        self.assertEqual(uuids, expected)
 
-        self.assertEqual(len(uuids), 2)
+    def test_get_all_desktop_uuids_parses_uuids_from_dbus_output(self):
+        b = self._backend6()
+        dbus_output = (
+            'method return time=1234\n'
+            '   variant       array [\n'
+            '         struct {\n'
+            '            uint32 0\n'
+            '            string "dc2a66f1-85e4-41c1-b2bb-d256ef392502"\n'
+            '            string "Desktop 1"\n'
+            '         }\n'
+            '         struct {\n'
+            '            uint32 1\n'
+            '            string "d67df56e-0a97-4b34-927a-3ed936c8a18a"\n'
+            '            string "Eldrun-Hidden"\n'
+            '         }\n'
+            '      ]\n'
+        )
+        with patch.object(b, "_kwin_dbus", return_value=dbus_output):
+            uuids = b._get_all_desktop_uuids()
+        self.assertEqual(uuids, [
+            "dc2a66f1-85e4-41c1-b2bb-d256ef392502",
+            "d67df56e-0a97-4b34-927a-3ed936c8a18a",
+        ])
+
+    def test_get_all_desktop_uuids_returns_empty_on_dbus_failure(self):
+        b = self._backend6()
+        with patch.object(b, "_kwin_dbus", return_value=None):
+            uuids = b._get_all_desktop_uuids()
+        self.assertEqual(uuids, [])
 
 
 # ── window moves — Wayland ────────────────────────────────────────────────────
@@ -1134,21 +1157,38 @@ class TestMoveWindowsWayland(unittest.TestCase):
 
 class TestSwitchDesktopWayland(unittest.TestCase):
 
-    def test_switch_to_desktop_wayland_runs_script(self):
+    def test_switch_to_desktop_wayland_uses_dbus_by_uuid(self):
         b = _backend()
         b._session = "wayland"
-        with patch.object(b, "_run_kwin_script") as run:
-            b._switch_to_desktop_wayland(0)
-        run.assert_called_once()
-
-    def test_switch_to_desktop_wayland_js_contains_index(self):
-        b = _backend()
-        b._session = "wayland"
-        js_args = []
-        with patch.object(b, "_run_kwin_script",
-                          side_effect=lambda js: js_args.append(js) or True):
+        with patch.object(b, "_get_all_desktop_uuids",
+                          return_value=["uuid-0", "uuid-1"]), \
+             patch.object(b, "_set_current_desktop_uuid") as sw:
             b._switch_to_desktop_wayland(1)
-        self.assertIn("workspace.desktops[1]", js_args[0])
+        sw.assert_called_once_with("uuid-1")
+
+    def test_switch_to_desktop_wayland_falls_back_to_script_when_index_oob(self):
+        b = _backend()
+        b._session = "wayland"
+        with patch.object(b, "_get_all_desktop_uuids", return_value=["uuid-0"]), \
+             patch.object(b, "_set_current_desktop_uuid") as sw, \
+             patch.object(b, "_run_kwin_script") as script:
+            b._switch_to_desktop_wayland(5)
+        sw.assert_not_called()
+        script.assert_called_once()
+
+    def test_set_current_desktop_uuid_calls_dbus(self):
+        b = _backend()
+        with patch.object(b, "_kwin_dbus") as dbus:
+            b._set_current_desktop_uuid("test-uuid")
+        call_args = dbus.call_args
+        self.assertIn("current", " ".join(str(a) for a in call_args[0]))
+        self.assertIn("test-uuid", " ".join(str(a) for a in call_args[0]))
+
+    def test_set_current_desktop_uuid_noop_on_empty(self):
+        b = _backend()
+        with patch.object(b, "_kwin_dbus") as dbus:
+            b._set_current_desktop_uuid("")
+        dbus.assert_not_called()
 
     def test_make_sticky_wayland_passes_uuids_to_script(self):
         b = _backend()
@@ -1167,119 +1207,73 @@ class TestSwitchDesktopWayland(unittest.TestCase):
         run.assert_not_called()
 
 
-# ── activate_project — Wayland ────────────────────────────────────────────────
+# ── activate_project — Wayland (per-project desktop model) ───────────────────
 
 class TestActivateWayland(unittest.TestCase):
 
-    def _backend_wayland(self, windows=None, desk_uuids=None):
+    def _backend_wayland(self):
         b = _backend(kde_version=6)
         b._session = "wayland"
-        uuids = desk_uuids or ["d0", "d1"]
-        b._desktop_uuids = uuids
-        state = {
-            "desktopUUIDs": uuids,
-            "windows": windows or [],
-        }
-        b._enumerate_state_wayland = MagicMock(return_value=state)
-        b._move_windows_wayland = MagicMock()
-        b._switch_to_desktop_wayland = MagicMock()
         return b
 
-    def _win(self, uuid, cls="code", desktop_index=0, uuids=None):
-        if uuids is None:
-            uuids = ["d0", "d1"]
-        return {
-            "uuid": uuid,
-            "cls": cls,
-            "desktops": [uuids[desktop_index]] if desktop_index < len(uuids) else [],
-            "onAllDesktops": False,
-        }
-
-    def test_activate_parks_ws0_windows_on_ws1(self):
-        b = self._backend_wayland(windows=[self._win("w1")])
-        b.activate_project("new", "old")
-        b._move_windows_wayland.assert_any_call(["w1"], 1)
-
-    def test_activate_records_old_project_windows(self):
-        b = self._backend_wayland(windows=[self._win("w1")])
-        b.activate_project("new", "old")
-        self.assertEqual(b._project_windows.get("old"), ["w1"])
-
-    def test_activate_restores_new_project_windows_from_ws1(self):
-        b = self._backend_wayland(
-            windows=[self._win("w2", desktop_index=1)]
-        )
-        b._project_windows["new"] = ["w2"]
-        b.activate_project("new", None)
-        b._move_windows_wayland.assert_any_call(["w2"], 0)
-
-    def test_activate_excludes_protected_windows_from_parking(self):
-        b = self._backend_wayland(windows=[
-            self._win("firefox-w", cls="firefox"),
-            self._win("code-w", cls="code"),
-        ])
-        b.activate_project("new", "old", protected_names={"firefox"})
-        # "code" should be parked; "firefox" should not
-        park_calls = [c for c in b._move_windows_wayland.call_args_list
-                      if c[0][1] == 1]  # moves to ws1
-        parked_uuids = park_calls[0][0][0] if park_calls else []
-        self.assertNotIn("firefox-w", parked_uuids)
-        self.assertIn("code-w", parked_uuids)
-
-    def test_activate_rescues_protected_windows_from_ws1(self):
-        b = self._backend_wayland(windows=[
-            self._win("browser-w", cls="firefox", desktop_index=1),
-        ])
-        b.activate_project("new", None, protected_names={"firefox"})
-        rescue_calls = [c for c in b._move_windows_wayland.call_args_list
-                        if c[0][1] == 0]
-        rescued = rescue_calls[0][0][0] if rescue_calls else []
-        self.assertIn("browser-w", rescued)
-
-    def test_activate_calls_switch_to_desktop_zero(self):
+    def test_activate_creates_desktop_for_new_project(self):
         b = self._backend_wayland()
-        b.activate_project("new", None)
-        b._switch_to_desktop_wayland.assert_called_with(0)
+        with patch.object(b, "_ensure_project_desktop",
+                          return_value="new-uuid") as ensure, \
+             patch.object(b, "_set_current_desktop_uuid"):
+            b.activate_project("proj-a", None)
+        ensure.assert_called_once_with("proj-a", "proj-a")
 
-    def test_activate_no_old_id_does_not_record(self):
-        b = self._backend_wayland(windows=[self._win("w1")])
-        b.activate_project("new", None)
-        self.assertNotIn(None, b._project_windows)
+    def test_activate_switches_to_project_desktop_uuid(self):
+        b = self._backend_wayland()
+        with patch.object(b, "_ensure_project_desktop", return_value="desk-uuid"), \
+             patch.object(b, "_set_current_desktop_uuid") as sw:
+            b.activate_project("proj-a", "proj-b")
+        sw.assert_called_once_with("desk-uuid")
 
-    def test_activate_no_old_id_does_not_park_ws0_windows(self):
-        b = self._backend_wayland(windows=[self._win("w1")])
-        b.activate_project("new", None)
-        park_calls = [c for c in b._move_windows_wayland.call_args_list
-                      if c.args[1] == _HIDDEN_DESK]
-        self.assertEqual(park_calls, [])
+    def test_activate_reuses_existing_project_desktop(self):
+        b = self._backend_wayland()
+        b._project_desktops["proj-a"] = "existing-uuid"
+        with patch.object(b, "_set_current_desktop_uuid") as sw, \
+             patch.object(b, "_get_all_desktop_uuids", return_value=["existing-uuid"]), \
+             patch.object(b, "_get_desktop_count", return_value=1), \
+             patch.object(b, "_create_desktop"):
+            b.activate_project("proj-a", None)
+        sw.assert_called_once_with("existing-uuid")
 
-    def test_activate_only_restores_tracked_ws1_windows(self):
-        b = self._backend_wayland(windows=[
-            self._win("tracked", desktop_index=1),
-            self._win("untracked", desktop_index=1),
-        ])
-        b._project_windows["new"] = ["tracked"]
-        b.activate_project("new", None)
-        restore_calls = [c for c in b._move_windows_wayland.call_args_list
-                         if c[0][1] == 0]
-        restored = restore_calls[0][0][0] if restore_calls else []
-        self.assertIn("tracked", restored)
-        self.assertNotIn("untracked", restored)
+    def test_activate_noop_when_desktop_creation_fails(self):
+        b = self._backend_wayland()
+        with patch.object(b, "_ensure_project_desktop", return_value=""), \
+             patch.object(b, "_set_current_desktop_uuid") as sw:
+            b.activate_project("proj-a", None)
+        sw.assert_not_called()
 
-    def test_activate_fallback_when_enumeration_fails(self):
-        b = _backend(kde_version=6)
-        b._session = "wayland"
-        b._desktop_uuids = []
-        b._project_windows = {"old": ["tracked-w"]}
-        b._enumerate_state_wayland = MagicMock(return_value=None)
-        b._move_windows_wayland = MagicMock()
-        b._switch_to_desktop_wayland = MagicMock()
+    def test_ensure_project_desktop_creates_if_missing(self):
+        b = self._backend_wayland()
+        with patch.object(b, "_get_all_desktop_uuids",
+                          side_effect=[["d0"], ["d0", "d1"]]), \
+             patch.object(b, "_get_desktop_count", return_value=1), \
+             patch.object(b, "_create_desktop"):
+            uuid = b._ensure_project_desktop("new-proj", "new-proj")
+        self.assertEqual(uuid, "d1")
+        self.assertEqual(b._project_desktops["new-proj"], "d1")
 
-        b.activate_project("new", "old")
+    def test_ensure_project_desktop_returns_cached_uuid(self):
+        b = self._backend_wayland()
+        b._project_desktops["cached"] = "cached-uuid"
+        with patch.object(b, "_create_desktop") as create:
+            uuid = b._ensure_project_desktop("cached", "cached")
+        create.assert_not_called()
+        self.assertEqual(uuid, "cached-uuid")
 
-        # Should still move tracked windows
-        b._move_windows_wayland.assert_any_call(["tracked-w"], 1)
-        b._switch_to_desktop_wayland.assert_called_with(0)
+    def test_ensure_project_desktop_empty_when_creation_fails(self):
+        b = self._backend_wayland()
+        with patch.object(b, "_get_all_desktop_uuids",
+                          side_effect=[["d0"], ["d0"]]), \
+             patch.object(b, "_get_desktop_count", return_value=1), \
+             patch.object(b, "_create_desktop"):
+            uuid = b._ensure_project_desktop("fail-proj", "fail-proj")
+        self.assertEqual(uuid, "")
 
     def test_activate_dispatches_to_x11_when_session_x11(self):
         b = _backend(kde_version=6)
@@ -1324,17 +1318,31 @@ class TestActivateWayland(unittest.TestCase):
 
 class TestPrepareCleanupWayland(unittest.TestCase):
 
-    def test_prepare_wayland_calls_switch_wayland(self):
+    def test_prepare_wayland_stores_root_uuid(self):
         b = _backend()
         b._session = "wayland"
-        with patch.object(b, "_get_desktop_count", return_value=2), \
-             patch.object(b, "_create_desktop"), \
-             patch.object(b, "_set_desktop_names"), \
-             patch.object(b, "_switch_to_desktop_wayland") as sw, \
-             patch.object(b, "_switch_to_desktop") as sx11:
+        with patch.object(b, "_get_all_desktop_uuids",
+                          return_value=["root-uuid", "other-uuid"]), \
+             patch.object(b, "_run_kwin_script"):
             b.prepare()
-        sw.assert_called_once_with(0)
-        sx11.assert_not_called()
+        self.assertEqual(b._root_desktop_uuid, "root-uuid")
+
+    def test_prepare_wayland_runs_sticky_script(self):
+        b = _backend()
+        b._session = "wayland"
+        with patch.object(b, "_get_all_desktop_uuids", return_value=[]), \
+             patch.object(b, "_run_kwin_script") as run_script:
+            b.prepare()
+        run_script.assert_called_once()
+
+    def test_prepare_wayland_does_not_create_hidden_desktop(self):
+        b = _backend()
+        b._session = "wayland"
+        with patch.object(b, "_get_all_desktop_uuids", return_value=["root"]), \
+             patch.object(b, "_create_desktop") as create, \
+             patch.object(b, "_run_kwin_script"):
+            b.prepare()
+        create.assert_not_called()
 
     def test_prepare_x11_calls_switch_x11(self):
         b = _backend()
@@ -1348,37 +1356,40 @@ class TestPrepareCleanupWayland(unittest.TestCase):
         sx11.assert_called_once_with(0)
         sw.assert_not_called()
 
-    def test_cleanup_wayland_restores_hidden_windows(self):
+    def test_cleanup_wayland_switches_to_root_desktop(self):
         b = _backend()
         b._session = "wayland"
-        b._created_hidden_desktop = False
-        b._original_desktop_count = 2
-        b._desktop_uuids = ["d0", "d1"]
+        b._root_desktop_uuid = "root-uuid"
         b._project_windows = {"p1": ["w1"]}
-        state = {
-            "desktopUUIDs": ["d0", "d1"],
-            "windows": [
-                {"uuid": "w1", "cls": "code", "desktops": ["d1"],
-                 "onAllDesktops": False},
-                {"uuid": "w2", "cls": "code", "desktops": ["d1"],
-                 "onAllDesktops": False},
-            ],
-        }
-        with patch.object(b, "_enumerate_state_wayland", return_value=state), \
-             patch.object(b, "_move_windows_wayland") as move, \
-             patch.object(b, "_collapse_desktop_count"):
+        with patch.object(b, "_set_current_desktop_uuid") as sw:
             b.cleanup()
-        move.assert_called_once_with(["w1"], 0)
+        sw.assert_called_once_with("root-uuid")
+
+    def test_cleanup_wayland_clears_project_desktops(self):
+        b = _backend()
+        b._session = "wayland"
+        b._root_desktop_uuid = "root-uuid"
+        b._project_desktops = {"p1": "d1-uuid", "p2": "d2-uuid"}
+        with patch.object(b, "_set_current_desktop_uuid"):
+            b.cleanup()
+        self.assertEqual(b._project_desktops, {})
 
     def test_cleanup_wayland_clears_project_windows(self):
         b = _backend()
         b._session = "wayland"
-        b._created_hidden_desktop = False
+        b._root_desktop_uuid = ""
         b._project_windows = {"p1": ["w1"]}
-        with patch.object(b, "_enumerate_state_wayland", return_value=None), \
-             patch.object(b, "_collapse_desktop_count"):
+        with patch.object(b, "_set_current_desktop_uuid"):
             b.cleanup()
         self.assertEqual(b._project_windows, {})
+
+    def test_cleanup_wayland_skips_switch_when_no_root_uuid(self):
+        b = _backend()
+        b._session = "wayland"
+        b._root_desktop_uuid = ""
+        with patch.object(b, "_set_current_desktop_uuid") as sw:
+            b.cleanup()
+        sw.assert_not_called()
 
     def test_cleanup_wayland_collapses_desktop_if_created(self):
         b = _backend()

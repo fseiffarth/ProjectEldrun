@@ -8,7 +8,7 @@ Last reviewed: 2026-05-31
 
 ## Current State
 
-- Version: `0.0.17`.
+- Version: `0.0.18`.
 - Primary target: Linux desktop (X11 and KDE Wayland).
 - Main app shell is in place: root terminal, project terminals, agent tabs,
   bottom project switcher, right file tree, global app toolbar, settings, time
@@ -21,8 +21,11 @@ Last reviewed: 2026-05-31
 - Browser download routing uses `~/eldrun/downloads`, a symlink that follows the
   active project or falls back to the root workspace.
 - **KDE Plasma backend** (Phase 6a + 6b): full workspace isolation on KDE X11
-  and KDE Wayland via Xlib EWMH (X11) and KWin JS scripting / DBus (Wayland).
-  KDE 5 and KDE 6 are both supported.
+  and KDE Wayland. X11 uses the 2-desktop Xlib EWMH model. KDE Wayland uses a
+  per-project virtual desktop model: each project gets a dedicated KDE virtual
+  desktop; switching projects switches the active desktop via
+  `VirtualDesktopManager.current` (DBus). Eldrun is made sticky at startup so
+  it remains visible across all desktops. KDE 5 and KDE 6 are both supported.
 
 ## Quality Snapshot
 
@@ -51,27 +54,27 @@ Last reviewed: 2026-05-31
 
 ## Time Log
 
-Total: 57h 36m
+Total: 64h 13m
 
 | Date | Start | Duration |
 |------|-------|----------|
-| 2026-05-31 | 2026-05-31 12:41 | 0h 0m |
-| 2026-05-31 | 2026-05-31 12:41 | 0h 0m |
-| 2026-05-31 | 2026-05-31 12:00 | 0h 40m |
-| 2026-05-31 | 2026-05-31 11:58 | 0h 2m |
-| 2026-05-31 | 2026-05-31 11:58 | 0h 0m |
-| 2026-05-31 | 2026-05-31 11:58 | 0h 0m |
-| 2026-05-31 | 2026-05-31 11:58 | 0h 0m |
-| 2026-05-31 | 2026-05-31 11:57 | 0h 0m |
-| 2026-05-31 | 2026-05-31 11:57 | 0h 0m |
-| 2026-05-31 | 2026-05-31 11:25 | 0h 32m |
-| 2026-05-31 | 2026-05-31 10:32 | 0h 52m |
-| 2026-05-31 | 2026-05-31 10:32 | 0h 0m |
-| 2026-05-31 | 2026-05-31 10:32 | 0h 0m |
-| 2026-05-31 | 2026-05-31 10:31 | 0h 0m |
-| 2026-05-31 | 2026-05-31 10:31 | 0h 0m |
-| 2026-05-31 | 2026-05-31 10:24 | 0h 6m |
-| 2026-05-31 | 2026-05-31 10:24 | 0h 0m |
-| 2026-05-31 | 2026-05-31 10:23 | 0h 0m |
-| 2026-05-31 | 2026-05-31 10:22 | 0h 0m |
-| 2026-05-31 | 2026-05-31 10:14 | 0h 8m |
+| 2026-05-31 | 2026-05-31 19:22 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:21 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:20 | 0h 1m |
+| 2026-05-31 | 2026-05-31 19:19 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:02 | 0h 15m |
+| 2026-05-31 | 2026-05-31 19:01 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:01 | 0h 0m |
+| 2026-05-31 | 2026-05-31 18:58 | 0h 2m |
+| 2026-05-31 | 2026-05-31 18:58 | 0h 0m |
+| 2026-05-31 | 2026-05-31 18:57 | 0h 1m |
+| 2026-05-31 | 2026-05-31 18:56 | 0h 0m |
+| 2026-05-31 | 2026-05-31 18:56 | 0h 0m |
+| 2026-05-31 | 2026-05-31 18:56 | 0h 0m |
+| 2026-05-31 | 2026-05-31 18:56 | 0h 0m |
+| 2026-05-31 | 2026-05-31 18:55 | 0h 0m |
+| 2026-05-31 | 2026-05-31 18:55 | 0h 0m |
+| 2026-05-31 | 2026-05-31 18:55 | 0h 0m |
+| 2026-05-31 | 2026-05-31 18:55 | 0h 0m |
+| 2026-05-31 | 2026-05-31 18:55 | 0h 0m |
+| 2026-05-31 | 2026-05-31 18:55 | 0h 0m |

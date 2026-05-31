@@ -79,6 +79,17 @@ _JS_STICKY = """
 })();
 """
 
+# Make the Eldrun shell window sticky by its app ID (no UUID lookup needed)
+_JS_STICKY_ELDRUN = """
+(function() {
+    workspace.windowList().forEach(function(w) {
+        if (w.resourceClass === 'io.github.fseiffarth.eldrun') {
+            w.onAllDesktops = true;
+        }
+    });
+})();
+"""
+
 
 class KDEKWinBackend(ProjectSpaceBackend):
     """KDE Plasma adapter — X11 (Phase 6a) + Wayland (Phase 6b)."""
@@ -90,6 +101,8 @@ class KDEKWinBackend(ProjectSpaceBackend):
         self._desktop_uuids: list[str] = []   # index → UUID, refreshed per switch
         self._created_hidden_desktop: bool = False
         self._original_desktop_count: int = 1
+        self._project_desktops: dict[str, str] = {}  # Wayland: project_id → desktop UUID
+        self._root_desktop_uuid: str = ""             # Wayland: UUID at prepare() time
 
     # ── availability ──────────────────────────────────────────────────────────
 
@@ -266,15 +279,23 @@ class KDEKWinBackend(ProjectSpaceBackend):
     # ── prepare / cleanup ─────────────────────────────────────────────────────
 
     def prepare(self) -> None:
+        if self._session == "wayland":
+            self._prepare_wayland()
+        else:
+            self._prepare_x11()
+
+    def _prepare_x11(self) -> None:
         self._original_desktop_count = self._get_desktop_count()
         if self._original_desktop_count < 2:
             self._create_desktop(1, "Eldrun-Hidden")
             self._created_hidden_desktop = True
         self._set_desktop_names(["Eldrun", "Eldrun-Hidden"])
-        if self._session == "wayland":
-            self._switch_to_desktop_wayland(_CURRENT_DESK)
-        else:
-            self._switch_to_desktop(_CURRENT_DESK)
+        self._switch_to_desktop(_CURRENT_DESK)
+
+    def _prepare_wayland(self) -> None:
+        uuids = self._get_all_desktop_uuids()
+        self._root_desktop_uuid = uuids[0] if uuids else ""
+        self._run_kwin_script(_JS_STICKY_ELDRUN)
 
     def cleanup(self) -> None:
         if self._session == "wayland":
@@ -299,21 +320,9 @@ class KDEKWinBackend(ProjectSpaceBackend):
             pass
 
     def _cleanup_wayland(self) -> None:
-        state = self._enumerate_state_wayland()
-        if not state:
-            return
-        uuids = self._desktop_uuids
-        if len(uuids) < 2:
-            return
-        desk1_uuid = uuids[_HIDDEN_DESK]
-        tracked = self._tracked_window_ids()
-        to_restore = [
-            w["uuid"] for w in state.get("windows", [])
-            if desk1_uuid and desk1_uuid in w.get("desktops", [])
-            and w.get("uuid") in tracked
-        ]
-        if to_restore:
-            self._move_windows_wayland(to_restore, _CURRENT_DESK)
+        if self._root_desktop_uuid:
+            self._set_current_desktop_uuid(self._root_desktop_uuid)
+        self._project_desktops.clear()
 
     def _tracked_window_ids(self) -> set:
         return {
@@ -515,9 +524,13 @@ class KDEKWinBackend(ProjectSpaceBackend):
             pass
 
     def _switch_to_desktop_wayland(self, index: int) -> None:
-        """Switch active virtual desktop via KWin script."""
-        js = _JS_SWITCH.replace("__DESK_IDX__", str(index))
-        self._run_kwin_script(js)
+        """Switch active virtual desktop by index via DBus (KWin script as fallback)."""
+        uuids = self._get_all_desktop_uuids()
+        if 0 <= index < len(uuids):
+            self._set_current_desktop_uuid(uuids[index])
+        else:
+            js = _JS_SWITCH.replace("__DESK_IDX__", str(index))
+            self._run_kwin_script(js)
 
     def _make_sticky_wayland(self, uuids: list[str]) -> None:
         """Mark windows as sticky (visible on all desktops) via KWin script."""
@@ -573,27 +586,50 @@ class KDEKWinBackend(ProjectSpaceBackend):
         desktop_uuids = self._get_desktop_uuids_kde6_dbus()
         return {"desktopUUIDs": desktop_uuids, "windows": windows}
 
-    def _get_desktop_uuids_kde6_dbus(self) -> list[str]:
-        """Return ordered list of desktop UUIDs from /VirtualDesktopManager children."""
+    def _get_all_desktop_uuids(self) -> list[str]:
+        """Return ordered desktop UUIDs from the VirtualDesktopManager.desktops property."""
         out = self._kwin_dbus(
             "/VirtualDesktopManager",
-            "org.freedesktop.DBus.Introspectable.Introspect",
+            "org.freedesktop.DBus.Properties.Get",
+            "string:org.kde.KWin.VirtualDesktopManager",
+            "string:desktops",
         )
         if not out:
             return []
-        children = self._parse_introspect_children(out)
-        uuids: list[str] = []
-        for child in children:
-            path = f"/VirtualDesktopManager/{child}"
-            id_out = self._kwin_dbus(
-                path, "org.freedesktop.DBus.Properties.Get",
-                "string:org.kde.KWin.VirtualDesktopManager.Desktop",
-                "string:id",
-            )
-            matches = self._parse_strings(id_out or "")
-            if matches:
-                uuids.append(matches[0])
-        return uuids
+        return re.findall(
+            r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+            out,
+        )
+
+    def _get_desktop_uuids_kde6_dbus(self) -> list[str]:
+        """Return ordered list of desktop UUIDs (delegates to _get_all_desktop_uuids)."""
+        return self._get_all_desktop_uuids()
+
+    def _set_current_desktop_uuid(self, uuid: str) -> None:
+        """Switch the active virtual desktop by UUID via VirtualDesktopManager."""
+        if not uuid:
+            return
+        self._kwin_dbus(
+            "/VirtualDesktopManager",
+            "org.freedesktop.DBus.Properties.Set",
+            "string:org.kde.KWin.VirtualDesktopManager",
+            "string:current",
+            f"variant:string:{uuid}",
+        )
+
+    def _ensure_project_desktop(self, project_id: str, name: str) -> str:
+        """Return (creating if needed) the UUID of this project's virtual desktop."""
+        if project_id in self._project_desktops:
+            return self._project_desktops[project_id]
+        before = set(self._get_all_desktop_uuids())
+        count = self._get_desktop_count()
+        self._create_desktop(count, name)
+        after = self._get_all_desktop_uuids()
+        new_uuids = [u for u in after if u not in before]
+        uuid = new_uuids[0] if new_uuids else ""
+        if uuid:
+            self._project_desktops[project_id] = uuid
+        return uuid
 
     @staticmethod
     def _parse_introspect_children(xml_text: str) -> list[str]:
@@ -676,65 +712,15 @@ class KDEKWinBackend(ProjectSpaceBackend):
     def _activate_wayland(
         self, new_id: str, old_id: str | None, protected: set[str]
     ) -> None:
-        state = self._enumerate_state_wayland()
-        if state is None:
-            # Fallback: only move explicitly tracked windows
-            self._activate_wayland_tracked_only(new_id, old_id)
-            return
+        """Switch to new_id's dedicated virtual desktop (per-project model).
 
-        uuids = self._desktop_uuids
-        desk0_uuid = uuids[_CURRENT_DESK] if len(uuids) > _CURRENT_DESK else ""
-        desk1_uuid = uuids[_HIDDEN_DESK] if len(uuids) > _HIDDEN_DESK else ""
-        windows = state.get("windows", [])
-
-        # Collect moveable windows on desktop 0
-        ws0_moveable: list[str] = [
-            w["uuid"] for w in windows
-            if desk0_uuid and desk0_uuid in w.get("desktops", [])
-            and not w.get("onAllDesktops", False)
-            and not (protected and self._is_protected_wayland(w.get("cls", ""),
-                                                              protected))
-        ]
-
-        # Park old project's windows on desktop 1
-        if old_id is not None and ws0_moveable:
-            self._move_windows_wayland(ws0_moveable, _HIDDEN_DESK)
-        if old_id is not None:
-            self._project_windows[old_id] = ws0_moveable
-
-        # Rescue protected windows that drifted to desktop 1
-        if protected and desk1_uuid:
-            protected_on_ws1 = [
-                w["uuid"] for w in windows
-                if desk1_uuid in w.get("desktops", [])
-                and self._is_protected_wayland(w.get("cls", ""), protected)
-            ]
-            if protected_on_ws1:
-                self._move_windows_wayland(protected_on_ws1, _CURRENT_DESK)
-
-        # Restore new project's tracked windows from desktop 1 to desktop 0
-        ws1_uuids = {
-            w["uuid"] for w in windows
-            if desk1_uuid and desk1_uuid in w.get("desktops", [])
-        }
-        to_restore = list(set(self._project_windows.get(new_id, [])) & ws1_uuids)
-        if to_restore:
-            self._move_windows_wayland(to_restore, _CURRENT_DESK)
-
-        self._switch_to_desktop_wayland(_CURRENT_DESK)
-
-    def _activate_wayland_tracked_only(
-        self, new_id: str, old_id: str | None
-    ) -> None:
-        """Minimal fallback when enumeration fails: only move tracked windows."""
-        if old_id is not None:
-            old_windows = self._project_windows.get(old_id, [])
-            if old_windows:
-                self._move_windows_wayland(list(old_windows), _HIDDEN_DESK)
-        new_windows = self._project_windows.get(new_id, [])
-        if new_windows:
-            self._move_windows_wayland(list(new_windows), _CURRENT_DESK)
-        self._switch_to_desktop_wayland(_CURRENT_DESK)
+        Each project gets its own virtual desktop created on first activation.
+        KDE handles the visual show/hide automatically — no window enumeration needed.
+        Eldrun itself is made sticky in _prepare_wayland so it stays visible.
+        """
+        uuid = self._ensure_project_desktop(new_id, new_id)
+        if uuid:
+            self._set_current_desktop_uuid(uuid)
 
     def make_global_window(self, window_id: int) -> None:
         if self._session == "wayland":

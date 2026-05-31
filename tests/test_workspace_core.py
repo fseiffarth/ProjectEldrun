@@ -115,7 +115,8 @@ class TestDetectBackend(unittest.TestCase):
         import backends as bk
         from backends.null import NullBackend
 
-        with patch.dict(os.environ, {"WAYLAND_DISPLAY": ":1"}):
+        env = {"WAYLAND_DISPLAY": ":1", "XDG_CURRENT_DESKTOP": "GNOME"}
+        with patch.dict(os.environ, env, clear=False):
             b = bk.detect_backend()
 
         self.assertIsInstance(b, NullBackend)
