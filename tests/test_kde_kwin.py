@@ -1,8 +1,10 @@
-"""Tests for backends/kde_kwin.py — Phase 6a (KDE Plasma / X11)."""
+"""Tests for backends/kde_kwin.py — Phase 6a + 6b (KDE Plasma / X11 + Wayland)."""
 
+import json
 import os
 import sys
 import subprocess
+import tempfile
 import types
 import unittest
 from subprocess import CompletedProcess
@@ -35,10 +37,12 @@ def _fail() -> CompletedProcess:
     return CompletedProcess(args=[], returncode=1, stdout="", stderr="")
 
 
-def _backend(kde_version: int = 6) -> KDEKWinBackend:
+def _backend(kde_version: int = 6, session: str = "x11") -> KDEKWinBackend:
     b = KDEKWinBackend.__new__(KDEKWinBackend)
     b._kde_version = kde_version
+    b._session = session
     b._project_windows = {}
+    b._desktop_uuids = []
     b._created_hidden_desktop = False
     b._original_desktop_count = 1
     return b
@@ -48,12 +52,15 @@ def _backend(kde_version: int = 6) -> KDEKWinBackend:
 
 class TestKDEDetection(unittest.TestCase):
 
-    def test_is_available_returns_false_on_wayland(self):
+    def test_is_available_returns_true_on_kde_wayland_phase6b(self):
         b = _backend()
         with patch.dict(os.environ,
                         {"WAYLAND_DISPLAY": ":1",
-                         "XDG_CURRENT_DESKTOP": "KDE"}):
-            self.assertFalse(b.is_available())
+                         "XDG_CURRENT_DESKTOP": "KDE"}), \
+             patch("subprocess.run",
+                   side_effect=[_ok(), _ok("VirtualDesktopManager x")]):
+            self.assertTrue(b.is_available())
+        self.assertEqual(b._session, "wayland")
 
     def test_is_available_returns_false_for_non_kde_desktop(self):
         b = _backend()
@@ -215,7 +222,7 @@ class TestKDEDesktopManagement(unittest.TestCase):
         mock_d.flush.assert_called()
 
     def test_collapse_desktop_count_calls_wmctrl(self):
-        b = _backend()
+        b = _backend(kde_version=5)
         with patch("subprocess.run", return_value=_ok()) as run:
             b._collapse_desktop_count(1)
         cmd = run.call_args[0][0]
@@ -223,16 +230,34 @@ class TestKDEDesktopManagement(unittest.TestCase):
         self.assertIn("1", cmd)
 
     def test_collapse_desktop_count_clamps_to_minimum_one(self):
-        b = _backend()
+        b = _backend(kde_version=5)
         with patch("subprocess.run", return_value=_ok()) as run:
             b._collapse_desktop_count(0)
         cmd = run.call_args[0][0]
         self.assertIn("1", cmd)
 
     def test_collapse_desktop_count_ignores_wmctrl_error(self):
-        b = _backend()
+        b = _backend(kde_version=5)
         with patch("subprocess.run", side_effect=FileNotFoundError):
             b._collapse_desktop_count(1)  # must not raise
+
+    def test_collapse_desktop_count_kde6_uses_dbus_removal(self):
+        b = _backend(kde_version=6)
+        with patch.object(b, "_get_desktop_uuids_kde6_dbus",
+                          return_value=["d0", "d1", "d2"]), \
+             patch.object(b, "_kwin_dbus") as dbus, \
+             patch("subprocess.run") as run:
+            b._collapse_desktop_count(1)
+        run.assert_not_called()
+        removed = [c.args[2] for c in dbus.call_args_list]
+        self.assertEqual(removed, ["string:d2", "string:d1"])
+
+    def test_collapse_desktop_count_kde6_ignores_unknown_desktops(self):
+        b = _backend(kde_version=6)
+        with patch.object(b, "_get_desktop_uuids_kde6_dbus", return_value=[]), \
+             patch.object(b, "_kwin_dbus") as dbus:
+            b._collapse_desktop_count(1)
+        dbus.assert_not_called()
 
     def test_prepare_creates_second_desktop_when_only_one_exists(self):
         b = _backend()
@@ -303,6 +328,17 @@ class TestKDEDesktopManagement(unittest.TestCase):
             with patch.object(XD, "Display", return_value=MagicMock()):
                 b.cleanup()
         self.assertEqual(b._project_windows, {})
+
+    def test_cleanup_restores_only_tracked_hidden_windows(self):
+        b = _backend()
+        b._project_windows = {"p1": [10, 20]}
+        with patch.object(b, "_get_windows_on_desktop", return_value=[10, 30]), \
+             patch.object(b, "_move_window") as move:
+            from Xlib import display as XD
+            with patch.object(XD, "Display", return_value=MagicMock()):
+                b.cleanup()
+        moved = {c.args[1] for c in move.call_args_list}
+        self.assertEqual(moved, {10})
 
 
 # ── window operations ─────────────────────────────────────────────────────────
@@ -511,6 +547,13 @@ class TestKDEActivateProject(unittest.TestCase):
         self._run_activate(b, d, gw, gc, new_id="new", old_id=None)
         self.assertNotIn(None, b._project_windows)
 
+    def test_activate_no_previous_project_does_not_park_ws0_windows(self):
+        b, d, gw, gc = self._backend_with_windows(ws0=[10, 20], ws1=[])
+        move = self._run_activate(b, d, gw, gc, new_id="new", old_id=None)
+        moved_to_hidden = [c for c in move.call_args_list
+                           if c.args[2] == _HIDDEN_DESK]
+        self.assertEqual(moved_to_hidden, [])
+
     def test_activate_rescues_protected_windows_from_hidden(self):
         classes = {10: ["firefox"]}
         # 10 drifted to ws1 even though it's protected
@@ -603,8 +646,8 @@ class TestDetectBackendKDE(unittest.TestCase):
 
         self.assertIsInstance(b, CinnamonX11Backend)
 
-    def test_detect_kde_wayland_returns_null_backend(self):
-        """KDE on Wayland falls through to NullBackend in Phase 6a."""
+    def test_detect_kde_wayland_returns_null_backend_when_kwin_unavailable(self):
+        """KDE on Wayland falls through to NullBackend when KWin DBus is unreachable."""
         import backends as bk
         from backends.kde_kwin import KDEKWinBackend
         from backends.null import NullBackend
@@ -648,6 +691,778 @@ class TestDetectBackendKDE(unittest.TestCase):
             bk.detect_backend()
 
         self.assertEqual(len(kde_called), 0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 6b — Wayland tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSessionDetection(unittest.TestCase):
+    """is_available() now sets _session based on WAYLAND_DISPLAY."""
+
+    def test_is_available_returns_true_on_kde_wayland(self):
+        b = KDEKWinBackend.__new__(KDEKWinBackend)
+        b._kde_version = 5
+        b._session = "x11"
+        with patch.dict(os.environ,
+                        {"XDG_CURRENT_DESKTOP": "KDE",
+                         "WAYLAND_DISPLAY": ":1"}), \
+             patch("subprocess.run",
+                   side_effect=[_ok(), _ok("VirtualDesktopManager x")]):
+            result = b.is_available()
+        self.assertTrue(result)
+        self.assertEqual(b._session, "wayland")
+
+    def test_is_available_sets_x11_session_when_no_wayland_display(self):
+        b = KDEKWinBackend.__new__(KDEKWinBackend)
+        b._kde_version = 5
+        b._session = "wayland"
+        with patch.dict(os.environ,
+                        {"XDG_CURRENT_DESKTOP": "KDE"},
+                        clear=True), \
+             patch("subprocess.run",
+                   side_effect=[_ok(), _ok("VirtualDesktopManager x")]):
+            b.is_available()
+        self.assertEqual(b._session, "x11")
+
+    def test_is_available_wayland_kde5_has_session_wayland(self):
+        b = _backend(kde_version=5)
+        b._session = "x11"
+        with patch.dict(os.environ,
+                        {"XDG_CURRENT_DESKTOP": "KDE",
+                         "WAYLAND_DISPLAY": ":1"}), \
+             patch("subprocess.run",
+                   side_effect=[_ok(), _fail()]):
+            b.is_available()
+        self.assertEqual(b._session, "wayland")
+
+    def test_wayland_kde_returns_true_from_is_available(self):
+        b = _backend()
+        with patch.dict(os.environ,
+                        {"XDG_CURRENT_DESKTOP": "plasma",
+                         "WAYLAND_DISPLAY": ":1"}), \
+             patch("subprocess.run",
+                   side_effect=[_ok(), _ok("VirtualDesktopManager")]):
+            self.assertTrue(b.is_available())
+
+
+# ── KWin script runner ────────────────────────────────────────────────────────
+
+class TestKWinScriptRunner(unittest.TestCase):
+
+    def _backend_wayland(self, kde=6):
+        b = _backend(kde_version=kde)
+        b._session = "wayland"
+        return b
+
+    def test_run_kwin_script_loads_and_unloads(self):
+        b = self._backend_wayland()
+        calls = []
+
+        def run_side_effect(cmd, **kw):
+            calls.append(cmd)
+            return _ok("   int32 1\n")
+
+        with patch("subprocess.run", side_effect=run_side_effect), \
+             patch("os.unlink"):
+            result = b._run_kwin_script("print('hello');")
+
+        self.assertTrue(result)
+        methods = [c[5] for c in calls]  # 6th element is the method name
+        self.assertTrue(any("loadScript" in m for m in methods))
+        self.assertTrue(any("unloadScript" in m for m in methods))
+
+    def test_run_kwin_script_kde5_sends_run_call(self):
+        b = self._backend_wayland(kde=5)
+        methods_called = []
+
+        def run_side_effect(cmd, **kw):
+            methods_called.append(cmd[5] if len(cmd) > 5 else "")
+            return _ok("   int32 42\n")
+
+        with patch("subprocess.run", side_effect=run_side_effect), \
+             patch("os.unlink"):
+            b._run_kwin_script("1+1;")
+
+        self.assertTrue(any("Script.run" in m for m in methods_called))
+
+    def test_run_kwin_script_kde6_skips_explicit_run(self):
+        b = self._backend_wayland(kde=6)
+        methods_called = []
+
+        def run_side_effect(cmd, **kw):
+            methods_called.append(cmd[5] if len(cmd) > 5 else "")
+            return _ok("   int32 7\n")
+
+        with patch("subprocess.run", side_effect=run_side_effect), \
+             patch("os.unlink"):
+            b._run_kwin_script("1+1;")
+
+        self.assertFalse(any("Script.run" in m for m in methods_called))
+
+    def test_run_kwin_script_returns_false_when_load_fails(self):
+        b = self._backend_wayland()
+        with patch("subprocess.run", return_value=_fail()), \
+             patch("os.unlink"):
+            result = b._run_kwin_script("1+1;")
+        self.assertFalse(result)
+
+    def test_run_kwin_script_returns_false_when_script_id_negative(self):
+        b = self._backend_wayland()
+        with patch("subprocess.run", return_value=_ok("no int here")), \
+             patch("os.unlink"):
+            result = b._run_kwin_script("1+1;")
+        self.assertFalse(result)
+
+    def test_run_kwin_script_cleans_up_temp_file_on_success(self):
+        b = self._backend_wayland()
+        deleted = []
+        with patch("subprocess.run", return_value=_ok("   int32 1\n")), \
+             patch("os.unlink", side_effect=deleted.append):
+            b._run_kwin_script("1+1;")
+        self.assertEqual(len(deleted), 1)
+
+    def test_run_kwin_script_cleans_up_temp_file_on_failure(self):
+        b = self._backend_wayland()
+        deleted = []
+        with patch("subprocess.run", return_value=_fail()), \
+             patch("os.unlink", side_effect=deleted.append):
+            b._run_kwin_script("1+1;")
+        self.assertEqual(len(deleted), 1)
+
+    def test_run_kwin_script_js_content_is_written_to_file(self):
+        b = self._backend_wayland()
+        written = []
+        original_open = open
+
+        def fake_ntf(*args, **kwargs):
+            class FakeFile:
+                name = "/tmp/eldrun_kwin_test.js"
+                def write(self, s): written.append(s)
+                def __enter__(self): return self
+                def __exit__(self, *_): pass
+            return FakeFile()
+
+        with patch("tempfile.NamedTemporaryFile", side_effect=fake_ntf), \
+             patch("subprocess.run", return_value=_ok("   int32 1\n")), \
+             patch("os.unlink"):
+            b._run_kwin_script("var x = 42;")
+
+        self.assertTrue(any("var x = 42;" in w for w in written))
+
+
+# ── window enumeration — KWin script path ─────────────────────────────────────
+
+class TestEnumerateStateWayland(unittest.TestCase):
+
+    def _state(self, desktops=None, windows=None):
+        return {
+            "desktopUUIDs": desktops or ["uuid-desk0", "uuid-desk1"],
+            "windows": windows or [],
+        }
+
+    def _backend_wayland(self):
+        b = _backend(kde_version=6)
+        b._session = "wayland"
+        b._desktop_uuids = []
+        return b
+
+    def test_enumerate_returns_parsed_json_from_file(self):
+        b = self._backend_wayland()
+        state = self._state(windows=[
+            {"uuid": "w1", "cls": "firefox", "desktops": ["uuid-desk0"],
+             "onAllDesktops": False},
+        ])
+        with patch.object(b, "_run_kwin_script", return_value=True), \
+             patch.object(KDEKWinBackend, "_read_json_file", return_value=state):
+            result = b._enumerate_state_wayland()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["windows"][0]["uuid"], "w1")
+
+    def test_enumerate_caches_desktop_uuids(self):
+        b = self._backend_wayland()
+        state = self._state(desktops=["aaa", "bbb"])
+        with patch.object(b, "_run_kwin_script", return_value=True), \
+             patch.object(KDEKWinBackend, "_read_json_file", return_value=state):
+            b._enumerate_state_wayland()
+
+        self.assertEqual(b._desktop_uuids, ["aaa", "bbb"])
+
+    def test_enumerate_returns_none_when_file_missing_and_kde5(self):
+        b = _backend(kde_version=5)
+        b._session = "wayland"
+        b._desktop_uuids = []
+        with patch.object(b, "_run_kwin_script", return_value=False), \
+             patch.object(KDEKWinBackend, "_read_json_file", return_value=None):
+            result = b._enumerate_state_wayland()
+        self.assertIsNone(result)
+
+    def test_enumerate_kde6_falls_back_to_dbus_when_file_missing(self):
+        b = self._backend_wayland()
+        fallback_state = self._state(windows=[{"uuid": "w2", "cls": "code",
+                                               "desktops": [], "onAllDesktops": False}])
+        with patch.object(b, "_run_kwin_script", return_value=True), \
+             patch.object(KDEKWinBackend, "_read_json_file", return_value=None), \
+             patch.object(b, "_enumerate_windows_kde6_dbus",
+                          return_value=fallback_state) as dbus_enum:
+            result = b._enumerate_state_wayland()
+
+        dbus_enum.assert_called_once()
+        self.assertEqual(result["windows"][0]["uuid"], "w2")
+
+    def test_read_json_file_returns_none_on_missing_file(self):
+        self.assertIsNone(KDEKWinBackend._read_json_file("/nonexistent/path.json"))
+
+    def test_read_json_file_returns_none_on_invalid_json(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json",
+                                         delete=False) as f:
+            f.write("not json {{{{")
+            path = f.name
+        try:
+            self.assertIsNone(KDEKWinBackend._read_json_file(path))
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_read_json_file_returns_none_for_non_dict_json(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json",
+                                         delete=False) as f:
+            json.dump([1, 2, 3], f)
+            path = f.name
+        try:
+            self.assertIsNone(KDEKWinBackend._read_json_file(path))
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_read_json_file_parses_valid_dict(self):
+        data = {"desktopUUIDs": ["d0", "d1"], "windows": []}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json",
+                                         delete=False) as f:
+            json.dump(data, f)
+            path = f.name
+        result = KDEKWinBackend._read_json_file(path)
+        self.assertEqual(result, data)
+
+    def test_read_json_file_deletes_file_after_reading(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json",
+                                         delete=False) as f:
+            json.dump({"desktopUUIDs": [], "windows": []}, f)
+            path = f.name
+        KDEKWinBackend._read_json_file(path)
+        self.assertFalse(os.path.exists(path))
+
+    def test_read_json_file_deletes_file_even_on_parse_error(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json",
+                                         delete=False) as f:
+            f.write("{bad")
+            path = f.name
+        KDEKWinBackend._read_json_file(path)
+        self.assertFalse(os.path.exists(path))
+
+
+# ── window enumeration — KDE 6 DBus fallback ─────────────────────────────────
+
+class TestEnumerateWindowsKDE6DBus(unittest.TestCase):
+
+    _INTROSPECT_XML = """
+    <?xml version="1.0"?>
+    <node>
+      <node name="win-uuid-1"/>
+      <node name="win-uuid-2"/>
+    </node>
+    """
+
+    def _backend6(self):
+        b = _backend(kde_version=6)
+        b._session = "wayland"
+        b._desktop_uuids = []
+        return b
+
+    def test_parse_introspect_children_extracts_names(self):
+        names = KDEKWinBackend._parse_introspect_children(self._INTROSPECT_XML)
+        self.assertEqual(names, ["win-uuid-1", "win-uuid-2"])
+
+    def test_parse_introspect_children_returns_empty_on_bad_xml(self):
+        names = KDEKWinBackend._parse_introspect_children("not xml")
+        self.assertEqual(names, [])
+
+    def test_parse_strings_extracts_quoted_values(self):
+        text = '   string "firefox"\n   string "Mozilla"\n'
+        self.assertEqual(KDEKWinBackend._parse_strings(text), ["firefox", "Mozilla"])
+
+    def test_enumerate_kde6_dbus_queries_each_window(self):
+        b = self._backend6()
+        call_count = [0]
+
+        def fake_dbus(path, method, *args):
+            call_count[0] += 1
+            if any("resourceClass" in a for a in args):
+                return '   string "firefox"\n'
+            if any("desktops" in a for a in args):
+                return '   string "desk-uuid"\n'
+            return '   string "ignored"\n'
+
+        with patch.object(b, "_kwin_dbus", side_effect=fake_dbus), \
+             patch.object(KDEKWinBackend, "_parse_introspect_children",
+                          return_value=["w1", "w2"]), \
+             patch.object(b, "_get_desktop_uuids_kde6_dbus", return_value=[]):
+            result = b._enumerate_windows_kde6_dbus()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result["windows"]), 2)
+
+    def test_enumerate_kde6_dbus_returns_none_when_introspect_fails(self):
+        b = self._backend6()
+        with patch.object(b, "_kwin_dbus", return_value=None):
+            self.assertIsNone(b._enumerate_windows_kde6_dbus())
+
+    def test_enumerate_kde6_dbus_returns_none_when_no_windows(self):
+        b = self._backend6()
+        with patch.object(b, "_kwin_dbus", return_value="<node/>"), \
+             patch.object(KDEKWinBackend, "_parse_introspect_children",
+                          return_value=[]):
+            self.assertIsNone(b._enumerate_windows_kde6_dbus())
+
+    def test_enumerate_kde6_dbus_lowercases_class(self):
+        b = self._backend6()
+
+        def fake_dbus(path, method, *args):
+            if not args:
+                return "<node/>"
+            if any("resourceClass" in a for a in args):
+                return '   string "Firefox"\n'
+            if any("desktops" in a for a in args):
+                return '   string "d0"\n'
+            return ""
+
+        with patch.object(b, "_kwin_dbus", side_effect=fake_dbus), \
+             patch.object(KDEKWinBackend, "_parse_introspect_children",
+                          return_value=["w1"]), \
+             patch.object(b, "_get_desktop_uuids_kde6_dbus", return_value=[]):
+            result = b._enumerate_windows_kde6_dbus()
+
+        self.assertEqual(result["windows"][0]["cls"], "firefox")
+
+    def test_get_desktop_uuids_kde6_reads_each_child_id(self):
+        b = self._backend6()
+
+        def fake_dbus(path, method, *args):
+            if any("string:id" in a for a in args):
+                return f'   string "{path.split("/")[-1]}"\n'
+            # introspect
+            return '<node><node name="D1"/><node name="D2"/></node>'
+
+        with patch.object(b, "_kwin_dbus", side_effect=fake_dbus), \
+             patch.object(KDEKWinBackend, "_parse_introspect_children",
+                          return_value=["D1", "D2"]):
+            uuids = b._get_desktop_uuids_kde6_dbus()
+
+        self.assertEqual(len(uuids), 2)
+
+
+# ── window moves — Wayland ────────────────────────────────────────────────────
+
+class TestMoveWindowsWayland(unittest.TestCase):
+
+    def _backend_wayland(self, kde=6):
+        b = _backend(kde_version=kde)
+        b._session = "wayland"
+        b._desktop_uuids = ["desk-uuid-0", "desk-uuid-1"]
+        return b
+
+    def test_move_windows_calls_run_kwin_script(self):
+        b = self._backend_wayland()
+        with patch.object(b, "_run_kwin_script", return_value=True) as run:
+            b._move_windows_wayland(["uuid-w1", "uuid-w2"], 1)
+        run.assert_called_once()
+
+    def test_move_windows_js_contains_all_uuids(self):
+        b = self._backend_wayland()
+        js_args = []
+        with patch.object(b, "_run_kwin_script",
+                          side_effect=lambda js: js_args.append(js) or True):
+            b._move_windows_wayland(["aaa", "bbb"], 0)
+        js = js_args[0]
+        self.assertIn('"aaa"', js)
+        self.assertIn('"bbb"', js)
+
+    def test_move_windows_js_contains_target_index(self):
+        b = self._backend_wayland()
+        js_args = []
+        with patch.object(b, "_run_kwin_script",
+                          side_effect=lambda js: js_args.append(js) or True):
+            b._move_windows_wayland(["aaa"], 1)
+        self.assertIn("workspace.desktops[1]", js_args[0])
+
+    def test_move_windows_empty_list_is_noop(self):
+        b = self._backend_wayland()
+        with patch.object(b, "_run_kwin_script") as run:
+            b._move_windows_wayland([], 0)
+        run.assert_not_called()
+
+    def test_move_windows_kde6_falls_back_to_gdbus_on_script_failure(self):
+        b = self._backend_wayland(kde=6)
+        with patch.object(b, "_run_kwin_script", return_value=False), \
+             patch.object(b, "_move_window_kde6_dbus") as gdbus:
+            b._move_windows_wayland(["w1", "w2"], 1)
+        self.assertEqual(gdbus.call_count, 2)
+
+    def test_move_windows_kde5_no_gdbus_fallback_on_script_failure(self):
+        b = self._backend_wayland(kde=5)
+        with patch.object(b, "_run_kwin_script", return_value=False), \
+             patch.object(b, "_move_window_kde6_dbus") as gdbus:
+            b._move_windows_wayland(["w1"], 0)
+        gdbus.assert_not_called()
+
+    def test_move_window_kde6_dbus_calls_gdbus(self):
+        b = self._backend_wayland()
+        with patch("subprocess.run", return_value=_ok()) as run:
+            b._move_window_kde6_dbus("w-uuid", "desk-uuid")
+        cmd = run.call_args[0][0]
+        self.assertIn("gdbus", cmd)
+        self.assertIn("w-uuid", " ".join(cmd))
+        self.assertIn("desk-uuid", " ".join(cmd))
+
+
+# ── desktop switching — Wayland ───────────────────────────────────────────────
+
+class TestSwitchDesktopWayland(unittest.TestCase):
+
+    def test_switch_to_desktop_wayland_runs_script(self):
+        b = _backend()
+        b._session = "wayland"
+        with patch.object(b, "_run_kwin_script") as run:
+            b._switch_to_desktop_wayland(0)
+        run.assert_called_once()
+
+    def test_switch_to_desktop_wayland_js_contains_index(self):
+        b = _backend()
+        b._session = "wayland"
+        js_args = []
+        with patch.object(b, "_run_kwin_script",
+                          side_effect=lambda js: js_args.append(js) or True):
+            b._switch_to_desktop_wayland(1)
+        self.assertIn("workspace.desktops[1]", js_args[0])
+
+    def test_make_sticky_wayland_passes_uuids_to_script(self):
+        b = _backend()
+        b._session = "wayland"
+        js_args = []
+        with patch.object(b, "_run_kwin_script",
+                          side_effect=lambda js: js_args.append(js) or True):
+            b._make_sticky_wayland(["sticky-uuid"])
+        self.assertIn('"sticky-uuid"', js_args[0])
+        self.assertIn("onAllDesktops", js_args[0])
+
+    def test_make_sticky_wayland_empty_list_is_noop(self):
+        b = _backend()
+        with patch.object(b, "_run_kwin_script") as run:
+            b._make_sticky_wayland([])
+        run.assert_not_called()
+
+
+# ── activate_project — Wayland ────────────────────────────────────────────────
+
+class TestActivateWayland(unittest.TestCase):
+
+    def _backend_wayland(self, windows=None, desk_uuids=None):
+        b = _backend(kde_version=6)
+        b._session = "wayland"
+        uuids = desk_uuids or ["d0", "d1"]
+        b._desktop_uuids = uuids
+        state = {
+            "desktopUUIDs": uuids,
+            "windows": windows or [],
+        }
+        b._enumerate_state_wayland = MagicMock(return_value=state)
+        b._move_windows_wayland = MagicMock()
+        b._switch_to_desktop_wayland = MagicMock()
+        return b
+
+    def _win(self, uuid, cls="code", desktop_index=0, uuids=None):
+        if uuids is None:
+            uuids = ["d0", "d1"]
+        return {
+            "uuid": uuid,
+            "cls": cls,
+            "desktops": [uuids[desktop_index]] if desktop_index < len(uuids) else [],
+            "onAllDesktops": False,
+        }
+
+    def test_activate_parks_ws0_windows_on_ws1(self):
+        b = self._backend_wayland(windows=[self._win("w1")])
+        b.activate_project("new", "old")
+        b._move_windows_wayland.assert_any_call(["w1"], 1)
+
+    def test_activate_records_old_project_windows(self):
+        b = self._backend_wayland(windows=[self._win("w1")])
+        b.activate_project("new", "old")
+        self.assertEqual(b._project_windows.get("old"), ["w1"])
+
+    def test_activate_restores_new_project_windows_from_ws1(self):
+        b = self._backend_wayland(
+            windows=[self._win("w2", desktop_index=1)]
+        )
+        b._project_windows["new"] = ["w2"]
+        b.activate_project("new", None)
+        b._move_windows_wayland.assert_any_call(["w2"], 0)
+
+    def test_activate_excludes_protected_windows_from_parking(self):
+        b = self._backend_wayland(windows=[
+            self._win("firefox-w", cls="firefox"),
+            self._win("code-w", cls="code"),
+        ])
+        b.activate_project("new", "old", protected_names={"firefox"})
+        # "code" should be parked; "firefox" should not
+        park_calls = [c for c in b._move_windows_wayland.call_args_list
+                      if c[0][1] == 1]  # moves to ws1
+        parked_uuids = park_calls[0][0][0] if park_calls else []
+        self.assertNotIn("firefox-w", parked_uuids)
+        self.assertIn("code-w", parked_uuids)
+
+    def test_activate_rescues_protected_windows_from_ws1(self):
+        b = self._backend_wayland(windows=[
+            self._win("browser-w", cls="firefox", desktop_index=1),
+        ])
+        b.activate_project("new", None, protected_names={"firefox"})
+        rescue_calls = [c for c in b._move_windows_wayland.call_args_list
+                        if c[0][1] == 0]
+        rescued = rescue_calls[0][0][0] if rescue_calls else []
+        self.assertIn("browser-w", rescued)
+
+    def test_activate_calls_switch_to_desktop_zero(self):
+        b = self._backend_wayland()
+        b.activate_project("new", None)
+        b._switch_to_desktop_wayland.assert_called_with(0)
+
+    def test_activate_no_old_id_does_not_record(self):
+        b = self._backend_wayland(windows=[self._win("w1")])
+        b.activate_project("new", None)
+        self.assertNotIn(None, b._project_windows)
+
+    def test_activate_no_old_id_does_not_park_ws0_windows(self):
+        b = self._backend_wayland(windows=[self._win("w1")])
+        b.activate_project("new", None)
+        park_calls = [c for c in b._move_windows_wayland.call_args_list
+                      if c.args[1] == _HIDDEN_DESK]
+        self.assertEqual(park_calls, [])
+
+    def test_activate_only_restores_tracked_ws1_windows(self):
+        b = self._backend_wayland(windows=[
+            self._win("tracked", desktop_index=1),
+            self._win("untracked", desktop_index=1),
+        ])
+        b._project_windows["new"] = ["tracked"]
+        b.activate_project("new", None)
+        restore_calls = [c for c in b._move_windows_wayland.call_args_list
+                         if c[0][1] == 0]
+        restored = restore_calls[0][0][0] if restore_calls else []
+        self.assertIn("tracked", restored)
+        self.assertNotIn("untracked", restored)
+
+    def test_activate_fallback_when_enumeration_fails(self):
+        b = _backend(kde_version=6)
+        b._session = "wayland"
+        b._desktop_uuids = []
+        b._project_windows = {"old": ["tracked-w"]}
+        b._enumerate_state_wayland = MagicMock(return_value=None)
+        b._move_windows_wayland = MagicMock()
+        b._switch_to_desktop_wayland = MagicMock()
+
+        b.activate_project("new", "old")
+
+        # Should still move tracked windows
+        b._move_windows_wayland.assert_any_call(["tracked-w"], 1)
+        b._switch_to_desktop_wayland.assert_called_with(0)
+
+    def test_activate_dispatches_to_x11_when_session_x11(self):
+        b = _backend(kde_version=6)
+        b._session = "x11"
+        b._project_windows = {}
+        activated = []
+        with patch.object(b, "_do_switch_x11",
+                          side_effect=lambda *_: activated.append(1)):
+            from Xlib import display as XD
+            with patch.object(XD, "Display", return_value=MagicMock()):
+                b.activate_project("new", "old")
+        self.assertEqual(len(activated), 1)
+
+    def test_activate_dispatches_to_wayland_when_session_wayland(self):
+        b = _backend(kde_version=6)
+        b._session = "wayland"
+        b._project_windows = {}
+        activated = []
+        with patch.object(b, "_activate_wayland",
+                          side_effect=lambda *_: activated.append(1)):
+            b.activate_project("new", "old")
+        self.assertEqual(len(activated), 1)
+
+    def test_make_global_window_wayland_calls_sticky(self):
+        b = _backend()
+        b._session = "wayland"
+        with patch.object(b, "_make_sticky_wayland") as sticky:
+            b.make_global_window(12345)
+        sticky.assert_called_once()
+
+    def test_make_global_window_x11_uses_net_wm_state(self):
+        b = _backend()
+        b._session = "x11"
+        mock_d = MagicMock()
+        from Xlib import display as XD
+        with patch.object(XD, "Display", return_value=mock_d):
+            b.make_global_window(9999)
+        mock_d.screen.return_value.root.send_event.assert_called_once()
+
+
+# ── prepare / cleanup — Wayland ───────────────────────────────────────────────
+
+class TestPrepareCleanupWayland(unittest.TestCase):
+
+    def test_prepare_wayland_calls_switch_wayland(self):
+        b = _backend()
+        b._session = "wayland"
+        with patch.object(b, "_get_desktop_count", return_value=2), \
+             patch.object(b, "_create_desktop"), \
+             patch.object(b, "_set_desktop_names"), \
+             patch.object(b, "_switch_to_desktop_wayland") as sw, \
+             patch.object(b, "_switch_to_desktop") as sx11:
+            b.prepare()
+        sw.assert_called_once_with(0)
+        sx11.assert_not_called()
+
+    def test_prepare_x11_calls_switch_x11(self):
+        b = _backend()
+        b._session = "x11"
+        with patch.object(b, "_get_desktop_count", return_value=2), \
+             patch.object(b, "_create_desktop"), \
+             patch.object(b, "_set_desktop_names"), \
+             patch.object(b, "_switch_to_desktop") as sx11, \
+             patch.object(b, "_switch_to_desktop_wayland") as sw:
+            b.prepare()
+        sx11.assert_called_once_with(0)
+        sw.assert_not_called()
+
+    def test_cleanup_wayland_restores_hidden_windows(self):
+        b = _backend()
+        b._session = "wayland"
+        b._created_hidden_desktop = False
+        b._original_desktop_count = 2
+        b._desktop_uuids = ["d0", "d1"]
+        b._project_windows = {"p1": ["w1"]}
+        state = {
+            "desktopUUIDs": ["d0", "d1"],
+            "windows": [
+                {"uuid": "w1", "cls": "code", "desktops": ["d1"],
+                 "onAllDesktops": False},
+                {"uuid": "w2", "cls": "code", "desktops": ["d1"],
+                 "onAllDesktops": False},
+            ],
+        }
+        with patch.object(b, "_enumerate_state_wayland", return_value=state), \
+             patch.object(b, "_move_windows_wayland") as move, \
+             patch.object(b, "_collapse_desktop_count"):
+            b.cleanup()
+        move.assert_called_once_with(["w1"], 0)
+
+    def test_cleanup_wayland_clears_project_windows(self):
+        b = _backend()
+        b._session = "wayland"
+        b._created_hidden_desktop = False
+        b._project_windows = {"p1": ["w1"]}
+        with patch.object(b, "_enumerate_state_wayland", return_value=None), \
+             patch.object(b, "_collapse_desktop_count"):
+            b.cleanup()
+        self.assertEqual(b._project_windows, {})
+
+    def test_cleanup_wayland_collapses_desktop_if_created(self):
+        b = _backend()
+        b._session = "wayland"
+        b._created_hidden_desktop = True
+        b._original_desktop_count = 1
+        with patch.object(b, "_enumerate_state_wayland", return_value=None), \
+             patch.object(b, "_collapse_desktop_count") as collapse:
+            b.cleanup()
+        collapse.assert_called_once_with(1)
+        self.assertFalse(b._created_hidden_desktop)
+
+    def test_cleanup_x11_dispatches_to_xlib(self):
+        b = _backend()
+        b._session = "x11"
+        b._created_hidden_desktop = False
+        b._project_windows = {"p1": [10, 20]}
+        with patch.object(b, "_get_windows_on_desktop", return_value=[10, 20]), \
+             patch.object(b, "_move_window") as move:
+            from Xlib import display as XD
+            with patch.object(XD, "Display", return_value=MagicMock()):
+                b.cleanup()
+        self.assertEqual(move.call_count, 2)
+
+    def test_cleanup_x11_leaves_untracked_hidden_windows(self):
+        b = _backend()
+        b._session = "x11"
+        b._created_hidden_desktop = False
+        b._project_windows = {"p1": [10]}
+        with patch.object(b, "_get_windows_on_desktop", return_value=[10, 20]), \
+             patch.object(b, "_move_window") as move:
+            from Xlib import display as XD
+            with patch.object(XD, "Display", return_value=MagicMock()):
+                b.cleanup()
+        moved = {c.args[1] for c in move.call_args_list}
+        self.assertEqual(moved, {10})
+
+
+# ── detect_backend — KDE Wayland integration ──────────────────────────────────
+
+class TestDetectBackendKDEWayland(unittest.TestCase):
+
+    def test_detect_returns_kde_backend_on_kde_wayland(self):
+        import backends as bk
+        from backends.kde_kwin import KDEKWinBackend
+
+        with patch.dict(os.environ,
+                        {"XDG_CURRENT_DESKTOP": "KDE",
+                         "WAYLAND_DISPLAY": ":1"}), \
+             patch.object(KDEKWinBackend, "__init__", return_value=None), \
+             patch.object(KDEKWinBackend, "is_available", return_value=True):
+            b = bk.detect_backend()
+
+        self.assertIsInstance(b, KDEKWinBackend)
+
+    def test_detect_kde_wayland_does_not_fall_to_cinnamon(self):
+        import backends as bk
+        from backends.kde_kwin import KDEKWinBackend
+        from backends.cinnamon_x11 import CinnamonX11Backend
+
+        cinnamon_called = []
+        with patch.dict(os.environ,
+                        {"XDG_CURRENT_DESKTOP": "KDE",
+                         "WAYLAND_DISPLAY": ":1"}), \
+             patch.object(KDEKWinBackend, "__init__", return_value=None), \
+             patch.object(KDEKWinBackend, "is_available", return_value=True), \
+             patch.object(CinnamonX11Backend, "is_available",
+                          side_effect=lambda: cinnamon_called.append(1) or True):
+            bk.detect_backend()
+
+        self.assertEqual(len(cinnamon_called), 0)
+
+    def test_non_kde_wayland_returns_null_backend(self):
+        import backends as bk
+        from backends.null import NullBackend
+        from backends.kde_kwin import KDEKWinBackend
+
+        with patch.dict(os.environ,
+                        {"XDG_CURRENT_DESKTOP": "sway",
+                         "WAYLAND_DISPLAY": ":1"}), \
+             patch.object(KDEKWinBackend, "is_available", return_value=False):
+            b = bk.detect_backend()
+
+        self.assertIsInstance(b, NullBackend)
 
 
 if __name__ == "__main__":

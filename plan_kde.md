@@ -716,30 +716,300 @@ Wayland session before the feature is declared stable.
 
 Work in this sequence to get a stable X11 backend before touching Wayland:
 
-1. **Detection + version probe** — `is_available()`, `_detect_kde_version()`,
+1. ✅ **Detection + version probe** — `is_available()`, `_detect_kde_version()`,
    `_detect_session()`.  No side effects.  Tests first.
 
-2. **Desktop CRUD** — `prepare()`, `_create_desktop()`, `_rename_desktop()`,
+2. ✅ **Desktop CRUD** — `prepare()`, `_create_desktop()`, `_rename_desktop()`,
    `_switch_to_desktop()`, `_remove_desktop()`, `cleanup()` skeleton.
    Tests mock `subprocess.run`.
 
-3. **X11 window path** — `_activate_x11()` reusing Xlib EWMH helpers.
+3. ✅ **X11 window path** — `_activate_x11()` reusing Xlib EWMH helpers.
    At this point the backend is **feature-complete for KDE/X11**.
 
-4. **Wire into `detect_backend()`** — 6-line change + integration test.
+4. ✅ **Wire into `detect_backend()`** — 6-line change + integration test.
    Deployable to KDE/X11 users after live QA.
 
-5. **Wayland scripting path** — `_run_kwin_script()`,
+5. ✅ **Wayland scripting path** — `_run_kwin_script()`,
    `_enumerate_windows_wayland()`, `_move_window_wayland()`,
    `_activate_wayland()`.
 
-6. **KDE 6 window DBus shortcut** — replace KWin script moves on KDE 6 + Wayland
+6. ✅ **KDE 6 window DBus shortcut** — replace KWin script moves on KDE 6 + Wayland
    with direct `/org/kde/KWin/Windows/<uuid>` DBus calls.
 
-7. **Live session QA** — test on actual KDE 5 X11, KDE 6 X11, KDE 6 Wayland.
+7. ⬜ **Live session QA** — test on actual KDE 5 X11, KDE 6 X11, KDE 6 Wayland.
    KDE 5 Wayland is best-effort.
 
-8. **Version bump to `0.2.0`** — after QA sign-off.
+8. ⬜ **Version bump to `0.2.0`** — after QA sign-off.
+
+---
+
+## Phase 6b — Wayland support
+
+### The three hard problems
+
+| Problem | Root cause | Solution chosen |
+|---------|-----------|----------------|
+| Window enumeration | No `_NET_CLIENT_LIST` EWMH atom on Wayland | KWin JS script writes JSON to a temp file; KDE 6 DBus fallback |
+| Desktop UUID resolution | KDE 6 `setCurrent` and window `desktops` use UUID strings, not indices | Script output includes `workspace.desktops[*].id`; cache as `_desktop_uuids` |
+| Script data transport | KWin JS runtime has no Node.js-style `fs` | `XMLHttpRequest` with `file://` URL (supported in both KDE 5 and 6 KWin scripting) |
+
+### Tool inventory
+
+`dbus-send` — available everywhere; used for all DBus calls including script loading.  
+`gdbus call` — available on this system; cleaner GVariant syntax for setting array
+properties such as `desktops`.  Used as the fallback window-move path when scripting
+fails.  
+`xml.etree.ElementTree` — stdlib; used to parse KWin Introspect XML responses.  
+`qdbus6` / `qdbus` — NOT assumed to be present.
+
+### Architecture
+
+```
+activate_project()
+  ├── _session == "x11"  →  _do_switch()  (Xlib EWMH, unchanged from 6a)
+  └── _session == "wayland"
+        ├── _enumerate_state_wayland()  — run JS script → JSON file → parse
+        │     ├── success: returns {windows: [...], desktop_uuids: [...]}
+        │     └── failure (KDE 6 only): _enumerate_windows_kde6_dbus() fallback
+        ├── compute ws0_windows, ws1_windows from enumerated state
+        ├── batch move old→hidden via _move_windows_wayland()  — second JS script
+        ├── batch move new←hidden via _move_windows_wayland()
+        └── _switch_to_desktop_wayland()  — third JS script or EWMH-equivalent
+```
+
+### KWin scripting runner
+
+All three Wayland operations (enumerate, move, switch) share `_run_kwin_script(js)`:
+
+```python
+def _run_kwin_script(self, js_code: str) -> bool:
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".js", prefix="eldrun_kwin_",
+        delete=False, encoding="utf-8",
+    ) as f:
+        f.write(js_code)
+        script_path = f.name
+    try:
+        name = f"eldrun_{os.getpid()}"
+        out = self._kwin_dbus("/Scripting",
+                               "org.kde.kwin.Scripting.loadScript",
+                               f"string:{script_path}", f"string:{name}")
+        if out is None:
+            return False
+        script_id = self._parse_int(out, default=-1)
+        if script_id < 0:
+            return False
+        # KDE 5 requires an explicit run; KDE 6 auto-starts on load
+        if self._kde_version < 6:
+            self._kwin_dbus(f"/Scripting/Script{script_id}",
+                            "org.kde.kwin.Script.run")
+        self._kwin_dbus("/Scripting",
+                        "org.kde.kwin.Scripting.unloadScript",
+                        f"string:{name}")
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
+```
+
+### Window enumeration via KWin script
+
+The enumeration script runs once per `activate_project` call and produces a JSON
+blob with both desktop UUIDs (in index order) and per-window state:
+
+```javascript
+var state = {
+    desktopUUIDs: workspace.desktops.map(function(d) { return d.id; }),
+    windows: workspace.windowList().map(function(w) {
+        return {
+            uuid: w.internalId,
+            cls:  w.resourceClass.toLowerCase(),
+            desktops: w.desktops.map(function(d) { return d.id; }),
+            onAllDesktops: w.onAllDesktops
+        };
+    })
+};
+var xhr = new XMLHttpRequest();
+xhr.open("PUT", "file://__OUTPUT_PATH__", false);
+xhr.send(JSON.stringify(state));
+```
+
+Python side:
+```python
+def _enumerate_state_wayland(self) -> dict | None:
+    import json, os, tempfile
+    out_path = os.path.join(tempfile.gettempdir(),
+                            f"eldrun_kwin_{os.getpid()}.json")
+    js = _ENUMERATE_JS_TEMPLATE.replace("__OUTPUT_PATH__", out_path)
+    self._run_kwin_script(js)
+    try:
+        with open(out_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+```
+
+On success, Python caches `state["desktopUUIDs"]` as `self._desktop_uuids: list[str]`
+so that index-to-UUID lookups are O(1) for the rest of the activation:
+
+```python
+self._desktop_uuids = state.get("desktopUUIDs", [])
+desk0_uuid = self._desktop_uuids[0] if len(self._desktop_uuids) > 0 else ""
+desk1_uuid = self._desktop_uuids[1] if len(self._desktop_uuids) > 1 else ""
+```
+
+### KDE 6 DBus fallback (when script file write fails)
+
+`dbus-send` introspects `/org/kde/KWin/Windows` to list window UUID paths.
+For each UUID, two property queries fetch `resourceClass` and `desktops`.
+`xml.etree.ElementTree` parses the Introspect XML reliably without regex fragility.
+
+```
+GET /org/kde/KWin/Windows  Introspect  →  XML  →  list of UUID child node names
+  for each uuid:
+    GET /org/kde/KWin/Windows/<uuid>  Properties.Get resourceClass  →  str
+    GET /org/kde/KWin/Windows/<uuid>  Properties.Get desktops       →  [uuid, ...]
+```
+
+Desktop UUIDs for the fallback are obtained by introspecting `/VirtualDesktopManager`
+and reading each child Desktop's `name` property to match "Eldrun" / "Eldrun-Hidden".
+
+### Batch window moves
+
+One KWin script moves all windows to the target desktop, avoiding per-window DBus
+round-trips:
+
+```javascript
+// generated with uuid list and target index interpolated
+var uuids = ["uuid1", "uuid2"];
+var targetDesk = workspace.desktops[1];
+var clients = workspace.windowList();
+for (var i = 0; i < clients.length; i++) {
+    if (uuids.indexOf(clients[i].internalId) !== -1) {
+        clients[i].desktops = [targetDesk];
+    }
+}
+```
+
+Fallback (KDE 6, when scripting fails): `gdbus call` sets the `desktops` property
+directly on `/org/kde/KWin/Windows/<uuid>` using GVariant array syntax
+`"<as ['desktop-uuid']>"`.
+
+### Desktop switching on Wayland
+
+```javascript
+if (workspace.desktops.length > 0) {
+    workspace.currentDesktop = workspace.desktops[0];
+}
+```
+
+This script runs after window moves so the user sees the correct desktop.
+
+### Sticky global windows on Wayland
+
+```javascript
+var uuids = ["uuid1"];
+var clients = workspace.windowList();
+for (var i = 0; i < clients.length; i++) {
+    if (uuids.indexOf(clients[i].internalId) !== -1) {
+        clients[i].onAllDesktops = true;
+    }
+}
+```
+
+### `prepare()` on Wayland
+
+```python
+def prepare(self) -> None:
+    self._original_desktop_count = self._get_desktop_count()
+    if self._original_desktop_count < 2:
+        self._create_desktop(1, "Eldrun-Hidden")
+        self._created_hidden_desktop = True
+    self._set_desktop_names(["Eldrun", "Eldrun-Hidden"])  # Xlib (works via XWayland)
+    if self._session == "wayland":
+        self._switch_to_desktop_wayland(_CURRENT_DESK)
+    else:
+        self._switch_to_desktop(_CURRENT_DESK)
+```
+
+`_set_desktop_names` via Xlib still works on KDE Wayland because XWayland proxies the
+EWMH `_NET_DESKTOP_NAMES` atom through to KWin.  If Xlib is unavailable (pure Wayland
+with no XWayland), naming is skipped gracefully.
+
+### `cleanup()` on Wayland
+
+```python
+if self._session == "wayland":
+    # Enumerate windows on desktop 1 and batch-move to desktop 0
+    state = self._enumerate_state_wayland()
+    if state:
+        desk1_uuid = state["desktopUUIDs"][1] if len(state["desktopUUIDs"]) > 1 else ""
+        to_restore = [w["uuid"] for w in state["windows"]
+                      if desk1_uuid and desk1_uuid in w["desktops"]]
+        if to_restore:
+            self._move_windows_wayland(to_restore, _CURRENT_DESK)
+```
+
+### `is_available()` change for 6b
+
+Remove the Wayland early-return.  Set `self._session` during the availability check:
+
+```python
+if r.returncode == 0:
+    import os
+    self._kde_version = self._detect_kde_version()
+    self._session = "wayland" if os.environ.get("WAYLAND_DISPLAY") else "x11"
+    return True
+```
+
+### New state attributes
+
+```python
+self._session: str = "x11"           # set in is_available()
+self._desktop_uuids: list[str] = []  # refreshed per activate_project call
+```
+
+### Limitations of Phase 6b
+
+| Limitation | Scope |
+|-----------|-------|
+| `assign_window_to_project()` on Wayland | Window UUID must come from a future KWin "window opened" signal watcher; deferred to Phase 6c |
+| KDE 5 Wayland — `XMLHttpRequest file://` sandbox | If the write is blocked, enumeration returns empty; only explicitly tracked windows are managed |
+| XWayland-only windows on KDE 5 Wayland | These appear in KWin's scripting `windowList()` and are managed normally |
+| `make_global_window(window_id)` on Wayland | Takes an int (XID); on Wayland, window_id is a UUID string — callers must use the new `assign_window_to_project` flow in Phase 6c |
+
+---
+
+## Phase 6b test plan
+
+All tests are fully mockable — no live KDE Wayland session required.
+
+### New test classes (additions to `test_kde_kwin.py`)
+
+| Class | Tests | What's covered |
+|-------|-------|---------------|
+| `TestKWinScriptRunner` | 8 | load/run/unload lifecycle, KDE 5 vs 6 dispatch, temp file cleanup, error handling |
+| `TestEnumerateStateWayland` | 10 | JSON parse, desktop UUID caching, file-not-found fallback path |
+| `TestEnumerateWindowsKDE6DBus` | 8 | XML introspect parsing, per-window property queries, regex extraction |
+| `TestMoveWindowsWayland` | 7 | JS generation with UUID list and index, empty list no-op, script failure |
+| `TestSwitchDesktopWayland` | 4 | JS content, index interpolation, script delegation |
+| `TestActivateWayland` | 14 | full flow — enumerate, park old, rescue protected, restore new |
+| `TestMakeStickyWayland` | 4 | JS generation, delegation from make_global_window() |
+| `TestPrepareCleanupWayland` | 6 | Wayland prepare dispatches correctly; cleanup enumerates and restores |
+| `TestSessionDetection` | 4 | is_available sets _session; Wayland returns True for KDE |
+| `TestDetectBackendKDEWayland` | 3 | detect_backend returns KDE on KDE Wayland |
+
+**Total new tests: ~68.  Running total after 6b: ~119 in `test_kde_kwin.py`.**
 
 ---
 

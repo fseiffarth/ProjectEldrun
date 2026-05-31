@@ -660,7 +660,11 @@ class EldrunWindow(Adw.ApplicationWindow):
         if self._wm_enabled:
             GLib.idle_add(self._setup_workspaces)
         if current_id:
-            GLib.idle_add(self._restore_project_apps, current_id)
+            # Delay until after GTK4's initial frame-clock rendering cycle.
+            # Calling get_monitor_at_surface() from the first idle callback can
+            # re-enter the main loop via gdk_display_sync(), firing the frame
+            # clock before layout is complete and causing a SIGSEGV.
+            GLib.timeout_add(500, self._restore_project_apps, current_id)
         GLib.idle_add(self._suggest_startup_projects)
 
     # ── workspace management ──────────────────────────────────────────────────

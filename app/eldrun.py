@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Entry point for ProjectEldrun."""
 
-__version__ = "0.0.15"
+__version__ = "0.0.17"
 
 _debug_enabled: bool = True
 
@@ -1800,7 +1800,40 @@ class EldrunApp(Adw.Application):
         win.present()
 
 
+def _setup_crash_logging() -> None:
+    import faulthandler
+    import traceback
+    from gi.repository import GLib as _GLib
+
+    log_dir = _GLib.get_user_data_dir() + "/eldrun"
+    os.makedirs(log_dir, exist_ok=True)
+    crash_log = os.path.join(log_dir, "crash.log")
+
+    # faulthandler writes C-level crash info (SIGSEGV, SIGABRT, etc.)
+    try:
+        _fh = open(crash_log, "a", encoding="utf-8")  # noqa: WPS515
+        faulthandler.enable(_fh)
+    except OSError:
+        faulthandler.enable()
+
+    # sys.excepthook captures unhandled Python exceptions
+    _orig_hook = sys.excepthook
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        try:
+            with open(crash_log, "a", encoding="utf-8") as f:
+                import datetime
+                f.write(f"\n--- {datetime.datetime.now().isoformat()} ---\n")
+                traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+        except OSError:
+            pass
+        _orig_hook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _excepthook
+
+
 def main():
+    _setup_crash_logging()
     app = EldrunApp()
     # Schedule quit on the GLib loop — safe to call from a Python signal handler.
     signal.signal(signal.SIGTERM, lambda *_: GLib.idle_add(app.quit))
