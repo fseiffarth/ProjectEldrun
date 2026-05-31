@@ -67,7 +67,7 @@ pub struct TabEntry {
 /// Most fields are optional because projects created by older app versions may
 /// not have all fields, and this struct must survive forward-compatibility reads
 /// (newer Python app wrote fields the Rust model doesn't know about → `extra`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Project {
     pub id: String,
     pub name: String,
