@@ -8,7 +8,7 @@ Last reviewed: 2026-05-31
 
 ## Current State
 
-- Version: `0.0.18`.
+- Version: `0.0.18` (Python/GTK4 app); Tauri migration on `rust_migration` branch.
 - Primary target: Linux desktop (X11 and KDE Wayland).
 - Main app shell is in place: root terminal, project terminals, agent tabs,
   bottom project switcher, right file tree, global app toolbar, settings, time
@@ -26,15 +26,30 @@ Last reviewed: 2026-05-31
   `VirtualDesktopManager.current` (DBus). Eldrun is made sticky at startup so
   it remains visible across all desktops. KDE 5 and KDE 6 are both supported.
 
+## Tauri Migration (rust_migration branch)
+
+All 8 phases from TauriRust.md are implemented:
+- **Phase 1**: Rust schema harness (serde models + 15 round-trip tests, backup-before-write)
+- **Phase 2**: Tauri v2 shell + React/TS frontend (4 themes, layout, settings/projects IPC)
+- **Phase 3**: xterm.js + portable-pty terminal MVP (batched output, crash-loop guard, ready event)
+- **Phase 4**: Project CRUD, scaffold writer, validated file tree, MIME detection
+- **Phase 5**: TabBar with Claude/Codex/Gemini/Shell tabs, tab layout persistence
+- **Phase 6**: External window tracking replaces X11 embedding; open_file via xdg-open
+- **Phase 7**: X11 EWMH two-desktop backend + KDE Wayland per-project desktop + null backend
+- **Phase 8**: Downloads symlink + browser pref editing, F11/Super shortcuts, crash logging, deb+AppImage packaging
+
+Build: `. ~/.cargo/env && cargo build && npm run build`
+Tests: `. ~/.cargo/env && cargo test` (15 passing)
+
+Needs live QA before promotion to main: terminal resize/exit/paste, workspace switching, browser pref editing.
+
 ## Quality Snapshot
 
-- Unit tests cover project management, settings, default apps, global apps,
-  network detection, time tracking, workspace helpers, download routing, app
-  picker behavior, panel-adjacent logic, and the KDE Plasma backend
-  (X11 + Wayland paths).
-- Last agent-run checks:
+- Python app unit tests: `python3 -m unittest` (132 passing on main branch).
+- Tauri migration tests: `cargo test` (15 schema round-trip tests passing).
+- Last agent-run checks (Python app):
   - `python3 -m unittest`
-  - `python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py app/new_project_dialog.py app/import_project_dialog.py app/settings_manager.py app/default_apps_manager.py app/network_monitor.py app/time_tracker.py app/project_stats.py app/workspace_manager.py app/panels/*.py`
+  - `python3 -m py_compile app/eldrun.py app/window.py ...`
 - Runtime validation still needs a human-run Eldrun session. Agents should not
   launch a second Eldrun instance for verification.
 
@@ -52,27 +67,27 @@ Last reviewed: 2026-05-31
 
 ## Time Log
 
-Total: 64h 29m
+Total: 65h 13m
 
 | Date | Start | Duration |
 |------|-------|----------|
-| 2026-05-31 | 2026-05-31 19:36 | 0h 2m |
-| 2026-05-31 | 2026-05-31 19:36 | 0h 0m |
-| 2026-05-31 | 2026-05-31 19:35 | 0h 1m |
-| 2026-05-31 | 2026-05-31 19:32 | 0h 3m |
-| 2026-05-31 | 2026-05-31 19:29 | 0h 2m |
-| 2026-05-31 | 2026-05-31 19:28 | 0h 0m |
-| 2026-05-31 | 2026-05-31 19:25 | 0h 3m |
-| 2026-05-31 | 2026-05-31 19:25 | 0h 0m |
-| 2026-05-31 | 2026-05-31 19:23 | 0h 2m |
-| 2026-05-31 | 2026-05-31 19:22 | 0h 0m |
-| 2026-05-31 | 2026-05-31 19:21 | 0h 0m |
-| 2026-05-31 | 2026-05-31 19:20 | 0h 1m |
-| 2026-05-31 | 2026-05-31 19:19 | 0h 0m |
-| 2026-05-31 | 2026-05-31 19:02 | 0h 15m |
-| 2026-05-31 | 2026-05-31 19:01 | 0h 0m |
-| 2026-05-31 | 2026-05-31 19:01 | 0h 0m |
-| 2026-05-31 | 2026-05-31 18:58 | 0h 2m |
-| 2026-05-31 | 2026-05-31 18:58 | 0h 0m |
-| 2026-05-31 | 2026-05-31 18:57 | 0h 1m |
-| 2026-05-31 | 2026-05-31 18:56 | 0h 0m |
+| 2026-05-31 | 2026-05-31 20:23 | 0h 0m |
+| 2026-05-31 | 2026-05-31 20:23 | 0h 0m |
+| 2026-05-31 | 2026-05-31 20:18 | 0h 5m |
+| 2026-05-31 | 2026-05-31 20:18 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:58 | 0h 20m |
+| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:58 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:57 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:56 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:55 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:55 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:54 | 0h 1m |
+| 2026-05-31 | 2026-05-31 19:49 | 0h 5m |
+| 2026-05-31 | 2026-05-31 19:48 | 0h 0m |
