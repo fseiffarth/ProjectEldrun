@@ -3,17 +3,24 @@
 ## Context
 
 ProjectEldrun is a GTK4/Python desktop workspace for AI-assisted development. The goal is
-to rewrite it using Tauri v2 (Rust backend) + React + TypeScript (WebView frontend), gaining
-a modern component-based UI, TypeScript safety, and a more accessible tech stack while
-keeping the full feature set. This is a ground-up rewrite — no Python/GTK code survives
-as-is. Total estimated effort: ~12 weeks of focused engineering.
+to rewrite the current `noollama` version using Tauri v2 (Rust backend) + React +
+TypeScript (WebView frontend), gaining a modern component-based UI, TypeScript safety,
+and a more accessible tech stack while preserving current-state data compatibility and
+the Linux desktop workflows that define Eldrun.
 
-**Platform targets:** Linux is the primary target. The architecture minimises Linux-only
-code to a single seam: the `WorkspaceBackend` trait in `src-tauri/src/platform/`. Every
-other subsystem — PTY, network, MIME, file opening, persistence, UI — uses cross-platform
-crates and compiles unchanged on Windows and macOS. Linux-specific crates (`xcb`, `zbus`)
-are in `[target.'cfg(target_os = "linux")'.dependencies]` so they never enter the build
-graph on other OSes.
+This is a ground-up rewrite. No Python/GTK code survives as-is, and the migration should
+not reintroduce removed Ollama features. Ollama belongs in a separate future design note
+after Tauri parity exists.
+
+**Platform targets:** Linux is the parity target. The Tauri shell, React UI, and much of
+the PTY layer can be portable, but Eldrun as a workspace manager is Linux-first. Windows
+and macOS builds are future experimental shells unless OS-specific app, window, default
+application, download-routing, and workspace integrations are implemented. Linux-specific
+crates (`xcb`, `zbus`) stay in `[target.'cfg(target_os = "linux")'.dependencies]`.
+
+**Schedule framing:** 12 focused weeks is a prototype target, not a confident parity
+promise. Treat the schema harness, terminal subsystem, workspace backends, and external
+window tracking as the migration's highest-risk areas.
 
 ---
 
@@ -54,7 +61,8 @@ src-tauri/
 
 **IPC pattern:** Rust ↔ React via Tauri commands (`invoke`) for request/response and Tauri
 events (`emit_all` / `listen`) for push notifications (terminal output, network status,
-Ollama chunks, time ticks).
+time ticks, workspace/window updates). Terminal output must be batched and bounded before
+crossing IPC; do not emit one unbounded event stream per byte/chunk without backpressure.
 
 ---
 
@@ -65,39 +73,55 @@ Ollama chunks, time ticks).
 | Terminal UI | `xterm.js` (`@xterm/xterm` + `@xterm/addon-fit`) | No — WebView |
 | PTY management | `portable-pty` crate | No — Win/Mac/Linux |
 | Async runtime | Tokio | No |
-| JSON persistence | `serde_json` + Tauri path API | No |
+| JSON persistence | `serde_json` + pinned Linux state path | Linux path is fixed to existing app state |
 | MIME detection | `mime_guess` (extension) + `infer` (magic bytes) | No — replaces `xdg-mime` subprocess |
-| File/URL opening | `opener` crate | No — wraps xdg-open / open / start per OS |
+| File/URL opening | Linux default-app resolver + `opener` fallback | Default-app parity is Linux-specific |
 | Network adapter type | `network-interface` crate + TCP probe | No — replaces sysfs read |
 | State (frontend) | Zustand | No |
 | Styling | Tailwind CSS + CSS variables | No |
 | Drag-to-reorder | `@dnd-kit/core` | No |
-| Workspace abstraction | `WorkspaceBackend` trait + null backend | No — Linux impls compiled only on Linux |
+| Workspace abstraction | `WorkspaceBackend` trait + null backend | Linux parity only; other OSes are stubs |
 | X11 window ops | `xcb` crate | **Yes** — `cfg(target_os = "linux")` only |
 | DBus | `zbus` crate | **Yes** — `cfg(target_os = "linux")` only |
 | XDG sandbox env | `#[cfg(target_os = "linux")]` block in `terminal.rs` | **Yes** — entire block gated |
 
 ---
 
+## Scope Lock
+
+The Tauri migration targets the current `noollama` branch, not older Ollama-enabled
+releases.
+
+- **In scope:** current project management, root/project/agent terminals, Claude/Codex
+  tabs, file tree, settings, default app mappings, global app toolbar, time tracking,
+  browser download routing if explicitly retained, and Linux workspace integration.
+- **Out of scope:** Ollama dialog/search/client behavior, X11 embedding inside the WebView,
+  and full Windows/macOS workspace parity.
+- **Intentional redesign:** app tabs become external-window tracking. Restore is
+  best-effort launch/raise, not embedded window resurrection.
+- **Compatibility rule:** before any UI migration work rewrites user state, Rust must
+  prove it can load, preserve, and round-trip current JSON files without losing unknown
+  fields or breaking rollback to the Python app.
+
 ## Feature Fate
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| VTE terminals (agent + project + root) | **Redesigned** | xterm.js + portable-pty PTY backend |
+| VTE terminals (agent + project + root) | **Redesigned, high risk** | xterm.js + portable-pty PTY backend with resize, lifecycle, batching, backpressure, paste, key handling, and scrollback limits |
 | Tab management + persistence | **Ported** | React tabs, `tab_layout` in project.json |
 | Project CRUD + scaffolding | **Ported** | Rust (serde_json) |
 | Settings manager | **Ported** | Rust (serde_json + Tauri path API) |
 | Time tracking | **Ported** | Rust + Tauri events for UI updates |
 | Network monitor | **Ported** | Tokio + `network-interface` crate + TCP probe; Tauri events to frontend |
-| File tree + default apps | **Ported** | React TreeView; `mime_guess`+`infer` for MIME; `opener` crate for launching |
+| File tree + default apps | **Ported, Linux parity first** | React TreeView; preserve `default_apps.json`; Linux default-app resolution remains more than `opener::open()` |
 | Bottom panel / project pills | **Ported** | React + @dnd-kit drag-to-reorder |
-| Global apps toolbar | **Ported** | React toolbar + Rust subprocess launch |
+| Global apps toolbar | **Ported, Linux parity first** | React toolbar + role registry, visibility toggles, launch-or-raise, sticky/global windows, screenshot handling, URI routing, protected app names |
 | CSS themes (4) | **Ported** | Tailwind CSS variables |
-| Workspace management (KDE/Cinnamon) | **Ported (X11 + KDE Wayland)** | X11: xcb EWMH; Wayland: KWin JS scripting + zbus (mirrors Phase 6b) |
-| X11 window embedding | **Dropped** | Fundamentally incompatible with Tauri WebView; redesign as floating windows |
-| Windows / macOS support | **Stubbed, future-ready** | `WorkspaceBackend` trait returns null backend; PTY + UI work on day 1; workspace swapping needs OS-specific impl |
+| Workspace management (KDE/Cinnamon) | **Ported (X11 + KDE Wayland)** | X11: two-desktop parking model; KDE Wayland: per-project virtual desktop model via DBus/KWin |
+| X11 window embedding | **Dropped, model redesign required** | Fundamentally incompatible with Tauri WebView; replace app tabs with external-window tracking |
+| Windows / macOS support | **Stubbed, experimental** | `WorkspaceBackend` trait returns null backend; usable shell requires OS-specific app/window/default-app/download integrations |
 | Project stats scanner | **Ported** | Tokio background task |
-| Downloads manager | **Ported** | Rust symlink + browser prefs |
+| Downloads manager | **Decision required** | Current parity means `~/eldrun/downloads` symlink plus Firefox/Chromium preference edits with backups/locking; otherwise mark deliberate regression |
 | Crash logging | **Ported** | `std::panic::set_hook` to crash.log |
 | Header (clock, lamps, buttons) | **Ported** | React + Tauri window controls API |
 
@@ -105,117 +129,134 @@ Ollama chunks, time ticks).
 
 ## Phased Implementation Roadmap
 
-### Phase 1 — Scaffolding + Persistence (Week 1)
-**Goal:** Tauri project boots, reads and writes all JSON data files.
+### Phase 0 — Scope Lock and Parity Contract
+**Goal:** Freeze what the Tauri rewrite must preserve before code is written.
 
-- `cargo create-tauri-app` with React + TypeScript template (Tauri v2)
-- Port `project_manager.py` → `src-tauri/src/commands/projects.rs`
-  - Load/save `projects.json`, per-project `project.json`
-  - Project CRUD: create, import, delete, reorder
-  - Scaffold writer (AGENTS.md, CLAUDE.md, .gitignore, etc.)
-  - Migration logic for legacy formats
-- Port `settings_manager.py` → `src-tauri/src/commands/settings.rs`
-- Port `default_apps_manager.py` → `src-tauri/src/commands/apps.rs` (data layer only)
-- Port `time_tracker.py` → `src-tauri/src/commands/time_tracker.rs`
-- Tauri commands: `load_projects`, `save_project`, `load_settings`, `save_settings`, etc.
-- No UI yet; validate by writing integration tests in Rust.
+- Confirm migration source is the current `noollama` branch.
+- Remove Ollama from migration scope, shortcuts, IPC events, settings, tests, and UI copy.
+- Define intentional regressions and redesigns:
+  - no X11 embedding in the Tauri WebView;
+  - app tabs become external-window tracker entries;
+  - Windows/macOS are experimental shells until native integrations exist;
+  - browser preference editing for downloads is either explicitly retained or marked as a deliberate regression.
+- Define the local security model:
+  - Tauri commands are allowlisted by capability;
+  - file operations validate canonicalized paths and symlinks;
+  - project-scoped commands require paths inside registered project roots unless explicitly marked global;
+  - PTY spawning is limited to known shell/agent commands plus validated user shell paths;
+  - destructive operations require backend validation and cannot be triggered by frontend route state alone.
 
-### Phase 2 — App Shell + Themes (Week 2)
-**Goal:** Window renders with correct layout and all 4 themes switchable.
+### Phase 1 — Schema and Compatibility Harness
+**Goal:** Rust can load and save current state without breaking rollback to Python.
 
-- Main window layout: header bar (top) + center terminal stack + right panel overlay + bottom bar
-- Tailwind CSS variables for 4 themes (dark, light, fancy_dark, fancy_light) matching existing colors exactly
-- Header: window-manager buttons (min/max/close via Tauri window API), clock (1s interval), status lamp placeholders
-- Bottom panel: project pills (click to switch, no drag yet), add/settings buttons
-- Right panel: static file tree placeholder
-- Theme toggle working end-to-end
+- Pin Linux state to `~/.local/share/eldrun/`; do not rely on Tauri's generated
+  `app_data_dir()` unless it is verified to be the same path and locked down.
+- Inventory schemas for:
+  - `projects.json`;
+  - `settings.json`;
+  - `default_apps.json`;
+  - `time_log.json`;
+  - `active_session.json`;
+  - each project `project.json`;
+  - `project.json["open_apps"]`;
+  - `project.json["tab_layout"]`.
+- For each schema, document required fields, optional fields, legacy fields,
+  `noollama`-removed fields, default values, and unknown-field preservation.
+- Add real sample fixtures from current `noollama` state.
+- Implement serde models that preserve unknown fields and perform backup-before-write.
+- Add round-trip tests proving the Python app can still recover after Rust writes state.
 
-### Phase 3 — Terminal Subsystem (Weeks 3–5) ← highest risk
-**Goal:** VTE-equivalent terminal tabs with PTY, env sandbox, agent spawning.
+### Phase 2 — Tauri Shell Without Workspace Features
+**Goal:** Window renders with correct layout and basic state read-only flows.
 
+- `cargo create-tauri-app` with React + TypeScript template (Tauri v2).
+- Main window layout: header bar, center stack, right panel overlay, bottom bar.
+- Tailwind CSS variables for the four current themes.
+- Header: window controls, clock, network/workspace placeholders.
+- Bottom panel: project pills, add/settings buttons, no workspace switching yet.
+- Right panel: placeholder file tree reading fixture data through safe commands.
+- Theme switching, settings display, and project list work without writing state except through the Phase 1 harness.
+
+### Phase 3 — Terminal MVP
+**Goal:** Prove xterm.js + PTY behavior before building the full tab model.
+
+- Implement one root terminal and one project terminal first.
 - `src-tauri/src/commands/terminal.rs`:
-  - `portable-pty` for PTY creation (cross-platform; handles SIGCHLD + auto-respawn)
-  - Per-terminal `TerminalSession { pty_master, child_pid, write_tx, read_rx }`
-  - `spawn_terminal(cmd, directory, envv)` command — builds sandbox env; XDG_* vars injected only inside `#[cfg(target_os = "linux")]` block (identical logic to `_project_sandbox_envv`)
-  - Streaming stdout via Tauri events: `emit_all("terminal-output-{id}", chunk)`
-  - `write_terminal(id, data)` command for stdin (replaces `feed_child`)
-  - Auto-respawn on child exit (re-spawn same cmd+env)
-  - Terminal registry in `AppState`
-- React `TerminalTab` component:
-  - `xterm.js` instance per tab, attached via `useEffect`
-  - `@xterm/addon-fit` for resize; `@xterm/addon-web-links` for URI click
-  - Listen to `terminal-output-{id}` events → `xterm.write(chunk)`
-  - `invoke('write_terminal', { id, data })` on xterm's `onData`
-- Tab bar: React tabs with close/rename, auto-numbering (Claude, Claude1, Claude2…)
-- `tab_layout` save/restore: persist to `project.json` via `projects.rs` commands
-- Task feeding: 350 ms delay post-spawn, then `write_terminal` (same pattern as current)
-- Offline banner: React overlay shown when `network-status-changed` fires with `is_online: false`
-- Agent spawning: `_add_agent_terminal` logic → `invoke('spawn_agent', { cmd, taskTitle, directory })`
+  - `portable-pty` PTY creation and child lifecycle tracking;
+  - resize propagation from xterm fit events to PTY dimensions;
+  - explicit shell fallback and exit handling;
+  - crash-loop protection for fast respawns;
+  - bounded per-PTY output channels;
+  - batched/throttled IPC events to avoid WebView flooding;
+  - UTF-8 lossy/binary-safe output handling;
+  - Linux project sandbox env in a `#[cfg(target_os = "linux")]` block.
+- React terminal component:
+  - `xterm.js`, `@xterm/addon-fit`, and `@xterm/addon-web-links`;
+  - bracketed paste, copy/paste integration, Ctrl/Alt/meta behavior, focus restore;
+  - bounded scrollback default.
+- Replace the fixed 350 ms task-feed race with an explicit terminal-ready event when possible; keep the delay only as fallback.
 
-### Phase 4 — File Tree + Right Panel (Week 6)
-**Goal:** File tree browsable; context menus and project settings work.
+### Phase 4 — Project and File Management
+**Goal:** Project CRUD and the right file panel work with safe backend validation.
 
-- `src-tauri/src/commands/files.rs`: directory listing, MIME detection via `mime_guess` (extension lookup) + `infer` (magic-byte sniffing) — no subprocess, no Linux dependency; default app resolution stores user mappings in `default_apps.json`; `invoke('open_path', { path })` delegates to `opener::open()` which calls `xdg-open` / `open` / `start` per OS
-- React `FileTree` component using a virtual tree (react-arborist or custom recursive component)
-- Context menu on files: open with default / choose app
-- Project settings popover: hidden files toggle, file stats display, time display
-- App picker dialog: search + suggested section
+- Port `project_manager.py` to `src-tauri/src/commands/projects.rs`.
+- Project CRUD: create, import, delete, reorder, and scaffold writer.
+- Port settings, time tracking, default-app data, and project stats commands.
+- File tree command validates canonicalized paths and symlinks before list/open/rename/delete/create.
+- Preserve hidden-file toggles, file stats, time display, context menus, and app picker.
+- Default app handling preserves `default_apps.json` and Linux resolution behavior; `opener::open()` is only the fallback launcher, not the whole model.
 
-### Phase 5 — Project Dialogs (Week 7)
-**Goal:** New project and import flows work end-to-end.
+### Phase 5 — Tabs and Agent Orchestration
+**Goal:** Restore the daily coding workflow without workspace movement yet.
 
-- `NewProjectDialog` React component: name validation, path preview, remote repo option
-- `ImportProjectDialog` React component: folder picker (Tauri dialog API), import modes
-- All scaffold writing via Rust command `scaffold_project`
+- Tab bar with close/rename/reorder and current auto-numbering behavior.
+- Claude, Codex, Gemini, and plain shell tabs.
+- `tab_layout` compatibility through the Phase 1 schema contract.
+- URI routing from terminal links through the default/global app system.
+- Terminal persistence policy is explicit: what survives project switches and what survives app restarts.
+- Offline banner from `network-status-changed`.
 
-### Phase 6 — Network + Platform Integrations (Weeks 8–9)
-**Goal:** Network monitor, workspace management, app launching all work.
+### Phase 6 — External App and Window Model
+**Goal:** Replace embedded app pages with tracked external windows.
 
-- `src-tauri/src/commands/network.rs`: Tokio interval + TCP probe (cross-platform) + `network-interface` crate for adapter type detection (ethernet/wifi/none) → `emit_all("network-status-changed", …)`; no sysfs, no Linux dependency
-- Workspace backend trait in `src-tauri/src/platform/mod.rs`; auto-detect at startup: KDE → Cinnamon → GNOME → null
-- `src-tauri/src/platform/x11.rs` — **KDE/Cinnamon/GNOME X11 path**:
-  - EWMH via `xcb`: `_NET_CLIENT_LIST`, `_NET_WM_DESKTOP`, `_NET_CURRENT_DESKTOP`, `_NET_NUMBER_OF_DESKTOPS`, `_NET_DESKTOP_NAMES`, `_NET_CLOSE_WINDOW`
-  - `activate_project`: collect ws0 windows (excluding Eldrun XID + protected WM_CLASS), move to ws1, restore tracked ws1 windows for new project
-  - `prepare`: ensure 2 desktops exist, name them "Eldrun" / "Eldrun-Hidden"
-  - `cleanup`: move all tracked hidden windows back to ws0, collapse to original desktop count
-  - `make_global_window`: `_NET_WM_STATE` + `_NET_WM_STATE_STICKY` ClientMessage
-  - KDE version probe: introspect `/VirtualDesktopManager` to detect KDE 6 vs 5
-  - KDE 6 desktop management: `VirtualDesktopManager.createDesktop` / `removeDesktop` via `zbus`
-  - Cinnamon: `zbus` call to `org.Cinnamon /org/Cinnamon org.Cinnamon.Eval` (JS string eval)
-  - GNOME: `std::process::Command` for `gsettings` + `zbus` for Shell.Eval fallback
-- `src-tauri/src/platform/wayland_kde.rs` — **KDE Wayland path** (mirrors `kde_kwin.py` Phase 6b):
-  - Active when `WAYLAND_DISPLAY` is set and `XDG_CURRENT_DESKTOP` contains `kde`/`plasma`
-  - KWin DBus availability check: `org.kde.KWin / org.freedesktop.DBus.Peer.Ping` via `zbus`
-  - KDE version probe: introspect `/VirtualDesktopManager` via `zbus`
-  - `run_kwin_script(js)`: write JS to `NamedTempFile`, call `org.kde.kwin.Scripting.loadScript` via `zbus`, run (KDE 5 only: `org.kde.kwin.Script.run`), then `unloadScript`; delete temp file in `Drop`
-  - KWin JS templates (identical to Python):
-    - `JS_ENUMERATE`: writes `{ desktopUUIDs, windows }` JSON via XHR PUT to a temp file path; fallback on KDE 6: enumerate via `/org/kde/KWin/Windows` DBus introspection
-    - `JS_MOVE`: batch-move windows by UUID array to `workspace.desktops[N]`
-    - `JS_SWITCH`: `workspace.currentDesktop = workspace.desktops[N]`
-    - `JS_STICKY`: set `onAllDesktops = true` for UUID array
-  - `enumerate_state()`: run JS_ENUMERATE, read + delete output JSON, parse into `WaylandState { desktop_uuids, windows }`; fallback to `enumerate_kde6_dbus()` if file write fails
-  - `enumerate_kde6_dbus()`: introspect `/org/kde/KWin/Windows` for UUIDs; get `resourceClass` + `desktops` properties per window via `zbus`; get desktop UUIDs from `/VirtualDesktopManager` children
-  - `activate_project`: enumerate state, collect moveable ws0 windows (non-sticky, non-protected by `resourceClass`), batch-move to ws1, store as old project; rescue protected windows from ws1; restore tracked ws1 windows for new project; call `JS_SWITCH(0)`
-  - `activate_project` fallback (enumeration fails): move only tracked windows via `JS_MOVE`
-  - `move_window_kde6_dbus(window_uuid, desktop_uuid)`: `zbus` call to `org.kde.KWin.Window.desktops` property setter on `/org/kde/KWin/Windows/{uuid}` (used when `run_kwin_script` fails)
-  - `cleanup_wayland()`: enumerate state, move all tracked hidden-desk windows back to ws0
-  - `prepare()`: ensure 2 virtual desktops exist (`createDesktop` via `zbus`), set names, switch to desktop 0
-  - `cleanup()`: restore all hidden windows to ws0, collapse desktop count to original
-- Global apps toolbar: React toolbar + `invoke('launch_app', { role, uri })` → `opener::open_with()` (cross-platform; falls back to `opener::open()` if app name is not an absolute path)
-- Download manager: `invoke('set_active_project_downloads', { projectDir })` → `std::fs::remove_file` + `std::os::unix::fs::symlink` on Unix; on Windows use `std::os::windows::fs::symlink_dir` (requires developer mode or admin) — gate with `#[cfg(unix)]` / `#[cfg(windows)]`
-- Project stats scanner: Tokio background task in `AppState`
+- No embedded app pages in Tauri.
+- Track external windows by PID, window ID, desktop UUID, resource class, and command where available.
+- `project.json["open_apps"]` remains compatible but is treated as best-effort restore metadata.
+- Right panel or toolbar shows external windows instead of embedded pages.
+- Launch-or-raise, project restore, sticky/global windows, screenshot special handling,
+  protected app names, and terminal URI routing are ported as Linux-first behavior.
+- Restore means best-effort launch/raise and workspace assignment, not embedded restore.
 
-### Phase 7 — Drag-to-Reorder + Polish (Weeks 10–11)
-**Goal:** Feature-complete, all interactions polished.
+### Phase 7 — Workspace Backends
+**Goal:** Rebuild workspace behavior after terminals, files, and windows are testable.
 
-- Bottom panel drag-to-reorder: `@dnd-kit/core` (pointer sensor, long-press activation)
-- Right panel drag-over scroll (scroll trigger area at panel edges)
-- All keyboard shortcuts: F11 fullscreen, Super panel toggle, Ctrl+K Ollama, per-dialog Escape/Enter
-- Custom window-manager buttons via `appWindow.minimize/maximize/close()`
-- Crash logging: `std::panic::set_hook` writes to `{app_data_dir}/crash.log` via Tauri's `app.path().app_data_dir()` — resolves to `~/.local/share/eldrun/` on Linux, `%APPDATA%\eldrun\` on Windows, `~/Library/Application Support/eldrun/` on macOS
-- Time tracking bars in bottom panel (update on `time-tick` events)
-- Debug badge, workspace ID badge (debug mode)
-- Ollama will be added post-migration as a persistent terminal tab (better than the removed GTK dialog)
+- Start with `null.rs` backend for unsupported desktops and CI.
+- `src-tauri/src/platform/wayland_kde.rs` — **KDE Wayland per-project desktop model**:
+  - active when `WAYLAND_DISPLAY` is set and `XDG_CURRENT_DESKTOP` contains `kde`/`plasma`;
+  - each project gets a dedicated KDE virtual desktop;
+  - switching projects switches `VirtualDesktopManager.current` via DBus;
+  - Eldrun is made sticky at startup so it remains visible across all desktops;
+  - KDE 5 and KDE 6 paths use DBus/KWin scripting where the current Python backend does.
+- `src-tauri/src/platform/x11.rs` — **KDE/Cinnamon/GNOME-ish X11 parking model**:
+  - EWMH via `xcb`;
+  - two-workspace model: active project on workspace 0, hidden/background windows parked on workspace 1;
+  - protect Eldrun and protected WM_CLASS/app names from movement;
+  - cleanup restores tracked hidden windows and original desktop count.
+- Decide explicitly whether KDE X11 stays with the two-desktop model or later moves toward per-project desktops.
+- GNOME/non-KDE Wayland remains null backend unless a real compositor-specific implementation is added.
+
+### Phase 8 — Downloads, Polish, Packaging, and Release
+**Goal:** Prepare a migration release with a rollback path.
+
+- Download manager:
+  - always update `~/eldrun/downloads` symlink on Linux;
+  - if retained, edit Firefox `prefs.js`, Firefox `user.js`, and Chromium `Preferences` with backups, file-lock awareness, and profile detection;
+  - if deferred, document it as a deliberate regression in release notes.
+- Keyboard shortcuts: F11 fullscreen, Super panel toggle, per-dialog Escape/Enter, and current non-Ollama shortcuts.
+- Bottom panel drag-to-reorder and right-panel drag-over scroll.
+- Crash logging writes under the pinned state directory on Linux.
+- Packaging targets: Linux `deb` and AppImage first.
+- Manual migration notes include backup location, rollback instructions, and known platform limits.
 
 ---
 
@@ -260,10 +301,12 @@ xcb = { version = "1", features = ["randr", "ewmh"] }
 ## Feature Parity Verification
 
 At each phase, verify against the current GTK app:
-1. **Phase 1**: Read/write all JSON data files; existing data from `~/.local/share/eldrun/` loads correctly
-2. **Phase 3**: Terminal spawns `claude`; task text is fed after 350 ms; tab saves/restores across project switches
-3. **Phase 7**: On KDE X11, switching projects moves windows to workspace 0/1 correctly
-4. Final: All existing Python unit tests have Rust equivalents passing; no regression in JSON data files
+1. **Phase 1**: Real `noollama` fixtures round-trip without dropping unknown fields; backups are created before first write; Python rollback can still load the files.
+2. **Phase 3**: Root/project terminals handle resize, process exit, fast-crash protection, large output, paste, Ctrl/Alt/meta input, URI detection, and task feed readiness.
+3. **Phase 6**: External app/window tracking preserves `open_apps` compatibility and restores by best-effort launch/raise instead of embedding.
+4. **Phase 7**: KDE Wayland uses one virtual desktop per project; KDE/Cinnamon/GNOME-ish X11 uses the two-workspace parking model; unsupported desktops use the null backend.
+5. **Phase 8**: Download routing behavior is either fully preserved, including browser preferences, or documented as a deliberate regression.
+6. Final: Rust schema tests, Rust unit tests, frontend component tests, and a live desktop QA matrix pass for KDE X11, KDE Wayland, Cinnamon X11, and GNOME/null.
 
 ---
 
@@ -271,13 +314,17 @@ At each phase, verify against the current GTK app:
 
 | Risk | Mitigation |
 |------|-----------|
-| xterm.js performance vs VTE for large scrollback | Cap scrollback at 5,000 lines by default; `@xterm/addon-canvas` renderer for GPU acceleration |
-| portable-pty SIGCHLD handling on Linux | Integration test: spawn bash, kill it, verify respawn in <1s |
-| XDG sandbox env on non-Linux | Entire XDG_* injection block is `#[cfg(target_os = "linux")]`; on Windows/macOS the env is passed as-is |
-| xcb/zbus workspace code on Wayland | `wayland_kde.rs` handles KDE Wayland via KWin JS scripting + zbus; other compositors (GNOME Wayland, etc.) get null backend + informational badge |
-| X11 window embedding dropped | Document in ROADMAP.md as "Embedding not available in Tauri version" |
-| Windows support (future) | Only `workspace.rs` needs a new impl (`windows.rs` using `IVirtualDesktopManager` COM via `windows-rs`); all other code already compiles — no changes to PTY, network, MIME, or UI |
-| macOS support (future) | Only `workspace.rs` needs a new impl (`macos.rs` using `NSWorkspace`/Spaces via `objc2`); all other code already compiles |
+| JSON state corruption | Schema inventory, real fixtures, unknown-field preservation, backup-before-write, rollback test with the Python app |
+| Tauri app-data path mismatch | Pin Linux state to `~/.local/share/eldrun/`; use Tauri path APIs only after verifying the generated path is identical |
+| xterm.js performance vs VTE for large scrollback | Cap scrollback, batch output, use bounded channels, throttle IPC, and add large-output tests |
+| PTY lifecycle gaps | Test resize, shell exit, child kill, fast crash loops, binary/invalid UTF-8 output, paste, Ctrl/Alt/meta input, and terminal-ready task feed |
+| Frontend injection causing local file/app access | Keep command allowlists, canonical path validation, project-root confinement, symlink handling, and backend-side checks for destructive operations |
+| XDG sandbox env on non-Linux | Treat XDG sandboxing as Linux-only; Windows/macOS shells need separate design before parity claims |
+| KDE Wayland regression to X11 two-desktop model | Implement a dedicated per-project virtual desktop backend matching current Phase 6b behavior |
+| X11 window embedding dropped | Redesign app tabs as external windows tracked by PID/window ID/desktop UUID where available; document restore as best-effort launch/raise |
+| Downloads browser-pref editing | Either port Firefox/Chromium preference editing with backup/locking safeguards or document the omission as an intentional regression |
+| Global apps reduced to simple opener calls | Preserve role registry, visibility toggles, launch-or-raise, sticky windows, screenshot handling, URI routing, and protected app names |
+| Windows/macOS scope creep | Label non-Linux builds experimental until native default-app, window, download, and workspace integrations exist |
 | `mime_guess` misses uncommon types | `infer` magic-byte sniffing covers binaries; for truly unknown types fall back to `"application/octet-stream"` — same behaviour as current `xdg-mime` fallback |
 | `opener` not found on headless Linux | `opener` calls `xdg-open`; on headless CI just skip integration tests that open files |
-| `tauri.conf.json` bundle targets | Set `targets: ["deb", "appimage"]` for Linux; adding `"msi"` / `"dmg"` later requires no code changes, only CI pipeline additions |
+| `tauri.conf.json` bundle targets | Set `targets: ["deb", "appimage"]` for Linux first; Windows/macOS packages wait for platform-specific scope decisions |
