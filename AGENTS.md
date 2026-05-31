@@ -5,7 +5,7 @@
 ProjectEldrun, or Eldrun, is a GTK4 desktop workspace for AI-assisted
 development. It manages a root control terminal, one terminal per active
 project, a bottom project switcher, a right-side project file browser, app
-launching/embedding, time tracking, and optional Cinnamon workspace integration.
+launching/embedding, time tracking, and optional workspace backend (KDE Plasma, Cinnamon, GNOME, or `wmctrl`) integration.
 
 ## Key conventions
 
@@ -26,8 +26,9 @@ launching/embedding, time tracking, and optional Cinnamon workspace integration.
 - `TODO.md` uses grouped IDs such as `G1.1`. When adding a TODO, place it in
   the matching group, create a new group if no current group fits, or merge
   groups if the TODO depends on distinct areas that should be tracked together.
-- X11 embedding and workspace control are best-effort features. Wayland support
-  is not implemented for those paths.
+- X11 embedding and workspace control are best-effort features. KDE Plasma
+  Wayland workspace isolation is implemented (Phase 6b); non-KDE Wayland
+  paths are not.
 
 ## Development workflow
 
@@ -51,7 +52,8 @@ For syntax checks, use:
 python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py \
   app/new_project_dialog.py app/import_project_dialog.py app/settings_manager.py \
   app/default_apps_manager.py app/network_monitor.py app/time_tracker.py \
-  app/project_stats.py app/workspace_manager.py app/panels/*.py
+  app/project_stats.py app/workspace_manager.py app/panels/*.py \
+  app/backends/*.py
 ```
 
 ## Running locally

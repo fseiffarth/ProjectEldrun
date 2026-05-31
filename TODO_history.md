@@ -180,3 +180,27 @@
 - [x] **Deactivate / close**: `_do_close_project` calls `wm.release(project_id)`; removes the workspace and reindexes remaining assignments
 - [x] **Shutdown cleanup**: `_on_destroy` calls `wm.release_all()` to remove all project workspaces
 - [x] **Settings toggle** "Manage workspaces" in the settings popover; persists under `"workspace_management"` in `settings.json`; off by default
+
+---
+
+### Phase 6a — KDE Plasma backend (X11) — v0.0.16
+
+- [x] `app/backends/kde_kwin.py`: `KDEKWinBackend` class with `is_available()`, KDE version detection (5 vs 6), session type detection (X11 vs Wayland)
+- [x] Desktop CRUD via KWin DBus: `prepare()`, `_create_desktop()`, `_rename_desktop()`, `_switch_to_desktop()`, `_remove_desktop()`, `cleanup()`
+- [x] X11 window ops via Xlib EWMH: `_activate_x11()`, `_move_window_to_desktop_xlib()`, `_get_windows_on_desktop_xlib()`
+- [x] Protected global app exclusion: WM_CLASS comparison to avoid moving sticky cross-project windows
+- [x] Backend detection order updated in `backends/__init__.py`: KDE before Cinnamon (both have wmctrl; KDE must win)
+- [x] `tests/test_kde_kwin.py`: ~74 tests covering detection, X11 window ops, and desktop CRUD — all mockable without a live KDE session
+
+### Phase 6b — KDE Plasma backend (Wayland) + crash fixes — v0.0.17
+
+- [x] KWin JS scripting runner `_run_kwin_script()`: load/run/unload lifecycle, KDE 5 vs 6 dispatch, temp file cleanup
+- [x] Wayland window enumeration via KWin JS + JSON file: `_enumerate_state_wayland()`, desktop UUID caching
+- [x] KDE 6 DBus fallback for enumeration: `_enumerate_windows_kde6_dbus()` using `xml.etree.ElementTree` to parse Introspect XML
+- [x] Batch window moves via KWin script: `_move_windows_wayland()`
+- [x] Desktop switching via KWin JS: `_switch_to_desktop_wayland()`
+- [x] Sticky global windows on Wayland via `onAllDesktops = true` JS property
+- [x] `is_available()` detects session type during availability check; removed earlier Wayland early-return
+- [x] ~68 new tests in `test_kde_kwin.py` for Wayland paths (520 total tests across repo)
+- [x] `app/eldrun.py`: `_setup_crash_logging()` enables `faulthandler` + `sys.excepthook`; logs to `~/.local/share/eldrun/crash.log`
+- [x] `app/window.py`: `GLib.idle_add` → `GLib.timeout_add(500, ...)` for `_restore_project_apps()` to fix GTK4 frame-clock reentrance crash (`get_monitor_at_surface` SIGSEGV during first idle callback)

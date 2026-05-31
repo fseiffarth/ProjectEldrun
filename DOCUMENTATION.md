@@ -6,7 +6,7 @@ sessions available without losing the surrounding project context: files,
 default app choices, global app shortcuts, time tracking, network state, and
 optional desktop workspace routing.
 
-This document reflects the code in `app/` as of May 30, 2026.
+This document reflects the code in `app/` as of May 31, 2026.
 
 ## Document Boundaries
 
@@ -329,7 +329,13 @@ EldrunApp (Adw.Application)
 | `app/time_tracker.py` | Active project session tracking and crash/orphan session closure. |
 | `app/project_stats.py` | Background file-type and time summary scanner. |
 | `app/network_monitor.py` | Background 1.1.1.1:53 probe and network interface type detection. |
-| `app/workspace_manager.py` | Two-workspace parking model for Cinnamon, GNOME, and wmctrl backends; moves project windows between visible and hidden workspaces. |
+| `app/workspace_manager.py` | Two-workspace parking model; delegates window and desktop operations to the active `ProjectSpaceBackend`; orchestrates project activation, cleanup, and mid-session backend changes. |
+| `app/workspace_core.py` | `ProjectSpaceBackend` abstract base class; shared types for all workspace backends. |
+| `app/backends/__init__.py` | Backend auto-detection: probes KDE Plasma first (X11 + Wayland), then Cinnamon/X11, then no-op null. |
+| `app/backends/kde_kwin.py` | KDE Plasma workspace backend: X11 path uses Xlib EWMH; Wayland path uses KWin JS scripting and KDE 6 DBus window interface. Supports KDE 5 and KDE 6. |
+| `app/backends/cinnamon_x11.py` | Cinnamon/X11 workspace backend. |
+| `app/backends/gnome.py` | GNOME workspace backend. |
+| `app/backends/null.py` | No-op backend used when no supported compositor is detected. |
 | `app/panels/center_panel.py` | Terminal stack, tab bar, agent/plain terminal lifecycle, app tab lifecycle, X11 embedding/fallback. |
 | `app/panels/right_panel.py` | Current `FileTreePanel`: file operations, default app dialogs, open-window list. |
 | `app/panels/bottom_panel.py` | Bottom bar, project pills, settings windows, search, drag/drop ordering. |
@@ -502,7 +508,9 @@ orphaned session and removes the sentinel.
 
 ### Startup
 
-1. `EldrunApp` applies CSS and creates `EldrunWindow`.
+1. `EldrunApp` applies CSS and creates `EldrunWindow`. `_setup_crash_logging()`
+   enables `faulthandler` (C-level crashes) and `sys.excepthook` (unhandled
+   Python exceptions); both append to `~/.local/share/eldrun/crash.log`.
 2. `ProjectManager` creates required global directories and root context files,
    then loads and migrates the project registry.
 3. Settings, default apps, global apps, time tracker, and workspace manager are
@@ -597,8 +605,10 @@ owned by any single project.
 
 `WorkspaceManager` auto-detects the backend on startup:
 
-| Backend | Detection | Workspace create/name | Workspace switch |
+| Backend | Detection | Desktop create/name | Desktop switch |
 |---|---|---|---|
+| **KDE Plasma (X11)** | `XDG_CURRENT_DESKTOP` contains `kde`/`plasma` + KWin DBus responds | KDE 5: `/KWin`; KDE 6: `/VirtualDesktopManager` | KWin DBus `setCurrentDesktop`/`setCurrent` |
+| **KDE Plasma (Wayland)** | same + `WAYLAND_DISPLAY` set | same DBus paths | KWin JS `workspace.currentDesktop = workspace.desktops[N]` |
 | Cinnamon | `org.Cinnamon` DBus Eval | JS via `global.workspace_manager` | JS activate |
 | GNOME | `gsettings get org.gnome.mutter dynamic-workspaces` succeeds | `gsettings` (`org.gnome.desktop.wm.preferences`) | EWMH `_NET_CURRENT_DESKTOP` |
 | wmctrl | `wmctrl -l` exits 0 | `wmctrl -n` (count only, no names) | `wmctrl -s` |
@@ -634,13 +644,29 @@ GNOME-specific notes:
   remains changed and must be restored manually:
   `gsettings reset org.gnome.mutter dynamic-workspaces`
 
-Wayland limitations:
+KDE Plasma notes:
+
+- On X11, window operations use Xlib EWMH atoms (`_NET_CLIENT_LIST`,
+  `_NET_WM_DESKTOP`, `_NET_WM_STATE_STICKY`), the same as for Cinnamon/X11.
+- On Wayland, window enumeration and moves use KWin JS scripting executed via
+  `org.kde.kwin.Scripting` load/run/unload. KDE 6 also exposes a per-window
+  DBus interface at `/org/kde/KWin/Windows/<uuid>` used as a fallback when
+  script file writes fail.
+- KDE 6 desktop CRUD uses `/VirtualDesktopManager`; KDE 5 uses `/KWin`.
+- No Python DBus bindings are required; all DBus calls use `dbus-send` and
+  `gdbus` subprocess invocations.
+- KDE 5 Wayland: `XMLHttpRequest file://` in the KWin JS runtime may be
+  sandboxed. If the enumeration JSON write fails, window management falls back
+  to tracking only windows explicitly assigned via `assign_window_to_project()`.
+
+Non-KDE Wayland limitations:
 
 - `gsettings` calls for workspace count, names, and dynamic-workspace toggling
-  work on Wayland.
-- Workspace switching uses EWMH (`_NET_CURRENT_DESKTOP`), which Wayland
+  work on Wayland but only affect GNOME Shell-based compositors.
+- Workspace switching uses EWMH (`_NET_CURRENT_DESKTOP`), which non-KDE Wayland
   compositors do not honor.
-- Sticky-window state also relies on EWMH and may not propagate under Wayland.
+- Sticky-window state also relies on EWMH and may not propagate under non-KDE
+  Wayland.
 - App window embedding is not implemented on Wayland.
 
 ## Local AI — Ollama
@@ -720,7 +746,8 @@ existing window instead of creating a second workspace-mutating instance.
 ## Tests and Current Quality Signals
 
 The repository has unit tests for project management, settings, default apps,
-network detection, time tracking, open-app metadata, and bottom-panel logic.
+network detection, time tracking, open-app metadata, bottom-panel logic, and
+the KDE Plasma backend (X11 + Wayland paths, ~127 tests).
 
 Recommended checks:
 
@@ -728,7 +755,8 @@ Recommended checks:
 python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py \
   app/new_project_dialog.py app/import_project_dialog.py app/settings_manager.py \
   app/default_apps_manager.py app/network_monitor.py app/time_tracker.py \
-  app/project_stats.py app/workspace_manager.py app/panels/*.py
+  app/project_stats.py app/workspace_manager.py app/panels/*.py \
+  app/backends/*.py
 
 python3 -m unittest
 ```
@@ -745,9 +773,10 @@ Important analysis findings:
 ## Known Limitations
 
 - X11 app embedding is fragile and should be treated as experimental.
-- Wayland: workspace switching, sticky-window state, launch-or-raise window
-  manipulation, and app embedding are limited or unavailable because those paths
-  rely on X11/EWMH.
+- KDE Plasma Wayland workspace management is implemented (virtual desktop
+  isolation via KWin scripting). For non-KDE Wayland compositors, workspace
+  switching, sticky-window state, launch-or-raise, and app embedding are
+  unavailable because those paths rely on X11/EWMH.
 - Open-window/app persistence has a canonical metadata location, but restore
   behavior is not wired as a robust current feature.
 - Extra agent/plain terminal tab layout is runtime state and is not persisted

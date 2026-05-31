@@ -1,26 +1,27 @@
-# ProjectEldrun — Claude Context
+# ProjectEldrun — Gemini Context
 
 Eldrun is a GTK4 desktop workspace for AI-assisted development. It keeps a root
 control terminal, one terminal per active project, a bottom project switcher, a
 right-side file tree overlay, app launching/embedding, time tracking, and
-optional Cinnamon workspace integration in one window.
+optional workspace backend integration in one window.
 
 Python 3.11+, GTK4, Libadwaita, VTE 3.91, and `python-xlib` are expected. X11 is
-required for app-window embedding and Cinnamon workspace management.
+required for app-window embedding; KDE Plasma (X11 and Wayland) and Cinnamon
+workspace management are supported.
 
 ## Running
 
-Do not launch Eldrun from Claude or any other agent terminal for verification.
+Do not launch Eldrun from Gemini or any other agent terminal for verification.
 Opening a second Eldrun instance can corrupt workspace state. Ask the user to
 run or restart the existing instance when runtime validation is needed.
 
-Runtime launch commands are intentionally omitted from this Claude context.
+Runtime launch commands are intentionally omitted from this context.
 
 ## File Map
 
 | File | Purpose |
 |------|---------|
-| `app/eldrun.py` | `Adw.Application`, CSS themes, signal handlers. |
+| `app/eldrun.py` | `Adw.Application`, CSS themes, signal handlers, crash logging. |
 | `app/window.py` | `EldrunWindow`: header, layout, key handling, startup restore, project activation, time tracking hooks, network callbacks, workspace integration. |
 | `app/project_manager.py` | Project registry, create/import flow, scaffold writer, migrations, root context files. |
 | `app/settings_manager.py` | JSON-backed user settings. |
@@ -97,8 +98,8 @@ python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py \
 python3 -m unittest
 ```
 
-4. Do not start Eldrun from Claude. Ask the user to restart the existing
-   instance for runtime verification.
+4. Do not start Eldrun from an agent terminal. Ask the user to restart the
+   existing instance for runtime verification.
 
 Useful keys: `F11` toggles fullscreen; `Super` toggles panels while Eldrun is
 focused. The custom header close button calls `app.quit()`.
