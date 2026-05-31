@@ -326,6 +326,57 @@ class TestFileTreeLaunchRouting(unittest.TestCase):
         )
 
 
+class TestUrlFileRouting(unittest.TestCase):
+    """Phase 5a (G6.7) — .url/.webloc shortcut files routed via xdg-open."""
+
+    def _panel(self):
+        panel = FileTreePanel.__new__(FileTreePanel)
+        panel._current_project = {"id": "p1", "directory": "/work"}
+        panel._dam = MagicMock()
+        panel._dam.get_app_for_file.return_value = None
+        panel._on_file_opened = None
+        panel.get_root = MagicMock(return_value=MagicMock())
+        return panel
+
+    def test_url_file_uses_xdg_open(self):
+        panel = self._panel()
+
+        with patch("panels.right_panel.Gtk.Window", object), \
+                patch("panels.right_panel.launch_on_other_monitor") as launch:
+            panel._open_file("/work/shortcut.url")
+
+        launch.assert_called_once_with(
+            ["xdg-open", "/work/shortcut.url"],
+            cwd=None,
+            anchor_window=panel.get_root.return_value,
+        )
+
+    def test_webloc_file_uses_xdg_open(self):
+        panel = self._panel()
+
+        with patch("panels.right_panel.Gtk.Window", object), \
+                patch("panels.right_panel.launch_on_other_monitor") as launch:
+            panel._open_file("/work/link.webloc")
+
+        launch.assert_called_once_with(
+            ["xdg-open", "/work/link.webloc"],
+            cwd=None,
+            anchor_window=panel.get_root.return_value,
+        )
+
+    def test_regular_file_not_routed_through_xdg_open_shortcut(self):
+        panel = self._panel()
+        panel._dam.get_app_for_file.return_value = "code"
+
+        with patch("panels.right_panel.Gtk.Window", object), \
+                patch("panels.right_panel.launch_on_other_monitor") as launch:
+            panel._open_file("/work/main.py")
+
+        # Should use "code", not xdg-open
+        call_args = launch.call_args_list[0][0][0]
+        self.assertEqual(call_args[0], "code")
+
+
 class TestOpenAppsPanel(unittest.TestCase):
     """Phase 1 (G4.4) — project-scoped open-apps list in the right panel."""
 

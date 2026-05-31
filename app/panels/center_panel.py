@@ -185,12 +185,13 @@ def _spawn(terminal: Vte.Terminal, directory: str, cmd: list[str], on_done, envv
 
 class CenterPanel(Gtk.Box):
     def __init__(self, project_manager, on_page_changed=None, settings_manager=None,
-                 ollama_client=None):
+                 ollama_client=None, global_apps_manager=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._pm = project_manager
         self._settings = settings_manager
         self._ollama_client = ollama_client
         self._on_page_changed = on_page_changed
+        self._global_apps_manager = global_apps_manager
         scheme = settings_manager.get("color_scheme") if settings_manager else "dark"
         self._color_scheme = _normalize_scheme(scheme)
         self._last_terminal_page = "empty"
@@ -1300,11 +1301,30 @@ class CenterPanel(Gtk.Box):
             self._update_tab_visibility(None)
         self._notify_page(page_name)
 
+    def _on_terminal_uri_activated(self, terminal, uri, _event=None):
+        """Route Ctrl+click terminal URIs through the global apps manager (G6.7)."""
+        if not uri or self._global_apps_manager is None:
+            return False
+        scheme = uri.split(":")[0].lower() if ":" in uri else ""
+        if scheme in ("http", "https", "mailto", "webcal"):
+            try:
+                root = self.get_root()
+            except Exception:
+                root = None
+            return bool(self._global_apps_manager.launch_role_for_uri(
+                scheme, uri, anchor_window=root
+            ))
+        return False
+
     def _make_terminal(self) -> Vte.Terminal:
         terminal = Vte.Terminal()
         terminal.set_scrollback_lines(10000)
         terminal.set_font(Pango.FontDescription("Monospace 11"))
         self._apply_terminal_colors(terminal)
+        try:
+            terminal.connect("open-hyperlink", self._on_terminal_uri_activated)
+        except Exception:
+            pass
         return terminal
 
     def _apply_terminal_colors(self, terminal: Vte.Terminal):

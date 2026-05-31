@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Entry point for ProjectEldrun."""
 
-__version__ = "0.0.14"
+__version__ = "0.0.15"
 
 _debug_enabled: bool = True
 
@@ -28,11 +28,11 @@ import os
 def _preferred_gsk_renderer(environ=os.environ) -> str | None:
     """Return the GSK_RENDERER value to set, or None to leave it alone.
 
-    On Cinnamon/X11 the cairo renderer avoids one class of VTE flicker but
-    writes frames via XPutImage without vsync, causing horizontal tearing
-    artifacts (reddish bands spanning the full screen width) especially at
-    high refresh rates.  The ngl renderer uses OpenGL with a proper swap-sync
-    path so the compositor always scans out a complete frame.
+    On any X11 session the ngl (OpenGL) renderer is preferred over cairo.
+    The cairo renderer avoids one class of VTE flicker but writes frames via
+    XPutImage without vsync, causing horizontal tearing artifacts at high
+    refresh rates.  The ngl renderer uses OpenGL with a proper swap-sync path
+    so the compositor always scans out a complete frame (ISSUE-018).
 
     We only act when the caller has not already set GSK_RENDERER, so an
     explicit override in the environment is always respected.  Set
@@ -43,8 +43,7 @@ def _preferred_gsk_renderer(environ=os.environ) -> str | None:
     if environ.get("ELDRUN_DISABLE_RENDERER_WORKAROUND") == "1":
         return None
     session_type = environ.get("XDG_SESSION_TYPE", "").lower()
-    desktop = environ.get("XDG_CURRENT_DESKTOP", "").lower()
-    if session_type == "x11" and "cinnamon" in desktop:
+    if session_type == "x11":
         return "ngl"
     return None
 

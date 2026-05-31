@@ -721,7 +721,15 @@ class FileTreePanel(Gtk.Box):
         anchor_window = root if isinstance(root, Gtk.Window) else None
         return launch_on_other_monitor(argv, cwd=cwd, anchor_window=anchor_window)
 
+    _URL_FILE_EXTS = frozenset({".url", ".webloc"})
+
     def _open_file(self, path: str):
+        # .url / .webloc shortcut files go through xdg-open so the system
+        # browser picks them up regardless of which global app role is set.
+        if pathlib.Path(path).suffix.lower() in self._URL_FILE_EXTS:
+            self._launch_and_track(["xdg-open", path], None)
+            return
+
         project_dir = self._current_project.get("directory") if self._current_project else None
         project_id = self._current_project.get("id") if self._current_project else None
         app = None

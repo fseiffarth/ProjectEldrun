@@ -219,6 +219,60 @@ class TestCenterPanelAgentTaskFlow(unittest.TestCase):
         second_terminal.grab_focus.assert_called_once()
 
 
+class TestTerminalUriRouting(unittest.TestCase):
+    """Phase 5a (G6.7) — VTE URI routing through global apps manager."""
+
+    def _panel(self, gam=None):
+        panel = CenterPanel.__new__(CenterPanel)
+        panel._global_apps_manager = gam or MagicMock()
+        return panel
+
+    def test_http_uri_routed_through_global_apps(self):
+        panel = self._panel()
+        panel.get_root = MagicMock(return_value=None)
+        panel._global_apps_manager.launch_role_for_uri.return_value = True
+
+        result = panel._on_terminal_uri_activated(MagicMock(), "https://example.com")
+
+        panel._global_apps_manager.launch_role_for_uri.assert_called_once_with(
+            "https", "https://example.com", anchor_window=None
+        )
+        self.assertTrue(result)
+
+    def test_mailto_uri_routed(self):
+        panel = self._panel()
+        panel.get_root = MagicMock(return_value=None)
+        panel._global_apps_manager.launch_role_for_uri.return_value = True
+
+        panel._on_terminal_uri_activated(MagicMock(), "mailto:foo@bar.com")
+
+        panel._global_apps_manager.launch_role_for_uri.assert_called_with(
+            "mailto", "mailto:foo@bar.com", anchor_window=None
+        )
+
+    def test_unknown_scheme_not_routed(self):
+        panel = self._panel()
+        panel.get_root = MagicMock(return_value=None)
+
+        result = panel._on_terminal_uri_activated(MagicMock(), "ssh://server.local")
+
+        panel._global_apps_manager.launch_role_for_uri.assert_not_called()
+        self.assertFalse(result)
+
+    def test_no_global_apps_manager_returns_false(self):
+        panel = self._panel()
+        panel._global_apps_manager = None
+
+        result = panel._on_terminal_uri_activated(MagicMock(), "https://example.com")
+
+        self.assertFalse(result)
+
+    def test_empty_uri_returns_false(self):
+        panel = self._panel()
+        result = panel._on_terminal_uri_activated(MagicMock(), "")
+        self.assertFalse(result)
+
+
 class TestTerminalHintStrip(unittest.TestCase):
     """Phase 4d (G5.4) — terminal scrollback hint infrastructure."""
 

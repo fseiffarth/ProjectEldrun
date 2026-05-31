@@ -37,6 +37,11 @@ class TestEldrunThemeNormalization(unittest.TestCase):
         self.assertEqual(_normalize_theme(True), "dark")
         self.assertEqual(_normalize_theme(False), "light")
 
+    def test_renderer_workaround_targets_any_x11_session(self):
+        # Phase 5b (ISSUE-018): ngl is now used for all X11, not just Cinnamon
+        env = {"XDG_SESSION_TYPE": "x11", "XDG_CURRENT_DESKTOP": "GNOME"}
+        self.assertEqual(_preferred_gsk_renderer(env), "ngl")
+
     def test_renderer_workaround_targets_cinnamon_x11(self):
         env = {"XDG_SESSION_TYPE": "x11", "XDG_CURRENT_DESKTOP": "X-Cinnamon"}
         self.assertEqual(_preferred_gsk_renderer(env), "ngl")

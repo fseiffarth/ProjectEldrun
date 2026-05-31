@@ -466,6 +466,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_page_changed=self._on_center_page_changed,
             settings_manager=self.settings_manager,
             ollama_client=self._ollama_client,
+            global_apps_manager=self._global_apps_manager,
         )
         self._center_panel.set_hexpand(True)
         self._center_panel.set_vexpand(True)
