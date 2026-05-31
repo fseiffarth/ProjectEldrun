@@ -155,7 +155,7 @@ class TestEldrunWindowWorkspaceActivation(unittest.TestCase):
         win = EldrunWindow.__new__(EldrunWindow)
         win.settings_manager = MagicMock()
         win.settings_manager.get.return_value = enabled
-        win._workspace_manager = MagicMock()
+        win._project_space_backend = MagicMock()
         win._get_own_xid = MagicMock(return_value=123)
         win._global_apps_manager = MagicMock()
         win._global_apps_manager.get_exec_names.return_value = set()
@@ -192,17 +192,14 @@ class TestEldrunWindowWorkspaceActivation(unittest.TestCase):
 
         switch.assert_called_once_with(None, "alpha")
 
-    def test_switch_project_workspace_calls_workspace_manager(self):
-        """_switch_project_workspace delegates to workspace_manager.switch_project."""
+    def test_switch_project_workspace_calls_backend_activate(self):
+        """_switch_project_workspace delegates to backend.activate_project."""
         win = self._window(enabled=True)
 
         win._switch_project_workspace("old", "new")
 
-        win._workspace_manager.switch_project.assert_called_once_with(
-            "old",
-            "new",
-            123,
-            set(),
+        win._project_space_backend.activate_project.assert_called_once_with(
+            "new", "old", eldrun_xid=123, protected_names=set()
         )
 
     def test_switch_project_workspace_noop_when_disabled(self):
@@ -210,7 +207,7 @@ class TestEldrunWindowWorkspaceActivation(unittest.TestCase):
 
         win._switch_project_workspace("old", "new")
 
-        win._workspace_manager.switch_project.assert_not_called()
+        win._project_space_backend.activate_project.assert_not_called()
 
     def test_search_activation_adds_terminal_and_switches_workspace(self):
         win = self._window(enabled=True)

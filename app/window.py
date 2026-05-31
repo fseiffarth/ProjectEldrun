@@ -17,7 +17,7 @@ from default_apps_manager import DefaultAppsManager
 from global_apps_manager import GlobalAppsManager, ROLES, select_role_icon
 from network_monitor import NetworkMonitor
 from time_tracker import TimeTracker
-from workspace_manager import WorkspaceManager
+from backends import detect_backend
 from panels.center_panel import CenterPanel, _MASTER_PAGE
 from panels.right_panel import FileTreePanel
 from panels.bottom_panel import BottomPanel
@@ -59,8 +59,8 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.settings_manager = SettingsManager()
         self.default_apps_manager = DefaultAppsManager()
         self._time_tracker = TimeTracker()
-        self._workspace_manager = WorkspaceManager()
-        atexit.register(self._workspace_manager.release_all)
+        self._project_space_backend = detect_backend()
+        atexit.register(self._project_space_backend.cleanup)
         self._global_apps_manager = GlobalAppsManager(self.settings_manager)
         self._ollama_client = OllamaClient(self.settings_manager)
         self._ollama_proc = None
@@ -88,7 +88,7 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _on_destroy(self, _win):
         self.project_manager.set_all_inactive()
         if self._wm_enabled:
-            self._workspace_manager.release_all()
+            self._project_space_backend.cleanup()
         if self._ollama_proc is not None:
             try:
                 self._ollama_proc.terminate()
@@ -167,7 +167,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         box.append(heading)
 
         lines = ["All open project terminals will be closed."]
-        if self._wm_enabled and self._workspace_manager._project_windows:
+        if self._wm_enabled and self._project_space_backend.has_managed_windows():
             lines.append(
                 "Apps on the hidden workspace will be moved to the default workspace."
             )
@@ -655,7 +655,7 @@ class EldrunWindow(Adw.ApplicationWindow):
 
     def _setup_workspaces(self) -> bool:
         """Ensure two named workspaces exist: workspace 0 (current) and 1 (hidden)."""
-        self._workspace_manager.setup_two_workspaces()
+        self._project_space_backend.prepare()
         return False
 
     def _switch_project_workspace(self, old_project_id: str | None, new_project_id: str):
@@ -664,7 +664,10 @@ class EldrunWindow(Adw.ApplicationWindow):
             return
         xid = self._get_own_xid()
         protected = self._global_apps_manager.get_exec_names()
-        self._workspace_manager.switch_project(old_project_id, new_project_id, xid, protected)
+        self._project_space_backend.activate_project(
+            new_project_id, old_project_id,
+            eldrun_xid=xid, protected_names=protected,
+        )
 
     # ── open apps (per-project file tracking) ────────────────────────────────
 
@@ -824,7 +827,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         if enabled:
             GLib.idle_add(self._setup_workspaces)
         else:
-            self._workspace_manager.release_all()
+            self._project_space_backend.cleanup()
 
     def _on_terminal_changed(self):
         if hasattr(self._center_panel, "respawn_all"):
@@ -893,7 +896,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._center_panel.remove_project_terminal(project_id)
         self.project_manager.deactivate_project(project_id)
         if self._wm_enabled:
-            self._workspace_manager.on_project_closed(project_id)
+            self._project_space_backend.close_project(project_id)
         if was_active:
             self._active_project_id = None
             self._on_root_clicked()
