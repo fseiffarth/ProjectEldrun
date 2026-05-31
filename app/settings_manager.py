@@ -13,9 +13,6 @@ _DEFAULTS: dict = {
     "git_profile_url": "",
     "git_token": "",
     "color_scheme": "fancy_dark",
-    "ollama_host": "http://localhost:11434",
-    "ollama_model": "mistral",
-    "ollama_autostart": False,
 }
 
 

@@ -29,17 +29,6 @@ tasks live in `TODO.md`; current status and validation notes live in
 - Keep runtime-generated state in `~/.local/share/eldrun/` or project-local
   `project.json`, not in human-maintained markdown files.
 
-## Local AI
-
-- Turn Ollama support from a lightweight prompt dialog into a useful local AI
-  surface: status indication, model selection, privacy labeling, and explicit
-  daemon lifecycle controls.
-- Add context-aware helpers only after the basic Ollama path is stable:
-  terminal hints, suggested files, suggested projects, and semantic project
-  search.
-- Keep Claude/Codex terminal agents and Ollama dialog behavior clearly separate
-  unless a persistent local-agent terminal mode is intentionally designed.
-
 ## App and Workspace Integration
 
 - Keep global apps separate from project-owned apps. Browser, mail, calendar,

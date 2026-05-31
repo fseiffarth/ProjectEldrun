@@ -88,8 +88,7 @@ def _human_size(n: int) -> str:
 class FileTreePanel(Gtk.Box):
     def __init__(self, center_panel=None, default_apps_manager=None,
                  settings_manager=None, on_context_menu_open_changed=None,
-                 ollama_client=None, on_file_opened=None,
-                 project_manager=None):
+                 on_file_opened=None, project_manager=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("panel-right")
         self.set_size_request(220, -1)
@@ -97,7 +96,6 @@ class FileTreePanel(Gtk.Box):
         self._center = center_panel
         self._dam = default_apps_manager
         self._on_context_menu_open_changed = on_context_menu_open_changed
-        self._ollama_client = ollama_client
         self._on_file_opened = on_file_opened  # callback(project_id, exec_cmd, file_path)
         self._pm = project_manager
         self._color_scheme = _normalize_theme(
@@ -652,10 +650,6 @@ class FileTreePanel(Gtk.Box):
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         box.append(btn("Properties", lambda: self._show_properties(path)))
 
-        if self._ollama_client is not None:
-            box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-            box.append(btn("Ask Ollama…", lambda: self._ask_ollama_about(path)))
-
         popover.set_child(box)
         popover.popup()
 
@@ -1020,18 +1014,6 @@ class FileTreePanel(Gtk.Box):
         win.set_child(box)
         win.present()
 
-    def _ask_ollama_about(self, path: str):
-        if self._ollama_client is None:
-            return
-        filename = os.path.basename(path)
-        root = self.get_root()
-        model = self._current_project.get("ollama_model") if self._current_project else None
-        from ollama_dialog import OllamaDialog
-        dlg = OllamaDialog(root, self._ollama_client,
-                           initial_prompt=f"About {filename}: ",
-                           model=model or None)
-        dlg.present()
-
     def _rename_dialog(self, path: str):
         win = Gtk.Window()
         win.set_title("Rename")
@@ -1190,30 +1172,6 @@ class FileTreePanel(Gtk.Box):
         hidden_sw.connect("notify::active", _on_hidden_toggled)
         hidden_row.append(hidden_sw)
         outer.append(hidden_row)
-
-        outer.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-
-        # Per-project Ollama model (G5.2)
-        model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        model_lbl = Gtk.Label(label="Local AI model")
-        model_lbl.set_hexpand(True)
-        model_lbl.set_xalign(0)
-        model_row.append(model_lbl)
-        model_entry = Gtk.Entry()
-        model_entry.set_text(project.get("ollama_model", ""))
-        model_entry.set_placeholder_text("e.g. mistral (overrides global)")
-        model_entry.set_width_chars(20)
-
-        def _save_model(_w=None):
-            m = model_entry.get_text().strip()
-            project["ollama_model"] = m
-            if self._pm is not None:
-                self._pm._save_local(project)
-
-        model_entry.connect("activate", _save_model)
-        model_entry.connect("focus-out-event", _save_model)
-        model_row.append(model_entry)
-        outer.append(model_row)
 
         outer.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 

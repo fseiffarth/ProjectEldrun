@@ -185,11 +185,10 @@ def _spawn(terminal: Vte.Terminal, directory: str, cmd: list[str], on_done, envv
 
 class CenterPanel(Gtk.Box):
     def __init__(self, project_manager, on_page_changed=None, settings_manager=None,
-                 ollama_client=None, global_apps_manager=None):
+                 global_apps_manager=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._pm = project_manager
         self._settings = settings_manager
-        self._ollama_client = ollama_client
         self._on_page_changed = on_page_changed
         self._global_apps_manager = global_apps_manager
         scheme = settings_manager.get("color_scheme") if settings_manager else "dark"
@@ -322,44 +321,6 @@ class CenterPanel(Gtk.Box):
     def _show_hint(self, text: str):
         self._hint_label.set_label(text)
         self._hint_revealer.set_reveal_child(True)
-
-    def _schedule_hint_check(self):
-        """Schedule an Ollama hint check after 5 s of terminal idle."""
-        if self._hint_idle_source is not None:
-            GLib.source_remove(self._hint_idle_source)
-        self._hint_idle_source = GLib.timeout_add(5_000, self._check_terminal_hints)
-
-    def _check_terminal_hints(self) -> bool:
-        """Read terminal scrollback and ask Ollama for a hint if errors detected."""
-        self._hint_idle_source = None
-        if self._ollama_client is None:
-            return False
-
-        terminal = self._terminals.get(self._last_terminal_page)
-        if terminal is None:
-            return False
-
-        text = self._read_terminal_scrollback(terminal, lines=50)
-        if not text or not self._has_error_pattern(text):
-            return False
-
-        def on_chunk(chunk):
-            current = self._hint_label.get_label()
-            if not current:
-                self._show_hint(chunk.split("\n")[0])
-            return False
-
-        def on_done():
-            return False
-
-        def on_error(_msg):
-            return False
-
-        self._ollama_client.ask(
-            f"In one sentence, suggest what's wrong with this terminal output:\n\n{text[-1000:]}",
-            on_chunk, on_done, on_error,
-        )
-        return False
 
     @staticmethod
     def _read_terminal_scrollback(terminal, lines: int = 50) -> str:
@@ -669,12 +630,8 @@ class CenterPanel(Gtk.Box):
         box.add_controller(motion)
         popover.connect("closed", lambda *_: _disarm_hide())
 
-        # Row 1: New agent + inline command dropdown (claude, codex, gemini, + local Ollama models)
-        ollama_models: list[str] = (
-            self._ollama_client.list_models() if self._ollama_client is not None else []
-        )
+        # Row 1: New agent + inline command dropdown (claude, codex, gemini)
         cli_agents = ["claude", "codex", "gemini"]
-        agent_labels = cli_agents + [f"{m} (local)" for m in ollama_models]
 
         agent_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         agent_row.set_valign(Gtk.Align.CENTER)
@@ -684,7 +641,7 @@ class CenterPanel(Gtk.Box):
         agent_lbl.set_hexpand(True)
         agent_row.append(agent_lbl)
 
-        cmd_dropdown = Gtk.DropDown.new_from_strings(agent_labels)
+        cmd_dropdown = Gtk.DropDown.new_from_strings(cli_agents)
         cmd_dropdown.set_valign(Gtk.Align.CENTER)
         agent_row.append(cmd_dropdown)
 
@@ -705,17 +662,11 @@ class CenterPanel(Gtk.Box):
         task_entry.set_hexpand(True)
         task_row.append(task_entry)
 
-        def _on_add_agent(_b, _om=ollama_models, _cli=cli_agents, _dd=cmd_dropdown):
+        def _on_add_agent(_b, _cli=cli_agents, _dd=cmd_dropdown):
             idx = _dd.get_selected()
             task_title = task_entry.get_text()
             popover.popdown()
-            if idx < len(_cli):
-                self._add_agent_terminal(_cli[idx], task_title=task_title)
-            else:
-                model = _om[idx - len(_cli)]
-                from ollama_dialog import OllamaDialog
-                OllamaDialog(self.get_root(), self._ollama_client,
-                             initial_prompt=task_title, model=model).present()
+            self._add_agent_terminal(_cli[idx], task_title=task_title)
 
         add_btn.connect("clicked", _on_add_agent)
         task_entry.connect("activate", _on_add_agent)

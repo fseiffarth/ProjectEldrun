@@ -13,8 +13,7 @@ Last reviewed: 2026-05-31
 - Main app shell is in place: root terminal, project terminals, agent tabs,
   bottom project switcher, right file tree, global app toolbar, settings, time
   tracking, and optional workspace management.
-- Claude and Codex are first-class VTE agent commands. Ollama is integrated via
-  a GTK dialog and HTTP streaming, not as a persistent terminal tab.
+- Claude and Codex are first-class VTE agent commands.
 - Global apps are cross-project shortcuts stored in
   `settings.json["global_apps"]`; they are separate from project file-extension
   defaults.
@@ -30,9 +29,9 @@ Last reviewed: 2026-05-31
 ## Quality Snapshot
 
 - Unit tests cover project management, settings, default apps, global apps,
-  network detection, time tracking, workspace helpers, Ollama client behavior,
-  download routing, app picker behavior, panel-adjacent logic, and the KDE
-  Plasma backend (X11 + Wayland paths, ~127 tests).
+  network detection, time tracking, workspace helpers, download routing, app
+  picker behavior, panel-adjacent logic, and the KDE Plasma backend
+  (X11 + Wayland paths).
 - Last agent-run checks:
   - `python3 -m unittest`
   - `python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py app/new_project_dialog.py app/import_project_dialog.py app/settings_manager.py app/default_apps_manager.py app/network_monitor.py app/time_tracker.py app/project_stats.py app/workspace_manager.py app/panels/*.py`
@@ -50,14 +49,19 @@ Last reviewed: 2026-05-31
   reentrance crash (`get_monitor_at_surface` during the first idle callback).
 - Extra agent/plain terminal tab layout is runtime state and is not restored
   across restarts.
-- Ollama autostart is partial; daemon cleanup should be verified manually.
 
 ## Time Log
 
-Total: 64h 15m
+Total: 64h 26m
 
 | Date | Start | Duration |
 |------|-------|----------|
+| 2026-05-31 | 2026-05-31 19:36 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:35 | 0h 1m |
+| 2026-05-31 | 2026-05-31 19:32 | 0h 3m |
+| 2026-05-31 | 2026-05-31 19:29 | 0h 2m |
+| 2026-05-31 | 2026-05-31 19:28 | 0h 0m |
+| 2026-05-31 | 2026-05-31 19:25 | 0h 3m |
 | 2026-05-31 | 2026-05-31 19:25 | 0h 0m |
 | 2026-05-31 | 2026-05-31 19:23 | 0h 2m |
 | 2026-05-31 | 2026-05-31 19:22 | 0h 0m |
@@ -72,9 +76,3 @@ Total: 64h 15m
 | 2026-05-31 | 2026-05-31 18:57 | 0h 1m |
 | 2026-05-31 | 2026-05-31 18:56 | 0h 0m |
 | 2026-05-31 | 2026-05-31 18:56 | 0h 0m |
-| 2026-05-31 | 2026-05-31 18:56 | 0h 0m |
-| 2026-05-31 | 2026-05-31 18:56 | 0h 0m |
-| 2026-05-31 | 2026-05-31 18:55 | 0h 0m |
-| 2026-05-31 | 2026-05-31 18:55 | 0h 0m |
-| 2026-05-31 | 2026-05-31 18:55 | 0h 0m |
-| 2026-05-31 | 2026-05-31 18:55 | 0h 0m |

@@ -588,21 +588,6 @@ button.terminal-back-btn:hover { background-color: rgba(48, 54, 61, 0.96); }
 .bottom-panel searchentry:focus {
     border-color: #388bfd;
 }
-.bottom-panel entry.bottom-ollama-entry {
-    min-height: 40px;
-    font-size: 12px;
-    border-radius: 6px;
-    background-color: #21262d;
-    color: #e6edf3;
-    border: 1px solid #30363d;
-    padding: 0 8px;
-}
-.bottom-panel entry.bottom-ollama-entry text {
-    color: #e6edf3;
-}
-.bottom-panel entry.bottom-ollama-entry:focus {
-    border-color: #388bfd;
-}
 /* ── screenshot toast ────────────────────────────────────── */
 .screenshot-toast {
     background-color: rgba(22, 27, 34, 0.92);
@@ -1071,21 +1056,6 @@ button.terminal-back-btn:hover { background-color: rgba(234, 238, 242, 0.96); }
 .bottom-panel searchentry:focus {
     border-color: #0969da;
 }
-.bottom-panel entry.bottom-ollama-entry {
-    min-height: 40px;
-    font-size: 12px;
-    border-radius: 6px;
-    background-color: #eaeef2;
-    color: #24292f;
-    border: 1px solid #d0d7de;
-    padding: 0 8px;
-}
-.bottom-panel entry.bottom-ollama-entry text {
-    color: #24292f;
-}
-.bottom-panel entry.bottom-ollama-entry:focus {
-    border-color: #0969da;
-}
 /* ── screenshot toast ────────────────────────────────────── */
 .screenshot-toast {
     background-color: rgba(255, 255, 255, 0.92);
@@ -1127,7 +1097,6 @@ button.terminal-back-btn,
 .bottom-toggle-btn,
 .bottom-panel searchentry,
 .bottom-panel searchentry entry,
-.bottom-panel entry.bottom-ollama-entry,
 .debug-badge,
 .offline-banner,
 progressbar.project-time-bar trough,
@@ -1364,25 +1333,13 @@ button.terminal-back-btn:hover {
     color: #f4f8ff;
     border-color: #293852;
 }
-.bottom-panel entry.bottom-ollama-entry {
-    background-color: #18243b;
-    color: #f4f8ff;
-    border-color: #293852;
-}
-.bottom-panel entry.bottom-ollama-entry text {
-    color: #f4f8ff;
-}
 .bottom-panel .project-search-entry,
 .bottom-panel entry.project-search-entry,
 .bottom-panel .project-search-entry text,
-.bottom-panel entry.project-search-entry text,
-.bottom-panel entry.bottom-ollama-entry {
+.bottom-panel entry.project-search-entry text {
     border-radius: 0;
 }
 .bottom-panel searchentry:focus {
-    border-color: #36c5f0;
-}
-.bottom-panel entry.bottom-ollama-entry:focus {
     border-color: #36c5f0;
 }
 .global-apps-toggle-bar {
@@ -1450,7 +1407,6 @@ button.terminal-back-btn,
 .bottom-toggle-btn,
 .bottom-panel searchentry,
 .bottom-panel searchentry entry,
-.bottom-panel entry.bottom-ollama-entry,
 .debug-badge,
 .offline-banner,
 progressbar.project-time-bar trough,
@@ -1689,25 +1645,13 @@ button.terminal-back-btn:hover {
     color: #172033;
     border-color: #c9dff3;
 }
-.bottom-panel entry.bottom-ollama-entry {
-    background-color: #ffffff;
-    color: #172033;
-    border-color: #c9dff3;
-}
-.bottom-panel entry.bottom-ollama-entry text {
-    color: #172033;
-}
 .bottom-panel .project-search-entry,
 .bottom-panel entry.project-search-entry,
 .bottom-panel .project-search-entry text,
-.bottom-panel entry.project-search-entry text,
-.bottom-panel entry.bottom-ollama-entry {
+.bottom-panel entry.project-search-entry text {
     border-radius: 0;
 }
 .bottom-panel searchentry:focus {
-    border-color: #0969da;
-}
-.bottom-panel entry.bottom-ollama-entry:focus {
     border-color: #0969da;
 }
 .global-apps-toggle-bar {

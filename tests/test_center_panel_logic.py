@@ -273,64 +273,6 @@ class TestTerminalUriRouting(unittest.TestCase):
         self.assertFalse(result)
 
 
-class TestTerminalHintStrip(unittest.TestCase):
-    """Phase 4d (G5.4) — terminal scrollback hint infrastructure."""
-
-    def _panel(self):
-        panel = CenterPanel.__new__(CenterPanel)
-        panel._hint_idle_source = None
-        panel._hint_revealer = MagicMock()
-        panel._hint_label = MagicMock()
-        panel._ollama_client = None
-        panel._terminals = {}
-        panel._last_terminal_page = "project-p1"
-        return panel
-
-    def test_show_hint_reveals_strip(self):
-        panel = self._panel()
-        panel._show_hint("Try restarting the server.")
-        panel._hint_revealer.set_reveal_child.assert_called_once_with(True)
-        panel._hint_label.set_label.assert_called_once_with("Try restarting the server.")
-
-    def test_hide_hint_strip_hides_revealer(self):
-        panel = self._panel()
-        panel._hide_hint_strip()
-        panel._hint_revealer.set_reveal_child.assert_called_once_with(False)
-
-    def test_hide_removes_idle_source(self):
-        import panels.center_panel as cp
-        panel = self._panel()
-        panel._hint_idle_source = 42
-
-        with patch.object(cp.GLib, "source_remove") as sr:
-            panel._hide_hint_strip()
-
-        sr.assert_called_once_with(42)
-        self.assertIsNone(panel._hint_idle_source)
-
-    def test_has_error_pattern_detects_traceback(self):
-        self.assertTrue(CenterPanel._has_error_pattern("Traceback (most recent call last):"))
-
-    def test_has_error_pattern_detects_error(self):
-        self.assertTrue(CenterPanel._has_error_pattern("ModuleNotFoundError: no module"))
-
-    def test_has_error_pattern_false_for_normal_output(self):
-        self.assertFalse(CenterPanel._has_error_pattern("Build succeeded in 1.2s"))
-
-    def test_check_terminal_hints_skips_when_no_ollama(self):
-        panel = self._panel()
-        panel._ollama_client = None
-        result = panel._check_terminal_hints()
-        self.assertFalse(result)
-
-    def test_check_terminal_hints_skips_when_no_terminal(self):
-        panel = self._panel()
-        panel._ollama_client = MagicMock()
-        panel._terminals = {}
-        result = panel._check_terminal_hints()
-        self.assertFalse(result)
-
-
 class TestTabLayoutPersistence(unittest.TestCase):
     """Phase 2 (G2a / G2b) — tab layout save and restore."""
 

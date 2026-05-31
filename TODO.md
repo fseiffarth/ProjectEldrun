@@ -65,22 +65,6 @@ G4.7 [ ] **Built-in app dispatch**: each resolved Browser, Mail, and Calendar ap
 
 G4.8 [ ] **Embedding pipeline hardening and verification** (`ISSUE-001`, `ISSUE-008`, Stages 2-3): define the center panel XID as the embedding target, retry reparenting after launch, restore the terminal page on failure, reconnect `AppRow` clicks, and verify a live file-open/reparent/close flow end-to-end.
 
-### G5 — Local AI and suggestions
-
-G5.1 [ ] **Ollama daemon management**: start/stop an `ollama serve` subprocess when Eldrun launches; expose a status indicator in the header bar where green means ready and grey means offline.
-
-G5.2 [ ] **Local AI model selection**: make model selection configurable per project in `CLAUDE.md` or a sidebar setting; default to a small fast model such as `mistral` or `phi3`.
-
-G5.3 [ ] **Local AI privacy boundary**: keep all inference local; no data leaves the machine; add a visible "local AI" label to AI-generated suggestions.
-
-G5.4 [ ] **Context-aware terminal hints**: optionally pipe the last N lines of the active terminal's scrollback to Ollama and display a short hint strip below the terminal.
-
-G5.5 [ ] **Intelligent project search**: embedding-based semantic search; query Ollama for sentence embeddings of the project name plus `STATUS.md` / `CLAUDE.md` summary, then rank results by cosine similarity.
-
-G5.6 [ ] **Suggest projects for today**: on startup, send recent git activity (`git log --oneline -20` across all projects) plus current date/time to Ollama and surface the top 2-3 projects the user likely wants to continue; show as a soft highlight or pinned section at the top of the project list.
-
-G5.7 [ ] **App/file suggestions per project**: when a project is activated, ask Ollama which files are most likely relevant given recent commits and `project.json["open_apps"]` history; surface suggestions as a "Suggested" section at the top of the open-apps browser.
-
 ### G6 — Global cross-project apps
 
 These roles are not owned by any single project. They must remain visible across workspaces and must never be moved to a project workspace. Each role can be individually shown or hidden in the header toolbar via the Settings window. G4.2, G4.3, and G4.7 are superseded by this group.

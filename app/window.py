@@ -21,7 +21,6 @@ from backends import detect_backend
 from panels.center_panel import CenterPanel, _MASTER_PAGE
 from panels.right_panel import FileTreePanel
 from panels.bottom_panel import BottomPanel
-from ollama_client import OllamaClient
 from eldrun import set_theme
 from downloads_manager import apply_browser_download_dir, update_project_downloads
 import launch_helpers as _launch_helpers
@@ -62,8 +61,6 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._project_space_backend = detect_backend()
         atexit.register(self._project_space_backend.cleanup)
         self._global_apps_manager = GlobalAppsManager(self.settings_manager)
-        self._ollama_client = OllamaClient(self.settings_manager)
-        self._ollama_proc = None
         initial_scheme = self.settings_manager.get("color_scheme") or "dark"
         set_theme(initial_scheme)
         _launch_helpers.set_dark_mode("dark" in str(initial_scheme))
@@ -71,8 +68,6 @@ class EldrunWindow(Adw.ApplicationWindow):
         set_debug(bool(self.settings_manager.get("debug")))
         GLib.idle_add(self._bootstrap_default_apps)
         GLib.idle_add(self._bootstrap_global_apps)
-        if self.settings_manager.get("ollama_autostart"):
-            GLib.idle_add(self._maybe_start_ollama)
         self._add_key_controller()
         self._build_layout()
         self._debug_badge.set_visible(bool(self.settings_manager.get("debug")))
@@ -81,9 +76,6 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._network_monitor = NetworkMonitor(self._on_network_status_changed)
         GLib.timeout_add(60_000, self._on_time_tick)
         GLib.timeout_add_seconds(30, self._update_clock)
-        GLib.timeout_add(10_000, self._poll_ollama_status)
-        GLib.idle_add(self._check_ollama_once)
-
         self.connect("destroy", self._on_destroy)
         self.connect("close-request", self._on_close_request)
 
@@ -91,39 +83,6 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.project_manager.set_all_inactive()
         if self._wm_enabled:
             self._project_space_backend.cleanup()
-        if self._ollama_proc is not None:
-            try:
-                self._ollama_proc.terminate()
-            except OSError:
-                pass
-
-    # ── ollama autostart ──────────────────────────────────────────────────────
-
-    def _maybe_start_ollama(self) -> bool:
-        import socket
-        import subprocess
-        import urllib.parse
-        host = self.settings_manager.get("ollama_host") or "http://localhost:11434"
-        parsed = urllib.parse.urlparse(host)
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        hostname = parsed.hostname or "localhost"
-        try:
-            with socket.create_connection((hostname, port), timeout=1):
-                return False  # already running
-        except OSError:
-            pass
-        ollama_bin = GLib.find_program_in_path("ollama")
-        if not ollama_bin:
-            return False
-        try:
-            self._ollama_proc = subprocess.Popen(
-                [ollama_bin, "serve"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError:
-            pass
-        return False
 
     # ── close / quit flow ─────────────────────────────────────────────────────
 
@@ -268,11 +227,6 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._toggle_panels()
             return True
 
-        if keyval == Gdk.KEY_k and (state & Gdk.ModifierType.CONTROL_MASK):
-            from ollama_dialog import OllamaDialog
-            OllamaDialog(self, self._ollama_client).present()
-            return True
-
         return False
 
     # ── header bar ────────────────────────────────────────────────────────────
@@ -301,13 +255,6 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._conn_icon.add_css_class("conn-type-label")
         self._conn_icon.set_visible(False)
         left_status.append(self._conn_icon)
-
-        self._ollama_lamp = Gtk.Label(label="●")
-        self._ollama_lamp.add_css_class("status-lamp")
-        self._ollama_lamp.add_css_class("status-offline")
-        self._ollama_lamp.set_tooltip_text("Ollama: offline")
-        self._ollama_lamp.set_valign(Gtk.Align.CENTER)
-        left_status.append(self._ollama_lamp)
 
         from eldrun import __version__
         version_stack = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -465,7 +412,6 @@ class EldrunWindow(Adw.ApplicationWindow):
             self.project_manager,
             on_page_changed=self._on_center_page_changed,
             settings_manager=self.settings_manager,
-            ollama_client=self._ollama_client,
             global_apps_manager=self._global_apps_manager,
         )
         self._center_panel.set_hexpand(True)
@@ -481,7 +427,6 @@ class EldrunWindow(Adw.ApplicationWindow):
             default_apps_manager=self.default_apps_manager,
             settings_manager=self.settings_manager,
             on_context_menu_open_changed=self._on_file_tree_context_menu_open_changed,
-            ollama_client=self._ollama_client,
             on_file_opened=self._on_file_opened,
             project_manager=self.project_manager,
         )
@@ -533,7 +478,6 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_global_apps_changed=self._refresh_global_apps_toolbar,
             on_default_apps_changed=self._file_tree_panel._refresh_default_app_icons,
             on_context_menu_open_changed=self._on_bottom_context_menu_open_changed,
-            ollama_client=self._ollama_client,
         )
         self._bottom_revealer = Gtk.Revealer()
         self._bottom_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
@@ -1129,72 +1073,3 @@ class EldrunWindow(Adw.ApplicationWindow):
         totals = self._time_tracker.get_today_totals()
         self._bottom_panel.update_time_bars(totals)
 
-    # ── Ollama status (G5.1) ──────────────────────────────────────────────────
-
-    def _check_ollama_once(self) -> bool:
-        self._ollama_client.is_ready(self._on_ollama_status)
-        return False
-
-    def _poll_ollama_status(self) -> bool:
-        self._ollama_client.is_ready(self._on_ollama_status)
-        return True
-
-    def _on_ollama_status(self, ready: bool):
-        lamp = self._ollama_lamp
-        if ready:
-            lamp.remove_css_class("status-offline")
-            lamp.add_css_class("status-online")
-            lamp.set_tooltip_text("Ollama: ready")
-        else:
-            lamp.remove_css_class("status-online")
-            lamp.add_css_class("status-offline")
-            lamp.set_tooltip_text("Ollama: offline")
-
-    # ── Startup project suggestions (G5.6) ────────────────────────────────────
-
-    def _suggest_startup_projects(self) -> bool:
-        """Ask Ollama which projects the user is most likely continuing today."""
-        visible = self.project_manager.get_visible_projects()
-        if not visible or not self._ollama_client:
-            return False
-
-        import subprocess as _sp
-        import datetime as _dt
-
-        git_summaries = []
-        for p in visible[:5]:
-            d = p.get("directory", "")
-            if not d:
-                continue
-            try:
-                r = _sp.run(
-                    ["git", "log", "--oneline", "-5"],
-                    cwd=d, capture_output=True, text=True, timeout=3,
-                )
-                if r.stdout.strip():
-                    git_summaries.append(f"{p['name']}:\n{r.stdout.strip()}")
-            except Exception:
-                pass
-
-        if not git_summaries:
-            return False
-
-        today = _dt.datetime.now().strftime("%A, %B %d %Y")
-        prompt = (
-            f"Today is {today}. Based on recent git activity, which 1-2 projects "
-            f"is the user most likely continuing?\n\n"
-            + "\n\n".join(git_summaries)
-            + "\n\nList only project names, one per line."
-        )
-
-        def on_done():
-            pass
-
-        def on_chunk(text):
-            pass
-
-        def on_error(_msg):
-            pass
-
-        self._ollama_client.ask(prompt, on_chunk, on_done, on_error)
-        return False
