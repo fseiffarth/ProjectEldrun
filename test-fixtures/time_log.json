@@ -1,0 +1,23 @@
+[
+    {
+        "project_id": "e56d1562-80f1-43d4-8321-e8ca357ccf60",
+        "date": "2026-05-25",
+        "start_iso": "2026-05-25T21:23:53.674831+00:00",
+        "duration_s": 0.0,
+        "_unknown_test": "preserved"
+    },
+    {
+        "project_id": "e56d1562-80f1-43d4-8321-e8ca357ccf60",
+        "date": "2026-05-25",
+        "start_iso": "2026-05-25T21:23:53.677472+00:00",
+        "duration_s": 0.0,
+        "_unknown_test": "preserved"
+    },
+    {
+        "project_id": "0af63aff-7926-44b0-91df-b0c1bef49531",
+        "date": "2026-05-25",
+        "start_iso": "2026-05-25T21:23:53.684796+00:00",
+        "duration_s": 0.0,
+        "_unknown_test": "preserved"
+    }
+]

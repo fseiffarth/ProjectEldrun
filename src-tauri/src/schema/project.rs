@@ -1,0 +1,105 @@
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Per-extension file count and byte total inside `file_type_stats`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileTypeStat {
+    pub count: i64,
+    pub bytes: i64,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// One item in `time["recent_sessions"]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentSession {
+    /// "YYYY-MM-DD"
+    pub date: String,
+    /// "YYYY-MM-DD HH:MM"
+    pub start: String,
+    pub duration_s: f64,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// `project.json["time"]` block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeInfo {
+    pub total_s: f64,
+    pub recent_sessions: Vec<RecentSession>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// One entry in `project.json["open_apps"]`.
+/// Fields are optional because the model evolved; older records may omit mode/pid.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenApp {
+    pub exec: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// "standalone" | "embedded" — how the app was opened
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opened_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<i64>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// One entry in `project.json["tab_layout"]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabEntry {
+    pub key: String,
+    pub label: String,
+    pub cmd: String,
+    pub cwd: String,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// Per-project `project.json` file.
+///
+/// Most fields are optional because projects created by older app versions may
+/// not have all fields, and this struct must survive forward-compatibility reads
+/// (newer Python app wrote fields the Rust model doesn't know about → `extra`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub directory: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_type_stats: Option<HashMap<String, FileTypeStat>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_today_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_total_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_updated: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_apps: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<TimeInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_tasks: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_apps: Option<Vec<OpenApp>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tab_layout: Option<Vec<TabEntry>>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}

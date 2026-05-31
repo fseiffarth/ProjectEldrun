@@ -1,0 +1,42 @@
+[
+    {
+        "id": "0af63aff-7926-44b0-91df-b0c1bef49531",
+        "name": "ProjectEldrun",
+        "status": "current",
+        "position": 0,
+        "local_file": "/home/user/eldrun/projects/projecteldrun/project.json",
+        "_unknown_test": "preserved"
+    },
+    {
+        "id": "f803b096-9f4e-4937-8683-39c59c71b713",
+        "name": "Test",
+        "status": "active",
+        "position": 10,
+        "local_file": "/home/user/eldrun/projects/test/project.json",
+        "_unknown_test": "preserved"
+    },
+    {
+        "id": "224c4c98-e44f-41e6-a77f-8b8f376bb6ac",
+        "name": "New",
+        "status": "inactive",
+        "position": 10,
+        "local_file": "/home/user/eldrun/projects/new/project.json",
+        "_unknown_test": "preserved"
+    },
+    {
+        "id": "0f9a869a-b756-4327-a596-fa7c80f728d4",
+        "name": "TestEldrun",
+        "status": "inactive",
+        "position": 30,
+        "local_file": "/home/user/Documents/TestEldrun/project.json",
+        "_unknown_test": "preserved"
+    },
+    {
+        "id": "0ebbf666-3490-46f3-869f-ac90a889bdfd",
+        "name": "ExampleOne",
+        "status": "active",
+        "position": 20,
+        "local_file": "/home/user/Documents/ExampleOne/project.json",
+        "_unknown_test": "preserved"
+    }
+]

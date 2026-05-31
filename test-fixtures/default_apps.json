@@ -1,0 +1,21 @@
+{
+    ".c": "vim",
+    ".cpp": "vim",
+    ".h": "vim",
+    ".html": "/usr/bin/firefox",
+    ".jpeg": "gimp-3.2",
+    ".jpg": "gimp-3.2",
+    ".json": "kate",
+    ".md": "/opt/MarkText/marktext",
+    ".mp3": "rhythmbox",
+    ".mp4": "showtime",
+    ".pdf": "evince",
+    ".png": "gimp-3.2",
+    ".py": "\"/home/user/.local/share/JetBrains/Toolbox/apps/pycharm-professional/bin/pycharm\"",
+    ".sh": "/opt/MarkText/marktext",
+    ".svg": "gimp-3.2",
+    ".txt": "gnome-text-editor",
+    ".xml": "env",
+    ".yaml": "kate",
+    ".yml": "kate"
+}

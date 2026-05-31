@@ -1,0 +1,58 @@
+{
+    "terminal_command": "claude",
+    "workspace_management": true,
+    "debug": true,
+    "git_profile_url": "",
+    "git_token": "",
+    "color_scheme": "fancy_dark",
+    "ollama_host": "http://localhost:11434",
+    "ollama_model": "mistral",
+    "ollama_autostart": false,
+    "global_apps": {
+        "browser": {
+            "exec": "/usr/bin/firefox",
+            "visible": true
+        },
+        "mail": {
+            "exec": "/usr/bin/thunderbird",
+            "visible": true
+        },
+        "calendar": {
+            "exec": "/usr/bin/thunderbird",
+            "visible": true
+        },
+        "print_manager": {
+            "exec": "/usr/bin/system-config-printer",
+            "visible": true
+        },
+        "file_manager": {
+            "exec": "/usr/bin/nemo",
+            "visible": true
+        },
+        "password_manager": {
+            "exec": "/usr/bin/keepassxc",
+            "visible": true
+        },
+        "video_conf": {
+            "exec": "/usr/bin/zoom",
+            "visible": true
+        },
+        "media_player": {
+            "exec": "/usr/bin/rhythmbox",
+            "visible": true
+        },
+        "system_monitor": {
+            "exec": "/usr/bin/gnome-system-monitor",
+            "visible": true
+        },
+        "screenshot": {
+            "exec": "/usr/bin/gnome-screenshot",
+            "visible": true
+        },
+        "chat": {
+            "exec": "/usr/bin/signal-desktop",
+            "visible": true
+        }
+    },
+    "_unknown_test": "preserved"
+}

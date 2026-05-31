@@ -19,6 +19,25 @@ project.json
 .eldrun_colors.json
 *.migrated
 
+# Exempt test fixtures from the above exclusions
+!test-fixtures/project.json
+!test-fixtures/
+
 # Local Claude Code settings (contain machine-specific absolute paths)
 .claude/settings.json
 .claude/settings.local.json
+
+# Rust / Cargo
+target/
+Cargo.lock
+
+# Node / frontend (Phase 2+)
+node_modules/
+.next/
+
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/WixTools/
+
+# JSON backup files created by storage layer
+*.bak.json

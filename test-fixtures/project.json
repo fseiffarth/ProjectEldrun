@@ -1,0 +1,124 @@
+{
+    "id": "0af63aff-7926-44b0-91df-b0c1bef49531",
+    "name": "ProjectEldrun",
+    "directory": "/home/user/eldrun/projects/projecteldrun",
+    "git_type": "private",
+    "created_at": "2026-05-25T09:32:32.757462+00:00",
+    "file_type_stats": {
+        ".json": {
+            "count": 2,
+            "bytes": 3802
+        },
+        ".md": {
+            "count": 15,
+            "bytes": 202067
+        },
+        ".sh": {
+            "count": 1,
+            "bytes": 68
+        },
+        ".png": {
+            "count": 6,
+            "bytes": 1381288
+        },
+        ".desktop": {
+            "count": 1,
+            "bytes": 244
+        },
+        "(none)": {
+            "count": 1,
+            "bytes": 1076
+        },
+        ".migrated": {
+            "count": 1,
+            "bytes": 32
+        },
+        ".py": {
+            "count": 50,
+            "bytes": 679193
+        },
+        ".pyc": {
+            "count": 45,
+            "bytes": 1018555
+        }
+    },
+    "time_today_s": 48671.5,
+    "time_total_s": 197122.4,
+    "last_updated": "2026-05-31T11:50:43.394277",
+    "default_apps": {
+        ".md": "gnome-text-editor"
+    },
+    "time": {
+        "total_s": 233261.1,
+        "recent_sessions": [
+            {
+                "date": "2026-05-31",
+                "start": "2026-05-31 19:57",
+                "duration_s": 59.2
+            },
+            {
+                "date": "2026-05-31",
+                "start": "2026-05-31 19:56",
+                "duration_s": 31.2
+            },
+            {
+                "date": "2026-05-31",
+                "start": "2026-05-31 19:55",
+                "duration_s": 35.4
+            },
+            {
+                "date": "2026-05-31",
+                "start": "2026-05-31 19:55",
+                "duration_s": 0.3
+            },
+            {
+                "date": "2026-05-31",
+                "start": "2026-05-31 19:54",
+                "duration_s": 88.4
+            }
+        ]
+    },
+    "open_apps": [
+        {
+            "exec": "gnome-text-editor",
+            "file": "/home/user/eldrun/projects/projecteldrun/TauriRust.md",
+            "mode": "standalone",
+            "opened_at": 1780256839.5877938,
+            "pid": 68342
+        },
+        {
+            "exec": "gnome-text-editor",
+            "file": "/home/user/eldrun/projects/projecteldrun/PLAN_OLLAMA.md",
+            "mode": "standalone",
+            "opened_at": 1780253409.5196025,
+            "pid": 36708
+        },
+        {
+            "exec": "gnome-text-editor",
+            "file": "/home/user/eldrun/projects/projecteldrun/plan_vision.md",
+            "mode": "standalone",
+            "opened_at": 1780222413.0189211,
+            "pid": 1729831
+        },
+        {
+            "exec": "gnome-text-editor",
+            "file": "/home/user/eldrun/projects/projecteldrun/VISION.md",
+            "mode": "standalone",
+            "opened_at": 1780222410.8143451,
+            "pid": 1729821
+        }
+    ],
+    "status": "current",
+    "position": 0,
+    "local_file": "/home/user/eldrun/projects/projecteldrun/project.json",
+    "agent_tasks": [],
+    "tab_layout": [
+        {
+            "key": "agent-2",
+            "label": "Codex",
+            "cmd": "codex",
+            "cwd": "/home/user/eldrun/projects/projecteldrun"
+        }
+    ],
+    "_unknown_test": "preserved"
+}
