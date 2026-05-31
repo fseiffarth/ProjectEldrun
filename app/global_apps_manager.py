@@ -393,6 +393,33 @@ class GlobalAppsManager:
             GLib.timeout_add(500, self._poll_and_sticky, pid, attempts - 1)
         return False
 
+    # ── URI routing (G6.7) ───────────────────────────────────────────────────
+
+    _URI_SCHEME_TO_ROLE: dict[str, str] = {
+        "http": "browser",
+        "https": "browser",
+        "mailto": "mail",
+        "webcal": "calendar",
+    }
+
+    def launch_role_for_uri(self, scheme: str, uri: str,
+                             anchor_window=None) -> bool:
+        """Launch the appropriate global app for the given URI scheme.
+
+        Maps http/https → browser, mailto → mail, webcal → calendar.
+        Returns True if a matching exec was found and launched.
+        """
+        role_key = self._URI_SCHEME_TO_ROLE.get(scheme.lower())
+        if role_key is None:
+            return False
+        registry = self.get_registry()
+        entry = registry.get(role_key, {})
+        exec_cmd = entry.get("exec")
+        if not exec_cmd:
+            return False
+        launch_on_other_monitor([exec_cmd, uri], anchor_window=anchor_window)
+        return True
+
     @staticmethod
     def _make_sticky(win, root, d):
         from Xlib import X as _X

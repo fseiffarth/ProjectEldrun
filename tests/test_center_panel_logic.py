@@ -219,5 +219,318 @@ class TestCenterPanelAgentTaskFlow(unittest.TestCase):
         second_terminal.grab_focus.assert_called_once()
 
 
+class TestTerminalUriRouting(unittest.TestCase):
+    """Phase 5a (G6.7) — VTE URI routing through global apps manager."""
+
+    def _panel(self, gam=None):
+        panel = CenterPanel.__new__(CenterPanel)
+        panel._global_apps_manager = gam or MagicMock()
+        return panel
+
+    def test_http_uri_routed_through_global_apps(self):
+        panel = self._panel()
+        panel.get_root = MagicMock(return_value=None)
+        panel._global_apps_manager.launch_role_for_uri.return_value = True
+
+        result = panel._on_terminal_uri_activated(MagicMock(), "https://example.com")
+
+        panel._global_apps_manager.launch_role_for_uri.assert_called_once_with(
+            "https", "https://example.com", anchor_window=None
+        )
+        self.assertTrue(result)
+
+    def test_mailto_uri_routed(self):
+        panel = self._panel()
+        panel.get_root = MagicMock(return_value=None)
+        panel._global_apps_manager.launch_role_for_uri.return_value = True
+
+        panel._on_terminal_uri_activated(MagicMock(), "mailto:foo@bar.com")
+
+        panel._global_apps_manager.launch_role_for_uri.assert_called_with(
+            "mailto", "mailto:foo@bar.com", anchor_window=None
+        )
+
+    def test_unknown_scheme_not_routed(self):
+        panel = self._panel()
+        panel.get_root = MagicMock(return_value=None)
+
+        result = panel._on_terminal_uri_activated(MagicMock(), "ssh://server.local")
+
+        panel._global_apps_manager.launch_role_for_uri.assert_not_called()
+        self.assertFalse(result)
+
+    def test_no_global_apps_manager_returns_false(self):
+        panel = self._panel()
+        panel._global_apps_manager = None
+
+        result = panel._on_terminal_uri_activated(MagicMock(), "https://example.com")
+
+        self.assertFalse(result)
+
+    def test_empty_uri_returns_false(self):
+        panel = self._panel()
+        result = panel._on_terminal_uri_activated(MagicMock(), "")
+        self.assertFalse(result)
+
+
+class TestTerminalHintStrip(unittest.TestCase):
+    """Phase 4d (G5.4) — terminal scrollback hint infrastructure."""
+
+    def _panel(self):
+        panel = CenterPanel.__new__(CenterPanel)
+        panel._hint_idle_source = None
+        panel._hint_revealer = MagicMock()
+        panel._hint_label = MagicMock()
+        panel._ollama_client = None
+        panel._terminals = {}
+        panel._last_terminal_page = "project-p1"
+        return panel
+
+    def test_show_hint_reveals_strip(self):
+        panel = self._panel()
+        panel._show_hint("Try restarting the server.")
+        panel._hint_revealer.set_reveal_child.assert_called_once_with(True)
+        panel._hint_label.set_label.assert_called_once_with("Try restarting the server.")
+
+    def test_hide_hint_strip_hides_revealer(self):
+        panel = self._panel()
+        panel._hide_hint_strip()
+        panel._hint_revealer.set_reveal_child.assert_called_once_with(False)
+
+    def test_hide_removes_idle_source(self):
+        import panels.center_panel as cp
+        panel = self._panel()
+        panel._hint_idle_source = 42
+
+        with patch.object(cp.GLib, "source_remove") as sr:
+            panel._hide_hint_strip()
+
+        sr.assert_called_once_with(42)
+        self.assertIsNone(panel._hint_idle_source)
+
+    def test_has_error_pattern_detects_traceback(self):
+        self.assertTrue(CenterPanel._has_error_pattern("Traceback (most recent call last):"))
+
+    def test_has_error_pattern_detects_error(self):
+        self.assertTrue(CenterPanel._has_error_pattern("ModuleNotFoundError: no module"))
+
+    def test_has_error_pattern_false_for_normal_output(self):
+        self.assertFalse(CenterPanel._has_error_pattern("Build succeeded in 1.2s"))
+
+    def test_check_terminal_hints_skips_when_no_ollama(self):
+        panel = self._panel()
+        panel._ollama_client = None
+        result = panel._check_terminal_hints()
+        self.assertFalse(result)
+
+    def test_check_terminal_hints_skips_when_no_terminal(self):
+        panel = self._panel()
+        panel._ollama_client = MagicMock()
+        panel._terminals = {}
+        result = panel._check_terminal_hints()
+        self.assertFalse(result)
+
+
+class TestTabLayoutPersistence(unittest.TestCase):
+    """Phase 2 (G2a / G2b) — tab layout save and restore."""
+
+    def _panel(self, project=None):
+        panel = CenterPanel.__new__(CenterPanel)
+        panel._pm = MagicMock()
+        panel._restoring_tab_layout = False
+        panel._restored_tab_layouts = set()
+        panel._tab_widgets = {}
+        panel._agent_info = {}
+        panel._tab_project = {}
+        panel._task_state = {}
+        panel._last_terminal_page = "project-p1"
+        panel._settings = None
+        panel._stack = MagicMock()
+        if project is None:
+            project = {"id": "p1", "directory": "/work/p1", "tab_layout": []}
+        panel._pm.get_project.return_value = project
+        return panel, project
+
+    def test_save_tab_layout_captures_agent_tabs(self):
+        panel, project = self._panel()
+        panel._tab_widgets["agent-1"] = MagicMock()
+        panel._tab_project["agent-1"] = "p1"
+        panel._agent_info["agent-1"] = {"cmd": "claude", "directory": "/work/p1",
+                                         "label_base": "Claude", "label_index": 0}
+
+        with patch.object(panel, "_tab_label", return_value="Claude"):
+            panel._save_tab_layout()
+
+        self.assertEqual(len(project["tab_layout"]), 1)
+        entry = project["tab_layout"][0]
+        self.assertEqual(entry["key"], "agent-1")
+        self.assertEqual(entry["cmd"], "claude")
+        self.assertEqual(entry["label"], "Claude")
+        panel._pm._save_local.assert_called_once_with(project)
+
+    def test_save_tab_layout_excludes_default_terminal_tab(self):
+        from panels.center_panel import _TERMINAL_TAB
+        panel, project = self._panel()
+        panel._tab_widgets[_TERMINAL_TAB] = MagicMock()
+        panel._tab_project[_TERMINAL_TAB] = None
+
+        panel._save_tab_layout()
+
+        self.assertEqual(project["tab_layout"], [])
+
+    def test_save_tab_layout_excludes_other_project_tabs(self):
+        panel, project = self._panel()
+        panel._tab_widgets["agent-2"] = MagicMock()
+        panel._tab_project["agent-2"] = "other-project"
+        panel._agent_info["agent-2"] = {"cmd": "claude", "directory": "/work/other",
+                                         "label_base": "Claude", "label_index": 0}
+
+        panel._save_tab_layout()
+
+        self.assertEqual(project["tab_layout"], [])
+
+    def test_save_tab_layout_skips_when_restoring(self):
+        panel, project = self._panel()
+        panel._restoring_tab_layout = True
+        panel._tab_widgets["agent-1"] = MagicMock()
+        panel._tab_project["agent-1"] = "p1"
+        panel._agent_info["agent-1"] = {"cmd": "claude", "directory": "/work/p1",
+                                         "label_base": "Claude", "label_index": 0}
+
+        panel._save_tab_layout()
+
+        panel._pm._save_local.assert_not_called()
+
+    def test_restore_tab_layout_creates_agent_tabs(self):
+        import panels.center_panel as cp
+
+        project = {
+            "id": "p1", "directory": "/work/p1",
+            "tab_layout": [{"key": "agent-1", "cmd": "claude", "label": "Claude", "cwd": "/work/p1"}],
+        }
+        panel, _ = self._panel(project=project)
+        panel._next_agent_number = MagicMock(return_value=1)
+        panel._current_project_id = MagicMock(return_value="p1")
+        panel._current_agent_directory = MagicMock(return_value="/work/p1")
+        panel._used_tab_label_indices = MagicMock(return_value=set())
+        panel._make_terminal = MagicMock(return_value=MagicMock())
+        panel._add_tab = MagicMock()
+        panel._set_agent_task = MagicMock()
+        panel._notify_page = MagicMock()
+        panel._terminal_pids = {}
+        panel._terminals = {}
+        panel._task_state = {}
+        panel._tab_project = {}
+        panel._agent_info = {}
+        panel._tab_widgets = {}
+
+        with patch.object(cp, "_spawn"), \
+                patch.object(cp.GLib, "timeout_add"):
+            result = panel._restore_tab_layout("p1")
+
+        self.assertFalse(result)
+        self.assertIn("agent-1", panel._agent_info)
+        self.assertEqual(panel._agent_info["agent-1"]["cmd"], "claude")
+        # _save_tab_layout is suppressed during restore (restoring_tab_layout flag)
+        panel._pm._save_local.assert_not_called()
+
+    def test_restore_tab_layout_returns_false_on_empty_layout(self):
+        project = {"id": "p1", "directory": "/work/p1", "tab_layout": []}
+        panel, _ = self._panel(project=project)
+
+        result = panel._restore_tab_layout("p1")
+
+        self.assertFalse(result)
+
+    def test_show_project_terminal_triggers_restore_once(self):
+        import panels.center_panel as cp
+        panel, _ = self._panel()
+        panel._stack.get_child_by_name.return_value = MagicMock()
+        panel._show_terminal = MagicMock()
+
+        with patch.object(cp.GLib, "idle_add") as idle_add:
+            panel.show_project_terminal("p1")
+            panel.show_project_terminal("p1")  # second call should not re-schedule
+
+        idle_add.assert_called_once_with(panel._restore_tab_layout, "p1")
+        self.assertIn("p1", panel._restored_tab_layouts)
+
+
+class TestCenterPanelEmbedRetry(unittest.TestCase):
+    """Phase 1 (G4.8 Stage 2) — X11 embedding retry scaffold."""
+
+    def _panel(self):
+        panel = CenterPanel.__new__(CenterPanel)
+        panel._embedded_pages = {}
+        panel._last_terminal_page = "project-abc"
+        panel._show_terminal = MagicMock()
+        return panel
+
+    def test_successful_embed_does_not_retry(self):
+        import panels.center_panel as cp
+
+        panel = self._panel()
+        panel._embedded_pages["embed-1"] = 12345
+
+        with patch.object(panel, "_do_embed_window", return_value=True):
+            with patch.object(cp.GLib, "timeout_add") as timeout_add:
+                result = panel._try_embed_window(12345, "embed-1")
+
+        self.assertFalse(result)
+        timeout_add.assert_not_called()
+        panel._show_terminal.assert_not_called()
+
+    def test_failed_embed_schedules_retry_within_max_attempts(self):
+        import panels.center_panel as cp
+
+        panel = self._panel()
+        panel._embedded_pages["embed-1"] = 12345
+
+        with patch.object(panel, "_do_embed_window", side_effect=RuntimeError):
+            with patch.object(cp.GLib, "timeout_add") as timeout_add:
+                result = panel._try_embed_window(12345, "embed-1", _attempt=0)
+
+        self.assertFalse(result)
+        timeout_add.assert_called_once_with(
+            300, panel._try_embed_window, 12345, "embed-1", 1
+        )
+        panel._show_terminal.assert_not_called()
+
+    def test_last_attempt_exhausted_restores_terminal_and_removes_page(self):
+        import panels.center_panel as cp
+
+        panel = self._panel()
+        panel._embedded_pages["embed-1"] = 12345
+
+        with patch.object(panel, "_do_embed_window", side_effect=RuntimeError):
+            with patch.object(cp.GLib, "timeout_add") as timeout_add:
+                result = panel._try_embed_window(12345, "embed-1", _attempt=4)
+
+        self.assertFalse(result)
+        timeout_add.assert_not_called()
+        panel._show_terminal.assert_called_once_with("project-abc")
+        self.assertNotIn("embed-1", panel._embedded_pages)
+
+    def test_embed_cancelled_externally_is_noop(self):
+        """If embed-page key is removed before retry fires, skip silently."""
+        import panels.center_panel as cp
+
+        panel = self._panel()
+        # _embedded_pages does NOT contain "embed-1"
+
+        with patch.object(panel, "_do_embed_window") as do_embed:
+            with patch.object(cp.GLib, "timeout_add"):
+                result = panel._try_embed_window(12345, "embed-1")
+
+        self.assertFalse(result)
+        do_embed.assert_not_called()
+        panel._show_terminal.assert_not_called()
+
+    def test_do_embed_window_raises_not_implemented(self):
+        panel = self._panel()
+        with self.assertRaises(NotImplementedError):
+            panel._do_embed_window(12345, "embed-1")
+
+
 if __name__ == "__main__":
     unittest.main()

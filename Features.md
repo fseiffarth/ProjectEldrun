@@ -16,21 +16,25 @@ instance or after the user restarts Eldrun.
 
 ## Source Snapshot
 
-- Plans: `plan_0.md`, `plan_1.md`
+- Plans: `plan_0.md`, `plan_1.md`, `plan_kde.md` (completed)
 - Current/open TODOs: `TODO.md`
 - Completed history: `TODO_history.md`
 - Documentation: `DOCUMENTATION.md`, `README.md`, `CLAUDE.md`, `AGENTS.md`
 - Recent commits: workspace fixes, global app toolbar, screenshot support,
   graceful shutdown, Git hosting, GNOME workspace support, agent tab work,
-  project search, time tracking, network monitor, settings, and panel polish.
+  project search, time tracking, network monitor, settings, panel polish,
+  KDE Plasma backend (X11 + Wayland), crash logging.
 - New files: `app/ollama_client.py`, `app/ollama_dialog.py`, `app/app_picker.py`,
-  `app/downloads_manager.py`, `tests/test_ollama_client.py`,
-  `tests/test_window_layout_logic.py`.
-- Major changes since last commit: Ollama client + dialog + settings UI, downloads
-  symlink manager + browser prefs, agent task metadata system, bottom-bar and
-  file-tree overlay hover behaviour, single-instance protection, Ctrl+K shortcut,
-  center inline Ollama prompt bar, app picker from `.desktop` files, expanded test
-  suite (227 tests passing). Version bumped to 0.0.7.
+  `app/downloads_manager.py`, `app/workspace_core.py`, `app/backends/__init__.py`,
+  `app/backends/kde_kwin.py`, `app/backends/cinnamon_x11.py`,
+  `app/backends/gnome.py`, `app/backends/null.py`,
+  `tests/test_ollama_client.py`, `tests/test_window_layout_logic.py`,
+  `tests/test_kde_kwin.py`.
+- Major changes since last snapshot: KDE Plasma backend (Phase 6a X11, Phase 6b
+  Wayland) adds virtual desktop isolation for KDE 5 and KDE 6 sessions; crash
+  logging via `faulthandler` + `sys.excepthook` in `eldrun.py`; `GLib.timeout_add(500,
+  ...)` replaces `GLib.idle_add` for `_restore_project_apps()` to fix a GTK4
+  frame-clock reentrance crash; 520 tests passing. Version bumped to 0.0.17.
 
 ## Grouped Subfeature Checklists
 
@@ -186,6 +190,8 @@ independently before marking the broader feature in later sections as done.
 | Workspaces | Eldrun sticky | Implemented | [ ] | [ ] | [ ] | Eldrun remains on all workspaces. |
 | Workspaces | GNOME path | Implemented | [ ] | [ ] | [ ] | GNOME workspace control works or fails gracefully. |
 | Workspaces | Cinnamon path | Implemented | [ ] | [ ] | [ ] | Cinnamon workspace control works or fails gracefully. |
+| Workspaces | KDE X11 path | Implemented | [ ] | [ ] | [ ] | KDE DBus desktop CRUD + Xlib EWMH window ops; works or fails gracefully. |
+| Workspaces | KDE Wayland path | Partial | [ ] | [ ] | [ ] | KWin scripting + DBus; KDE 5 window enumeration is best-effort. Needs live-session QA. |
 | Time | Active session start | Implemented | [ ] | [ ] | [ ] | Activating project starts session. |
 | Time | Session close | Implemented | [ ] | [ ] | [ ] | Switching/closing project records duration. |
 | Time | Orphan cleanup | Implemented | [ ] | [ ] | [ ] | Crash/restart closes prior active session. |
@@ -330,7 +336,7 @@ independently before marking the broader feature in later sections as done.
 | `wmctrl` fallback | Implemented | [ ] | [ ] | [ ] | Workspace activation falls back gracefully when DBus path is unavailable. |
 | Eldrun sticky window | Implemented | [ ] | [ ] | [ ] | Eldrun remains visible across managed workspaces. |
 | Project workspace assignment order | Implemented | [ ] | [ ] | [ ] | Workspaces follow bottom pill order and remain correct after close/reorder. |
-| X11-only boundary | Implemented | [ ] | [ ] | [ ] | Wayland workspace/window paths fail gracefully without crashing. |
+| Non-KDE Wayland boundary | Implemented | [ ] | [ ] | [ ] | Non-KDE Wayland workspace/window paths fail gracefully without crashing. |
 
 ## Time, Stats, Network, and Downloads
 
@@ -364,8 +370,8 @@ independently before marking the broader feature in later sections as done.
 
 | Feature | Code State | Done | Partial | Issue | Manual checks |
 |---|---:|---|---|---|---|
-| Unit test suite | Implemented | [ ] | [ ] | [ ] | `python3 -m unittest` passes (227 tests). Covers Ollama client streaming, window layout helpers, project manager, theme, right panel, and center panel logic. |
-| Syntax check command | Implemented | [ ] | [ ] | [ ] | `python3 -m py_compile ... app/panels/*.py app/ollama_client.py app/ollama_dialog.py app/app_picker.py app/downloads_manager.py` passes. |
+| Unit test suite | Implemented | [ ] | [ ] | [ ] | `python3 -m unittest` passes (520 tests). Covers project manager, settings, default apps, global apps, network, time tracking, workspace helpers, Ollama client, download routing, app picker, panel-adjacent logic, and KDE Plasma backend (X11 + Wayland, ~127 tests). |
+| Syntax check command | Implemented | [ ] | [ ] | [ ] | `python3 -m py_compile ... app/panels/*.py app/backends/*.py` passes. |
 | App docs | Partial | [ ] | [ ] | [ ] | `DOCUMENTATION.md` covers most features; Ollama and downloads manager sections may lag code. |
 | Agent docs | Implemented | [ ] | [ ] | [ ] | `AGENTS.md` and `CLAUDE.md` describe workflow and no-duplicate-launch rule. |
 | Feature checklist | Implemented | [ ] | [ ] | [ ] | This `Features.md` exists and is kept current as features change. |

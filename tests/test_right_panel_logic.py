@@ -279,6 +279,39 @@ class TestFileTreeLaunchRouting(unittest.TestCase):
         )
         panel._show_choose_app_dialog.assert_not_called()
 
+    def test_open_file_forwards_pid_to_callback(self):
+        panel = self._panel()
+        panel._dam.get_app_for_file.return_value = "code"
+        events: list = []
+        panel._on_file_opened = lambda *args: events.append(args)
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 9999
+
+        with patch("panels.right_panel.Gtk.Window", object), \
+                patch("panels.right_panel.launch_on_other_monitor", return_value=mock_proc):
+            panel._open_file("/work/project/main.py")
+
+        self.assertEqual(len(events), 1)
+        proj_id, exec_cmd, file_path, pid = events[0]
+        self.assertEqual(proj_id, "proj1")
+        self.assertEqual(exec_cmd, "code")
+        self.assertEqual(file_path, "/work/project/main.py")
+        self.assertEqual(pid, 9999)
+
+    def test_open_file_no_callback_when_no_project(self):
+        panel = self._panel()
+        panel._current_project = None
+        panel._dam.get_app_for_file.return_value = "code"
+        events: list = []
+        panel._on_file_opened = lambda *args: events.append(args)
+
+        with patch("panels.right_panel.Gtk.Window", object), \
+                patch("panels.right_panel.launch_on_other_monitor", return_value=MagicMock()):
+            panel._open_file("/work/project/main.py")
+
+        self.assertEqual(len(events), 0)
+
     def test_reveal_in_fm_uses_shared_launch_helper(self):
         panel = self._panel()
 
@@ -291,6 +324,183 @@ class TestFileTreeLaunchRouting(unittest.TestCase):
             cwd=None,
             anchor_window=panel.get_root.return_value,
         )
+
+
+class TestUrlFileRouting(unittest.TestCase):
+    """Phase 5a (G6.7) — .url/.webloc shortcut files routed via xdg-open."""
+
+    def _panel(self):
+        panel = FileTreePanel.__new__(FileTreePanel)
+        panel._current_project = {"id": "p1", "directory": "/work"}
+        panel._dam = MagicMock()
+        panel._dam.get_app_for_file.return_value = None
+        panel._on_file_opened = None
+        panel.get_root = MagicMock(return_value=MagicMock())
+        return panel
+
+    def test_url_file_uses_xdg_open(self):
+        panel = self._panel()
+
+        with patch("panels.right_panel.Gtk.Window", object), \
+                patch("panels.right_panel.launch_on_other_monitor") as launch:
+            panel._open_file("/work/shortcut.url")
+
+        launch.assert_called_once_with(
+            ["xdg-open", "/work/shortcut.url"],
+            cwd=None,
+            anchor_window=panel.get_root.return_value,
+        )
+
+    def test_webloc_file_uses_xdg_open(self):
+        panel = self._panel()
+
+        with patch("panels.right_panel.Gtk.Window", object), \
+                patch("panels.right_panel.launch_on_other_monitor") as launch:
+            panel._open_file("/work/link.webloc")
+
+        launch.assert_called_once_with(
+            ["xdg-open", "/work/link.webloc"],
+            cwd=None,
+            anchor_window=panel.get_root.return_value,
+        )
+
+    def test_regular_file_not_routed_through_xdg_open_shortcut(self):
+        panel = self._panel()
+        panel._dam.get_app_for_file.return_value = "code"
+
+        with patch("panels.right_panel.Gtk.Window", object), \
+                patch("panels.right_panel.launch_on_other_monitor") as launch:
+            panel._open_file("/work/main.py")
+
+        # Should use "code", not xdg-open
+        call_args = launch.call_args_list[0][0][0]
+        self.assertEqual(call_args[0], "code")
+
+
+class TestOpenAppsPanel(unittest.TestCase):
+    """Phase 1 (G4.4) — project-scoped open-apps list in the right panel."""
+
+    def _panel(self, open_apps=None):
+        panel = FileTreePanel.__new__(FileTreePanel)
+        panel._current_project = {
+            "id": "proj1",
+            "directory": "/work/project",
+            "open_apps": open_apps if open_apps is not None else [],
+        }
+        panel._open_apps_section = MagicMock()
+        panel._open_apps_box = MagicMock()
+        panel._open_apps_box.get_first_child.return_value = None
+        panel._on_file_opened = None
+        panel.get_root = MagicMock(return_value=MagicMock())
+        return panel
+
+    def test_is_pid_alive_true_for_current_process(self):
+        import os as _os
+        self.assertTrue(FileTreePanel._is_pid_alive(_os.getpid()))
+
+    def test_is_pid_alive_false_for_dead_pid(self):
+        with patch("os.kill", side_effect=ProcessLookupError):
+            self.assertFalse(FileTreePanel._is_pid_alive(99999))
+
+    def test_is_pid_alive_false_for_permission_error(self):
+        with patch("os.kill", side_effect=OSError):
+            self.assertFalse(FileTreePanel._is_pid_alive(1))
+
+    def test_rebuild_open_apps_hides_section_when_no_project(self):
+        panel = self._panel()
+        panel._current_project = None
+
+        panel._rebuild_open_apps()
+
+        panel._open_apps_section.set_visible.assert_called_once_with(False)
+
+    def test_rebuild_open_apps_hides_section_when_apps_list_empty(self):
+        panel = self._panel(open_apps=[])
+
+        panel._rebuild_open_apps()
+
+        panel._open_apps_section.set_visible.assert_called_once_with(False)
+
+    def test_rebuild_open_apps_hides_section_for_malformed_entries(self):
+        panel = self._panel(open_apps=[{"exec": "code"}, {"file": "/f"}])
+
+        panel._rebuild_open_apps()
+
+        panel._open_apps_section.set_visible.assert_called_once_with(False)
+
+    def test_rebuild_open_apps_shows_section_with_valid_entries(self):
+        panel = self._panel(open_apps=[{
+            "exec": "code",
+            "file": "/work/project/main.py",
+            "mode": "standalone",
+        }])
+
+        with patch.object(_GTK_MOCKS["gi.repository.Gtk"], "Box", MagicMock):
+            panel._rebuild_open_apps()
+
+        panel._open_apps_section.set_visible.assert_called_once_with(True)
+        panel._open_apps_box.append.assert_called_once()
+
+    def test_rebuild_open_apps_running_entry_has_no_relaunch_button(self):
+        panel = self._panel(open_apps=[{
+            "exec": "code",
+            "file": "/work/project/main.py",
+            "pid": 12345,
+        }])
+
+        with patch.object(FileTreePanel, "_is_pid_alive", return_value=True), \
+                patch.object(_GTK_MOCKS["gi.repository.Gtk"], "Box", MagicMock), \
+                patch("panels.right_panel.Gtk.Button") as mock_btn_cls:
+            panel._rebuild_open_apps()
+
+        mock_btn_cls.assert_not_called()
+
+    def test_rebuild_open_apps_stale_entry_shows_relaunch_button(self):
+        panel = self._panel(open_apps=[{
+            "exec": "code",
+            "file": "/work/project/main.py",
+            "pid": 12345,
+        }])
+
+        with patch.object(FileTreePanel, "_is_pid_alive", return_value=False), \
+                patch("os.path.exists", return_value=True), \
+                patch.object(_GTK_MOCKS["gi.repository.Gtk"], "Box", MagicMock), \
+                patch("panels.right_panel.Gtk.Button") as mock_btn_cls:
+            panel._rebuild_open_apps()
+
+        mock_btn_cls.assert_called()
+
+    def test_rebuild_open_apps_caps_at_ten_entries(self):
+        apps = [
+            {"exec": "code", "file": f"/work/project/f{i}.py"}
+            for i in range(15)
+        ]
+        panel = self._panel(open_apps=apps)
+
+        with patch.object(_GTK_MOCKS["gi.repository.Gtk"], "Box", MagicMock):
+            panel._rebuild_open_apps()
+
+        self.assertEqual(panel._open_apps_box.append.call_count, 10)
+
+    def test_relaunch_app_calls_on_file_opened_with_pid(self):
+        panel = self._panel(open_apps=[])
+        panel._rebuild_open_apps = MagicMock()
+        events: list = []
+        panel._on_file_opened = lambda *args: events.append(args)
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 7777
+
+        with patch("panels.right_panel.Gtk.Window", object), \
+                patch("panels.right_panel.launch_on_other_monitor", return_value=mock_proc):
+            panel._relaunch_app("code", "/work/project/main.py")
+
+        self.assertEqual(len(events), 1)
+        proj_id, exec_cmd, file_path, pid = events[0]
+        self.assertEqual(proj_id, "proj1")
+        self.assertEqual(exec_cmd, "code")
+        self.assertEqual(pid, 7777)
+        panel._rebuild_open_apps.assert_called_once()
 
 
 if __name__ == "__main__":

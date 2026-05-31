@@ -184,5 +184,39 @@ class TestOllamaClientStreaming(unittest.TestCase):
             self.assertEqual(self.client.list_models(), [])
 
 
+class TestOllamaClientIsReady(unittest.TestCase):
+    """Phase 4a (G5.1) — async Ollama availability check."""
+
+    def setUp(self):
+        self.client = OllamaClient(_make_settings())
+
+    def _run_is_ready(self, urlopen_side_effect):
+        results: list = []
+
+        with patch("urllib.request.urlopen", side_effect=urlopen_side_effect):
+            self.client.is_ready(results.append)
+            import threading
+            for t in threading.enumerate():
+                if t.daemon and t != threading.main_thread():
+                    t.join(timeout=2)
+
+        return results
+
+    def test_returns_true_when_server_responds(self):
+        results = self._run_is_ready(lambda *_, **__: MagicMock())
+        self.assertEqual(results, [True])
+
+    def test_returns_false_when_server_unavailable(self):
+        import urllib.error
+        results = self._run_is_ready(
+            lambda *_: (_ for _ in ()).throw(urllib.error.URLError("refused"))
+        )
+        self.assertEqual(results, [False])
+
+    def test_returns_false_on_generic_error(self):
+        results = self._run_is_ready(lambda *_: (_ for _ in ()).throw(OSError("no route")))
+        self.assertEqual(results, [False])
+
+
 if __name__ == "__main__":
     unittest.main()

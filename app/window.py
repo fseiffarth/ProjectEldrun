@@ -17,13 +17,14 @@ from default_apps_manager import DefaultAppsManager
 from global_apps_manager import GlobalAppsManager, ROLES, select_role_icon
 from network_monitor import NetworkMonitor
 from time_tracker import TimeTracker
-from workspace_manager import WorkspaceManager
+from backends import detect_backend
 from panels.center_panel import CenterPanel, _MASTER_PAGE
 from panels.right_panel import FileTreePanel
 from panels.bottom_panel import BottomPanel
 from ollama_client import OllamaClient
 from eldrun import set_theme
 from downloads_manager import apply_browser_download_dir, update_project_downloads
+import launch_helpers as _launch_helpers
 
 _LEFT_WIDTH = 220
 _HEADER_HEIGHT = 40
@@ -58,12 +59,14 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.settings_manager = SettingsManager()
         self.default_apps_manager = DefaultAppsManager()
         self._time_tracker = TimeTracker()
-        self._workspace_manager = WorkspaceManager()
-        atexit.register(self._workspace_manager.release_all)
+        self._project_space_backend = detect_backend()
+        atexit.register(self._project_space_backend.cleanup)
         self._global_apps_manager = GlobalAppsManager(self.settings_manager)
         self._ollama_client = OllamaClient(self.settings_manager)
         self._ollama_proc = None
-        set_theme(self.settings_manager.get("color_scheme"))
+        initial_scheme = self.settings_manager.get("color_scheme") or "dark"
+        set_theme(initial_scheme)
+        _launch_helpers.set_dark_mode("dark" in str(initial_scheme))
         from eldrun import set_debug
         set_debug(bool(self.settings_manager.get("debug")))
         GLib.idle_add(self._bootstrap_default_apps)
@@ -78,6 +81,8 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._network_monitor = NetworkMonitor(self._on_network_status_changed)
         GLib.timeout_add(60_000, self._on_time_tick)
         GLib.timeout_add_seconds(30, self._update_clock)
+        GLib.timeout_add(10_000, self._poll_ollama_status)
+        GLib.idle_add(self._check_ollama_once)
 
         self.connect("destroy", self._on_destroy)
         self.connect("close-request", self._on_close_request)
@@ -85,7 +90,7 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _on_destroy(self, _win):
         self.project_manager.set_all_inactive()
         if self._wm_enabled:
-            self._workspace_manager.release_all()
+            self._project_space_backend.cleanup()
         if self._ollama_proc is not None:
             try:
                 self._ollama_proc.terminate()
@@ -164,7 +169,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         box.append(heading)
 
         lines = ["All open project terminals will be closed."]
-        if self._wm_enabled and self._workspace_manager._project_windows:
+        if self._wm_enabled and self._project_space_backend.has_managed_windows():
             lines.append(
                 "Apps on the hidden workspace will be moved to the default workspace."
             )
@@ -296,6 +301,13 @@ class EldrunWindow(Adw.ApplicationWindow):
         self._conn_icon.add_css_class("conn-type-label")
         self._conn_icon.set_visible(False)
         left_status.append(self._conn_icon)
+
+        self._ollama_lamp = Gtk.Label(label="●")
+        self._ollama_lamp.add_css_class("status-lamp")
+        self._ollama_lamp.add_css_class("status-offline")
+        self._ollama_lamp.set_tooltip_text("Ollama: offline")
+        self._ollama_lamp.set_valign(Gtk.Align.CENTER)
+        left_status.append(self._ollama_lamp)
 
         from eldrun import __version__
         version_stack = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -454,6 +466,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_page_changed=self._on_center_page_changed,
             settings_manager=self.settings_manager,
             ollama_client=self._ollama_client,
+            global_apps_manager=self._global_apps_manager,
         )
         self._center_panel.set_hexpand(True)
         self._center_panel.set_vexpand(True)
@@ -470,6 +483,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             on_context_menu_open_changed=self._on_file_tree_context_menu_open_changed,
             ollama_client=self._ollama_client,
             on_file_opened=self._on_file_opened,
+            project_manager=self.project_manager,
         )
         self._file_tree_panel.set_valign(Gtk.Align.FILL)
         self._file_tree_panel.set_margin_bottom(0)
@@ -646,13 +660,18 @@ class EldrunWindow(Adw.ApplicationWindow):
         if self._wm_enabled:
             GLib.idle_add(self._setup_workspaces)
         if current_id:
-            GLib.idle_add(self._restore_project_apps, current_id)
+            # Delay until after GTK4's initial frame-clock rendering cycle.
+            # Calling get_monitor_at_surface() from the first idle callback can
+            # re-enter the main loop via gdk_display_sync(), firing the frame
+            # clock before layout is complete and causing a SIGSEGV.
+            GLib.timeout_add(500, self._restore_project_apps, current_id)
+        GLib.idle_add(self._suggest_startup_projects)
 
     # ── workspace management ──────────────────────────────────────────────────
 
     def _setup_workspaces(self) -> bool:
         """Ensure two named workspaces exist: workspace 0 (current) and 1 (hidden)."""
-        self._workspace_manager.setup_two_workspaces()
+        self._project_space_backend.prepare()
         return False
 
     def _switch_project_workspace(self, old_project_id: str | None, new_project_id: str):
@@ -661,19 +680,26 @@ class EldrunWindow(Adw.ApplicationWindow):
             return
         xid = self._get_own_xid()
         protected = self._global_apps_manager.get_exec_names()
-        self._workspace_manager.switch_project(old_project_id, new_project_id, xid, protected)
+        self._project_space_backend.activate_project(
+            new_project_id, old_project_id,
+            eldrun_xid=xid, protected_names=protected,
+        )
 
     # ── open apps (per-project file tracking) ────────────────────────────────
 
-    def _on_file_opened(self, project_id: str, exec_cmd: str, file_path: str):
+    def _on_file_opened(self, project_id: str, exec_cmd: str, file_path: str,
+                        pid: int | None = None):
         """Callback from the file tree when a file is opened with an external app."""
-        self.project_manager.add_open_app(project_id, exec_cmd, file_path)
+        self.project_manager.add_open_app(project_id, exec_cmd, file_path, pid=pid)
 
     def _restore_project_apps(self, project_id: str) -> bool:
-        """Re-launch saved open apps for the given project at startup."""
+        """Re-launch saved standalone open apps for the given project at startup."""
         from launch_helpers import launch_on_other_monitor
         apps = self.project_manager.get_open_apps(project_id)
         for app in apps:
+            mode = app.get("mode") or "standalone"
+            if mode != "standalone":
+                continue
             exec_cmd = app.get("exec")
             file_path = app.get("file")
             if exec_cmd and file_path and os.path.exists(file_path):
@@ -805,6 +831,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         self.settings_manager.set("color_scheme", scheme)
         self._center_panel.apply_theme(scheme)
         self._file_tree_panel.apply_theme(scheme)
+        _launch_helpers.set_dark_mode("dark" in scheme)
 
     def _on_debug_toggled(self, enabled: bool):
         from eldrun import set_debug
@@ -816,7 +843,7 @@ class EldrunWindow(Adw.ApplicationWindow):
         if enabled:
             GLib.idle_add(self._setup_workspaces)
         else:
-            self._workspace_manager.release_all()
+            self._project_space_backend.cleanup()
 
     def _on_terminal_changed(self):
         if hasattr(self._center_panel, "respawn_all"):
@@ -885,7 +912,7 @@ class EldrunWindow(Adw.ApplicationWindow):
             self._center_panel.remove_project_terminal(project_id)
         self.project_manager.deactivate_project(project_id)
         if self._wm_enabled:
-            self._workspace_manager.on_project_closed(project_id)
+            self._project_space_backend.close_project(project_id)
         if was_active:
             self._active_project_id = None
             self._on_root_clicked()
@@ -1101,3 +1128,73 @@ class EldrunWindow(Adw.ApplicationWindow):
     def _refresh_time_bars(self):
         totals = self._time_tracker.get_today_totals()
         self._bottom_panel.update_time_bars(totals)
+
+    # ── Ollama status (G5.1) ──────────────────────────────────────────────────
+
+    def _check_ollama_once(self) -> bool:
+        self._ollama_client.is_ready(self._on_ollama_status)
+        return False
+
+    def _poll_ollama_status(self) -> bool:
+        self._ollama_client.is_ready(self._on_ollama_status)
+        return True
+
+    def _on_ollama_status(self, ready: bool):
+        lamp = self._ollama_lamp
+        if ready:
+            lamp.remove_css_class("status-offline")
+            lamp.add_css_class("status-online")
+            lamp.set_tooltip_text("Ollama: ready")
+        else:
+            lamp.remove_css_class("status-online")
+            lamp.add_css_class("status-offline")
+            lamp.set_tooltip_text("Ollama: offline")
+
+    # ── Startup project suggestions (G5.6) ────────────────────────────────────
+
+    def _suggest_startup_projects(self) -> bool:
+        """Ask Ollama which projects the user is most likely continuing today."""
+        visible = self.project_manager.get_visible_projects()
+        if not visible or not self._ollama_client:
+            return False
+
+        import subprocess as _sp
+        import datetime as _dt
+
+        git_summaries = []
+        for p in visible[:5]:
+            d = p.get("directory", "")
+            if not d:
+                continue
+            try:
+                r = _sp.run(
+                    ["git", "log", "--oneline", "-5"],
+                    cwd=d, capture_output=True, text=True, timeout=3,
+                )
+                if r.stdout.strip():
+                    git_summaries.append(f"{p['name']}:\n{r.stdout.strip()}")
+            except Exception:
+                pass
+
+        if not git_summaries:
+            return False
+
+        today = _dt.datetime.now().strftime("%A, %B %d %Y")
+        prompt = (
+            f"Today is {today}. Based on recent git activity, which 1-2 projects "
+            f"is the user most likely continuing?\n\n"
+            + "\n\n".join(git_summaries)
+            + "\n\nList only project names, one per line."
+        )
+
+        def on_done():
+            pass
+
+        def on_chunk(text):
+            pass
+
+        def on_error(_msg):
+            pass
+
+        self._ollama_client.ask(prompt, on_chunk, on_done, on_error)
+        return False

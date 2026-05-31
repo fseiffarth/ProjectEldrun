@@ -88,7 +88,8 @@ def _human_size(n: int) -> str:
 class FileTreePanel(Gtk.Box):
     def __init__(self, center_panel=None, default_apps_manager=None,
                  settings_manager=None, on_context_menu_open_changed=None,
-                 ollama_client=None, on_file_opened=None):
+                 ollama_client=None, on_file_opened=None,
+                 project_manager=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("panel-right")
         self.set_size_request(220, -1)
@@ -98,6 +99,7 @@ class FileTreePanel(Gtk.Box):
         self._on_context_menu_open_changed = on_context_menu_open_changed
         self._ollama_client = ollama_client
         self._on_file_opened = on_file_opened  # callback(project_id, exec_cmd, file_path)
+        self._pm = project_manager
         self._color_scheme = _normalize_theme(
             settings_manager.get("color_scheme") if settings_manager else "dark"
         )
@@ -199,6 +201,34 @@ class FileTreePanel(Gtk.Box):
         self._proj_stack.add_named(tree_scrolled, "tree")
         self._proj_stack.set_visible_child_name("placeholder")
         self.append(self._proj_stack)
+
+        # ── open apps section (G4.4) ─────────────────────────────────────────
+        sep_apps = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        sep_apps.set_margin_top(4)
+
+        open_apps_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        open_apps_hdr.set_margin_start(8)
+        open_apps_hdr.set_margin_top(6)
+        open_apps_hdr.set_margin_bottom(4)
+        open_apps_hdr.set_margin_end(8)
+
+        open_apps_lbl = Gtk.Label(label="OPEN APPS")
+        open_apps_lbl.get_style_context().add_class("panel-header")
+        open_apps_lbl.set_xalign(0)
+        open_apps_lbl.set_hexpand(True)
+        open_apps_hdr.append(open_apps_lbl)
+
+        self._open_apps_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self._open_apps_box.set_margin_start(8)
+        self._open_apps_box.set_margin_end(8)
+        self._open_apps_box.set_margin_bottom(8)
+
+        self._open_apps_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._open_apps_section.append(sep_apps)
+        self._open_apps_section.append(open_apps_hdr)
+        self._open_apps_section.append(self._open_apps_box)
+        self._open_apps_section.set_visible(False)
+        self.append(self._open_apps_section)
 
     # ── file-tree colors ──────────────────────────────────────────────────────
 
@@ -344,6 +374,95 @@ class FileTreePanel(Gtk.Box):
         cache[key] = icon
         return icon
 
+    # ── open apps (G4.4) ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
+        """Return True if the process with the given PID is still running."""
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    def _rebuild_open_apps(self):
+        """Rebuild the open-apps list from the current project's open_apps metadata."""
+        child = self._open_apps_box.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self._open_apps_box.remove(child)
+            child = nxt
+
+        if self._current_project is None:
+            self._open_apps_section.set_visible(False)
+            return
+
+        apps = self._current_project.get("open_apps", [])
+        if not isinstance(apps, list):
+            apps = []
+
+        visible = [
+            a for a in apps[:10]
+            if isinstance(a, dict) and a.get("exec") and a.get("file")
+        ]
+        if not visible:
+            self._open_apps_section.set_visible(False)
+            return
+
+        self._open_apps_section.set_visible(True)
+        for entry in visible:
+            exec_cmd = entry["exec"]
+            file_path = entry["file"]
+            pid = entry.get("pid")
+            is_running = self._is_pid_alive(pid) if pid else False
+
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            row.set_margin_top(2)
+            row.set_margin_start(2)
+            row.set_margin_end(2)
+
+            status_lbl = Gtk.Label(label="●" if is_running else "○")
+            status_lbl.set_valign(Gtk.Align.CENTER)
+            status_lbl.add_css_class("status-online" if is_running else "status-offline")
+            row.append(status_lbl)
+
+            name_lbl = Gtk.Label(label=os.path.basename(file_path))
+            name_lbl.set_xalign(0)
+            name_lbl.set_hexpand(True)
+            name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+            name_lbl.set_max_width_chars(14)
+            name_lbl.set_valign(Gtk.Align.CENTER)
+            name_lbl.set_tooltip_text(
+                f"{file_path}\n(via {os.path.basename(exec_cmd)})"
+            )
+            row.append(name_lbl)
+
+            if not is_running and os.path.exists(file_path):
+                btn = Gtk.Button(label="↺")
+                btn.add_css_class("flat")
+                btn.set_valign(Gtk.Align.CENTER)
+                btn.set_tooltip_text("Relaunch")
+                btn.connect(
+                    "clicked",
+                    lambda _, e=exec_cmd, f=file_path: self._relaunch_app(e, f),
+                )
+                row.append(btn)
+
+            self._open_apps_box.append(row)
+
+    def _relaunch_app(self, exec_cmd: str, file_path: str):
+        """Relaunch a stale open-app entry and update its recorded PID."""
+        project_id = self._current_project.get("id") if self._current_project else None
+        project_dir = self._current_project.get("directory") if self._current_project else None
+        launched = self._launch_and_track(
+            [exec_cmd, file_path], project_dir or os.path.dirname(file_path)
+        )
+        if launched is not None and self._on_file_opened and project_id:
+            self._on_file_opened(
+                project_id, exec_cmd, file_path, getattr(launched, "pid", None)
+            )
+        self._rebuild_open_apps()
+
     # ── project update ────────────────────────────────────────────────────────
 
     def update_project(self, project: dict | None):
@@ -360,15 +479,18 @@ class FileTreePanel(Gtk.Box):
             self._proj_stack.set_visible_child_name("tree")
             self._rebuild_file_tree()
             self._load_colors()
+            self._rebuild_open_apps()
             self._tree_refresh_source = GLib.timeout_add(5000, self._on_tree_tick)
         else:
             self._file_store.clear()
             self._proj_stack.set_visible_child_name("placeholder")
+            self._rebuild_open_apps()
 
     # ── project file tree ─────────────────────────────────────────────────────
 
     def _on_tree_tick(self) -> bool:
         self._rebuild_file_tree()
+        self._rebuild_open_apps()
         return True
 
     def _rebuild_file_tree(self):
@@ -599,7 +721,15 @@ class FileTreePanel(Gtk.Box):
         anchor_window = root if isinstance(root, Gtk.Window) else None
         return launch_on_other_monitor(argv, cwd=cwd, anchor_window=anchor_window)
 
+    _URL_FILE_EXTS = frozenset({".url", ".webloc"})
+
     def _open_file(self, path: str):
+        # .url / .webloc shortcut files go through xdg-open so the system
+        # browser picks them up regardless of which global app role is set.
+        if pathlib.Path(path).suffix.lower() in self._URL_FILE_EXTS:
+            self._launch_and_track(["xdg-open", path], None)
+            return
+
         project_dir = self._current_project.get("directory") if self._current_project else None
         project_id = self._current_project.get("id") if self._current_project else None
         app = None
@@ -613,12 +743,16 @@ class FileTreePanel(Gtk.Box):
             launched = self._launch_and_track([app, path], project_dir or os.path.dirname(path))
             if launched is not None:
                 if self._on_file_opened and project_id:
-                    self._on_file_opened(project_id, app, path)
+                    self._on_file_opened(
+                        project_id, app, path, getattr(launched, "pid", None)
+                    )
                 return
             launched = self._launch_and_track(["xdg-open", path], None)
             if launched is not None:
                 if self._on_file_opened and project_id:
-                    self._on_file_opened(project_id, "xdg-open", path)
+                    self._on_file_opened(
+                        project_id, "xdg-open", path, getattr(launched, "pid", None)
+                    )
                 return
             self._show_choose_app_dialog(path)
             return
@@ -697,7 +831,13 @@ class FileTreePanel(Gtk.Box):
             elif save_global.get_active() and self._dam and ext:
                 self._dam.set_global_app(ext, cmd)
                 self._refresh_default_app_icons()
-            self._launch_and_track([cmd, path], project_dir or os.path.dirname(path))
+            launched = self._launch_and_track([cmd, path], project_dir or os.path.dirname(path))
+            if launched is not None and self._on_file_opened and self._current_project:
+                p_id = self._current_project.get("id")
+                if p_id:
+                    self._on_file_opened(
+                        p_id, cmd, path, getattr(launched, "pid", None)
+                    )
             win.close()
 
         open_btn.connect("clicked", on_open)
@@ -885,9 +1025,11 @@ class FileTreePanel(Gtk.Box):
             return
         filename = os.path.basename(path)
         root = self.get_root()
+        model = self._current_project.get("ollama_model") if self._current_project else None
         from ollama_dialog import OllamaDialog
         dlg = OllamaDialog(root, self._ollama_client,
-                           initial_prompt=f"About {filename}: ")
+                           initial_prompt=f"About {filename}: ",
+                           model=model or None)
         dlg.present()
 
     def _rename_dialog(self, path: str):
@@ -1048,6 +1190,30 @@ class FileTreePanel(Gtk.Box):
         hidden_sw.connect("notify::active", _on_hidden_toggled)
         hidden_row.append(hidden_sw)
         outer.append(hidden_row)
+
+        outer.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # Per-project Ollama model (G5.2)
+        model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        model_lbl = Gtk.Label(label="Local AI model")
+        model_lbl.set_hexpand(True)
+        model_lbl.set_xalign(0)
+        model_row.append(model_lbl)
+        model_entry = Gtk.Entry()
+        model_entry.set_text(project.get("ollama_model", ""))
+        model_entry.set_placeholder_text("e.g. mistral (overrides global)")
+        model_entry.set_width_chars(20)
+
+        def _save_model(_w=None):
+            m = model_entry.get_text().strip()
+            project["ollama_model"] = m
+            if self._pm is not None:
+                self._pm._save_local(project)
+
+        model_entry.connect("activate", _save_model)
+        model_entry.connect("focus-out-event", _save_model)
+        model_row.append(model_entry)
+        outer.append(model_row)
 
         outer.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 

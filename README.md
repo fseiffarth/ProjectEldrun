@@ -59,6 +59,10 @@ sudo apt install python3 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 \
 pip3 install --user python-xlib
 ```
 
+For KDE Plasma sessions, workspace management uses `dbus-send` (part of
+`dbus-x11`) and optionally `gdbus` (`libglib2.0-bin`). No additional Python
+packages are required.
+
 ## Run
 
 ```bash
@@ -126,8 +130,10 @@ can always be used manually in a plain shell tab.
 | Platform | Status | Notes |
 |----------|--------|-------|
 | **Linux — X11 / Cinnamon** | Yes | Fully supported and primary development target. |
+| **Linux — X11 / KDE Plasma** | Yes | Supported via KDE DBus + Xlib EWMH. Live-session QA pending before 0.2.0. |
+| **Linux — Wayland / KDE Plasma** | Yes | Supported via KWin JS scripting + DBus. KDE 5 Wayland window enumeration is best-effort; KDE 6 is full. |
 | **Linux — X11 / GNOME** | Untested | Expected to work; workspace integration may behave differently. |
-| **Linux — Wayland** | No | X11 is required for app-window embedding, launch-or-raise, sticky windows, and workspace control. |
+| **Linux — Wayland (non-KDE)** | No | Workspace, sticky-window, and embedding paths rely on X11/EWMH. |
 | **Windows** | No | GTK4/VTE stack not supported. |
 | **macOS** | No | GTK4/VTE stack not supported. |
 
@@ -169,10 +175,10 @@ can always be used manually in a plain shell tab.
   summaries into project metadata, and shows stats on project pills.
 - **Network indicator**: probes connectivity and shows online/offline plus wired
   or wireless state.
-- **Workspace management**: optional Cinnamon, GNOME, or `wmctrl` integration can
-  maintain a visible project workspace plus a hidden parking workspace; project
-  windows are moved between them on switch, while global app windows stay
-  cross-project.
+- **Workspace management**: optional workspace backend (KDE Plasma, Cinnamon,
+  GNOME, or `wmctrl`) can maintain a visible project workspace plus a hidden
+  parking workspace; project windows are moved between them on switch, while
+  global app windows stay cross-project.
 - **Themes and keyboard controls**: settings include Dark, Bright, Fancy Dark,
   Fancy Bright, terminal command, global apps, file-type defaults, and workspace
   management. `F11` toggles fullscreen and `Super` toggles panel visibility.
@@ -185,8 +191,9 @@ can always be used manually in a plain shell tab.
   control are best-effort and need live desktop-session validation.
 - Open-app metadata is stored per project, but robust restart restore,
   geometry/layout restore, and primary-window focus are not complete.
-- Wayland does not support the current window manipulation and embedding paths;
-  compositor-specific backends are future work.
+- KDE Wayland workspace management is implemented. For non-KDE Wayland
+  compositors, workspace switching, sticky-window state, launch-or-raise, and
+  app embedding are not yet available.
 
 ## Project Storage
 

@@ -165,5 +165,72 @@ class TestGlobalAppsLaunch(unittest.TestCase):
         timeout_add.assert_called_once_with(500, manager._poll_and_sticky, 1234, 10)
 
 
+class TestLaunchRoleForUri(unittest.TestCase):
+    """Phase 5a (G6.7) — URI scheme routing through global app roles."""
+
+    def _manager(self, browser="/usr/bin/firefox", mail=None, calendar=None):
+        settings = MemorySettings({
+            "global_apps": {
+                "browser": {"exec": browser, "visible": True} if browser else {},
+                "mail":    {"exec": mail,    "visible": True} if mail    else {},
+                "calendar":{"exec": calendar,"visible": True} if calendar else {},
+            },
+        })
+        return gam.GlobalAppsManager(settings)
+
+    def test_http_launches_browser(self):
+        manager = self._manager(browser="/usr/bin/firefox")
+        with patch("global_apps_manager.launch_on_other_monitor") as launch:
+            result = manager.launch_role_for_uri("http", "http://example.com")
+        self.assertTrue(result)
+        launch.assert_called_once_with(
+            ["/usr/bin/firefox", "http://example.com"], anchor_window=None
+        )
+
+    def test_https_launches_browser(self):
+        manager = self._manager(browser="/usr/bin/firefox")
+        with patch("global_apps_manager.launch_on_other_monitor") as launch:
+            result = manager.launch_role_for_uri("https", "https://example.com")
+        self.assertTrue(result)
+        launch.assert_called_once()
+
+    def test_mailto_launches_mail_client(self):
+        manager = self._manager(mail="/usr/bin/thunderbird")
+        with patch("global_apps_manager.launch_on_other_monitor") as launch:
+            result = manager.launch_role_for_uri("mailto", "mailto:user@example.com")
+        self.assertTrue(result)
+        launch.assert_called_once_with(
+            ["/usr/bin/thunderbird", "mailto:user@example.com"], anchor_window=None
+        )
+
+    def test_webcal_launches_calendar(self):
+        manager = self._manager(calendar="/usr/bin/gnome-calendar")
+        with patch("global_apps_manager.launch_on_other_monitor") as launch:
+            result = manager.launch_role_for_uri("webcal", "webcal://cal.example.com")
+        self.assertTrue(result)
+        launch.assert_called_once()
+
+    def test_unknown_scheme_returns_false(self):
+        manager = self._manager()
+        with patch("global_apps_manager.launch_on_other_monitor") as launch:
+            result = manager.launch_role_for_uri("ftp", "ftp://files.example.com")
+        self.assertFalse(result)
+        launch.assert_not_called()
+
+    def test_no_exec_returns_false(self):
+        manager = self._manager(browser=None)
+        with patch("global_apps_manager.launch_on_other_monitor") as launch:
+            result = manager.launch_role_for_uri("http", "http://example.com")
+        self.assertFalse(result)
+        launch.assert_not_called()
+
+    def test_scheme_matching_is_case_insensitive(self):
+        manager = self._manager(browser="/usr/bin/firefox")
+        with patch("global_apps_manager.launch_on_other_monitor") as launch:
+            result = manager.launch_role_for_uri("HTTP", "http://example.com")
+        self.assertTrue(result)
+        launch.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

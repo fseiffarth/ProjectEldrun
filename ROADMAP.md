@@ -53,9 +53,12 @@ tasks live in `TODO.md`; current status and validation notes live in
 ## Platform Direction
 
 - X11 remains the supported target for embedding, launch-or-raise, sticky
-  windows, and workspace control.
-- Wayland support should be treated as a separate design effort, not a small
-  compatibility fix, because the current implementation depends on X11/EWMH
-  primitives.
+  windows, and full workspace control.
+- KDE Plasma (X11 and Wayland) now has a first-class backend. KDE Wayland
+  virtual desktop isolation is implemented; live-session QA is needed before
+  the 0.2.0 version bump.
+- For non-KDE Wayland compositors (Sway, Hyprland, GNOME on Wayland), workspace
+  switching, sticky-window state, launch-or-raise, and app embedding are not yet
+  implemented — each would require a compositor-specific backend.
 - Cross-platform Windows/macOS support is out of scope for the current GTK/VTE
   architecture.

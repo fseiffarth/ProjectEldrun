@@ -58,6 +58,19 @@ class OllamaDialog(Gtk.Window):
         scrolled.set_child(self._response_view)
         outer.append(scrolled)
 
+        # Local AI privacy badge (G5.3)
+        badge_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        badge_row.set_halign(Gtk.Align.START)
+        lock_icon = Gtk.Image.new_from_icon_name("security-high-symbolic")
+        lock_icon.set_pixel_size(12)
+        lock_icon.set_valign(Gtk.Align.CENTER)
+        badge_row.append(lock_icon)
+        badge_lbl = Gtk.Label(label="Local AI — responses stay on this device")
+        badge_lbl.add_css_class("dim-label")
+        badge_lbl.set_valign(Gtk.Align.CENTER)
+        badge_row.append(badge_lbl)
+        outer.append(badge_row)
+
         self.set_child(outer)
 
         key_ctrl = Gtk.EventControllerKey()

@@ -11,6 +11,15 @@ import subprocess
 import threading
 import time
 
+# GTK_THEME propagation (G3.2): set once at theme-change time via set_dark_mode().
+_dark_mode: bool = True
+
+
+def set_dark_mode(dark: bool) -> None:
+    """Update the GTK_THEME env injected into all subsequently launched apps."""
+    global _dark_mode
+    _dark_mode = dark
+
 
 def _display_and_gdk():
     import gi
@@ -204,8 +213,16 @@ def launch_on_other_monitor(argv: list[str], cwd: str | None = None,
         except Exception:
             baseline = set()
 
+    env = None
     try:
-        proc = subprocess.Popen(argv, cwd=cwd)
+        import os as _os
+        env = _os.environ.copy()
+        env["GTK_THEME"] = "Adwaita:dark" if _dark_mode else "Adwaita"
+    except Exception:
+        env = None
+
+    try:
+        proc = subprocess.Popen(argv, cwd=cwd, env=env)
     except OSError:
         return None
 

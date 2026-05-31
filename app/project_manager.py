@@ -4,6 +4,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -650,7 +651,8 @@ class ProjectManager:
         project["agent_tasks"] = tasks
         self._save_local(project)
 
-    def add_open_app(self, project_id: str, exec_cmd: str, file_path: str):
+    def add_open_app(self, project_id: str, exec_cmd: str, file_path: str,
+                     pid: int | None = None, mode: str = "standalone"):
         """Record that a file was opened with exec_cmd for this project."""
         project = self.get_project(project_id)
         if project is None or not exec_cmd or not file_path:
@@ -661,7 +663,15 @@ class ProjectManager:
         # De-duplicate by (exec, file) pair; keep the most recent at the front
         apps = [a for a in apps
                 if not (a.get("exec") == exec_cmd and a.get("file") == file_path)]
-        apps.insert(0, {"exec": exec_cmd, "file": file_path})
+        entry: dict = {
+            "exec": exec_cmd,
+            "file": file_path,
+            "mode": mode,
+            "opened_at": time.time(),
+        }
+        if pid is not None:
+            entry["pid"] = pid
+        apps.insert(0, entry)
         project["open_apps"] = apps[:50]
         self._save_local(project)
 

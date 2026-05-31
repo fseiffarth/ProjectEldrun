@@ -99,5 +99,51 @@ class TestLaunchHelperMonitorSelection(unittest.TestCase):
         self.assertEqual((geom.x, geom.y, geom.width, geom.height), (0, 0, 1920, 1080))
 
 
+class TestGtkThemeInjection(unittest.TestCase):
+    """Phase 2c (G3.2) — GTK_THEME propagation into launched apps."""
+
+    def setUp(self):
+        # Reset to known state before each test
+        lh._dark_mode = True
+
+    def test_set_dark_mode_true(self):
+        lh.set_dark_mode(True)
+        self.assertTrue(lh._dark_mode)
+
+    def test_set_dark_mode_false(self):
+        lh.set_dark_mode(False)
+        self.assertFalse(lh._dark_mode)
+
+    def test_launch_injects_dark_theme_env(self):
+        lh.set_dark_mode(True)
+        launched_envs: list = []
+
+        def fake_popen(argv, cwd=None, env=None):
+            launched_envs.append(env)
+            raise OSError("no real launch")
+
+        with patch.object(lh, "get_other_monitor_geometry", return_value=None), \
+                patch("subprocess.Popen", side_effect=fake_popen):
+            lh.launch_on_other_monitor(["echo", "hi"])
+
+        self.assertEqual(len(launched_envs), 1)
+        self.assertEqual(launched_envs[0]["GTK_THEME"], "Adwaita:dark")
+
+    def test_launch_injects_light_theme_env(self):
+        lh.set_dark_mode(False)
+        launched_envs: list = []
+
+        def fake_popen(argv, cwd=None, env=None):
+            launched_envs.append(env)
+            raise OSError("no real launch")
+
+        with patch.object(lh, "get_other_monitor_geometry", return_value=None), \
+                patch("subprocess.Popen", side_effect=fake_popen):
+            lh.launch_on_other_monitor(["echo", "hi"])
+
+        self.assertEqual(len(launched_envs), 1)
+        self.assertEqual(launched_envs[0]["GTK_THEME"], "Adwaita")
+
+
 if __name__ == "__main__":
     unittest.main()
