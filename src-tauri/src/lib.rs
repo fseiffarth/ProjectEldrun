@@ -4,15 +4,18 @@ pub mod storage;
 pub mod terminal;
 
 use std::sync::{Arc, Mutex};
+use commands::apps::{WindowRegistry, WindowRegistryState};
 use commands::terminal::RegistryState;
 use terminal::PtyRegistry;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let registry: RegistryState = Arc::new(Mutex::new(PtyRegistry::default()));
+    let pty_registry: RegistryState = Arc::new(Mutex::new(PtyRegistry::default()));
+    let win_registry: WindowRegistryState = Arc::new(Mutex::new(WindowRegistry::default()));
 
     tauri::Builder::default()
-        .manage(registry)
+        .manage(pty_registry)
+        .manage(win_registry)
         .invoke_handler(tauri::generate_handler![
             // Settings
             commands::settings::get_settings,
@@ -35,6 +38,13 @@ pub fn run() {
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
             commands::terminal::pty_kill,
+            // External apps / window tracking
+            commands::apps::launch_app,
+            commands::apps::open_file,
+            commands::apps::list_tracked_windows,
+            commands::apps::untrack_window,
+            commands::apps::check_pid_alive,
+            commands::apps::restore_open_apps,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

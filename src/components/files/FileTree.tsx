@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useWindowsStore } from "../../stores/windows";
 
 interface FileEntry {
   name: string;
@@ -20,6 +21,7 @@ export function FileTree({ projectDir, showHidden = false }: Props) {
   const [relPath, setRelPath] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { openFile } = useWindowsStore();
 
   useEffect(() => {
     if (!projectDir) return;
@@ -50,8 +52,10 @@ export function FileTree({ projectDir, showHidden = false }: Props) {
     if (entry.is_dir) {
       const rel = relPath ? `${relPath}/${entry.name}` : entry.name;
       load(rel);
+    } else {
+      // Open file via default app (xdg-open fallback).
+      openFile(entry.path).catch(console.error);
     }
-    // File open handled by parent via default apps in Phase 6.
   }
 
   function goUp() {
