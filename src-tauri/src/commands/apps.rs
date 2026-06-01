@@ -27,7 +27,9 @@ pub struct TrackedWindow {
     pub project_id: Option<String>,
     pub role: Option<String>,
     pub opened_at: f64,
-    pub window_id: Option<u32>,
+    pub window_id: Option<u64>,
+    #[serde(default = "default_window_origin")]
+    pub origin: String,
 }
 
 #[derive(Default)]
@@ -37,6 +39,34 @@ pub struct WindowRegistry {
 
 pub type WindowRegistryState = Arc<Mutex<WindowRegistry>>;
 
+pub const ORIGIN_RIGHT_FILE_TREE: &str = "right_file_tree";
+pub const ORIGIN_MIDDLE_FILE_BROWSER: &str = "middle_file_browser";
+pub const ORIGIN_GLOBAL_APP: &str = "global_app";
+pub const ORIGIN_MANUAL_LAUNCH: &str = "manual_launch";
+pub const ORIGIN_RESTORED: &str = "restored";
+
+fn default_window_origin() -> String {
+    ORIGIN_MANUAL_LAUNCH.to_string()
+}
+
+pub fn is_project_opened_window(window: &TrackedWindow) -> bool {
+    matches!(
+        window.origin.as_str(),
+        ORIGIN_RIGHT_FILE_TREE | ORIGIN_MIDDLE_FILE_BROWSER
+    )
+}
+
+pub fn opened_windows_for_project<'a>(
+    windows: impl Iterator<Item = &'a TrackedWindow>,
+    project_id: Option<&str>,
+) -> Vec<TrackedWindow> {
+    windows
+        .filter(|window| window.project_id.as_deref() == project_id)
+        .filter(|window| is_project_opened_window(window))
+        .cloned()
+        .collect()
+}
+
 // ── Core launch helper ────────────────────────────────────────────────────
 
 fn do_launch(
@@ -45,6 +75,7 @@ fn do_launch(
     file: Option<&str>,
     project_id: Option<&str>,
     role: Option<&str>,
+    origin: &str,
 ) -> Result<TrackedWindow, String> {
     let mut cmd = Command::new(exec);
     if let Some(f) = file {
@@ -74,6 +105,7 @@ fn do_launch(
         role: role.map(String::from),
         opened_at,
         window_id,
+        origin: origin.to_string(),
     };
     registry.lock().unwrap().windows.insert(id, win.clone());
     Ok(win)
@@ -88,13 +120,22 @@ pub fn launch_app(
     file: Option<String>,
     project_id: Option<String>,
     role: Option<String>,
+    origin: Option<String>,
 ) -> Result<TrackedWindow, String> {
+    let origin = origin.unwrap_or_else(|| {
+        if role.is_some() {
+            ORIGIN_GLOBAL_APP.to_string()
+        } else {
+            ORIGIN_MANUAL_LAUNCH.to_string()
+        }
+    });
     do_launch(
         registry.inner(),
         &exec,
         file.as_deref(),
         project_id.as_deref(),
         role.as_deref(),
+        &origin,
     )
 }
 
@@ -152,8 +193,10 @@ pub fn open_file(
     path: String,
     handler: Option<String>,
     project_id: Option<String>,
+    origin: Option<String>,
 ) -> Result<TrackedWindow, String> {
-    let before = list_x11_window_ids();
+    let origin = origin.unwrap_or_else(|| ORIGIN_MANUAL_LAUNCH.to_string());
+    let before = list_window_ids();
     if let Some(exec) = handler {
         let child = Command::new(&exec)
             .arg(&path)
@@ -163,7 +206,7 @@ pub fn open_file(
             .spawn()
             .map_err(|e| format!("open with {exec}: {e}"))?;
         let pid = child.id();
-        let window_id = find_window_for_pid(pid, 20).or_else(|| find_new_x11_window(&before, 20));
+        let window_id = find_window_for_pid(pid, 20).or_else(|| find_new_window(&before, 20));
         return track_opened_file(
             registry.inner(),
             exec,
@@ -171,10 +214,11 @@ pub fn open_file(
             pid,
             project_id,
             window_id,
+            origin,
         );
     }
     opener::open(&path).map_err(|e| e.to_string())?;
-    let window_id = find_new_x11_window(&before, 20);
+    let window_id = find_new_window(&before, 20);
     track_opened_file(
         registry.inner(),
         "open-file".to_string(),
@@ -182,6 +226,7 @@ pub fn open_file(
         0,
         project_id,
         window_id,
+        origin,
     )
 }
 
@@ -389,6 +434,7 @@ pub fn restore_open_apps(
             app.file.as_deref(),
             Some(&project_id),
             None,
+            ORIGIN_RESTORED,
         ) {
             launched.push(win);
         }
@@ -402,13 +448,14 @@ fn track_opened_file(
     path: String,
     pid: u32,
     project_id: Option<String>,
-    window_id: Option<u32>,
+    window_id: Option<u64>,
+    origin: String,
 ) -> Result<TrackedWindow, String> {
     let opened_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64();
-    let id_suffix = window_id.unwrap_or(pid);
+    let id_suffix = window_id.unwrap_or(pid as u64);
     let id = format!("file-{id_suffix}-{opened_at:.0}");
     let win = TrackedWindow {
         id: id.clone(),
@@ -419,29 +466,35 @@ fn track_opened_file(
         role: None,
         opened_at,
         window_id,
+        origin,
     };
     registry.lock().unwrap().windows.insert(id, win.clone());
     Ok(win)
 }
 
 #[cfg(target_os = "linux")]
-fn list_x11_window_ids() -> Vec<u32> {
+fn list_window_ids() -> Vec<u64> {
     x11_client_windows()
-        .map(|windows| windows.into_iter().map(|w| w.id).collect())
+        .map(|windows| windows.into_iter().map(|w| w.id as u64).collect())
         .unwrap_or_default()
 }
 
-#[cfg(not(target_os = "linux"))]
-fn list_x11_window_ids() -> Vec<u32> {
+#[cfg(target_os = "windows")]
+fn list_window_ids() -> Vec<u64> {
+    crate::platform::windows::list_window_ids()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn list_window_ids() -> Vec<u64> {
     Vec::new()
 }
 
 #[cfg(target_os = "linux")]
-fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u32> {
+fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
     for _ in 0..attempts {
         if let Ok(windows) = x11_client_windows() {
             if let Some(window) = windows.into_iter().find(|w| w.pid == Some(pid) && !w.protected) {
-                return Some(window.id);
+                return Some(window.id as u64);
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -449,20 +502,25 @@ fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u32> {
     None
 }
 
-#[cfg(not(target_os = "linux"))]
-fn find_window_for_pid(_pid: u32, _attempts: usize) -> Option<u32> {
+#[cfg(target_os = "windows")]
+fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
+    crate::platform::windows::find_window_for_pid(pid, attempts)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn find_window_for_pid(_pid: u32, _attempts: usize) -> Option<u64> {
     None
 }
 
 #[cfg(target_os = "linux")]
-fn find_new_x11_window(before: &[u32], attempts: usize) -> Option<u32> {
+fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
     for _ in 0..attempts {
         if let Ok(windows) = x11_client_windows() {
             if let Some(window) = windows
                 .into_iter()
-                .find(|w| !before.contains(&w.id) && !w.protected)
+                .find(|w| !before.contains(&(w.id as u64)) && !w.protected)
             {
-                return Some(window.id);
+                return Some(window.id as u64);
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -470,8 +528,13 @@ fn find_new_x11_window(before: &[u32], attempts: usize) -> Option<u32> {
     None
 }
 
-#[cfg(not(target_os = "linux"))]
-fn find_new_x11_window(_before: &[u32], _attempts: usize) -> Option<u32> {
+#[cfg(target_os = "windows")]
+fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
+    crate::platform::windows::find_new_window(before, attempts)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn find_new_window(_before: &[u64], _attempts: usize) -> Option<u64> {
     None
 }
 
@@ -562,4 +625,86 @@ fn is_protected_window(conn: &xcb::Connection, window: xcb::x::Window) -> bool {
     ["eldrun", "plasmashell", "kwin", "cinnamon"]
         .iter()
         .any(|protected| class.contains(protected))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tracked(project_id: Option<&str>, origin: &str, window_id: Option<u64>) -> TrackedWindow {
+        TrackedWindow {
+            id: format!("{}-{window_id:?}", project_id.unwrap_or("root")),
+            exec: "editor".to_string(),
+            file: Some("/tmp/file.txt".to_string()),
+            pid: 42,
+            project_id: project_id.map(String::from),
+            role: None,
+            opened_at: 1.0,
+            window_id,
+            origin: origin.to_string(),
+        }
+    }
+
+    #[test]
+    fn opened_windows_are_only_project_file_ui_windows() {
+        let windows = vec![
+            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+            tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11)),
+            tracked(Some("p1"), ORIGIN_GLOBAL_APP, Some(12)),
+            tracked(Some("p1"), ORIGIN_MANUAL_LAUNCH, Some(13)),
+            tracked(Some("p2"), ORIGIN_RIGHT_FILE_TREE, Some(20)),
+            tracked(None, ORIGIN_RIGHT_FILE_TREE, Some(30)),
+        ];
+
+        let opened = opened_windows_for_project(windows.iter(), Some("p1"));
+        let ids = opened
+            .into_iter()
+            .filter_map(|window| window.window_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec![10, 11]);
+    }
+
+    #[test]
+    fn project_opened_window_predicate_matches_file_ui_origins() {
+        assert!(is_project_opened_window(&tracked(
+            Some("p1"),
+            ORIGIN_RIGHT_FILE_TREE,
+            Some(1),
+        )));
+        assert!(is_project_opened_window(&tracked(
+            Some("p1"),
+            ORIGIN_MIDDLE_FILE_BROWSER,
+            Some(1),
+        )));
+        assert!(!is_project_opened_window(&tracked(
+            Some("p1"),
+            ORIGIN_GLOBAL_APP,
+            Some(1),
+        )));
+        assert!(!is_project_opened_window(&tracked(
+            Some("p1"),
+            ORIGIN_MANUAL_LAUNCH,
+            Some(1),
+        )));
+    }
+
+    #[test]
+    fn tracked_window_defaults_missing_origin_to_manual_launch() {
+        let raw = r#"{
+            "id": "old",
+            "exec": "editor",
+            "file": null,
+            "pid": 7,
+            "project_id": "p1",
+            "role": null,
+            "opened_at": 1.0,
+            "window_id": 99
+        }"#;
+
+        let window: TrackedWindow = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(window.origin, ORIGIN_MANUAL_LAUNCH);
+        assert!(!is_project_opened_window(&window));
+    }
 }

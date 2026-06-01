@@ -5,10 +5,11 @@ import { type FileEntry, fileIcon, folderIcon, fmtSize, visibleEntries } from ".
 
 interface Props {
   projectDir: string;
+  projectId: string | null;
   showHidden?: boolean;
 }
 
-export function FileTree({ projectDir, showHidden = false }: Props) {
+export function FileTree({ projectDir, projectId, showHidden = false }: Props) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [relPath, setRelPath] = useState("");
   const [loading, setLoading] = useState(false);
@@ -43,7 +44,7 @@ export function FileTree({ projectDir, showHidden = false }: Props) {
       load(rel);
     } else {
       // Open file via default app (xdg-open fallback).
-      openFile(entry.path).catch(console.error);
+      openFile(entry.path, undefined, projectId, "right_file_tree").catch(console.error);
     }
   }
 

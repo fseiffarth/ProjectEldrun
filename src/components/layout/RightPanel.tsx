@@ -47,12 +47,12 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
 
       {view === "files" ? (
         <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
-          {open && <FileTree projectDir={projectDir} />}
+          {open && <FileTree projectDir={projectDir} projectId={activeId} />}
         </div>
       ) : (
         <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 4 }}>
           {windows.length === 0 ? (
-            <div className="file-tree-empty">No tracked windows</div>
+            <div className="file-tree-empty">No opened windows</div>
           ) : (
             windows.map((w) => (
               <div key={w.id} className="file-entry">

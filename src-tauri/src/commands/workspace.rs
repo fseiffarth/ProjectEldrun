@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, State};
 
-use crate::commands::apps::WindowRegistryState;
+use crate::commands::apps::{opened_windows_for_project, TrackedWindow, WindowRegistryState};
 use crate::platform::{detect_backend, WorkspaceBackend, WorkspaceInfo};
 
 pub struct WorkspaceState {
@@ -35,7 +35,8 @@ pub fn workspace_switch(
 ) -> Result<(), String> {
     let (previous_window_ids, current_window_ids) = {
         let windows = windows.lock().unwrap();
-        let previous_window_ids = workspace_window_ids(&windows.windows, previous_project_id.as_deref());
+        let previous_window_ids =
+            workspace_window_ids(&windows.windows, previous_project_id.as_deref());
         let current_window_ids = workspace_window_ids(&windows.windows, project_id.as_deref());
         (previous_window_ids, current_window_ids)
     };
@@ -58,13 +59,78 @@ pub fn workspace_switch(
 fn workspace_window_ids(
     windows: &std::collections::HashMap<String, crate::commands::apps::TrackedWindow>,
     project_id: Option<&str>,
-) -> Vec<u32> {
+) -> Vec<u64> {
     windows
         .values()
         .filter(|window| window.role.is_none())
         .filter(|window| window.project_id.as_deref() == project_id)
         .filter_map(|window| window.window_id)
         .collect()
+}
+
+#[tauri::command]
+pub fn show_window(
+    state: State<'_, WorkspaceStateArc>,
+    window_id: u64,
+) -> Result<(), String> {
+    state.lock().unwrap().backend.show_window(window_id)
+}
+
+#[tauri::command]
+pub fn hide_window(
+    state: State<'_, WorkspaceStateArc>,
+    window_id: u64,
+) -> Result<(), String> {
+    state.lock().unwrap().backend.hide_window(window_id)
+}
+
+#[tauri::command]
+pub fn get_opened_windows(
+    windows: State<'_, WindowRegistryState>,
+    project_id: Option<String>,
+) -> Vec<TrackedWindow> {
+    let windows = windows.lock().unwrap();
+    opened_windows_for_project(windows.windows.values(), project_id.as_deref())
+}
+
+#[tauri::command]
+pub fn switch_project_windows(
+    state: State<'_, WorkspaceStateArc>,
+    windows: State<'_, WindowRegistryState>,
+    project_id: Option<String>,
+    previous_project_id: Option<String>,
+) -> Result<(), String> {
+    let (previous_window_ids, current_window_ids) = {
+        let windows = windows.lock().unwrap();
+        let previous = opened_windows_for_project(
+            windows.windows.values(),
+            previous_project_id.as_deref(),
+        );
+        let current = opened_windows_for_project(windows.windows.values(), project_id.as_deref());
+        (
+            previous
+                .into_iter()
+                .filter_map(|window| window.window_id)
+                .collect::<Vec<_>>(),
+            current
+                .into_iter()
+                .filter_map(|window| window.window_id)
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let backend = state.lock().unwrap();
+    for window_id in previous_window_ids {
+        if let Err(error) = backend.backend.hide_window(window_id) {
+            eprintln!("hide tracked window {window_id} failed: {error}");
+        }
+    }
+    for window_id in current_window_ids {
+        if let Err(error) = backend.backend.show_window(window_id) {
+            eprintln!("show tracked window {window_id} failed: {error}");
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

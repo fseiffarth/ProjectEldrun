@@ -121,12 +121,20 @@ impl WorkspaceBackend for KdeWaylandBackend {
         }
     }
 
+    fn show_window(&self, _window_id: u64) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn hide_window(&self, _window_id: u64) -> Result<(), String> {
+        Ok(())
+    }
+
     fn switch_to_project(
         &self,
         project_id: Option<&str>,
         _previous_project_id: Option<&str>,
-        _previous_window_ids: &[u32],
-        _current_window_ids: &[u32],
+        _previous_window_ids: &[u64],
+        _current_window_ids: &[u64],
     ) -> Result<(), String> {
         let project_id = project_id.unwrap_or(ROOT_PROJECT_ID);
         let id = self.ensure_desktop_for(project_id)?;

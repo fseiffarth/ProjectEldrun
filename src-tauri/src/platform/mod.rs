@@ -13,6 +13,8 @@ pub mod null;
 
 #[cfg(target_os = "linux")]
 pub mod wayland_kde;
+#[cfg(target_os = "windows")]
+pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod x11;
 
@@ -31,6 +33,8 @@ pub struct WorkspaceInfo {
 pub trait WorkspaceBackend: Send + Sync {
     fn name(&self) -> &'static str;
     fn info(&self) -> WorkspaceInfo;
+    fn show_window(&self, window_id: u64) -> Result<(), String>;
+    fn hide_window(&self, window_id: u64) -> Result<(), String>;
     /// Bring `project_id`'s windows to the foreground desktop and park the
     /// previous project's windows on the hidden desktop. `None` targets the
     /// root terminal workspace.
@@ -40,8 +44,8 @@ pub trait WorkspaceBackend: Send + Sync {
         &self,
         project_id: Option<&str>,
         previous_project_id: Option<&str>,
-        previous_window_ids: &[u32],
-        current_window_ids: &[u32],
+        previous_window_ids: &[u64],
+        current_window_ids: &[u64],
     ) -> Result<(), String>;
     /// Called at startup to make Eldrun visible on all desktops (sticky).
     fn make_sticky(&self, eldrun_pid: u32) -> Result<(), String>;
@@ -52,6 +56,11 @@ pub trait WorkspaceBackend: Send + Sync {
 // ── Factory ────────────────────────────────────────────────────────────────
 
 pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
+    #[cfg(target_os = "windows")]
+    {
+        return Box::new(windows::WindowsBackend);
+    }
+
     #[cfg(target_os = "linux")]
     {
         let desktop = std::env::var("XDG_CURRENT_DESKTOP")

@@ -76,11 +76,11 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     });
     await invoke<void>("save_projects", { projects: nextProjects });
     void useTimerStore.getState().setProject(id);
-    invoke<void>("workspace_switch", {
+    invoke<void>("switch_project_windows", {
       projectId: id,
       previousProjectId: previousId,
     }).catch((error) => {
-      console.warn("workspace_switch failed", error);
+      console.warn("switch_project_windows failed", error);
     });
   },
 

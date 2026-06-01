@@ -18,12 +18,20 @@ impl WorkspaceBackend for NullBackend {
         }
     }
 
+    fn show_window(&self, _window_id: u64) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn hide_window(&self, _window_id: u64) -> Result<(), String> {
+        Ok(())
+    }
+
     fn switch_to_project(
         &self,
         _project_id: Option<&str>,
         _previous_project_id: Option<&str>,
-        _previous_window_ids: &[u32],
-        _current_window_ids: &[u32],
+        _previous_window_ids: &[u64],
+        _current_window_ids: &[u64],
     ) -> Result<(), String> {
         Ok(())
     }

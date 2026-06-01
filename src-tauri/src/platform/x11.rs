@@ -112,8 +112,8 @@ impl WorkspaceBackend for X11Backend {
         &self,
         project_id: Option<&str>,
         previous_project_id: Option<&str>,
-        previous_window_ids: &[u32],
-        current_window_ids: &[u32],
+        previous_window_ids: &[u64],
+        current_window_ids: &[u64],
     ) -> Result<(), String> {
         let project_id = project_id.unwrap_or(ROOT_PROJECT_ID);
         let previous_project_id = previous_project_id.unwrap_or(ROOT_PROJECT_ID);
@@ -125,16 +125,18 @@ impl WorkspaceBackend for X11Backend {
         let mut ws1_set = HashSet::new();
         for &wid in &all_windows {
             match get_window_desktop(&self.conn, wid, &self.atoms) {
-                Some(d) if d == PARKED_DESKTOP => { ws1_set.insert(wid); }
-                _ => {}  // sticky or other desktops — leave untouched
+                Some(d) if d == PARKED_DESKTOP => {
+                    ws1_set.insert(wid);
+                }
+                _ => {} // sticky or other desktops — leave untouched
             }
         }
 
         let previous_windows: Vec<Window> = previous_window_ids
             .iter()
             .copied()
-            .filter(|id| all_window_ids.contains(id))
-            .map(Window::new)
+            .filter_map(window_from_u64)
+            .filter(|id| all_window_ids.contains(&id.resource_id()))
             .filter(|&wid| !is_protected(&self.conn, wid))
             .collect();
 
@@ -164,8 +166,8 @@ impl WorkspaceBackend for X11Backend {
         let mut restore_windows: Vec<Window> = current_window_ids
             .iter()
             .copied()
-            .filter(|id| all_window_ids.contains(id))
-            .map(Window::new)
+            .filter_map(window_from_u64)
+            .filter(|id| all_window_ids.contains(&id.resource_id()))
             .collect();
         if let Some(project_wins) = parked.get(project_id) {
             restore_windows.extend(project_wins.iter().copied());
@@ -185,6 +187,36 @@ impl WorkspaceBackend for X11Backend {
         switch_current_desktop(&self.conn, self.screen_num, &self.atoms, ACTIVE_DESKTOP)?;
         self.conn.flush().ok();
         Ok(())
+    }
+
+    fn show_window(&self, window_id: u64) -> Result<(), String> {
+        let wid =
+            window_from_u64(window_id).ok_or_else(|| format!("invalid x11 window id {window_id}"))?;
+        if is_protected(&self.conn, wid) {
+            return Ok(());
+        }
+        self.conn
+            .send_and_check_request(&x::MapWindow { window: wid })
+            .map_err(|e| e.to_string())?;
+        self.conn
+            .send_and_check_request(&x::ConfigureWindow {
+                window: wid,
+                value_list: &[x::ConfigWindow::StackMode(x::StackMode::Above)],
+            })
+            .map_err(|e| e.to_string())?;
+        self.conn.flush().map_err(|e| e.to_string())
+    }
+
+    fn hide_window(&self, window_id: u64) -> Result<(), String> {
+        let wid =
+            window_from_u64(window_id).ok_or_else(|| format!("invalid x11 window id {window_id}"))?;
+        if is_protected(&self.conn, wid) {
+            return Ok(());
+        }
+        self.conn
+            .send_and_check_request(&x::UnmapWindow { window: wid })
+            .map_err(|e| e.to_string())?;
+        self.conn.flush().map_err(|e| e.to_string())
     }
 
     fn make_sticky(&self, _eldrun_pid: u32) -> Result<(), String> {
@@ -370,6 +402,10 @@ fn root_window(conn: &Connection, screen_num: i32) -> Window {
         .nth(screen_num as usize)
         .unwrap()
         .root()
+}
+
+fn window_from_u64(window_id: u64) -> Option<Window> {
+    u32::try_from(window_id).ok().map(Window::new)
 }
 
 fn intern_atom(conn: &Connection, name: &[u8]) -> Result<Atom, String> {

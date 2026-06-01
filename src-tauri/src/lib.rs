@@ -196,6 +196,10 @@ pub fn run() {
             // Workspace / network
             commands::workspace::workspace_info,
             commands::workspace::workspace_switch,
+            commands::workspace::show_window,
+            commands::workspace::hide_window,
+            commands::workspace::get_opened_windows,
+            commands::workspace::switch_project_windows,
             commands::workspace::workspace_name,
             commands::workspace::network_conn_type,
             // Downloads
