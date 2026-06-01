@@ -86,7 +86,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: eldrun-${{ github.sha }}-windows-nsis
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          # Tauri 2 on Windows puts bundles in the project-root target/ when
+          # CARGO_TARGET_DIR is overridden by swatinem/rust-cache.
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.exe
 
   package:
     name: package
