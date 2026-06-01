@@ -17,6 +17,7 @@ tmp/
 open_apps.json
 project.json
 .eldrun_colors.json
+.eldrun/
 *.migrated
 
 # Exempt test fixtures from the above exclusions
