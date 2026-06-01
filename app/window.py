@@ -611,6 +611,10 @@ class EldrunWindow(Adw.ApplicationWindow):
             GLib.timeout_add(500, self._restore_project_apps, current_id)
         GLib.idle_add(self._suggest_startup_projects)
 
+    def _suggest_startup_projects(self) -> bool:
+        # Placeholder — suggest activating an inactive project at startup (not yet implemented).
+        return False
+
     # ── workspace management ──────────────────────────────────────────────────
 
     def _setup_workspaces(self) -> bool:

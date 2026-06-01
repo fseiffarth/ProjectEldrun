@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 
-export type TabKind = "agent" | "shell" | "root";
+export type TabKind = "agent" | "shell";
 
 export interface TabEntry {
   key: string;
@@ -17,6 +17,10 @@ interface TabsStore {
   activeKey: string | null;
   setActive: (key: string) => void;
   addTab: (tab: Omit<TabEntry, "key">) => TabEntry;
+  ensureTab: (
+    tab: Omit<TabEntry, "key">,
+    matches: (tab: TabEntry) => boolean,
+  ) => TabEntry;
   removeTab: (key: string) => void;
   reorder: (from: number, to: number) => void;
   loadFromLayout: (
@@ -42,6 +46,15 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const entry: TabEntry = { key, ...tab };
     set((s) => ({ tabs: [...s.tabs, entry], activeKey: key }));
     return entry;
+  },
+
+  ensureTab: (tab, matches) => {
+    const existing = get().tabs.find(matches);
+    if (existing) {
+      set({ activeKey: existing.key });
+      return existing;
+    }
+    return get().addTab(tab);
   },
 
   removeTab: (key) => {

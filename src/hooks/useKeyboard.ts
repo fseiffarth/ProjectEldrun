@@ -2,10 +2,10 @@ import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 interface KeyboardOptions {
-  onToggleRightPanel: () => void;
+  onTogglePanels: () => void;
 }
 
-export function useKeyboard({ onToggleRightPanel }: KeyboardOptions) {
+export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
   useEffect(() => {
     const win = getCurrentWindow();
 
@@ -21,7 +21,7 @@ export function useKeyboard({ onToggleRightPanel }: KeyboardOptions) {
       // Super key — toggle right panel (same as Python app's Super behavior)
       if (e.key === "Meta" || e.key === "Super") {
         e.preventDefault();
-        onToggleRightPanel();
+        onTogglePanels();
         return;
       }
 
@@ -30,5 +30,5 @@ export function useKeyboard({ onToggleRightPanel }: KeyboardOptions) {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onToggleRightPanel]);
+  }, [onTogglePanels]);
 }

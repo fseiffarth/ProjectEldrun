@@ -11,6 +11,7 @@ interface SettingsStore {
   loaded: boolean;
   load: () => Promise<void>;
   setTheme: (theme: Theme) => Promise<void>;
+  updateSettings: (patch: Partial<Settings>) => Promise<void>;
 }
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
@@ -28,6 +29,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const updated = { ...current, color_scheme: theme };
     await invoke<void>("save_settings", { settings: updated });
     applyTheme(theme);
+    set({ settings: updated as Settings });
+  },
+
+  updateSettings: async (patch) => {
+    const current = get().settings ?? {};
+    const updated = { ...current, ...patch };
+    await invoke<void>("save_settings", { settings: updated });
+    if (typeof updated.color_scheme === "string") {
+      applyTheme(updated.color_scheme);
+    }
     set({ settings: updated as Settings });
   },
 }));

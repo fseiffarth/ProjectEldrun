@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use portable_pty::{Child, CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
@@ -64,6 +64,7 @@ pub struct TerminalReady {
 
 struct PtyEntry {
     writer: Box<dyn Write + Send>,
+    child: Box<dyn Child + Send + Sync>,
     dead: Arc<AtomicBool>,
     crash_times: Vec<Instant>,
 }
@@ -76,11 +77,18 @@ pub struct PtyRegistry {
 }
 
 impl PtyRegistry {
-    pub fn insert(&mut self, id: String, writer: Box<dyn Write + Send>, dead: Arc<AtomicBool>) {
+    pub fn insert(
+        &mut self,
+        id: String,
+        writer: Box<dyn Write + Send>,
+        child: Box<dyn Child + Send + Sync>,
+        dead: Arc<AtomicBool>,
+    ) {
         self.entries.insert(
             id,
             PtyEntry {
                 writer,
+                child,
                 dead,
                 crash_times: Vec::new(),
             },
@@ -95,10 +103,10 @@ impl PtyRegistry {
     }
 
     pub fn kill(&mut self, id: &str) {
-        if let Some(e) = self.entries.get_mut(id) {
+        if let Some(mut e) = self.entries.remove(id) {
             e.dead.store(true, Ordering::SeqCst);
+            let _ = e.child.kill();
         }
-        self.entries.remove(id);
     }
 
     pub fn check_crash_loop(&mut self, id: &str) -> bool {
@@ -139,7 +147,7 @@ pub fn spawn_pty(
         .map_err(|e| format!("openpty: {e}"))?;
 
     let cmd = build_command(&opts);
-    let _child = pair
+    let child = pair
         .slave
         .spawn_command(cmd)
         .map_err(|e| format!("spawn: {e}"))?;
@@ -156,7 +164,7 @@ pub fn spawn_pty(
     let dead = Arc::new(AtomicBool::new(false));
     {
         let mut reg = registry.lock().unwrap();
-        reg.insert(opts.id.clone(), writer, dead.clone());
+        reg.insert(opts.id.clone(), writer, child, dead.clone());
     }
 
     let _ = app.emit("terminal-ready", TerminalReady { id: opts.id.clone() });

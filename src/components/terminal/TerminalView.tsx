@@ -31,9 +31,11 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
   const unlistenOutput = useRef<(() => void) | null>(null);
   const unlistenReady = useRef<(() => void) | null>(null);
   const unlistenExit = useRef<(() => void) | null>(null);
+  const argsKey = JSON.stringify(args);
 
   useEffect(() => {
     if (!containerRef.current) return;
+    let cancelled = false;
 
     const term = new Terminal({
       scrollback: 5000,
@@ -80,9 +82,8 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
       invoke("pty_write", { id, data: bytes }).catch(console.error);
     });
 
-    // Listen for output events.
-    const setupListeners = async () => {
-      unlistenOutput.current = await listen<TerminalOutput>(
+    const setupAndSpawn = async () => {
+      const outputListener = await listen<TerminalOutput>(
         "terminal-output",
         (ev: Event<TerminalOutput>) => {
           if (ev.payload.id === id) {
@@ -91,13 +92,13 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
         },
       );
 
-      unlistenReady.current = await listen("terminal-ready", (ev: Event<{ id: string }>) => {
+      const readyListener = await listen("terminal-ready", (ev: Event<{ id: string }>) => {
         if (ev.payload.id === id) {
           termRef.current?.write("\r\n");
         }
       });
 
-      unlistenExit.current = await listen<TerminalExit>(
+      const exitListener = await listen<TerminalExit>(
         "terminal-exit",
         (ev: Event<TerminalExit>) => {
           if (ev.payload.id === id) {
@@ -107,20 +108,30 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
           }
         },
       );
-    };
 
-    // Spawn the PTY process.
-    const spawnTerminal = async () => {
+      if (cancelled) {
+        outputListener();
+        readyListener();
+        exitListener();
+        return;
+      }
+
+      unlistenOutput.current = outputListener;
+      unlistenReady.current = readyListener;
+      unlistenExit.current = exitListener;
+
       try {
         await invoke("pty_spawn", {
           opts: { id, cmd, args, cwd, cols: term.cols, rows: term.rows },
         });
       } catch (e) {
-        term.write(`\r\n\x1b[31m[spawn error: ${e}]\x1b[0m\r\n`);
+        if (!cancelled) {
+          term.write(`\r\n\x1b[31m[spawn error: ${e}]\x1b[0m\r\n`);
+        }
       }
     };
 
-    setupListeners().then(spawnTerminal);
+    setupAndSpawn();
 
     // Resize observer.
     const ro = new ResizeObserver(() => {
@@ -136,14 +147,18 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
     if (containerRef.current) ro.observe(containerRef.current);
 
     return () => {
+      cancelled = true;
       ro.disconnect();
       unlistenOutput.current?.();
       unlistenReady.current?.();
       unlistenExit.current?.();
+      unlistenOutput.current = null;
+      unlistenReady.current = null;
+      unlistenExit.current = null;
       invoke("pty_kill", { id }).catch(() => {});
       term.dispose();
     };
-  }, [id, cmd, cwd]);
+  }, [id, cmd, cwd, argsKey]);
 
   // Re-fit when the tab becomes visible.
   useEffect(() => {

@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::schema::project::Project;
 use crate::schema::projects::{ProjectEntry, ProjectsList};
@@ -36,6 +38,16 @@ pub fn load_project(local_file: String) -> Result<Project, String> {
 pub fn save_project(local_file: String, project: Project) -> Result<(), String> {
     let path = PathBuf::from(&local_file);
     storage::write_json(&path, &project).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn root_work_dir() -> String {
+    storage::root_work_dir().to_string_lossy().to_string()
+}
+
+#[tauri::command]
+pub fn projects_root_dir() -> String {
+    projects_root().to_string_lossy().to_string()
 }
 
 // ── File tree ─────────────────────────────────────────────────────────────
@@ -216,9 +228,11 @@ pub fn scaffold_project(dir: &Path) -> std::io::Result<()> {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateProjectRequest {
     pub name: String,
     pub directory: String,
+    pub git_type: Option<String>,
 }
 
 #[tauri::command]
@@ -228,12 +242,13 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
 
     let id = uuid_v4();
     let now = chrono_now();
+    let git_type = req.git_type.unwrap_or_else(|| "private".to_string());
 
     let project = Project {
         id: id.clone(),
         name: req.name.clone(),
         directory: req.directory.clone(),
-        git_type: Some("private".to_string()),
+        git_type: Some(git_type.clone()),
         created_at: Some(now),
         ..Default::default()
     };
@@ -249,13 +264,17 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
         vec![]
     };
     let max_pos = list.iter().map(|p| p.position).max().unwrap_or(0);
+    let mut extra = HashMap::new();
+    extra.insert("directory".to_string(), Value::String(req.directory));
+    extra.insert("git_type".to_string(), Value::String(git_type));
+
     let entry = ProjectEntry {
         id: id.clone(),
         name: req.name,
         status: "inactive".to_string(),
         position: max_pos + 10,
         local_file: project_file.to_string_lossy().to_string(),
-        extra: Default::default(),
+        extra,
     };
     list.push(entry.clone());
     storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
@@ -263,10 +282,146 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
     Ok(entry)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportProjectRequest {
+    pub source_dir: String,
+    pub name: String,
+    pub git_type: Option<String>,
+    pub mode: String,
+}
+
+#[tauri::command]
+pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String> {
+    if req.name.trim().is_empty() {
+        return Err("Project name is invalid".to_string());
+    }
+
+    let source = PathBuf::from(&req.source_dir);
+    if !source.is_dir() {
+        return Err("Source folder does not exist".to_string());
+    }
+
+    let target = match req.mode.as_str() {
+        "keep" => source,
+        "copy" | "move" => {
+            let safe = sanitize_name(&req.name);
+            if safe.is_empty() {
+                return Err("Project name is invalid".to_string());
+            }
+            let dest = projects_root().join(safe);
+            if dest.exists() {
+                return Err(format!("Destination '{}' already exists", dest.display()));
+            }
+            if req.mode == "copy" {
+                copy_dir_all(&source, &dest)?;
+            } else {
+                fs::create_dir_all(projects_root()).map_err(|e| e.to_string())?;
+                fs::rename(&source, &dest).map_err(|e| e.to_string())?;
+            }
+            dest
+        }
+        other => return Err(format!("Unknown import mode: {other}")),
+    };
+
+    let directory = target.to_string_lossy().to_string();
+    let project_file = target.join("project.json");
+    let project_file_s = project_file.to_string_lossy().to_string();
+
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).unwrap_or_default()
+    } else {
+        vec![]
+    };
+    if list.iter().any(|p| {
+        p.local_file == project_file_s
+            || p.extra.get("directory").and_then(Value::as_str) == Some(directory.as_str())
+    }) {
+        return Err("Project is already registered".to_string());
+    }
+
+    scaffold_project(&target).map_err(|e| e.to_string())?;
+
+    let id = uuid_v4();
+    let now = chrono_now();
+    let git_type = req.git_type.unwrap_or_else(|| "private".to_string());
+
+    let project = if project_file.exists() {
+        let mut existing: Project = storage::read_json(&project_file).unwrap_or_default();
+        existing.id = id.clone();
+        existing.name = req.name.clone();
+        existing.directory = directory.clone();
+        existing.git_type = Some(git_type.clone());
+        existing
+    } else {
+        Project {
+            id: id.clone(),
+            name: req.name.clone(),
+            directory: directory.clone(),
+            git_type: Some(git_type.clone()),
+            created_at: Some(now),
+            ..Default::default()
+        }
+    };
+    storage::write_json(&project_file, &project).map_err(|e| e.to_string())?;
+
+    let max_pos = list.iter().map(|p| p.position).max().unwrap_or(0);
+    let mut extra = HashMap::new();
+    extra.insert("directory".to_string(), Value::String(directory));
+    extra.insert("git_type".to_string(), Value::String(git_type));
+    let entry = ProjectEntry {
+        id,
+        name: req.name,
+        status: "inactive".to_string(),
+        position: max_pos + 10,
+        local_file: project_file_s,
+        extra,
+    };
+    list.push(entry.clone());
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+    Ok(entry)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 fn canonical(path: &str) -> Result<PathBuf, String> {
     fs::canonicalize(path).map_err(|e| format!("canonicalize {path}: {e}"))
+}
+
+fn projects_root() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    PathBuf::from(home).join("eldrun").join("projects")
+}
+
+fn sanitize_name(name: &str) -> String {
+    name.trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        let target = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn canonical_or_new(path: &Path) -> PathBuf {

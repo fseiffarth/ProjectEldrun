@@ -57,12 +57,17 @@ pub fn run() {
             // Settings
             commands::settings::get_settings,
             commands::settings::save_settings,
+            commands::default_apps::get_default_apps,
+            commands::default_apps::save_default_apps,
             // Projects
             commands::projects::get_projects,
             commands::projects::save_projects,
             commands::projects::load_project,
             commands::projects::save_project,
+            commands::projects::root_work_dir,
+            commands::projects::projects_root_dir,
             commands::projects::create_project,
+            commands::projects::import_project,
             // File tree
             commands::projects::list_dir,
             commands::projects::rename_path,
@@ -82,14 +87,16 @@ pub fn run() {
             commands::apps::untrack_window,
             commands::apps::check_pid_alive,
             commands::apps::restore_open_apps,
-            // Workspace
+            // Workspace / network
             commands::workspace::workspace_info,
             commands::workspace::workspace_switch,
             commands::workspace::workspace_name,
+            commands::workspace::network_conn_type,
             // Downloads
             commands::downloads::update_downloads_symlink,
             commands::downloads::configure_browser_downloads,
         ])
+        .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

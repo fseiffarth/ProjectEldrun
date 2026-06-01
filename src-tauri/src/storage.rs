@@ -49,3 +49,11 @@ pub fn state_dir() -> std::path::PathBuf {
         .join("share")
         .join("eldrun")
 }
+
+/// Working directory for terminals that are not attached to a project.
+///
+/// This mirrors the Python app's documented root terminal directory.
+pub fn root_work_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    std::path::PathBuf::from(home).join("eldrun").join("root")
+}

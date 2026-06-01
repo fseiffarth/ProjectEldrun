@@ -5,11 +5,13 @@ import { useWindowsStore } from "../../stores/windows";
 
 interface Props {
   open: boolean;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
 }
 
 type View = "files" | "windows";
 
-export function RightPanel({ open }: Props) {
+export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
   const { projects, activeId } = useProjectsStore();
   const { windows, refresh, untrack } = useWindowsStore();
   const [view, setView] = useState<View>("files");
@@ -24,7 +26,11 @@ export function RightPanel({ open }: Props) {
   }, [open, activeId]);
 
   return (
-    <div className={`right-panel ${open ? "open" : ""}`}>
+    <div
+      className={`right-panel ${open ? "open" : ""}`}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
       <div className="right-panel-header">
         <span style={{ flex: 1 }}>
           {activeProject ? activeProject.name : "Files"}

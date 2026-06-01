@@ -6,11 +6,6 @@ export function WindowControls() {
   return (
     <div className="wm-controls no-drag">
       <button
-        className="wm-btn wm-close"
-        onClick={() => win.close()}
-        title="Close"
-      />
-      <button
         className="wm-btn wm-minimize"
         onClick={() => win.minimize()}
         title="Minimize"
@@ -19,6 +14,11 @@ export function WindowControls() {
         className="wm-btn wm-maximize"
         onClick={() => win.toggleMaximize()}
         title="Maximize"
+      />
+      <button
+        className="wm-btn wm-close"
+        onClick={() => win.close()}
+        title="Close"
       />
     </div>
   );

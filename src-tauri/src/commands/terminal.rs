@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, State};
 
+use crate::storage;
 use crate::terminal::{PtyOptions, PtyRegistry};
 
 pub type RegistryState = Arc<Mutex<PtyRegistry>>;
@@ -12,9 +13,16 @@ pub async fn pty_spawn(
     registry: State<'_, RegistryState>,
     mut opts: PtyOptions,
 ) -> Result<(), String> {
-    // Resolve empty cwd to the user's home directory.
+    // Resolve empty cwd to Eldrun's root workspace directory.
     if opts.cwd.is_empty() {
-        opts.cwd = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+        let root_dir = storage::root_work_dir();
+        std::fs::create_dir_all(&root_dir).map_err(|e| {
+            format!(
+                "create root workspace '{}': {e}",
+                root_dir.to_string_lossy()
+            )
+        })?;
+        opts.cwd = root_dir.to_string_lossy().into_owned();
     }
 
     // Crash-loop guard.

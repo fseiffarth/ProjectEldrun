@@ -13,7 +13,8 @@ export function ProjectPill({ project, active, onClick }: Props) {
       onClick={onClick}
       title={project.directory as string | undefined}
     >
-      {project.name}
+      <span className="pill-folder-icon" aria-hidden>📁</span>
+      <span className="project-pill-label">{project.name}</span>
     </button>
   );
 }
