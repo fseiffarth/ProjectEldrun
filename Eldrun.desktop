@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Eldrun (Tauri)
-Comment=Terminal workspace manager — Tauri/React rewrite
+Name=Eldrun
+Comment=Terminal workspace manager
 Exec=/home/user/eldrun/projects/projecteldrun/start-eldrun-tauri.sh
-Icon=/home/user/.local/share/eldrun/icon.png
+Icon=/home/user/eldrun/projects/projecteldrun/src-tauri/icons/128x128.png
 Terminal=false
 Categories=Utility;TerminalEmulator;Development;
 StartupWMClass=eldrun

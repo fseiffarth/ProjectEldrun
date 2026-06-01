@@ -82,7 +82,8 @@ Or for a development hot-reload build:
 npm run tauri dev
 ```
 
-The desktop launcher is `Eldrun-Tauri.app.desktop`.
+The desktop launchers are `Eldrun.desktop` for the packaged app and
+`EldrunHotReload.desktop` for the hot-reload dev server.
 
 ## User Interface
 

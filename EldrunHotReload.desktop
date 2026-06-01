@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=EldrunHotReload
+Comment=Terminal workspace manager hot reload
+Exec=/home/user/eldrun/projects/projecteldrun/start-eldrun-tauri-hotreload.sh
+Icon=/home/user/eldrun/projects/projecteldrun/src-tauri/icons/128x128.png
+Terminal=false
+Categories=Utility;TerminalEmulator;Development;
+StartupWMClass=eldrun

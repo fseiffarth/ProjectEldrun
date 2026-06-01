@@ -81,11 +81,12 @@ Or for a development build with hot-reload:
 npm run tauri dev
 ```
 
-The desktop launcher is `Eldrun-Tauri.app.desktop`. Adjust `Exec=` to match
-this checkout's path, then install it:
+The desktop launchers are `Eldrun.desktop` for the normal packaged app and
+`EldrunHotReload.desktop` for hot reload. They already point at this
+checkout's scripts, so you can install them as-is:
 
 ```bash
-cp Eldrun-Tauri.app.desktop ~/.local/share/applications/
+cp Eldrun*.desktop ~/.local/share/applications/
 update-desktop-database ~/.local/share/applications/
 ```
 
