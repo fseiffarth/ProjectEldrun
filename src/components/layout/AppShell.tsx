@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { BottomBar } from "./BottomBar";
 import { CenterPanel } from "./CenterPanel";
 import { GlobalAppBar } from "./GlobalAppBar";
@@ -23,6 +24,7 @@ export function AppShell() {
   useEffect(() => {
     loadSettings();
     loadProjects();
+    getCurrentWindow().setFullscreen(true).catch(() => {});
   }, [loadSettings, loadProjects]);
 
   const reveal = (
