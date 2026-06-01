@@ -17,7 +17,7 @@ interface ProjectsStore {
   removeProject: (id: string) => Promise<void>;
 }
 
-export const useProjectsStore = create<ProjectsStore>((set) => ({
+export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   projects: [],
   activeId: null,
   loaded: false,
@@ -41,6 +41,7 @@ export const useProjectsStore = create<ProjectsStore>((set) => ({
   },
 
   setActive: async (id) => {
+    const previousId = get().activeId;
     let nextProjects: ProjectEntry[] = [];
     set((state) => {
       nextProjects = state.projects.map((project) => {
@@ -73,6 +74,13 @@ export const useProjectsStore = create<ProjectsStore>((set) => ({
       };
     });
     await invoke<void>("save_projects", { projects: nextProjects });
+    // Trigger workspace switch when activating a project (not root terminal).
+    if (id !== null) {
+      invoke<void>("workspace_switch", {
+        projectId: id,
+        previousProjectId: previousId,
+      }).catch(() => {});
+    }
   },
 
   clearSwitchToast: () => set({ switchToast: null }),

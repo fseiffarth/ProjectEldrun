@@ -9,7 +9,7 @@ import { useSettingsStore } from "../../stores/settings";
 import type { GlobalAppEntry, ProjectEntry, Theme } from "../../types";
 import { resolveProjectDirectory, THEMES } from "../../types";
 
-const TERMINAL_OPTIONS = ["claude", "codex", "gemini"];
+const TERMINAL_OPTIONS = ["claude", "codex", "gemini", "vibe"];
 
 function sanitizeName(name: string) {
   return name

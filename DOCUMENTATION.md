@@ -1,12 +1,13 @@
-# ProjectEldrun - Documentation
+# ProjectEldrun — Documentation
 
-Eldrun is a Python/GTK4 desktop orchestration and project-management app built
-around agent terminals. It keeps project-specific Claude, Codex, and shell
-sessions available without losing the surrounding project context: files,
-default app choices, global app shortcuts, time tracking, network state, and
-optional desktop workspace routing.
+Eldrun is a Tauri 2 + React + TypeScript desktop workspace for AI-assisted
+development. It keeps a root control terminal, one terminal per active project,
+a bottom project switcher, a right-side file browser, global app launching,
+time tracking, and optional KDE/X11 workspace integration in one fullscreen
+window.
 
-This document reflects the code in `app/` as of May 31, 2026.
+This document reflects the code in `src/` and `src-tauri/src/` as of
+2026-06-01 (all 10 migration phases complete).
 
 ## Document Boundaries
 
@@ -20,9 +21,8 @@ This document reflects the code in `app/` as of May 31, 2026.
 ## Eldrun's Model
 
 Eldrun treats development work as a set of active projects, each with its own
-directory, metadata, terminal state, file context, and optional project-space
-state. On X11, the current implementation represents project spaces with a
-visible workspace and a hidden parking workspace.
+directory, metadata, terminal tabs, file context, and optional workspace-level
+desktop state.
 
 - The root terminal is for orchestration: managing Eldrun itself and the broader
   workspace under `~/eldrun/root/`.
@@ -30,242 +30,227 @@ visible workspace and a hidden parking workspace.
   directory. They launch with a best-effort project sandbox that keeps XDG
   config/cache/data/state and temp writes under `<project>/.eldrun/sandbox/`.
   The root terminal keeps the normal workspace environment.
-- Agent tabs run `claude` or `codex`; plain terminal tabs run the user's shell.
-  Local Ollama models open a built-in dialog instead of a VTE tab.
-  Other agents (Mistral, Qwen, Grok, etc.) are not integrated and can only be
-  used manually in a plain shell tab.
-- The right file panel, default app mappings, open-window list, stats, and time
+- Agent tabs run `claude`, `codex`, `gemini`, or `vibe`; plain shell tabs run
+  the user's shell. Other agents can be used in a plain shell tab.
+- The right file panel, default app mappings, tracked external windows, and time
   tracking follow the active project.
 - Global app shortcuts are intentionally cross-project. They launch or raise
   tools such as a browser, mail client, notes app, screenshot tool, or system
-  monitor and keep those windows visible across project switches when X11
-  allows it. They are not owned by a single project.
+  monitor and keep those windows visible across project switches. They are not
+  owned by a single project.
+
+## Stack
+
+| Concern | Technology |
+|---------|-----------|
+| Window shell | Tauri v2 (`tauri-plugin-dialog`) |
+| Frontend framework | React 18, TypeScript, Vite |
+| Styling | Tailwind CSS + CSS variables (4 themes) |
+| Global state | Zustand |
+| Terminal UI | xterm.js (`@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`) |
+| PTY management | `portable-pty` Rust crate |
+| JSON persistence | `serde` + `serde_json` |
+| MIME detection | `mime_guess` (extension) + `infer` (magic bytes) |
+| File/URL opening | `xdg-open` / `opener` crate |
+| Network monitoring | `network-interface` crate + TCP probe |
+| Drag-to-reorder | `@dnd-kit/core` + `@dnd-kit/sortable` |
+| X11 workspace | `xcb` crate (Linux only) |
+| KDE DBus | `zbus` crate (Linux only) |
 
 ## Installation
 
 ### Runtime Dependencies
 
 ```bash
-# Debian / Ubuntu
-sudo apt install python3 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 \
-    gir1.2-vte-3.91 gir1.2-gdkx11-4.0
-pip3 install --user python-xlib
+# Tauri system dependencies (Debian / Ubuntu)
+sudo apt install libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+    libayatana-appindicator3-dev librsvg2-dev
+
+# Install JS dependencies
+npm install
 ```
-
-Eldrun uses:
-
-- GTK 4 and Libadwaita for windows and controls.
-- VTE 3.91 for embedded terminals.
-- `python-xlib` and GDK X11 bindings for X11 window tracking, app embedding,
-  launch-or-raise, sticky windows, and workspace integration.
-- `xdg-mime`, `xdg-settings`, `.desktop` files, and `xdg-open` style handlers for
-  file and global app discovery.
-- `git` for new/imported project initialization.
 
 ### Launching
 
 ```bash
-./start-eldrun.sh
+./start-eldrun-tauri.sh
 ```
 
-or:
+Or for a development hot-reload build:
 
 ```bash
-cd app && python3 eldrun.py
+npm run tauri dev
 ```
 
-The desktop launcher is `Eldrun.app.desktop`. Its `Exec=` path is absolute in the
-current checkout, so update that path before installing it elsewhere:
-
-```bash
-cp Eldrun.app.desktop ~/.local/share/applications/
-update-desktop-database ~/.local/share/applications/
-```
+The desktop launcher is `Eldrun-Tauri.app.desktop`.
 
 ## User Interface
 
-The active layout is a single orchestration surface:
+The active layout is a single fullscreen orchestration surface:
 
 ```text
 +------------------------------------------------------------------+
-| status/network      agent + terminal tabs          wm controls   |
+| status lamp | network icon | clock  tab bar  workspace | controls |
 +------------------------------------------------------------------+
-| global cross-project app toolbar                                 |
+| global cross-project app toolbar (hover-revealed from left edge)  |
 +------------------------------------------------------------------+
 |                                                                  |
-| VTE agent terminal, shell terminal, app placeholder, or X11 app   | right overlay
-|                                                                  | PROJECT tree
-|                                                                  | OPEN WINDOWS
+| xterm.js PTY terminal or file browser tab                        | right panel
+|                                                                  | (hover-revealed
+|                                                                  |  from right edge)
 +------------------------------------------------------------------+
-| Root | Search... | project pills...             | settings | +   |
+| bottom project switcher (hover-revealed from bottom edge)        |
 +------------------------------------------------------------------+
 ```
 
-### Header
+All three side panels — global app bar (left), right file panel, and bottom
+project switcher — appear on pointer hover and auto-close after the pointer
+leaves. `Super` hides all panels simultaneously; `F11` toggles fullscreen.
 
-- Shows online/offline status and wired/wireless type.
-- Hosts the center tab bar, so terminal and app context stays visible at the top
-  of the window.
-- Provides custom minimize, maximize/restore, and close buttons.
-- Shows a close confirmation dialog before quitting.
-- Uses `Gtk.WindowHandle` so the undecorated header can be dragged.
+### Header Bar
+
+`HeaderBar.tsx` spans the full window width and acts as the drag handle. It
+contains:
+
+- Status lamp and network/connection icon.
+- Clock.
+- Tab bar (center, from `TabBar.tsx`).
+- Workspace info label (backend name + current desktop when active).
+- Custom minimize, maximize/restore, and close buttons.
 
 ### Global App Toolbar
 
-The slim toolbar below the header renders cross-project app roles from
-`settings.json["global_apps"]`.
+`GlobalAppBar.tsx` is a thin hover-revealed strip on the left side of the app
+body. When the pointer enters the strip, the toolbar opens; it closes when the
+pointer leaves.
 
 Supported roles:
 
-| Role | Typical resolution |
-|------|--------------------|
-| Browser | `xdg-settings get default-web-browser`, fallback to configured command |
-| Mail | `xdg-mime query default x-scheme-handler/mailto` |
-| Calendar | `xdg-mime query default text/calendar` |
-| Print Manager | `system-config-printer` |
-| File Manager | `xdg-mime query default inode/directory` |
-| Password Manager | `keepassxc`, `bitwarden-desktop`, or `1password` |
-| Video Conferencing | `zoom`, `teams`, or `webex` |
-| Media Player | `xdg-mime query default audio/mpeg` |
-| System Monitor | `gnome-system-monitor` or `ksysguard` |
-| Notes | `obsidian`, `zettlr`, or `gedit` |
-| Screenshot | `flameshot`, `gnome-screenshot`, or another configured tool |
-| Screen Recorder | `obs`, `kazam`, or `simplescreenrecorder` |
+| Role | Key |
+|------|-----|
+| Browser | `browser` |
+| Mail | `mail` |
+| Calendar | `calendar` |
+| Print Manager | `print_manager` |
+| File Manager | `file_manager` |
+| Password Manager | `password_manager` |
+| Video Conferencing | `video_conf` |
+| Media Player | `media_player` |
+| System Monitor | `system_monitor` |
+| Notes | `notes` |
+| Screenshot | `screenshot` |
+| Screen Recorder | `screen_recorder` |
+| Chat | `chat` |
 
 Toolbar behavior:
 
-- Startup resolution fills missing executable paths when system defaults are
-  discoverable.
-- Settings can show/hide each role and edit its executable command.
-- Buttons are insensitive when a visible role has no resolved command.
-- Clicking a role scans existing X11 windows and raises a match when possible.
-- If no match is found, Eldrun launches a new process and polls for its window.
-- Found global app windows are marked sticky across all workspaces via EWMH on
-  X11.
-- The screenshot role can launch common tools in interactive region-selection
-  mode.
+- Role entries come from `settings.json["global_apps"]`.
+- Buttons are hidden when `visible: false`; clicking exposes an inline edit
+  popover to change the command.
+- Clicking a visible role invokes `launch_or_raise_global_app` on the backend.
+- The backend scans for an existing window matching the role, raises it, marks
+  it sticky (X11), or launches a new instance.
+- Desktop icons are resolved via `resolve_app_icon` and cached as data URLs.
 
 ### Center Panel and Tabs
 
-`CenterPanel` in `app/panels/center_panel.py` owns the terminal/app stack and the
-tab bar.
+`CenterPanel.tsx` owns the terminal/file-browser stack and drives tab scoping.
 
-- The default tab uses the configured agent command, currently `claude` or
-  `codex`.
-- Right-clicking the tab bar opens controls for adding a new Claude/Codex agent
-  or a plain shell terminal.
-- New agent creation can include an optional task prompt. Eldrun stores it as
-  the tab task and sends it to the spawned Claude/Codex process as initial
-  terminal input.
-- Project-bound agent and plain terminal tabs inherit the same project sandbox
-  env as project terminals.
-- Agent and plain terminal tabs can be renamed, closed, and reordered by drag and
-  drop.
-- If all tabs are closed, the stack shows an empty state explaining that a new
-  agent or terminal can be added from the tab bar.
-- Each active project has a VTE terminal page named `project-<id>`.
-- The root orchestration terminal uses the master page and opens in
+- When a project is activated, `CenterPanel` sets the tab scope to that
+  project's ID and restores its saved `tab_layout` from `project.json`, or
+  opens a default agent tab on an explicit switch.
+- When the root is active, the scope is `"root"` and the root terminal opens in
   `~/eldrun/root/`.
-- File opens can create temporary app tabs. Eldrun tries to find the launched
-  process' X11 window and reparent it into the center panel.
-- If embedding fails, the app tab is removed and the app is tracked as a
-  standalone open window in the right overlay.
-- An offline banner is displayed over the stack when the network probe reports
-  offline.
+- `TabBar.tsx` renders tabs with close, rename (double-click), drag-to-reorder,
+  and a `+` menu for adding Claude/Codex/Gemini/Vibe/Shell/Files tabs.
+- Each tab with kind `"agent"` or `"shell"` renders a `TerminalView` backed by
+  a PTY. Tabs with kind `"files"` render a `FileBrowser`.
+- Tab layout is auto-saved to `project.json["tab_layout"]` whenever tabs change.
+- If no tabs exist for the active scope, the stack shows an empty placeholder.
+- A project-switch toast notification appears briefly after switching projects.
+- An offline banner appears over the center when the network probe reports offline.
 
-The terminal command comes from `settings.json["terminal_command"]`. UI choices
-are `claude`, `codex`, and `gemini`. If the configured command is not found in
-`$PATH`, Eldrun falls back to the system shell.
+`TerminalView.tsx`:
+- Creates an xterm.js `Terminal` instance with the `FitAddon` and `WebLinksAddon`.
+- On mount, invokes `spawn_pty` on the backend; backend emits
+  `pty-output-<key>` events which the frontend writes to the terminal.
+- Resize events call `resize_pty`; keyboard input calls `write_pty`.
+- On unmount, invokes `kill_pty`.
 
-Other AI agents — Mistral, Qwen, Grok, Llama.cpp, and similar tools — are not
-integrated as first-class tab types. They can be used in a plain shell tab, but
-Eldrun has no dedicated lifecycle, task metadata, or command discovery for them.
-Ollama is the only non-CLI-terminal AI integration; see
-[Local AI — Ollama](#local-ai--ollama).
+### Right File Panel
 
-### Right File Tree Overlay
+`RightPanel.tsx` is a hover-revealed overlay on the right edge.
 
-`FileTreePanel` lives in `app/panels/right_panel.py`. Despite the historical
-filename, it is the current project file browser, not the old project-list
-panel.
+The panel has two views toggled by buttons in its header:
 
-The panel appears only while a project page is active and panel visibility allows
-it. If the file panel is hidden, a small edge control near the upper-right side
-opens it on hover; the control disappears while the panel is open. A panel that
-was auto-shown hides again when the pointer leaves it.
+1. **Files** — renders `FileTree.tsx`: a recursive project file tree. Features:
+   - Toggle hidden files.
+   - Double-click to expand/collapse folders.
+   - File opens via per-project defaults → global defaults → system MIME →
+     `xdg-open` fallback; tracked via `open_file`.
+   - Context menu: open, open with, new file, new folder, copy path, reveal in
+     file manager, rename, delete, properties.
+2. **Windows** — lists tracked external windows from `windows.ts` store. Each
+   entry shows the app name and allows un-tracking.
 
-The panel provides:
-
-- Recursive project file tree with folders first.
-- Toggles for hidden files and standard scaffold files.
-- Ignored internal files: `.git`, `open_apps.json`, `project.json`,
-  `project_default_apps.json`, and `.eldrun_colors.json`.
-- Double-click folder expand/collapse.
-- Double-click file open through per-project defaults, global defaults, system
-  MIME defaults, or a manual "Open With" dialog.
-- Right-click actions: open, open with, new file, new folder, copy path, reveal
-  in file manager, color label, reset color, rename, delete, and properties.
-- Per-path color labels stored as `.eldrun_colors.json` in the project.
-- An `OPEN WINDOWS` section for standalone app windows that could not be
-  embedded.
+The panel is only rendered when a project is active and panels are not hidden.
 
 ### Bottom Project Bar
 
-`BottomPanel` in `app/panels/bottom_panel.py` owns the persistent project and
-settings controls:
+`BottomBar.tsx` is a hover-revealed strip along the bottom of the app body.
 
-- **Root** opens the root orchestration terminal.
-- **Search** finds registered projects, including inactive projects.
-- **Project pills** activate, close, show warm/open-app state, show time/file
-  type stats on hover/right click, and support drag-and-drop reordering.
-- **Settings** opens terminal command, theme, workspace management, global app,
-  and file-type default settings.
-- **+** opens a popover for new project or import project.
+Contents:
 
-Closing a project removes its terminal and marks it inactive in the global index.
-If local metadata says the project has open apps, Eldrun asks for confirmation.
-Closing the active project returns the UI to the root terminal.
+- **Root button** — switches to the root terminal.
+- **Search bar** — filters registered projects by name or path; `Enter`
+  activates a unique match, `Escape` clears the search.
+- **Project pills** — one per active/current project, drag-to-reorder via
+  `@dnd-kit/sortable`. Hovering a pill shows a tooltip with the project path,
+  status, and today's active time (from `get_time_today`). Clicking switches to
+  the project; the × button closes it.
+- **Settings gear** — opens the settings dialog.
+- **+ button** — opens an add-project menu with "New project" and "Import
+  project" sub-options.
+
+Settings dialog covers: default agent command, theme (Dark/Bright/Fancy
+Dark/Fancy Bright), workspace management toggle, global app role visibility and
+commands, and global file-extension defaults.
 
 ### Keyboard Shortcuts
 
 | Key | Behavior |
 |-----|----------|
 | `F11` | Toggle fullscreen. |
-| `Super` | Toggle panel visibility while Eldrun is focused. Eldrun temporarily disables the desktop Super binding and restores it when focus is lost or the app exits. |
-| `Esc` | Closes create/import dialogs. |
-| `Enter` | Confirms create/import when valid; activates a unique bottom-bar search match. |
+| `Super` | Toggle all panels (right, bottom, global app bar). |
+| `Escape` | Close dialogs. |
+| `Enter` | Confirm create/import dialogs; activate a unique search result. |
 
 ## Project Lifecycle
 
 ### Creating a Project
 
-Click `+` -> `New Project`.
+Click `+` → "New project".
 
-Name sanitization for the directory:
+Name sanitization:
 
-- Lowercase and trim.
-- Spaces and underscores become hyphens.
-- Characters outside `a-z`, `0-9`, and `-` are removed.
-- Repeated hyphens collapse and leading/trailing hyphens are stripped.
+- Trim and lowercase.
+- Characters outside `a-z`, `0-9`, `_`, `-` become `-`.
+- Repeated hyphens collapse; leading/trailing hyphens strip.
 
-Example: `My New Project!` -> `my-new-project`.
+Example: `My New Project!` → `my-new-project`.
 
-On confirmation Eldrun:
+On confirmation the backend:
 
 1. Creates `~/eldrun/projects/<sanitized-name>/`.
 2. Runs `git init --initial-branch=main`, falling back to plain `git init`.
 3. Writes scaffold files.
-4. Commits them as `Initial project scaffold` with author
-   `Eldrun <eldrun@local>`.
+4. Commits them as `Initial project scaffold` with author `Eldrun <eldrun@local>`.
 5. Creates project-local `project.json`.
-6. Adds a lightweight global index entry to
-   `~/.local/share/eldrun/projects.json`.
-7. Opens the project terminal and adds a project pill.
-8. Starts a background stats scan.
+6. Adds a lightweight global index entry to `~/.local/share/eldrun/projects.json`.
 
 ### Importing a Project
 
-Click `+` -> `Import Project`.
+Click `+` → "Import project".
 
 Import modes:
 
@@ -275,9 +260,8 @@ Import modes:
 | Copy | Copies the source into `~/eldrun/projects/<sanitized-name>/`, excluding `.git/`. |
 | Move | Moves the source into `~/eldrun/projects/<sanitized-name>/`. |
 
-Missing scaffold files are created without overwriting existing files. If the
-target has no `.git/`, Eldrun initializes git and commits the registration or
-import.
+Missing scaffold files are created without overwriting existing ones. If the
+target has no `.git/`, Eldrun initializes git and commits the registration.
 
 ### Scaffold Files
 
@@ -286,79 +270,97 @@ New and imported projects receive these files when missing:
 | File | Purpose |
 |------|---------|
 | `AGENTS.md` | Agent instructions, scope, and permission boundary. |
-| `CLAUDE.md` | Claude Code context: path, visibility, and project notes. |
-| `GEMINI.md` | Gemini CLI context: path, visibility, and project notes. |
-| `.claude/settings.json` | Claude permission allow/deny rules scoped to the project directory. |
-| `.gitignore` | Common Python, Node, macOS, log, and build ignores. |
+| `CLAUDE.md` | Claude Code context: paths, conventions, project notes. |
+| `GEMINI.md` | Gemini CLI context: paths, conventions, project notes. |
+| `.claude/settings.json` | Claude permission allow/deny rules scoped to the project. |
+| `.gitignore` | Common ignores for Python, Node, macOS, logs, and build output. |
 | `TODO.md` | Concrete task backlog with grouped IDs. |
 | `ROADMAP.md` | High-level project direction and sequencing. |
-| `STATUS.md` | Short current-state and validation snapshot. |
-| `DOCUMENTATION.md` | Current architecture, behavior, and persistence notes. |
+| `STATUS.md` | Current-state and validation snapshot. |
+| `DOCUMENTATION.md` | Architecture, behavior, and persistence notes. |
 
 The root terminal also gets context files in `~/eldrun/root/`:
-
-- `CLAUDE.md`: explains the Eldrun workspace root and global data files.
-- `AGENTS.md`: tells agents that root-terminal work is for Eldrun/workspace
-  management, not project implementation.
-- `GEMINI.md`: same scope as `AGENTS.md`, written for the Gemini CLI.
+`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`.
 
 ## Architecture
 
 ```text
-EldrunApp (Adw.Application)
-+-- EldrunWindow (Adw.ApplicationWindow)
-    +-- header: status lamp, network icon, center tab bar, window controls
-    +-- global app toolbar
-    +-- CenterPanel: VTE agent terminals, shell terminals, app tabs, X11 embedding attempt
-    +-- FileTreePanel: project file tree and standalone open-window list
-    +-- BottomPanel: Root, search, project pills, settings, add/import
+Tauri v2 Application
++-- Rust backend (src-tauri/src/)
+|   +-- commands/         Tauri command handlers
+|   |   +-- terminal.rs   PTY lifecycle, spawn/resize/kill/write
+|   |   +-- projects.rs   Project CRUD, scaffold, file tree, stats
+|   |   +-- settings.rs   Settings load/save
+|   |   +-- workspace.rs  Workspace backend dispatch
+|   |   +-- apps.rs       Launch helpers, role mapping, icon resolution
+|   |   +-- default_apps.rs  File-extension app mapping
+|   |   +-- downloads.rs  ~/eldrun/downloads symlink + browser prefs
+|   +-- platform/         Workspace backends
+|   |   +-- x11.rs        EWMH/xcb — two-desktop parking model
+|   |   +-- wayland_kde.rs  KWin DBus — per-project virtual desktop
+|   |   +-- null.rs       No-op fallback
+|   +-- terminal/         PTY registry (mod.rs + active_session.rs)
+|   +-- schema/           Serde structs (project, settings, time_log, …)
+|   +-- storage.rs        Path helpers (~/.local/share/eldrun/)
+|   +-- lib.rs            Command registration and app setup
+|   +-- main.rs           Tauri entry point
++-- React/TypeScript frontend (src/)
+    +-- components/layout/
+    |   +-- AppShell.tsx    Top-level layout, hover-panel orchestration
+    |   +-- HeaderBar.tsx   Drag handle, header icons, tab bar, window controls
+    |   +-- CenterPanel.tsx Terminal/file-browser stack and tab scoping
+    |   +-- GlobalAppBar.tsx  Cross-project app toolbar (hover-revealed)
+    |   +-- RightPanel.tsx  File tree + tracked windows (hover-revealed)
+    |   +-- BottomBar.tsx   Project pills, search, settings (hover-revealed)
+    +-- components/terminal/
+    |   +-- TerminalView.tsx  xterm.js PTY wrapper
+    +-- components/files/
+    |   +-- FileBrowser.tsx  Files tab wrapper
+    |   +-- FileTree.tsx     Recursive file tree with context menu
+    +-- components/projects/
+    |   +-- ProjectPill.tsx  Individual project tab pill
+    +-- components/tabs/
+    |   +-- TabBar.tsx       Tab strip with add/close/rename/reorder
+    +-- components/header/
+    |   +-- Clock.tsx        Live clock
+    |   +-- ConnTypeIcon.tsx  Network type icon
+    |   +-- StatusLamp.tsx   Online/offline status lamp
+    |   +-- WindowControls.tsx  Minimize/maximize/close buttons
+    +-- stores/
+    |   +-- projects.ts     Project list, active project, CRUD
+    |   +-- tabs.ts         Tab entries by scope, layout persistence
+    |   +-- settings.ts     App settings
+    |   +-- windows.ts      Tracked external windows
+    +-- hooks/
+    |   +-- useKeyboard.ts  F11 / Super key handlers
+    +-- types/index.ts      Shared TypeScript types
 ```
 
-### Module Map
-
-| File | Responsibility |
-|------|----------------|
-| `app/eldrun.py` | Application entry point, CSS themes, signal handlers, `EldrunApp`. |
-| `app/window.py` | Main window composition, key handling, startup restore, project activation, global app toolbar, time tracking hooks, network callbacks, workspace integration, quit flow. |
-| `app/project_manager.py` | Project registry, project creation/import, scaffold writing, migrations, root context files. |
-| `app/new_project_dialog.py` | Modal project creation UI and validation. |
-| `app/import_project_dialog.py` | Modal import UI, folder chooser, mode selection. |
-| `app/settings_manager.py` | JSON-backed user settings. |
-| `app/default_apps_manager.py` | Global and per-project file-extension app mappings; system MIME bootstrap. |
-| `app/global_apps_manager.py` | Cross-project app role registry, system resolution, launch-or-raise, sticky-window handling, screenshot-region dispatch. |
-| `app/time_tracker.py` | Active project session tracking and crash/orphan session closure. |
-| `app/project_stats.py` | Background file-type and time summary scanner. |
-| `app/network_monitor.py` | Background 1.1.1.1:53 probe and network interface type detection. |
-| `app/workspace_manager.py` | Two-workspace parking model; delegates window and desktop operations to the active `ProjectSpaceBackend`; orchestrates project activation, cleanup, and mid-session backend changes. |
-| `app/workspace_core.py` | `ProjectSpaceBackend` abstract base class; shared types for all workspace backends. |
-| `app/backends/__init__.py` | Backend auto-detection: probes KDE Plasma first (X11 + Wayland), then Cinnamon/X11, then no-op null. |
-| `app/backends/kde_kwin.py` | KDE Plasma workspace backend: X11 path uses Xlib EWMH; Wayland path uses KWin JS scripting and KDE 6 DBus window interface. Supports KDE 5 and KDE 6. |
-| `app/backends/cinnamon_x11.py` | Cinnamon/X11 workspace backend. |
-| `app/backends/gnome.py` | GNOME workspace backend. |
-| `app/backends/null.py` | No-op backend used when no supported compositor is detected. |
-| `app/panels/center_panel.py` | Terminal stack, tab bar, agent/plain terminal lifecycle, app tab lifecycle, X11 embedding/fallback. |
-| `app/panels/right_panel.py` | Current `FileTreePanel`: file operations, default app dialogs, open-window list. |
-| `app/panels/bottom_panel.py` | Bottom bar, project pills, settings windows, search, drag/drop ordering. |
+**IPC pattern:** Rust ↔ React via Tauri `invoke` for request/response and
+Tauri events (`emit_to` / `listen`) for push notifications (PTY output, network
+status, time ticks, workspace updates). Terminal output is batched before
+crossing IPC.
 
 ## Persistence Model
 
-Eldrun intentionally splits global index data from project-local metadata.
+Eldrun splits global index data from project-local metadata.
 
 ### Global Directory
 
 All global data is under `~/.local/share/eldrun/`.
 
-| File | Managed by | Purpose |
-|------|------------|---------|
-| `projects.json` | `ProjectManager` | Lightweight index of known projects. |
-| `settings.json` | `SettingsManager` | User settings, including terminal command, theme, workspace management, and global app registry. |
-| `default_apps.json` | `DefaultAppsManager` | Global file-extension app map. |
-| `time_log.json` | `TimeTracker` | Append-only session records. |
-| `active_session.json` | `TimeTracker` | Crash/orphan-session sentinel. |
+| File | Purpose |
+|------|---------|
+| `projects.json` | Lightweight index of known projects. |
+| `settings.json` | User settings: agent command, theme, workspace management, global apps, etc. |
+| `default_apps.json` | Global file-extension → app command map. |
+| `time_log.json` | Append-only session records. |
+| `active_session.json` | Crash/orphan-session sentinel. |
+| `crash.log` | Appended on Rust panics. |
 
 ### `projects.json`
 
-Current global index entries contain only:
+Each entry:
 
 ```json
 {
@@ -370,24 +372,15 @@ Current global index entries contain only:
 }
 ```
 
-Global fields:
-
 | Field | Meaning |
 |-------|---------|
-| `id` | Stable UUID for UI state, logs, and references. |
+| `id` | Stable UUID. |
 | `name` | Display name. |
-| `status` | `current`, `active`, or `inactive`. At most one should be `current`. |
+| `status` | `current`, `active`, or `inactive`. At most one `current`. |
 | `position` | Bottom-bar ordering weight; lower appears earlier. |
-| `local_file` | Path to project-local metadata. |
-
-Older entries that stored full project data in `projects.json` are migrated on
-load by deriving or writing `project.json`.
+| `local_file` | Path to the project-local metadata file. |
 
 ### Project-Local `project.json`
-
-Each project stores durable local metadata in `<project_dir>/project.json`.
-
-Example:
 
 ```json
 {
@@ -395,7 +388,7 @@ Example:
   "name": "My Project",
   "directory": "/home/user/eldrun/projects/my-project",
   "git_type": "private",
-  "created_at": "2026-05-27T10:00:00+00:00",
+  "created_at": "2026-06-01T10:00:00+00:00",
   "status": "current",
   "position": 10,
   "local_file": "/home/user/eldrun/projects/my-project/project.json",
@@ -403,89 +396,59 @@ Example:
     ".md": "gnome-text-editor"
   },
   "file_type_stats": {
-    ".py": { "count": 12, "bytes": 48200 }
+    ".ts": { "count": 20, "bytes": 48200 }
   },
   "time_today_s": 1800.0,
   "time_total_s": 3600.0,
-  "last_updated": "2026-05-27T11:00:00",
   "time": {
     "total_s": 3600.0,
     "recent_sessions": [
-      {
-        "date": "2026-05-27",
-        "start": "2026-05-27 10:00",
-        "duration_s": 3600.0
-      }
+      { "date": "2026-06-01", "start": "2026-06-01 10:00", "duration_s": 3600.0 }
     ]
   },
-  "agent_tasks": [
-    {
-      "task_key": "project-<uuid4>",
-      "task_title": "Review the parser error handling",
-      "task_status": "active",
-      "task_updated_at": "2026-05-27T11:15:00+00:00",
-      "tab_label": "Claude",
-      "command": "claude"
-    }
+  "tab_layout": [
+    { "key": "tab-1", "label": "claude", "cmd": "claude", "cwd": "/home/user/eldrun/projects/my-project", "kind": "agent" }
   ],
   "open_apps": []
 }
 ```
 
-Notes:
-
-- `ProjectManager` treats `id`, `name`, `status`, `position`, and `local_file`
-  as global-index-canonical fields and overlays them when loading.
-- `shell_pid` is runtime-only and is not persisted.
-- `open_apps` is the canonical durable location for current open-app state.
-  `ProjectManager` preserves it while other metadata is rewritten.
-- `agent_tasks` stores lightweight current/recent task metadata for project
-  agent tabs. Runtime tab layout is still not persisted.
-- Per-project default app overrides live in `default_apps`.
-- Old `project_default_apps.json` files are migrated into `project.json`.
+- `tab_layout` is the persisted tab state restored on next project activation.
+- `open_apps` stores best-effort metadata for tracked external windows.
+- `default_apps` holds per-project file-extension overrides.
+- Unknown fields are preserved on read/write (serde `deny_unknown_fields` is
+  not used) to allow rollback to earlier versions.
 
 ### `settings.json`
 
-Common settings:
-
 ```json
 {
-  "terminal_command": "claude",
+  "default_agent_cmd": "claude",
   "workspace_management": false,
   "color_scheme": "dark",
   "global_apps": {
-    "browser": {
-      "exec": "/usr/bin/firefox",
-      "visible": true
-    }
+    "browser": { "exec": "/usr/bin/firefox", "visible": true }
   }
 }
 ```
 
-Notes:
-
-- `terminal_command` drives the default agent tab and project/root terminal
-  respawn behavior. UI choices are currently `claude` and `codex`.
-- `color_scheme` supports `dark`, `light`, `fancy_dark`, and `fancy_light`;
-  legacy `fancy` is normalized to `fancy_dark`.
+- `default_agent_cmd` drives the default tab type and project terminal respawn.
+  UI choices are `claude`, `codex`, `gemini`, `vibe`.
+- `color_scheme` supports `dark`, `light`, `fancy_dark`, `fancy_light`.
 - `global_apps` stores one entry per role with `exec` and `visible`.
 
 ### `default_apps.json`
 
 ```json
-{
-  ".py": "code",
-  ".md": "gnome-text-editor",
-  ".pdf": "evince"
-}
+{ ".py": "code", ".md": "gnome-text-editor", ".pdf": "evince" }
 ```
 
 Lookup order for file opens:
 
 1. Project-local `project.json["default_apps"]`.
 2. Global `default_apps.json`.
-3. System MIME default from `xdg-mime`.
-4. Manual "Open With" dialog.
+3. System MIME default (`xdg-mime query default …`).
+4. `xdg-open` fallback.
 
 ### `time_log.json`
 
@@ -493,308 +456,167 @@ Lookup order for file opens:
 [
   {
     "project_id": "<uuid4>",
-    "date": "2026-05-27",
-    "start_iso": "2026-05-27T10:00:00+00:00",
+    "date": "2026-06-01",
+    "start_iso": "2026-06-01T10:00:00+00:00",
     "duration_s": 3600.0
   }
 ]
 ```
 
-`active_session.json` stores the active project id and start time while a session
-is open. On next startup, `TimeTracker` closes a leftover sentinel as an
-orphaned session and removes the sentinel.
+`active_session.json` stores the active project id and start time while a
+session is open. On next startup, a leftover sentinel is closed as an orphaned
+session and removed.
 
 ## Runtime Behavior
 
 ### Startup
 
-1. `EldrunApp` applies CSS and creates `EldrunWindow`. `_setup_crash_logging()`
-   enables `faulthandler` (C-level crashes) and `sys.excepthook` (unhandled
-   Python exceptions); both append to `~/.local/share/eldrun/crash.log`.
-2. `ProjectManager` creates required global directories and root context files,
-   then loads and migrates the project registry.
-3. Settings, default apps, global apps, time tracker, and workspace manager are
-   initialized.
-4. Missing global app executables are populated from system defaults when
-   discoverable.
-5. On map, visible projects (`active` or `current`) get terminals and bottom-bar
-   pills.
-6. Inactive projects receive background stats scans.
-7. The project marked `current` is opened; if none exists, the root terminal is
-   opened.
-8. Optional workspace management allocates workspaces for visible projects.
-9. File-extension app mappings are bootstrapped from system MIME defaults in an
-   idle callback.
+1. `AppShell` mounts; loads settings and projects from the backend.
+2. `getCurrentWindow().setFullscreen(true)` is called after the window is ready.
+3. Projects marked `current` or `active` appear as bottom-bar pills.
+4. The project marked `current` is the initial active scope; if none, root.
+5. Workspace management (if enabled) allocates desktops for visible projects.
+6. Network monitoring begins; `network-status-changed` events drive the status
+   lamp and offline banner.
 
 ### Project Activation
 
-Activating a project pill:
+Switching to a project pill:
 
-- Shows the project terminal page.
-- Marks the previous current project `active`.
-- Marks the new one `current`.
-- Updates the file tree overlay.
-- Starts a time-tracking session for the project.
-- Refreshes time tooltips.
-- Moves tracked project windows between the visible workspace and hidden parking
-  workspace if workspace management is enabled.
+- Sets the active scope in the projects store.
+- `CenterPanel` reacts to `activeId` change: loads `tab_layout` from
+  `project.json` and restores or spawns tabs.
+- Updates the right panel to the new project directory.
+- Starts a time-tracking session via `start_session`.
+- The workspace backend moves windows between desktops (if enabled).
 
-Switching away from a project terminal closes the active time-tracking session.
+Switching away closes the active time session via `end_session`.
 
-### Terminal Respawn
+### Terminal Lifecycle
 
-Project and root terminals respawn automatically when their child exits. Changing
-the terminal command from settings resets active terminal widgets and terminates
-recorded child PIDs so they respawn with the new command.
+- `TerminalView` mounts → invokes `spawn_pty(key, cmd, args, cwd, env)`.
+- Backend creates a PTY, spawns the child process, and begins streaming
+  `pty-output-<key>` events.
+- xterm.js renders output; user input invokes `write_pty(key, data)`.
+- Window resize invokes `resize_pty(key, cols, rows)`.
+- Unmount invokes `kill_pty(key)`.
+- The backend has a crash-loop guard: if a process exits within 1 s, respawn is
+  delayed.
 
-Additional agent and plain terminal tabs are runtime UI state. They can be
-renamed, closed, and reordered, but the current implementation does not persist
-custom tab layouts across application restarts.
+Tab layout is auto-saved to `project.json["tab_layout"]` with a 500 ms debounce
+after any tab change.
 
-Agent and terminal tabs can also carry explicit task metadata. Supplying a task
-when creating a new agent sets it automatically and sends the same prompt to the
-agent. Right-click a tab to set, mark done, or clear its task; hovering the tab
-shows the current task preview. Project tasks are written to
-`project.json["agent_tasks"]`.
-
-### File Opening and App Embedding
+### File Opening and External Window Tracking
 
 When a file is opened:
 
-1. Eldrun resolves an app command.
-2. It launches `subprocess.Popen([app, path], cwd=project_dir)`.
-3. `CenterPanel` creates an app tab and polls `_NET_CLIENT_LIST` for a window
-   with `_NET_WM_PID` matching the launched process.
-4. If found, Eldrun attempts to strip decorations and reparent the X11 window
-   into the center stack.
-5. If embedding fails, it closes the app tab and records a standalone
-   open-window row in the right overlay.
+1. Backend resolves the app command (per-project → global → MIME → `xdg-open`).
+2. Backend launches the process via `xdg-open` or the resolved command.
+3. The opened window is tracked by PID in `project.json["open_apps"]` and shown
+   in the right panel's Windows view.
 
-This is best-effort and X11-specific. Wayland compositors do not support this
-embedding model.
-
-On startup, Eldrun can relaunch saved open-app entries from
-`project.json["open_apps"]` when the recorded executable and file still exist.
-This is a basic relaunch path; it does not yet restore window geometry, layout,
-focus order, or a durable window identity across restarts.
+There is no X11 window embedding in the Tauri WebView. All file-opened apps run
+as external processes tracked by PID.
 
 ### Global App Launching
 
-Global app buttons are separate from project file opening:
-
-1. Eldrun looks up the role entry in `settings.json["global_apps"]`.
-2. It scans `_NET_CLIENT_LIST` for a likely matching existing window.
-3. If a window is found, Eldrun raises it.
-4. If no window is found, Eldrun launches the configured command.
-5. When a launched or found global app window is available, Eldrun marks it
-   sticky across all workspaces on X11.
-
-Global apps are not moved into the hidden project parking workspace and are not
-owned by any single project.
+1. Backend looks up the role entry in `settings.json["global_apps"]`.
+2. Scans open windows for a match (by process name, WM_CLASS, or window title).
+3. If found, raises the window (and marks it sticky on X11).
+4. If not found, launches the configured command.
+5. Global app windows are not moved during project switches.
 
 ### Network Monitoring
 
-`NetworkMonitor` runs a daemon thread every 5 seconds:
-
-- TCP connect probe to `1.1.1.1:53` with a 3 second timeout.
-- Interface scan under `/sys/class/net` to classify `wlan`, `lan`, or
-  `disconnected`.
-- UI callbacks are delivered through `GLib.idle_add`.
+A Tokio background task probes `1.1.1.1:53` every 5 seconds with a 3-second
+TCP timeout and scans `network-interface` for adapter type. State changes emit
+`network-status-changed` Tauri events to the frontend.
 
 ### Workspace Management
 
-`WorkspaceManager` auto-detects the backend on startup:
+Backend auto-detection:
 
-| Backend | Detection | Desktop create/name | Desktop switch |
-|---|---|---|---|
-| **KDE Plasma (X11)** | `XDG_CURRENT_DESKTOP` contains `kde`/`plasma` + KWin DBus responds | KDE 5: `/KWin`; KDE 6: `/VirtualDesktopManager` | KWin DBus `setCurrentDesktop`/`setCurrent` |
-| **KDE Plasma (Wayland)** | same + `WAYLAND_DISPLAY` set | same DBus paths | KWin JS `workspace.currentDesktop = workspace.desktops[N]` |
-| Cinnamon | `org.Cinnamon` DBus Eval | JS via `global.workspace_manager` | JS activate |
-| GNOME | `gsettings get org.gnome.mutter dynamic-workspaces` succeeds | `gsettings` (`org.gnome.desktop.wm.preferences`) | EWMH `_NET_CURRENT_DESKTOP` |
-| wmctrl | `wmctrl -l` exits 0 | `wmctrl -n` (count only, no names) | `wmctrl -s` |
-| none | fallthrough | no-op | no-op |
+| Backend | Detected when |
+|---------|--------------|
+| KDE Wayland | `WAYLAND_DISPLAY` is set and `XDG_CURRENT_DESKTOP` contains `kde`/`plasma` |
+| X11 | X11 display is available and KDE Wayland conditions are not met |
+| Null | All else |
 
-Current parking model:
+**X11 two-desktop model:**
 
-- Workspace 0, named `Eldrun`, is the visible workspace for the current project
-  and the Eldrun window itself.
-- Workspace 1, named `Eldrun-Hidden`, is the parking workspace for inactive
-  project windows.
-- When the user switches projects, non-sticky, non-Eldrun, non-global-app
-  windows from workspace 0 are moved to workspace 1 and recorded against the
-  old project id.
-- Previously recorded windows for the new project are moved from workspace 1
-  back to workspace 0.
-- Global app windows are excluded from project parking and are kept
-  cross-project when X11 sticky-window handling is available.
-- Assignments are in memory only. X11 window ids do not survive restarts, so
-  durable restart restore relies on `project.json["open_apps"]` relaunch
-  metadata rather than saved XIDs.
-- Turning workspace management on mid-session reconciles already-active
-  projects without requiring a restart.
-- Normal quit restores managed workspace state where the backend supports it.
+- Workspace 0 (`Eldrun`): the visible workspace for the current project.
+- Workspace 1 (`Eldrun-Hidden`): parking workspace for inactive project windows.
+- On project switch, non-sticky windows from workspace 0 are moved to workspace
+  1 (or vice versa).
+- Global app windows are excluded from parking.
 
-GNOME-specific notes:
+**KDE Wayland per-project model:**
 
-- Dynamic workspaces (`org.gnome.mutter dynamic-workspaces`) are temporarily
-  disabled while Eldrun is running so a fixed workspace count can be held.
-- On clean exit (or Python crash via `atexit`), the original workspace count,
-  names, and dynamic-workspaces setting are restored.
-- SIGKILL cannot be caught; if the process is killed hard the `gsettings` state
-  remains changed and must be restored manually:
-  `gsettings reset org.gnome.mutter dynamic-workspaces`
+- Each project gets a dedicated KDE virtual desktop.
+- Switching projects switches `VirtualDesktopManager.current` via KWin DBus.
+- Eldrun is made sticky at startup via `_NET_WM_STATE_STICKY` or KWin scripting.
+- KDE 5 and KDE 6 use different DBus paths (`/KWin` vs `/VirtualDesktopManager`).
+- Window enumeration uses KWin JS scripting via `org.kde.kwin.Scripting`.
 
-KDE Plasma notes:
+### Download Routing
 
-- On X11, window operations use Xlib EWMH atoms (`_NET_CLIENT_LIST`,
-  `_NET_WM_DESKTOP`, `_NET_WM_STATE_STICKY`), the same as for Cinnamon/X11.
-- On Wayland, window enumeration and moves use KWin JS scripting executed via
-  `org.kde.kwin.Scripting` load/run/unload. KDE 6 also exposes a per-window
-  DBus interface at `/org/kde/KWin/Windows/<uuid>` used as a fallback when
-  script file writes fail.
-- KDE 6 desktop CRUD uses `/VirtualDesktopManager`; KDE 5 uses `/KWin`.
-- No Python DBus bindings are required; all DBus calls use `dbus-send` and
-  `gdbus` subprocess invocations.
-- KDE 5 Wayland: `XMLHttpRequest file://` in the KWin JS runtime may be
-  sandboxed. If the enumeration JSON write fails, window management falls back
-  to tracking only windows explicitly assigned via `assign_window_to_project()`.
+On every project switch, the backend updates the `~/eldrun/downloads` symlink
+to point to `<active_project_dir>/tmp/downloads/`. When root is active, it
+points to `~/eldrun/root/tmp/downloads/`.
 
-Non-KDE Wayland limitations:
+Firefox and Chromium preference files are updated on project switch (with
+backups). Profile detection is best-effort.
 
-- `gsettings` calls for workspace count, names, and dynamic-workspace toggling
-  work on Wayland but only affect GNOME Shell-based compositors.
-- Workspace switching uses EWMH (`_NET_CURRENT_DESKTOP`), which non-KDE Wayland
-  compositors do not honor.
-- Sticky-window state also relies on EWMH and may not propagate under non-KDE
-  Wayland.
-- App window embedding is not implemented on Wayland.
+### Crash Logging
 
-## Local AI — Ollama
+`std::panic::set_hook` in the Rust backend appends stack traces to
+`~/.local/share/eldrun/crash.log` on panics.
 
-Eldrun has a built-in Ollama client separate from the VTE agent-terminal path.
-It does not run Ollama inside a terminal tab; instead it opens a GTK dialog that
-streams responses directly from the Ollama HTTP API.
+## Tests and Quality Checks
 
-### Entry Points
-
-| Trigger | Behavior |
-|---------|----------|
-| `Ctrl+K` | Opens the Ask Ollama dialog with the configured model. |
-| Center inline prompt bar | Text entered in the center bar opens the dialog pre-filled with that prompt. |
-| File-tree → Ask Ollama | Right-click a file in the tree and choose Ask Ollama to open the dialog with a file-oriented prompt. |
-| Agent picker (local model) | Selecting a local model from the new-agent popover opens the Ollama dialog for that model instead of spawning a VTE tab. |
-
-### Ollama Dialog
-
-- Shows the initial prompt if one was supplied by the entry point.
-- Displays the model name in the title.
-- Send button starts the stream and is disabled while a request is in flight.
-- Spinner runs while streaming; stops on completion or error.
-- Streamed text appears incrementally in the response view.
-- Escape closes the dialog.
-
-### Model Discovery
-
-Eldrun fetches the model list from `<ollama_host>/api/tags` when the agent
-picker is opened. Models that are returned appear as `(local)` entries in the
-list. If the fetch fails the list is empty and the UI does not block.
-
-### Ollama Settings
-
-Settings → Ollama:
-
-| Field | Purpose |
-|-------|---------|
-| Host | Base URL for the Ollama server, e.g. `http://localhost:11434`. |
-| Default model | Model name used when no explicit model is selected. |
-| Autostart | If enabled and the host is `localhost`, Eldrun runs `ollama serve` on startup and stops it on quit. Autostart state is partial — verify daemon cleanup manually. |
-
-### Current Limitations
-
-- Local models open the Ollama dialog, not a persistent VTE terminal session.
-- The local/private label (G5.3) is not shown in the UI yet.
-- Scrollback-to-Ollama hint strip (G5.4) is not implemented.
-- Embedding-based project search (G5.5) and startup suggestions (G5.6) are not
-  implemented.
-
-## Download Routing
-
-Eldrun manages a `~/eldrun/downloads` symlink that always points to the active
-project's `tmp/downloads/` directory:
-
-- When a project is active, the symlink points to `<project_dir>/tmp/downloads/`.
-- When no project is active (root terminal), the symlink points to
-  `~/eldrun/root/tmp/downloads/`.
-
-This lets browser download directories be set once to `~/eldrun/downloads` and
-automatically follow the active project.
-
-Browser preference bootstrapping:
-
-- Firefox: Eldrun writes download path into the detected Firefox profile `prefs.js`.
-- Chromium/Chrome: Eldrun writes into the detected Chromium preferences file.
-
-Both browser paths are partial — profile detection and the assumption that the
-browser is not running when preferences are written need manual verification.
-
-## Single-Instance Protection
-
-Eldrun uses GTK application ID uniqueness to prevent a second instance from
-starting. Starting Eldrun while an instance is already running focuses the
-existing window instead of creating a second workspace-mutating instance.
-
-## Tests and Current Quality Signals
-
-The repository has unit tests for project management, settings, default apps,
-network detection, time tracking, open-app metadata, bottom-panel logic, and
-the KDE Plasma backend (X11 + Wayland paths, ~127 tests).
-
-Recommended checks:
+Type-check frontend:
 
 ```bash
-python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py \
-  app/new_project_dialog.py app/import_project_dialog.py app/settings_manager.py \
-  app/default_apps_manager.py app/network_monitor.py app/time_tracker.py \
-  app/project_stats.py app/workspace_manager.py app/panels/*.py \
-  app/backends/*.py
-
-python3 -m unittest
+npx tsc --noEmit
 ```
 
-Important analysis findings:
+Build frontend:
 
-- `app/panels/right_panel.py` is a historical filename. Its live widget is
-  `FileTreePanel`.
-- Open-app metadata is stored in `project.json["open_apps"]`; robust standalone
-  restore remains future work.
-- Global app role state is stored in `settings.json["global_apps"]`, not in
-  project metadata.
+```bash
+npm run build
+```
+
+Run Rust schema round-trip tests:
+
+```bash
+cd src-tauri && cargo test
+```
+
+(15 schema round-trip tests pass; test fixtures in `test-fixtures/`.)
 
 ## Known Limitations
 
-- X11 app embedding is fragile and should be treated as experimental.
-- KDE Plasma Wayland workspace management is implemented (virtual desktop
-  isolation via KWin scripting). For non-KDE Wayland compositors, workspace
-  switching, sticky-window state, launch-or-raise, and app embedding are
-  unavailable because those paths rely on X11/EWMH.
-- Open-window/app persistence has a canonical metadata location, but restore
-  behavior is not wired as a robust current feature.
-- Extra agent/plain terminal tab layout is runtime state and is not persisted
-  across restarts.
-- Network status depends on reaching Cloudflare DNS and may show offline on
-  networks that block direct TCP/53 even when general internet access works.
-- The app uses several GTK widgets and X11 techniques that require live-session
-  testing beyond headless unit tests.
+- X11 window embedding is not implemented; all file-opened apps run externally.
+- KDE Wayland workspace management needs live-session QA (functional but
+  untested end-to-end).
+- Non-KDE Wayland compositors use the null backend (no workspace switching, no
+  sticky windows).
+- Tab layout is persisted but PTYs do not survive app restarts; tabs respawn
+  their processes on next activation.
+- Open-app restore uses a best-effort relaunch model; window geometry and focus
+  order are not restored.
+- Network status depends on reaching Cloudflare DNS; may show offline on
+  networks that block direct TCP/53.
+- Download routing browser preference edits assume the browser is not running.
 
 ## Practical Development Notes
 
-- Prefer editing under `app/`; generated global/runtime data lives under
-  `~/.local/share/eldrun/` and project-local runtime files.
-- Use `GLib.idle_add` for GTK updates from threads and return `False` from
-  one-shot callbacks.
-- Keep `ProjectManager._save()` as a lightweight index write and
-  `_save_local()` as project-local metadata write.
-- Be careful with terminal command changes: active terminals are reset and child
-  PIDs are killed so VTE `child-exited` handlers respawn them.
-- Treat X11 window IDs as volatile. Any embedding path needs recovery that
-  returns to a valid terminal page on failure.
+- Edit frontend under `src/`; backend under `src-tauri/src/`.
+- Run `npm run build` and `cargo test` before handing off changes.
+- Do not launch Eldrun from an agent terminal; a second instance corrupts
+  workspace state. Ask the user to restart the running instance.
+- Keep Tauri command payload names in camelCase to match frontend `invoke` calls.
+- Global/runtime data lives under `~/.local/share/eldrun/`; do not store it in
+  tracked markdown files.
+- Unknown JSON fields are preserved on read/write to allow rollback to earlier
+  versions.

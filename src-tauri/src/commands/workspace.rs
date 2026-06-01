@@ -29,12 +29,13 @@ pub fn workspace_switch(
     state: State<'_, WorkspaceStateArc>,
     app: AppHandle,
     project_id: String,
+    previous_project_id: Option<String>,
 ) -> Result<(), String> {
     state
         .lock()
         .unwrap()
         .backend
-        .switch_to_project(&project_id)?;
+        .switch_to_project(&project_id, previous_project_id.as_deref())?;
     let info = state.lock().unwrap().backend.info();
     let _ = app.emit("workspace-changed", info);
     Ok(())

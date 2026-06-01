@@ -18,7 +18,11 @@ impl WorkspaceBackend for NullBackend {
         }
     }
 
-    fn switch_to_project(&self, _project_id: &str) -> Result<(), String> {
+    fn switch_to_project(
+        &self,
+        _project_id: &str,
+        _previous_project_id: Option<&str>,
+    ) -> Result<(), String> {
         Ok(())
     }
 

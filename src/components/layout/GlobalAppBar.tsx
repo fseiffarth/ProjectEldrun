@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
+import { FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
 import type { GlobalAppEntry } from "../../types";
 import { resolveProjectDirectory } from "../../types";
 
@@ -35,8 +36,9 @@ type EditState = {
 export function GlobalAppBar() {
   const { settings, updateSettings } = useSettingsStore();
   const { projects, activeId } = useProjectsStore();
+  const { ensureTab } = useTabsStore();
   const [edit, setEdit] = useState<EditState | null>(null);
-  const [iconPaths, setIconPaths] = useState<Record<string, string | null>>({});
+  const [iconDataUrls, setIconDataUrls] = useState<Record<string, string | null>>({});
   const popoverRef = useRef<HTMLDivElement>(null);
   const activeProject = projects.find((p) => p.id === activeId);
   const activeDir = resolveProjectDirectory(activeProject) || undefined;
@@ -52,14 +54,14 @@ export function GlobalAppBar() {
     Promise.all(
       execs.map(async (exec) => {
         try {
-          const path = await invoke<string | null>("resolve_app_icon", { exec });
-          return [exec, path] as const;
+          const dataUrl = await invoke<string | null>("resolve_app_icon", { exec });
+          return [exec, dataUrl] as const;
         } catch {
           return [exec, null] as const;
         }
       }),
     ).then((entries) => {
-      if (!cancelled) setIconPaths(Object.fromEntries(entries));
+      if (!cancelled) setIconDataUrls(Object.fromEntries(entries));
     });
     return () => {
       cancelled = true;
@@ -85,13 +87,15 @@ export function GlobalAppBar() {
   if (apps.length === 0) return null;
 
   const launch = (role: string, exec: string) => {
+    if (role === "file_manager") {
+      ensureTab(
+        { label: "Files", cmd: FILES_TAB_CMD, cwd: activeDir ?? "", kind: "files" },
+        (tab) => tab.kind === "files" && tab.cwd === (activeDir ?? ""),
+      );
+      return;
+    }
     if (!exec) return;
-    invoke("launch_app", {
-      exec,
-      file: role === "file_manager" ? activeDir ?? null : null,
-      projectId: null,
-      role,
-    }).catch(() => {});
+    invoke("launch_app", { exec, file: null, projectId: null, role }).catch(() => {});
   };
 
   const updateGlobalApp = async (role: string, patch: Partial<GlobalAppEntry>) => {
@@ -120,13 +124,13 @@ export function GlobalAppBar() {
     <div className="global-apps-toolbar" onClick={(e) => e.stopPropagation()}>
       {apps.map(([role, app]) => {
         const meta = ROLE_BY_KEY[role] ?? { key: role, label: role, fallback: "●" };
-        const iconPath = app.exec ? iconPaths[app.exec] : null;
+        const iconDataUrl = app.exec ? iconDataUrls[app.exec] : null;
         return (
           <button
             key={role}
             className="global-app-btn"
             title={`${meta.label}${app.exec ? `: ${app.exec}` : ""} · Right-click to configure`}
-            aria-disabled={!app.exec}
+            aria-disabled={role !== "file_manager" && !app.exec}
             onClick={() => launch(role, app.exec)}
             onContextMenu={(event) => {
               event.preventDefault();
@@ -134,8 +138,8 @@ export function GlobalAppBar() {
               setEdit({ role, label: meta.label, exec: app.exec, x: event.clientX, y: event.clientY });
             }}
           >
-            {iconPath ? (
-              <img className="global-app-icon" src={convertFileSrc(iconPath)} aria-hidden />
+            {iconDataUrl ? (
+              <img className="global-app-icon" src={iconDataUrl} aria-hidden />
             ) : (
               <span className="global-app-fallback-icon" aria-hidden>{meta.fallback}</span>
             )}

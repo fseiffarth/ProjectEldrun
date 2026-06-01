@@ -1,4 +1,4 @@
-# ProjectEldrun - Roadmap
+# ProjectEldrun — Roadmap
 
 This file captures product direction and sequencing. Concrete implementation
 tasks live in `TODO.md`; current status and validation notes live in
@@ -6,48 +6,44 @@ tasks live in `TODO.md`; current status and validation notes live in
 
 ## Near Term
 
-- Stabilize the current GTK shell: hover-revealed panels, header tab bar,
-  bottom project switcher, settings windows, and global app toolbar.
+- Live-session QA: terminal resize/exit/paste, project switch, workspace
+  switching (X11 and KDE Wayland), download routing, browser pref editing.
+- Promote `rust_migration` to `main` after QA passes.
 - Harden project context routing: file tree state, active-project download
-  symlink, app defaults, time tracking, and task metadata should reliably follow
+  symlink, app defaults, time tracking, and tab layout should reliably follow
   the active project.
-- Improve coverage around the new local AI, app picker, download routing, and
-  window-layout helpers without requiring a live display server.
+- Improve coverage for terminal lifecycle, project CRUD, and workspace backends
+  without requiring a live display server.
 - Keep docs split by purpose so generated runtime state does not churn tracked
   project files.
 
 ## Core Reliability
 
-- Make standalone open-app handling reliable before extending embedding. File
-  opens should launch, track, close, and restore predictably even when X11
-  reparenting fails.
-- Treat X11 embedding as an enhancement path. It needs recovery that always
-  returns the center panel to a valid terminal or app state when window probing
-  fails.
-- Tighten workspace-management behavior for Cinnamon, GNOME, and `wmctrl`,
-  including cleanup after normal exits and clear warnings for hard-kill cases.
+- Make standalone open-app handling reliable before extending it. File opens
+  should launch, track, and restore predictably.
+- Tighten workspace-management behavior for X11 and KDE Wayland, including
+  cleanup after normal exits and clear warnings for kill-9 cases.
 - Keep runtime-generated state in `~/.local/share/eldrun/` or project-local
   `project.json`, not in human-maintained markdown files.
 
 ## App and Workspace Integration
 
 - Keep global apps separate from project-owned apps. Browser, mail, calendar,
-  notes, screenshot, and similar roles should stay visible across workspaces and
-  avoid being assigned to a project.
-- Route common URI schemes through the global app launcher instead of bare
-  `xdg-open` calls.
+  notes, screenshot, and similar roles should stay visible across workspaces
+  and avoid being assigned to a project.
+- Route common URI schemes from terminal links through the global app launcher.
 - Improve file opening around system MIME defaults, per-project overrides, and
   the app picker so users can correct defaults without leaving Eldrun.
 
 ## Platform Direction
 
-- X11 remains the supported target for embedding, launch-or-raise, sticky
-  windows, and full workspace control.
-- KDE Plasma (X11 and Wayland) now has a first-class backend. KDE Wayland
-  virtual desktop isolation is implemented; live-session QA is needed before
-  the 0.2.0 version bump.
+- Linux X11 is the primary target for launch-or-raise, sticky windows, and
+  full workspace control.
+- KDE Plasma (X11 and Wayland) has a first-class backend. KDE Wayland
+  per-project virtual desktop isolation is implemented; live-session QA is
+  needed before the 0.2.0 version bump.
 - For non-KDE Wayland compositors (Sway, Hyprland, GNOME on Wayland), workspace
-  switching, sticky-window state, launch-or-raise, and app embedding are not yet
-  implemented — each would require a compositor-specific backend.
-- Cross-platform Windows/macOS support is out of scope for the current GTK/VTE
-  architecture.
+  switching, sticky-window state, launch-or-raise, and app embedding are not
+  implemented — each requires a compositor-specific backend.
+- Windows/macOS builds are experimental shells until native default-app, window,
+  download, and workspace integrations are added.

@@ -95,14 +95,14 @@ export function CenterPanel() {
       {allTabs.map(({ tab, scopeKey }) => (
         tab.kind === "files" ? (
           <FileBrowser
-            key={tab.key}
+            key={`${scopeKey}/${tab.key}`}
             projectDir={tab.cwd}
             projectId={scopeKey === "root" ? null : scopeKey}
             active={scopeKey === scope && tab.key === activeKey}
           />
         ) : (
           <TerminalView
-            key={tab.key}
+            key={`${scopeKey}/${tab.key}`}
             id={tab.key}
             cmd={tab.cmd}
             args={tab.args ?? []}

@@ -108,12 +108,39 @@ pub fn resolve_app_icon(exec: String) -> Option<String> {
             };
             if entry.exec == exec || entry_base == exec_base {
                 if let Some(icon_path) = resolve_icon_path(&entry.icon) {
-                    return Some(icon_path.to_string_lossy().to_string());
+                    return icon_to_data_url(&icon_path);
                 }
             }
         }
     }
     None
+}
+
+fn icon_to_data_url(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let mime = match path.extension().and_then(|e| e.to_str()) {
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("xpm") => "image/x-xpixmap",
+        _ => "image/png",
+    };
+    Some(format!("data:{mime};base64,{}", base64_encode(&bytes)))
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(T[((n >> 18) & 63) as usize]);
+        out.push(T[((n >> 12) & 63) as usize]);
+        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] } else { b'=' });
+        out.push(if chunk.len() > 2 { T[(n & 63) as usize] } else { b'=' });
+    }
+    String::from_utf8(out).unwrap_or_default()
 }
 
 #[tauri::command]

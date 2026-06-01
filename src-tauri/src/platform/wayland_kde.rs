@@ -119,7 +119,11 @@ impl WorkspaceBackend for KdeWaylandBackend {
         }
     }
 
-    fn switch_to_project(&self, project_id: &str) -> Result<(), String> {
+    fn switch_to_project(
+        &self,
+        project_id: &str,
+        _previous_project_id: Option<&str>,
+    ) -> Result<(), String> {
         let id = self.ensure_desktop_for(project_id)?;
         self.switch_to_desktop(&id)
     }

@@ -172,6 +172,6 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 
 export function cmdToKind(cmd: string): TabKind {
   if (cmd === FILES_TAB_CMD) return "files";
-  if (cmd === "claude" || cmd === "codex" || cmd === "gemini") return "agent";
+  if (cmd === "claude" || cmd === "codex" || cmd === "gemini" || cmd === "vibe") return "agent";
   return "shell";
 }

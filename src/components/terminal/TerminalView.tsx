@@ -210,6 +210,7 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
       style={{
         flex: 1,
         minHeight: 0,
+        position: "relative",
         display: active ? "flex" : "none",
         flexDirection: "column",
         background: colorScheme === "light" || colorScheme === "fancy_light" ? "#ffffff" : "#0d1117",

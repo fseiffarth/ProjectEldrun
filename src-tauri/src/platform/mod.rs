@@ -31,8 +31,14 @@ pub struct WorkspaceInfo {
 pub trait WorkspaceBackend: Send + Sync {
     fn name(&self) -> &'static str;
     fn info(&self) -> WorkspaceInfo;
-    /// Move all windows associated with `project_id` to the foreground desktop.
-    fn switch_to_project(&self, project_id: &str) -> Result<(), String>;
+    /// Bring `project_id`'s windows to the foreground desktop and park the
+    /// previous project's windows on the hidden desktop.
+    /// `previous_project_id` is the project being deactivated (None on first switch).
+    fn switch_to_project(
+        &self,
+        project_id: &str,
+        previous_project_id: Option<&str>,
+    ) -> Result<(), String>;
     /// Called at startup to make Eldrun visible on all desktops (sticky).
     fn make_sticky(&self, eldrun_pid: u32) -> Result<(), String>;
     /// Called when the app exits — restore original desktop configuration.
