@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 
-export type TabKind = "agent" | "shell";
+export type TabKind = "agent" | "shell" | "files";
+
+export const FILES_TAB_CMD = "__eldrun_files__";
 
 export interface TabEntry {
   key: string;
@@ -13,9 +15,14 @@ export interface TabEntry {
 }
 
 interface TabsStore {
+  scope: string;
+  tabsByScope: Record<string, TabEntry[]>;
+  activeKeyByScope: Record<string, string | null>;
   tabs: TabEntry[];
   activeKey: string | null;
+  setScope: (scope: string) => void;
   setActive: (key: string) => void;
+  renameTab: (key: string, label: string) => void;
   addTab: (tab: Omit<TabEntry, "key">) => TabEntry;
   ensureTab: (
     tab: Omit<TabEntry, "key">,
@@ -24,7 +31,7 @@ interface TabsStore {
   removeTab: (key: string) => void;
   reorder: (from: number, to: number) => void;
   loadFromLayout: (
-    layout: Array<{ key: string; label: string; cmd: string; cwd: string }>,
+    layout: Array<{ key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string }>,
     defaultCwd: string,
   ) => void;
   saveLayout: (localFile: string) => Promise<void>;
@@ -36,22 +43,60 @@ function nextKey(prefix: string) {
 }
 
 export const useTabsStore = create<TabsStore>((set, get) => ({
+  scope: "root",
+  tabsByScope: {},
+  activeKeyByScope: {},
   tabs: [],
   activeKey: null,
 
-  setActive: (key) => set({ activeKey: key }),
+  setScope: (scope) => {
+    set((s) => ({
+      scope,
+      tabs: s.tabsByScope[scope] ?? [],
+      activeKey: s.activeKeyByScope[scope] ?? null,
+    }));
+  },
+
+  setActive: (key) => {
+    set((s) => ({
+      activeKey: key,
+      activeKeyByScope: { ...s.activeKeyByScope, [s.scope]: key },
+    }));
+  },
+
+  renameTab: (key, label) => {
+    const nextLabel = label.trim();
+    if (!nextLabel) return;
+    set((s) => {
+      const tabs = s.tabs.map((tab) =>
+        tab.key === key ? { ...tab, label: nextLabel } : tab,
+      );
+      return {
+        tabs,
+        tabsByScope: { ...s.tabsByScope, [s.scope]: tabs },
+      };
+    });
+  },
 
   addTab: (tab) => {
     const key = nextKey(tab.kind);
     const entry: TabEntry = { key, ...tab };
-    set((s) => ({ tabs: [...s.tabs, entry], activeKey: key }));
+    set((s) => {
+      const tabs = [...s.tabs, entry];
+      return {
+        tabs,
+        activeKey: key,
+        tabsByScope: { ...s.tabsByScope, [s.scope]: tabs },
+        activeKeyByScope: { ...s.activeKeyByScope, [s.scope]: key },
+      };
+    });
     return entry;
   },
 
   ensureTab: (tab, matches) => {
     const existing = get().tabs.find(matches);
     if (existing) {
-      set({ activeKey: existing.key });
+      get().setActive(existing.key);
       return existing;
     }
     return get().addTab(tab);
@@ -61,10 +106,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     set((s) => {
       const tabs = s.tabs.filter((t) => t.key !== key);
       const activeKey =
-        s.activeKey === key
-          ? tabs[tabs.length - 1]?.key ?? null
-          : s.activeKey;
-      return { tabs, activeKey };
+        s.activeKey === key ? (tabs[tabs.length - 1]?.key ?? null) : s.activeKey;
+      return {
+        tabs,
+        activeKey,
+        tabsByScope: { ...s.tabsByScope, [s.scope]: tabs },
+        activeKeyByScope: { ...s.activeKeyByScope, [s.scope]: activeKey },
+      };
     });
   },
 
@@ -73,7 +121,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const tabs = [...s.tabs];
       const [moved] = tabs.splice(from, 1);
       tabs.splice(to, 0, moved);
-      return { tabs };
+      return {
+        tabs,
+        tabsByScope: { ...s.tabsByScope, [s.scope]: tabs },
+      };
     });
   },
 
@@ -84,14 +135,19 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       cmd: t.cmd,
       args: [],
       cwd: t.cwd || defaultCwd,
-      kind: cmdToKind(t.cmd),
+      kind: t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : "")),
     }));
-    set({ tabs, activeKey: tabs[0]?.key ?? null });
+    const activeKey = tabs[0]?.key ?? null;
+    set((s) => ({
+      tabs,
+      activeKey,
+      tabsByScope: { ...s.tabsByScope, [s.scope]: tabs },
+      activeKeyByScope: { ...s.activeKeyByScope, [s.scope]: activeKey },
+    }));
   },
 
   saveLayout: async (localFile) => {
     const { tabs } = get();
-    // Load the current project.json and update tab_layout.
     try {
       const project = await invoke<Record<string, unknown>>("load_project", {
         localFile,
@@ -101,18 +157,21 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         label: t.label,
         cmd: t.cmd,
         cwd: t.cwd,
+        kind: t.kind,
+        type: t.kind,
       }));
       await invoke("save_project", {
         localFile,
         project: { ...project, tab_layout: tabLayout },
       });
     } catch {
-      // Silently fail — tab layout is non-critical state.
+      // tab layout is non-critical
     }
   },
 }));
 
-function cmdToKind(cmd: string): TabKind {
+export function cmdToKind(cmd: string): TabKind {
+  if (cmd === FILES_TAB_CMD) return "files";
   if (cmd === "claude" || cmd === "codex" || cmd === "gemini") return "agent";
   return "shell";
 }

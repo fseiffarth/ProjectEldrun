@@ -41,6 +41,8 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_autostart: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent_cmd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub global_apps: Option<HashMap<String, GlobalAppEntry>>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,

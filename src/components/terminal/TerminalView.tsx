@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, Event } from "@tauri-apps/api/event";
+import { useSettingsStore } from "../../stores/settings";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalOutput {
@@ -24,7 +25,56 @@ interface Props {
   active: boolean;
 }
 
+function terminalTheme(scheme: string | undefined) {
+  if (scheme === "light" || scheme === "fancy_light") {
+    return {
+      background: "#ffffff",
+      foreground: "#24292f",
+      cursor: "#24292f",
+      black: "#24292f",
+      red: "#d1242f",
+      green: "#1a7f37",
+      yellow: "#9a6700",
+      blue: "#0969da",
+      magenta: "#8250df",
+      cyan: "#1b7c83",
+      white: "#6e7781",
+      brightBlack: "#57606a",
+      brightRed: "#cf222e",
+      brightGreen: "#2da44e",
+      brightYellow: "#bf8700",
+      brightBlue: "#0550ae",
+      brightMagenta: "#6639ba",
+      brightCyan: "#3192aa",
+      brightWhite: "#24292f",
+    };
+  }
+
+  return {
+    background: "#0d1117",
+    foreground: "#e6edf3",
+    cursor: "#e6edf3",
+    black: "#484f58",
+    red: "#f85149",
+    green: "#3fb950",
+    yellow: "#e3b341",
+    blue: "#388bfd",
+    magenta: "#bc8cff",
+    cyan: "#39c5cf",
+    white: "#b1bac4",
+    brightBlack: "#6e7681",
+    brightRed: "#ff7b72",
+    brightGreen: "#56d364",
+    brightYellow: "#e3b341",
+    brightBlue: "#58a6ff",
+    brightMagenta: "#d2a8ff",
+    brightCyan: "#39c5cf",
+    brightWhite: "#e6edf3",
+  };
+}
+
 export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
+  const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -43,27 +93,7 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
       cursorBlink: true,
       fontSize: 13,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
-      theme: {
-        background: "#0d1117",
-        foreground: "#e6edf3",
-        cursor: "#e6edf3",
-        black: "#484f58",
-        red: "#f85149",
-        green: "#3fb950",
-        yellow: "#e3b341",
-        blue: "#388bfd",
-        magenta: "#bc8cff",
-        cyan: "#39c5cf",
-        white: "#b1bac4",
-        brightBlack: "#6e7681",
-        brightRed: "#ff7b72",
-        brightGreen: "#56d364",
-        brightYellow: "#e3b341",
-        brightBlue: "#58a6ff",
-        brightMagenta: "#d2a8ff",
-        brightCyan: "#39c5cf",
-        brightWhite: "#e6edf3",
-      },
+      theme: terminalTheme(colorScheme),
     });
 
     const fit = new FitAddon();
@@ -160,6 +190,12 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
     };
   }, [id, cmd, cwd, argsKey]);
 
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.options.theme = terminalTheme(colorScheme);
+    }
+  }, [colorScheme]);
+
   // Re-fit when the tab becomes visible.
   useEffect(() => {
     if (active && fitRef.current && termRef.current) {
@@ -176,6 +212,7 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
         minHeight: 0,
         display: active ? "flex" : "none",
         flexDirection: "column",
+        background: colorScheme === "light" || colorScheme === "fancy_light" ? "#ffffff" : "#0d1117",
       }}
     />
   );

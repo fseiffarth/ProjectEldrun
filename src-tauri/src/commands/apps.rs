@@ -7,6 +7,8 @@
 //! treated as best-effort restore metadata.
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -94,6 +96,27 @@ pub fn launch_app(
 }
 
 #[tauri::command]
+pub fn resolve_app_icon(exec: String) -> Option<String> {
+    let exec_base = Path::new(&exec).file_name()?.to_string_lossy().to_lowercase();
+    for desktop_file in desktop_files() {
+        if let Some(entry) = parse_desktop_entry(&desktop_file) {
+            let Some(entry_base) = Path::new(&entry.exec)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_lowercase())
+            else {
+                continue;
+            };
+            if entry.exec == exec || entry_base == exec_base {
+                if let Some(icon_path) = resolve_icon_path(&entry.icon) {
+                    return Some(icon_path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
 pub fn open_file(path: String, handler: Option<String>) -> Result<(), String> {
     if let Some(exec) = handler {
         Command::new(&exec)
@@ -106,6 +129,134 @@ pub fn open_file(path: String, handler: Option<String>) -> Result<(), String> {
         return Ok(());
     }
     opener::open(&path).map_err(|e| e.to_string())
+}
+
+struct DesktopEntry {
+    exec: String,
+    icon: String,
+}
+
+fn desktop_files() -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/usr/share/applications"),
+        PathBuf::from("/usr/local/share/applications"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.insert(0, PathBuf::from(home).join(".local/share/applications"));
+    }
+
+    let mut files = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("desktop") {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+fn parse_desktop_entry(path: &Path) -> Option<DesktopEntry> {
+    let content = fs::read_to_string(path).ok()?;
+    let mut in_desktop_entry = false;
+    let mut exec = None;
+    let mut icon = None;
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            in_desktop_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_desktop_entry {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("Exec=") {
+            exec = first_exec_token(value);
+        } else if let Some(value) = line.strip_prefix("Icon=") {
+            icon = Some(value.to_string());
+        }
+    }
+    Some(DesktopEntry {
+        exec: exec?,
+        icon: icon?,
+    })
+}
+
+fn first_exec_token(value: &str) -> Option<String> {
+    let first = value
+        .split_whitespace()
+        .find(|part| !part.starts_with('%'))?
+        .trim_matches('"')
+        .to_string();
+    if first.is_empty() {
+        None
+    } else {
+        Some(first)
+    }
+}
+
+fn resolve_icon_path(icon: &str) -> Option<PathBuf> {
+    let direct = PathBuf::from(icon);
+    if direct.is_absolute() && direct.exists() {
+        return Some(direct);
+    }
+
+    let names = [
+        format!("{icon}.svg"),
+        format!("{icon}.png"),
+        format!("{icon}.xpm"),
+        icon.to_string(),
+    ];
+    let mut roots = vec![
+        PathBuf::from("/usr/share/pixmaps"),
+        PathBuf::from("/usr/local/share/pixmaps"),
+        PathBuf::from("/usr/share/icons/hicolor"),
+        PathBuf::from("/usr/share/icons/Adwaita"),
+        PathBuf::from("/usr/share/icons/breeze"),
+        PathBuf::from("/usr/share/icons/breeze-dark"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        roots.insert(0, home.join(".local/share/icons"));
+        roots.insert(1, home.join(".icons"));
+    }
+
+    for root in roots {
+        if let Some(path) = find_icon_file(&root, &names, 5) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn find_icon_file(dir: &Path, names: &[String], depth: usize) -> Option<PathBuf> {
+    if depth == 0 || !dir.is_dir() {
+        return None;
+    }
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let file_name = path.file_name()?.to_string_lossy();
+            if names.iter().any(|name| name == file_name.as_ref()) {
+                return Some(path);
+            }
+        }
+    }
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_icon_file(&path, names, depth - 1) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 #[tauri::command]

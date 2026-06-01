@@ -8,6 +8,7 @@ import { StatusLamp } from "../header/StatusLamp";
 import { WindowControls } from "../header/WindowControls";
 import { TabBar } from "../tabs/TabBar";
 import { useProjectsStore } from "../../stores/projects";
+import { resolveProjectDirectory } from "../../types";
 
 interface WorkspaceInfo {
   label: string;
@@ -43,7 +44,7 @@ export function HeaderBar() {
   const { projects, activeId } = useProjectsStore();
 
   const activeProject = projects.find((p) => p.id === activeId);
-  const projectCwd = (activeProject?.directory as string | undefined) ?? "";
+  const projectCwd = resolveProjectDirectory(activeProject);
 
   useEffect(() => {
     invoke<WorkspaceInfo>("workspace_info").catch(() => {});

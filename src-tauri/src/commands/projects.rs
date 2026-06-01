@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::schema::project::Project;
 use crate::schema::projects::{ProjectEntry, ProjectsList};
+use crate::schema::time_log::TimeLog;
 use crate::storage;
 
 // ── Project list ──────────────────────────────────────────────────────────
@@ -58,6 +59,7 @@ pub struct FileEntry {
     pub path: String,
     pub is_dir: bool,
     pub size: u64,
+    pub modified_secs: Option<u64>,
     pub extension: Option<String>,
     pub mime: Option<String>,
 }
@@ -97,6 +99,11 @@ pub fn list_dir(project_dir: String, rel_path: String) -> Result<Vec<FileEntry>,
             path: path.to_string_lossy().to_string(),
             is_dir: meta.is_dir(),
             size: if meta.is_file() { meta.len() } else { 0 },
+            modified_secs: meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs()),
             extension: ext,
             mime,
         });
@@ -139,6 +146,22 @@ pub fn delete_file(project_dir: String, rel_path: String) -> Result<(), String> 
         return Err("use delete_dir for directories".to_string());
     }
     fs::remove_file(&target).map_err(|e| e.to_string())
+}
+
+/// Delete a directory tree inside the project root.
+#[tauri::command]
+pub fn delete_dir(project_dir: String, rel_path: String) -> Result<(), String> {
+    let root = canonical(&project_dir)?;
+    let target = canonical(&root.join(&rel_path).to_string_lossy().to_string())?;
+    enforce_confinement(&root, &target)?;
+
+    if target == root {
+        return Err("refusing to delete project root".to_string());
+    }
+    if !target.is_dir() {
+        return Err("use delete_file for files".to_string());
+    }
+    fs::remove_dir_all(&target).map_err(|e| e.to_string())
 }
 
 /// Create a new empty file inside the project.
@@ -381,6 +404,46 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
     list.push(entry.clone());
     storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
     Ok(entry)
+}
+
+// ── Time tracking ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_time_today(project_id: String) -> f64 {
+    let path = storage::state_dir().join("time_log.json");
+    if !path.exists() {
+        return 0.0;
+    }
+    let log: TimeLog = match storage::read_json(&path) {
+        Ok(l) => l,
+        Err(_) => return 0.0,
+    };
+    let today = today_utc();
+    log.iter()
+        .filter(|e| e.project_id == project_id && e.date == today)
+        .map(|e| e.duration_s)
+        .sum()
+}
+
+fn today_utc() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = (secs / 86400) as i64;
+    // Howard Hinnant's civil_from_days algorithm
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

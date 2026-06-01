@@ -11,6 +11,7 @@ export interface Settings {
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
+  default_agent_cmd?: string;
   global_apps?: Record<string, GlobalAppEntry>;
   [key: string]: unknown;
 }
@@ -22,7 +23,16 @@ export interface ProjectEntry {
   status: string;
   position: number;
   local_file: string;
+  directory?: string;
   [key: string]: unknown;
+}
+
+export function resolveProjectDirectory(project: ProjectEntry | null | undefined): string {
+  if (!project) return "";
+  if (project.directory) return project.directory;
+  return project.local_file.endsWith("/project.json")
+    ? project.local_file.slice(0, -"/project.json".length)
+    : "";
 }
 
 export type Theme = "fancy_dark" | "dark" | "light" | "fancy_light";

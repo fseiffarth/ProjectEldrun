@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type MutableRefObject,
+} from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { BottomBar } from "./BottomBar";
 import { CenterPanel } from "./CenterPanel";
@@ -13,6 +19,8 @@ export function AppShell() {
   const loadSettings = useSettingsStore((s) => s.load);
   const loadProjects = useProjectsStore((s) => s.load);
   const activeId = useProjectsStore((s) => s.activeId);
+  const switchToast = useProjectsStore((s) => s.switchToast);
+  const clearSwitchToast = useProjectsStore((s) => s.clearSwitchToast);
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [bottomOpen, setBottomOpen] = useState(false);
@@ -26,6 +34,12 @@ export function AppShell() {
     loadProjects();
     getCurrentWindow().setFullscreen(true).catch(() => {});
   }, [loadSettings, loadProjects]);
+
+  useEffect(() => {
+    if (!switchToast) return;
+    const t = setTimeout(clearSwitchToast, 2200);
+    return () => clearTimeout(t);
+  }, [switchToast, clearSwitchToast]);
 
   const reveal = (
     timer: MutableRefObject<number | null>,
@@ -56,10 +70,20 @@ export function AppShell() {
   const revealBottom = !panelsHidden && bottomOpen;
   const revealGlobal = !panelsHidden && globalOpen;
 
+  const handleBodyMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (activeId === null || panelsHidden || rightOpen) return;
+    if (window.innerWidth - event.clientX <= 2) {
+      reveal(rightCloseTimer, setRightOpen);
+    }
+  };
+
   return (
     <div className="app-shell">
       <HeaderBar />
-      <div className="app-body">
+      {switchToast != null && (
+        <div key={switchToast} className="project-switch-toast">{switchToast}</div>
+      )}
+      <div className="app-body" onMouseMove={handleBodyMouseMove}>
         <CenterPanel />
         <div
           className={`global-apps-area ${revealGlobal ? "open" : ""}`}
@@ -69,13 +93,6 @@ export function AppShell() {
           <div className={`global-apps-toggle-bar ${revealGlobal ? "panel-open" : ""}`} />
           {revealGlobal && <GlobalAppBar />}
         </div>
-        {activeId !== null && !panelsHidden && (
-          <div
-            className={`file-tree-toggle-strip ${revealRight ? "panel-open" : ""}`}
-            onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
-            onMouseLeave={() => scheduleClose(rightCloseTimer, setRightOpen)}
-          />
-        )}
         {activeId !== null && !panelsHidden && (
           <RightPanel
             open={revealRight}

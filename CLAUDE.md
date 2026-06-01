@@ -1,12 +1,11 @@
 # ProjectEldrun — Claude Context
 
-Eldrun is a GTK4 desktop workspace for AI-assisted development. It keeps a root
-control terminal, one terminal per active project, a bottom project switcher, a
-right-side file tree overlay, app launching/embedding, time tracking, and
-optional Cinnamon workspace integration in one window.
+Eldrun is a Tauri 2 + React + TypeScript desktop workspace for AI-assisted
+development. It keeps a root control terminal, one terminal per active project,
+a bottom project switcher, a right-side file tree overlay, app launching, time
+tracking, and optional KDE/X11 workspace integration in one window.
 
-Python 3.11+, GTK4, Libadwaita, VTE 3.91, and `python-xlib` are expected. X11 is
-required for app-window embedding and Cinnamon workspace management.
+Stack: Rust (Tauri 2), React 18, TypeScript, Zustand, xterm.js, Tailwind CSS.
 
 ## Running
 
@@ -18,28 +17,39 @@ Runtime launch commands are intentionally omitted from this Claude context.
 
 ## File Map
 
+### Frontend (`src/`)
+
 | File | Purpose |
 |------|---------|
-| `app/eldrun.py` | `Adw.Application`, CSS themes, signal handlers. |
-| `app/window.py` | `EldrunWindow`: header, layout, key handling, startup restore, project activation, time tracking hooks, network callbacks, workspace integration. |
-| `app/project_manager.py` | Project registry, create/import flow, scaffold writer, migrations, root context files. |
-| `app/settings_manager.py` | JSON-backed user settings. |
-| `app/default_apps_manager.py` | Global and per-project file-extension app mappings; system MIME bootstrap. |
-| `app/time_tracker.py` | Active project session tracking, orphan-session closure, `STATUS.md` time summary updates. |
-| `app/project_stats.py` | Background file-type and time summary scanner. |
-| `app/network_monitor.py` | Background connectivity probe and network interface type detection. |
-| `app/workspace_manager.py` | Two-workspace parking model; delegates window and desktop operations to the active `ProjectSpaceBackend`. |
-| `app/workspace_core.py` | `ProjectSpaceBackend` ABC and shared workspace types. |
-| `app/backends/__init__.py` | Backend auto-detection: KDE first, then Cinnamon, then null. |
-| `app/backends/kde_kwin.py` | KDE Plasma backend: X11 via Xlib EWMH; Wayland via KWin JS scripting + DBus. |
-| `app/backends/cinnamon_x11.py` | Cinnamon/X11 workspace backend. |
-| `app/backends/gnome.py` | GNOME workspace backend. |
-| `app/backends/null.py` | No-op backend fallback. |
-| `app/new_project_dialog.py` | Modal project creation UI and validation. |
-| `app/import_project_dialog.py` | Modal import UI, folder chooser, mode selection. |
-| `app/panels/center_panel.py` | Terminal stack, tab bar, app tab lifecycle, X11 embedding/fallback. |
-| `app/panels/right_panel.py` | Current `FileTreePanel`: file operations, default app dialogs, open-window list. Historical filename. |
-| `app/panels/bottom_panel.py` | Bottom bar, project pills, settings windows, project search, drag/drop ordering. |
+| `src/App.tsx` | Root component, theme injection, global key handlers. |
+| `src/main.tsx` | React entry point. |
+| `src/components/layout/AppShell.tsx` | Top-level layout: header, center, bottom, right panel wiring. |
+| `src/components/layout/HeaderBar.tsx` | Window drag handle, close/minimize/maximize buttons. |
+| `src/components/layout/GlobalAppBar.tsx` | Global toolbar (app launcher, shortcuts). |
+| `src/components/layout/CenterPanel.tsx` | Terminal stack and tab bar. |
+| `src/components/layout/BottomBar.tsx` | Project pill switcher. |
+| `src/components/layout/RightPanel.tsx` | File tree overlay panel. |
+| `src/components/projects/ProjectPill.tsx` | Individual project tab pill in the bottom bar. |
+| `src/components/terminal/TerminalView.tsx` | xterm.js terminal wrapper. |
+| `src/stores/projects.ts` | Zustand store for project list, active project, CRUD. |
+| `src/stores/tabs.ts` | Zustand store for center-panel tabs. |
+| `src/stores/settings.ts` | Zustand store for app settings. |
+| `src/stores/windows.ts` | Zustand store for embedded app windows. |
+| `src/types/index.ts` | Shared TypeScript types. |
+
+### Backend (`src-tauri/src/`)
+
+| File | Purpose |
+|------|---------|
+| `main.rs` | Tauri app entry point, plugin registration. |
+| `lib.rs` | Command registration, app setup. |
+| `storage.rs` | JSON persistence helpers (read/write state files). |
+| `schema/` | Serde structs mirroring the JSON state files (projects, settings, time log, etc.). |
+| `platform/x11.rs` | X11 workspace / window management via xlib. |
+| `platform/wayland_kde.rs` | KDE Wayland workspace backend via KWin scripting + DBus. |
+| `platform/null.rs` | No-op platform fallback. |
+| `terminal/` | PTY management and terminal I/O commands. |
+| `commands/` | Tauri command handlers exposed to the frontend. |
 
 ## Persistence
 
@@ -49,8 +59,6 @@ Runtime launch commands are intentionally omitted from this Claude context.
   `projects.json`, `settings.json`, `default_apps.json`, `time_log.json`, and
   `active_session.json`.
 - Project-local state lives in each project's `project.json`.
-- Open-app metadata is stored in `project.json["open_apps"]`; standalone restore
-  behavior is still future work.
 - New/imported projects receive `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
   `.claude/settings.json`, `.gitignore`, `TODO.md`, `ROADMAP.md`, `STATUS.md`,
   and `DOCUMENTATION.md` when missing.
@@ -58,47 +66,23 @@ Runtime launch commands are intentionally omitted from this Claude context.
   matching group, create a new group if no current group fits, or merge groups
   if the TODO depends on distinct areas that should be tracked together.
 
-## GTK4 Gotchas
-
-- `Gtk.Dialog` is deprecated; use `Gtk.Window` with `modal=True` and
-  `transient_for`.
-- `Gtk.TreeView` / `Gtk.TreeStore` are legacy but still used here. Do not
-  refactor to `Gtk.ColumnView` unless the task requires it.
-- `Vte.Terminal.spawn_async` is non-blocking; the PID arrives in the callback,
-  not the return value.
-- `GLib.idle_add` callbacks must return `False` unless repeated calls are
-  intended.
-- Do not use `GLib.idle_add` for deferred startup work that calls
-  `get_monitor_at_surface()`. Use `GLib.timeout_add(500, ...)` instead — the
-  idle path can trigger a frame-clock reentrance SIGSEGV before the first render
-  cycle completes (see `_restore_project_apps()` in `window.py`).
-- X11 reparenting is best-effort and fragile; non-KDE Wayland embedding is not
-  implemented.
-- `Gtk.WindowHandle` makes its child area drag-to-move; custom header content
-  belongs inside it.
-- `Gtk.FileChooserNative` is preferred over deprecated file chooser dialogs.
-
 ## Dev Workflow
 
-1. Edit focused files under `app/` or docs.
-2. Syntax check:
+1. Edit files under `src/` (frontend) or `src-tauri/src/` (backend).
+2. Type-check frontend:
 
 ```bash
-python3 -m py_compile app/eldrun.py app/window.py app/project_manager.py \
-  app/new_project_dialog.py app/import_project_dialog.py app/settings_manager.py \
-  app/default_apps_manager.py app/network_monitor.py app/time_tracker.py \
-  app/project_stats.py app/workspace_manager.py app/panels/*.py \
-  app/backends/*.py
+npx tsc --noEmit
 ```
 
-3. Run tests:
+3. Run Rust tests:
 
 ```bash
-python3 -m unittest
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 4. Do not start Eldrun from Claude. Ask the user to restart the existing
    instance for runtime verification.
 
 Useful keys: `F11` toggles fullscreen; `Super` toggles panels while Eldrun is
-focused. The custom header close button calls `app.quit()`.
+focused.

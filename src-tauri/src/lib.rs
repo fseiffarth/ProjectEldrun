@@ -68,10 +68,12 @@ pub fn run() {
             commands::projects::projects_root_dir,
             commands::projects::create_project,
             commands::projects::import_project,
+            commands::projects::get_time_today,
             // File tree
             commands::projects::list_dir,
             commands::projects::rename_path,
             commands::projects::delete_file,
+            commands::projects::delete_dir,
             commands::projects::create_file,
             commands::projects::create_dir,
             commands::projects::detect_mime,
@@ -82,6 +84,7 @@ pub fn run() {
             commands::terminal::pty_kill,
             // External apps / window tracking
             commands::apps::launch_app,
+            commands::apps::resolve_app_icon,
             commands::apps::open_file,
             commands::apps::list_tracked_windows,
             commands::apps::untrack_window,

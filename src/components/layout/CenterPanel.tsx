@@ -1,60 +1,117 @@
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TerminalView } from "../terminal/TerminalView";
-import { useTabsStore } from "../../stores/tabs";
+import { FileBrowser } from "../files/FileBrowser";
+import { useTabsStore, cmdToKind } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
+import { resolveProjectDirectory } from "../../types";
 
 export function CenterPanel() {
-  const { tabs, activeKey, ensureTab } = useTabsStore();
-  const { projects, activeId } = useProjectsStore();
+  const tabsByScope = useTabsStore((s) => s.tabsByScope);
+  const scope = useTabsStore((s) => s.scope);
+  const activeKey = useTabsStore((s) => s.activeKey);
+  const setScope = useTabsStore((s) => s.setScope);
+  const ensureTab = useTabsStore((s) => s.ensureTab);
+  const loadFromLayout = useTabsStore((s) => s.loadFromLayout);
+  const tabs = useTabsStore((s) => s.tabs);
+  const saveLayout = useTabsStore((s) => s.saveLayout);
+  const { projects, activeId, switchGeneration } = useProjectsStore();
+  const settings = useSettingsStore((s) => s.settings);
 
   const activeProject = projects.find((p) => p.id === activeId);
-  const projectCwd = (activeProject?.directory as string | undefined) ?? "";
+  const localFile = activeProject?.local_file as string | undefined;
+  const projectCwd = resolveProjectDirectory(activeProject);
+
+  const agentCmd = settings?.default_agent_cmd ?? "claude";
 
   useEffect(() => {
-    if (!activeId) {
+    const nextScope = activeId ?? "root";
+    setScope(nextScope);
+
+    // Already have live tabs for this scope — just switch, nothing to spawn.
+    if ((useTabsStore.getState().tabsByScope[nextScope]?.length ?? 0) > 0) return;
+
+    if (!activeId || !localFile) {
+      // Root context: only spawn on explicit switch.
+      if (switchGeneration === 0) return;
       invoke<string>("root_work_dir")
         .then((cwd) => {
+          const kind = cmdToKind(agentCmd);
           ensureTab(
-            {
-              label: "root",
-              cmd: "bash",
-              args: [],
-              cwd,
-              kind: "shell",
-            },
-            (tab) => tab.kind === "shell" && tab.cwd === cwd,
+            { label: agentCmd, cmd: agentCmd, args: [], cwd, kind },
+            (tab) => tab.kind === kind && tab.cwd === cwd,
           );
         })
         .catch(() => {});
       return;
     }
-    if (!projectCwd) return;
-    ensureTab(
-      {
-        label: activeProject?.name ?? "project",
-        cmd: "bash",
-        args: [],
-        cwd: projectCwd,
-        kind: "shell",
-      },
-      (tab) => tab.kind === "shell" && tab.cwd === projectCwd,
-    );
-  }, [activeId, projectCwd, activeProject?.name, ensureTab]);
+
+    // Project context: try to restore saved tab layout first.
+    invoke<Record<string, unknown>>("load_project", { localFile })
+      .then((proj) => {
+        const layout = proj.tab_layout as
+          | Array<{ key: string; label: string; cmd: string; cwd: string; kind?: "agent" | "shell" | "files"; type?: string }>
+          | undefined;
+        if (layout && layout.length > 0) {
+          loadFromLayout(layout, projectCwd);
+          return;
+        }
+        // No saved layout — only open default tab on explicit switch.
+        if (switchGeneration === 0) return;
+        const kind = cmdToKind(agentCmd);
+        ensureTab(
+          { label: agentCmd, cmd: agentCmd, args: [], cwd: projectCwd, kind },
+          (tab) => tab.kind === kind && tab.cwd === projectCwd,
+        );
+      })
+      .catch(() => {
+        if (switchGeneration === 0) return;
+        const kind = cmdToKind(agentCmd);
+        ensureTab(
+          { label: agentCmd, cmd: agentCmd, args: [], cwd: projectCwd, kind },
+          (tab) => tab.kind === kind && tab.cwd === projectCwd,
+        );
+      });
+  }, [activeId, projectCwd, localFile, agentCmd, switchGeneration, setScope, ensureTab, loadFromLayout]);
+
+  useEffect(() => {
+    if (!activeId || !localFile || tabs.length === 0) return;
+    const timer = window.setTimeout(() => {
+      saveLayout(localFile).catch(() => {});
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [activeId, localFile, tabs, saveLayout]);
+
+  // Render all tabs across all scopes so TerminalView components are never
+  // unmounted on scope switches (unmounting kills the PTY process).
+  const allTabs = Object.entries(tabsByScope).flatMap(([s, tabs]) =>
+    tabs.map((tab) => ({ tab, scopeKey: s })),
+  );
+  const hasVisibleTab = (tabsByScope[scope]?.length ?? 0) > 0;
 
   return (
     <div className="center-panel">
-      {tabs.map((tab) => (
-        <TerminalView
-          key={tab.key}
-          id={tab.key}
-          cmd={tab.cmd}
-          args={tab.args ?? []}
-          cwd={tab.cwd}
-          active={tab.key === activeKey}
-        />
+      {allTabs.map(({ tab, scopeKey }) => (
+        tab.kind === "files" ? (
+          <FileBrowser
+            key={tab.key}
+            projectDir={tab.cwd}
+            projectId={scopeKey === "root" ? null : scopeKey}
+            active={scopeKey === scope && tab.key === activeKey}
+          />
+        ) : (
+          <TerminalView
+            key={tab.key}
+            id={tab.key}
+            cmd={tab.cmd}
+            args={tab.args ?? []}
+            cwd={tab.cwd}
+            active={scopeKey === scope && tab.key === activeKey}
+          />
+        )
       ))}
-      {tabs.length === 0 && (
+      {!hasVisibleTab && (
         <div className="center-placeholder">No active project terminal</div>
       )}
     </div>

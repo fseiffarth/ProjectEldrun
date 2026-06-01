@@ -1,28 +1,41 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import type { ProjectEntry } from "../types";
+import { resolveProjectDirectory, type ProjectEntry } from "../types";
 
 interface ProjectsStore {
   projects: ProjectEntry[];
   activeId: string | null;
   loaded: boolean;
+  rootDir: string | null;
+  switchToast: string | null;
+  /** Incremented only on explicit setActive calls, never by load(). */
+  switchGeneration: number;
   load: () => Promise<void>;
   setActive: (id: string | null) => Promise<void>;
+  clearSwitchToast: () => void;
   addProject: (project: ProjectEntry) => Promise<void>;
+  removeProject: (id: string) => Promise<void>;
 }
 
 export const useProjectsStore = create<ProjectsStore>((set) => ({
   projects: [],
   activeId: null,
   loaded: false,
+  rootDir: null,
+  switchToast: null,
+  switchGeneration: 0,
 
   load: async () => {
-    const raw = await invoke<ProjectEntry[]>("get_projects");
+    const [raw, rootDir] = await Promise.all([
+      invoke<ProjectEntry[]>("get_projects"),
+      invoke<string>("root_work_dir").catch(() => null),
+    ]);
     const projects = [...raw].sort((a, b) => a.position - b.position);
     const current = projects.find((p) => p.status === "current");
     set({
       projects,
       loaded: true,
+      rootDir,
       activeId: current?.id ?? projects[0]?.id ?? null,
     });
   },
@@ -43,10 +56,26 @@ export const useProjectsStore = create<ProjectsStore>((set) => ({
                 : project.status;
         return status === project.status ? project : { ...project, status };
       });
-      return { projects: nextProjects, activeId: id };
+      let toastPath: string | null = null;
+      if (id === null) {
+        toastPath = state.rootDir ?? "root";
+      } else {
+        const proj = state.projects.find((p) => p.id === id);
+        if (proj) {
+          toastPath = resolveProjectDirectory(proj) || proj.name;
+        }
+      }
+      return {
+        projects: nextProjects,
+        activeId: id,
+        switchToast: toastPath,
+        switchGeneration: state.switchGeneration + 1,
+      };
     });
     await invoke<void>("save_projects", { projects: nextProjects });
   },
+
+  clearSwitchToast: () => set({ switchToast: null }),
 
   addProject: async (project) => {
     let nextProjects: ProjectEntry[] = [];
@@ -55,5 +84,22 @@ export const useProjectsStore = create<ProjectsStore>((set) => ({
       return { projects: nextProjects };
     });
     await useProjectsStore.getState().setActive(project.id);
+  },
+
+  removeProject: async (id) => {
+    let nextProjects: ProjectEntry[] = [];
+    let nextActiveId: string | null = null;
+    set((state) => {
+      nextProjects = state.projects.filter((p) => p.id !== id);
+      nextActiveId =
+        state.activeId === id
+          ? (nextProjects.find((p) => p.status === "active") ?? nextProjects[0])?.id ?? null
+          : state.activeId;
+      return { projects: nextProjects };
+    });
+    await invoke<void>("save_projects", { projects: nextProjects });
+    if (useProjectsStore.getState().activeId !== nextActiveId) {
+      await useProjectsStore.getState().setActive(nextActiveId);
+    }
   },
 }));

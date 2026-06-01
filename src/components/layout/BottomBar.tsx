@@ -1,22 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ProjectPill } from "../projects/ProjectPill";
+import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import type { GlobalAppEntry, ProjectEntry, Theme } from "../../types";
-import { THEMES } from "../../types";
+import { resolveProjectDirectory, THEMES } from "../../types";
 
 const TERMINAL_OPTIONS = ["claude", "codex", "gemini"];
-
-const GLOBAL_APP_ROLES: Array<{ key: string; label: string; icon: string }> = [
-  { key: "browser", label: "Browser", icon: "🌐" },
-  { key: "terminal", label: "Terminal", icon: "▣" },
-  { key: "editor", label: "Editor", icon: "✎" },
-  { key: "file_manager", label: "File Manager", icon: "📁" },
-  { key: "screenshot", label: "Screenshot", icon: "▤" },
-  { key: "notes", label: "Notes", icon: "☰" },
-];
 
 function sanitizeName(name: string) {
   return name
@@ -28,11 +21,11 @@ function sanitizeName(name: string) {
 }
 
 function projectDirectory(project: ProjectEntry) {
-  return (project.directory as string | undefined) ?? "";
+  return resolveProjectDirectory(project);
 }
 
 export function BottomBar() {
-  const { projects, activeId, setActive, addProject } = useProjectsStore();
+  const { projects, activeId, setActive, addProject, removeProject } = useProjectsStore();
   const [showSettings, setShowSettings] = useState(false);
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [dialog, setDialog] = useState<"new" | "import" | null>(null);
@@ -64,23 +57,26 @@ export function BottomBar() {
 
   return (
     <>
-      {showSettings && (
-        <SettingsDialog onClose={() => setShowSettings(false)} />
+      {showSettings && createPortal(
+        <SettingsDialog onClose={() => setShowSettings(false)} />,
+        document.body,
       )}
 
-      {dialog === "new" && (
+      {dialog === "new" && createPortal(
         <ProjectDialog
           kind="new"
           onClose={() => setDialog(null)}
           onProject={(project) => addProject(project)}
-        />
+        />,
+        document.body,
       )}
-      {dialog === "import" && (
+      {dialog === "import" && createPortal(
         <ProjectDialog
           kind="import"
           onClose={() => setDialog(null)}
           onProject={(project) => addProject(project)}
-        />
+        />,
+        document.body,
       )}
 
       <div
@@ -145,6 +141,7 @@ export function BottomBar() {
               project={p}
               active={p.id === activeId}
               onClick={() => setActive(p.id)}
+              onClose={() => removeProject(p.id)}
             />
           ))}
         </div>
@@ -348,7 +345,7 @@ function GlobalAppsSettings({ onBack }: { onBack: () => void }) {
                 onChange={(e) => updateRole(role.key, { visible: e.target.checked })}
                 title={`Show ${role.label}`}
               />
-              <span className="settings-role-icon" aria-hidden>{role.icon}</span>
+              <span className="settings-role-icon" aria-hidden>{role.fallback}</span>
               <span className="settings-role-label">{role.label}</span>
               <input
                 value={entry.exec}

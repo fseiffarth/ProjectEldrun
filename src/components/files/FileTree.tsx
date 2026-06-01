@@ -1,15 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useWindowsStore } from "../../stores/windows";
-
-interface FileEntry {
-  name: string;
-  path: string;
-  is_dir: boolean;
-  size: number;
-  extension: string | null;
-  mime: string | null;
-}
+import { type FileEntry, fileIcon, folderIcon, fmtSize, visibleEntries } from "./fileUtils";
 
 interface Props {
   projectDir: string;
@@ -36,10 +28,7 @@ export function FileTree({ projectDir, showHidden = false }: Props) {
         projectDir,
         relPath: rel,
       });
-      const visible = showHidden
-        ? result
-        : result.filter((e) => !e.name.startsWith("."));
-      setEntries(visible);
+      setEntries(visibleEntries(result, { showHidden, showStandardFiles: false }));
       setRelPath(rel);
     } catch (e) {
       setError(String(e));
@@ -85,7 +74,7 @@ export function FileTree({ projectDir, showHidden = false }: Props) {
           className={`file-entry ${e.is_dir ? "dir" : "file"}`}
           onClick={() => handleClick(e)}
         >
-          <span className="file-icon">{e.is_dir ? "📁" : fileIcon(e.extension)}</span>
+          <span className="file-icon">{e.is_dir ? folderIcon() : fileIcon(e.extension)}</span>
           <span className="file-name">{e.name}</span>
           {!e.is_dir && (
             <span className="file-size">{fmtSize(e.size)}</span>
@@ -94,29 +83,4 @@ export function FileTree({ projectDir, showHidden = false }: Props) {
       ))}
     </div>
   );
-}
-
-function fileIcon(ext: string | null): string {
-  switch (ext) {
-    case ".py": return "🐍";
-    case ".rs": return "🦀";
-    case ".ts":
-    case ".tsx": return "⟨⟩";
-    case ".js":
-    case ".jsx": return "⚡";
-    case ".md": return "📝";
-    case ".json": return "{}";
-    case ".png":
-    case ".jpg":
-    case ".jpeg":
-    case ".svg": return "🖼";
-    case ".sh": return "⚙";
-    default: return "📄";
-  }
-}
-
-function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
 }

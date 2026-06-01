@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { FileTree } from "../files/FileTree";
 import { useProjectsStore } from "../../stores/projects";
 import { useWindowsStore } from "../../stores/windows";
+import { resolveProjectDirectory } from "../../types";
 
 interface Props {
   open: boolean;
@@ -17,7 +18,7 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
   const [view, setView] = useState<View>("files");
 
   const activeProject = projects.find((p) => p.id === activeId);
-  const projectDir = (activeProject?.directory as string | undefined) ?? "";
+  const projectDir = resolveProjectDirectory(activeProject);
 
   useEffect(() => {
     if (open && activeId) {
@@ -45,11 +46,11 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
       </div>
 
       {view === "files" ? (
-        <div style={{ flex: 1, overflowY: "auto" }}>
+        <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
           {open && <FileTree projectDir={projectDir} />}
         </div>
       ) : (
-        <div style={{ flex: 1, overflowY: "auto", padding: 4 }}>
+        <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 4 }}>
           {windows.length === 0 ? (
             <div className="file-tree-empty">No tracked windows</div>
           ) : (
