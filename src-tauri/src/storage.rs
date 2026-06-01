@@ -28,13 +28,7 @@ where
             .and_then(|s| s.to_str())
             .unwrap_or("file");
         let backup_name = format!("{file_stem}.{ts}.bak.json");
-        let bak_dir = path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("tmp")
-            .join("bak");
-        fs::create_dir_all(&bak_dir)?;
-        let backup = bak_dir.join(backup_name);
+        let backup = path.with_file_name(backup_name);
         fs::copy(path, backup)?;
     }
     if let Some(parent) = path.parent() {

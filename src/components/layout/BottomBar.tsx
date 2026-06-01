@@ -36,6 +36,7 @@ export function BottomBar() {
     const q = query.trim().toLowerCase();
     if (!q) return [];
     return projects
+      .filter((p) => p.status === "inactive")
       .filter((p) => p.name.toLowerCase().includes(q) || projectDirectory(p).toLowerCase().includes(q))
       .sort((a, b) => a.position - b.position);
   }, [projects, query]);
