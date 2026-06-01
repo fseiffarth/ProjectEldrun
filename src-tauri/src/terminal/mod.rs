@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{Child, CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
@@ -63,6 +63,7 @@ pub struct TerminalReady {
 // ── Internal entry ─────────────────────────────────────────────────────────
 
 struct PtyEntry {
+    master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     dead: Arc<AtomicBool>,
@@ -80,6 +81,7 @@ impl PtyRegistry {
     pub fn insert(
         &mut self,
         id: String,
+        master: Box<dyn MasterPty + Send>,
         writer: Box<dyn Write + Send>,
         child: Box<dyn Child + Send + Sync>,
         dead: Arc<AtomicBool>,
@@ -87,6 +89,7 @@ impl PtyRegistry {
         self.entries.insert(
             id,
             PtyEntry {
+                master,
                 writer,
                 child,
                 dead,
@@ -164,7 +167,7 @@ pub fn spawn_pty(
     let dead = Arc::new(AtomicBool::new(false));
     {
         let mut reg = registry.lock().unwrap();
-        reg.insert(opts.id.clone(), writer, child, dead.clone());
+        reg.insert(opts.id.clone(), pair.master, writer, child, dead.clone());
     }
 
     let _ = app.emit("terminal-ready", TerminalReady { id: opts.id.clone() });
@@ -248,17 +251,26 @@ pub fn spawn_pty(
 }
 
 /// Resize an existing PTY.
-/// In this phase we signal resize by writing a TIOCSWINSZ-style message;
-/// the full implementation stores the master handle for proper ioctl.
 pub fn resize_pty(
-    _registry: &Arc<Mutex<PtyRegistry>>,
-    _id: &str,
-    _cols: u16,
-    _rows: u16,
+    registry: &Arc<Mutex<PtyRegistry>>,
+    id: &str,
+    cols: u16,
+    rows: u16,
 ) -> Result<(), String> {
-    // Phase 3 stub — resize support requires storing the master handle.
-    // Tracked as Phase 3 follow-up: store pair.master in the registry.
-    Ok(())
+    let mut reg = registry.lock().unwrap();
+    let Some(entry) = reg.entries.get_mut(id) else {
+        return Ok(());
+    };
+
+    entry
+        .master
+        .resize(PtySize {
+            cols,
+            rows,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("resize: {e}"))
 }
 
 // ── Command builder ────────────────────────────────────────────────────────
@@ -279,4 +291,47 @@ fn build_command(opts: &PtyOptions) -> CommandBuilder {
     }
 
     cmd
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn resize_pty_updates_kernel_size() {
+        let pty_system = NativePtySystem::default();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+
+        let mut cmd = CommandBuilder::new("sleep");
+        cmd.arg("1");
+        let child = pair.slave.spawn_command(cmd).expect("spawn sleep");
+        let writer = pair.master.take_writer().expect("take writer");
+        let master = pair.master;
+
+        let registry = Arc::new(Mutex::new(PtyRegistry::default()));
+        let dead = Arc::new(AtomicBool::new(false));
+        {
+            let mut reg = registry.lock().unwrap();
+            reg.insert("test".to_string(), master, writer, child, dead);
+        }
+
+        resize_pty(&registry, "test", 100, 40).expect("resize");
+
+        let reg = registry.lock().unwrap();
+        let entry = reg.entries.get("test").expect("entry exists");
+        let size = entry.master.get_size().expect("get_size");
+        assert_eq!(size.cols, 100);
+        assert_eq!(size.rows, 40);
+        drop(reg);
+
+        registry.lock().unwrap().kill("test");
+    }
 }
