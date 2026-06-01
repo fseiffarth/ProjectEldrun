@@ -25,10 +25,13 @@ mime_guess = "2.0.5"
 infer = "0.19.0"
 opener = "0.8.4"
 
-# Linux-only: workspace backends
+# Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "4"
 xcb = { version = "1", features = ["randr"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
