@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { AppTimerDisplay } from "../header/AppTimerDisplay";
 import { Clock } from "../header/Clock";
 import { ConnTypeIcon } from "../header/ConnTypeIcon";
 import { StatusLamp } from "../header/StatusLamp";
@@ -9,6 +10,7 @@ import { WindowControls } from "../header/WindowControls";
 import { TabBar } from "../tabs/TabBar";
 import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory } from "../../types";
+import logo from "../../assets/logo.png";
 
 interface WorkspaceInfo {
   label: string;
@@ -79,6 +81,7 @@ export function HeaderBar() {
   return (
     <header className="app-header" onMouseDown={handleDrag}>
       <div className="header-left" data-tauri-drag-region>
+        <img src={logo} alt="Eldrun" className="app-logo" />
         <StatusLamp online={online} />
         <div className="app-version-stack">
           {isDev && <span className="debug-badge">DEBUG</span>}
@@ -86,10 +89,12 @@ export function HeaderBar() {
         </div>
         {connKind && <ConnTypeIcon type={connKind} />}
       </div>
+
       <div className="header-center no-drag">
         <TabBar projectCwd={projectCwd} />
       </div>
       <div className="header-right no-drag">
+        <AppTimerDisplay />
         <Clock />
         <WindowControls />
       </div>

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { resolveProjectDirectory, type ProjectEntry } from "../types";
+import { useTimerStore } from "./timer";
 
 interface ProjectsStore {
   projects: ProjectEntry[];
@@ -14,7 +15,7 @@ interface ProjectsStore {
   setActive: (id: string | null) => Promise<void>;
   clearSwitchToast: () => void;
   addProject: (project: ProjectEntry) => Promise<void>;
-  removeProject: (id: string) => Promise<void>;
+  deactivateProject: (id: string) => Promise<void>;
 }
 
 export const useProjectsStore = create<ProjectsStore>((set, get) => ({
@@ -74,13 +75,13 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       };
     });
     await invoke<void>("save_projects", { projects: nextProjects });
-    // Trigger workspace switch when activating a project (not root terminal).
-    if (id !== null) {
-      invoke<void>("workspace_switch", {
-        projectId: id,
-        previousProjectId: previousId,
-      }).catch(() => {});
-    }
+    void useTimerStore.getState().setProject(id);
+    invoke<void>("workspace_switch", {
+      projectId: id,
+      previousProjectId: previousId,
+    }).catch((error) => {
+      console.warn("workspace_switch failed", error);
+    });
   },
 
   clearSwitchToast: () => set({ switchToast: null }),
@@ -94,11 +95,15 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     await useProjectsStore.getState().setActive(project.id);
   },
 
-  removeProject: async (id) => {
+  deactivateProject: async (id) => {
     let nextProjects: ProjectEntry[] = [];
     let nextActiveId: string | null = null;
     set((state) => {
-      nextProjects = state.projects.filter((p) => p.id !== id);
+      nextProjects = state.projects.map((project) =>
+        project.id === id && project.status !== "inactive"
+          ? { ...project, status: "inactive" }
+          : project,
+      );
       nextActiveId =
         state.activeId === id
           ? (nextProjects.find((p) => p.status === "active") ?? nextProjects[0])?.id ?? null

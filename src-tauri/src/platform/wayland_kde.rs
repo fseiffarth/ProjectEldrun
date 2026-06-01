@@ -14,6 +14,8 @@ use zbus::blocking::Connection;
 
 use super::{WorkspaceBackend, WorkspaceInfo};
 
+const ROOT_PROJECT_ID: &str = "__eldrun_root__";
+
 // ── DBus service names and paths ──────────────────────────────────────────
 
 // KDE 6 path
@@ -121,9 +123,12 @@ impl WorkspaceBackend for KdeWaylandBackend {
 
     fn switch_to_project(
         &self,
-        project_id: &str,
+        project_id: Option<&str>,
         _previous_project_id: Option<&str>,
+        _previous_window_ids: &[u32],
+        _current_window_ids: &[u32],
     ) -> Result<(), String> {
+        let project_id = project_id.unwrap_or(ROOT_PROJECT_ID);
         let id = self.ensure_desktop_for(project_id)?;
         self.switch_to_desktop(&id)
     }

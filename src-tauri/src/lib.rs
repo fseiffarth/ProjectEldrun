@@ -168,6 +168,10 @@ pub fn run() {
             commands::projects::create_project,
             commands::projects::import_project,
             commands::projects::get_time_today,
+            // Timer flush + activity
+            commands::timer::timer_flush_app,
+            commands::timer::timer_flush_project,
+            commands::timer::get_project_activity,
             // File tree
             commands::projects::list_dir,
             commands::projects::rename_path,

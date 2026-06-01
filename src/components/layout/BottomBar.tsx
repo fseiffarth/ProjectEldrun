@@ -25,7 +25,7 @@ function projectDirectory(project: ProjectEntry) {
 }
 
 export function BottomBar() {
-  const { projects, activeId, setActive, addProject, removeProject } = useProjectsStore();
+  const { projects, activeId, setActive, addProject, deactivateProject } = useProjectsStore();
   const [showSettings, setShowSettings] = useState(false);
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [dialog, setDialog] = useState<"new" | "import" | null>(null);
@@ -40,6 +40,12 @@ export function BottomBar() {
       .filter((p) => p.name.toLowerCase().includes(q) || projectDirectory(p).toLowerCase().includes(q))
       .sort((a, b) => a.position - b.position);
   }, [projects, query]);
+
+  const activeProjects = useMemo(() => {
+    return projects
+      .filter((p) => p.status !== "inactive")
+      .sort((a, b) => a.position - b.position);
+  }, [projects]);
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
@@ -102,7 +108,7 @@ export function BottomBar() {
           <input
             className="project-search-entry"
             type="search"
-            placeholder="Search..."
+            placeholder="Search inactive..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -136,13 +142,13 @@ export function BottomBar() {
 
         <div className="bottom-separator" />
         <div className="project-pills-scroll">
-          {projects.map((p) => (
+          {activeProjects.map((p) => (
             <ProjectPill
               key={p.id}
               project={p}
               active={p.id === activeId}
               onClick={() => setActive(p.id)}
-              onClose={() => removeProject(p.id)}
+              onClose={() => deactivateProject(p.id)}
             />
           ))}
         </div>

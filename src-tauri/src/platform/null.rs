@@ -20,8 +20,10 @@ impl WorkspaceBackend for NullBackend {
 
     fn switch_to_project(
         &self,
-        _project_id: &str,
+        _project_id: Option<&str>,
         _previous_project_id: Option<&str>,
+        _previous_window_ids: &[u32],
+        _current_window_ids: &[u32],
     ) -> Result<(), String> {
         Ok(())
     }

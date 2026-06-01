@@ -137,6 +137,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       cwd: t.cwd || defaultCwd,
       kind: t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : "")),
     }));
+    // Prevent key collisions: advance the counter past any restored key numbers.
+    for (const t of tabs) {
+      const n = parseInt(t.key.split("-").pop() ?? "0", 10);
+      if (!isNaN(n) && n > _keyCounter) _keyCounter = n;
+    }
     const activeKey = tabs[0]?.key ?? null;
     set((s) => ({
       tabs,

@@ -17,6 +17,9 @@ html, body, #root {
   background: var(--bg-main);
 }
 
+/* ── Activity calendar color levels (shared across themes) ──────────── */
+/* Override per-theme below where contrast requires it. */
+
 /* ── Theme: fancy_dark (default) ─────────────────────────────────────── */
 :root,
 [data-theme="fancy_dark"] {
@@ -46,6 +49,11 @@ html, body, #root {
   --wm-close: #ff5c8a;
   --wm-minimize: #ffd166;
   --wm-maximize: #7ee787;
+  --activity-0: rgba(255,255,255,0.05);
+  --activity-1: #0e4429;
+  --activity-2: #006d32;
+  --activity-3: #26a641;
+  --activity-4: #39d353;
 }
 
 /* ── Theme: dark (plain dark) ────────────────────────────────────────── */
@@ -76,6 +84,11 @@ html, body, #root {
   --wm-close: #f85149;
   --wm-minimize: #e3b341;
   --wm-maximize: #3fb950;
+  --activity-0: #161b22;
+  --activity-1: #0e4429;
+  --activity-2: #006d32;
+  --activity-3: #26a641;
+  --activity-4: #39d353;
 }
 
 /* ── Theme: light (plain light) ─────────────────────────────────────── */
@@ -106,6 +119,11 @@ html, body, #root {
   --wm-close: #f85149;
   --wm-minimize: #e3b341;
   --wm-maximize: #3fb950;
+  --activity-0: #ebedf0;
+  --activity-1: #9be9a8;
+  --activity-2: #40c463;
+  --activity-3: #30a14e;
+  --activity-4: #216e39;
 }
 
 /* ── Theme: fancy_light ─────────────────────────────────────────────── */
@@ -136,6 +154,11 @@ html, body, #root {
   --wm-close: #ff5c8a;
   --wm-minimize: #ffd166;
   --wm-maximize: #7ee787;
+  --activity-0: #dce9f5;
+  --activity-1: #9be9a8;
+  --activity-2: #40c463;
+  --activity-3: #30a14e;
+  --activity-4: #216e39;
 }
 
 /* ── App layout shell ─────────────────────────────────────────────────── */
@@ -225,6 +248,15 @@ input {
 .wm-minimize { background-color: var(--wm-minimize); }
 .wm-maximize { background-color: var(--wm-maximize); }
 
+/* ── App logo ────────────────────────────────────────────────────────── */
+.app-logo {
+  height: 20px;
+  width: 20px;
+  object-fit: contain;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
 /* ── Status lamp (● dot) ─────────────────────────────────────────────── */
 .status-lamp {
   font-size: 16px;
@@ -271,6 +303,44 @@ input {
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+}
+
+/* ── App timer ───────────────────────────────────────────────────────── */
+.app-timer-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+.app-timer-btn:hover {
+  background: var(--control-hover-bg);
+  color: var(--text-primary);
+}
+.app-timer-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+.app-timer-btn.paused .app-timer-dot {
+  background: var(--text-muted);
+}
+.app-timer-btn.paused .app-timer-text {
+  color: var(--text-muted);
+}
+.project-pill.timer-paused .pill-folder-icon {
+  opacity: 0.7;
 }
 
 /* ── Center panel ────────────────────────────────────────────────────── */
@@ -511,6 +581,8 @@ input {
 .pill-popup-time {
   font-size: 11px;
   color: var(--text-secondary);
+  display: flex;
+  align-items: center;
 }
 
 /* ── Bottom bar action buttons ──────────────────────────────────────── */
@@ -1775,6 +1847,139 @@ input {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+
+/* ── Orbit spinner (active-tracking indicator) ───────────────────────── */
+@keyframes orbit-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.orbit-spinner {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 5px;
+  animation: orbit-spin 2s linear infinite;
+  flex-shrink: 0;
+}
+
+.orbit-dot {
+  fill: var(--accent);
+}
+
+/* ── Activity calendar ───────────────────────────────────────────────── */
+.activity-calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  user-select: none;
+}
+
+.activity-cell {
+  fill: var(--activity-0);
+  transition: opacity 0.1s;
+}
+.activity-cell:hover { opacity: 0.8; }
+.activity-cell-0 { fill: var(--activity-0); }
+.activity-cell-1 { fill: var(--activity-1); }
+.activity-cell-2 { fill: var(--activity-2); }
+.activity-cell-3 { fill: var(--activity-3); }
+.activity-cell-4 { fill: var(--activity-4); }
+.activity-today  { stroke: var(--accent); stroke-width: 1.5; }
+
+/* ── Activity year selector ──────────────────────────────────────────── */
+.activity-years {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.activity-year-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.activity-year-btn:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+.activity-year-btn.selected {
+  background: var(--pill-active-bg);
+  border-color: var(--pill-active-border);
+  color: var(--text-primary);
+}
+
+.activity-legend {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 28px;
+}
+
+.activity-legend span {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.activity-tooltip {
+  padding: 5px 9px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.activity-tooltip strong {
+  color: var(--text-primary);
+}
+
+/* ── Activity window (modal) ─────────────────────────────────────────── */
+.activity-window {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 0;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.48);
+  min-width: 320px;
+}
+
+.activity-window-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.activity-window-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.activity-window-body {
+  padding: 16px 20px 20px;
+}
+
+.activity-loading {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 12px 0;
+  text-align: center;
 }
 
 /* ── Project-switch toast ──────────────────────────────────────────────── */

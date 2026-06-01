@@ -27,6 +27,7 @@ pub struct TrackedWindow {
     pub project_id: Option<String>,
     pub role: Option<String>,
     pub opened_at: f64,
+    pub window_id: Option<u32>,
 }
 
 #[derive(Default)]
@@ -55,6 +56,7 @@ fn do_launch(
 
     let child = cmd.spawn().map_err(|e| format!("launch {exec}: {e}"))?;
     let pid = child.id();
+    let window_id = find_window_for_pid(pid, 20);
 
     let opened_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -71,6 +73,7 @@ fn do_launch(
         project_id: project_id.map(String::from),
         role: role.map(String::from),
         opened_at,
+        window_id,
     };
     registry.lock().unwrap().windows.insert(id, win.clone());
     Ok(win)
@@ -144,18 +147,42 @@ fn base64_encode(bytes: &[u8]) -> String {
 }
 
 #[tauri::command]
-pub fn open_file(path: String, handler: Option<String>) -> Result<(), String> {
+pub fn open_file(
+    registry: State<'_, WindowRegistryState>,
+    path: String,
+    handler: Option<String>,
+    project_id: Option<String>,
+) -> Result<TrackedWindow, String> {
+    let before = list_x11_window_ids();
     if let Some(exec) = handler {
-        Command::new(&exec)
+        let child = Command::new(&exec)
             .arg(&path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("open with {exec}: {e}"))?;
-        return Ok(());
+        let pid = child.id();
+        let window_id = find_window_for_pid(pid, 20).or_else(|| find_new_x11_window(&before, 20));
+        return track_opened_file(
+            registry.inner(),
+            exec,
+            path,
+            pid,
+            project_id,
+            window_id,
+        );
     }
-    opener::open(&path).map_err(|e| e.to_string())
+    opener::open(&path).map_err(|e| e.to_string())?;
+    let window_id = find_new_x11_window(&before, 20);
+    track_opened_file(
+        registry.inner(),
+        "open-file".to_string(),
+        path,
+        0,
+        project_id,
+        window_id,
+    )
 }
 
 struct DesktopEntry {
@@ -349,4 +376,172 @@ pub fn restore_open_apps(
         }
     }
     launched
+}
+
+fn track_opened_file(
+    registry: &WindowRegistryState,
+    exec: String,
+    path: String,
+    pid: u32,
+    project_id: Option<String>,
+    window_id: Option<u32>,
+) -> Result<TrackedWindow, String> {
+    let opened_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    let id_suffix = window_id.unwrap_or(pid);
+    let id = format!("file-{id_suffix}-{opened_at:.0}");
+    let win = TrackedWindow {
+        id: id.clone(),
+        exec,
+        file: Some(path),
+        pid,
+        project_id,
+        role: None,
+        opened_at,
+        window_id,
+    };
+    registry.lock().unwrap().windows.insert(id, win.clone());
+    Ok(win)
+}
+
+#[cfg(target_os = "linux")]
+fn list_x11_window_ids() -> Vec<u32> {
+    x11_client_windows()
+        .map(|windows| windows.into_iter().map(|w| w.id).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn list_x11_window_ids() -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u32> {
+    for _ in 0..attempts {
+        if let Ok(windows) = x11_client_windows() {
+            if let Some(window) = windows.into_iter().find(|w| w.pid == Some(pid) && !w.protected) {
+                return Some(window.id);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn find_window_for_pid(_pid: u32, _attempts: usize) -> Option<u32> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn find_new_x11_window(before: &[u32], attempts: usize) -> Option<u32> {
+    for _ in 0..attempts {
+        if let Ok(windows) = x11_client_windows() {
+            if let Some(window) = windows
+                .into_iter()
+                .find(|w| !before.contains(&w.id) && !w.protected)
+            {
+                return Some(window.id);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn find_new_x11_window(_before: &[u32], _attempts: usize) -> Option<u32> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct X11ClientWindow {
+    id: u32,
+    pid: Option<u32>,
+    protected: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn x11_client_windows() -> Result<Vec<X11ClientWindow>, String> {
+    use xcb::x::{self, Window};
+    use xcb::{Connection, Xid};
+
+    let (conn, screen_num) =
+        Connection::connect(None).map_err(|e| format!("xcb connect: {e}"))?;
+    let root = conn
+        .get_setup()
+        .roots()
+        .nth(screen_num as usize)
+        .ok_or_else(|| "missing x11 screen".to_string())?
+        .root();
+    let net_client_list = intern_atom(&conn, b"_NET_CLIENT_LIST")?;
+    let net_wm_pid = intern_atom(&conn, b"_NET_WM_PID")?;
+    let reply = conn
+        .wait_for_reply(conn.send_request(&x::GetProperty {
+            delete: false,
+            window: root,
+            property: net_client_list,
+            r#type: x::ATOM_WINDOW,
+            long_offset: 0,
+            long_length: 2048,
+        }))
+        .map_err(|e| e.to_string())?;
+
+    Ok(reply
+        .value::<Window>()
+        .iter()
+        .map(|&window| X11ClientWindow {
+            id: window.resource_id(),
+            pid: window_pid(&conn, window, net_wm_pid),
+            protected: is_protected_window(&conn, window),
+        })
+        .collect())
+}
+
+#[cfg(target_os = "linux")]
+fn intern_atom(conn: &xcb::Connection, name: &[u8]) -> Result<xcb::x::Atom, String> {
+    conn.wait_for_reply(conn.send_request(&xcb::x::InternAtom {
+        only_if_exists: false,
+        name,
+    }))
+    .map(|r| r.atom())
+    .map_err(|e| format!("InternAtom {}: {e}", String::from_utf8_lossy(name)))
+}
+
+#[cfg(target_os = "linux")]
+fn window_pid(conn: &xcb::Connection, window: xcb::x::Window, atom: xcb::x::Atom) -> Option<u32> {
+    conn.wait_for_reply(conn.send_request(&xcb::x::GetProperty {
+        delete: false,
+        window,
+        property: atom,
+        r#type: xcb::x::ATOM_CARDINAL,
+        long_offset: 0,
+        long_length: 1,
+    }))
+    .ok()
+    .and_then(|r| r.value::<u32>().first().copied())
+}
+
+#[cfg(target_os = "linux")]
+fn is_protected_window(conn: &xcb::Connection, window: xcb::x::Window) -> bool {
+    let class = conn
+        .wait_for_reply(conn.send_request(&xcb::x::GetProperty {
+            delete: false,
+            window,
+            property: xcb::x::ATOM_WM_CLASS,
+            r#type: xcb::x::ATOM_STRING,
+            long_offset: 0,
+            long_length: 64,
+        }))
+        .ok()
+        .map(|r| String::from_utf8_lossy(r.value::<u8>()).to_lowercase())
+        .unwrap_or_default();
+
+    ["eldrun", "plasmashell", "kwin", "cinnamon"]
+        .iter()
+        .any(|protected| class.contains(protected))
 }

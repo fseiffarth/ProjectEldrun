@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
 
 /// Read and deserialize a JSON file.
 pub fn read_json<T>(path: &Path) -> Result<T, Box<dyn std::error::Error>>
@@ -11,26 +10,11 @@ where
     Ok(serde_json::from_str(&content)?)
 }
 
-/// Serialize and write a JSON file, creating a timestamped backup of the
-/// existing file first.  The caller's data is never written if the backup
-/// step fails, keeping the original intact.
+/// Serialize and write a JSON file.
 pub fn write_json<T>(path: &Path, value: &T) -> Result<(), Box<dyn std::error::Error>>
 where
     T: serde::Serialize,
 {
-    if path.exists() {
-        let ts = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let file_stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file");
-        let backup_name = format!("{file_stem}.{ts}.bak.json");
-        let backup = path.with_file_name(backup_name);
-        fs::copy(path, backup)?;
-    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -56,4 +40,54 @@ pub fn state_dir() -> std::path::PathBuf {
 pub fn root_work_dir() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
     std::path::PathBuf::from(home).join("eldrun").join("root")
+}
+
+/// Current date in UTC as "YYYY-MM-DD".
+pub fn today_utc() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = (secs / 86400) as i64;
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Current timestamp as ISO-8601 UTC string (seconds precision).
+pub fn iso_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let total = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let s = total % 60;
+    let m = (total / 60) % 60;
+    let h = (total / 3600) % 24;
+    let mut days = total / 86400;
+    let mut year = 1970u64;
+    loop {
+        let dy = if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 };
+        if days < dy { break; }
+        days -= dy;
+        year += 1;
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_lens: [u64; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u64;
+    for &ml in &month_lens {
+        if days < ml { break; }
+        days -= ml;
+        month += 1;
+    }
+    format!("{year:04}-{month:02}-{:02}T{h:02}:{m:02}:{s:02}+00:00", days + 1)
 }

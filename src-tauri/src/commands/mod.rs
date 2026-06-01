@@ -4,4 +4,5 @@ pub mod downloads;
 pub mod projects;
 pub mod settings;
 pub mod terminal;
+pub mod timer;
 pub mod workspace;

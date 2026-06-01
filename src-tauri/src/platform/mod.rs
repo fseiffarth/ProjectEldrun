@@ -32,12 +32,16 @@ pub trait WorkspaceBackend: Send + Sync {
     fn name(&self) -> &'static str;
     fn info(&self) -> WorkspaceInfo;
     /// Bring `project_id`'s windows to the foreground desktop and park the
-    /// previous project's windows on the hidden desktop.
-    /// `previous_project_id` is the project being deactivated (None on first switch).
+    /// previous project's windows on the hidden desktop. `None` targets the
+    /// root terminal workspace.
+    /// `previous_project_id` is the project being deactivated, with `None`
+    /// representing the root terminal workspace.
     fn switch_to_project(
         &self,
-        project_id: &str,
+        project_id: Option<&str>,
         previous_project_id: Option<&str>,
+        previous_window_ids: &[u32],
+        current_window_ids: &[u32],
     ) -> Result<(), String>;
     /// Called at startup to make Eldrun visible on all desktops (sticky).
     fn make_sticky(&self, eldrun_pid: u32) -> Result<(), String>;
@@ -56,20 +60,23 @@ pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
         let wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
 
         if wayland && (desktop.contains("kde") || desktop.contains("plasma")) {
-            if let Ok(b) = wayland_kde::KdeWaylandBackend::try_new() {
-                return Box::new(b);
+            match wayland_kde::KdeWaylandBackend::try_new() {
+                Ok(b) => return Box::new(b),
+                Err(e) => eprintln!("workspace backend kde-wayland unavailable: {e}"),
             }
         }
 
         if desktop.contains("kde") || desktop.contains("plasma") {
-            if let Ok(b) = x11::X11Backend::try_new() {
-                return Box::new(b);
+            match x11::X11Backend::try_new() {
+                Ok(b) => return Box::new(b),
+                Err(e) => eprintln!("workspace backend x11 unavailable: {e}"),
             }
         }
 
         if desktop.contains("cinnamon") || desktop.contains("x-cinnamon") {
-            if let Ok(b) = x11::X11Backend::try_new() {
-                return Box::new(b);
+            match x11::X11Backend::try_new() {
+                Ok(b) => return Box::new(b),
+                Err(e) => eprintln!("workspace backend x11 unavailable: {e}"),
             }
         }
     }
