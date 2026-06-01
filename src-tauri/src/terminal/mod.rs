@@ -273,10 +273,24 @@ pub fn resize_pty(
         .map_err(|e| format!("resize: {e}"))
 }
 
+// ── Shell detection ────────────────────────────────────────────────────────
+
+/// Return the user's preferred login shell, falling back to a platform default.
+pub fn default_shell() -> String {
+    if cfg!(target_os = "windows") {
+        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+    } else if cfg!(target_os = "macos") {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
+    } else {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+    }
+}
+
 // ── Command builder ────────────────────────────────────────────────────────
 
 fn build_command(opts: &PtyOptions) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new(&opts.cmd);
+    let cmd_str = if opts.cmd.is_empty() { default_shell() } else { opts.cmd.clone() };
+    let mut cmd = CommandBuilder::new(&cmd_str);
     for arg in &opts.args {
         cmd.arg(arg);
     }

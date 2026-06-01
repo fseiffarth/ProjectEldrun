@@ -337,10 +337,28 @@ pub fn untrack_window(registry: State<'_, WindowRegistryState>, id: String) -> b
 
 #[tauri::command]
 pub fn check_pid_alive(pid: u32) -> bool {
-    #[cfg(target_os = "linux")]
-    return std::path::Path::new(&format!("/proc/{pid}")).exists();
-    #[cfg(not(target_os = "linux"))]
-    return false;
+    if cfg!(target_os = "linux") {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    } else if cfg!(target_os = "windows") {
+        // tasklist /FI "PID eq <pid>" exits 0 even if the PID is not found;
+        // check that the PID number appears in the output instead.
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
+            .output()
+            .map(|o| {
+                let out = String::from_utf8_lossy(&o.stdout);
+                out.contains(&format!(",\"{}\",", pid))
+            })
+            .unwrap_or(false)
+    } else {
+        // macOS / non-Linux Unix: kill(pid, 0) returns 0 if process exists.
+        // On non-Unix platforms this branch is never reached (Windows is
+        // handled above), so the `false` fallback is a compile-time safety net.
+        #[cfg(unix)]
+        { return unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }; }
+        #[allow(unreachable_code)]
+        false
+    }
 }
 
 /// Best-effort restore: launch apps from `open_apps` metadata.

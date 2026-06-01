@@ -23,22 +23,40 @@ where
     Ok(())
 }
 
-/// Pinned Linux state directory — do not use Tauri's generated path; this
-/// must match the Python app's hard-coded `~/.local/share/eldrun/` path so
-/// that Python rollback finds the same files Rust wrote.
+/// State directory for Eldrun's JSON files.
+///
+/// Linux: `~/.local/share/eldrun/` — matches the Python app's hard-coded path
+/// so that Python rollback finds the same files Rust wrote.
+/// Windows: `%APPDATA%\eldrun\`
+/// macOS:   `~/Library/Application Support/eldrun/`
 pub fn state_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    std::path::PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("eldrun")
+    if cfg!(target_os = "windows") {
+        let base = std::env::var("APPDATA")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "C:\\Users\\Default".to_string());
+        std::path::PathBuf::from(base).join("eldrun")
+    } else if cfg!(target_os = "macos") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        std::path::PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("eldrun")
+    } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        std::path::PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("eldrun")
+    }
 }
 
 /// Working directory for terminals that are not attached to a project.
-///
-/// This mirrors the Python app's documented root terminal directory.
 pub fn root_work_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let home = if cfg!(target_os = "windows") {
+        std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".to_string())
+    } else {
+        std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
+    };
     std::path::PathBuf::from(home).join("eldrun").join("root")
 }
 

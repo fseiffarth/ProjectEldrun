@@ -52,6 +52,42 @@ jobs:
       - name: Run backend tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
+  package-windows:
+    name: package-windows
+    runs-on: windows-latest
+    if: github.event_name == 'push'
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build release bundles
+        run: npm run tauri:bundle -- --bundles nsis
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: eldrun-${{ github.sha }}-windows-nsis
+          path: src-tauri/target/release/bundle/nsis/*.exe
+
   package:
     name: package
     runs-on: ubuntu-22.04
@@ -110,7 +146,7 @@ jobs:
     name: release
     runs-on: ubuntu-22.04
     if: startsWith(github.ref, 'refs/tags/v0.') && endsWith(github.ref, '.0')
-    needs: package
+    needs: [package, package-windows]
     permissions:
       contents: write
 
@@ -127,6 +163,12 @@ jobs:
           name: eldrun-${{ github.sha }}-deb
           path: release-assets
 
+      - name: Download Windows NSIS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: eldrun-${{ github.sha }}-windows-nsis
+          path: release-assets
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -139,3 +181,4 @@ jobs:
           files: |
             release-assets/*.AppImage
             release-assets/*.deb
+            release-assets/*.exe

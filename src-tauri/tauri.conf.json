@@ -28,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage"],
+    "targets": ["deb", "appimage", "nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -43,6 +43,14 @@
           "libgtk-3-0",
           "libappindicator3-1"
         ]
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
       }
     },
     "category": "Development"
