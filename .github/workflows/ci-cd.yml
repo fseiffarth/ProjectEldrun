@@ -80,7 +80,7 @@ jobs:
         run: npm ci
 
       - name: Build release bundles
-        run: npm run tauri:bundle -- --bundles nsis
+        run: npm run tauri:build -- --bundles nsis
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
