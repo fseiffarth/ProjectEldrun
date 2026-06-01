@@ -81,7 +81,13 @@ npx tsc --noEmit
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-4. Do not start Eldrun from Claude. Ask the user to restart the existing
+4. Every push to GitHub should produce a fresh packaged artifact from the
+   workflow in `.github/workflows/ci-cd.yml`; use `npm run package` locally if
+   you need to install the same release build under `~/.local/share/eldrun/`.
+   GitHub Releases are only published for `v0.<minor>.0` tags, so patch-only
+   bumps like `0.1.1 -> 0.1.2` do not create a release.
+
+5. Do not start Eldrun from Claude. Ask the user to restart the existing
    instance for runtime verification.
 
 Useful keys: `F11` toggles fullscreen; `Super` toggles panels while Eldrun is

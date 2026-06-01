@@ -1,0 +1,141 @@
+name: ci-cd
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libappindicator3-dev \
+            libgtk-3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run backend tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  package:
+    name: package
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'push'
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libappindicator3-dev \
+            libgtk-3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build release bundles
+        run: npm run tauri:bundle
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: eldrun-${{ github.sha }}-appimage
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: eldrun-${{ github.sha }}-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+
+  release:
+    name: release
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/v0.') && endsWith(github.ref, '.0')
+    needs: package
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download AppImage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: eldrun-${{ github.sha }}-appimage
+          path: release-assets
+
+      - name: Download DEB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: eldrun-${{ github.sha }}-deb
+          path: release-assets
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: |
+            Eldrun release ${{ github.ref_name }}.
+
+            Built from commit ${{ github.sha }}.
+          files: |
+            release-assets/*.AppImage
+            release-assets/*.deb

@@ -163,8 +163,8 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
 
     setupAndSpawn();
 
-    // Resize observer.
-    const ro = new ResizeObserver(() => {
+    // Resize observer — handles container-level resizes (e.g. panel open/close).
+    const doFit = () => {
       if (fitRef.current && termRef.current) {
         fitRef.current.fit();
         invoke("pty_resize", {
@@ -173,11 +173,17 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
           rows: termRef.current.rows,
         }).catch(() => {});
       }
-    });
+    };
+    const ro = new ResizeObserver(doFit);
     if (containerRef.current) ro.observe(containerRef.current);
+
+    // Window resize listener — WebKitGTK doesn't reliably fire ResizeObserver
+    // for viewport-level changes (maximize, fullscreen toggle).
+    window.addEventListener("resize", doFit);
 
     return () => {
       cancelled = true;
+      window.removeEventListener("resize", doFit);
       ro.disconnect();
       unlistenOutput.current?.();
       unlistenReady.current?.();

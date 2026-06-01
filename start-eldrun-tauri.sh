@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Launcher for the Tauri dev build.
-# After `cargo tauri build`, replace this with the compiled binary:
-#   ~/.../target/release/eldrun
-set -e
-cd "$(dirname "$0")"
-. "$HOME/.cargo/env"
-exec cargo tauri dev
+# Thin launcher for the packaged Eldrun AppImage.
+set -euo pipefail
+
+APPIMAGE="$HOME/.local/share/eldrun/eldrun.AppImage"
+
+if [[ ! -x "$APPIMAGE" ]]; then
+  printf '%s\n' "Eldrun is not packaged yet." \
+    "Run 'npm run package' to build and install the AppImage first." >&2
+  exit 1
+fi
+
+exec "$APPIMAGE" "$@"
