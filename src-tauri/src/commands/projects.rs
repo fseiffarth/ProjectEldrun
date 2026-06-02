@@ -222,7 +222,7 @@ const SCAFFOLD_FILES: &[(&str, &str)] = &[
     ("DOCUMENTATION.md", "# Documentation\n"),
 ];
 
-const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\n.DS_Store\n*.log\n";
+const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\n.DS_Store\n*.log\n.eldrun/\n";
 
 const CLAUDE_SETTINGS: &str =
     r#"{"permissions":{"allow":[],"deny":[]}}"#;

@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod platform;
 pub mod schema;
+pub mod services;
 pub mod storage;
 pub mod terminal;
 
@@ -199,9 +200,11 @@ pub fn run() {
             commands::workspace::show_window,
             commands::workspace::hide_window,
             commands::workspace::get_opened_windows,
-            commands::workspace::switch_project_windows,
+            commands::workspace::switch_project_windows, // deprecated; use switch_project_runtime
             commands::workspace::workspace_name,
             commands::workspace::network_conn_type,
+            // Project-runtime switching (replaces switch_project_windows)
+            commands::project_runtime::switch_project_runtime,
             // Downloads
             commands::downloads::update_downloads_symlink,
             commands::downloads::configure_browser_downloads,

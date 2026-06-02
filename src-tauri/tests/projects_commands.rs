@@ -16,7 +16,7 @@ const SCAFFOLDS: &[(&str, &str)] = &[
     ("ROADMAP.md", "# Roadmap\n"),
     ("STATUS.md", "# Status\n"),
     ("DOCUMENTATION.md", "# Documentation\n"),
-    (".gitignore", "__pycache__/\n*.pyc\n.venv/\n.DS_Store\n*.log\n"),
+    (".gitignore", "__pycache__/\n*.pyc\n.venv/\n.DS_Store\n*.log\n.eldrun/\n"),
     (".claude/settings.json", r#"{"permissions":{"allow":[],"deny":[]}}"#),
 ];
 

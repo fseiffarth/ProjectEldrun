@@ -69,7 +69,7 @@ pub fn opened_windows_for_project<'a>(
 
 // ── Core launch helper ────────────────────────────────────────────────────
 
-fn do_launch(
+pub fn do_launch(
     registry: &WindowRegistryState,
     exec: &str,
     file: Option<&str>,

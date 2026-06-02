@@ -1,7 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { resolveProjectDirectory, type ProjectEntry } from "../types";
+import { useTabsStore } from "./tabs";
 import { useTimerStore } from "./timer";
+
+interface ProjectRuntimeSwitchedPayload {
+  projectId: string | null;
+  tabLayout: Array<{ key: string; label: string; cmd: string; cwd: string }>;
+  activeTabIndex: number;
+  fileTabs: unknown[];
+  rightPanelFolder: string | null;
+  openedWindowIds: string[];
+}
 
 interface ProjectsStore {
   projects: ProjectEntry[];
@@ -76,12 +86,32 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     });
     await invoke<void>("save_projects", { projects: nextProjects });
     void useTimerStore.getState().setProject(id);
-    invoke<void>("switch_project_windows", {
+    const tabsStore = useTabsStore.getState();
+    const tabs = tabsStore.tabs;
+    const activeTabIndex = Math.max(
+      0,
+      tabs.findIndex((t) => t.key === tabsStore.activeKey),
+    );
+    invoke<ProjectRuntimeSwitchedPayload>("switch_project_runtime", {
       projectId: id,
       previousProjectId: previousId,
-    }).catch((error) => {
-      console.warn("switch_project_windows failed", error);
-    });
+      previousSnapshot: {
+        tabLayout: tabs.map((t) => ({ key: t.key, label: t.label, cmd: t.cmd, cwd: t.cwd })),
+        activeTabIndex,
+        fileTabs: [],
+        rightPanelFolder: null,
+        activeLayoutMetadata: null,
+        flushSecs: 0.0,
+      },
+    })
+      .then((payload) => {
+        if (payload.tabLayout.length > 0) {
+          useTabsStore.getState().loadFromLayout(payload.tabLayout, "");
+        }
+      })
+      .catch((error) => {
+        console.warn("switch_project_runtime failed", error);
+      });
   },
 
   clearSwitchToast: () => set({ switchToast: null }),
