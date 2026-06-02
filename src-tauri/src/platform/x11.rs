@@ -533,31 +533,6 @@ fn is_protected(conn: &Connection, wid: Window) -> bool {
         .any(|p| class.contains(*p))
 }
 
-fn get_pid_for_window(conn: &Connection, wid: Window) -> Option<u32> {
-    let atom = conn
-        .wait_for_reply(conn.send_request(&x::InternAtom {
-            only_if_exists: true,
-            name: b"_NET_WM_PID",
-        }))
-        .ok()
-        .map(|r| r.atom())?;
-
-    if atom == x::ATOM_NONE {
-        return None;
-    }
-
-    let cookie = conn.send_request(&x::GetProperty {
-        delete: false,
-        window: wid,
-        property: atom,
-        r#type: x::ATOM_CARDINAL,
-        long_offset: 0,
-        long_length: 1,
-    });
-    conn.wait_for_reply(cookie)
-        .ok()
-        .and_then(|r| r.value::<u32>().first().copied())
-}
 
 fn is_cinnamon_desktop() -> bool {
     std::env::var("XDG_CURRENT_DESKTOP")

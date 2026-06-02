@@ -183,7 +183,7 @@ fn update_firefox_prefs(ff_base: &Path, download_path: &str) -> Result<bool, Str
         if is_locked(&profile_dir.join(".parentlock")) {
             continue;
         }
-        let backup = backup_file(&prefs)?;
+        let _backup = backup_file(&prefs)?;
         let content = fs::read_to_string(&prefs).map_err(|e| e.to_string())?;
 
         let new_content = set_pref(
