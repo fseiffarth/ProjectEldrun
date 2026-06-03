@@ -55,24 +55,9 @@ export function CenterPanel() {
           | undefined;
         if (layout && layout.length > 0) {
           loadFromLayout(layout, projectCwd);
-          return;
         }
-        // No saved layout — only open default tab on explicit switch.
-        if (switchGeneration === 0) return;
-        const kind = cmdToKind(agentCmd);
-        ensureTab(
-          { label: agentCmd, cmd: agentCmd, args: [], cwd: projectCwd, kind },
-          (tab) => tab.kind === kind && tab.cwd === projectCwd,
-        );
       })
-      .catch(() => {
-        if (switchGeneration === 0) return;
-        const kind = cmdToKind(agentCmd);
-        ensureTab(
-          { label: agentCmd, cmd: agentCmd, args: [], cwd: projectCwd, kind },
-          (tab) => tab.kind === kind && tab.cwd === projectCwd,
-        );
-      });
+      .catch(() => {});
   }, [activeId, projectCwd, localFile, agentCmd, switchGeneration, setScope, ensureTab, loadFromLayout]);
 
   useEffect(() => {
