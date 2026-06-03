@@ -41,6 +41,37 @@ pub fn save_project(local_file: String, project: Project) -> Result<(), String> 
     storage::write_json(&path, &project).map_err(|e| e.to_string())
 }
 
+/// Save only the tab layout — writes to both project.json and the session file.
+#[tauri::command]
+pub fn save_tab_layout(
+    local_file: String,
+    tabs: Vec<crate::schema::project::TabEntry>,
+) -> Result<(), String> {
+    crate::services::terminal_service::save_tab_layout(&local_file, &tabs)
+}
+
+/// Debug: clear all project session state from disk (tabs, open_apps, session files).
+#[tauri::command]
+pub fn clear_project_session(local_file: String) -> Result<(), String> {
+    use crate::services::terminal_service::eldrun_sessions_dir;
+
+    let path = PathBuf::from(&local_file);
+    let mut project: Project = storage::read_json(&path).unwrap_or_default();
+    project.tab_layout = None;
+    project.open_apps = None;
+    storage::write_json(&path, &project).map_err(|e| e.to_string())?;
+
+    if let Some(sessions_dir) = eldrun_sessions_dir(&local_file) {
+        for file in &["terminals.json", "windows.json", "filetabs.json"] {
+            let p = sessions_dir.join(file);
+            if p.exists() {
+                let _ = fs::remove_file(&p);
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn root_work_dir() -> String {
     storage::root_work_dir().to_string_lossy().to_string()

@@ -154,21 +154,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   saveLayout: async (localFile) => {
     const { tabs } = get();
     try {
-      const project = await invoke<Record<string, unknown>>("load_project", {
-        localFile,
-      });
       const tabLayout = tabs.map((t) => ({
         key: t.key,
         label: t.label,
         cmd: t.cmd,
         cwd: t.cwd,
-        kind: t.kind,
-        type: t.kind,
       }));
-      await invoke("save_project", {
-        localFile,
-        project: { ...project, tab_layout: tabLayout },
-      });
+      await invoke("save_tab_layout", { localFile, tabs: tabLayout });
     } catch {
       // tab layout is non-critical
     }

@@ -164,6 +164,8 @@ pub fn run() {
             commands::projects::save_projects,
             commands::projects::load_project,
             commands::projects::save_project,
+            commands::projects::save_tab_layout,
+            commands::projects::clear_project_session,
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
             commands::projects::create_project,

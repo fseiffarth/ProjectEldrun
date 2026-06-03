@@ -76,7 +76,7 @@ export function CenterPanel() {
   }, [activeId, projectCwd, localFile, agentCmd, switchGeneration, setScope, ensureTab, loadFromLayout]);
 
   useEffect(() => {
-    if (!activeId || !localFile || tabs.length === 0) return;
+    if (!activeId || !localFile) return;
     const timer = window.setTimeout(() => {
       saveLayout(localFile).catch(() => {});
     }, 300);
