@@ -86,6 +86,8 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     });
     await invoke<void>("save_projects", { projects: nextProjects });
     void useTimerStore.getState().setProject(id);
+    const nextProject = id !== null ? nextProjects.find((p) => p.id === id) : null;
+    const projectCwd = resolveProjectDirectory(nextProject);
     const tabsStore = useTabsStore.getState();
     const tabs = tabsStore.tabs;
     const activeTabIndex = Math.max(
@@ -106,7 +108,11 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     })
       .then((payload) => {
         if (payload.tabLayout.length > 0) {
-          useTabsStore.getState().loadFromLayout(payload.tabLayout, "");
+          const scopeKey = id ?? "root";
+          const liveTabs = useTabsStore.getState().tabsByScope[scopeKey];
+          if (!liveTabs || liveTabs.length === 0) {
+            useTabsStore.getState().loadFromLayout(payload.tabLayout, projectCwd);
+          }
         }
       })
       .catch((error) => {
