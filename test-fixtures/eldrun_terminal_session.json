@@ -1,0 +1,19 @@
+{
+  "tabLayout": [
+    {
+      "key": "shell-1",
+      "label": "Terminal",
+      "cmd": "bash",
+      "cwd": "/home/user/project",
+      "_unknown_test": "preserved"
+    },
+    {
+      "key": "agent-1",
+      "label": "Claude",
+      "cmd": "claude",
+      "cwd": "/home/user/project"
+    }
+  ],
+  "activeTabIndex": 1,
+  "_unknown_test": "preserved"
+}

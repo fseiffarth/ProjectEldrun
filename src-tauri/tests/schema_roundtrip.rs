@@ -14,7 +14,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use eldrun_lib::schema::{
-    ActiveSession, DefaultApps, Project, ProjectEntry, Settings, TimeLogEntry,
+    ActiveSession, DefaultApps, FileTabSession, LayoutSession, Project, ProjectEntry,
+    ProjectState, Settings, TerminalSession, TimeLogEntry, WindowSession,
 };
 use serde_json::Value;
 
@@ -242,6 +243,103 @@ fn project_python_rollback_shape() {
     assert!(back["open_apps"].is_array(), "open_apps must be array");
     // tab_layout must remain an array
     assert!(back["tab_layout"].is_array(), "tab_layout must be array");
+}
+
+// ── .eldrun/sessions/terminals.json ──────────────────────────────────────
+
+#[test]
+fn eldrun_terminal_session_roundtrip() {
+    let path = fixture("eldrun_terminal_session.json");
+    let raw = std::fs::read_to_string(&path).expect("read eldrun_terminal_session.json");
+    let session: TerminalSession = roundtrip(&raw);
+
+    assert_eq!(session.tab_layout.len(), 2);
+    assert_eq!(session.tab_layout[0].key, "shell-1");
+    assert_eq!(session.tab_layout[1].cmd, "claude");
+    assert_eq!(session.active_tab_index, 1);
+
+    // Unknown field preserved in the tab entry.
+    assert_eq!(
+        session.tab_layout[0]
+            .extra
+            .get("_unknown_test")
+            .and_then(|v| v.as_str()),
+        Some("preserved")
+    );
+    // Unknown field preserved at top level.
+    assert_unknown_preserved(&session.extra);
+}
+
+// ── .eldrun/sessions/windows.json ────────────────────────────────────────
+
+#[test]
+fn eldrun_window_session_roundtrip() {
+    let path = fixture("eldrun_window_session.json");
+    let raw = std::fs::read_to_string(&path).expect("read eldrun_window_session.json");
+    let session: WindowSession = roundtrip(&raw);
+
+    assert_eq!(session.project_window_ids.len(), 2);
+    assert!(session.project_window_ids.contains(&"win-abc123".to_string()));
+    assert_unknown_preserved(&session.extra);
+}
+
+// ── .eldrun/sessions/filetabs.json ───────────────────────────────────────
+
+#[test]
+fn eldrun_filetab_session_roundtrip() {
+    let path = fixture("eldrun_filetab_session.json");
+    let raw = std::fs::read_to_string(&path).expect("read eldrun_filetab_session.json");
+    let session: FileTabSession = roundtrip(&raw);
+
+    assert_eq!(session.file_tabs.len(), 2);
+    assert_eq!(
+        session.right_panel_folder.as_deref(),
+        Some("/home/user/project/src")
+    );
+    assert_unknown_preserved(&session.extra);
+}
+
+#[test]
+fn eldrun_filetab_session_optional_right_panel_folder() {
+    let json = r#"{"fileTabs": [], "_unknown_test": "preserved"}"#;
+    let session: FileTabSession = roundtrip(json);
+    assert!(session.right_panel_folder.is_none());
+    assert_unknown_preserved(&session.extra);
+}
+
+// ── .eldrun/sessions/layout.json ─────────────────────────────────────────
+
+#[test]
+fn eldrun_layout_session_roundtrip() {
+    let path = fixture("eldrun_layout_session.json");
+    let raw = std::fs::read_to_string(&path).expect("read eldrun_layout_session.json");
+    let session: LayoutSession = roundtrip(&raw);
+
+    let meta = session.active_layout_metadata.expect("metadata present");
+    assert_eq!(meta["splitRatio"].as_f64(), Some(0.6));
+    assert_unknown_preserved(&session.extra);
+}
+
+#[test]
+fn eldrun_layout_session_empty_metadata() {
+    let json = r#"{"_unknown_test": "preserved"}"#;
+    let session: LayoutSession = roundtrip(json);
+    assert!(session.active_layout_metadata.is_none());
+    assert_unknown_preserved(&session.extra);
+}
+
+// ── .eldrun/state.json ───────────────────────────────────────────────────
+
+#[test]
+fn eldrun_state_roundtrip() {
+    let path = fixture("eldrun_state.json");
+    let raw = std::fs::read_to_string(&path).expect("read eldrun_state.json");
+    let state: ProjectState = roundtrip(&raw);
+
+    assert_eq!(state.project_id, "test-project-id");
+    assert!(!state.project_dir.is_empty());
+    assert!(state.saved_at.is_some());
+    assert_unknown_preserved(&state.extra);
 }
 
 // ── storage: write_json roundtrip ─────────────────────────────────────────

@@ -86,6 +86,10 @@ pub fn list_dir(project_dir: String, rel_path: String) -> Result<Vec<FileEntry>,
             Err(_) => continue,
         };
         let name = entry.file_name().to_string_lossy().to_string();
+        // Always hide .eldrun/ — it is internal runtime storage, not user content.
+        if name == ".eldrun" {
+            continue;
+        }
         let ext = path
             .extension()
             .and_then(|e| e.to_str())

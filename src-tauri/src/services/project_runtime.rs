@@ -6,8 +6,10 @@ use tauri::{AppHandle, Emitter};
 use crate::commands::apps::WindowRegistryState;
 use crate::commands::workspace::WorkspaceStateArc;
 use crate::schema::project::TabEntry;
+use crate::schema::session::{FileTabSession, LayoutSession, ProjectState};
 use crate::schema::time_log::TimeLogEntry;
 use crate::services::{download_routing, restore_service, terminal_service, window_service};
+use crate::services::terminal_service::eldrun_sessions_dir;
 use crate::storage;
 
 // ── Public snapshot types ─────────────────────────────────────────────────
@@ -69,11 +71,16 @@ pub fn switch(
         }
     }
 
-    // 2. Save previous project's tab layout to its project.json.
+    // 2. Save previous project's tab layout to project.json + .eldrun/sessions/.
     if let Some(local_file) = previous_local_file {
-        if let Err(e) = terminal_service::save_tab_layout(local_file, &snapshot.tab_layout) {
+        if let Err(e) = terminal_service::save_terminal_session(
+            local_file,
+            &snapshot.tab_layout,
+            snapshot.active_tab_index,
+        ) {
             eprintln!("ProjectRuntime: save tab layout: {e}");
         }
+        save_previous_sessions(local_file, previous_project_id, snapshot);
     }
 
     // 3. Hide previous project-owned windows.
@@ -87,25 +94,39 @@ pub fn switch(
         window_service::hide_windows(&*ws.backend, &prev_wids);
     }
 
-    // 4. Point ~/eldrun/downloads at the next project (or root work dir).
+    // 4. Save previous window session IDs to .eldrun/sessions/windows.json.
+    if let Some(local_file) = previous_local_file {
+        let prev_reg_ids = {
+            let wins = win_registry.lock().unwrap();
+            window_service::project_tracked_ids(&wins.windows, previous_project_id)
+        };
+        window_service::save_window_session(local_file, &prev_reg_ids);
+    }
+
+    // 5. Point ~/eldrun/downloads at the next project (or root work dir).
     if let Err(e) = download_routing::route_downloads(next_project_dir) {
         eprintln!("ProjectRuntime: download routing: {e}");
     }
 
-    // 5. Load next project data.
-    let next_tab_layout = next_local_file
-        .map(terminal_service::load_tab_layout)
+    // 6. Load next project terminal session.
+    let next_terminal_session = next_local_file
+        .map(terminal_service::load_terminal_session)
         .unwrap_or_default();
     let next_open_apps = next_local_file
         .map(terminal_service::load_open_apps)
         .unwrap_or_default();
 
-    // 6. Restore standalone project apps.
+    // 7. Load next project file tab + layout sessions.
+    let (next_file_tabs, next_right_panel_folder) = next_local_file
+        .map(load_file_tab_session)
+        .unwrap_or_default();
+
+    // 8. Restore standalone project apps.
     if let Some(next_id) = project_id {
         restore_service::restore_project_apps(win_registry, &next_open_apps, next_id);
     }
 
-    // 7. Show next project-owned windows (including freshly restored ones).
+    // 9. Show next project-owned windows (including freshly restored ones).
     {
         let next_wids = {
             let wins = win_registry.lock().unwrap();
@@ -115,7 +136,7 @@ pub fn switch(
         window_service::show_windows(&*ws.backend, &next_wids);
     }
 
-    // 8. Collect opened window IDs for the payload.
+    // 10. Collect opened window IDs for the payload.
     let opened_window_ids = {
         let wins = win_registry.lock().unwrap();
         window_service::project_tracked_ids(&wins.windows, project_id)
@@ -123,10 +144,10 @@ pub fn switch(
 
     let payload = ProjectRuntimeSwitchedPayload {
         project_id: project_id.map(String::from),
-        tab_layout: next_tab_layout,
-        active_tab_index: 0,
-        file_tabs: vec![],
-        right_panel_folder: None,
+        tab_layout: next_terminal_session.tab_layout,
+        active_tab_index: next_terminal_session.active_tab_index,
+        file_tabs: next_file_tabs,
+        right_panel_folder: next_right_panel_folder,
         opened_window_ids,
     };
 
@@ -135,6 +156,63 @@ pub fn switch(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+/// Persist file-tab, layout, and state snapshots for the project being left.
+fn save_previous_sessions(
+    local_file: &str,
+    project_id: Option<&str>,
+    snapshot: &PreviousProjectSnapshot,
+) {
+    let Some(sessions_dir) = eldrun_sessions_dir(local_file) else {
+        return;
+    };
+
+    let file_tab_session = FileTabSession {
+        file_tabs: snapshot.file_tabs.clone(),
+        right_panel_folder: snapshot.right_panel_folder.clone(),
+        extra: Default::default(),
+    };
+    if let Err(e) = storage::write_json(&sessions_dir.join("filetabs.json"), &file_tab_session) {
+        eprintln!("ProjectRuntime: write filetabs session: {e}");
+    }
+
+    let layout_session = LayoutSession {
+        active_layout_metadata: snapshot.active_layout_metadata.clone(),
+        extra: Default::default(),
+    };
+    if let Err(e) = storage::write_json(&sessions_dir.join("layout.json"), &layout_session) {
+        eprintln!("ProjectRuntime: write layout session: {e}");
+    }
+
+    // Write .eldrun/state.json one level up from sessions/.
+    if let Some(eldrun_dir) = sessions_dir.parent() {
+        if let Some(project_dir) = std::path::Path::new(local_file).parent() {
+            let state = ProjectState {
+                project_id: project_id.unwrap_or("").to_string(),
+                project_dir: project_dir.to_string_lossy().into_owned(),
+                saved_at: Some(storage::iso_now()),
+                extra: Default::default(),
+            };
+            if let Err(e) = storage::write_json(&eldrun_dir.join("state.json"), &state) {
+                eprintln!("ProjectRuntime: write .eldrun/state.json: {e}");
+            }
+        }
+    }
+}
+
+/// Load file tabs and right-panel folder from `.eldrun/sessions/filetabs.json`.
+/// Returns (file_tabs, right_panel_folder).
+fn load_file_tab_session(local_file: &str) -> (Vec<serde_json::Value>, Option<String>) {
+    if let Some(sessions_dir) = eldrun_sessions_dir(local_file) {
+        let path = sessions_dir.join("filetabs.json");
+        if path.exists() {
+            if let Ok(session) = storage::read_json::<FileTabSession>(&path) {
+                return (session.file_tabs, session.right_panel_folder);
+            }
+        }
+    }
+    (vec![], None)
+}
 
 fn flush_project_secs(project_id: &str, secs: f64) {
     let path = storage::state_dir().join("time_log.json");
