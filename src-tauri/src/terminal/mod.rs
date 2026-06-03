@@ -38,6 +38,8 @@ pub struct PtyOptions {
     pub id: String,
     pub cmd: String,
     pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
     pub cwd: String,
     pub cols: u16,
     pub rows: u16,
@@ -297,6 +299,9 @@ fn build_command(opts: &PtyOptions) -> CommandBuilder {
     cmd.cwd(&opts.cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    for (k, v) in &opts.env {
+        cmd.env(k, v);
+    }
 
     #[cfg(target_os = "linux")]
     {

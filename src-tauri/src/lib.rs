@@ -210,6 +210,9 @@ pub fn run() {
             // Downloads
             commands::downloads::update_downloads_symlink,
             commands::downloads::configure_browser_downloads,
+            // Ollama local models
+            commands::ollama::list_ollama_models,
+            commands::ollama::ensure_vibe_ollama_model,
         ])
         .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())

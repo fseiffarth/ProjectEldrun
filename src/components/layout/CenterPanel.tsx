@@ -91,6 +91,7 @@ export function CenterPanel() {
             id={tab.key}
             cmd={tab.cmd}
             args={tab.args ?? []}
+            env={tab.env ?? {}}
             cwd={tab.cwd}
             active={scopeKey === scope && tab.key === activeKey}
           />

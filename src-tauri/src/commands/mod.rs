@@ -1,6 +1,7 @@
 pub mod apps;
 pub mod default_apps;
 pub mod downloads;
+pub mod ollama;
 pub mod project_runtime;
 pub mod projects;
 pub mod settings;

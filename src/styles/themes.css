@@ -809,6 +809,23 @@ input {
 
 .tab-new-menu-dot { font-size: 8px; flex-shrink: 0; }
 
+.tab-new-menu-group-label {
+  padding: 6px 10px 2px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.tab-new-menu-hint {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 /* ── Context menus ───────────────────────────────────────────────────── */
 .context-menu {
   position: fixed;

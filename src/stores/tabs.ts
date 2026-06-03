@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 
-export type TabKind = "agent" | "shell" | "files";
+export type TabKind = "agent" | "local_agent" | "shell" | "files";
 
 export const FILES_TAB_CMD = "__eldrun_files__";
 
@@ -10,6 +10,7 @@ export interface TabEntry {
   label: string;
   cmd: string;
   args?: string[];
+  env?: Record<string, string>;
   cwd: string;
   kind: TabKind;
 }
@@ -171,4 +172,8 @@ export function cmdToKind(cmd: string): TabKind {
   if (cmd === FILES_TAB_CMD) return "files";
   if (cmd === "claude" || cmd === "codex" || cmd === "gemini" || cmd === "vibe") return "agent";
   return "shell";
+}
+
+export function isLocalAgentKind(kind: TabKind): kind is "local_agent" {
+  return kind === "local_agent";
 }
