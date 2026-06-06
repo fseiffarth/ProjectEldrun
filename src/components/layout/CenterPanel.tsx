@@ -65,7 +65,7 @@ export function CenterPanel() {
               projectDir: projectCwd,
               vibeHome: tab.env?.VIBE_HOME ?? null,
             }).catch(() => null);
-            if (detected && detected !== tab.sessionId) return { ...tab, sessionId: detected };
+            if (detected && !tab.sessionId) return { ...tab, sessionId: detected };
             return tab;
           })
         );
@@ -93,13 +93,40 @@ export function CenterPanel() {
             projectDir: projectCwd,
             vibeHome: tab.env?.VIBE_HOME ?? null,
           });
-          if (sessionId && sessionId !== tab.sessionId) update(tab.key, sessionId);
+          if (sessionId && !tab.sessionId) update(tab.key, sessionId);
         } catch {
           // session detection is best-effort
         }
       }
     }, 5000);
     return () => window.clearTimeout(timer);
+  }, [activeId, projectCwd]);
+
+  // Periodically re-detect session IDs so that /clear (which creates a new
+  // session) is picked up without requiring a project switch.  Only runs when
+  // there is exactly one agent tab in scope to avoid incorrectly overwriting
+  // session IDs across independent multi-agent tab setups.
+  useEffect(() => {
+    if (!activeId || !projectCwd) return;
+    const interval = window.setInterval(async () => {
+      const { tabs: currentTabs, updateTabSessionId: update } = useTabsStore.getState();
+      const agentTabs = currentTabs.filter(
+        (t) => t.kind === "agent" || t.kind === "local_agent",
+      );
+      if (agentTabs.length !== 1) return;
+      const tab = agentTabs[0];
+      try {
+        const sessionId = await invoke<string | null>("detect_agent_session_id", {
+          agentCmd: tab.cmd,
+          projectDir: projectCwd,
+          vibeHome: tab.env?.VIBE_HOME ?? null,
+        });
+        if (sessionId && sessionId !== tab.sessionId) update(tab.key, sessionId);
+      } catch {
+        // session detection is best-effort
+      }
+    }, 60_000);
+    return () => window.clearInterval(interval);
   }, [activeId, projectCwd]);
 
   // Re-hydrate local_agent tabs that were saved without VIBE_HOME/VIBE_ACTIVE_MODEL.
