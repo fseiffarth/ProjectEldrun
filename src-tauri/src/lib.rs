@@ -171,6 +171,7 @@ pub fn run() {
             commands::projects::create_project,
             commands::projects::import_project,
             commands::projects::get_time_today,
+            commands::projects::detect_agent_session_id,
             // Timer flush + activity
             commands::timer::timer_flush_app,
             commands::timer::timer_flush_project,

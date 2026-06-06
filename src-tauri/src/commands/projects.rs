@@ -72,6 +72,186 @@ pub fn clear_project_session(local_file: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Detect the most recent session ID for any supported agent CLI.
+///
+/// - `agent_cmd`: the command name ("claude", "codex", "gemini", "vibe")
+/// - `project_dir`: the project's working directory
+/// - `vibe_home`: optional VIBE_HOME override (used for local Ollama agent tabs)
+#[tauri::command]
+pub fn detect_agent_session_id(
+    agent_cmd: String,
+    project_dir: String,
+    vibe_home: Option<String>,
+) -> Option<String> {
+    match agent_cmd.as_str() {
+        "claude" => detect_claude_session(&project_dir),
+        "codex"  => detect_codex_session(&project_dir),
+        "gemini" => detect_gemini_session(&project_dir),
+        "vibe"   => detect_vibe_session(&project_dir, vibe_home.as_deref()),
+        _        => None,
+    }
+}
+
+/// Claude: `~/.claude/projects/<encoded-path>/<session-id>.jsonl`
+/// Path encoding: every `/` → `-`.
+fn detect_claude_session(project_dir: &str) -> Option<String> {
+    let encoded = project_dir.replace('/', "-");
+    let home = std::env::var("HOME").ok()?;
+    let dir = PathBuf::from(home).join(".claude").join("projects").join(&encoded);
+    most_recent_jsonl_stem(&dir)
+}
+
+/// Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`
+/// Each file starts with a `session_meta` line containing `id` and `cwd`.
+/// We walk newest date directories first and return the first session whose
+/// cwd matches `project_dir`.
+fn detect_codex_session(project_dir: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let root = PathBuf::from(home).join(".codex").join("sessions");
+    if !root.is_dir() {
+        return None;
+    }
+
+    // Collect every JSONL file with its modification time, then sort newest first.
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    collect_jsonl_files(&root, &mut files);
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+
+    for (_, path) in files {
+        if let Some(id) = read_codex_session_id_for_dir(&path, project_dir) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// Gemini stores per-project history under `~/.gemini/history/<name>/` where
+/// the name mapping lives in `~/.gemini/projects.json`.  The resume flag
+/// accepts "latest" which always picks the most recent session, so we just
+/// confirm a history entry exists for this project and return the sentinel.
+fn detect_gemini_session(project_dir: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let gemini_home = PathBuf::from(home).join(".gemini");
+
+    // Resolve project name from projects.json.
+    let projects_file = gemini_home.join("projects.json");
+    let content = fs::read_to_string(&projects_file).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let name = v["projects"]
+        .as_object()?
+        .iter()
+        .find(|(k, _)| k.as_str() == project_dir)
+        .map(|(_, v)| v.as_str().unwrap_or("").to_owned())?;
+
+    let history_dir = gemini_home.join("history").join(&name);
+    if history_dir.is_dir() { Some("latest".to_string()) } else { None }
+}
+
+/// Vibe: `$VIBE_HOME/logs/session/<dir>/meta.json`
+/// `meta.json` has `session_id` and `environment.working_directory`.
+fn detect_vibe_session(project_dir: &str, vibe_home: Option<&str>) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let base = match vibe_home {
+        Some(h) if !h.is_empty() => PathBuf::from(h),
+        _ => PathBuf::from(&home).join(".vibe"),
+    };
+    let sessions_dir = base.join("logs").join("session");
+    if !sessions_dir.is_dir() {
+        return None;
+    }
+
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    for entry in fs::read_dir(&sessions_dir).ok()?.flatten() {
+        if !entry.file_type().map_or(false, |t| t.is_dir()) {
+            continue;
+        }
+        let meta_path = entry.path().join("meta.json");
+        if !meta_path.exists() {
+            continue;
+        }
+        let content = match fs::read_to_string(&meta_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let v: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let cwd = v["environment"]["working_directory"].as_str().unwrap_or("");
+        if cwd != project_dir {
+            continue;
+        }
+        let session_id = match v["session_id"].as_str() {
+            Some(id) => id.to_owned(),
+            None => continue,
+        };
+        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+            if best.as_ref().map_or(true, |(t, _)| modified > *t) {
+                best = Some((modified, session_id));
+            }
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────
+
+/// Return the stem (filename without `.jsonl`) of the most recently modified
+/// `.jsonl` file in `dir`.
+fn most_recent_jsonl_stem(dir: &PathBuf) -> Option<String> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let mut latest: Option<(std::time::SystemTime, String)> = None;
+    for entry in fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".jsonl") {
+            continue;
+        }
+        let stem = name[..name.len() - 6].to_string();
+        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+            if latest.as_ref().map_or(true, |(t, _)| modified > *t) {
+                latest = Some((modified, stem));
+            }
+        }
+    }
+    latest.map(|(_, stem)| stem)
+}
+
+/// Recursively collect all `.jsonl` files under `dir` along with their mtime.
+fn collect_jsonl_files(dir: &PathBuf, out: &mut Vec<(std::time::SystemTime, PathBuf)>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonl_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+                out.push((modified, path));
+            }
+        }
+    }
+}
+
+/// Read the first `session_meta` line of a codex JSONL file and return the
+/// session `id` if `cwd` matches `project_dir`.
+fn read_codex_session_id_for_dir(path: &PathBuf, project_dir: &str) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let file = fs::File::open(path).ok()?;
+    for line in BufReader::new(file).lines().take(5).flatten() {
+        let v: serde_json::Value = serde_json::from_str(&line).ok()?;
+        if v["type"].as_str() != Some("session_meta") {
+            continue;
+        }
+        let payload = &v["payload"];
+        if payload["cwd"].as_str() != Some(project_dir) {
+            return None;
+        }
+        return payload["id"].as_str().map(String::from);
+    }
+    None
+}
+
 #[tauri::command]
 pub fn root_work_dir() -> String {
     storage::root_work_dir().to_string_lossy().to_string()
