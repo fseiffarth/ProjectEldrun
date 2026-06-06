@@ -213,7 +213,15 @@ pub fn run() {
             // Ollama local models
             commands::ollama::list_ollama_models,
             commands::ollama::ensure_vibe_ollama_model,
+            commands::ollama::prepare_local_agent,
             commands::ollama::ensure_ollama_running,
+            // Ollama model management
+            commands::ollama::ollama_is_installed,
+            commands::ollama::list_ollama_models_detailed,
+            commands::ollama::stop_ollama_model,
+            commands::ollama::pull_ollama_model,
+            commands::ollama::delete_ollama_model,
+            commands::ollama::list_installable_models,
         ])
         .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())

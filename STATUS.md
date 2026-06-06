@@ -4,7 +4,7 @@ This file is the short current-state snapshot. It should not contain generated
 time logs or long-form design notes; those belong in Eldrun runtime state and
 `DOCUMENTATION.md`.
 
-Last reviewed: 2026-06-01
+Last reviewed: 2026-06-06
 
 ## Current State
 
@@ -14,6 +14,9 @@ Last reviewed: 2026-06-01
 - App shell: root terminal, project terminals, agent tabs (Claude/Codex/Gemini/
   Vibe/Shell), bottom project switcher, right file tree, global app toolbar,
   hover-revealed panels, time tracking, and optional workspace management.
+- Local Ollama support: installed models appear as Local Agent tab choices,
+  local tabs run through Vibe with isolated per-model `VIBE_HOME` configs, and
+  the Settings Ollama panel can list, install/update, unload, and delete models.
 - Hover-revealed UI: all three side panels (global app bar, right file panel,
   bottom bar) appear on pointer hover and auto-close when the pointer leaves.
 - Project pill hover shows path, status, and today's active time.
@@ -26,6 +29,8 @@ Last reviewed: 2026-06-01
 - `F11` toggles fullscreen; `Super` toggles all panels.
 - Crash logging to `~/.local/share/eldrun/crash.log`.
 - Packaging: Debian `.deb` and AppImage targets.
+- Current documentation pass updated `README.md`, `DOCUMENTATION.md`, and this
+  status snapshot for the Ollama model-management and local-agent changes.
 
 ## Completed Migration Phases
 
@@ -42,7 +47,8 @@ Last reviewed: 2026-06-01
 
 ## Quality Snapshot
 
-- Tauri/Rust tests: `cargo test` in `src-tauri/` (15 schema round-trip tests passing).
+- Tauri/Rust tests: `cargo test` in `src-tauri/` (schema round-trip tests plus
+  Ollama local-agent config regression tests).
 - Frontend build: `npm run build` (TypeScript + Vite; must be clean).
 - Runtime validation needs a human-run Eldrun session. Agents must not launch a
   second Eldrun instance for verification.
@@ -54,6 +60,10 @@ Last reviewed: 2026-06-01
   window enumeration falls back to tracked-only mode if the file write fails.
 - Tab layout is persisted but PTYs do not survive app restarts; terminals
   respawn their child processes on next activation.
+- Ollama pulls/updates depend on network access to the Ollama registry and can
+  take minutes for large models.
+- Starting the system Ollama service depends on local user permissions; Eldrun
+  falls back to a user `ollama serve` process when needed.
 - Open-app restore is best-effort relaunch; window geometry is not restored.
 - Download routing browser preference edits assume the browser is not running.
 

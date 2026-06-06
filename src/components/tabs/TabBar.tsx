@@ -103,12 +103,15 @@ export function TabBar({ projectCwd }: Props) {
     setMenuPos(null);
     try {
       await invoke("ensure_ollama_running");
-      const alias = await invoke<string>("ensure_vibe_ollama_model", { model });
+      const { vibe_home, alias } = await invoke<{ vibe_home: string; alias: string }>(
+        "prepare_local_agent",
+        { model },
+      );
       addTab({
         label: model,
         cmd: "vibe",
         args: [],
-        env: { VIBE_ACTIVE_MODEL: alias },
+        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias },
         cwd: projectCwd,
         kind: "local_agent",
       });

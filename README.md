@@ -3,7 +3,8 @@
 Eldrun is a Tauri 2 + React + TypeScript desktop workspace for AI-assisted
 development. It keeps a root control terminal, one terminal per active project,
 a bottom project switcher, a right-side file browser, global app launching,
-time tracking, and optional KDE/X11 workspace integration in one window.
+time tracking, local Ollama model management, and optional KDE/X11 workspace
+integration in one window.
 
 The goal is to make AI-assisted development feel less like a pile of terminals
 and more like an operational cockpit: one root control terminal for managing the
@@ -103,6 +104,7 @@ current integration state.
 | **Codex** (`codex`) | Yes | Yes | Selectable as default agent command in Settings. Same tab lifecycle as Claude. |
 | **Gemini** (`gemini`) | Yes | Yes | Selectable as default agent command in Settings. Same tab lifecycle as Claude and Codex. |
 | **Vibe** (`vibe`) | Yes | No | Listed as a selectable agent command; same tab lifecycle. |
+| **Ollama via Vibe** (`vibe` + local model) | Yes | Partial | Installed Ollama models appear under Local Agents. Each local tab gets an isolated per-model `VIBE_HOME` under `~/.local/share/eldrun/vibe_local/`. |
 | **Shell** | Yes | Yes | Plain interactive shell tab in the project directory. |
 | Mistral CLI | No | No | Not integrated. Can be used in a plain shell tab. |
 | Qwen CLI | No | No | Not integrated. |
@@ -115,6 +117,13 @@ sandbox: the child process runs in the project directory with project-local XDG
 config, cache, data, state, and temp locations under
 `<project>/.eldrun/sandbox/`. The root orchestration terminal keeps the normal
 workspace environment.
+
+Local Ollama models are available from the tab `+` menu when Ollama is
+installed and reachable. Eldrun can start the Ollama service, list installed
+models, and create a `vibe` tab for a selected model. The per-model `VIBE_HOME`
+config pins `active_model`, registers the Ollama provider, and disables Vibe
+tool calls for local models so local tabs do not mutate global `~/.vibe`
+configuration.
 
 ## Platform Support
 
@@ -129,8 +138,12 @@ workspace environment.
 ## Main Features
 
 - **Agent-terminal orchestration**: create Claude, Codex, Gemini, or plain shell
-  tabs from the tab bar; rename, close, and reorder them by drag and drop. Tab
-  layout is persisted per project.
+  tabs from the tab bar; create local Ollama-backed Vibe tabs from installed
+  models; rename, close, and reorder them by drag and drop. Tab layout is
+  persisted per project.
+- **Ollama model management**: the Settings Ollama panel shows installed
+  models, running CPU/GPU state, parameter and quantization details, plus
+  catalog install, update, unload, and delete controls.
 - **Hover-revealed panels**: the global app bar, right file panel, and bottom
   project switcher all appear on pointer hover and disappear when the pointer
   leaves, keeping the center terminal unobstructed.
@@ -187,6 +200,8 @@ Global Eldrun state lives in `~/.local/share/eldrun/`:
   global app registry, and other user preferences.
 - `default_apps.json`: global file-extension to application command map.
 - `time_log.json` and `active_session.json`: session time tracking.
+- `vibe_local/<model-alias>/config.toml`: isolated Vibe configuration for
+  each local Ollama model tab.
 
 Project-local state lives in each project's `project.json`, alongside
 scaffolded files such as `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `TODO.md`,
