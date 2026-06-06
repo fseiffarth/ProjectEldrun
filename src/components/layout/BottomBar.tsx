@@ -28,6 +28,22 @@ interface CatalogEntry {
   size_hint: string;
 }
 
+interface ScaffoldPreviewItem {
+  path: string;
+  exists: boolean;
+  kind: string;
+}
+
+const SCAFFOLD_FILL_OPTIONS = [
+  { value: "none", label: "No filling" },
+  { value: "manual", label: "Manual" },
+  { value: "validation", label: "Validation" },
+  { value: "claude", label: "Fill by Claude" },
+  { value: "codex", label: "Fill by Codex" },
+  { value: "gemini", label: "Fill by Gemini" },
+  { value: "vibe", label: "Fill by Mistral" },
+];
+
 function sanitizeName(name: string) {
   return name
     .trim()
@@ -764,6 +780,10 @@ function ProjectDialog({
   const [gitType, setGitType] = useState("private");
   const [mode, setMode] = useState("keep");
   const [sourceDir, setSourceDir] = useState("");
+  const [scaffoldPreview, setScaffoldPreview] = useState<ScaffoldPreviewItem[]>([]);
+  const [scaffoldFillModes, setScaffoldFillModes] = useState<Record<string, string>>({});
+  const [scaffoldError, setScaffoldError] = useState("");
+  const [manualValidationConfirmed, setManualValidationConfirmed] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const safeName = sanitizeName(name);
@@ -772,6 +792,40 @@ function ProjectDialog({
   useEffect(() => {
     invoke<string>("projects_root_dir").then(setProjectsRoot).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (kind !== "import" || !sourceDir) {
+      setScaffoldPreview([]);
+      setScaffoldError("");
+      return;
+    }
+
+    let cancelled = false;
+    setScaffoldError("");
+    invoke<ScaffoldPreviewItem[]>("preview_project_scaffold", { sourceDir })
+      .then((items) => {
+        if (cancelled) return;
+        setScaffoldPreview(items);
+        setScaffoldFillModes((current) => {
+          const next: Record<string, string> = {};
+          for (const item of items) next[item.path] = current[item.path] ?? "none";
+          return next;
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setScaffoldPreview([]);
+        setScaffoldError(String(err));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [kind, sourceDir]);
+
+  useEffect(() => {
+    setManualValidationConfirmed(false);
+  }, [mode, sourceDir]);
 
   const chooseFolder = async () => {
     const picked = await open({ directory: true, multiple: false });
@@ -793,7 +847,7 @@ function ProjectDialog({
               req: { name, directory: targetDir, gitType },
             })
           : await invoke<ProjectEntry>("import_project", {
-              req: { sourceDir, name, gitType, mode },
+              req: { sourceDir, name, gitType, mode, scaffoldFillModes, manualValidationConfirmed },
             });
       onProject(project);
       onClose();
@@ -807,7 +861,12 @@ function ProjectDialog({
   const canSubmit =
     kind === "new"
       ? Boolean(name.trim() && targetDir && safeName)
-      : Boolean(name.trim() && sourceDir && (mode === "keep" || safeName));
+      : Boolean(
+          name.trim() &&
+          sourceDir &&
+          (mode === "keep" || safeName) &&
+          (mode === "keep" || manualValidationConfirmed),
+        );
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -855,6 +914,62 @@ function ProjectDialog({
               <option value="move">Move to ~/eldrun/projects/</option>
             </select>
           </label>
+        )}
+
+        {kind === "import" && (
+          <div className="scaffold-popover" role="group" aria-label="Import scaffold guidance">
+            <div className="scaffold-popover-title">Import guidance</div>
+            <ol className="scaffold-steps">
+              <li>Select the source folder and project metadata.</li>
+              <li>
+                {mode === "keep"
+                  ? "Register the project in its current location."
+                  : mode === "copy"
+                    ? "Copy the project to the Eldrun projects folder after manual validation."
+                    : "Move the project to the Eldrun projects folder after manual validation."}
+              </li>
+              <li>Create missing scaffold files and acknowledge files already there.</li>
+              <li>Write project.json and add the project to the switcher.</li>
+            </ol>
+
+            {mode !== "keep" && (
+              <label className="manual-validation-row">
+                <input
+                  type="checkbox"
+                  checked={manualValidationConfirmed}
+                  onChange={(e) => setManualValidationConfirmed(e.target.checked)}
+                />
+                I manually validated the {mode} destination and source folder.
+              </label>
+            )}
+
+            <div className="scaffold-list">
+              {scaffoldPreview.map((item) => (
+                <div className="scaffold-row" key={item.path}>
+                  <div className="scaffold-file">
+                    <span>{item.path}</span>
+                    <small>{item.exists ? "Already there, will be kept" : "Missing, will be added"}</small>
+                  </div>
+                  <select
+                    value={item.exists ? "none" : scaffoldFillModes[item.path] ?? "none"}
+                    disabled={item.exists}
+                    onChange={(e) =>
+                      setScaffoldFillModes((current) => ({ ...current, [item.path]: e.target.value }))
+                    }
+                  >
+                    {SCAFFOLD_FILL_OPTIONS.map((option) => (
+                      <option value={option.value} key={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+              {!sourceDir && <div className="scaffold-empty">Choose a source folder to preview scaffold files.</div>}
+              {sourceDir && !scaffoldPreview.length && !scaffoldError && (
+                <div className="scaffold-empty">Loading scaffold preview...</div>
+              )}
+              {scaffoldError && <div className="project-dialog-error">{scaffoldError}</div>}
+            </div>
+          </div>
         )}
 
         <div className="project-dialog-path">

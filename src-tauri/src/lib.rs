@@ -169,6 +169,7 @@ pub fn run() {
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
             commands::projects::create_project,
+            commands::projects::preview_project_scaffold,
             commands::projects::import_project,
             commands::projects::get_time_today,
             commands::projects::detect_agent_session_id,

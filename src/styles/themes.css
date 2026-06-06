@@ -1583,7 +1583,9 @@ input {
 }
 
 .project-dialog {
-  width: min(460px, calc(100vw - 32px));
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(820px, calc(100vh - 40px));
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1857,6 +1859,93 @@ input {
   color: var(--danger);
   font-size: 12px;
   word-break: break-word;
+}
+
+.scaffold-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+}
+
+.scaffold-popover-title {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.scaffold-steps {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.scaffold-steps li + li {
+  margin-top: 3px;
+}
+
+.manual-validation-row {
+  min-height: 28px;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  color: var(--text-primary) !important;
+}
+
+.manual-validation-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.scaffold-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scaffold-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 210px);
+  gap: 10px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+}
+
+.scaffold-file {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scaffold-file span {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.scaffold-file small,
+.scaffold-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.scaffold-row select:disabled {
+  opacity: 0.62;
+  cursor: default;
+}
+
+@media (max-width: 640px) {
+  .scaffold-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .project-dialog-actions {

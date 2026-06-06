@@ -431,12 +431,21 @@ const SCAFFOLD_FILES: &[(&str, &str)] = &[
     ("ROADMAP.md", "# Roadmap\n"),
     ("STATUS.md", "# Status\n"),
     ("README.md", "# Project\n"),
+    ("DOCUMENTATION.md", "# Documentation\n"),
 ];
 
 const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\n";
 
 const CLAUDE_SETTINGS: &str =
     r#"{"permissions":{"allow":[],"deny":[]}}"#;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScaffoldPreviewItem {
+    pub path: String,
+    pub exists: bool,
+    pub kind: String,
+}
 
 /// Write the standard Eldrun project scaffold into a directory.
 pub fn scaffold_project(dir: &Path) -> std::io::Result<()> {
@@ -459,6 +468,38 @@ pub fn scaffold_project(dir: &Path) -> std::io::Result<()> {
         fs::write(cs, CLAUDE_SETTINGS)?;
     }
     Ok(())
+}
+
+fn scaffold_preview(dir: &Path) -> Vec<ScaffoldPreviewItem> {
+    let mut items = SCAFFOLD_FILES
+        .iter()
+        .map(|(name, _)| ScaffoldPreviewItem {
+            path: (*name).to_string(),
+            exists: dir.join(name).exists(),
+            kind: "file".to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    items.push(ScaffoldPreviewItem {
+        path: ".gitignore".to_string(),
+        exists: dir.join(".gitignore").exists(),
+        kind: "file".to_string(),
+    });
+    items.push(ScaffoldPreviewItem {
+        path: ".claude/settings.json".to_string(),
+        exists: dir.join(".claude/settings.json").exists(),
+        kind: "file".to_string(),
+    });
+    items
+}
+
+#[tauri::command]
+pub fn preview_project_scaffold(source_dir: String) -> Result<Vec<ScaffoldPreviewItem>, String> {
+    let source = PathBuf::from(source_dir);
+    if !source.is_dir() {
+        return Err("Source folder does not exist".to_string());
+    }
+    Ok(scaffold_preview(&source))
 }
 
 #[derive(Debug, Deserialize)]
@@ -521,6 +562,8 @@ pub struct ImportProjectRequest {
     pub name: String,
     pub git_type: Option<String>,
     pub mode: String,
+    pub scaffold_fill_modes: Option<HashMap<String, String>>,
+    pub manual_validation_confirmed: Option<bool>,
 }
 
 #[tauri::command]
@@ -533,6 +576,14 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
     if !source.is_dir() {
         return Err("Source folder does not exist".to_string());
     }
+
+    if matches!(req.mode.as_str(), "copy" | "move")
+        && req.manual_validation_confirmed != Some(true)
+    {
+        return Err("Copy and move imports require manual validation".to_string());
+    }
+
+    let _scaffold_fill_modes = req.scaffold_fill_modes.unwrap_or_default();
 
     let target = match req.mode.as_str() {
         "keep" => source,

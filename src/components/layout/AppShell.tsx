@@ -24,6 +24,7 @@ export function AppShell() {
   const switchToast = useProjectsStore((s) => s.switchToast);
   const clearSwitchToast = useProjectsStore((s) => s.clearSwitchToast);
   const initTimer = useTimerStore((s) => s.init);
+  const flushTimer = useTimerStore((s) => s.flush);
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [bottomOpen, setBottomOpen] = useState(false);
@@ -37,6 +38,17 @@ export function AppShell() {
     loadProjects();
     getCurrentWindow().setFullscreen(true).catch(() => {});
   }, [loadSettings, loadProjects]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const win = getCurrentWindow();
+    win.onCloseRequested(async (event) => {
+      event.preventDefault();
+      await flushTimer().catch(() => {});
+      await win.destroy();
+    }).then((fn) => { unlisten = fn; }).catch(() => {});
+    return () => { unlisten?.(); };
+  }, [flushTimer]);
 
   useEffect(() => {
     if (projectsLoaded) {

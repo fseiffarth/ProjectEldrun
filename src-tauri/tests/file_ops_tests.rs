@@ -326,7 +326,7 @@ fn scaffold_project_integration_creates_full_structure() {
         "TODO.md",
         "ROADMAP.md",
         "STATUS.md",
-        "DOCUMENTATION.md",
+        "README.md",
         ".gitignore",
         ".claude/settings.json",
     ] {

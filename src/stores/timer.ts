@@ -17,6 +17,8 @@ interface TimerStore {
   toggle: () => Promise<void>;
   /** Flush the old project, load committed secs for the new one, restart timer. */
   setProject: (newId: string | null) => Promise<void>;
+  /** Flush elapsed (uncommitted) time to the backend without changing state. */
+  flush: () => Promise<void>;
   /** Live app-usage seconds today (committed + current interval). */
   getAppSecs: () => number;
   /** Live project seconds today (committed + current interval). */
@@ -99,6 +101,23 @@ export const useTimerStore = create<TimerStore>((set, get) => ({
       projectCommittedSecs: newCommitted,
       projectStartedAt: s.paused ? null : now,
     });
+  },
+
+  flush: async () => {
+    const s = get();
+    const now = Date.now();
+    const appElapsed = !s.paused && s.appStartedAt != null
+      ? (now - s.appStartedAt) / 1000 : 0;
+    const projElapsed = !s.paused && s.projectStartedAt != null && s.activeProjectId
+      ? (now - s.projectStartedAt) / 1000 : 0;
+    await Promise.all([
+      appElapsed > 0
+        ? invoke("timer_flush_app", { secs: appElapsed }).catch(() => {})
+        : Promise.resolve(),
+      projElapsed > 0 && s.activeProjectId
+        ? invoke("timer_flush_project", { projectId: s.activeProjectId, secs: projElapsed }).catch(() => {})
+        : Promise.resolve(),
+    ]);
   },
 
   getAppSecs: () => {

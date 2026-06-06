@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TerminalView } from "../terminal/TerminalView";
 import { FileBrowser } from "../files/FileBrowser";
-import { useTabsStore, cmdToKind } from "../../stores/tabs";
+import { useTabsStore, cmdToKind, FILES_TAB_CMD } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { resolveProjectDirectory } from "../../types";
@@ -49,14 +49,28 @@ export function CenterPanel() {
     }
 
     // Project context: try to restore saved tab layout first.
+    type LayoutEntry = { key: string; label: string; cmd: string; cwd: string; kind?: "agent" | "local_agent" | "shell" | "files"; type?: string; env?: Record<string, string>; sessionId?: string };
     invoke<Record<string, unknown>>("load_project", { localFile })
-      .then((proj) => {
-        const layout = proj.tab_layout as
-          | Array<{ key: string; label: string; cmd: string; cwd: string; kind?: "agent" | "local_agent" | "shell" | "files"; type?: string; env?: Record<string, string>; sessionId?: string }>
-          | undefined;
-        if (layout && layout.length > 0) {
-          loadFromLayout(layout, projectCwd);
-        }
+      .then(async (proj) => {
+        const raw = proj.tab_layout as LayoutEntry[] | undefined;
+        if (!raw || raw.length === 0) return;
+
+        // Refresh session IDs before spawning to avoid resuming cleared sessions.
+        const layout = await Promise.all(
+          raw.map(async (tab): Promise<LayoutEntry> => {
+            const kind = tab.kind ?? cmdToKind(tab.cmd || (tab.type === "files" ? FILES_TAB_CMD : ""));
+            if (kind !== "agent" && kind !== "local_agent") return tab;
+            const detected = await invoke<string | null>("detect_agent_session_id", {
+              agentCmd: tab.cmd,
+              projectDir: projectCwd,
+              vibeHome: tab.env?.VIBE_HOME ?? null,
+            }).catch(() => null);
+            if (detected && detected !== tab.sessionId) return { ...tab, sessionId: detected };
+            return tab;
+          })
+        );
+
+        loadFromLayout(layout, projectCwd);
       })
       .catch(() => {});
   }, [activeId, projectCwd, localFile, agentCmd, switchGeneration, setScope, ensureTab, loadFromLayout]);
@@ -69,17 +83,17 @@ export function CenterPanel() {
     if (!activeId || !projectCwd) return;
     const timer = window.setTimeout(async () => {
       const { tabs: currentTabs, updateTabSessionId: update } = useTabsStore.getState();
-      const needsSession = currentTabs.filter(
-        (t) => (t.kind === "agent" || t.kind === "local_agent") && !t.sessionId,
+      const agentTabs = currentTabs.filter(
+        (t) => t.kind === "agent" || t.kind === "local_agent",
       );
-      for (const tab of needsSession) {
+      for (const tab of agentTabs) {
         try {
           const sessionId = await invoke<string | null>("detect_agent_session_id", {
             agentCmd: tab.cmd,
             projectDir: projectCwd,
             vibeHome: tab.env?.VIBE_HOME ?? null,
           });
-          if (sessionId) update(tab.key, sessionId);
+          if (sessionId && sessionId !== tab.sessionId) update(tab.key, sessionId);
         } catch {
           // session detection is best-effort
         }

@@ -15,8 +15,8 @@ const SCAFFOLDS: &[(&str, &str)] = &[
     ("TODO.md", "# TODO\n"),
     ("ROADMAP.md", "# Roadmap\n"),
     ("STATUS.md", "# Status\n"),
-    ("DOCUMENTATION.md", "# Documentation\n"),
-    (".gitignore", "__pycache__/\n*.pyc\n.venv/\n.DS_Store\n*.log\n.eldrun/\n"),
+    ("README.md", "# Project\n"),
+    (".gitignore", "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\n"),
     (".claude/settings.json", r#"{"permissions":{"allow":[],"deny":[]}}"#),
 ];
 
@@ -174,6 +174,8 @@ fn import_project_copy_creates_missing_scaffolds_without_overwriting_existing_on
             name: "copy-project".to_string(),
             git_type: None,
             mode: "copy".to_string(),
+            scaffold_fill_modes: None,
+            manual_validation_confirmed: Some(true),
         };
 
         let entry = import_project(req).expect("import copy");
@@ -206,6 +208,8 @@ fn import_project_move_creates_missing_scaffolds_without_overwriting_existing_on
             name: "move-project".to_string(),
             git_type: None,
             mode: "move".to_string(),
+            scaffold_fill_modes: None,
+            manual_validation_confirmed: Some(true),
         };
 
         let entry = import_project(req).expect("import move");
@@ -237,6 +241,8 @@ fn import_project_keep_creates_missing_scaffolds_in_place_without_overwriting_ex
             name: "keep-project".to_string(),
             git_type: None,
             mode: "keep".to_string(),
+            scaffold_fill_modes: None,
+            manual_validation_confirmed: None,
         };
 
         let entry = import_project(req).expect("import keep");
