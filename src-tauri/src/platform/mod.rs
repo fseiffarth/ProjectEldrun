@@ -92,3 +92,48 @@ pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
 
     Box::new(null::NullBackend)
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_backend_always_returns_a_backend() {
+        let b = detect_backend();
+        let name = b.name();
+        assert!(
+            ["null", "x11", "kde-wayland", "windows"].contains(&name),
+            "unknown backend name: {name}"
+        );
+    }
+
+    #[test]
+    fn detected_backend_info_does_not_panic() {
+        let b = detect_backend();
+        let _ = b.info(); // must not panic
+    }
+
+    #[test]
+    fn detected_backend_show_hide_window_zero_does_not_panic() {
+        let b = detect_backend();
+        // 0 is an invalid window ID — backend must handle it gracefully.
+        let _ = b.show_window(0);
+        let _ = b.hide_window(0);
+    }
+
+    #[test]
+    fn null_backend_satisfies_workspace_backend_trait() {
+        let b: Box<dyn WorkspaceBackend> = Box::new(null::NullBackend);
+        assert_eq!(b.name(), "null");
+        assert!(b.cleanup().is_ok());
+    }
+
+    #[test]
+    fn workspace_info_label_is_not_empty() {
+        let b = detect_backend();
+        let info = b.info();
+        assert!(!info.label.is_empty(), "WorkspaceInfo.label must not be empty");
+    }
+}

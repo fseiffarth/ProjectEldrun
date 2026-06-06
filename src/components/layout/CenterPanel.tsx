@@ -51,7 +51,7 @@ export function CenterPanel() {
     invoke<Record<string, unknown>>("load_project", { localFile })
       .then((proj) => {
         const layout = proj.tab_layout as
-          | Array<{ key: string; label: string; cmd: string; cwd: string; kind?: "agent" | "shell" | "files"; type?: string }>
+          | Array<{ key: string; label: string; cmd: string; cwd: string; kind?: "agent" | "local_agent" | "shell" | "files"; type?: string; env?: Record<string, string> }>
           | undefined;
         if (layout && layout.length > 0) {
           loadFromLayout(layout, projectCwd);

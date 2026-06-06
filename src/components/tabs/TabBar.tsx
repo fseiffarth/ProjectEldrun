@@ -39,6 +39,7 @@ export function TabBar({ projectCwd }: Props) {
   const [tabMenu, setTabMenu] = useState<{ key: string; x: number; y: number } | null>(null);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [ollamaLoading, setOllamaLoading] = useState(false);
+  const [ollamaError, setOllamaError] = useState<string | null>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const tabMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
@@ -75,9 +76,13 @@ export function TabBar({ projectCwd }: Props) {
     setMenuPos({ x: r.left, y: r.bottom + 4 });
 
     setOllamaLoading(true);
+    setOllamaError(null);
     invoke<string[]>("list_ollama_models")
       .then((models) => setOllamaModels(models))
-      .catch(() => setOllamaModels([]))
+      .catch((e: string) => {
+        setOllamaModels([]);
+        setOllamaError(e === "not_running" ? "Ollama not running" : "Failed to load models");
+      })
       .finally(() => setOllamaLoading(false));
   }
 
@@ -97,6 +102,7 @@ export function TabBar({ projectCwd }: Props) {
   async function handleOllamaModel(model: string) {
     setMenuPos(null);
     try {
+      await invoke("ensure_ollama_running");
       const alias = await invoke<string>("ensure_vibe_ollama_model", { model });
       addTab({
         label: model,
@@ -106,8 +112,7 @@ export function TabBar({ projectCwd }: Props) {
         cwd: projectCwd,
         kind: "local_agent",
       });
-    } catch {
-      // Fallback: open vibe without model override if config update fails
+    } catch (e) {
       addTab({
         label: model,
         cmd: "vibe",
@@ -189,7 +194,10 @@ export function TabBar({ projectCwd }: Props) {
           {ollamaLoading && (
             <div className="tab-new-menu-hint">Loading…</div>
           )}
-          {!ollamaLoading && ollamaModels.length === 0 && (
+          {!ollamaLoading && ollamaError && (
+            <div className="tab-new-menu-hint">{ollamaError}</div>
+          )}
+          {!ollamaLoading && !ollamaError && ollamaModels.length === 0 && (
             <div className="tab-new-menu-hint">No Ollama models found</div>
           )}
           {!ollamaLoading && ollamaModels.map((model) => (

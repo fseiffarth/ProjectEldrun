@@ -492,7 +492,7 @@ fn projects_root() -> PathBuf {
     PathBuf::from(home).join("eldrun").join("projects")
 }
 
-fn sanitize_name(name: &str) -> String {
+pub(crate) fn sanitize_name(name: &str) -> String {
     name.trim()
         .to_lowercase()
         .chars()
@@ -535,7 +535,7 @@ fn canonical_or_new(path: &Path) -> PathBuf {
 }
 
 /// Enforce that `target` is inside `root`.
-fn enforce_confinement(root: &Path, target: &Path) -> Result<(), String> {
+pub(crate) fn enforce_confinement(root: &Path, target: &Path) -> Result<(), String> {
     if !target.starts_with(root) {
         return Err(format!(
             "path '{}' escapes project root '{}'",
@@ -565,4 +565,157 @@ fn chrono_now() -> String {
         .unwrap_or_default()
         .as_secs();
     format!("{secs}+00:00")
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // ── sanitize_name ──────────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_name_lowercase_alphanumeric() {
+        assert_eq!(sanitize_name("MyProject"), "myproject");
+    }
+
+    #[test]
+    fn sanitize_name_replaces_spaces_with_dash() {
+        assert_eq!(sanitize_name("my project"), "my-project");
+    }
+
+    #[test]
+    fn sanitize_name_replaces_special_chars() {
+        assert_eq!(sanitize_name("my!project@2"), "my-project-2");
+    }
+
+    #[test]
+    fn sanitize_name_collapses_consecutive_dashes() {
+        assert_eq!(sanitize_name("my  project"), "my-project");
+        assert_eq!(sanitize_name("a---b"), "a-b");
+    }
+
+    #[test]
+    fn sanitize_name_trims_leading_trailing_dashes() {
+        assert_eq!(sanitize_name("  hello  "), "hello");
+        assert_eq!(sanitize_name("!hello!"), "hello");
+    }
+
+    #[test]
+    fn sanitize_name_preserves_underscore() {
+        assert_eq!(sanitize_name("my_project"), "my_project");
+    }
+
+    #[test]
+    fn sanitize_name_empty_after_stripping() {
+        assert_eq!(sanitize_name("!!!"), "");
+        assert_eq!(sanitize_name(""), "");
+        assert_eq!(sanitize_name("   "), "");
+    }
+
+    #[test]
+    fn sanitize_name_numeric_only() {
+        assert_eq!(sanitize_name("123"), "123");
+    }
+
+    #[test]
+    fn sanitize_name_unicode_becomes_dash() {
+        // Non-ASCII chars are replaced with '-', then collapsed.
+        let result = sanitize_name("café");
+        assert!(!result.contains("é"), "unicode must be replaced");
+        assert!(!result.contains("--"), "consecutive dashes collapsed");
+    }
+
+    // ── enforce_confinement ────────────────────────────────────────────────
+
+    #[test]
+    fn enforce_confinement_allows_exact_root() {
+        let root = PathBuf::from("/tmp/project");
+        assert!(enforce_confinement(&root, &root).is_ok());
+    }
+
+    #[test]
+    fn enforce_confinement_allows_child() {
+        let root = PathBuf::from("/tmp/project");
+        let child = PathBuf::from("/tmp/project/src/main.rs");
+        assert!(enforce_confinement(&root, &child).is_ok());
+    }
+
+    #[test]
+    fn enforce_confinement_blocks_parent_escape() {
+        let root = PathBuf::from("/tmp/project");
+        let parent = PathBuf::from("/tmp");
+        assert!(enforce_confinement(&root, &parent).is_err());
+    }
+
+    #[test]
+    fn enforce_confinement_blocks_sibling() {
+        let root = PathBuf::from("/tmp/project");
+        let sibling = PathBuf::from("/tmp/other");
+        assert!(enforce_confinement(&root, &sibling).is_err());
+    }
+
+    #[test]
+    fn enforce_confinement_blocks_absolute_escape() {
+        let root = PathBuf::from("/tmp/project");
+        let escape = PathBuf::from("/etc/passwd");
+        assert!(enforce_confinement(&root, &escape).is_err());
+    }
+
+    #[test]
+    fn enforce_confinement_error_message_mentions_root() {
+        let root = PathBuf::from("/tmp/project");
+        let escape = PathBuf::from("/etc/passwd");
+        let err = enforce_confinement(&root, &escape).unwrap_err();
+        assert!(err.contains("/tmp/project"), "error must mention root: {err}");
+    }
+
+    // ── scaffold_project ───────────────────────────────────────────────────
+
+    #[test]
+    fn scaffold_project_creates_all_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path()).unwrap();
+
+        for name in &["AGENTS.md", "CLAUDE.md", "GEMINI.md", "TODO.md",
+                       "ROADMAP.md", "STATUS.md", "DOCUMENTATION.md", ".gitignore"] {
+            assert!(tmp.path().join(name).exists(), "missing: {name}");
+        }
+        assert!(tmp.path().join(".claude/settings.json").exists());
+    }
+
+    #[test]
+    fn scaffold_project_does_not_overwrite_existing_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let todo_path = tmp.path().join("TODO.md");
+        std::fs::write(&todo_path, "original content").unwrap();
+
+        scaffold_project(tmp.path()).unwrap();
+
+        let content = std::fs::read_to_string(&todo_path).unwrap();
+        assert_eq!(content, "original content", "existing file must not be overwritten");
+    }
+
+    #[test]
+    fn scaffold_project_does_not_overwrite_claude_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        let cs = tmp.path().join(".claude/settings.json");
+        std::fs::write(&cs, r#"{"custom": true}"#).unwrap();
+
+        scaffold_project(tmp.path()).unwrap();
+
+        let content = std::fs::read_to_string(&cs).unwrap();
+        assert!(content.contains("custom"), "custom settings must not be overwritten");
+    }
+
+    #[test]
+    fn scaffold_project_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path()).unwrap();
+        scaffold_project(tmp.path()).unwrap(); // second call must not error
+        assert!(tmp.path().join("TODO.md").exists());
+    }
 }

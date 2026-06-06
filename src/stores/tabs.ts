@@ -32,7 +32,7 @@ interface TabsStore {
   removeTab: (key: string) => void;
   reorder: (from: number, to: number) => void;
   loadFromLayout: (
-    layout: Array<{ key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string }>,
+    layout: Array<{ key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string; env?: Record<string, string> }>,
     defaultCwd: string,
   ) => void;
   saveLayout: (localFile: string) => Promise<void>;
@@ -135,6 +135,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       label: t.label,
       cmd: t.cmd,
       args: [],
+      env: t.env ?? {},
       cwd: t.cwd || defaultCwd,
       kind: t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : "")),
     }));
@@ -160,6 +161,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         label: t.label,
         cmd: t.cmd,
         cwd: t.cwd,
+        kind: t.kind,
+        env: t.env ?? {},
       }));
       await invoke("save_tab_layout", { localFile, tabs: tabLayout });
     } catch {

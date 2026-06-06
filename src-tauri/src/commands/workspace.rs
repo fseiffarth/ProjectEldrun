@@ -152,7 +152,7 @@ pub fn network_conn_type() -> String {
     }
 }
 
-fn detect_conn_type_linux(net_dir: &Path) -> String {
+pub(crate) fn detect_conn_type_linux(net_dir: &Path) -> String {
     let Ok(entries) = std::fs::read_dir(net_dir) else {
         return "disconnected".into();
     };
@@ -199,7 +199,7 @@ fn detect_conn_type_windows() -> String {
     "disconnected".into()
 }
 
-fn detect_conn_type_macos() -> String {
+pub(crate) fn detect_conn_type_macos() -> String {
     // Check the default route's interface, then probe its type via networksetup.
     let out = std::process::Command::new("route")
         .args(["-n", "get", "default"])
@@ -223,4 +223,87 @@ fn detect_conn_type_macos() -> String {
         }
     }
     "disconnected".into()
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn mk(dir: &std::path::Path, iface: &str, up: bool, wireless: bool) {
+        let iface_dir = dir.join(iface);
+        fs::create_dir_all(&iface_dir).unwrap();
+        fs::write(iface_dir.join("operstate"), if up { "up\n" } else { "down\n" }).unwrap();
+        if wireless {
+            fs::create_dir_all(iface_dir.join("wireless")).unwrap();
+        }
+    }
+
+    #[test]
+    fn empty_net_dir_is_disconnected() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(detect_conn_type_linux(tmp.path()), "disconnected");
+    }
+
+    #[test]
+    fn loopback_only_is_disconnected() {
+        let tmp = tempfile::tempdir().unwrap();
+        mk(tmp.path(), "lo", true, false);
+        assert_eq!(detect_conn_type_linux(tmp.path()), "disconnected");
+    }
+
+    #[test]
+    fn ethernet_up_is_lan() {
+        let tmp = tempfile::tempdir().unwrap();
+        mk(tmp.path(), "eth0", true, false);
+        assert_eq!(detect_conn_type_linux(tmp.path()), "lan");
+    }
+
+    #[test]
+    fn ethernet_down_is_disconnected() {
+        let tmp = tempfile::tempdir().unwrap();
+        mk(tmp.path(), "eth0", false, false);
+        assert_eq!(detect_conn_type_linux(tmp.path()), "disconnected");
+    }
+
+    #[test]
+    fn wireless_up_is_wlan() {
+        let tmp = tempfile::tempdir().unwrap();
+        mk(tmp.path(), "wlan0", true, true);
+        assert_eq!(detect_conn_type_linux(tmp.path()), "wlan");
+    }
+
+    #[test]
+    fn wireless_down_is_disconnected() {
+        let tmp = tempfile::tempdir().unwrap();
+        mk(tmp.path(), "wlan0", false, true);
+        assert_eq!(detect_conn_type_linux(tmp.path()), "disconnected");
+    }
+
+    #[test]
+    fn loopback_plus_ethernet_is_lan() {
+        let tmp = tempfile::tempdir().unwrap();
+        mk(tmp.path(), "lo", true, false);
+        mk(tmp.path(), "eth0", true, false);
+        assert_eq!(detect_conn_type_linux(tmp.path()), "lan");
+    }
+
+    #[test]
+    fn missing_net_dir_is_disconnected() {
+        assert_eq!(
+            detect_conn_type_linux(std::path::Path::new("/nonexistent/sys/class/net")),
+            "disconnected"
+        );
+    }
+
+    #[test]
+    fn network_conn_type_returns_known_value() {
+        let val = network_conn_type();
+        assert!(
+            ["wlan", "lan", "disconnected"].contains(&val.as_str()),
+            "unexpected network type: {val}"
+        );
+    }
 }

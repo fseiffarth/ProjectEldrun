@@ -171,7 +171,7 @@ fn icon_to_data_url(path: &Path) -> Option<String> {
     Some(format!("data:{mime};base64,{}", base64_encode(&bytes)))
 }
 
-fn base64_encode(bytes: &[u8]) -> String {
+pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = Vec::with_capacity((bytes.len() + 2) / 3 * 4);
     for chunk in bytes.chunks(3) {
@@ -285,7 +285,7 @@ fn parse_desktop_entry(path: &Path) -> Option<DesktopEntry> {
     })
 }
 
-fn first_exec_token(value: &str) -> Option<String> {
+pub(crate) fn first_exec_token(value: &str) -> Option<String> {
     let first = value
         .split_whitespace()
         .find(|part| !part.starts_with('%'))?
@@ -706,5 +706,130 @@ mod tests {
 
         assert_eq!(window.origin, ORIGIN_MANUAL_LAUNCH);
         assert!(!is_project_opened_window(&window));
+    }
+
+    // ── base64_encode ──────────────────────────────────────────────────────
+
+    #[test]
+    fn base64_empty_input() {
+        assert_eq!(base64_encode(b""), "");
+    }
+
+    #[test]
+    fn base64_one_byte() {
+        // "M" = 0x4D → base64 "TQ=="
+        assert_eq!(base64_encode(b"M"), "TQ==");
+    }
+
+    #[test]
+    fn base64_two_bytes() {
+        // "Ma" = 0x4D 0x61 → base64 "TWE="
+        assert_eq!(base64_encode(b"Ma"), "TWE=");
+    }
+
+    #[test]
+    fn base64_three_bytes_no_padding() {
+        // "Man" = 0x4D 0x61 0x6E → base64 "TWFu"
+        assert_eq!(base64_encode(b"Man"), "TWFu");
+    }
+
+    #[test]
+    fn base64_hello_world() {
+        assert_eq!(base64_encode(b"Hello, World!"), "SGVsbG8sIFdvcmxkIQ==");
+    }
+
+    #[test]
+    fn base64_roundtrip_via_stdlib() {
+        use std::process::Command;
+        // Cross-check against system base64 on Linux.
+        let input = b"Eldrun workspace manager";
+        let encoded = base64_encode(input);
+
+        // Use base64 --decode via shell to verify correctness.
+        if let Ok(out) = Command::new("sh")
+            .arg("-c")
+            .arg(format!("echo -n '{encoded}' | base64 -d"))
+            .output()
+        {
+            if out.status.success() {
+                assert_eq!(out.stdout, input.as_ref());
+            }
+        }
+    }
+
+    #[test]
+    fn base64_output_length_is_multiple_of_four() {
+        for n in 0..=12usize {
+            let input: Vec<u8> = (0..n).map(|i| i as u8).collect();
+            let encoded = base64_encode(&input);
+            assert_eq!(encoded.len() % 4, 0, "length must be divisible by 4 for n={n}");
+        }
+    }
+
+    // ── origin predicates ──────────────────────────────────────────────────
+
+    #[test]
+    fn restored_origin_is_not_project_opened_window() {
+        // ORIGIN_RESTORED is project-owned (window_service) but NOT a
+        // "project opened window" in apps.rs — the distinction matters for
+        // which windows are sent to opened_windows_for_project.
+        let w = tracked(Some("p1"), ORIGIN_RESTORED, Some(1));
+        assert!(!is_project_opened_window(&w));
+    }
+
+    #[test]
+    fn opened_windows_returns_empty_for_wrong_project() {
+        let windows = vec![
+            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+            tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11)),
+        ];
+        let opened = opened_windows_for_project(windows.iter(), Some("p2"));
+        assert!(opened.is_empty());
+    }
+
+    #[test]
+    fn opened_windows_returns_empty_for_root_scope_when_all_in_project() {
+        let windows = vec![
+            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        ];
+        let opened = opened_windows_for_project(windows.iter(), None);
+        assert!(opened.is_empty(), "root scope (None) must not see project windows");
+    }
+
+    // ── first_exec_token ───────────────────────────────────────────────────
+
+    #[test]
+    fn first_exec_token_plain_path() {
+        assert_eq!(first_exec_token("/usr/bin/firefox"), Some("/usr/bin/firefox".into()));
+    }
+
+    #[test]
+    fn first_exec_token_strips_desktop_field_codes() {
+        // %U, %F etc. must be skipped.
+        assert_eq!(first_exec_token("/usr/bin/code %F"), Some("/usr/bin/code".into()));
+    }
+
+    #[test]
+    fn first_exec_token_strips_leading_percent_args() {
+        assert_eq!(first_exec_token("%u /usr/bin/app"), Some("/usr/bin/app".into()));
+    }
+
+    #[test]
+    fn first_exec_token_empty_string() {
+        assert_eq!(first_exec_token(""), None);
+    }
+
+    #[test]
+    fn first_exec_token_only_field_codes() {
+        assert_eq!(first_exec_token("%U %F %i"), None);
+    }
+
+    #[test]
+    fn first_exec_token_quoted_token_outer_quotes_stripped() {
+        // The function strips outer quotes from the final string but splits on
+        // whitespace first, so a quoted path with spaces is split at the space.
+        // This documents the actual behavior.
+        let result = first_exec_token("\"/usr/bin/myapp\"");
+        assert_eq!(result, Some("/usr/bin/myapp".into()));
     }
 }

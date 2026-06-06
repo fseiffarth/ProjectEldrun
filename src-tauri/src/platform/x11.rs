@@ -526,11 +526,14 @@ fn get_window_title(conn: &Connection, wid: Window, atoms: &Atoms) -> Option<Str
 
 fn is_protected(conn: &Connection, wid: Window) -> bool {
     let class = get_wm_class(conn, wid)
-        .unwrap_or_default()
-        .to_lowercase();
-    PROTECTED_CLASSES
-        .iter()
-        .any(|p| class.contains(*p))
+        .unwrap_or_default();
+    is_protected_class(&class)
+}
+
+/// Pure string check — exposed for unit tests.
+pub(crate) fn is_protected_class(wm_class_raw: &str) -> bool {
+    let lower = wm_class_raw.to_lowercase();
+    PROTECTED_CLASSES.iter().any(|p| lower.contains(*p))
 }
 
 
@@ -662,4 +665,105 @@ fn cinnamon_workspace_names_value(original: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("[{values}]")
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_protected_class ─────────────────────────────────────────────────
+
+    #[test]
+    fn eldrun_wm_class_is_always_protected() {
+        // The most critical invariant: Eldrun's own window must NEVER be sent
+        // to PARKED_DESKTOP.  X11 WM_CLASS is two NUL-separated strings:
+        // "<instance>\0<class>\0".
+        assert!(is_protected_class("eldrun\0Eldrun\0"));
+        assert!(is_protected_class("Eldrun\0Eldrun\0"));
+        assert!(is_protected_class("eldrun"));   // instance name only
+        assert!(is_protected_class("ELDRUN"));   // all-caps (case-insensitive)
+    }
+
+    #[test]
+    fn protected_classes_constant_includes_eldrun() {
+        // Regression guard: if someone removes "eldrun" from PROTECTED_CLASSES
+        // by accident, this test fails immediately.
+        assert!(
+            PROTECTED_CLASSES.contains(&"eldrun"),
+            "PROTECTED_CLASSES must contain \"eldrun\" or Eldrun will be hidden on project switch"
+        );
+    }
+
+    #[test]
+    fn shell_class_is_not_protected() {
+        // Ordinary app windows must be parkable.
+        assert!(!is_protected_class("konsole\0konsole\0"));
+        assert!(!is_protected_class("firefox\0Firefox\0"));
+        assert!(!is_protected_class("code\0Code\0"));
+        assert!(!is_protected_class(""));          // empty → not protected
+        assert!(!is_protected_class("\0\0"));      // blank WM_CLASS → not protected
+    }
+
+    #[test]
+    fn desktop_shell_classes_are_protected() {
+        assert!(is_protected_class("plasmashell\0plasmashell\0"));
+        assert!(is_protected_class("kwin\0kwin_x11\0"));
+        assert!(is_protected_class("cinnamon\0Cinnamon\0"));
+    }
+
+    #[test]
+    fn protected_class_substring_match() {
+        // WM_CLASS raw bytes may contain extra null chars; substring search must
+        // still find the protected token.
+        assert!(is_protected_class("org.kde.plasmashell\0plasmashell\0"));
+    }
+
+    // ── window_from_u64 ────────────────────────────────────────────────────
+
+    #[test]
+    fn window_from_u64_accepts_valid_u32() {
+        assert!(window_from_u64(12345).is_some());
+        assert!(window_from_u64(u32::MAX as u64).is_some());
+    }
+
+    #[test]
+    fn window_from_u64_rejects_above_u32() {
+        assert!(window_from_u64(u64::from(u32::MAX) + 1).is_none());
+        assert!(window_from_u64(u64::MAX).is_none());
+    }
+
+    // ── cinnamon_workspace_names ───────────────────────────────────────────
+
+    #[test]
+    fn parses_cinnamon_workspace_names() {
+        let raw = "['Work', 'Play']";
+        let names = cinnamon_workspace_names(raw);
+        assert_eq!(names, vec!["Work", "Play"]);
+    }
+
+    #[test]
+    fn parses_escaped_quote_in_workspace_name() {
+        // gsettings emits \' for an embedded single-quote inside a '-delimited value.
+        let raw = "['Can\\'t', 'Other']";
+        let names = cinnamon_workspace_names(raw);
+        assert_eq!(names[0], "Can't");
+        assert_eq!(names[1], "Other");
+    }
+
+    #[test]
+    fn cinnamon_names_value_always_sets_first_two_slots() {
+        let result = cinnamon_workspace_names_value(&[]);
+        assert!(result.contains("'Eldrun'"), "first slot must be Eldrun");
+        assert!(result.contains("'Eldrun-Hidden'"), "second slot must be Eldrun-Hidden");
+    }
+
+    #[test]
+    fn cinnamon_names_value_preserves_extra_workspaces() {
+        let original = vec!["Old".to_string(), "Also-Old".to_string(), "Extra".to_string()];
+        let result = cinnamon_workspace_names_value(&original);
+        assert!(result.contains("'Extra'"), "extra workspaces must be kept");
+        assert!(result.starts_with("['Eldrun', 'Eldrun-Hidden',"));
+    }
 }
