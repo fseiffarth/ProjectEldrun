@@ -21,31 +21,6 @@ All normal windows appear in "OPEN APPS" regardless of which project is active. 
 
 ---
 
-### ~~ISSUE-003: "+" button is a no-op~~ ✅ Fixed
-`NewProjectDialog` and `ImportProjectDialog` wired via the "+" popover in `right_panel.py`.
-
----
-
-### ~~ISSUE-004: Projects not restored on restart~~ ✅ Fixed
-`_on_map` in `window.py` calls `get_visible_projects()` and restores all `"active"` / `"current"` rows and terminals on startup.
-
----
-
-### ~~ISSUE-005: Root terminal opens in `~/eldrun/` even if the folder doesn't exist~~ ✅ Fixed
-`open_master_terminal()` now calls `pathlib.Path(_PROJECTS_ROOT).mkdir(parents=True, exist_ok=True)` before spawning.
-
----
-
-### ~~ISSUE-006: Project structure bottom section is a stub~~ ✅ Fixed
-`LeftPanel` has a full `Gtk.TreeView` file tree with expand/collapse, right-click context menu, color picker, and 5 s refresh timer.
-
----
-
-### ~~ISSUE-007: Right panel too wide on first project open after startup~~ ✅ Fixed
-`_init_inner_paned` now returns early and re-defers via `GLib.idle_add` when `outer_w == 0`, eliminating the stale `or 1440` fallback that caused wrong paned positioning before the window was fully allocated.
-
----
-
 ### ISSUE-009: Right panel gets double width after hide-both → show-left → show-right
 **Phase:** Post-Phase 13 (panel toggle polish)  
 **Severity:** Medium — visual layout broken in this specific sequence  
@@ -80,27 +55,6 @@ The entire "open apps" pipeline (launching a file, detecting the window, embeddi
 **Stage 3 — Wire to the open-apps panel**
 - Once Stage 2 is stable, reconnect `AppRow` click → `show_app_window(xid)` in `LeftPanel`
 - EWMH poll should track the embedded window's XID and update `AppRow.xid` accordingly
-
----
-
-### ~~ISSUE-010: Test suite references removed/renamed panel modules~~ ✅ Fixed
-**Phase:** Documentation/codebase analysis follow-up  
-**Severity:** Medium — tests can fail or validate stale behavior instead of current behavior  
-Stale tests have been replaced with current `FileTreePanel` / `BottomPanel` logic coverage.
-
----
-
-### ~~ISSUE-011: Scaffold contract disagrees with tests and docs~~ ✅ Fixed
-**Phase:** Documentation/codebase analysis follow-up  
-**Severity:** Low to Medium — new project contents are ambiguous  
-`STATUS.md` is part of the project scaffold and is documented consistently.
-
----
-
-### ~~ISSUE-012: Open-app persistence schema is inconsistent~~ ✅ Fixed
-**Phase:** Documentation/codebase analysis follow-up  
-**Severity:** Medium — warm project state and restore behavior are unreliable  
-`project.json["open_apps"]` is the durable representation. Full standalone restore behavior remains tracked as future open-app pipeline work.
 
 ---
 
@@ -160,19 +114,32 @@ When all tabs are closed, Eldrun currently creates a new terminal implicitly. Th
 ### ISSUE-018: Reddish full-width flicker under high CPU load
 **Phase:** Rendering/compositor diagnostics  
 **Severity:** Medium — visually disruptive and may indicate a renderer/compositor sync issue  
-Under high CPU load, a reddish flicker can appear as a short-height band spanning the full screen width. The symptom sounds like a frame presentation or compositor artifact rather than a normal widget repaint, especially because it is height-restricted but screen-wide.
+Under high CPU load, a reddish flicker can appear as a short-height band spanning the full screen width.
 
-**Possible causes:**
-- `GSK_RENDERER=cairo` or another non-synced renderer path may still be active. `app/eldrun.py` already prefers `ngl` on Cinnamon/X11 because cairo can produce reddish horizontal tearing bands via XPutImage without vsync.
-- The renderer workaround only applies when `XDG_SESSION_TYPE=x11` and `XDG_CURRENT_DESKTOP` contains `cinnamon`. Other X11 desktops, missing environment values, explicit `GSK_RENDERER`, or `ELDRUN_DISABLE_RENDERER_WORKAROUND=1` skip it.
-- Cinnamon/X11 compositing may be missing frames when the CPU is saturated, especially with an undecorated, maximized GTK window and continuous VTE terminal updates.
-- VTE output bursts may invalidate large areas of the center panel; if GTK/GSK cannot finish the render before scanout, a partially presented frame can look like a full-width colored strip.
-- Full-width overlays and fixed-height surfaces such as the header/bottom panel/offline banner could expose stale themed pixels during delayed redraws, making the artifact appear red or pink depending on the active theme.
+**Possible causes:** GSK renderer not synced with vsync; Cinnamon/X11 compositing missing frames; VTE output bursts invalidating large areas; stale themed pixels in overlays.
 
-**Diagnostics needed:**
-- Record `GSK_RENDERER`, `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`, GPU/driver, refresh rate, compositor settings, and active Eldrun theme when it happens.
-- Try `GSK_RENDERER=ngl`, `GSK_RENDERER=gl`, and `GSK_RENDERER=cairo` explicitly to confirm whether the artifact follows the renderer.
-- Check whether the flicker occurs only during heavy terminal output, only while maximized/fullscreen, or also when the window is restored.
-- Capture a phone video or compositor screencast to identify whether the band aligns with the VTE area, header, bottom panel, or the monitor scanout.
+**Diagnostics needed:** Record `GSK_RENDERER`, `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`, GPU/driver, refresh rate.
 
-**Fix needed:** Harden renderer selection beyond Cinnamon/X11 if confirmed, document a safe override, and consider throttling high-frequency UI updates or reducing full-width overlay redraws if the artifact is tied to VTE/output bursts.
+**Fix needed:** Harden renderer selection; document a safe override; consider throttling high-frequency UI updates.
+
+---
+
+## Fixed (kept for recurrence reference)
+
+### ~~ISSUE-019: Ollama local-agent tab shows wrong model (mistral-medium-3.5 instead of selected model)~~ ✅ Fixed
+**Phase:** Ollama local agents
+**Severity:** High — vibe uses the global `~/.vibe/config.toml` instead of the per-model config
+
+**Root cause:** `project.json` `tab_layout` entries for `local_agent` tabs were saved with `"env": {}`. This happened because:
+1. The catch block in `handleOllamaModel` (TabBar.tsx) created the tab with an empty env when `ensure_ollama_running` or `prepare_local_agent` threw.
+2. Without `VIBE_HOME` set, vibe falls back to `~/.vibe/config.toml` which has `active_model = "mistral-medium-3.5"`.
+
+**How to diagnose if it recurs:**
+1. Check `project.json` → `tab_layout` for the affected tab. If `"env": {}` or env is missing `VIBE_HOME`, the env was lost.
+2. Check `~/.local/share/eldrun/vibe_local/<model-alias>/config.toml` — if this file exists and has the correct `active_model`, the fix is to re-populate the tab env.
+3. The tab label will be correct (`deepcoder:latest`) but inside the terminal vibe shows the global model.
+
+**Fix applied (src/components/layout/CenterPanel.tsx, src/stores/tabs.ts, src/components/tabs/TabBar.tsx):**
+- Added `updateTabEnv` action to tabs store.
+- CenterPanel now has an effect that calls `prepare_local_agent` for any `local_agent` tab with an empty env after project load. The tab re-spawns with the correct `VIBE_HOME` and `VIBE_ACTIVE_MODEL`.
+- `handleOllamaModel` catch block no longer creates a tab with empty env — if agent prep fails, no tab is created (prevents silently broken tabs).

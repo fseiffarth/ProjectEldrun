@@ -586,7 +586,14 @@ function OllamaPanel({ onBack }: { onBack: () => void }) {
     }
   };
 
-  const installedNames = new Set(models.map((m) => m.name));
+  const installedNames = useMemo(() => new Set(models.map((m) => m.name)), [models]);
+  const runningModels = models.filter((m) => m.running);
+  const loadedLabel =
+    runningModels.length === 0
+      ? serverRunning
+        ? "No model loaded"
+        : "No loaded model"
+      : `Loaded: ${runningModels.map((m) => m.name).join(", ")}`;
 
   return (
     <>
@@ -596,12 +603,12 @@ function OllamaPanel({ onBack }: { onBack: () => void }) {
       </div>
 
       <div className="ollama-status-bar">
-        <span className={`ollama-status-dot ${serverRunning ? "running" : "stopped"}`} />
+        <span className={`ollama-status-dot ${runningModels.length > 0 ? "running" : "stopped"}`} />
         <span className="ollama-status-text">
           {serverRunning === null
             ? "Checking..."
             : serverRunning
-              ? "Server running"
+              ? loadedLabel
               : "Server not running"}
         </span>
         {serverRunning === false && (
@@ -694,7 +701,17 @@ function OllamaPanel({ onBack }: { onBack: () => void }) {
         </div>
       )}
 
-      <div className="settings-section-title">Available to Install</div>
+      <div className="settings-section-title ollama-section-title-row">
+        <span>Available to Install</span>
+        <button
+          type="button"
+          className="ollama-action-btn"
+          disabled={loading}
+          onClick={() => void refresh()}
+        >
+          {loading ? "..." : "Refresh"}
+        </button>
+      </div>
       <div className="settings-list">
         {catalog.map((entry) => (
           <div className="ollama-catalog-row" key={entry.name}>

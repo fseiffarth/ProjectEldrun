@@ -206,20 +206,74 @@ pub async fn list_installable_models() -> Vec<CatalogEntry> {
         CatalogEntry {
             name: "qwen2.5-coder".into(),
             description: "Alibaba Qwen 2.5 Coder — specialized code generation".into(),
-            tags: vec!["1.5b".into(), "7b".into(), "14b".into(), "32b".into()],
-            size_hint: "1 GB – 20 GB".into(),
+            tags: vec![
+                "0.5b".into(),
+                "1.5b".into(),
+                "3b".into(),
+                "7b".into(),
+                "14b".into(),
+                "32b".into(),
+            ],
+            size_hint: "397 MB – 20 GB".into(),
+        },
+        CatalogEntry {
+            name: "qwen3.5".into(),
+            description: "Alibaba Qwen 3.5 — current multimodal model family".into(),
+            tags: vec![
+                "0.8b".into(),
+                "2b".into(),
+                "4b".into(),
+                "9b".into(),
+                "27b".into(),
+                "35b".into(),
+                "122b".into(),
+            ],
+            size_hint: "1.0 GB – 81 GB".into(),
+        },
+        CatalogEntry {
+            name: "qwen3-coder".into(),
+            description: "Alibaba Qwen3 Coder — coding model for agentic workflows".into(),
+            tags: vec!["30b".into(), "480b".into()],
+            size_hint: "19 GB – 290 GB".into(),
+        },
+        CatalogEntry {
+            name: "qwen3-coder-next".into(),
+            description: "Alibaba Qwen3 Coder Next — coding-focused local development model".into(),
+            tags: vec!["q4_K_M".into(), "q8_0".into()],
+            size_hint: "52 GB – 85 GB".into(),
         },
         CatalogEntry {
             name: "deepseek-r1".into(),
             description: "DeepSeek R1 — chain-of-thought reasoning model".into(),
-            tags: vec!["1.5b".into(), "7b".into(), "8b".into(), "14b".into(), "32b".into(), "70b".into()],
-            size_hint: "1.1 GB – 43 GB".into(),
+            tags: vec![
+                "1.5b".into(),
+                "7b".into(),
+                "8b".into(),
+                "14b".into(),
+                "32b".into(),
+                "70b".into(),
+                "671b".into(),
+            ],
+            size_hint: "1.1 GB – 404 GB".into(),
+        },
+        CatalogEntry {
+            name: "deepseek-coder".into(),
+            description: "DeepSeek Coder — code model trained on code and natural language".into(),
+            tags: vec!["1.3b".into(), "6.7b".into(), "33b".into()],
+            size_hint: "776 MB – 18 GB".into(),
         },
         CatalogEntry {
             name: "gemma3".into(),
             description: "Google Gemma 3 — efficient open model from Google".into(),
             tags: vec!["1b".into(), "4b".into(), "12b".into(), "27b".into()],
             size_hint: "815 MB – 17 GB".into(),
+        },
+        CatalogEntry {
+            name: "gemma3n".into(),
+            description: "Google Gemma 3n — efficient multimodal model for low-resource devices"
+                .into(),
+            tags: vec!["e2b".into(), "e4b".into()],
+            size_hint: "5.6 GB – 7.5 GB".into(),
         },
         CatalogEntry {
             name: "phi4".into(),
@@ -234,10 +288,47 @@ pub async fn list_installable_models() -> Vec<CatalogEntry> {
             size_hint: "4.1 GB".into(),
         },
         CatalogEntry {
+            name: "mistral-large".into(),
+            description: "Mistral Large 2 — flagship model for code, math, and reasoning".into(),
+            tags: vec!["123b".into()],
+            size_hint: "69 GB".into(),
+        },
+        CatalogEntry {
+            name: "ministral-3".into(),
+            description: "Mistral Ministral 3 — edge-oriented models with vision and tool support"
+                .into(),
+            tags: vec!["3b".into(), "8b".into(), "14b".into()],
+            size_hint: "3.0 GB – 9.1 GB".into(),
+        },
+        CatalogEntry {
             name: "codellama".into(),
             description: "Meta Code Llama — code generation and completion".into(),
             tags: vec!["7b".into(), "13b".into(), "34b".into(), "70b".into()],
             size_hint: "3.8 GB – 39 GB".into(),
+        },
+        CatalogEntry {
+            name: "granite3.3".into(),
+            description: "IBM Granite 3.3 — compact enterprise-oriented language model".into(),
+            tags: vec!["2b".into(), "8b".into()],
+            size_hint: "1.5 GB – 4.9 GB".into(),
+        },
+        CatalogEntry {
+            name: "olmo2".into(),
+            description: "Allen AI OLMo 2 — fully open model family".into(),
+            tags: vec!["7b".into(), "13b".into()],
+            size_hint: "4.5 GB – 8.2 GB".into(),
+        },
+        CatalogEntry {
+            name: "cogito".into(),
+            description: "Deep Cogito — hybrid reasoning models across small and large sizes".into(),
+            tags: vec![
+                "3b".into(),
+                "8b".into(),
+                "14b".into(),
+                "32b".into(),
+                "70b".into(),
+            ],
+            size_hint: "2.0 GB – 43 GB".into(),
         },
         CatalogEntry {
             name: "smollm2".into(),
@@ -298,11 +389,8 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
 
     if service_started {
         let deadline = Instant::now() + Duration::from_secs(8);
-        while Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(300));
-            if ollama_listening() {
-                return Ok(());
-            }
+        if wait_for_ollama(deadline) {
+            return Ok(());
         }
     }
 
@@ -321,14 +409,21 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         .map_err(|e| format!("failed to start ollama serve: {e}"))?;
 
     let deadline = Instant::now() + Duration::from_secs(8);
-    while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(300));
-        if ollama_listening() {
-            return Ok(());
-        }
+    if wait_for_ollama(deadline) {
+        return Ok(());
     }
 
     Err("ollama serve started but did not become reachable within 8 s".to_string())
+}
+
+fn wait_for_ollama(deadline: Instant) -> bool {
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(300));
+        if ollama_listening() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Returns the path to the system-wide Ollama models directory if it exists
@@ -352,36 +447,18 @@ fn system_ollama_models_dir() -> Option<std::path::PathBuf> {
 /// Returns Err("not_running") when the Ollama server is not reachable.
 #[tauri::command]
 pub async fn list_ollama_models() -> Result<Vec<String>, String> {
-    let mut stream = TcpStream::connect("127.0.0.1:11434")
-        .map_err(|_| "not_running".to_string())?;
-
-    stream
-        .write_all(b"GET /api/tags HTTP/1.0\r\nHost: localhost\r\n\r\n")
-        .map_err(|e| format!("ollama request: {e}"))?;
-
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|e| format!("ollama read: {e}"))?;
-
-    let body = response
-        .split("\r\n\r\n")
-        .nth(1)
-        .ok_or("invalid ollama response")?;
-
+    let body = ollama_http("GET", "/api/tags", None)?;
     let v: serde_json::Value =
-        serde_json::from_str(body).map_err(|e| format!("ollama json: {e}"))?;
+        serde_json::from_str(&body).map_err(|e| format!("ollama json: {e}"))?;
 
     let models = v["models"]
         .as_array()
         .ok_or("no models field in ollama response")?;
 
-    let names: Vec<String> = models
+    Ok(models
         .iter()
         .filter_map(|m| Some(m["name"].as_str()?.to_owned()))
-        .collect();
-
-    Ok(names)
+        .collect())
 }
 
 /// Result of preparing a local Ollama agent for vibe.

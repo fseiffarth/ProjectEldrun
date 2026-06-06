@@ -1992,6 +1992,13 @@ input {
   padding: 4px 0;
 }
 
+.ollama-section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .ollama-action-btn {
   font-size: 11px;
   padding: 3px 8px;

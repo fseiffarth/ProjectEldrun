@@ -61,7 +61,7 @@ Runtime launch commands are intentionally omitted from this Claude context.
 - Project-local state lives in each project's `project.json`.
 - New/imported projects receive `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
   `.claude/settings.json`, `.gitignore`, `TODO.md`, `ROADMAP.md`, `STATUS.md`,
-  and `DOCUMENTATION.md` when missing.
+  and `README.md` when missing.
 - `TODO.md` uses grouped IDs such as `G1.1`. When adding a TODO, put it in the
   matching group, create a new group if no current group fits, or merge groups
   if the TODO depends on distinct areas that should be tracked together.

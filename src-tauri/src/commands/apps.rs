@@ -336,8 +336,8 @@ fn find_icon_file(dir: &Path, names: &[String], depth: usize) -> Option<PathBuf>
     if depth == 0 || !dir.is_dir() {
         return None;
     }
-    let entries = fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
+    let entries: Vec<_> = fs::read_dir(dir).ok()?.flatten().collect();
+    for entry in &entries {
         let path = entry.path();
         if path.is_file() {
             let file_name = path.file_name()?.to_string_lossy();
@@ -346,8 +346,7 @@ fn find_icon_file(dir: &Path, names: &[String], depth: usize) -> Option<PathBuf>
             }
         }
     }
-    let entries = fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
+    for entry in &entries {
         let path = entry.path();
         if path.is_dir() {
             if let Some(found) = find_icon_file(&path, names, depth - 1) {

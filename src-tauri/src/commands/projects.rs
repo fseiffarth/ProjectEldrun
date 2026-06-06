@@ -323,11 +323,7 @@ pub fn list_dir(project_dir: String, rel_path: String) -> Result<Vec<FileEntry>,
             mime,
         });
     }
-    result.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    result.sort_by_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
     Ok(result)
 }
 
@@ -434,10 +430,10 @@ const SCAFFOLD_FILES: &[(&str, &str)] = &[
     ("TODO.md", "# TODO\n"),
     ("ROADMAP.md", "# Roadmap\n"),
     ("STATUS.md", "# Status\n"),
-    ("DOCUMENTATION.md", "# Documentation\n"),
+    ("README.md", "# Project\n"),
 ];
 
-const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\n.DS_Store\n*.log\n.eldrun/\n";
+const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\n";
 
 const CLAUDE_SETTINGS: &str =
     r#"{"permissions":{"allow":[],"deny":[]}}"#;
@@ -501,16 +497,14 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
     } else {
         vec![]
     };
-    let max_pos = list.iter().map(|p| p.position).max().unwrap_or(0);
-    let mut extra = HashMap::new();
-    extra.insert("directory".to_string(), Value::String(req.directory));
-    extra.insert("git_type".to_string(), Value::String(git_type));
+    let position = next_position(&list);
+    let extra = project_extra(req.directory, git_type);
 
     let entry = ProjectEntry {
         id: id.clone(),
         name: req.name,
         status: "inactive".to_string(),
-        position: max_pos + 10,
+        position,
         local_file: project_file.to_string_lossy().to_string(),
         extra,
     };
@@ -604,15 +598,13 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
     };
     storage::write_json(&project_file, &project).map_err(|e| e.to_string())?;
 
-    let max_pos = list.iter().map(|p| p.position).max().unwrap_or(0);
-    let mut extra = HashMap::new();
-    extra.insert("directory".to_string(), Value::String(directory));
-    extra.insert("git_type".to_string(), Value::String(git_type));
+    let position = next_position(&list);
+    let extra = project_extra(directory, git_type);
     let entry = ProjectEntry {
         id,
         name: req.name,
         status: "inactive".to_string(),
-        position: max_pos + 10,
+        position,
         local_file: project_file_s,
         extra,
     };
@@ -633,35 +625,25 @@ pub fn get_time_today(project_id: String) -> f64 {
         Ok(l) => l,
         Err(_) => return 0.0,
     };
-    let today = today_utc();
+    let today = storage::today_utc();
     log.iter()
         .filter(|e| e.project_id == project_id && e.date == today)
         .map(|e| e.duration_s)
         .sum()
 }
 
-fn today_utc() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let days = (secs / 86400) as i64;
-    // Howard Hinnant's civil_from_days algorithm
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+fn next_position(list: &ProjectsList) -> i64 {
+    list.iter().map(|p| p.position).max().unwrap_or(0) + 10
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────
+fn project_extra(directory: String, git_type: String) -> HashMap<String, Value> {
+    HashMap::from([
+        ("directory".to_string(), Value::String(directory)),
+        ("git_type".to_string(), Value::String(git_type)),
+    ])
+}
 
 fn canonical(path: &str) -> Result<PathBuf, String> {
     fs::canonicalize(path).map_err(|e| format!("canonicalize {path}: {e}"))
@@ -860,7 +842,7 @@ mod tests {
         scaffold_project(tmp.path()).unwrap();
 
         for name in &["AGENTS.md", "CLAUDE.md", "GEMINI.md", "TODO.md",
-                       "ROADMAP.md", "STATUS.md", "DOCUMENTATION.md", ".gitignore"] {
+                       "ROADMAP.md", "STATUS.md", "README.md", ".gitignore"] {
             assert!(tmp.path().join(name).exists(), "missing: {name}");
         }
         assert!(tmp.path().join(".claude/settings.json").exists());

@@ -115,15 +115,8 @@ export function TabBar({ projectCwd }: Props) {
         cwd: projectCwd,
         kind: "local_agent",
       });
-    } catch (e) {
-      addTab({
-        label: model,
-        cmd: "vibe",
-        args: [],
-        env: {},
-        cwd: projectCwd,
-        kind: "local_agent",
-      });
+    } catch {
+      // Ollama not running or agent prep failed — don't create a tab with no model config.
     }
   }
 

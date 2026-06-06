@@ -16,6 +16,7 @@ export function CenterPanel() {
   const loadFromLayout = useTabsStore((s) => s.loadFromLayout);
   const tabs = useTabsStore((s) => s.tabs);
   const saveLayout = useTabsStore((s) => s.saveLayout);
+  const updateTabEnv = useTabsStore((s) => s.updateTabEnv);
   const { projects, activeId, switchGeneration } = useProjectsStore();
   const settings = useSettingsStore((s) => s.settings);
 
@@ -86,6 +87,22 @@ export function CenterPanel() {
     }, 5000);
     return () => window.clearTimeout(timer);
   }, [activeId, projectCwd]);
+
+  // Re-hydrate local_agent tabs that were saved without VIBE_HOME/VIBE_ACTIVE_MODEL.
+  useEffect(() => {
+    if (!activeId) return;
+    const { tabs: currentTabs } = useTabsStore.getState();
+    const needsEnv = currentTabs.filter(
+      (t) => t.kind === "local_agent" && Object.keys(t.env ?? {}).length === 0,
+    );
+    for (const tab of needsEnv) {
+      invoke<{ vibe_home: string; alias: string }>("prepare_local_agent", { model: tab.label })
+        .then(({ vibe_home, alias }) => {
+          updateTabEnv(tab.key, { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias });
+        })
+        .catch(() => {});
+    }
+  }, [activeId, updateTabEnv]);
 
   useEffect(() => {
     if (!activeId || !localFile) return;

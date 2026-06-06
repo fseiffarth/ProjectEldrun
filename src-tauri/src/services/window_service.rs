@@ -29,10 +29,7 @@ pub fn project_window_ids(
     windows: &HashMap<String, TrackedWindow>,
     project_id: Option<&str>,
 ) -> Vec<u64> {
-    windows
-        .values()
-        .filter(|w| w.project_id.as_deref() == project_id)
-        .filter(|w| is_project_owned(&w.origin))
+    project_owned_windows(windows, project_id)
         .filter_map(|w| w.window_id)
         .collect()
 }
@@ -42,10 +39,7 @@ pub fn project_tracked_ids(
     windows: &HashMap<String, TrackedWindow>,
     project_id: Option<&str>,
 ) -> Vec<String> {
-    windows
-        .values()
-        .filter(|w| w.project_id.as_deref() == project_id)
-        .filter(|w| is_project_owned(&w.origin))
+    project_owned_windows(windows, project_id)
         .map(|w| w.id.clone())
         .collect()
 }
@@ -82,4 +76,14 @@ fn is_project_owned(origin: &str) -> bool {
         origin,
         ORIGIN_RIGHT_FILE_TREE | ORIGIN_MIDDLE_FILE_BROWSER | ORIGIN_RESTORED
     )
+}
+
+fn project_owned_windows<'a, 'b>(
+    windows: &'a HashMap<String, TrackedWindow>,
+    project_id: Option<&'b str>,
+) -> impl Iterator<Item = &'a TrackedWindow> + use<'a, 'b> {
+    windows
+        .values()
+        .filter(move |w| w.project_id.as_deref() == project_id)
+        .filter(|w| is_project_owned(&w.origin))
 }

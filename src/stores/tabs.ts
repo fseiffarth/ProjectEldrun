@@ -33,6 +33,7 @@ interface TabsStore {
   removeTab: (key: string) => void;
   reorder: (from: number, to: number) => void;
   updateTabSessionId: (key: string, sessionId: string) => void;
+  updateTabEnv: (key: string, env: Record<string, string>) => void;
   loadFromLayout: (
     layout: Array<{ key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string; env?: Record<string, string>; sessionId?: string }>,
     defaultCwd: string,
@@ -43,6 +44,10 @@ interface TabsStore {
 let _keyCounter = 0;
 function nextKey(prefix: string) {
   return `${prefix}-${++_keyCounter}`;
+}
+
+function patchScopeTabs(s: TabsStore, tabs: TabEntry[]) {
+  return { tabsByScope: { ...s.tabsByScope, [s.scope]: tabs } };
 }
 
 export const useTabsStore = create<TabsStore>((set, get) => ({
@@ -76,7 +81,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       );
       return {
         tabs,
-        tabsByScope: { ...s.tabsByScope, [s.scope]: tabs },
+        ...patchScopeTabs(s, tabs),
       };
     });
   },
@@ -89,7 +94,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       return {
         tabs,
         activeKey: key,
-        tabsByScope: { ...s.tabsByScope, [s.scope]: tabs },
+        ...patchScopeTabs(s, tabs),
         activeKeyByScope: { ...s.activeKeyByScope, [s.scope]: key },
       };
     });
@@ -113,7 +118,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       return {
         tabs,
         activeKey,
-        tabsByScope: { ...s.tabsByScope, [s.scope]: tabs },
+        ...patchScopeTabs(s, tabs),
         activeKeyByScope: { ...s.activeKeyByScope, [s.scope]: activeKey },
       };
     });
@@ -126,7 +131,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       tabs.splice(to, 0, moved);
       return {
         tabs,
-        tabsByScope: { ...s.tabsByScope, [s.scope]: tabs },
+        ...patchScopeTabs(s, tabs),
       };
     });
   },
@@ -138,7 +143,19 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       );
       return {
         tabs,
-        tabsByScope: { ...s.tabsByScope, [s.scope]: tabs },
+        ...patchScopeTabs(s, tabs),
+      };
+    });
+  },
+
+  updateTabEnv: (key, env) => {
+    set((s) => {
+      const tabs = s.tabs.map((t) =>
+        t.key === key ? { ...t, env } : t,
+      );
+      return {
+        tabs,
+        ...patchScopeTabs(s, tabs),
       };
     });
   },
@@ -168,7 +185,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     set((s) => ({
       tabs,
       activeKey,
-      tabsByScope: { ...s.tabsByScope, [s.scope]: tabs },
+      ...patchScopeTabs(s, tabs),
       activeKeyByScope: { ...s.activeKeyByScope, [s.scope]: activeKey },
     }));
   },
