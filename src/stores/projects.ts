@@ -1,6 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { resolveProjectDirectory, type ProjectEntry } from "../types";
+import { useTabsStore } from "./tabs";
+import { useTimerStore } from "./timer";
+
+interface ProjectRuntimeSwitchedPayload {
+  projectId: string | null;
+  tabLayout: Array<{ key: string; label: string; cmd: string; cwd: string }>;
+  activeTabIndex: number;
+  fileTabs: unknown[];
+  rightPanelFolder: string | null;
+  openedWindowIds: string[];
+}
 
 interface ProjectsStore {
   projects: ProjectEntry[];
@@ -14,7 +25,7 @@ interface ProjectsStore {
   setActive: (id: string | null) => Promise<void>;
   clearSwitchToast: () => void;
   addProject: (project: ProjectEntry) => Promise<void>;
-  removeProject: (id: string) => Promise<void>;
+  deactivateProject: (id: string) => Promise<void>;
 }
 
 export const useProjectsStore = create<ProjectsStore>((set, get) => ({
@@ -74,13 +85,39 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       };
     });
     await invoke<void>("save_projects", { projects: nextProjects });
-    // Trigger workspace switch when activating a project (not root terminal).
-    if (id !== null) {
-      invoke<void>("workspace_switch", {
-        projectId: id,
-        previousProjectId: previousId,
-      }).catch(() => {});
-    }
+    void useTimerStore.getState().setProject(id);
+    const nextProject = id !== null ? nextProjects.find((p) => p.id === id) : null;
+    const projectCwd = resolveProjectDirectory(nextProject);
+    const tabsStore = useTabsStore.getState();
+    const tabs = tabsStore.tabs;
+    const activeTabIndex = Math.max(
+      0,
+      tabs.findIndex((t) => t.key === tabsStore.activeKey),
+    );
+    invoke<ProjectRuntimeSwitchedPayload>("switch_project_runtime", {
+      projectId: id,
+      previousProjectId: previousId,
+      previousSnapshot: {
+        tabLayout: tabs.map((t) => ({ key: t.key, label: t.label, cmd: t.cmd, cwd: t.cwd })),
+        activeTabIndex,
+        fileTabs: [],
+        rightPanelFolder: null,
+        activeLayoutMetadata: null,
+        flushSecs: 0.0,
+      },
+    })
+      .then((payload) => {
+        if (payload.tabLayout.length > 0) {
+          const scopeKey = id ?? "root";
+          const liveTabs = useTabsStore.getState().tabsByScope[scopeKey];
+          if (!liveTabs || liveTabs.length === 0) {
+            useTabsStore.getState().loadFromLayout(payload.tabLayout, projectCwd);
+          }
+        }
+      })
+      .catch((error) => {
+        console.warn("switch_project_runtime failed", error);
+      });
   },
 
   clearSwitchToast: () => set({ switchToast: null }),
@@ -94,11 +131,15 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     await useProjectsStore.getState().setActive(project.id);
   },
 
-  removeProject: async (id) => {
+  deactivateProject: async (id) => {
     let nextProjects: ProjectEntry[] = [];
     let nextActiveId: string | null = null;
     set((state) => {
-      nextProjects = state.projects.filter((p) => p.id !== id);
+      nextProjects = state.projects.map((project) =>
+        project.id === id && project.status !== "inactive"
+          ? { ...project, status: "inactive" }
+          : project,
+      );
       nextActiveId =
         state.activeId === id
           ? (nextProjects.find((p) => p.status === "active") ?? nextProjects[0])?.id ?? null

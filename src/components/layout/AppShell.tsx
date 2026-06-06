@@ -13,14 +13,17 @@ import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
+import { useTimerStore } from "../../stores/timer";
 import { useKeyboard } from "../../hooks/useKeyboard";
 
 export function AppShell() {
   const loadSettings = useSettingsStore((s) => s.load);
   const loadProjects = useProjectsStore((s) => s.load);
+  const projectsLoaded = useProjectsStore((s) => s.loaded);
   const activeId = useProjectsStore((s) => s.activeId);
   const switchToast = useProjectsStore((s) => s.switchToast);
   const clearSwitchToast = useProjectsStore((s) => s.clearSwitchToast);
+  const initTimer = useTimerStore((s) => s.init);
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [bottomOpen, setBottomOpen] = useState(false);
@@ -34,6 +37,14 @@ export function AppShell() {
     loadProjects();
     getCurrentWindow().setFullscreen(true).catch(() => {});
   }, [loadSettings, loadProjects]);
+
+  useEffect(() => {
+    if (projectsLoaded) {
+      void initTimer(activeId);
+    }
+    // Only fire once when projects finish loading.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectsLoaded]);
 
   useEffect(() => {
     if (!switchToast) return;

@@ -18,10 +18,20 @@ impl WorkspaceBackend for NullBackend {
         }
     }
 
+    fn show_window(&self, _window_id: u64) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn hide_window(&self, _window_id: u64) -> Result<(), String> {
+        Ok(())
+    }
+
     fn switch_to_project(
         &self,
-        _project_id: &str,
+        _project_id: Option<&str>,
         _previous_project_id: Option<&str>,
+        _previous_window_ids: &[u64],
+        _current_window_ids: &[u64],
     ) -> Result<(), String> {
         Ok(())
     }
@@ -32,5 +42,58 @@ impl WorkspaceBackend for NullBackend {
 
     fn cleanup(&self) -> Result<(), String> {
         Ok(())
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_backend_name() {
+        assert_eq!(NullBackend.name(), "null");
+    }
+
+    #[test]
+    fn null_backend_info_has_no_desktop_info() {
+        let info = NullBackend.info();
+        assert!(info.current_desktop.is_none());
+        assert!(info.desktop_count.is_none());
+    }
+
+    #[test]
+    fn null_backend_show_window_never_errors() {
+        assert!(NullBackend.show_window(0).is_ok());
+        assert!(NullBackend.show_window(u64::MAX).is_ok());
+    }
+
+    #[test]
+    fn null_backend_hide_window_never_errors() {
+        assert!(NullBackend.hide_window(0).is_ok());
+        assert!(NullBackend.hide_window(u64::MAX).is_ok());
+    }
+
+    #[test]
+    fn null_backend_switch_never_errors() {
+        assert!(NullBackend.switch_to_project(None, None, &[], &[]).is_ok());
+        assert!(NullBackend.switch_to_project(Some("p1"), Some("p0"), &[1, 2], &[3]).is_ok());
+    }
+
+    #[test]
+    fn null_backend_make_sticky_never_errors() {
+        assert!(NullBackend.make_sticky(1234).is_ok());
+    }
+
+    #[test]
+    fn null_backend_cleanup_never_errors() {
+        assert!(NullBackend.cleanup().is_ok());
+    }
+
+    #[test]
+    fn null_backend_cleanup_is_idempotent() {
+        assert!(NullBackend.cleanup().is_ok());
+        assert!(NullBackend.cleanup().is_ok());
     }
 }

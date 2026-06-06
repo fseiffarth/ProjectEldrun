@@ -41,6 +41,217 @@ pub fn save_project(local_file: String, project: Project) -> Result<(), String> 
     storage::write_json(&path, &project).map_err(|e| e.to_string())
 }
 
+/// Save only the tab layout — writes to both project.json and the session file.
+#[tauri::command]
+pub fn save_tab_layout(
+    local_file: String,
+    tabs: Vec<crate::schema::project::TabEntry>,
+) -> Result<(), String> {
+    crate::services::terminal_service::save_tab_layout(&local_file, &tabs)
+}
+
+/// Debug: clear all project session state from disk (tabs, open_apps, session files).
+#[tauri::command]
+pub fn clear_project_session(local_file: String) -> Result<(), String> {
+    use crate::services::terminal_service::eldrun_sessions_dir;
+
+    let path = PathBuf::from(&local_file);
+    let mut project: Project = storage::read_json(&path).unwrap_or_default();
+    project.tab_layout = None;
+    project.open_apps = None;
+    storage::write_json(&path, &project).map_err(|e| e.to_string())?;
+
+    if let Some(sessions_dir) = eldrun_sessions_dir(&local_file) {
+        for file in &["terminals.json", "windows.json", "filetabs.json"] {
+            let p = sessions_dir.join(file);
+            if p.exists() {
+                let _ = fs::remove_file(&p);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Detect the most recent session ID for any supported agent CLI.
+///
+/// - `agent_cmd`: the command name ("claude", "codex", "gemini", "vibe")
+/// - `project_dir`: the project's working directory
+/// - `vibe_home`: optional VIBE_HOME override (used for local Ollama agent tabs)
+#[tauri::command]
+pub fn detect_agent_session_id(
+    agent_cmd: String,
+    project_dir: String,
+    vibe_home: Option<String>,
+) -> Option<String> {
+    match agent_cmd.as_str() {
+        "claude" => detect_claude_session(&project_dir),
+        "codex"  => detect_codex_session(&project_dir),
+        "gemini" => detect_gemini_session(&project_dir),
+        "vibe"   => detect_vibe_session(&project_dir, vibe_home.as_deref()),
+        _        => None,
+    }
+}
+
+/// Claude: `~/.claude/projects/<encoded-path>/<session-id>.jsonl`
+/// Path encoding: every `/` → `-`.
+fn detect_claude_session(project_dir: &str) -> Option<String> {
+    let encoded = project_dir.replace('/', "-");
+    let home = std::env::var("HOME").ok()?;
+    let dir = PathBuf::from(home).join(".claude").join("projects").join(&encoded);
+    most_recent_jsonl_stem(&dir)
+}
+
+/// Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`
+/// Each file starts with a `session_meta` line containing `id` and `cwd`.
+/// We walk newest date directories first and return the first session whose
+/// cwd matches `project_dir`.
+fn detect_codex_session(project_dir: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let root = PathBuf::from(home).join(".codex").join("sessions");
+    if !root.is_dir() {
+        return None;
+    }
+
+    // Collect every JSONL file with its modification time, then sort newest first.
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    collect_jsonl_files(&root, &mut files);
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+
+    for (_, path) in files {
+        if let Some(id) = read_codex_session_id_for_dir(&path, project_dir) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// Gemini stores per-project history under `~/.gemini/history/<name>/` where
+/// the name mapping lives in `~/.gemini/projects.json`.  The resume flag
+/// accepts "latest" which always picks the most recent session, so we just
+/// confirm a history entry exists for this project and return the sentinel.
+fn detect_gemini_session(project_dir: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let gemini_home = PathBuf::from(home).join(".gemini");
+
+    // Resolve project name from projects.json.
+    let projects_file = gemini_home.join("projects.json");
+    let content = fs::read_to_string(&projects_file).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let name = v["projects"]
+        .as_object()?
+        .iter()
+        .find(|(k, _)| k.as_str() == project_dir)
+        .map(|(_, v)| v.as_str().unwrap_or("").to_owned())?;
+
+    let history_dir = gemini_home.join("history").join(&name);
+    if history_dir.is_dir() { Some("latest".to_string()) } else { None }
+}
+
+/// Vibe: `$VIBE_HOME/logs/session/<dir>/meta.json`
+/// `meta.json` has `session_id` and `environment.working_directory`.
+fn detect_vibe_session(project_dir: &str, vibe_home: Option<&str>) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let base = match vibe_home {
+        Some(h) if !h.is_empty() => PathBuf::from(h),
+        _ => PathBuf::from(&home).join(".vibe"),
+    };
+    let sessions_dir = base.join("logs").join("session");
+    if !sessions_dir.is_dir() {
+        return None;
+    }
+
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    for entry in fs::read_dir(&sessions_dir).ok()?.flatten() {
+        if !entry.file_type().map_or(false, |t| t.is_dir()) {
+            continue;
+        }
+        let meta_path = entry.path().join("meta.json");
+        if !meta_path.exists() {
+            continue;
+        }
+        let content = match fs::read_to_string(&meta_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let v: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let cwd = v["environment"]["working_directory"].as_str().unwrap_or("");
+        if cwd != project_dir {
+            continue;
+        }
+        let session_id = match v["session_id"].as_str() {
+            Some(id) => id.to_owned(),
+            None => continue,
+        };
+        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+            if best.as_ref().map_or(true, |(t, _)| modified > *t) {
+                best = Some((modified, session_id));
+            }
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────
+
+/// Return the stem (filename without `.jsonl`) of the most recently modified
+/// `.jsonl` file in `dir`.
+fn most_recent_jsonl_stem(dir: &PathBuf) -> Option<String> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let mut latest: Option<(std::time::SystemTime, String)> = None;
+    for entry in fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".jsonl") {
+            continue;
+        }
+        let stem = name[..name.len() - 6].to_string();
+        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+            if latest.as_ref().map_or(true, |(t, _)| modified > *t) {
+                latest = Some((modified, stem));
+            }
+        }
+    }
+    latest.map(|(_, stem)| stem)
+}
+
+/// Recursively collect all `.jsonl` files under `dir` along with their mtime.
+fn collect_jsonl_files(dir: &PathBuf, out: &mut Vec<(std::time::SystemTime, PathBuf)>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonl_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+                out.push((modified, path));
+            }
+        }
+    }
+}
+
+/// Read the first `session_meta` line of a codex JSONL file and return the
+/// session `id` if `cwd` matches `project_dir`.
+fn read_codex_session_id_for_dir(path: &PathBuf, project_dir: &str) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let file = fs::File::open(path).ok()?;
+    for line in BufReader::new(file).lines().take(5).flatten() {
+        let v: serde_json::Value = serde_json::from_str(&line).ok()?;
+        if v["type"].as_str() != Some("session_meta") {
+            continue;
+        }
+        let payload = &v["payload"];
+        if payload["cwd"].as_str() != Some(project_dir) {
+            return None;
+        }
+        return payload["id"].as_str().map(String::from);
+    }
+    None
+}
+
 #[tauri::command]
 pub fn root_work_dir() -> String {
     storage::root_work_dir().to_string_lossy().to_string()
@@ -86,6 +297,10 @@ pub fn list_dir(project_dir: String, rel_path: String) -> Result<Vec<FileEntry>,
             Err(_) => continue,
         };
         let name = entry.file_name().to_string_lossy().to_string();
+        // Always hide .eldrun/ — it is internal runtime storage, not user content.
+        if name == ".eldrun" {
+            continue;
+        }
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -222,7 +437,7 @@ const SCAFFOLD_FILES: &[(&str, &str)] = &[
     ("DOCUMENTATION.md", "# Documentation\n"),
 ];
 
-const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\n.DS_Store\n*.log\n";
+const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\n.DS_Store\n*.log\n.eldrun/\n";
 
 const CLAUDE_SETTINGS: &str =
     r#"{"permissions":{"allow":[],"deny":[]}}"#;
@@ -457,7 +672,7 @@ fn projects_root() -> PathBuf {
     PathBuf::from(home).join("eldrun").join("projects")
 }
 
-fn sanitize_name(name: &str) -> String {
+pub(crate) fn sanitize_name(name: &str) -> String {
     name.trim()
         .to_lowercase()
         .chars()
@@ -500,7 +715,7 @@ fn canonical_or_new(path: &Path) -> PathBuf {
 }
 
 /// Enforce that `target` is inside `root`.
-fn enforce_confinement(root: &Path, target: &Path) -> Result<(), String> {
+pub(crate) fn enforce_confinement(root: &Path, target: &Path) -> Result<(), String> {
     if !target.starts_with(root) {
         return Err(format!(
             "path '{}' escapes project root '{}'",
@@ -530,4 +745,157 @@ fn chrono_now() -> String {
         .unwrap_or_default()
         .as_secs();
     format!("{secs}+00:00")
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // ── sanitize_name ──────────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_name_lowercase_alphanumeric() {
+        assert_eq!(sanitize_name("MyProject"), "myproject");
+    }
+
+    #[test]
+    fn sanitize_name_replaces_spaces_with_dash() {
+        assert_eq!(sanitize_name("my project"), "my-project");
+    }
+
+    #[test]
+    fn sanitize_name_replaces_special_chars() {
+        assert_eq!(sanitize_name("my!project@2"), "my-project-2");
+    }
+
+    #[test]
+    fn sanitize_name_collapses_consecutive_dashes() {
+        assert_eq!(sanitize_name("my  project"), "my-project");
+        assert_eq!(sanitize_name("a---b"), "a-b");
+    }
+
+    #[test]
+    fn sanitize_name_trims_leading_trailing_dashes() {
+        assert_eq!(sanitize_name("  hello  "), "hello");
+        assert_eq!(sanitize_name("!hello!"), "hello");
+    }
+
+    #[test]
+    fn sanitize_name_preserves_underscore() {
+        assert_eq!(sanitize_name("my_project"), "my_project");
+    }
+
+    #[test]
+    fn sanitize_name_empty_after_stripping() {
+        assert_eq!(sanitize_name("!!!"), "");
+        assert_eq!(sanitize_name(""), "");
+        assert_eq!(sanitize_name("   "), "");
+    }
+
+    #[test]
+    fn sanitize_name_numeric_only() {
+        assert_eq!(sanitize_name("123"), "123");
+    }
+
+    #[test]
+    fn sanitize_name_unicode_becomes_dash() {
+        // Non-ASCII chars are replaced with '-', then collapsed.
+        let result = sanitize_name("café");
+        assert!(!result.contains("é"), "unicode must be replaced");
+        assert!(!result.contains("--"), "consecutive dashes collapsed");
+    }
+
+    // ── enforce_confinement ────────────────────────────────────────────────
+
+    #[test]
+    fn enforce_confinement_allows_exact_root() {
+        let root = PathBuf::from("/tmp/project");
+        assert!(enforce_confinement(&root, &root).is_ok());
+    }
+
+    #[test]
+    fn enforce_confinement_allows_child() {
+        let root = PathBuf::from("/tmp/project");
+        let child = PathBuf::from("/tmp/project/src/main.rs");
+        assert!(enforce_confinement(&root, &child).is_ok());
+    }
+
+    #[test]
+    fn enforce_confinement_blocks_parent_escape() {
+        let root = PathBuf::from("/tmp/project");
+        let parent = PathBuf::from("/tmp");
+        assert!(enforce_confinement(&root, &parent).is_err());
+    }
+
+    #[test]
+    fn enforce_confinement_blocks_sibling() {
+        let root = PathBuf::from("/tmp/project");
+        let sibling = PathBuf::from("/tmp/other");
+        assert!(enforce_confinement(&root, &sibling).is_err());
+    }
+
+    #[test]
+    fn enforce_confinement_blocks_absolute_escape() {
+        let root = PathBuf::from("/tmp/project");
+        let escape = PathBuf::from("/etc/passwd");
+        assert!(enforce_confinement(&root, &escape).is_err());
+    }
+
+    #[test]
+    fn enforce_confinement_error_message_mentions_root() {
+        let root = PathBuf::from("/tmp/project");
+        let escape = PathBuf::from("/etc/passwd");
+        let err = enforce_confinement(&root, &escape).unwrap_err();
+        assert!(err.contains("/tmp/project"), "error must mention root: {err}");
+    }
+
+    // ── scaffold_project ───────────────────────────────────────────────────
+
+    #[test]
+    fn scaffold_project_creates_all_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path()).unwrap();
+
+        for name in &["AGENTS.md", "CLAUDE.md", "GEMINI.md", "TODO.md",
+                       "ROADMAP.md", "STATUS.md", "DOCUMENTATION.md", ".gitignore"] {
+            assert!(tmp.path().join(name).exists(), "missing: {name}");
+        }
+        assert!(tmp.path().join(".claude/settings.json").exists());
+    }
+
+    #[test]
+    fn scaffold_project_does_not_overwrite_existing_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let todo_path = tmp.path().join("TODO.md");
+        std::fs::write(&todo_path, "original content").unwrap();
+
+        scaffold_project(tmp.path()).unwrap();
+
+        let content = std::fs::read_to_string(&todo_path).unwrap();
+        assert_eq!(content, "original content", "existing file must not be overwritten");
+    }
+
+    #[test]
+    fn scaffold_project_does_not_overwrite_claude_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        let cs = tmp.path().join(".claude/settings.json");
+        std::fs::write(&cs, r#"{"custom": true}"#).unwrap();
+
+        scaffold_project(tmp.path()).unwrap();
+
+        let content = std::fs::read_to_string(&cs).unwrap();
+        assert!(content.contains("custom"), "custom settings must not be overwritten");
+    }
+
+    #[test]
+    fn scaffold_project_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path()).unwrap();
+        scaffold_project(tmp.path()).unwrap(); // second call must not error
+        assert!(tmp.path().join("TODO.md").exists());
+    }
 }

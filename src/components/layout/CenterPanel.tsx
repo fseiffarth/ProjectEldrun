@@ -51,32 +51,44 @@ export function CenterPanel() {
     invoke<Record<string, unknown>>("load_project", { localFile })
       .then((proj) => {
         const layout = proj.tab_layout as
-          | Array<{ key: string; label: string; cmd: string; cwd: string; kind?: "agent" | "shell" | "files"; type?: string }>
+          | Array<{ key: string; label: string; cmd: string; cwd: string; kind?: "agent" | "local_agent" | "shell" | "files"; type?: string; env?: Record<string, string>; sessionId?: string }>
           | undefined;
         if (layout && layout.length > 0) {
           loadFromLayout(layout, projectCwd);
-          return;
         }
-        // No saved layout — only open default tab on explicit switch.
-        if (switchGeneration === 0) return;
-        const kind = cmdToKind(agentCmd);
-        ensureTab(
-          { label: agentCmd, cmd: agentCmd, args: [], cwd: projectCwd, kind },
-          (tab) => tab.kind === kind && tab.cwd === projectCwd,
-        );
       })
-      .catch(() => {
-        if (switchGeneration === 0) return;
-        const kind = cmdToKind(agentCmd);
-        ensureTab(
-          { label: agentCmd, cmd: agentCmd, args: [], cwd: projectCwd, kind },
-          (tab) => tab.kind === kind && tab.cwd === projectCwd,
-        );
-      });
+      .catch(() => {});
   }, [activeId, projectCwd, localFile, agentCmd, switchGeneration, setScope, ensureTab, loadFromLayout]);
 
+  // After switching to a project, detect the current session ID for any agent
+  // tabs that don't yet have one stored and update them so future restores can
+  // resume the session.  Runs 5 s after project switch to give agents time to
+  // create their session files.
   useEffect(() => {
-    if (!activeId || !localFile || tabs.length === 0) return;
+    if (!activeId || !projectCwd) return;
+    const timer = window.setTimeout(async () => {
+      const { tabs: currentTabs, updateTabSessionId: update } = useTabsStore.getState();
+      const needsSession = currentTabs.filter(
+        (t) => (t.kind === "agent" || t.kind === "local_agent") && !t.sessionId,
+      );
+      for (const tab of needsSession) {
+        try {
+          const sessionId = await invoke<string | null>("detect_agent_session_id", {
+            agentCmd: tab.cmd,
+            projectDir: projectCwd,
+            vibeHome: tab.env?.VIBE_HOME ?? null,
+          });
+          if (sessionId) update(tab.key, sessionId);
+        } catch {
+          // session detection is best-effort
+        }
+      }
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [activeId, projectCwd]);
+
+  useEffect(() => {
+    if (!activeId || !localFile) return;
     const timer = window.setTimeout(() => {
       saveLayout(localFile).catch(() => {});
     }, 300);
@@ -106,6 +118,7 @@ export function CenterPanel() {
             id={tab.key}
             cmd={tab.cmd}
             args={tab.args ?? []}
+            env={tab.env ?? {}}
             cwd={tab.cwd}
             active={scopeKey === scope && tab.key === activeKey}
           />

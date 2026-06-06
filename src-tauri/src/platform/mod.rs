@@ -13,6 +13,8 @@ pub mod null;
 
 #[cfg(target_os = "linux")]
 pub mod wayland_kde;
+#[cfg(target_os = "windows")]
+pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod x11;
 
@@ -31,13 +33,19 @@ pub struct WorkspaceInfo {
 pub trait WorkspaceBackend: Send + Sync {
     fn name(&self) -> &'static str;
     fn info(&self) -> WorkspaceInfo;
+    fn show_window(&self, window_id: u64) -> Result<(), String>;
+    fn hide_window(&self, window_id: u64) -> Result<(), String>;
     /// Bring `project_id`'s windows to the foreground desktop and park the
-    /// previous project's windows on the hidden desktop.
-    /// `previous_project_id` is the project being deactivated (None on first switch).
+    /// previous project's windows on the hidden desktop. `None` targets the
+    /// root terminal workspace.
+    /// `previous_project_id` is the project being deactivated, with `None`
+    /// representing the root terminal workspace.
     fn switch_to_project(
         &self,
-        project_id: &str,
+        project_id: Option<&str>,
         previous_project_id: Option<&str>,
+        previous_window_ids: &[u64],
+        current_window_ids: &[u64],
     ) -> Result<(), String>;
     /// Called at startup to make Eldrun visible on all desktops (sticky).
     fn make_sticky(&self, eldrun_pid: u32) -> Result<(), String>;
@@ -48,6 +56,11 @@ pub trait WorkspaceBackend: Send + Sync {
 // ── Factory ────────────────────────────────────────────────────────────────
 
 pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
+    #[cfg(target_os = "windows")]
+    {
+        return Box::new(windows::WindowsBackend);
+    }
+
     #[cfg(target_os = "linux")]
     {
         let desktop = std::env::var("XDG_CURRENT_DESKTOP")
@@ -56,23 +69,71 @@ pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
         let wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
 
         if wayland && (desktop.contains("kde") || desktop.contains("plasma")) {
-            if let Ok(b) = wayland_kde::KdeWaylandBackend::try_new() {
-                return Box::new(b);
+            match wayland_kde::KdeWaylandBackend::try_new() {
+                Ok(b) => return Box::new(b),
+                Err(e) => eprintln!("workspace backend kde-wayland unavailable: {e}"),
             }
         }
 
         if desktop.contains("kde") || desktop.contains("plasma") {
-            if let Ok(b) = x11::X11Backend::try_new() {
-                return Box::new(b);
+            match x11::X11Backend::try_new() {
+                Ok(b) => return Box::new(b),
+                Err(e) => eprintln!("workspace backend x11 unavailable: {e}"),
             }
         }
 
         if desktop.contains("cinnamon") || desktop.contains("x-cinnamon") {
-            if let Ok(b) = x11::X11Backend::try_new() {
-                return Box::new(b);
+            match x11::X11Backend::try_new() {
+                Ok(b) => return Box::new(b),
+                Err(e) => eprintln!("workspace backend x11 unavailable: {e}"),
             }
         }
     }
 
     Box::new(null::NullBackend)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_backend_always_returns_a_backend() {
+        let b = detect_backend();
+        let name = b.name();
+        assert!(
+            ["null", "x11", "kde-wayland", "windows"].contains(&name),
+            "unknown backend name: {name}"
+        );
+    }
+
+    #[test]
+    fn detected_backend_info_does_not_panic() {
+        let b = detect_backend();
+        let _ = b.info(); // must not panic
+    }
+
+    #[test]
+    fn detected_backend_show_hide_window_zero_does_not_panic() {
+        let b = detect_backend();
+        // 0 is an invalid window ID — backend must handle it gracefully.
+        let _ = b.show_window(0);
+        let _ = b.hide_window(0);
+    }
+
+    #[test]
+    fn null_backend_satisfies_workspace_backend_trait() {
+        let b: Box<dyn WorkspaceBackend> = Box::new(null::NullBackend);
+        assert_eq!(b.name(), "null");
+        assert!(b.cleanup().is_ok());
+    }
+
+    #[test]
+    fn workspace_info_label_is_not_empty() {
+        let b = detect_backend();
+        let info = b.info();
+        assert!(!info.label.is_empty(), "WorkspaceInfo.label must not be empty");
+    }
 }

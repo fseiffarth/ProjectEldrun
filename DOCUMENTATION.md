@@ -3,11 +3,11 @@
 Eldrun is a Tauri 2 + React + TypeScript desktop workspace for AI-assisted
 development. It keeps a root control terminal, one terminal per active project,
 a bottom project switcher, a right-side file browser, global app launching,
-time tracking, and optional KDE/X11 workspace integration in one fullscreen
-window.
+time tracking, local Ollama model management, and optional KDE/X11 workspace
+integration in one fullscreen window.
 
 This document reflects the code in `src/` and `src-tauri/src/` as of
-2026-06-01 (all 10 migration phases complete).
+2026-06-06.
 
 ## Document Boundaries
 
@@ -32,6 +32,9 @@ desktop state.
   The root terminal keeps the normal workspace environment.
 - Agent tabs run `claude`, `codex`, `gemini`, or `vibe`; plain shell tabs run
   the user's shell. Other agents can be used in a plain shell tab.
+- Local Ollama models appear as Local Agent tab choices when the Ollama server
+  exposes installed models. They run through `vibe` with an isolated per-model
+  `VIBE_HOME` under `~/.local/share/eldrun/vibe_local/`.
 - The right file panel, default app mappings, tracked external windows, and time
   tracking follow the active project.
 - Global app shortcuts are intentionally cross-project. They launch or raise
@@ -53,6 +56,7 @@ desktop state.
 | MIME detection | `mime_guess` (extension) + `infer` (magic bytes) |
 | File/URL opening | `xdg-open` / `opener` crate |
 | Network monitoring | `network-interface` crate + TCP probe |
+| Local model integration | Ollama REST API over localhost TCP + Vibe config files |
 | Drag-to-reorder | `@dnd-kit/core` + `@dnd-kit/sortable` |
 | X11 workspace | `xcb` crate (Linux only) |
 | KDE DBus | `zbus` crate (Linux only) |
@@ -82,7 +86,8 @@ Or for a development hot-reload build:
 npm run tauri dev
 ```
 
-The desktop launcher is `Eldrun-Tauri.app.desktop`.
+The desktop launchers are `Eldrun.desktop` for the packaged app and
+`EldrunHotReload.desktop` for the hot-reload dev server.
 
 ## User Interface
 
@@ -115,7 +120,6 @@ contains:
 - Status lamp and network/connection icon.
 - Clock.
 - Tab bar (center, from `TabBar.tsx`).
-- Workspace info label (backend name + current desktop when active).
 - Custom minimize, maximize/restore, and close buttons.
 
 ### Global App Toolbar
@@ -162,9 +166,12 @@ Toolbar behavior:
 - When the root is active, the scope is `"root"` and the root terminal opens in
   `~/eldrun/root/`.
 - `TabBar.tsx` renders tabs with close, rename (double-click), drag-to-reorder,
-  and a `+` menu for adding Claude/Codex/Gemini/Vibe/Shell/Files tabs.
+  and a `+` menu for adding Claude/Codex/Gemini/Vibe/Shell/Files tabs plus
+  locally installed Ollama models.
 - Each tab with kind `"agent"` or `"shell"` renders a `TerminalView` backed by
-  a PTY. Tabs with kind `"files"` render a `FileBrowser`.
+  a PTY. Tabs with kind `"local_agent"` also render a PTY, using `vibe` with a
+  per-model local Ollama configuration. Tabs with kind `"files"` render a
+  `FileBrowser`.
 - Tab layout is auto-saved to `project.json["tab_layout"]` whenever tabs change.
 - If no tabs exist for the active scope, the stack shows an empty placeholder.
 - A project-switch toast notification appears briefly after switching projects.
@@ -214,7 +221,43 @@ Contents:
 
 Settings dialog covers: default agent command, theme (Dark/Bright/Fancy
 Dark/Fancy Bright), workspace management toggle, global app role visibility and
-commands, and global file-extension defaults.
+commands, global file-extension defaults, and Ollama model management when the
+`ollama` binary is installed.
+
+### Ollama Model Management
+
+The Settings dialog shows an `Ollama...` panel when `ollama_is_installed`
+returns true. The panel uses backend commands from `commands/ollama.rs`:
+
+| Command | Behavior |
+|---------|----------|
+| `ollama_is_installed` | Checks whether the `ollama` binary exists in `$PATH`. |
+| `ensure_ollama_running` | Starts the system `ollama` service when possible, otherwise falls back to `ollama serve`. |
+| `list_ollama_models` | Lists installed model names for the Local Agents tab menu. |
+| `list_ollama_models_detailed` | Returns installed model names, disk sizes, family, parameter size, quantization, running state, and VRAM use. |
+| `list_installable_models` | Returns Eldrun's built-in catalog of common model families and tags. |
+| `pull_ollama_model` | Pulls or updates a model through `/api/pull`. |
+| `stop_ollama_model` | Unloads a model from memory with `keep_alive = 0`. |
+| `delete_ollama_model` | Deletes a local model through `/api/delete`. |
+| `prepare_local_agent` | Writes an isolated per-model Vibe config and returns `VIBE_HOME` plus alias. |
+
+`ensure_ollama_running` prefers `systemctl start ollama` so models owned by the
+system Ollama service remain visible. If the service path is unavailable, it
+spawns `ollama serve`; when system model directories are detected, it sets
+`OLLAMA_MODELS` so the fallback process can see those models.
+
+Local model tabs use `prepare_local_agent(model)`. The backend writes:
+
+```text
+~/.local/share/eldrun/vibe_local/<alias>/config.toml
+```
+
+The generated Vibe config pins `active_model = "<alias>"`, disables tools with
+`enabled_tools = ["__no_tools__"]`, registers the local Ollama provider, and
+adds one model block for the selected model. `TabBar.tsx` then opens `vibe`
+with both `VIBE_HOME=<path>` and `VIBE_ACTIVE_MODEL=<alias>`. Keeping one
+directory per alias prevents one local model tab from shadowing another and
+keeps global `~/.vibe/config.toml` untouched.
 
 ### Keyboard Shortcuts
 
@@ -295,6 +338,7 @@ Tauri v2 Application
 |   |   +-- apps.rs       Launch helpers, role mapping, icon resolution
 |   |   +-- default_apps.rs  File-extension app mapping
 |   |   +-- downloads.rs  ~/eldrun/downloads symlink + browser prefs
+|   |   +-- ollama.rs     Local model discovery, management, and Vibe config
 |   +-- platform/         Workspace backends
 |   |   +-- x11.rs        EWMH/xcb — two-desktop parking model
 |   |   +-- wayland_kde.rs  KWin DBus — per-project virtual desktop
@@ -357,6 +401,7 @@ All global data is under `~/.local/share/eldrun/`.
 | `time_log.json` | Append-only session records. |
 | `active_session.json` | Crash/orphan-session sentinel. |
 | `crash.log` | Appended on Rust panics. |
+| `vibe_local/` | Per-model Vibe homes for local Ollama agent tabs. |
 
 ### `projects.json`
 
@@ -407,13 +452,26 @@ Each entry:
     ]
   },
   "tab_layout": [
-    { "key": "tab-1", "label": "claude", "cmd": "claude", "cwd": "/home/user/eldrun/projects/my-project", "kind": "agent" }
+    { "key": "tab-1", "label": "claude", "cmd": "claude", "cwd": "/home/user/eldrun/projects/my-project", "kind": "agent" },
+    {
+      "key": "local_agent-2",
+      "label": "llama3.2:3b",
+      "cmd": "vibe",
+      "cwd": "/home/user/eldrun/projects/my-project",
+      "kind": "local_agent",
+      "env": {
+        "VIBE_HOME": "/home/user/.local/share/eldrun/vibe_local/llama3.2-3b",
+        "VIBE_ACTIVE_MODEL": "llama3.2-3b"
+      }
+    }
   ],
   "open_apps": []
 }
 ```
 
 - `tab_layout` is the persisted tab state restored on next project activation.
+  Local Ollama agent tabs persist `kind: "local_agent"` and the Vibe-related
+  environment variables needed to relaunch the same model.
 - `open_apps` stores best-effort metadata for tracked external windows.
 - `default_apps` holds per-project file-extension overrides.
 - Unknown fields are preserved on read/write (serde `deny_unknown_fields` is
@@ -497,6 +555,8 @@ Switching away closes the active time session via `end_session`.
 - `TerminalView` mounts → invokes `spawn_pty(key, cmd, args, cwd, env)`.
 - Backend creates a PTY, spawns the child process, and begins streaming
   `pty-output-<key>` events.
+- Project tabs get project-local XDG sandbox paths; local Ollama tabs also pass
+  the prepared `VIBE_HOME` and `VIBE_ACTIVE_MODEL` values.
 - xterm.js renders output; user input invokes `write_pty(key, data)`.
 - Window resize invokes `resize_pty(key, cols, rows)`.
 - Unmount invokes `kill_pty(key)`.
@@ -592,7 +652,10 @@ Run Rust schema round-trip tests:
 cd src-tauri && cargo test
 ```
 
-(15 schema round-trip tests pass; test fixtures in `test-fixtures/`.)
+The Rust suite also includes Ollama config regression tests that verify
+per-model Vibe homes, active-model ordering, alias sanitization, no-tools
+configuration, and idempotent config generation. The live Ollama integration
+test skips itself when no local Ollama server or model is available.
 
 ## Known Limitations
 
@@ -603,6 +666,11 @@ cd src-tauri && cargo test
   sticky windows).
 - Tab layout is persisted but PTYs do not survive app restarts; tabs respawn
   their processes on next activation.
+- Ollama model installation and update depend on network access to the Ollama
+  registry and may take minutes for large models.
+- `ensure_ollama_running` can start a system service only when the current user
+  has permission to do so; otherwise it falls back to a user `ollama serve`
+  process.
 - Open-app restore uses a best-effort relaunch model; window geometry and focus
   order are not restored.
 - Network status depends on reaching Cloudflare DNS; may show offline on

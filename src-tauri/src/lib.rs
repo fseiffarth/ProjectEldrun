@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod platform;
 pub mod schema;
+pub mod services;
 pub mod storage;
 pub mod terminal;
 
@@ -57,7 +58,7 @@ fn iso_now() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
-fn epoch_to_utc(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
+pub(crate) fn epoch_to_utc(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
     let s = secs % 60;
     let m = (secs / 60) % 60;
     let h = (secs / 3600) % 24;
@@ -82,7 +83,7 @@ fn epoch_to_utc(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
     (year, month, days + 1, h, m, s)
 }
 
-fn is_leap_year(y: u64) -> bool {
+pub(crate) fn is_leap_year(y: u64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
@@ -163,11 +164,18 @@ pub fn run() {
             commands::projects::save_projects,
             commands::projects::load_project,
             commands::projects::save_project,
+            commands::projects::save_tab_layout,
+            commands::projects::clear_project_session,
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
             commands::projects::create_project,
             commands::projects::import_project,
             commands::projects::get_time_today,
+            commands::projects::detect_agent_session_id,
+            // Timer flush + activity
+            commands::timer::timer_flush_app,
+            commands::timer::timer_flush_project,
+            commands::timer::get_project_activity,
             // File tree
             commands::projects::list_dir,
             commands::projects::rename_path,
@@ -192,13 +200,125 @@ pub fn run() {
             // Workspace / network
             commands::workspace::workspace_info,
             commands::workspace::workspace_switch,
+            commands::workspace::show_window,
+            commands::workspace::hide_window,
+            commands::workspace::get_opened_windows,
+            commands::workspace::switch_project_windows, // deprecated; use switch_project_runtime
             commands::workspace::workspace_name,
             commands::workspace::network_conn_type,
+            // Project-runtime switching (replaces switch_project_windows)
+            commands::project_runtime::switch_project_runtime,
             // Downloads
             commands::downloads::update_downloads_symlink,
             commands::downloads::configure_browser_downloads,
+            // Ollama local models
+            commands::ollama::list_ollama_models,
+            commands::ollama::ensure_vibe_ollama_model,
+            commands::ollama::prepare_local_agent,
+            commands::ollama::ensure_ollama_running,
+            // Ollama model management
+            commands::ollama::ollama_is_installed,
+            commands::ollama::list_ollama_models_detailed,
+            commands::ollama::stop_ollama_model,
+            commands::ollama::pull_ollama_model,
+            commands::ollama::delete_ollama_model,
+            commands::ollama::list_installable_models,
         ])
         .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_leap_year ───────────────────────────────────────────────────────
+
+    #[test]
+    fn year_divisible_by_4_is_leap() {
+        assert!(is_leap_year(2024));
+        assert!(is_leap_year(2000));
+        assert!(is_leap_year(1600));
+    }
+
+    #[test]
+    fn year_divisible_by_100_but_not_400_is_not_leap() {
+        assert!(!is_leap_year(1900));
+        assert!(!is_leap_year(1800));
+        assert!(!is_leap_year(2100));
+    }
+
+    #[test]
+    fn year_not_divisible_by_4_is_not_leap() {
+        assert!(!is_leap_year(2023));
+        assert!(!is_leap_year(2025));
+        assert!(!is_leap_year(1999));
+    }
+
+    #[test]
+    fn year_2000_is_leap() {
+        assert!(is_leap_year(2000));
+    }
+
+    // ── epoch_to_utc ───────────────────────────────────────────────────────
+
+    #[test]
+    fn epoch_zero_is_unix_epoch() {
+        let (y, mo, d, h, m, s) = epoch_to_utc(0);
+        assert_eq!((y, mo, d, h, m, s), (1970, 1, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn epoch_midnight_jan_2_1970() {
+        let (y, mo, d, h, m, s) = epoch_to_utc(86400);
+        assert_eq!((y, mo, d, h, m, s), (1970, 1, 2, 0, 0, 0));
+    }
+
+    #[test]
+    fn epoch_end_of_1970() {
+        // Dec 31 1970 23:59:59 = 86400*365 - 1 = 31535999
+        let (y, mo, d, ..) = epoch_to_utc(31535999);
+        assert_eq!((y, mo, d), (1970, 12, 31));
+    }
+
+    #[test]
+    fn epoch_jan_1_2000() {
+        // 2000-01-01T00:00:00Z = 946684800
+        let (y, mo, d, h, m, s) = epoch_to_utc(946684800);
+        assert_eq!((y, mo, d, h, m, s), (2000, 1, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn epoch_feb_29_leap_year() {
+        // 2000-02-29T00:00:00Z = 951782400
+        let (y, mo, d, ..) = epoch_to_utc(951782400);
+        assert_eq!((y, mo, d), (2000, 2, 29));
+    }
+
+    #[test]
+    fn epoch_time_components_are_correct() {
+        // 1717414496 = 2024-06-03T11:34:56Z (verified: 1717372800 + 41696)
+        let (y, mo, d, h, m, s) = epoch_to_utc(1717414496);
+        assert_eq!((y, mo, d), (2024, 6, 3));
+        assert_eq!((h, m, s), (11, 34, 56));
+    }
+
+    #[test]
+    fn epoch_seconds_wrap_at_60() {
+        let (_, _, _, _, _, s) = epoch_to_utc(59);
+        assert_eq!(s, 59);
+        let (_, _, _, _, _, s2) = epoch_to_utc(60);
+        assert_eq!(s2, 0);
+    }
+
+    #[test]
+    fn epoch_minutes_wrap_at_60() {
+        let (_, _, _, _, m, _) = epoch_to_utc(3599); // 59m59s
+        assert_eq!(m, 59);
+        let (_, _, _, _, m2, _) = epoch_to_utc(3600); // 1h0m0s
+        assert_eq!(m2, 0);
+    }
 }

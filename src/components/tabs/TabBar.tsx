@@ -1,20 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { FILES_TAB_CMD, useTabsStore, TabKind } from "../../stores/tabs";
 
 const TAB_ACCENT: Record<TabKind, string> = {
   agent: "var(--accent)",
+  local_agent: "var(--warning)",
   shell: "var(--success)",
-  files: "var(--warning)",
+  files: "#888",
 };
 
-const MENU_ITEMS: Array<{ label: string; cmd: string; kind: TabKind }> = [
-  { label: "Claude",  cmd: "claude",  kind: "agent" },
-  { label: "Codex",   cmd: "codex",   kind: "agent" },
-  { label: "Gemini",  cmd: "gemini",  kind: "agent" },
-  { label: "Mistral", cmd: "vibe",    kind: "agent" },
-  { label: "Shell",   cmd: "bash",    kind: "shell"  },
-  { label: "Files",   cmd: FILES_TAB_CMD, kind: "files" },
+interface StaticMenuItem {
+  label: string;
+  cmd: string;
+  kind: TabKind;
+  env?: Record<string, string>;
+}
+
+const AGENT_ITEMS: StaticMenuItem[] = [
+  { label: "Claude",  cmd: "claude", kind: "agent" },
+  { label: "Codex",   cmd: "codex",  kind: "agent" },
+  { label: "Gemini",  cmd: "gemini", kind: "agent" },
+  { label: "Mistral", cmd: "vibe",   kind: "agent" },
+];
+
+const SHELL_ITEMS: StaticMenuItem[] = [
+  { label: "Shell", cmd: "bash",          kind: "shell" },
+  { label: "Files", cmd: FILES_TAB_CMD,   kind: "files" },
 ];
 
 interface Props {
@@ -25,6 +37,9 @@ export function TabBar({ projectCwd }: Props) {
   const { tabs, activeKey, setActive, renameTab, addTab, ensureTab, removeTab } = useTabsStore();
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ key: string; x: number; y: number } | null>(null);
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [ollamaLoading, setOllamaLoading] = useState(false);
+  const [ollamaError, setOllamaError] = useState<string | null>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const tabMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
@@ -34,7 +49,6 @@ export function TabBar({ projectCwd }: Props) {
     if (!menuOpen && !tabMenu) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
-      // Let the + button's own onClick handle its toggle; ignore clicks inside either menu.
       if (addBtnRef.current?.contains(t)) return;
       if (addMenuRef.current?.contains(t)) return;
       if (tabMenuRef.current?.contains(t)) return;
@@ -55,17 +69,62 @@ export function TabBar({ projectCwd }: Props) {
     };
   }, [menuOpen, tabMenu]);
 
-  function handleAdd(cmd: string, label: string, kind: TabKind) {
-    if (kind === "files") {
+  function openAddMenu() {
+    if (menuPos) { setMenuPos(null); return; }
+    const r = addBtnRef.current?.getBoundingClientRect();
+    if (!r) return;
+    setMenuPos({ x: r.left, y: r.bottom + 4 });
+
+    setOllamaLoading(true);
+    setOllamaError(null);
+    invoke<string[]>("list_ollama_models")
+      .then((models) => setOllamaModels(models))
+      .catch((e: string) => {
+        setOllamaModels([]);
+        setOllamaError(e === "not_running" ? "Ollama not running" : "Failed to load models");
+      })
+      .finally(() => setOllamaLoading(false));
+  }
+
+  function handleAdd(item: StaticMenuItem) {
+    if (item.kind === "files") {
       ensureTab(
-        { label, cmd, cwd: projectCwd, kind },
+        { label: item.label, cmd: item.cmd, cwd: projectCwd, kind: item.kind },
         (tab) => tab.kind === "files" && tab.cwd === projectCwd,
       );
       setMenuPos(null);
       return;
     }
-    addTab({ label, cmd, cwd: projectCwd, kind });
+    addTab({ label: item.label, cmd: item.cmd, args: [], env: item.env ?? {}, cwd: projectCwd, kind: item.kind });
     setMenuPos(null);
+  }
+
+  async function handleOllamaModel(model: string) {
+    setMenuPos(null);
+    try {
+      await invoke("ensure_ollama_running");
+      const { vibe_home, alias } = await invoke<{ vibe_home: string; alias: string }>(
+        "prepare_local_agent",
+        { model },
+      );
+      addTab({
+        label: model,
+        cmd: "vibe",
+        args: [],
+        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias },
+        cwd: projectCwd,
+        kind: "local_agent",
+      });
+    } catch (e) {
+      addTab({
+        label: model,
+        cmd: "vibe",
+        args: [],
+        env: {},
+        cwd: projectCwd,
+        kind: "local_agent",
+      });
+    }
   }
 
   function showTabMenu(event: React.MouseEvent, key: string) {
@@ -111,11 +170,7 @@ export function TabBar({ projectCwd }: Props) {
           ref={addBtnRef}
           className="tab-new-btn"
           title="New tab"
-          onClick={() => {
-            if (menuPos) { setMenuPos(null); return; }
-            const r = addBtnRef.current?.getBoundingClientRect();
-            if (r) setMenuPos({ x: r.left, y: r.bottom + 4 });
-          }}
+          onClick={openAddMenu}
         >
           +
         </button>
@@ -126,12 +181,58 @@ export function TabBar({ projectCwd }: Props) {
           ref={addMenuRef}
           style={{ position: "fixed", left: menuPos.x, top: menuPos.y }}
         >
-          {MENU_ITEMS.map((item) => (
+          <div className="tab-new-menu-group-label">Agents</div>
+          {AGENT_ITEMS.map((item) => (
             <button
               key={item.cmd}
               className="tab-new-menu-item"
-              disabled={item.kind === "files" && !projectCwd}
-              onClick={() => handleAdd(item.cmd, item.label, item.kind)}
+              onClick={() => handleAdd(item)}
+            >
+              <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT[item.kind] }}>●</span>
+              {item.label}
+            </button>
+          ))}
+
+          <div className="tab-new-menu-group-label">Local Agents</div>
+          {ollamaLoading && (
+            <div className="tab-new-menu-hint">Loading…</div>
+          )}
+          {!ollamaLoading && ollamaError && (
+            <div className="tab-new-menu-hint">{ollamaError}</div>
+          )}
+          {!ollamaLoading && !ollamaError && ollamaModels.length === 0 && (
+            <div className="tab-new-menu-hint">No Ollama models found</div>
+          )}
+          {!ollamaLoading && ollamaModels.map((model) => (
+            <button
+              key={model}
+              className="tab-new-menu-item"
+              onClick={() => handleOllamaModel(model)}
+            >
+              <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
+              {model}
+            </button>
+          ))}
+
+          <div className="tab-new-menu-group-label">Shell</div>
+          {SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => (
+            <button
+              key={item.cmd}
+              className="tab-new-menu-item"
+              onClick={() => handleAdd(item)}
+            >
+              <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT[item.kind] }}>●</span>
+              {item.label}
+            </button>
+          ))}
+
+          <div className="tab-new-menu-group-label">Files</div>
+          {SHELL_ITEMS.filter((i) => i.kind === "files").map((item) => (
+            <button
+              key={item.cmd}
+              className="tab-new-menu-item"
+              disabled={!projectCwd}
+              onClick={() => handleAdd(item)}
             >
               <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT[item.kind] }}>●</span>
               {item.label}

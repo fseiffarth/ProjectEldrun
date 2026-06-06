@@ -53,6 +53,12 @@ Do not launch Eldrun from Gemini or any other agent terminal for verification. O
 
 - **Development:** `npm run tauri dev`
 - **Build:** `npm run build` (builds frontend) then `npm run tauri build`
+- **Packaging:** every push to GitHub produces a fresh release artifact via
+  `.github/workflows/ci-cd.yml`; locally, `npm run package` installs the same
+  packaged AppImage under `~/.local/share/eldrun/` so the running app is
+  decoupled from the checkout. GitHub Releases are only published for
+  `v0.<minor>.0` tags, so patch-only bumps like `0.1.1 -> 0.1.2` do not create
+  a release.
 
 ### Validation
 

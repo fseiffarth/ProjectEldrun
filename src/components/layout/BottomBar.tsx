@@ -11,6 +11,23 @@ import { resolveProjectDirectory, THEMES } from "../../types";
 
 const TERMINAL_OPTIONS = ["claude", "codex", "gemini", "vibe"];
 
+interface OllamaModelInfo {
+  name: string;
+  size: number;
+  parameter_size: string | null;
+  quantization: string | null;
+  family: string | null;
+  running: boolean;
+  size_vram: number;
+}
+
+interface CatalogEntry {
+  name: string;
+  description: string;
+  tags: string[];
+  size_hint: string;
+}
+
 function sanitizeName(name: string) {
   return name
     .trim()
@@ -25,12 +42,19 @@ function projectDirectory(project: ProjectEntry) {
 }
 
 export function BottomBar() {
-  const { projects, activeId, setActive, addProject, removeProject } = useProjectsStore();
+  const { projects, activeId, setActive, addProject, deactivateProject } = useProjectsStore();
   const [showSettings, setShowSettings] = useState(false);
+  const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const [settingsPanel, setSettingsPanel] = useState<"main" | "global" | "filetypes" | "ollama">("main");
+  const [ollamaInstalled, setOllamaInstalled] = useState(false);
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [dialog, setDialog] = useState<"new" | "import" | null>(null);
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    invoke<boolean>("ollama_is_installed").then(setOllamaInstalled).catch(() => {});
+  }, []);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -40,6 +64,12 @@ export function BottomBar() {
       .filter((p) => p.name.toLowerCase().includes(q) || projectDirectory(p).toLowerCase().includes(q))
       .sort((a, b) => a.position - b.position);
   }, [projects, query]);
+
+  const activeProjects = useMemo(() => {
+    return projects
+      .filter((p) => p.status !== "inactive")
+      .sort((a, b) => a.position - b.position);
+  }, [projects]);
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
@@ -59,7 +89,7 @@ export function BottomBar() {
   return (
     <>
       {showSettings && createPortal(
-        <SettingsDialog onClose={() => setShowSettings(false)} />,
+        <SettingsDialog onClose={() => setShowSettings(false)} initialPanel={settingsPanel} />,
         document.body,
       )}
 
@@ -84,6 +114,7 @@ export function BottomBar() {
         className="bottom-bar"
         onClick={() => {
           setShowSettings(false);
+          setShowSettingsMenu(false);
           setShowAddMenu(false);
         }}
       >
@@ -102,7 +133,7 @@ export function BottomBar() {
           <input
             className="project-search-entry"
             type="search"
-            placeholder="Search..."
+            placeholder="Search inactive..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -136,29 +167,42 @@ export function BottomBar() {
 
         <div className="bottom-separator" />
         <div className="project-pills-scroll">
-          {projects.map((p) => (
+          {activeProjects.map((p) => (
             <ProjectPill
               key={p.id}
               project={p}
               active={p.id === activeId}
               onClick={() => setActive(p.id)}
-              onClose={() => removeProject(p.id)}
+              onClose={() => deactivateProject(p.id)}
             />
           ))}
         </div>
         <div className="bottom-separator" />
 
-        <button
-          className="bottom-action-btn"
-          title="Settings"
-          onClick={(e) => {
-            e.stopPropagation();
-            setShowAddMenu(false);
-            setShowSettings((v) => !v);
-          }}
-        >
-          ⚙
-        </button>
+        <div className="bottom-add-wrap" onClick={(e) => e.stopPropagation()}>
+          <button
+            className="bottom-action-btn"
+            title="Settings"
+            onClick={() => {
+              setShowAddMenu(false);
+              setShowSettingsMenu((v) => !v);
+            }}
+          >
+            ⚙
+          </button>
+          {showSettingsMenu && (
+            <div className="bottom-add-menu">
+              <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("main"); setShowSettings(true); }}>
+                Settings
+              </button>
+              {ollamaInstalled && (
+                <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("ollama"); setShowSettings(true); }}>
+                  Ollama Models
+                </button>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="bottom-add-wrap" onClick={(e) => e.stopPropagation()}>
           <button
@@ -187,11 +231,24 @@ export function BottomBar() {
   );
 }
 
-function SettingsDialog({ onClose }: { onClose: () => void }) {
+type SettingsPanel = "main" | "global" | "filetypes" | "ollama";
+
+function SettingsDialog({
+  onClose,
+  initialPanel = "main",
+}: {
+  onClose: () => void;
+  initialPanel?: SettingsPanel;
+}) {
   const { settings, setTheme, updateSettings } = useSettingsStore();
-  const [panel, setPanel] = useState<"main" | "global" | "filetypes">("main");
+  const [panel, setPanel] = useState<SettingsPanel>(initialPanel);
   const [gitProfileUrl, setGitProfileUrl] = useState(settings?.git_profile_url ?? "");
   const [gitToken, setGitToken] = useState(settings?.git_token ?? "");
+  const [ollamaInstalled, setOllamaInstalled] = useState(false);
+
+  useEffect(() => {
+    invoke<boolean>("ollama_is_installed").then(setOllamaInstalled).catch(() => {});
+  }, []);
 
   useEffect(() => {
     setGitProfileUrl(settings?.git_profile_url ?? "");
@@ -293,11 +350,15 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
             <div className="settings-link-row">
               <button type="button" onClick={() => setPanel("global")}>Global Apps...</button>
               <button type="button" onClick={() => setPanel("filetypes")}>File Type Apps...</button>
+              {ollamaInstalled && (
+                <button type="button" onClick={() => setPanel("ollama")}>Ollama...</button>
+              )}
             </div>
           </>
         )}
         {panel === "global" && <GlobalAppsSettings onBack={() => setPanel("main")} />}
         {panel === "filetypes" && <FileTypeSettings onBack={() => setPanel("main")} />}
+        {panel === "ollama" && <OllamaPanel onBack={() => setPanel("main")} />}
       </div>
     </div>
   );
@@ -459,6 +520,214 @@ function FileTypeSettings({ onBack }: { onBack: () => void }) {
           />
           <button type="button" onClick={addEntry}>Add</button>
         </div>
+      </div>
+    </>
+  );
+}
+
+function fmtBytes(n: number): string {
+  if (n === 0) return "0 B";
+  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(0) + " MB";
+  return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+}
+
+function OllamaPanel({ onBack }: { onBack: () => void }) {
+  const [models, setModels] = useState<OllamaModelInfo[]>([]);
+  const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
+  const [serverRunning, setServerRunning] = useState<boolean | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await invoke<OllamaModelInfo[]>("list_ollama_models_detailed");
+      setModels(result);
+      setServerRunning(true);
+    } catch (e) {
+      if (String(e).includes("not_running")) {
+        setServerRunning(false);
+        setModels([]);
+      } else {
+        setError(String(e));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    invoke<CatalogEntry[]>("list_installable_models").then(setCatalog).catch(() => {});
+    void refresh();
+  }, []);
+
+  const startServer = async () => {
+    setError(null);
+    try {
+      await invoke("ensure_ollama_running");
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const withBusy = async (key: string, fn: () => Promise<void>) => {
+    setBusy((prev) => ({ ...prev, [key]: true }));
+    setError(null);
+    try {
+      await fn();
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const installedNames = new Set(models.map((m) => m.name));
+
+  return (
+    <>
+      <div className="settings-title-row">
+        <h2>Ollama Models</h2>
+        <button type="button" onClick={onBack}>Back</button>
+      </div>
+
+      <div className="ollama-status-bar">
+        <span className={`ollama-status-dot ${serverRunning ? "running" : "stopped"}`} />
+        <span className="ollama-status-text">
+          {serverRunning === null
+            ? "Checking..."
+            : serverRunning
+              ? "Server running"
+              : "Server not running"}
+        </span>
+        {serverRunning === false && (
+          <button type="button" className="ollama-action-btn" onClick={() => void startServer()}>
+            Start
+          </button>
+        )}
+        {serverRunning === true && (
+          <button
+            type="button"
+            className="ollama-action-btn"
+            disabled={loading}
+            onClick={() => void refresh()}
+          >
+            {loading ? "..." : "Refresh"}
+          </button>
+        )}
+      </div>
+
+      {error && <div className="project-dialog-error">{error}</div>}
+
+      <div className="settings-section-title">Installed Models</div>
+      {loading ? (
+        <div className="ollama-empty">Loading...</div>
+      ) : models.length === 0 ? (
+        <div className="ollama-empty">No models installed</div>
+      ) : (
+        <div className="settings-list">
+          {models.map((m) => (
+            <div className="ollama-model-row" key={m.name}>
+              <div className="ollama-model-header">
+                <span className="ollama-model-name">{m.name}</span>
+                <span className="ollama-model-size">{fmtBytes(m.size)}</span>
+              </div>
+              <div className="ollama-model-details">
+                {m.parameter_size && <span className="ollama-badge">{m.parameter_size}</span>}
+                {m.quantization && <span className="ollama-badge">{m.quantization}</span>}
+                {m.family && <span className="ollama-badge">{m.family}</span>}
+                {m.running && (
+                  <span className={`ollama-badge running${m.size_vram > 0 ? " gpu" : ""}`}>
+                    {m.size_vram > 0 ? `GPU ${fmtBytes(m.size_vram)}` : "CPU"}
+                  </span>
+                )}
+              </div>
+              <div className="ollama-model-actions">
+                {m.running && (
+                  <button
+                    type="button"
+                    className="ollama-action-btn"
+                    disabled={busy[`${m.name}:stop`]}
+                    title="Unload from memory"
+                    onClick={() =>
+                      void withBusy(`${m.name}:stop`, () =>
+                        invoke("stop_ollama_model", { model: m.name }),
+                      )
+                    }
+                  >
+                    {busy[`${m.name}:stop`] ? "..." : "Unload"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="ollama-action-btn"
+                  disabled={busy[`${m.name}:pull`]}
+                  title="Check for update and download latest"
+                  onClick={() =>
+                    void withBusy(`${m.name}:pull`, () =>
+                      invoke("pull_ollama_model", { model: m.name }),
+                    )
+                  }
+                >
+                  {busy[`${m.name}:pull`] ? "Updating..." : "Update"}
+                </button>
+                <button
+                  type="button"
+                  className="ollama-action-btn danger"
+                  disabled={busy[`${m.name}:del`]}
+                  title="Delete this model"
+                  onClick={() =>
+                    void withBusy(`${m.name}:del`, () =>
+                      invoke("delete_ollama_model", { model: m.name }),
+                    )
+                  }
+                >
+                  {busy[`${m.name}:del`] ? "..." : "Delete"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="settings-section-title">Available to Install</div>
+      <div className="settings-list">
+        {catalog.map((entry) => (
+          <div className="ollama-catalog-row" key={entry.name}>
+            <div className="ollama-catalog-header">
+              <span className="ollama-model-name">{entry.name}</span>
+              <span className="ollama-catalog-hint">{entry.size_hint}</span>
+            </div>
+            <div className="ollama-catalog-desc">{entry.description}</div>
+            <div className="ollama-catalog-tags">
+              {entry.tags.map((tag) => {
+                const fullName = `${entry.name}:${tag}`;
+                const isInstalled = installedNames.has(fullName);
+                const isBusy = busy[`${fullName}:pull`];
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    className={`ollama-tag-btn${isInstalled ? " installed" : ""}`}
+                    disabled={!!isBusy}
+                    title={isInstalled ? `Update ${fullName}` : `Install ${fullName}`}
+                    onClick={() =>
+                      void withBusy(`${fullName}:pull`, () =>
+                        invoke("pull_ollama_model", { model: fullName }),
+                      )
+                    }
+                  >
+                    {isBusy ? "..." : tag}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
     </>
   );

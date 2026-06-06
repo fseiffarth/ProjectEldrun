@@ -110,7 +110,9 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
     if (entry.is_dir) {
       load(joinRel(relPath, entry.name));
     } else {
-      openFile(entry.path).catch((e) => setError(String(e)));
+      openFile(entry.path, undefined, projectId, "middle_file_browser").catch((e) =>
+        setError(String(e)),
+      );
     }
   }
 
@@ -193,7 +195,9 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
     const target = firstSelectedEntry();
     if (!target) return;
     const path = target.is_dir ? target.path : target.path.slice(0, target.path.lastIndexOf("/"));
-    openFile(path).catch((e) => setError(String(e)));
+    openFile(path, undefined, projectId, "middle_file_browser").catch((e) =>
+      setError(String(e)),
+    );
   }
 
   function showProperties() {

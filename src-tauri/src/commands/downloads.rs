@@ -19,22 +19,18 @@ use serde::{Deserialize, Serialize};
 /// Ensure ~/eldrun/downloads symlink points at the given project directory.
 #[tauri::command]
 pub fn update_downloads_symlink(project_dir: String) -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let link = PathBuf::from(&home).join("eldrun").join("downloads");
+    crate::services::download_routing::route_downloads(&project_dir)
+}
 
-    if let Ok(existing) = fs::read_link(&link) {
-        if existing.to_string_lossy() == project_dir {
-            return Ok(()); // Already correct.
-        }
-        fs::remove_file(&link).map_err(|e| format!("remove symlink: {e}"))?;
+/// Platform-appropriate home directory.
+fn home_dir() -> String {
+    if cfg!(target_os = "windows") {
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOMEDRIVE").and_then(|d| std::env::var("HOMEPATH").map(|p| format!("{d}{p}"))))
+            .unwrap_or_else(|_| "C:\\Users\\Default".to_string())
+    } else {
+        std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
     }
-
-    if let Some(parent) = link.parent() {
-        fs::create_dir_all(parent).ok();
-    }
-
-    std::os::unix::fs::symlink(&project_dir, &link)
-        .map_err(|e| format!("create symlink: {e}"))
 }
 
 // ── Browser preference editing ─────────────────────────────────────────────
@@ -51,8 +47,9 @@ pub struct DownloadsStatus {
 /// Creates backups and skips locked files.
 #[tauri::command]
 pub fn configure_browser_downloads() -> Result<DownloadsStatus, String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let target = format!("{home}/eldrun/downloads");
+    let home = home_dir();
+    let sep = if cfg!(target_os = "windows") { '\\' } else { '/' };
+    let target = format!("{home}{sep}eldrun{sep}downloads");
     let mut status = DownloadsStatus {
         symlink_ok: false,
         firefox_updated: false,
@@ -60,12 +57,10 @@ pub fn configure_browser_downloads() -> Result<DownloadsStatus, String> {
         notes: Vec::new(),
     };
 
-    // Check symlink.
     let link = PathBuf::from(&home).join("eldrun").join("downloads");
     status.symlink_ok = link.exists() && fs::read_link(&link).is_ok();
 
-    // Firefox.
-    let ff_base = PathBuf::from(&home).join(".mozilla").join("firefox");
+    let ff_base = firefox_profile_base();
     if ff_base.exists() {
         match update_firefox_prefs(&ff_base, &target) {
             Ok(updated) => {
@@ -78,31 +73,63 @@ pub fn configure_browser_downloads() -> Result<DownloadsStatus, String> {
         }
     }
 
-    // Chromium / Chrome.
-    let chromium_paths = [
-        ".config/chromium",
-        ".config/google-chrome",
-        ".config/google-chrome-beta",
-    ];
-    for rel in &chromium_paths {
-        let base = PathBuf::from(&home).join(rel);
+    for base in chromium_profile_bases() {
         if base.exists() {
+            let label = base.to_string_lossy().to_string();
             match update_chromium_prefs(&base, &target) {
                 Ok(updated) => {
                     if updated {
                         status.chromium_updated = true;
                     } else {
-                        status
-                            .notes
-                            .push(format!("{rel}: Preferences was locked; skipped"));
+                        status.notes.push(format!("{label}: Preferences was locked; skipped"));
                     }
                 }
-                Err(e) => status.notes.push(format!("{rel} error: {e}")),
+                Err(e) => status.notes.push(format!("{label} error: {e}")),
             }
         }
     }
 
     Ok(status)
+}
+
+fn firefox_profile_base() -> PathBuf {
+    let home = home_dir();
+    if cfg!(target_os = "windows") {
+        let appdata = std::env::var("APPDATA").unwrap_or_else(|_| home);
+        PathBuf::from(appdata).join("Mozilla").join("Firefox")
+    } else if cfg!(target_os = "macos") {
+        PathBuf::from(&home)
+            .join("Library")
+            .join("Application Support")
+            .join("Firefox")
+    } else {
+        PathBuf::from(&home).join(".mozilla").join("firefox")
+    }
+}
+
+fn chromium_profile_bases() -> Vec<PathBuf> {
+    let home = home_dir();
+    if cfg!(target_os = "windows") {
+        let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| home);
+        vec![
+            PathBuf::from(&local).join("Google").join("Chrome").join("User Data"),
+            PathBuf::from(&local).join("Chromium").join("User Data"),
+            PathBuf::from(&local).join("Google").join("Chrome Beta").join("User Data"),
+        ]
+    } else if cfg!(target_os = "macos") {
+        let base = PathBuf::from(&home).join("Library").join("Application Support");
+        vec![
+            base.join("Google").join("Chrome"),
+            base.join("Chromium"),
+            base.join("Google").join("Chrome Beta"),
+        ]
+    } else {
+        vec![
+            PathBuf::from(&home).join(".config").join("chromium"),
+            PathBuf::from(&home).join(".config").join("google-chrome"),
+            PathBuf::from(&home).join(".config").join("google-chrome-beta"),
+        ]
+    }
 }
 
 // ── Firefox prefs.js editor ───────────────────────────────────────────────
@@ -119,7 +146,7 @@ fn update_firefox_prefs(ff_base: &Path, download_path: &str) -> Result<bool, Str
         if is_locked(&profile_dir.join(".parentlock")) {
             continue;
         }
-        let backup = backup_file(&prefs)?;
+        let _backup = backup_file(&prefs)?;
         let content = fs::read_to_string(&prefs).map_err(|e| e.to_string())?;
 
         let new_content = set_pref(
@@ -155,7 +182,7 @@ fn find_firefox_profiles(ff_base: &Path) -> Vec<PathBuf> {
     if let Ok(content) = fs::read_to_string(&ini) {
         for line in content.lines() {
             if let Some(path_str) = line.strip_prefix("Path=") {
-                let p = if path_str.starts_with('/') {
+                let p = if Path::new(path_str).is_absolute() {
                     PathBuf::from(path_str)
                 } else {
                     ff_base.join(path_str)

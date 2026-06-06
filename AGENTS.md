@@ -84,6 +84,13 @@ handoff. For whitespace checks, also run:
 git diff --check
 ```
 
+Every push to GitHub should generate a new packaged artifact from
+`.github/workflows/ci-cd.yml`; the local equivalent is `npm run package`,
+which installs the packaged AppImage outside the checkout so branch switches
+do not affect the running app. GitHub Releases are only published for
+`v0.<minor>.0` tags, so patch-only bumps like `0.1.1 -> 0.1.2` do not create
+new releases.
+
 ## Running Locally
 
 Human-only by default. Agents must not run these commands while an Eldrun

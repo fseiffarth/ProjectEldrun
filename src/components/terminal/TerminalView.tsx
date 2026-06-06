@@ -21,6 +21,7 @@ interface Props {
   id: string;
   cmd: string;
   args?: string[];
+  env?: Record<string, string>;
   cwd: string;
   active: boolean;
 }
@@ -73,7 +74,7 @@ function terminalTheme(scheme: string | undefined) {
   };
 }
 
-export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -82,6 +83,7 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
   const unlistenReady = useRef<(() => void) | null>(null);
   const unlistenExit = useRef<(() => void) | null>(null);
   const argsKey = JSON.stringify(args);
+  const envKey = JSON.stringify(env);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -152,7 +154,7 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
 
       try {
         await invoke("pty_spawn", {
-          opts: { id, cmd, args, cwd, cols: term.cols, rows: term.rows },
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows },
         });
       } catch (e) {
         if (!cancelled) {
@@ -163,8 +165,8 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
 
     setupAndSpawn();
 
-    // Resize observer.
-    const ro = new ResizeObserver(() => {
+    // Resize observer — handles container-level resizes (e.g. panel open/close).
+    const doFit = () => {
       if (fitRef.current && termRef.current) {
         fitRef.current.fit();
         invoke("pty_resize", {
@@ -173,11 +175,17 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
           rows: termRef.current.rows,
         }).catch(() => {});
       }
-    });
+    };
+    const ro = new ResizeObserver(doFit);
     if (containerRef.current) ro.observe(containerRef.current);
+
+    // Window resize listener — WebKitGTK doesn't reliably fire ResizeObserver
+    // for viewport-level changes (maximize, fullscreen toggle).
+    window.addEventListener("resize", doFit);
 
     return () => {
       cancelled = true;
+      window.removeEventListener("resize", doFit);
       ro.disconnect();
       unlistenOutput.current?.();
       unlistenReady.current?.();
@@ -188,7 +196,7 @@ export function TerminalView({ id, cmd, args = [], cwd, active }: Props) {
       invoke("pty_kill", { id }).catch(() => {});
       term.dispose();
     };
-  }, [id, cmd, cwd, argsKey]);
+  }, [id, cmd, cwd, argsKey, envKey]);
 
   useEffect(() => {
     if (termRef.current) {

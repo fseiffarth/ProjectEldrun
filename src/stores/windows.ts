@@ -9,6 +9,8 @@ export interface TrackedWindow {
   project_id: string | null;
   role: string | null;
   opened_at: number;
+  window_id: number | null;
+  origin: string;
 }
 
 interface WindowsStore {
@@ -16,14 +18,19 @@ interface WindowsStore {
   refresh: (projectId?: string) => Promise<void>;
   launch: (exec: string, file?: string, projectId?: string) => Promise<TrackedWindow>;
   untrack: (id: string) => Promise<void>;
-  openFile: (path: string, handler?: string) => Promise<void>;
+  openFile: (
+    path: string,
+    handler?: string,
+    projectId?: string | null,
+    origin?: string,
+  ) => Promise<TrackedWindow>;
 }
 
 export const useWindowsStore = create<WindowsStore>((set) => ({
   windows: [],
 
   refresh: async (projectId) => {
-    const windows = await invoke<TrackedWindow[]>("list_tracked_windows", {
+    const windows = await invoke<TrackedWindow[]>("get_opened_windows", {
       projectId: projectId ?? null,
     });
     set({ windows });
@@ -45,7 +52,14 @@ export const useWindowsStore = create<WindowsStore>((set) => ({
     set((s) => ({ windows: s.windows.filter((w) => w.id !== id) }));
   },
 
-  openFile: async (path, handler) => {
-    await invoke("open_file", { path, handler: handler ?? null });
+  openFile: async (path, handler, projectId, origin) => {
+    const win = await invoke<TrackedWindow>("open_file", {
+      path,
+      handler: handler ?? null,
+      projectId: projectId ?? null,
+      origin: origin ?? null,
+    });
+    set((s) => ({ windows: [...s.windows, win] }));
+    return win;
   },
 }));

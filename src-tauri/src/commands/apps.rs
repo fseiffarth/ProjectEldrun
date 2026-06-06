@@ -27,6 +27,9 @@ pub struct TrackedWindow {
     pub project_id: Option<String>,
     pub role: Option<String>,
     pub opened_at: f64,
+    pub window_id: Option<u64>,
+    #[serde(default = "default_window_origin")]
+    pub origin: String,
 }
 
 #[derive(Default)]
@@ -36,14 +39,43 @@ pub struct WindowRegistry {
 
 pub type WindowRegistryState = Arc<Mutex<WindowRegistry>>;
 
+pub const ORIGIN_RIGHT_FILE_TREE: &str = "right_file_tree";
+pub const ORIGIN_MIDDLE_FILE_BROWSER: &str = "middle_file_browser";
+pub const ORIGIN_GLOBAL_APP: &str = "global_app";
+pub const ORIGIN_MANUAL_LAUNCH: &str = "manual_launch";
+pub const ORIGIN_RESTORED: &str = "restored";
+
+fn default_window_origin() -> String {
+    ORIGIN_MANUAL_LAUNCH.to_string()
+}
+
+pub fn is_project_opened_window(window: &TrackedWindow) -> bool {
+    matches!(
+        window.origin.as_str(),
+        ORIGIN_RIGHT_FILE_TREE | ORIGIN_MIDDLE_FILE_BROWSER
+    )
+}
+
+pub fn opened_windows_for_project<'a>(
+    windows: impl Iterator<Item = &'a TrackedWindow>,
+    project_id: Option<&str>,
+) -> Vec<TrackedWindow> {
+    windows
+        .filter(|window| window.project_id.as_deref() == project_id)
+        .filter(|window| is_project_opened_window(window))
+        .cloned()
+        .collect()
+}
+
 // ── Core launch helper ────────────────────────────────────────────────────
 
-fn do_launch(
+pub fn do_launch(
     registry: &WindowRegistryState,
     exec: &str,
     file: Option<&str>,
     project_id: Option<&str>,
     role: Option<&str>,
+    origin: &str,
 ) -> Result<TrackedWindow, String> {
     let mut cmd = Command::new(exec);
     if let Some(f) = file {
@@ -55,6 +87,7 @@ fn do_launch(
 
     let child = cmd.spawn().map_err(|e| format!("launch {exec}: {e}"))?;
     let pid = child.id();
+    let window_id = find_window_for_pid(pid, 20);
 
     let opened_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -71,6 +104,8 @@ fn do_launch(
         project_id: project_id.map(String::from),
         role: role.map(String::from),
         opened_at,
+        window_id,
+        origin: origin.to_string(),
     };
     registry.lock().unwrap().windows.insert(id, win.clone());
     Ok(win)
@@ -85,13 +120,22 @@ pub fn launch_app(
     file: Option<String>,
     project_id: Option<String>,
     role: Option<String>,
+    origin: Option<String>,
 ) -> Result<TrackedWindow, String> {
+    let origin = origin.unwrap_or_else(|| {
+        if role.is_some() {
+            ORIGIN_GLOBAL_APP.to_string()
+        } else {
+            ORIGIN_MANUAL_LAUNCH.to_string()
+        }
+    });
     do_launch(
         registry.inner(),
         &exec,
         file.as_deref(),
         project_id.as_deref(),
         role.as_deref(),
+        &origin,
     )
 }
 
@@ -127,7 +171,7 @@ fn icon_to_data_url(path: &Path) -> Option<String> {
     Some(format!("data:{mime};base64,{}", base64_encode(&bytes)))
 }
 
-fn base64_encode(bytes: &[u8]) -> String {
+pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = Vec::with_capacity((bytes.len() + 2) / 3 * 4);
     for chunk in bytes.chunks(3) {
@@ -144,18 +188,46 @@ fn base64_encode(bytes: &[u8]) -> String {
 }
 
 #[tauri::command]
-pub fn open_file(path: String, handler: Option<String>) -> Result<(), String> {
+pub fn open_file(
+    registry: State<'_, WindowRegistryState>,
+    path: String,
+    handler: Option<String>,
+    project_id: Option<String>,
+    origin: Option<String>,
+) -> Result<TrackedWindow, String> {
+    let origin = origin.unwrap_or_else(|| ORIGIN_MANUAL_LAUNCH.to_string());
+    let before = list_window_ids();
     if let Some(exec) = handler {
-        Command::new(&exec)
+        let child = Command::new(&exec)
             .arg(&path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("open with {exec}: {e}"))?;
-        return Ok(());
+        let pid = child.id();
+        let window_id = find_window_for_pid(pid, 20).or_else(|| find_new_window(&before, 20));
+        return track_opened_file(
+            registry.inner(),
+            exec,
+            path,
+            pid,
+            project_id,
+            window_id,
+            origin,
+        );
     }
-    opener::open(&path).map_err(|e| e.to_string())
+    opener::open(&path).map_err(|e| e.to_string())?;
+    let window_id = find_new_window(&before, 20);
+    track_opened_file(
+        registry.inner(),
+        "open-file".to_string(),
+        path,
+        0,
+        project_id,
+        window_id,
+        origin,
+    )
 }
 
 struct DesktopEntry {
@@ -213,7 +285,7 @@ fn parse_desktop_entry(path: &Path) -> Option<DesktopEntry> {
     })
 }
 
-fn first_exec_token(value: &str) -> Option<String> {
+pub(crate) fn first_exec_token(value: &str) -> Option<String> {
     let first = value
         .split_whitespace()
         .find(|part| !part.starts_with('%'))?
@@ -310,10 +382,28 @@ pub fn untrack_window(registry: State<'_, WindowRegistryState>, id: String) -> b
 
 #[tauri::command]
 pub fn check_pid_alive(pid: u32) -> bool {
-    #[cfg(target_os = "linux")]
-    return std::path::Path::new(&format!("/proc/{pid}")).exists();
-    #[cfg(not(target_os = "linux"))]
-    return false;
+    if cfg!(target_os = "linux") {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    } else if cfg!(target_os = "windows") {
+        // tasklist /FI "PID eq <pid>" exits 0 even if the PID is not found;
+        // check that the PID number appears in the output instead.
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
+            .output()
+            .map(|o| {
+                let out = String::from_utf8_lossy(&o.stdout);
+                out.contains(&format!(",\"{}\",", pid))
+            })
+            .unwrap_or(false)
+    } else {
+        // macOS / non-Linux Unix: kill(pid, 0) returns 0 if process exists.
+        // On non-Unix platforms this branch is never reached (Windows is
+        // handled above), so the `false` fallback is a compile-time safety net.
+        #[cfg(unix)]
+        { return unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }; }
+        #[allow(unreachable_code)]
+        false
+    }
 }
 
 /// Best-effort restore: launch apps from `open_apps` metadata.
@@ -344,9 +434,402 @@ pub fn restore_open_apps(
             app.file.as_deref(),
             Some(&project_id),
             None,
+            ORIGIN_RESTORED,
         ) {
             launched.push(win);
         }
     }
     launched
+}
+
+fn track_opened_file(
+    registry: &WindowRegistryState,
+    exec: String,
+    path: String,
+    pid: u32,
+    project_id: Option<String>,
+    window_id: Option<u64>,
+    origin: String,
+) -> Result<TrackedWindow, String> {
+    let opened_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    let id_suffix = window_id.unwrap_or(pid as u64);
+    let id = format!("file-{id_suffix}-{opened_at:.0}");
+    let win = TrackedWindow {
+        id: id.clone(),
+        exec,
+        file: Some(path),
+        pid,
+        project_id,
+        role: None,
+        opened_at,
+        window_id,
+        origin,
+    };
+    registry.lock().unwrap().windows.insert(id, win.clone());
+    Ok(win)
+}
+
+#[cfg(target_os = "linux")]
+fn list_window_ids() -> Vec<u64> {
+    x11_client_windows()
+        .map(|windows| windows.into_iter().map(|w| w.id as u64).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "windows")]
+fn list_window_ids() -> Vec<u64> {
+    crate::platform::windows::list_window_ids()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn list_window_ids() -> Vec<u64> {
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
+    for _ in 0..attempts {
+        if let Ok(windows) = x11_client_windows() {
+            if let Some(window) = windows.into_iter().find(|w| w.pid == Some(pid) && !w.protected) {
+                return Some(window.id as u64);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
+    crate::platform::windows::find_window_for_pid(pid, attempts)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn find_window_for_pid(_pid: u32, _attempts: usize) -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
+    for _ in 0..attempts {
+        if let Ok(windows) = x11_client_windows() {
+            if let Some(window) = windows
+                .into_iter()
+                .find(|w| !before.contains(&(w.id as u64)) && !w.protected)
+            {
+                return Some(window.id as u64);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
+    crate::platform::windows::find_new_window(before, attempts)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn find_new_window(_before: &[u64], _attempts: usize) -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct X11ClientWindow {
+    id: u32,
+    pid: Option<u32>,
+    protected: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn x11_client_windows() -> Result<Vec<X11ClientWindow>, String> {
+    use xcb::x::{self, Window};
+    use xcb::{Connection, Xid};
+
+    let (conn, screen_num) =
+        Connection::connect(None).map_err(|e| format!("xcb connect: {e}"))?;
+    let root = conn
+        .get_setup()
+        .roots()
+        .nth(screen_num as usize)
+        .ok_or_else(|| "missing x11 screen".to_string())?
+        .root();
+    let net_client_list = intern_atom(&conn, b"_NET_CLIENT_LIST")?;
+    let net_wm_pid = intern_atom(&conn, b"_NET_WM_PID")?;
+    let reply = conn
+        .wait_for_reply(conn.send_request(&x::GetProperty {
+            delete: false,
+            window: root,
+            property: net_client_list,
+            r#type: x::ATOM_WINDOW,
+            long_offset: 0,
+            long_length: 2048,
+        }))
+        .map_err(|e| e.to_string())?;
+
+    Ok(reply
+        .value::<Window>()
+        .iter()
+        .map(|&window| X11ClientWindow {
+            id: window.resource_id(),
+            pid: window_pid(&conn, window, net_wm_pid),
+            protected: is_protected_window(&conn, window),
+        })
+        .collect())
+}
+
+#[cfg(target_os = "linux")]
+fn intern_atom(conn: &xcb::Connection, name: &[u8]) -> Result<xcb::x::Atom, String> {
+    conn.wait_for_reply(conn.send_request(&xcb::x::InternAtom {
+        only_if_exists: false,
+        name,
+    }))
+    .map(|r| r.atom())
+    .map_err(|e| format!("InternAtom {}: {e}", String::from_utf8_lossy(name)))
+}
+
+#[cfg(target_os = "linux")]
+fn window_pid(conn: &xcb::Connection, window: xcb::x::Window, atom: xcb::x::Atom) -> Option<u32> {
+    conn.wait_for_reply(conn.send_request(&xcb::x::GetProperty {
+        delete: false,
+        window,
+        property: atom,
+        r#type: xcb::x::ATOM_CARDINAL,
+        long_offset: 0,
+        long_length: 1,
+    }))
+    .ok()
+    .and_then(|r| r.value::<u32>().first().copied())
+}
+
+#[cfg(target_os = "linux")]
+fn is_protected_window(conn: &xcb::Connection, window: xcb::x::Window) -> bool {
+    let class = conn
+        .wait_for_reply(conn.send_request(&xcb::x::GetProperty {
+            delete: false,
+            window,
+            property: xcb::x::ATOM_WM_CLASS,
+            r#type: xcb::x::ATOM_STRING,
+            long_offset: 0,
+            long_length: 64,
+        }))
+        .ok()
+        .map(|r| String::from_utf8_lossy(r.value::<u8>()).to_lowercase())
+        .unwrap_or_default();
+
+    ["eldrun", "plasmashell", "kwin", "cinnamon"]
+        .iter()
+        .any(|protected| class.contains(protected))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tracked(project_id: Option<&str>, origin: &str, window_id: Option<u64>) -> TrackedWindow {
+        TrackedWindow {
+            id: format!("{}-{window_id:?}", project_id.unwrap_or("root")),
+            exec: "editor".to_string(),
+            file: Some("/tmp/file.txt".to_string()),
+            pid: 42,
+            project_id: project_id.map(String::from),
+            role: None,
+            opened_at: 1.0,
+            window_id,
+            origin: origin.to_string(),
+        }
+    }
+
+    #[test]
+    fn opened_windows_are_only_project_file_ui_windows() {
+        let windows = vec![
+            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+            tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11)),
+            tracked(Some("p1"), ORIGIN_GLOBAL_APP, Some(12)),
+            tracked(Some("p1"), ORIGIN_MANUAL_LAUNCH, Some(13)),
+            tracked(Some("p2"), ORIGIN_RIGHT_FILE_TREE, Some(20)),
+            tracked(None, ORIGIN_RIGHT_FILE_TREE, Some(30)),
+        ];
+
+        let opened = opened_windows_for_project(windows.iter(), Some("p1"));
+        let ids = opened
+            .into_iter()
+            .filter_map(|window| window.window_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec![10, 11]);
+    }
+
+    #[test]
+    fn project_opened_window_predicate_matches_file_ui_origins() {
+        assert!(is_project_opened_window(&tracked(
+            Some("p1"),
+            ORIGIN_RIGHT_FILE_TREE,
+            Some(1),
+        )));
+        assert!(is_project_opened_window(&tracked(
+            Some("p1"),
+            ORIGIN_MIDDLE_FILE_BROWSER,
+            Some(1),
+        )));
+        assert!(!is_project_opened_window(&tracked(
+            Some("p1"),
+            ORIGIN_GLOBAL_APP,
+            Some(1),
+        )));
+        assert!(!is_project_opened_window(&tracked(
+            Some("p1"),
+            ORIGIN_MANUAL_LAUNCH,
+            Some(1),
+        )));
+    }
+
+    #[test]
+    fn tracked_window_defaults_missing_origin_to_manual_launch() {
+        let raw = r#"{
+            "id": "old",
+            "exec": "editor",
+            "file": null,
+            "pid": 7,
+            "project_id": "p1",
+            "role": null,
+            "opened_at": 1.0,
+            "window_id": 99
+        }"#;
+
+        let window: TrackedWindow = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(window.origin, ORIGIN_MANUAL_LAUNCH);
+        assert!(!is_project_opened_window(&window));
+    }
+
+    // ── base64_encode ──────────────────────────────────────────────────────
+
+    #[test]
+    fn base64_empty_input() {
+        assert_eq!(base64_encode(b""), "");
+    }
+
+    #[test]
+    fn base64_one_byte() {
+        // "M" = 0x4D → base64 "TQ=="
+        assert_eq!(base64_encode(b"M"), "TQ==");
+    }
+
+    #[test]
+    fn base64_two_bytes() {
+        // "Ma" = 0x4D 0x61 → base64 "TWE="
+        assert_eq!(base64_encode(b"Ma"), "TWE=");
+    }
+
+    #[test]
+    fn base64_three_bytes_no_padding() {
+        // "Man" = 0x4D 0x61 0x6E → base64 "TWFu"
+        assert_eq!(base64_encode(b"Man"), "TWFu");
+    }
+
+    #[test]
+    fn base64_hello_world() {
+        assert_eq!(base64_encode(b"Hello, World!"), "SGVsbG8sIFdvcmxkIQ==");
+    }
+
+    #[test]
+    fn base64_roundtrip_via_stdlib() {
+        use std::process::Command;
+        // Cross-check against system base64 on Linux.
+        let input = b"Eldrun workspace manager";
+        let encoded = base64_encode(input);
+
+        // Use base64 --decode via shell to verify correctness.
+        if let Ok(out) = Command::new("sh")
+            .arg("-c")
+            .arg(format!("echo -n '{encoded}' | base64 -d"))
+            .output()
+        {
+            if out.status.success() {
+                assert_eq!(out.stdout, input.as_ref());
+            }
+        }
+    }
+
+    #[test]
+    fn base64_output_length_is_multiple_of_four() {
+        for n in 0..=12usize {
+            let input: Vec<u8> = (0..n).map(|i| i as u8).collect();
+            let encoded = base64_encode(&input);
+            assert_eq!(encoded.len() % 4, 0, "length must be divisible by 4 for n={n}");
+        }
+    }
+
+    // ── origin predicates ──────────────────────────────────────────────────
+
+    #[test]
+    fn restored_origin_is_not_project_opened_window() {
+        // ORIGIN_RESTORED is project-owned (window_service) but NOT a
+        // "project opened window" in apps.rs — the distinction matters for
+        // which windows are sent to opened_windows_for_project.
+        let w = tracked(Some("p1"), ORIGIN_RESTORED, Some(1));
+        assert!(!is_project_opened_window(&w));
+    }
+
+    #[test]
+    fn opened_windows_returns_empty_for_wrong_project() {
+        let windows = vec![
+            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+            tracked(Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11)),
+        ];
+        let opened = opened_windows_for_project(windows.iter(), Some("p2"));
+        assert!(opened.is_empty());
+    }
+
+    #[test]
+    fn opened_windows_returns_empty_for_root_scope_when_all_in_project() {
+        let windows = vec![
+            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        ];
+        let opened = opened_windows_for_project(windows.iter(), None);
+        assert!(opened.is_empty(), "root scope (None) must not see project windows");
+    }
+
+    // ── first_exec_token ───────────────────────────────────────────────────
+
+    #[test]
+    fn first_exec_token_plain_path() {
+        assert_eq!(first_exec_token("/usr/bin/firefox"), Some("/usr/bin/firefox".into()));
+    }
+
+    #[test]
+    fn first_exec_token_strips_desktop_field_codes() {
+        // %U, %F etc. must be skipped.
+        assert_eq!(first_exec_token("/usr/bin/code %F"), Some("/usr/bin/code".into()));
+    }
+
+    #[test]
+    fn first_exec_token_strips_leading_percent_args() {
+        assert_eq!(first_exec_token("%u /usr/bin/app"), Some("/usr/bin/app".into()));
+    }
+
+    #[test]
+    fn first_exec_token_empty_string() {
+        assert_eq!(first_exec_token(""), None);
+    }
+
+    #[test]
+    fn first_exec_token_only_field_codes() {
+        assert_eq!(first_exec_token("%U %F %i"), None);
+    }
+
+    #[test]
+    fn first_exec_token_quoted_token_outer_quotes_stripped() {
+        // The function strips outer quotes from the final string but splits on
+        // whitespace first, so a quoted path with spaces is split at the space.
+        // This documents the actual behavior.
+        let result = first_exec_token("\"/usr/bin/myapp\"");
+        assert_eq!(result, Some("/usr/bin/myapp".into()));
+    }
 }
