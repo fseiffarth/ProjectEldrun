@@ -125,7 +125,7 @@ export function CenterPanel() {
       } catch {
         // session detection is best-effort
       }
-    }, 60_000);
+    }, 15_000);
     return () => window.clearInterval(interval);
   }, [activeId, projectCwd]);
 
@@ -177,6 +177,7 @@ export function CenterPanel() {
             cmd={tab.cmd}
             args={tab.args ?? []}
             env={tab.env ?? {}}
+            initialInput={tab.initialInput}
             cwd={tab.cwd}
             active={scopeKey === scope && tab.key === activeKey}
           />

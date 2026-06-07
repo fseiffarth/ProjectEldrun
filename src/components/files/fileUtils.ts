@@ -4,6 +4,7 @@ export interface FileEntry {
   is_dir: boolean;
   size: number;
   modified_secs?: number | null;
+  created_secs?: number | null;
   extension: string | null;
   mime: string | null;
 }
@@ -118,6 +119,16 @@ export function fmtSize(bytes: number): string {
 
 export function fmtModified(seconds?: number | null): string {
   if (!seconds) return "";
+  const ageMs = Date.now() - seconds * 1000;
+  const ageH = ageMs / 3_600_000;
+  if (ageH < 1) {
+    const mins = Math.floor(ageMs / 60_000);
+    return mins <= 1 ? "just now" : `${mins} min ago`;
+  }
+  if (ageH < 24) {
+    const h = Math.floor(ageH);
+    return `${h} h ago`;
+  }
   return new Date(seconds * 1000).toLocaleString(undefined, {
     year: "numeric",
     month: "2-digit",

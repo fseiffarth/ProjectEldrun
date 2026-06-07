@@ -910,9 +910,41 @@ input {
 
 .file-entry:hover { background-color: var(--pill-hover-bg); }
 
+.file-tree.drag-over {
+  outline: 2px dashed var(--accent, #58a6ff);
+  outline-offset: -2px;
+  border-radius: 6px;
+  background: rgba(88, 166, 255, 0.06);
+}
+
 .file-icon { font-size: 12px; flex-shrink: 0; }
 .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-size { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+.file-size.size-small  { color: var(--text-muted); }
+.file-size.size-medium { color: #e3b341; }
+.file-size.size-large  { color: #f0883e; }
+.file-size.size-huge   { color: #f85149; }
+
+.file-tooltip {
+  position: fixed;
+  z-index: 9999;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-primary);
+  pointer-events: none;
+  white-space: nowrap;
+  line-height: 1.8;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.file-tooltip-label {
+  color: var(--text-muted);
+  margin-right: 8px;
+  display: inline-block;
+  width: 5.5em;
+}
 
 /* ── Center file browser ─────────────────────────────────────────────── */
 .file-browser {
@@ -1903,6 +1935,19 @@ input {
   accent-color: var(--accent);
 }
 
+.scaffold-fill-all-row {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 210px);
+  gap: 10px !important;
+  align-items: center;
+  color: var(--text-primary) !important;
+}
+
+.scaffold-fill-all-row span {
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .scaffold-list {
   display: flex;
   flex-direction: column;
@@ -1943,6 +1988,7 @@ input {
 }
 
 @media (max-width: 640px) {
+  .scaffold-fill-all-row,
   .scaffold-row {
     grid-template-columns: 1fr;
   }

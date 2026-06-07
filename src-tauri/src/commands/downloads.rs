@@ -14,6 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::paths;
+
 // ── Symlink management ────────────────────────────────────────────────────
 
 /// Ensure ~/eldrun/downloads symlink points at the given project directory.
@@ -24,13 +26,7 @@ pub fn update_downloads_symlink(project_dir: String) -> Result<(), String> {
 
 /// Platform-appropriate home directory.
 fn home_dir() -> String {
-    if cfg!(target_os = "windows") {
-        std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOMEDRIVE").and_then(|d| std::env::var("HOMEPATH").map(|p| format!("{d}{p}"))))
-            .unwrap_or_else(|_| "C:\\Users\\Default".to_string())
-    } else {
-        std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
-    }
+    paths::home_dir_string()
 }
 
 // ── Browser preference editing ─────────────────────────────────────────────
@@ -48,7 +44,11 @@ pub struct DownloadsStatus {
 #[tauri::command]
 pub fn configure_browser_downloads() -> Result<DownloadsStatus, String> {
     let home = home_dir();
-    let sep = if cfg!(target_os = "windows") { '\\' } else { '/' };
+    let sep = if cfg!(target_os = "windows") {
+        '\\'
+    } else {
+        '/'
+    };
     let target = format!("{home}{sep}eldrun{sep}downloads");
     let mut status = DownloadsStatus {
         symlink_ok: false,
@@ -66,7 +66,9 @@ pub fn configure_browser_downloads() -> Result<DownloadsStatus, String> {
             Ok(updated) => {
                 status.firefox_updated = updated;
                 if !updated {
-                    status.notes.push("Firefox prefs.js was locked; skipped".to_string());
+                    status
+                        .notes
+                        .push("Firefox prefs.js was locked; skipped".to_string());
                 }
             }
             Err(e) => status.notes.push(format!("Firefox error: {e}")),
@@ -81,7 +83,9 @@ pub fn configure_browser_downloads() -> Result<DownloadsStatus, String> {
                     if updated {
                         status.chromium_updated = true;
                     } else {
-                        status.notes.push(format!("{label}: Preferences was locked; skipped"));
+                        status
+                            .notes
+                            .push(format!("{label}: Preferences was locked; skipped"));
                     }
                 }
                 Err(e) => status.notes.push(format!("{label} error: {e}")),
@@ -112,12 +116,20 @@ fn chromium_profile_bases() -> Vec<PathBuf> {
     if cfg!(target_os = "windows") {
         let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| home);
         vec![
-            PathBuf::from(&local).join("Google").join("Chrome").join("User Data"),
+            PathBuf::from(&local)
+                .join("Google")
+                .join("Chrome")
+                .join("User Data"),
             PathBuf::from(&local).join("Chromium").join("User Data"),
-            PathBuf::from(&local).join("Google").join("Chrome Beta").join("User Data"),
+            PathBuf::from(&local)
+                .join("Google")
+                .join("Chrome Beta")
+                .join("User Data"),
         ]
     } else if cfg!(target_os = "macos") {
-        let base = PathBuf::from(&home).join("Library").join("Application Support");
+        let base = PathBuf::from(&home)
+            .join("Library")
+            .join("Application Support");
         vec![
             base.join("Google").join("Chrome"),
             base.join("Chromium"),
@@ -127,7 +139,9 @@ fn chromium_profile_bases() -> Vec<PathBuf> {
         vec![
             PathBuf::from(&home).join(".config").join("chromium"),
             PathBuf::from(&home).join(".config").join("google-chrome"),
-            PathBuf::from(&home).join(".config").join("google-chrome-beta"),
+            PathBuf::from(&home)
+                .join(".config")
+                .join("google-chrome-beta"),
         ]
     }
 }
@@ -200,7 +214,10 @@ fn set_pref(content: &str, key: &str, value: &str) -> String {
     let pattern = format!("user_pref(\"{key}\"");
     let new_line = format!("user_pref(\"{key}\", {value});");
     if let Some(pos) = content.find(&pattern) {
-        let end = content[pos..].find('\n').map(|i| pos + i + 1).unwrap_or(content.len());
+        let end = content[pos..]
+            .find('\n')
+            .map(|i| pos + i + 1)
+            .unwrap_or(content.len());
         format!("{}{new_line}\n{}", &content[..pos], &content[end..])
     } else {
         format!("{content}{new_line}\n")

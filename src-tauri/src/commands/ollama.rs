@@ -38,8 +38,8 @@ pub struct CatalogEntry {
 /// Send a request to the local Ollama REST API and return the response body.
 /// Uses HTTP/1.0 to avoid chunked transfer encoding.
 fn ollama_http(method: &str, path: &str, json_body: Option<&str>) -> Result<String, String> {
-    let mut stream = TcpStream::connect("127.0.0.1:11434")
-        .map_err(|_| "not_running".to_string())?;
+    let mut stream =
+        TcpStream::connect("127.0.0.1:11434").map_err(|_| "not_running".to_string())?;
     // 10-minute timeout accommodates large model pulls
     stream
         .set_read_timeout(Some(Duration::from_secs(600)))
@@ -200,7 +200,15 @@ pub async fn list_installable_models() -> Vec<CatalogEntry> {
         CatalogEntry {
             name: "qwen2.5".into(),
             description: "Alibaba Qwen 2.5 — multilingual, strong coding & reasoning".into(),
-            tags: vec!["0.5b".into(), "1.5b".into(), "3b".into(), "7b".into(), "14b".into(), "32b".into(), "72b".into()],
+            tags: vec![
+                "0.5b".into(),
+                "1.5b".into(),
+                "3b".into(),
+                "7b".into(),
+                "14b".into(),
+                "32b".into(),
+                "72b".into(),
+            ],
             size_hint: "0.4 GB – 47 GB".into(),
         },
         CatalogEntry {
@@ -320,7 +328,8 @@ pub async fn list_installable_models() -> Vec<CatalogEntry> {
         },
         CatalogEntry {
             name: "cogito".into(),
-            description: "Deep Cogito — hybrid reasoning models across small and large sizes".into(),
+            description: "Deep Cogito — hybrid reasoning models across small and large sizes"
+                .into(),
             tags: vec![
                 "3b".into(),
                 "8b".into(),
@@ -543,8 +552,7 @@ fn sanitize_alias(model: &str) -> String {
 /// Each Ollama tab gets its own subdirectory so the configs are independent
 /// and `active_model` is always unambiguous.
 fn eldrun_vibe_local_dir_for(alias: &str) -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-    Ok(std::path::PathBuf::from(home)
+    Ok(crate::paths::home_dir()
         .join(".local")
         .join("share")
         .join("eldrun")
@@ -553,9 +561,10 @@ fn eldrun_vibe_local_dir_for(alias: &str) -> Result<std::path::PathBuf, String> 
 }
 
 fn dirs_vibe_config() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-    let vibe_home = std::env::var("VIBE_HOME").unwrap_or_else(|_| format!("{home}/.vibe"));
-    Ok(std::path::PathBuf::from(vibe_home).join("config.toml"))
+    let vibe_home = std::env::var_os("VIBE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| crate::paths::home_dir().join(".vibe"));
+    Ok(vibe_home.join("config.toml"))
 }
 
 fn ollama_provider_block() -> String {
@@ -631,11 +640,22 @@ mod tests {
         let (vibe_home, alias) = write_agent_config(tmp.path(), model);
 
         let cfg = std::fs::read_to_string(vibe_home.join("config.toml")).unwrap();
-        assert!(cfg.contains("enabled_tools = [\"__no_tools__\"]"),
-            "tool calls must be disabled for local models");
-        assert!(cfg.contains("name = \"ollama\""), "ollama provider block required");
-        assert!(cfg.contains(&format!("name = \"{model}\"")), "model name must appear");
-        assert!(cfg.contains(&format!("alias = \"{alias}\"")), "model alias must appear");
+        assert!(
+            cfg.contains("enabled_tools = [\"__no_tools__\"]"),
+            "tool calls must be disabled for local models"
+        );
+        assert!(
+            cfg.contains("name = \"ollama\""),
+            "ollama provider block required"
+        );
+        assert!(
+            cfg.contains(&format!("name = \"{model}\"")),
+            "model name must appear"
+        );
+        assert!(
+            cfg.contains(&format!("alias = \"{alias}\"")),
+            "model alias must appear"
+        );
     }
 
     // ── sanitize_alias turns ':' into '-' ─────────────────────────────────────
@@ -659,7 +679,10 @@ mod tests {
 
         let cfg = std::fs::read_to_string(vibe_home.join("config.toml")).unwrap();
         let model_block_count = cfg.matches("[[models]]").count();
-        assert_eq!(model_block_count, 1, "calling prepare_local_agent twice must not duplicate the model block");
+        assert_eq!(
+            model_block_count, 1,
+            "calling prepare_local_agent twice must not duplicate the model block"
+        );
         // active_model appears exactly once.
         let active_model_count = cfg.matches(&format!("active_model = \"{alias}\"")).count();
         assert_eq!(active_model_count, 1);
@@ -690,21 +713,26 @@ mod tests {
         let (vibe_home, alias) = write_agent_config(tmp.path(), &model);
 
         let cfg = std::fs::read_to_string(vibe_home.join("config.toml")).unwrap();
-        assert_eq!(cfg.lines().next().unwrap_or(""),
+        assert_eq!(
+            cfg.lines().next().unwrap_or(""),
             format!("active_model = \"{alias}\""),
-            "active_model must be first so global config cannot shadow it");
+            "active_model must be first so global config cannot shadow it"
+        );
         assert!(cfg.contains(&format!("alias = \"{alias}\"")));
     }
 
     fn first_available_model() -> Option<String> {
         let mut stream = TcpStream::connect("127.0.0.1:11434").ok()?;
-        stream.write_all(b"GET /api/tags HTTP/1.0\r\nHost: localhost\r\n\r\n").ok()?;
+        stream
+            .write_all(b"GET /api/tags HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            .ok()?;
         let mut response = String::new();
         std::io::Read::read_to_string(&mut stream, &mut response).ok()?;
         let body = response.split("\r\n\r\n").nth(1)?;
         let v: serde_json::Value = serde_json::from_str(body).ok()?;
-        v["models"].as_array()?.iter().find_map(|m| {
-            Some(m["name"].as_str()?.to_owned())
-        })
+        v["models"]
+            .as_array()?
+            .iter()
+            .find_map(|m| Some(m["name"].as_str()?.to_owned()))
     }
 }

@@ -77,7 +77,8 @@ pub fn do_launch(
     role: Option<&str>,
     origin: &str,
 ) -> Result<TrackedWindow, String> {
-    let mut cmd = Command::new(exec);
+    let launch_exec = resolve_launch_exec(exec);
+    let mut cmd = Command::new(&launch_exec);
     if let Some(f) = file {
         cmd.arg(f);
     }
@@ -85,7 +86,9 @@ pub fn do_launch(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let child = cmd.spawn().map_err(|e| format!("launch {exec}: {e}"))?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("launch {launch_exec}: {e}"))?;
     let pid = child.id();
     let window_id = find_window_for_pid(pid, 20);
 
@@ -94,11 +97,11 @@ pub fn do_launch(
         .unwrap_or_default()
         .as_secs_f64();
 
-    let safe_exec = exec.replace(['/', ' '], "-");
+    let safe_exec = launch_exec.replace(['/', '\\', ' '], "-");
     let id = format!("{safe_exec}-{pid}");
     let win = TrackedWindow {
         id: id.clone(),
-        exec: exec.to_string(),
+        exec: launch_exec,
         file: file.map(String::from),
         pid,
         project_id: project_id.map(String::from),
@@ -141,7 +144,17 @@ pub fn launch_app(
 
 #[tauri::command]
 pub fn resolve_app_icon(exec: String) -> Option<String> {
-    let exec_base = Path::new(&exec).file_name()?.to_string_lossy().to_lowercase();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(icon) = resolve_windows_app_icon(&exec) {
+            return Some(icon);
+        }
+    }
+
+    let exec_base = Path::new(&exec)
+        .file_name()?
+        .to_string_lossy()
+        .to_lowercase();
     for desktop_file in desktop_files() {
         if let Some(entry) = parse_desktop_entry(&desktop_file) {
             let Some(entry_base) = Path::new(&entry.exec)
@@ -181,8 +194,16 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(T[((n >> 18) & 63) as usize]);
         out.push(T[((n >> 12) & 63) as usize]);
-        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] } else { b'=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] } else { b'=' });
+        out.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize]
+        } else {
+            b'='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize]
+        } else {
+            b'='
+        });
     }
     String::from_utf8(out).unwrap_or_default()
 }
@@ -198,18 +219,19 @@ pub fn open_file(
     let origin = origin.unwrap_or_else(|| ORIGIN_MANUAL_LAUNCH.to_string());
     let before = list_window_ids();
     if let Some(exec) = handler {
-        let child = Command::new(&exec)
+        let launch_exec = resolve_launch_exec(&exec);
+        let child = Command::new(&launch_exec)
             .arg(&path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("open with {exec}: {e}"))?;
+            .map_err(|e| format!("open with {launch_exec}: {e}"))?;
         let pid = child.id();
         let window_id = find_window_for_pid(pid, 20).or_else(|| find_new_window(&before, 20));
         return track_opened_file(
             registry.inner(),
-            exec,
+            launch_exec,
             path,
             pid,
             project_id,
@@ -233,6 +255,240 @@ pub fn open_file(
 struct DesktopEntry {
     exec: String,
     icon: String,
+}
+
+fn resolve_launch_exec(exec: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(resolved) = resolve_windows_launch_exec(exec) {
+            return resolved;
+        }
+    }
+    exec.to_string()
+}
+
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShortcutEntry {
+    display_name: String,
+    shortcut_path: PathBuf,
+    target_path: PathBuf,
+    icon_path: Option<PathBuf>,
+}
+
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+fn shortcut_matches(query: &str, shortcut: &ShortcutEntry) -> bool {
+    let query = normalize_app_match(query);
+    if query.is_empty() {
+        return false;
+    }
+
+    let display = normalize_app_match(&shortcut.display_name);
+    let shortcut_path = normalize_app_match(&shortcut.shortcut_path.to_string_lossy());
+    let target_path = normalize_app_match(&shortcut.target_path.to_string_lossy());
+    let shortcut_stem = normalized_path_stem(&shortcut_path);
+    let target_base = normalized_path_basename(&target_path);
+    let target_stem = normalized_path_stem(&target_path);
+
+    [
+        display,
+        shortcut_stem,
+        shortcut_path,
+        target_path,
+        target_base,
+        target_stem,
+    ]
+    .into_iter()
+    .any(|candidate| candidate == query)
+}
+
+fn normalize_app_match(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .to_lowercase()
+        .replace('\\', "/")
+}
+
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+fn normalized_path_basename(normalized_path: &str) -> String {
+    normalized_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(normalized_path)
+        .to_string()
+}
+
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+fn normalized_path_stem(normalized_path: &str) -> String {
+    let base = normalized_path_basename(normalized_path);
+    base.rsplit_once('.')
+        .map(|(stem, _)| stem.to_string())
+        .unwrap_or(base)
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_launch_exec(exec: &str) -> Option<String> {
+    let direct = PathBuf::from(exec.trim_matches('"'));
+    if direct.exists() {
+        return Some(direct.to_string_lossy().into_owned());
+    }
+    windows_shortcuts()
+        .into_iter()
+        .find(|shortcut| shortcut_matches(exec, shortcut))
+        .map(|shortcut| shortcut.target_path.to_string_lossy().into_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_app_icon(exec: &str) -> Option<String> {
+    let direct = PathBuf::from(exec.trim_matches('"'));
+    if direct.exists() {
+        if direct
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map_or(false, |ext| ext.eq_ignore_ascii_case("lnk"))
+        {
+            return resolve_windows_shortcut(&direct)
+                .and_then(|shortcut| shortcut.icon_path.or(Some(shortcut.target_path)))
+                .and_then(|path| windows_icon_to_data_url(&path));
+        }
+        return windows_icon_to_data_url(&direct);
+    }
+
+    windows_shortcuts()
+        .into_iter()
+        .find(|shortcut| shortcut_matches(exec, shortcut))
+        .and_then(|shortcut| shortcut.icon_path.or(Some(shortcut.target_path)))
+        .and_then(|path| windows_icon_to_data_url(&path))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shortcuts() -> Vec<ShortcutEntry> {
+    let mut roots = Vec::new();
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        roots.push(
+            PathBuf::from(appdata)
+                .join("Microsoft")
+                .join("Windows")
+                .join("Start Menu")
+                .join("Programs"),
+        );
+    }
+    if let Some(program_data) = std::env::var_os("ProgramData") {
+        roots.push(
+            PathBuf::from(program_data)
+                .join("Microsoft")
+                .join("Windows")
+                .join("Start Menu")
+                .join("Programs"),
+        );
+    }
+
+    let mut shortcuts = Vec::new();
+    for root in roots {
+        collect_windows_shortcuts(&root, 4, &mut shortcuts);
+    }
+    shortcuts
+}
+
+#[cfg(target_os = "windows")]
+fn collect_windows_shortcuts(dir: &Path, depth: usize, out: &mut Vec<ShortcutEntry>) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_windows_shortcuts(&path, depth - 1, out);
+        } else if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map_or(false, |ext| ext.eq_ignore_ascii_case("lnk"))
+        {
+            if let Some(shortcut) = resolve_windows_shortcut(&path) {
+                out.push(shortcut);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_shortcut(path: &Path) -> Option<ShortcutEntry> {
+    use windows::core::{Interface, PCWSTR, PWSTR};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        let persist: IPersistFile = link.cast().ok()?;
+        let wide = wide_null(path.as_os_str());
+        persist.Load(PCWSTR(wide.as_ptr()), 0).ok()?;
+
+        let mut target_buf = [0u16; 32768];
+        link.GetPath(
+            PWSTR(target_buf.as_mut_ptr()),
+            target_buf.len() as i32,
+            None,
+            0,
+        )
+        .ok()?;
+        let target = utf16_buf_to_path(&target_buf)?;
+
+        let mut icon_buf = [0u16; 32768];
+        let mut icon_index = 0i32;
+        let icon_path = link
+            .GetIconLocation(
+                PWSTR(icon_buf.as_mut_ptr()),
+                icon_buf.len() as i32,
+                &mut icon_index,
+            )
+            .ok()
+            .and_then(|_| utf16_buf_to_path(&icon_buf));
+
+        Some(ShortcutEntry {
+            display_name: path.file_stem()?.to_string_lossy().into_owned(),
+            shortcut_path: path.to_path_buf(),
+            target_path: target,
+            icon_path,
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_icon_to_data_url(path: &Path) -> Option<String> {
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map_or(false, |ext| {
+            ext.eq_ignore_ascii_case("png") || ext.eq_ignore_ascii_case("ico")
+        })
+    {
+        return icon_to_data_url(path);
+    }
+    Some(path.to_string_lossy().into_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn wide_null(value: &std::ffi::OsStr) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    value.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn utf16_buf_to_path(buf: &[u16]) -> Option<PathBuf> {
+    let len = buf.iter().position(|&ch| ch == 0).unwrap_or(buf.len());
+    if len == 0 {
+        return None;
+    }
+    Some(PathBuf::from(String::from_utf16_lossy(&buf[..len])))
 }
 
 fn desktop_files() -> Vec<PathBuf> {
@@ -399,7 +655,9 @@ pub fn check_pid_alive(pid: u32) -> bool {
         // On non-Unix platforms this branch is never reached (Windows is
         // handled above), so the `false` fallback is a compile-time safety net.
         #[cfg(unix)]
-        { return unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }; }
+        {
+            return unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        }
         #[allow(unreachable_code)]
         false
     }
@@ -421,9 +679,11 @@ pub fn restore_open_apps(
         // Skip if already running for this project.
         {
             let reg = registry.lock().unwrap();
-            if reg.windows.values().any(|w| {
-                w.exec == app.exec && w.project_id.as_deref() == Some(&project_id)
-            }) {
+            if reg
+                .windows
+                .values()
+                .any(|w| w.exec == app.exec && w.project_id.as_deref() == Some(&project_id))
+            {
                 continue;
             }
         }
@@ -492,7 +752,10 @@ fn list_window_ids() -> Vec<u64> {
 fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
     for _ in 0..attempts {
         if let Ok(windows) = x11_client_windows() {
-            if let Some(window) = windows.into_iter().find(|w| w.pid == Some(pid) && !w.protected) {
+            if let Some(window) = windows
+                .into_iter()
+                .find(|w| w.pid == Some(pid) && !w.protected)
+            {
                 return Some(window.id as u64);
             }
         }
@@ -550,8 +813,7 @@ fn x11_client_windows() -> Result<Vec<X11ClientWindow>, String> {
     use xcb::x::{self, Window};
     use xcb::{Connection, Xid};
 
-    let (conn, screen_num) =
-        Connection::connect(None).map_err(|e| format!("xcb connect: {e}"))?;
+    let (conn, screen_num) = Connection::connect(None).map_err(|e| format!("xcb connect: {e}"))?;
     let root = conn
         .get_setup()
         .roots()
@@ -761,7 +1023,11 @@ mod tests {
         for n in 0..=12usize {
             let input: Vec<u8> = (0..n).map(|i| i as u8).collect();
             let encoded = base64_encode(&input);
-            assert_eq!(encoded.len() % 4, 0, "length must be divisible by 4 for n={n}");
+            assert_eq!(
+                encoded.len() % 4,
+                0,
+                "length must be divisible by 4 for n={n}"
+            );
         }
     }
 
@@ -788,29 +1054,39 @@ mod tests {
 
     #[test]
     fn opened_windows_returns_empty_for_root_scope_when_all_in_project() {
-        let windows = vec![
-            tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
-        ];
+        let windows = vec![tracked(Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10))];
         let opened = opened_windows_for_project(windows.iter(), None);
-        assert!(opened.is_empty(), "root scope (None) must not see project windows");
+        assert!(
+            opened.is_empty(),
+            "root scope (None) must not see project windows"
+        );
     }
 
     // ── first_exec_token ───────────────────────────────────────────────────
 
     #[test]
     fn first_exec_token_plain_path() {
-        assert_eq!(first_exec_token("/usr/bin/firefox"), Some("/usr/bin/firefox".into()));
+        assert_eq!(
+            first_exec_token("/usr/bin/firefox"),
+            Some("/usr/bin/firefox".into())
+        );
     }
 
     #[test]
     fn first_exec_token_strips_desktop_field_codes() {
         // %U, %F etc. must be skipped.
-        assert_eq!(first_exec_token("/usr/bin/code %F"), Some("/usr/bin/code".into()));
+        assert_eq!(
+            first_exec_token("/usr/bin/code %F"),
+            Some("/usr/bin/code".into())
+        );
     }
 
     #[test]
     fn first_exec_token_strips_leading_percent_args() {
-        assert_eq!(first_exec_token("%u /usr/bin/app"), Some("/usr/bin/app".into()));
+        assert_eq!(
+            first_exec_token("%u /usr/bin/app"),
+            Some("/usr/bin/app".into())
+        );
     }
 
     #[test]
@@ -830,5 +1106,45 @@ mod tests {
         // This documents the actual behavior.
         let result = first_exec_token("\"/usr/bin/myapp\"");
         assert_eq!(result, Some("/usr/bin/myapp".into()));
+    }
+
+    // ── Windows Start Menu matching ────────────────────────────────────────
+
+    fn shortcut() -> ShortcutEntry {
+        ShortcutEntry {
+            display_name: "Visual Studio Code".to_string(),
+            shortcut_path: PathBuf::from(
+                r"C:\Users\alice\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Visual Studio Code.lnk",
+            ),
+            target_path: PathBuf::from(
+                r"C:\Users\alice\AppData\Local\Programs\Microsoft VS Code\Code.exe",
+            ),
+            icon_path: Some(PathBuf::from(
+                r"C:\Users\alice\AppData\Local\Programs\Microsoft VS Code\Code.exe",
+            )),
+        }
+    }
+
+    #[test]
+    fn shortcut_matches_display_name() {
+        assert!(shortcut_matches("visual studio code", &shortcut()));
+    }
+
+    #[test]
+    fn shortcut_matches_target_basename() {
+        assert!(shortcut_matches("Code.exe", &shortcut()));
+    }
+
+    #[test]
+    fn shortcut_matches_direct_executable_path() {
+        assert!(shortcut_matches(
+            r"C:\Users\alice\AppData\Local\Programs\Microsoft VS Code\Code.exe",
+            &shortcut()
+        ));
+    }
+
+    #[test]
+    fn shortcut_does_not_match_unrelated_name() {
+        assert!(!shortcut_matches("notepad", &shortcut()));
     }
 }

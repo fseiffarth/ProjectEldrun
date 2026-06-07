@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod paths;
 pub mod platform;
 pub mod schema;
 pub mod services;
@@ -183,6 +184,8 @@ pub fn run() {
             commands::projects::delete_file,
             commands::projects::delete_dir,
             commands::projects::create_file,
+            commands::projects::write_project_file,
+            commands::projects::write_project_file_bytes,
             commands::projects::create_dir,
             commands::projects::detect_mime,
             // Terminal
@@ -209,6 +212,13 @@ pub fn run() {
             commands::workspace::network_conn_type,
             // Project-runtime switching (replaces switch_project_windows)
             commands::project_runtime::switch_project_runtime,
+            // Git
+            commands::git::git_status,
+            commands::git::git_add_all,
+            commands::git::git_generate_commit_message,
+            commands::git::git_commit,
+            commands::git::git_push,
+            commands::git::git_file_statuses,
             // Downloads
             commands::downloads::update_downloads_symlink,
             commands::downloads::configure_browser_downloads,

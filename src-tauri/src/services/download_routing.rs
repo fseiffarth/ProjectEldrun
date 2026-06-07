@@ -1,10 +1,11 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use crate::paths;
 
 /// Point `~/eldrun/downloads` at `target_dir`.
 pub fn route_downloads(target_dir: &str) -> Result<(), String> {
-    let home = home_dir();
-    let link = PathBuf::from(&home).join("eldrun").join("downloads");
+    let link = paths::home_dir().join("eldrun").join("downloads");
 
     if let Ok(existing) = fs::read_link(&link) {
         if existing.to_string_lossy() == target_dir {
@@ -39,16 +40,7 @@ fn create_dir_symlink(src: &str, link: &Path) -> Result<(), String> {
 }
 
 pub fn home_dir() -> String {
-    if cfg!(target_os = "windows") {
-        std::env::var("USERPROFILE")
-            .or_else(|_| {
-                std::env::var("HOMEDRIVE")
-                    .and_then(|d| std::env::var("HOMEPATH").map(|p| format!("{d}{p}")))
-            })
-            .unwrap_or_else(|_| "C:\\Users\\Default".to_string())
-    } else {
-        std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
-    }
+    paths::home_dir_string()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -74,7 +66,7 @@ mod tests {
     }
 
     #[test]
-    fn home_dir_falls_back_to_slash_when_no_home() {
+    fn home_dir_falls_back_to_root_when_no_home() {
         let _guard = env_lock().lock().unwrap();
         let old = std::env::var("HOME").ok();
         unsafe { std::env::remove_var("HOME") };
@@ -85,8 +77,8 @@ mod tests {
                 None => std::env::remove_var("HOME"),
             }
         }
-        // On Linux the fallback is "/" when HOME is unset.
-        assert_eq!(result, "/");
+        // Linux and other Unix paths share the storage fallback.
+        assert_eq!(result, "/root");
     }
 
     #[test]
@@ -102,7 +94,11 @@ mod tests {
 
         assert!(result.is_ok(), "route_downloads failed: {result:?}");
         let link = tmp.path().join("eldrun/downloads");
-        assert!(link.exists() || link.is_symlink(), "symlink must exist at {}", link.display());
+        assert!(
+            link.exists() || link.is_symlink(),
+            "symlink must exist at {}",
+            link.display()
+        );
     }
 
     #[test]

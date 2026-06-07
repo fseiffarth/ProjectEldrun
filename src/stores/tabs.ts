@@ -11,6 +11,7 @@ export interface TabEntry {
   cmd: string;
   args?: string[];
   env?: Record<string, string>;
+  initialInput?: string;
   cwd: string;
   kind: TabKind;
   sessionId?: string;

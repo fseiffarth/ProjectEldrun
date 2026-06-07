@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::Path;
 
+use crate::paths;
+
 /// Read and deserialize a JSON file.
 pub fn read_json<T>(path: &Path) -> Result<T, Box<dyn std::error::Error>>
 where
@@ -32,8 +34,8 @@ where
 pub fn state_dir() -> std::path::PathBuf {
     if cfg!(target_os = "windows") {
         let base = std::env::var("APPDATA")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| "C:\\Users\\Default".to_string());
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| paths::home_dir());
         std::path::PathBuf::from(base).join("eldrun")
     } else if cfg!(target_os = "macos") {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -52,12 +54,7 @@ pub fn state_dir() -> std::path::PathBuf {
 
 /// Working directory for terminals that are not attached to a project.
 pub fn root_work_dir() -> std::path::PathBuf {
-    let home = if cfg!(target_os = "windows") {
-        std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".to_string())
-    } else {
-        std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
-    };
-    std::path::PathBuf::from(home).join("eldrun").join("root")
+    paths::root_work_dir()
 }
 
 /// Current date in UTC as "YYYY-MM-DD".
@@ -94,20 +91,44 @@ pub fn iso_now() -> String {
     let mut days = total / 86400;
     let mut year = 1970u64;
     loop {
-        let dy = if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 };
-        if days < dy { break; }
+        let dy = if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+            366
+        } else {
+            365
+        };
+        if days < dy {
+            break;
+        }
         days -= dy;
         year += 1;
     }
     let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    let month_lens: [u64; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_lens: [u64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 1u64;
     for &ml in &month_lens {
-        if days < ml { break; }
+        if days < ml {
+            break;
+        }
         days -= ml;
         month += 1;
     }
-    format!("{year:04}-{month:02}-{:02}T{h:02}:{m:02}:{s:02}+00:00", days + 1)
+    format!(
+        "{year:04}-{month:02}-{:02}T{h:02}:{m:02}:{s:02}+00:00",
+        days + 1
+    )
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -156,7 +177,10 @@ mod tests {
         let today = today_utc();
         let now = iso_now();
         let year = &today[..4];
-        assert!(now.starts_with(year), "iso_now year must match today: now={now} today={today}");
+        assert!(
+            now.starts_with(year),
+            "iso_now year must match today: now={now} today={today}"
+        );
     }
 
     // ── state_dir ─────────────────────────────────────────────────────────
@@ -180,7 +204,11 @@ mod tests {
     #[test]
     fn root_work_dir_parent_is_eldrun() {
         let dir = root_work_dir();
-        let parent = dir.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("");
+        let parent = dir
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
         assert_eq!(parent, "eldrun");
     }
 
@@ -218,7 +246,8 @@ mod tests {
 
     #[test]
     fn read_json_error_on_missing_file() {
-        let result: Result<Vec<String>, _> = read_json(std::path::Path::new("/nonexistent/file.json"));
+        let result: Result<Vec<String>, _> =
+            read_json(std::path::Path::new("/nonexistent/file.json"));
         assert!(result.is_err());
     }
 

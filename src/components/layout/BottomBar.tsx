@@ -6,6 +6,7 @@ import { ProjectPill } from "../projects/ProjectPill";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
+import { cmdToKind, useTabsStore } from "../../stores/tabs";
 import type { GlobalAppEntry, ProjectEntry, Theme } from "../../types";
 import { resolveProjectDirectory, THEMES } from "../../types";
 
@@ -38,11 +39,14 @@ const SCAFFOLD_FILL_OPTIONS = [
   { value: "none", label: "No filling" },
   { value: "manual", label: "Manual" },
   { value: "validation", label: "Validation" },
+  { value: "agent_choice", label: "Agent choice" },
   { value: "claude", label: "Fill by Claude" },
   { value: "codex", label: "Fill by Codex" },
   { value: "gemini", label: "Fill by Gemini" },
   { value: "vibe", label: "Fill by Mistral" },
 ];
+
+const AGENT_SCAFFOLD_FILL_MODES = new Set(["agent_choice", "claude", "codex", "gemini", "vibe"]);
 
 function sanitizeName(name: string) {
   return name
@@ -55,6 +59,43 @@ function sanitizeName(name: string) {
 
 function projectDirectory(project: ProjectEntry) {
   return resolveProjectDirectory(project);
+}
+
+export function agentForScaffoldFillMode(fillMode: string, defaultAgentCmd: string) {
+  return fillMode === "agent_choice" ? defaultAgentCmd : fillMode;
+}
+
+export function collectScaffoldAgentFills(
+  preview: ScaffoldPreviewItem[],
+  fillModes: Record<string, string>,
+  defaultAgentCmd: string,
+) {
+  const filesByAgent = new Map<string, string[]>();
+  for (const item of preview) {
+    if (item.exists) continue;
+    const fillMode = fillModes[item.path] ?? "none";
+    if (!AGENT_SCAFFOLD_FILL_MODES.has(fillMode)) continue;
+    const agent = agentForScaffoldFillMode(fillMode, defaultAgentCmd);
+    const cmd = TERMINAL_OPTIONS.includes(agent) ? agent : "claude";
+    filesByAgent.set(cmd, [...(filesByAgent.get(cmd) ?? []), item.path]);
+  }
+  return filesByAgent;
+}
+
+export function buildScaffoldFillPrompt(files: string[]) {
+  const fileList = files.map((file) => `- ${file}`).join("\n");
+  return [
+    "Fill the Eldrun project scaffold files listed below.",
+    "",
+    "Instructions:",
+    "- Inspect the project first so the files reflect the actual codebase and purpose.",
+    "- Replace placeholder scaffold content with useful, project-specific guidance.",
+    "- Preserve unrelated existing content and do not rewrite files outside this list.",
+    "- Keep AGENTS.md practical for coding agents, including architecture, workflows, and constraints.",
+    "",
+    "Files to fill:",
+    fileList,
+  ].join("\n");
 }
 
 export function BottomBar() {
@@ -773,8 +814,9 @@ function ProjectDialog({
 }: {
   kind: "new" | "import";
   onClose: () => void;
-  onProject: (project: ProjectEntry) => void;
+  onProject: (project: ProjectEntry) => void | Promise<void>;
 }) {
+  const defaultAgentCmd = useSettingsStore((s) => s.settings?.default_agent_cmd ?? "claude");
   const [projectsRoot, setProjectsRoot] = useState("");
   const [name, setName] = useState("");
   const [gitType, setGitType] = useState("private");
@@ -837,10 +879,41 @@ function ProjectDialog({
     }
   };
 
+  const selectedScaffoldAgentFills = () => {
+    return collectScaffoldAgentFills(scaffoldPreview, scaffoldFillModes, defaultAgentCmd);
+  };
+
+  const openScaffoldAgentTabs = async (project: ProjectEntry, filesByAgent: Map<string, string[]>) => {
+    if (filesByAgent.size === 0) return;
+    const projectCwd = resolveProjectDirectory(project);
+    if (!projectCwd) return;
+
+    const tabsStore = useTabsStore.getState();
+    tabsStore.setScope(project.id);
+    for (const [cmd, files] of filesByAgent) {
+      const promptPath = `.eldrun/scaffold-fill-${cmd.replace(/[^a-z0-9_-]/gi, "-")}.md`;
+      await invoke("write_project_file", {
+        projectDir: projectCwd,
+        relPath: promptPath,
+        content: buildScaffoldFillPrompt(files),
+      });
+      tabsStore.addTab({
+        label: `Fill scaffolds (${cmd})`,
+        cmd,
+        args: [],
+        env: {},
+        initialInput: `Read ${promptPath} and complete the scaffold filling task described there.`,
+        cwd: projectCwd,
+        kind: cmdToKind(cmd),
+      });
+    }
+  };
+
   const submit = async () => {
     setError("");
     setBusy(true);
     try {
+      const scaffoldAgentFills = kind === "import" ? selectedScaffoldAgentFills() : new Map<string, string[]>();
       const project =
         kind === "new"
           ? await invoke<ProjectEntry>("create_project", {
@@ -849,7 +922,8 @@ function ProjectDialog({
           : await invoke<ProjectEntry>("import_project", {
               req: { sourceDir, name, gitType, mode, scaffoldFillModes, manualValidationConfirmed },
             });
-      onProject(project);
+      await onProject(project);
+      await openScaffoldAgentTabs(project, scaffoldAgentFills);
       onClose();
     } catch (err) {
       setError(String(err));
@@ -867,6 +941,18 @@ function ProjectDialog({
           (mode === "keep" || safeName) &&
           (mode === "keep" || manualValidationConfirmed),
         );
+
+  const missingScaffoldCount = scaffoldPreview.filter((item) => !item.exists).length;
+
+  const applyScaffoldFillAll = (fillMode: string) => {
+    setScaffoldFillModes((current) => {
+      const next = { ...current };
+      for (const item of scaffoldPreview) {
+        if (!item.exists) next[item.path] = fillMode;
+      }
+      return next;
+    });
+  };
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -942,6 +1028,22 @@ function ProjectDialog({
                 I manually validated the {mode} destination and source folder.
               </label>
             )}
+
+            <label className="scaffold-fill-all-row">
+              <span>Fill all</span>
+              <select
+                value=""
+                disabled={missingScaffoldCount === 0}
+                onChange={(e) => applyScaffoldFillAll(e.target.value)}
+              >
+                <option value="" disabled>
+                  {missingScaffoldCount === 0 ? "No missing files" : "Choose fill mode..."}
+                </option>
+                {SCAFFOLD_FILL_OPTIONS.map((option) => (
+                  <option value={option.value} key={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
 
             <div className="scaffold-list">
               {scaffoldPreview.map((item) => (

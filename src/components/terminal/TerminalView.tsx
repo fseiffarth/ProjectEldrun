@@ -22,6 +22,7 @@ interface Props {
   cmd: string;
   args?: string[];
   env?: Record<string, string>;
+  initialInput?: string;
   cwd: string;
   active: boolean;
 }
@@ -74,7 +75,7 @@ function terminalTheme(scheme: string | undefined) {
   };
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, active }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -82,6 +83,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
   const unlistenOutput = useRef<(() => void) | null>(null);
   const unlistenReady = useRef<(() => void) | null>(null);
   const unlistenExit = useRef<(() => void) | null>(null);
+  const initialInputSent = useRef(false);
   const argsKey = JSON.stringify(args);
   const envKey = JSON.stringify(env);
 
@@ -127,6 +129,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
       const readyListener = await listen("terminal-ready", (ev: Event<{ id: string }>) => {
         if (ev.payload.id === id) {
           termRef.current?.write("\r\n");
+          if (initialInput && !initialInputSent.current) {
+            initialInputSent.current = true;
+            const bytes = Array.from(new TextEncoder().encode(`${initialInput}\n`));
+            invoke("pty_write", { id, data: bytes }).catch(console.error);
+          }
         }
       });
 
@@ -196,7 +203,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
       invoke("pty_kill", { id }).catch(() => {});
       term.dispose();
     };
-  }, [id, cmd, cwd, argsKey, envKey]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey]);
 
   useEffect(() => {
     if (termRef.current) {
