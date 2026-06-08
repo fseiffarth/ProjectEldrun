@@ -166,14 +166,14 @@ pub fn run() {
             commands::projects::load_project,
             commands::projects::save_project,
             commands::projects::save_tab_layout,
-            commands::projects::clear_project_session,
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
+            commands::projects::list_project_endings,
+            commands::projects::list_project_paths,
             commands::projects::create_project,
             commands::projects::preview_project_scaffold,
             commands::projects::import_project,
             commands::projects::get_time_today,
-            commands::projects::detect_agent_session_id,
             // Timer flush + activity
             commands::timer::timer_flush_app,
             commands::timer::timer_flush_project,
@@ -186,6 +186,7 @@ pub fn run() {
             commands::projects::create_file,
             commands::projects::write_project_file,
             commands::projects::write_project_file_bytes,
+            commands::projects::update_gitignore_rule,
             commands::projects::create_dir,
             commands::projects::detect_mime,
             // Terminal
@@ -219,6 +220,8 @@ pub fn run() {
             commands::git::git_commit,
             commands::git::git_push,
             commands::git::git_file_statuses,
+            commands::git::git_unpushed_commits,
+            commands::git::git_add_path,
             // Downloads
             commands::downloads::update_downloads_symlink,
             commands::downloads::configure_browser_downloads,

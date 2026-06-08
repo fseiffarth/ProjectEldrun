@@ -1,262 +1,107 @@
 /**
- * Regression test for: tabs restore/resume last global agent session
- * instead of the one tied to the tab.
+ * Regression tests for agent-tab path contamination across projects.
  *
- * Root cause: loadFromLayout was overriding a saved sessionId whenever
- * detect_agent_session_id returned a *different* value (i.e. a newer session
- * from the same project).  All agent tabs therefore ended up pointing at the
- * same most-recently-modified session file.
+ * Root cause: loadFromLayout() in projects.ts was called without targetScope.
+ * When switch_project_runtime resolved after the user had already switched to a
+ * different project, the returned tabs were written into whatever scope was
+ * active at resolution time — so e.g. ExampleOne's scope could receive ExampleTwo's
+ * layout (or vice versa), and the agent tab's cwd would be wrong.
  *
- * Fix: only fill sessionId via detection when the tab has no saved sessionId.
+ * Fix: always pass targetScope so the write goes to the intended scope bucket
+ * regardless of the current active scope.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { describe, it, expect, beforeEach } from "vitest";
+import { vi } from "vitest";
 
-// ── shared state (must be hoisted so mock factories can reference it) ─────────
-const shared = vi.hoisted(() => {
-  const loadFromLayoutSpy = vi.fn();
-  const setScope = vi.fn();
-  const ensureTab = vi.fn();
-  const updateTabSessionId = vi.fn();
-  const updateTabEnv = vi.fn();
-  const saveLayout = vi.fn().mockResolvedValue(undefined);
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-  const tabsState = {
-    scope: "proj-1",
-    tabsByScope: {} as Record<string, unknown[]>,
-    activeKey: null as string | null,
-    tabs: [] as unknown[],
-    setScope,
-    ensureTab,
-    loadFromLayout: loadFromLayoutSpy,
-    saveLayout,
-    updateTabSessionId,
-    updateTabEnv,
-  };
+import { useTabsStore } from "../stores/tabs";
 
-  return {
-    tabsState,
-    loadFromLayoutSpy,
-    invokeResponses: {} as Record<string, unknown>,
-    projectDirectory: "/home/user/eldrun/projects/foo",
-    localFile: "/home/user/eldrun/projects/foo/project.json",
-    activeId: "proj-1",
-    switchGeneration: 1,
-  };
-});
-
-// ── Tauri core mock ───────────────────────────────────────────────────────────
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn((cmd: string) =>
-    Promise.resolve(
-      cmd in shared.invokeResponses ? shared.invokeResponses[cmd] : null,
-    ),
-  ),
-}));
-
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn().mockResolvedValue(() => {}),
-}));
-
-// ── Store mocks ───────────────────────────────────────────────────────────────
-vi.mock("../stores/tabs", () => {
-  const useTabsStore = vi.fn(
-    (sel?: (s: typeof shared.tabsState) => unknown) =>
-      sel ? sel(shared.tabsState) : shared.tabsState,
-  ) as unknown as ReturnType<typeof vi.fn> & { getState: () => typeof shared.tabsState };
-  useTabsStore.getState = () => shared.tabsState;
-  return {
-    useTabsStore,
-    FILES_TAB_CMD: "__eldrun_files__",
-    cmdToKind: (cmd: string) => (cmd === "claude" ? "agent" : "shell"),
-  };
-});
-
-vi.mock("../stores/projects", () => ({
-  useProjectsStore: vi.fn(
-    (sel?: (s: unknown) => unknown) => {
-      const state = {
-        projects: [
-          {
-            id: shared.activeId,
-            name: "foo",
-            local_file: shared.localFile,
-            directory: shared.projectDirectory,
-          },
-        ],
-        activeId: shared.activeId,
-        switchGeneration: shared.switchGeneration,
-      };
-      return sel ? sel(state) : state;
-    },
-  ),
-}));
-
-vi.mock("../stores/settings", () => ({
-  useSettingsStore: vi.fn((sel: (s: unknown) => unknown) =>
-    sel({ settings: { default_agent_cmd: "claude", color_scheme: "dark" } }),
-  ),
-}));
-
-// ── Stub heavy children ───────────────────────────────────────────────────────
-vi.mock("../components/terminal/TerminalView", () => ({
-  TerminalView: () => null,
-}));
-vi.mock("../components/files/FileBrowser", () => ({
-  FileBrowser: () => null,
-}));
-
-// ── resolveProjectDirectory helper ───────────────────────────────────────────
-vi.mock("../types", () => ({
-  resolveProjectDirectory: (
-    proj: { directory?: string; local_file?: string } | null | undefined,
-  ) => {
-    if (!proj) return "";
-    if (proj.directory) return proj.directory;
-    return proj.local_file?.endsWith("/project.json")
-      ? proj.local_file.slice(0, -"/project.json".length)
-      : "";
-  },
-}));
-
-import { CenterPanel } from "../components/layout/CenterPanel";
-
-describe("CenterPanel — session ID restoration", () => {
+describe("loadFromLayout — scope isolation", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    shared.tabsState.tabsByScope = {};
-    shared.tabsState.tabs = [];
-    shared.invokeResponses = {};
-    // Reset the getState reference after clearAllMocks re-creates the mock
-    // (useTabsStore.getState is set in the mock factory so it persists).
+    // Merge-reset the data fields only so function implementations are preserved.
+    useTabsStore.setState({
+      scope: "project-a",
+      tabsByScope: {},
+      activeKeyByScope: {},
+      tabs: [],
+      activeKey: null,
+    });
   });
 
-  it("preserves a tab's saved sessionId when detection returns a newer session", async () => {
-    shared.invokeResponses = {
-      load_project: {
-        tab_layout: [
-          {
-            key: "agent-1",
-            label: "claude",
-            cmd: "claude",
-            cwd: shared.projectDirectory,
-            kind: "agent",
-            sessionId: "saved-session-abc",
-          },
-        ],
-      },
-      detect_agent_session_id: "detected-session-xyz",
-    };
-
-    render(<CenterPanel />);
-
-    await waitFor(() =>
-      expect(shared.loadFromLayoutSpy).toHaveBeenCalled(),
-    );
-
-    const [layout] = shared.loadFromLayoutSpy.mock.calls[0] as [
-      Array<{ key: string; sessionId?: string }>,
+  it("writes to targetScope even when current scope differs", () => {
+    const layout = [
+      { key: "agent-1", label: "claude", cmd: "claude", cwd: "/stale", kind: "agent" as const },
     ];
-    expect(layout[0].sessionId).toBe("saved-session-abc");
+
+    useTabsStore.getState().loadFromLayout(layout, "/project-b-dir", "project-b");
+
+    const state = useTabsStore.getState();
+    expect(state.tabsByScope["project-b"]).toHaveLength(1);
+    expect(state.tabsByScope["project-a"]).toBeFalsy();
+    // flat shortcuts are NOT updated (current scope is still project-a)
+    expect(state.tabs).toHaveLength(0);
+    expect(state.activeKey).toBeNull();
   });
 
-  it("fills sessionId via detection when the tab has no saved sessionId", async () => {
-    shared.invokeResponses = {
-      load_project: {
-        tab_layout: [
-          {
-            key: "agent-2",
-            label: "claude",
-            cmd: "claude",
-            cwd: shared.projectDirectory,
-            kind: "agent",
-            // intentionally no sessionId
-          },
-        ],
-      },
-      detect_agent_session_id: "detected-session-xyz",
-    };
-
-    render(<CenterPanel />);
-
-    await waitFor(() =>
-      expect(shared.loadFromLayoutSpy).toHaveBeenCalled(),
-    );
-
-    const [layout] = shared.loadFromLayoutSpy.mock.calls[0] as [
-      Array<{ key: string; sessionId?: string }>,
+  it("agent tab cwd is always replaced by defaultCwd, never the saved cwd", () => {
+    const layout = [
+      { key: "agent-2", label: "claude", cmd: "claude", cwd: "/example-one", kind: "agent" as const },
     ];
-    expect(layout[0].sessionId).toBe("detected-session-xyz");
+
+    useTabsStore.getState().loadFromLayout(layout, "/example-two", "project-example");
+
+    const tab = useTabsStore.getState().tabsByScope["project-example"]?.[0];
+    expect(tab?.cwd).toBe("/example-two");
+    expect(tab?.cwd).not.toContain("example-one");
   });
 
-  it("leaves sessionId undefined when detection returns null and tab has no saved sessionId", async () => {
-    shared.invokeResponses = {
-      load_project: {
-        tab_layout: [
-          {
-            key: "agent-3",
-            label: "claude",
-            cmd: "claude",
-            cwd: shared.projectDirectory,
-            kind: "agent",
-          },
-        ],
-      },
-      detect_agent_session_id: null,
-    };
-
-    render(<CenterPanel />);
-
-    await waitFor(() =>
-      expect(shared.loadFromLayoutSpy).toHaveBeenCalled(),
-    );
-
-    const [layout] = shared.loadFromLayoutSpy.mock.calls[0] as [
-      Array<{ key: string; sessionId?: string }>,
+  it("shell tab cwd is kept from layout (only agents are overridden)", () => {
+    const layout = [
+      { key: "shell-1", label: "bash", cmd: "bash", cwd: "/some/shell/dir", kind: "shell" as const },
     ];
-    expect(layout[0].sessionId).toBeUndefined();
+
+    useTabsStore.getState().loadFromLayout(layout, "/project-dir", "project-x");
+
+    const tab = useTabsStore.getState().tabsByScope["project-x"]?.[0];
+    expect(tab?.cwd).toBe("/some/shell/dir");
   });
 
-  it("preserves distinct session IDs across multiple agent tabs in the same project", async () => {
-    // detect_agent_session_id returns one project-level "most recent" ID.
-    // Before the fix this would clobber *both* tabs — both would end up as
-    // "session-beta" instead of keeping their own saved IDs.
-    shared.invokeResponses = {
-      load_project: {
-        tab_layout: [
-          {
-            key: "agent-a",
-            label: "claude",
-            cmd: "claude",
-            cwd: shared.projectDirectory,
-            kind: "agent",
-            sessionId: "session-alpha",
-          },
-          {
-            key: "agent-b",
-            label: "claude",
-            cmd: "claude",
-            cwd: shared.projectDirectory,
-            kind: "agent",
-            sessionId: "session-beta",
-          },
-        ],
-      },
-      detect_agent_session_id: "session-beta",
-    };
-
-    render(<CenterPanel />);
-
-    await waitFor(() =>
-      expect(shared.loadFromLayoutSpy).toHaveBeenCalled(),
-    );
-
-    const [layout] = shared.loadFromLayoutSpy.mock.calls[0] as [
-      Array<{ key: string; sessionId?: string }>,
+  it("does not overwrite an already-populated scope (guard matches projects.ts check)", () => {
+    // Pre-populate project-b with a live tab
+    const live = [
+      { key: "agent-live", label: "claude", cmd: "claude", cwd: "/correct", kind: "agent" as const },
     ];
-    const alpha = layout.find((t) => t.key === "agent-a");
-    const beta = layout.find((t) => t.key === "agent-b");
-    expect(alpha?.sessionId).toBe("session-alpha");
-    expect(beta?.sessionId).toBe("session-beta");
+    useTabsStore.getState().loadFromLayout(live, "/correct", "project-b");
+
+    // Simulate a late async resolve trying to overwrite project-b
+    const stale = [
+      { key: "agent-stale", label: "claude", cmd: "claude", cwd: "/wrong", kind: "agent" as const },
+    ];
+    const liveTabs = useTabsStore.getState().tabsByScope["project-b"];
+    if (!liveTabs || liveTabs.length === 0) {
+      useTabsStore.getState().loadFromLayout(stale, "/wrong", "project-b");
+    }
+
+    // Still has the original live tab, not the stale one
+    expect(useTabsStore.getState().tabsByScope["project-b"]).toHaveLength(1);
+    expect(useTabsStore.getState().tabsByScope["project-b"][0].key).toBe("agent-live");
+  });
+
+  it("flat tabs and activeKey reflect targetScope when targetScope equals current scope", () => {
+    useTabsStore.getState().setScope("project-c");
+
+    const layout = [
+      { key: "agent-c1", label: "claude", cmd: "claude", cwd: "/stale-c", kind: "agent" as const },
+      { key: "agent-c2", label: "gemini", cmd: "gemini", cwd: "/stale-c", kind: "agent" as const },
+    ];
+
+    useTabsStore.getState().loadFromLayout(layout, "/project-c-dir", "project-c");
+
+    const state = useTabsStore.getState();
+    expect(state.tabs).toHaveLength(2);
+    expect(state.activeKey).toBe("agent-c1");
+    expect(state.tabs[0].cwd).toBe("/project-c-dir");
+    expect(state.tabs[1].cwd).toBe("/project-c-dir");
   });
 });

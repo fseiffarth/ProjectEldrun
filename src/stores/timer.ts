@@ -118,6 +118,27 @@ export const useTimerStore = create<TimerStore>((set, get) => ({
         ? invoke("timer_flush_project", { projectId: s.activeProjectId, secs: projElapsed }).catch(() => {})
         : Promise.resolve(),
     ]);
+    // Reload committed secs from the backend so day-boundary crossings are
+    // handled correctly (in-memory accumulation would carry yesterday's total
+    // into today once Eldrun runs past midnight).
+    if (!s.paused) {
+      const [newAppSecs, newProjSecs] = await Promise.all([
+        invoke<number>("get_time_today", { projectId: APP_TIMER_ID }).catch(
+          () => s.appCommittedSecs + appElapsed,
+        ),
+        s.activeProjectId
+          ? invoke<number>("get_time_today", { projectId: s.activeProjectId }).catch(
+              () => s.projectCommittedSecs + projElapsed,
+            )
+          : Promise.resolve(s.projectCommittedSecs + projElapsed),
+      ]);
+      set({
+        appStartedAt: now,
+        appCommittedSecs: newAppSecs,
+        projectStartedAt: now,
+        projectCommittedSecs: newProjSecs,
+      });
+    }
   },
 
   getAppSecs: () => {

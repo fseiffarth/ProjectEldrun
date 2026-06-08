@@ -111,7 +111,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
           const scopeKey = id ?? "root";
           const liveTabs = useTabsStore.getState().tabsByScope[scopeKey];
           if (!liveTabs || liveTabs.length === 0) {
-            useTabsStore.getState().loadFromLayout(payload.tabLayout, projectCwd);
+            useTabsStore.getState().loadFromLayout(payload.tabLayout, projectCwd, scopeKey);
           }
         }
       })

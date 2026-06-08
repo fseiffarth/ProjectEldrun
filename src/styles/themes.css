@@ -440,6 +440,8 @@ input {
 }
 
 .right-panel-header {
+  display: flex;
+  align-items: center;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
   font-size: 11px;
@@ -447,6 +449,109 @@ input {
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.right-panel-sort {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.sort-key-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 2px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.sort-key-btn:hover {
+  color: var(--text-secondary);
+  background: var(--pill-hover-bg);
+}
+
+.sort-key-btn.active {
+  color: var(--accent, #58a6ff);
+  font-weight: 700;
+}
+
+/* ── Git action buttons ──────────────────────────────────────────────── */
+.git-action-bar {
+  display: flex;
+  gap: 3px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.git-action-btn {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 3px 7px;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: inherit;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+  flex: 1;
+  justify-content: center;
+}
+
+.git-action-btn:hover {
+  background: var(--pill-active-bg);
+  color: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.git-action-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.git-btn-label {
+  display: none;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.git-action-btn:hover .git-btn-label {
+  display: inline;
+}
+
+.git-hover-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 200;
+  background: var(--bg-panel, #1e1e1e);
+  border: 1px solid var(--border-color);
+  border-top: none;
+  max-height: 160px;
+  overflow-y: auto;
+  font-size: 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.git-hover-item {
+  padding: 2px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
 }
 
 /* ── Bottom bar ──────────────────────────────────────────────────────── */
@@ -864,6 +969,8 @@ input {
 
 /* ── File tree ────────────────────────────────────────────────────────── */
 .file-tree {
+  min-height: 100%;
+  box-sizing: border-box;
   padding: 4px;
 }
 
@@ -1778,6 +1885,90 @@ input {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.project-settings-dialog {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.project-ending-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-ending-form input {
+  flex: 1;
+  height: 34px;
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  padding: 0 9px;
+}
+
+.project-ending-form input:hover,
+.project-ending-form input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.project-ending-form button {
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 7px 10px;
+}
+
+.project-ending-form button:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.settings-list.project-ending-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 4px 10px;
+  max-height: min(360px, calc(100vh - 300px));
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.project-ending-toggle {
+  min-height: 32px;
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: center;
+}
+
+.project-ending-toggle:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.project-ending-toggle.is-hidden {
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-color: var(--border-subtle);
+}
+
+.settings-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings-error {
+  color: var(--danger, #f85149);
+  font-size: 12px;
+  word-break: break-word;
 }
 
 .settings-list {

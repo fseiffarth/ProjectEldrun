@@ -214,6 +214,40 @@ pub fn git_file_statuses(
     Ok(map)
 }
 
+/// Stages a specific path (file or directory) via `git add`.
+#[tauri::command]
+pub fn git_add_path(project_dir: String, rel_path: String) -> Result<(), String> {
+    let out = Command::new("git")
+        .args(["add", &rel_path])
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(())
+}
+
+/// Returns one-line summaries of commits ahead of the upstream (not yet pushed).
+/// Returns an empty vec when there is no upstream or the repo is not git.
+#[tauri::command]
+pub fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> {
+    let dir = Path::new(&project_dir);
+    if !dir.join(".git").exists() {
+        return Ok(vec![]);
+    }
+    let out = Command::new("git")
+        .args(["log", "@{u}..", "--oneline"])
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Ok(vec![]);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text.lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect())
+}
+
 #[tauri::command]
 pub fn git_push(project_dir: String) -> Result<String, String> {
     let out = Command::new("git")

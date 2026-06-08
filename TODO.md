@@ -7,6 +7,17 @@
 
 ## Open TODOs
 
+### G0 — Deferred / Known Issues
+
+G0.1 [ ] **Agent session resume** (`ISSUE-RESUME`): when restoring a project's
+tab layout on switch/restart, detect the most recent agent session ID from the
+agent's own session directory (Claude Code: `~/.claude/projects/<encoded>/`,
+Codex: `~/.codex/sessions/`, Gemini: `~/.gemini/history/`, Vibe:
+`$VIBE_HOME/logs/session/`) and pass `--resume <id>` when spawning the tab so
+the conversation continues.  Removed 2026-06-07 — detection was unreliable and
+each tab must track its own distinct session ID (not the project-global latest)
+to work correctly with multi-agent setups. See ROADMAP.md "Deferred Features".
+
 ### G1 — Agents and tabs
 
 G1.1 [x] **Agent tab rename**: rename the permanent terminal tab from "Terminal" to the configured agent name (`Claude` or `Codex`) everywhere (`_TERMINAL_TAB` label, `_update_terminal_tab_label`, `_terminal_back_btn` label).

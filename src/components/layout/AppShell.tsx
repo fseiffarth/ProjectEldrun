@@ -50,6 +50,12 @@ export function AppShell() {
     return () => { unlisten?.(); };
   }, [flushTimer]);
 
+  // Periodically commit elapsed time so a crash doesn't lose the whole session.
+  useEffect(() => {
+    const id = setInterval(() => { void flushTimer(); }, 60_000);
+    return () => clearInterval(id);
+  }, [flushTimer]);
+
   useEffect(() => {
     if (projectsLoaded) {
       void initTimer(activeId);

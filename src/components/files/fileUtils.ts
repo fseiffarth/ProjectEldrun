@@ -22,14 +22,13 @@ export const STANDARD_PROJECT_FILES = new Set([
 ]);
 
 export const INTERNAL_PROJECT_FILES = new Set([
-  ".git",
   "open_apps.json",
   "project.json",
   "project_default_apps.json",
   ".eldrun_colors.json",
 ]);
 
-export type SortKey = "name" | "type" | "size" | "modified";
+export type SortKey = "name" | "type" | "size" | "created" | "modified";
 
 export function joinRel(base: string, name: string): string {
   return base ? `${base}/${name}` : name;
@@ -56,18 +55,49 @@ export function visibleEntries(
     query?: string;
     sortKey?: SortKey;
     descending?: boolean;
+    hiddenEndings?: string[];
+    relPath?: string;
+    hiddenPaths?: string[];
+    shownPaths?: string[];
   },
 ): FileEntry[] {
   const query = (options.query ?? "").trim().toLowerCase();
   const sortKey = options.sortKey ?? "name";
   const descending = options.descending ?? false;
+  const relPath = (options.relPath ?? "").replace(/^\/+|\/+$/g, "");
+  const hiddenEndings = (options.hiddenEndings ?? [])
+    .map((ending) => ending.trim().toLowerCase())
+    .filter(Boolean);
+  const hiddenPaths = new Set((options.hiddenPaths ?? []).map(normalizeRulePath));
+  const shownPaths = new Set((options.shownPaths ?? []).map(normalizeRulePath));
 
   return entries
-    .filter((entry) => !INTERNAL_PROJECT_FILES.has(entry.name))
-    .filter((entry) => options.showHidden || !entry.name.startsWith("."))
-    .filter((entry) => options.showStandardFiles || !STANDARD_PROJECT_FILES.has(entry.name))
+    .filter((entry) => {
+      const entryRelPath = normalizeRulePath(relPath ? `${relPath}/${entry.name}` : entry.name);
+      const explicitlyShown = shownPaths.has(entryRelPath);
+      if (hiddenPaths.has(entryRelPath) && !explicitlyShown) return false;
+      if (explicitlyShown) return true;
+      return !INTERNAL_PROJECT_FILES.has(entry.name);
+    })
+    .filter((entry) => {
+      const entryRelPath = normalizeRulePath(relPath ? `${relPath}/${entry.name}` : entry.name);
+      if (shownPaths.has(entryRelPath)) return true;
+      return !hiddenEndings.some((ending) => entry.name.toLowerCase().endsWith(ending));
+    })
+    .filter((entry) => {
+      const entryRelPath = normalizeRulePath(relPath ? `${relPath}/${entry.name}` : entry.name);
+      return shownPaths.has(entryRelPath) || options.showHidden || !entry.name.startsWith(".");
+    })
+    .filter((entry) => {
+      const entryRelPath = normalizeRulePath(relPath ? `${relPath}/${entry.name}` : entry.name);
+      return shownPaths.has(entryRelPath) || options.showStandardFiles || !STANDARD_PROJECT_FILES.has(entry.name);
+    })
     .filter((entry) => !query || entry.name.toLowerCase().includes(query))
     .sort((a, b) => compareEntries(a, b, sortKey, descending));
+}
+
+function normalizeRulePath(path: string): string {
+  return path.trim().replace(/^\/+|\/+$/g, "").toLowerCase();
 }
 
 function compareEntries(a: FileEntry, b: FileEntry, sortKey: SortKey, descending: boolean): number {
@@ -78,6 +108,8 @@ function compareEntries(a: FileEntry, b: FileEntry, sortKey: SortKey, descending
     result = (a.extension ?? "").localeCompare(b.extension ?? "");
   } else if (sortKey === "size") {
     result = a.size - b.size;
+  } else if (sortKey === "created") {
+    result = (a.created_secs ?? 0) - (b.created_secs ?? 0);
   } else if (sortKey === "modified") {
     result = (a.modified_secs ?? 0) - (b.modified_secs ?? 0);
   }

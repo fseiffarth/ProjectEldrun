@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useWindowsStore } from "../../stores/windows";
-import { type FileEntry, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries } from "./fileUtils";
+import { type FileEntry, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries } from "./fileUtils";
 
 function sizeCategory(bytes: number): string {
   if (bytes < 10 * 1024) return "size-small";
@@ -15,26 +15,60 @@ interface Props {
   projectDir: string;
   projectId: string | null;
   showHidden?: boolean;
+  sortKey?: SortKey;
+  descending?: boolean;
+  hiddenEndings?: string[];
+  hiddenPaths?: string[];
+  shownPaths?: string[];
 }
 
 type GitStatusMap = Record<string, string>;
+type EntryContextMenu = { x: number; y: number; entry: FileEntry } | null;
 
-const STATUS_COLOR: Record<string, string> = {
-  staged:    "#3fb950", // green
+export const STATUS_COLOR: Record<string, string> = {
+  staged:    "#e3b341", // yellow – staged for commit
   untracked: "#f85149", // red
   modified:  "#f85149", // red
-  ignored:   "#e3b341", // yellow
+  ignored:   "#6e7681", // dim gray
 };
 
-export function FileTree({ projectDir, projectId, showHidden = false }: Props) {
-  const [entries, setEntries] = useState<FileEntry[]>([]);
+function pathToFileUri(path: string): string {
+  return `file://${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+export function FileTree({
+  projectDir,
+  projectId,
+  showHidden = false,
+  sortKey = "name",
+  descending = false,
+  hiddenEndings = [],
+  hiddenPaths = [],
+  shownPaths = [],
+}: Props) {
+  const [rawEntries, setRawEntries] = useState<FileEntry[]>([]);
   const [relPath, setRelPath] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gitStatuses, setGitStatuses] = useState<GitStatusMap>({});
   const [isDragOver, setIsDragOver] = useState(false);
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
+  const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const { openFile } = useWindowsStore();
+
+  const entries = useMemo(
+    () => visibleEntries(rawEntries, {
+      showHidden,
+      showStandardFiles: false,
+      sortKey,
+      descending,
+      hiddenEndings,
+      relPath,
+      hiddenPaths,
+      shownPaths,
+    }),
+    [rawEntries, showHidden, sortKey, descending, hiddenEndings, relPath, hiddenPaths, shownPaths],
+  );
 
   useEffect(() => {
     if (!projectDir) return;
@@ -49,7 +83,7 @@ export function FileTree({ projectDir, projectId, showHidden = false }: Props) {
         projectDir,
         relPath: rel,
       });
-      setEntries(visibleEntries(result, { showHidden, showStandardFiles: false }));
+      setRawEntries(result);
       setRelPath(rel);
       const statuses = await invoke<GitStatusMap>("git_file_statuses", {
         projectDir,
@@ -81,6 +115,61 @@ export function FileTree({ projectDir, projectId, showHidden = false }: Props) {
   function handleEntryMouseEnter(e: React.MouseEvent<HTMLDivElement>, entry: FileEntry) {
     if (entry.modified_secs || entry.created_secs) {
       setTooltip({ rect: e.currentTarget.getBoundingClientRect(), entry });
+    }
+  }
+
+  function handleEntryDragStart(e: React.DragEvent<HTMLDivElement>, entry: FileEntry) {
+    const fileUri = pathToFileUri(entry.path);
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.setData("text/uri-list", fileUri);
+    e.dataTransfer.setData("text/plain", entry.path);
+    if (!entry.is_dir) {
+      e.dataTransfer.setData(
+        "DownloadURL",
+        `${entry.mime || "application/octet-stream"}:${entry.name}:${fileUri}`,
+      );
+    }
+  }
+
+  function relForEntry(entry: FileEntry): string {
+    return relPath ? `${relPath}/${entry.name}` : entry.name;
+  }
+
+  function showEntryContextMenu(e: React.MouseEvent<HTMLDivElement>, entry: FileEntry) {
+    e.preventDefault();
+    e.stopPropagation();
+    setTooltip(null);
+    setContextMenu({ x: e.clientX, y: e.clientY, entry });
+  }
+
+  async function stageEntry(entry: FileEntry) {
+    setContextMenu(null);
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke("git_add_path", { projectDir, relPath: relForEntry(entry) });
+      await load(relPath);
+    } catch (err) {
+      setError(String(err));
+      setLoading(false);
+    }
+  }
+
+  async function updateGitignore(entry: FileEntry, action: "ignore" | "unignore") {
+    setContextMenu(null);
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke("update_gitignore_rule", {
+        projectDir,
+        relPath: relForEntry(entry),
+        isDir: entry.is_dir,
+        action,
+      });
+      await load(relPath);
+    } catch (err) {
+      setError(String(err));
+      setLoading(false);
     }
   }
 
@@ -134,6 +223,7 @@ export function FileTree({ projectDir, projectId, showHidden = false }: Props) {
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      onMouseDown={() => setContextMenu(null)}
     >
       {relPath && (
         <button className="file-tree-up" onClick={goUp} title="Go up">
@@ -151,6 +241,9 @@ export function FileTree({ projectDir, projectId, showHidden = false }: Props) {
             key={e.path}
             className={`file-entry ${e.is_dir ? "dir" : "file"}`}
             onClick={() => handleClick(e)}
+            onContextMenu={(ev) => showEntryContextMenu(ev, e)}
+            draggable
+            onDragStart={(ev) => handleEntryDragStart(ev, e)}
             onMouseEnter={(ev) => handleEntryMouseEnter(ev, e)}
             onMouseLeave={() => setTooltip(null)}
           >
@@ -172,6 +265,27 @@ export function FileTree({ projectDir, projectId, showHidden = false }: Props) {
           </div>
         );
       })}
+      {contextMenu && createPortal(
+        <div
+          className="context-menu file-browser-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {gitStatuses[contextMenu.entry.name] !== "staged" && gitStatuses[contextMenu.entry.name] !== "ignored" && (
+            <button onClick={() => stageEntry(contextMenu.entry)}>
+              Stage (git add)
+            </button>
+          )}
+          <button onClick={() => updateGitignore(contextMenu.entry, "ignore")}>
+            Add to .gitignore
+          </button>
+          <button onClick={() => updateGitignore(contextMenu.entry, "unignore")}>
+            Show from .gitignore
+          </button>
+          <button onClick={() => setContextMenu(null)}>Cancel</button>
+        </div>,
+        document.body,
+      )}
       {tooltip && createPortal(
         <div
           className="file-tooltip"

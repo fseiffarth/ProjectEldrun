@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TerminalView } from "../terminal/TerminalView";
 import { FileBrowser } from "../files/FileBrowser";
-import { useTabsStore, cmdToKind, FILES_TAB_CMD } from "../../stores/tabs";
+import { useTabsStore, cmdToKind, type TabKind } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { resolveProjectDirectory } from "../../types";
@@ -17,6 +17,7 @@ export function CenterPanel() {
   const tabs = useTabsStore((s) => s.tabs);
   const saveLayout = useTabsStore((s) => s.saveLayout);
   const updateTabEnv = useTabsStore((s) => s.updateTabEnv);
+
   const { projects, activeId, switchGeneration } = useProjectsStore();
   const settings = useSettingsStore((s) => s.settings);
 
@@ -49,85 +50,18 @@ export function CenterPanel() {
     }
 
     // Project context: try to restore saved tab layout first.
-    type LayoutEntry = { key: string; label: string; cmd: string; cwd: string; kind?: "agent" | "local_agent" | "shell" | "files"; type?: string; env?: Record<string, string>; sessionId?: string };
+    // Capture the scope now so the async chain always writes to the right
+    // scope bucket even if the user switches projects before it resolves.
+    const scopeForLoad = nextScope;
+    type LayoutEntry = { key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string; env?: Record<string, string> };
     invoke<Record<string, unknown>>("load_project", { localFile })
-      .then(async (proj) => {
+      .then((proj) => {
         const raw = proj.tab_layout as LayoutEntry[] | undefined;
         if (!raw || raw.length === 0) return;
-
-        // Refresh session IDs before spawning to avoid resuming cleared sessions.
-        const layout = await Promise.all(
-          raw.map(async (tab): Promise<LayoutEntry> => {
-            const kind = tab.kind ?? cmdToKind(tab.cmd || (tab.type === "files" ? FILES_TAB_CMD : ""));
-            if (kind !== "agent" && kind !== "local_agent") return tab;
-            const detected = await invoke<string | null>("detect_agent_session_id", {
-              agentCmd: tab.cmd,
-              projectDir: projectCwd,
-              vibeHome: tab.env?.VIBE_HOME ?? null,
-            }).catch(() => null);
-            if (detected && !tab.sessionId) return { ...tab, sessionId: detected };
-            return tab;
-          })
-        );
-
-        loadFromLayout(layout, projectCwd);
+        loadFromLayout(raw, projectCwd, scopeForLoad);
       })
       .catch(() => {});
   }, [activeId, projectCwd, localFile, agentCmd, switchGeneration, setScope, ensureTab, loadFromLayout]);
-
-  // After switching to a project, detect the current session ID for any agent
-  // tabs that don't yet have one stored and update them so future restores can
-  // resume the session.  Runs 5 s after project switch to give agents time to
-  // create their session files.
-  useEffect(() => {
-    if (!activeId || !projectCwd) return;
-    const timer = window.setTimeout(async () => {
-      const { tabs: currentTabs, updateTabSessionId: update } = useTabsStore.getState();
-      const agentTabs = currentTabs.filter(
-        (t) => t.kind === "agent" || t.kind === "local_agent",
-      );
-      for (const tab of agentTabs) {
-        try {
-          const sessionId = await invoke<string | null>("detect_agent_session_id", {
-            agentCmd: tab.cmd,
-            projectDir: projectCwd,
-            vibeHome: tab.env?.VIBE_HOME ?? null,
-          });
-          if (sessionId && !tab.sessionId) update(tab.key, sessionId);
-        } catch {
-          // session detection is best-effort
-        }
-      }
-    }, 5000);
-    return () => window.clearTimeout(timer);
-  }, [activeId, projectCwd]);
-
-  // Periodically re-detect session IDs so that /clear (which creates a new
-  // session) is picked up without requiring a project switch.  Only runs when
-  // there is exactly one agent tab in scope to avoid incorrectly overwriting
-  // session IDs across independent multi-agent tab setups.
-  useEffect(() => {
-    if (!activeId || !projectCwd) return;
-    const interval = window.setInterval(async () => {
-      const { tabs: currentTabs, updateTabSessionId: update } = useTabsStore.getState();
-      const agentTabs = currentTabs.filter(
-        (t) => t.kind === "agent" || t.kind === "local_agent",
-      );
-      if (agentTabs.length !== 1) return;
-      const tab = agentTabs[0];
-      try {
-        const sessionId = await invoke<string | null>("detect_agent_session_id", {
-          agentCmd: tab.cmd,
-          projectDir: projectCwd,
-          vibeHome: tab.env?.VIBE_HOME ?? null,
-        });
-        if (sessionId && sessionId !== tab.sessionId) update(tab.key, sessionId);
-      } catch {
-        // session detection is best-effort
-      }
-    }, 15_000);
-    return () => window.clearInterval(interval);
-  }, [activeId, projectCwd]);
 
   // Re-hydrate local_agent tabs that were saved without VIBE_HOME/VIBE_ACTIVE_MODEL.
   useEffect(() => {

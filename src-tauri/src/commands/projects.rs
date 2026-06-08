@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -51,231 +51,6 @@ pub fn save_tab_layout(
     crate::services::terminal_service::save_tab_layout(&local_file, &tabs)
 }
 
-/// Debug: clear all project session state from disk (tabs, open_apps, session files).
-#[tauri::command]
-pub fn clear_project_session(local_file: String) -> Result<(), String> {
-    use crate::services::terminal_service::eldrun_sessions_dir;
-
-    let path = PathBuf::from(&local_file);
-    let mut project: Project = storage::read_json(&path).unwrap_or_default();
-    project.tab_layout = None;
-    project.open_apps = None;
-    storage::write_json(&path, &project).map_err(|e| e.to_string())?;
-
-    if let Some(sessions_dir) = eldrun_sessions_dir(&local_file) {
-        for file in &["terminals.json", "windows.json", "filetabs.json"] {
-            let p = sessions_dir.join(file);
-            if p.exists() {
-                let _ = fs::remove_file(&p);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Detect the most recent session ID for any supported agent CLI.
-///
-/// - `agent_cmd`: the command name ("claude", "codex", "gemini", "vibe")
-/// - `project_dir`: the project's working directory
-/// - `vibe_home`: optional VIBE_HOME override (used for local Ollama agent tabs)
-#[tauri::command]
-pub fn detect_agent_session_id(
-    agent_cmd: String,
-    project_dir: String,
-    vibe_home: Option<String>,
-) -> Option<String> {
-    match agent_cmd.as_str() {
-        "claude" => detect_claude_session(&project_dir),
-        "codex" => detect_codex_session(&project_dir),
-        "gemini" => detect_gemini_session(&project_dir),
-        "vibe" => detect_vibe_session(&project_dir, vibe_home.as_deref()),
-        _ => None,
-    }
-}
-
-/// Claude: `~/.claude/projects/<encoded-path>/<session-id>.jsonl`
-/// Path encoding: every `/` → `-`.
-fn detect_claude_session(project_dir: &str) -> Option<String> {
-    let encoded = project_dir.replace(['/', '\\'], "-");
-    let dir = paths::home_dir()
-        .join(".claude")
-        .join("projects")
-        .join(&encoded);
-    most_recent_jsonl_stem(&dir)
-}
-
-/// Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`
-/// Each file starts with a `session_meta` line containing `id` and `cwd`.
-/// We walk newest date directories first and return the first session whose
-/// cwd matches `project_dir`.
-fn detect_codex_session(project_dir: &str) -> Option<String> {
-    let root = paths::home_dir().join(".codex").join("sessions");
-    if !root.is_dir() {
-        return None;
-    }
-
-    // Collect every JSONL file with its modification time, then sort newest first.
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-    collect_jsonl_files(&root, &mut files);
-    files.sort_by(|a, b| b.0.cmp(&a.0));
-
-    for (_, path) in files {
-        if let Some(id) = read_codex_session_id_for_dir(&path, project_dir) {
-            return Some(id);
-        }
-    }
-    None
-}
-
-/// Gemini stores per-project history under `~/.gemini/history/<name>/` where
-/// the name mapping lives in `~/.gemini/projects.json`.  The resume flag
-/// accepts "latest" which always picks the most recent session, so we just
-/// confirm a history entry exists for this project and return the sentinel.
-fn detect_gemini_session(project_dir: &str) -> Option<String> {
-    let gemini_home = paths::home_dir().join(".gemini");
-
-    // Resolve project name from projects.json.
-    let projects_file = gemini_home.join("projects.json");
-    let content = fs::read_to_string(&projects_file).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let name = v["projects"]
-        .as_object()?
-        .iter()
-        .find(|(k, _)| k.as_str() == project_dir)
-        .map(|(_, v)| v.as_str().unwrap_or("").to_owned())?;
-
-    let history_dir = gemini_home.join("history").join(&name);
-    if history_dir.is_dir() {
-        Some("latest".to_string())
-    } else {
-        None
-    }
-}
-
-/// Vibe: `$VIBE_HOME/logs/session/<dir>/meta.json`
-/// `meta.json` has `session_id` and `environment.working_directory`.
-fn detect_vibe_session(project_dir: &str, vibe_home: Option<&str>) -> Option<String> {
-    let base = match vibe_home {
-        Some(h) if !h.is_empty() => PathBuf::from(h),
-        _ => paths::home_dir().join(".vibe"),
-    };
-    let sessions_dir = base.join("logs").join("session");
-    if !sessions_dir.is_dir() {
-        return None;
-    }
-
-    let mut best: Option<(std::time::SystemTime, String)> = None;
-    for entry in fs::read_dir(&sessions_dir).ok()?.flatten() {
-        if !entry.file_type().map_or(false, |t| t.is_dir()) {
-            continue;
-        }
-        let meta_path = entry.path().join("meta.json");
-        if !meta_path.exists() {
-            continue;
-        }
-        let content = match fs::read_to_string(&meta_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let v: serde_json::Value = match serde_json::from_str(&content) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let cwd = v["environment"]["working_directory"].as_str().unwrap_or("");
-        if cwd != project_dir {
-            continue;
-        }
-        let session_id = match v["session_id"].as_str() {
-            Some(id) => id.to_owned(),
-            None => continue,
-        };
-        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
-            if best.as_ref().map_or(true, |(t, _)| modified > *t) {
-                best = Some((modified, session_id));
-            }
-        }
-    }
-    best.map(|(_, id)| id)
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────
-
-/// Return the stem (filename without `.jsonl`) of the most recently *started*
-/// session in `dir`.  "Started" means the first `timestamp` field written to
-/// the JSONL file, which is set when Claude Code creates the session.  This is
-/// more reliable than file mtime because Claude appends a summary record to the
-/// old session a few seconds *after* creating the new one on `/clear`, which
-/// makes the old file appear newer by mtime.
-fn most_recent_jsonl_stem(dir: &PathBuf) -> Option<String> {
-    if !dir.is_dir() {
-        return None;
-    }
-    // (start_timestamp_string, stem) — ISO-8601 strings compare lexicographically.
-    let mut latest: Option<(String, String)> = None;
-    for entry in fs::read_dir(dir).ok()?.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".jsonl") {
-            continue;
-        }
-        let stem = name[..name.len() - 6].to_string();
-        if let Some(start_ts) = read_jsonl_start_timestamp(&entry.path()) {
-            if latest.as_ref().map_or(true, |(t, _)| start_ts > *t) {
-                latest = Some((start_ts, stem));
-            }
-        }
-    }
-    latest.map(|(_, stem)| stem)
-}
-
-/// Read the first `timestamp` field from the first few lines of a JSONL file.
-/// Claude Code writes this when the session is created, before any user turn.
-fn read_jsonl_start_timestamp(path: &PathBuf) -> Option<String> {
-    use std::io::{BufRead, BufReader};
-    let file = fs::File::open(path).ok()?;
-    for line in BufReader::new(file).lines().take(10).flatten() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-            if let Some(ts) = v["timestamp"].as_str() {
-                return Some(ts.to_owned());
-            }
-        }
-    }
-    None
-}
-
-/// Recursively collect all `.jsonl` files under `dir` along with their mtime.
-fn collect_jsonl_files(dir: &PathBuf, out: &mut Vec<(std::time::SystemTime, PathBuf)>) {
-    let Ok(rd) = fs::read_dir(dir) else { return };
-    for entry in rd.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_jsonl_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
-                out.push((modified, path));
-            }
-        }
-    }
-}
-
-/// Read the first `session_meta` line of a codex JSONL file and return the
-/// session `id` if `cwd` matches `project_dir`.
-fn read_codex_session_id_for_dir(path: &PathBuf, project_dir: &str) -> Option<String> {
-    use std::io::{BufRead, BufReader};
-    let file = fs::File::open(path).ok()?;
-    for line in BufReader::new(file).lines().take(5).flatten() {
-        let v: serde_json::Value = serde_json::from_str(&line).ok()?;
-        if v["type"].as_str() != Some("session_meta") {
-            continue;
-        }
-        let payload = &v["payload"];
-        if payload["cwd"].as_str() != Some(project_dir) {
-            return None;
-        }
-        return payload["id"].as_str().map(String::from);
-    }
-    None
-}
-
 #[tauri::command]
 pub fn root_work_dir() -> String {
     storage::root_work_dir().to_string_lossy().to_string()
@@ -298,6 +73,12 @@ pub struct FileEntry {
     pub created_secs: Option<u64>,
     pub extension: Option<String>,
     pub mime: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectPathEntry {
+    pub path: String,
+    pub is_dir: bool,
 }
 
 /// List directory contents — validates the path stays inside the project root.
@@ -357,6 +138,23 @@ pub fn list_dir(project_dir: String, rel_path: String) -> Result<Vec<FileEntry>,
     }
     result.sort_by_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
     Ok(result)
+}
+
+#[tauri::command]
+pub fn list_project_endings(project_dir: String) -> Result<Vec<String>, String> {
+    let root = canonical(&project_dir)?;
+    let mut endings = BTreeSet::new();
+    collect_project_endings(&root, &root, &mut endings)?;
+    Ok(endings.into_iter().collect())
+}
+
+#[tauri::command]
+pub fn list_project_paths(project_dir: String) -> Result<Vec<ProjectPathEntry>, String> {
+    let root = canonical(&project_dir)?;
+    let mut paths = Vec::new();
+    collect_project_paths(&root, &root, "", &mut paths)?;
+    paths.sort_by_key(|entry| (!entry.is_dir, entry.path.to_lowercase()));
+    Ok(paths)
 }
 
 /// Rename a file or directory — path must stay inside the project root.
@@ -453,6 +251,48 @@ pub fn write_project_file_bytes(
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     fs::write(&target, &content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_gitignore_rule(
+    project_dir: String,
+    rel_path: String,
+    is_dir: bool,
+    action: String,
+) -> Result<(), String> {
+    let root = canonical(&project_dir)?;
+    let clean_rel = normalize_project_rel_path(&rel_path)?;
+    let target_c = canonical_or_new(&root.join(&clean_rel));
+    enforce_confinement(&root, &target_c)?;
+
+    let gitignore_path = root.join(".gitignore");
+    let existing = fs::read_to_string(&gitignore_path).unwrap_or_default();
+    let mut lines: Vec<String> = existing.lines().map(|line| line.to_string()).collect();
+    let new_rules = match action.as_str() {
+        "ignore" => gitignore_ignore_rules(&clean_rel, is_dir),
+        "unignore" => gitignore_unignore_rules(&clean_rel, is_dir),
+        other => return Err(format!("unknown gitignore action: {other}")),
+    };
+    let inverse_rules = match action.as_str() {
+        "ignore" => gitignore_unignore_rules(&clean_rel, is_dir),
+        "unignore" => gitignore_ignore_rules(&clean_rel, is_dir),
+        _ => Vec::new(),
+    };
+
+    lines.retain(|line| {
+        let trimmed = line.trim();
+        !new_rules.iter().any(|rule| rule == trimmed)
+            && !inverse_rules.iter().any(|rule| rule == trimmed)
+    });
+    if !lines.is_empty() && lines.last().is_some_and(|line| !line.trim().is_empty()) {
+        lines.push(String::new());
+    }
+    lines.extend(new_rules);
+    let mut next = lines.join("\n");
+    if !next.is_empty() {
+        next.push('\n');
+    }
+    fs::write(&gitignore_path, next).map_err(|e| e.to_string())
 }
 
 /// Create a new directory inside the project.
@@ -802,6 +642,101 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn collect_project_endings(
+    root: &Path,
+    dir: &Path,
+    endings: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    enforce_confinement(root, dir)?;
+    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if path.is_dir() {
+            if should_skip_ending_scan_dir(&name) {
+                continue;
+            }
+            collect_project_endings(root, &path, endings)?;
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            endings.insert(format!(".{ext}"));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_project_rel_path(rel: &str) -> Result<String, String> {
+    let p = std::path::Path::new(rel);
+    for component in p.components() {
+        match component {
+            std::path::Component::ParentDir | std::path::Component::RootDir => {
+                return Err(format!("invalid path component in '{rel}'"));
+            }
+            _ => {}
+        }
+    }
+    Ok(rel.trim_start_matches('/').to_string())
+}
+
+fn gitignore_ignore_rules(rel_path: &str, is_dir: bool) -> Vec<String> {
+    let rule = if is_dir {
+        format!("/{rel_path}/")
+    } else {
+        format!("/{rel_path}")
+    };
+    vec![rule]
+}
+
+fn gitignore_unignore_rules(rel_path: &str, is_dir: bool) -> Vec<String> {
+    let mut rules = Vec::new();
+    let parts: Vec<&str> = rel_path.split('/').filter(|part| !part.is_empty()).collect();
+    let parent_count = if is_dir { parts.len() } else { parts.len().saturating_sub(1) };
+    for i in 0..parent_count {
+        rules.push(format!("!/{}/", parts[..=i].join("/")));
+    }
+    if !is_dir {
+        rules.push(format!("!/{rel_path}"));
+    }
+    rules
+}
+
+fn collect_project_paths(
+    root: &Path,
+    dir: &Path,
+    rel_dir: &str,
+    paths: &mut Vec<ProjectPathEntry>,
+) -> Result<(), String> {
+    enforce_confinement(root, dir)?;
+    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".eldrun" {
+            continue;
+        }
+        let rel_path = if rel_dir.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel_dir}/{name}")
+        };
+        let is_dir = path.is_dir();
+        paths.push(ProjectPathEntry {
+            path: rel_path.clone(),
+            is_dir,
+        });
+        if is_dir && !should_skip_ending_scan_dir(&name) {
+            collect_project_paths(root, &path, &rel_path, paths)?;
+        }
+    }
+    Ok(())
+}
+
+fn should_skip_ending_scan_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | ".eldrun" | "node_modules" | "target" | "dist" | "build" | ".next" | ".cache"
+    )
 }
 
 fn canonical_or_new(path: &Path) -> PathBuf {
