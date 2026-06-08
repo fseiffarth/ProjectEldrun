@@ -58,6 +58,8 @@ export function CenterPanel() {
       .then((proj) => {
         const raw = proj.tab_layout as LayoutEntry[] | undefined;
         if (!raw || raw.length === 0) return;
+        // Guard: don't overwrite tabs that switch_project_runtime already loaded.
+        if ((useTabsStore.getState().tabsByScope[scopeForLoad]?.length ?? 0) > 0) return;
         loadFromLayout(raw, projectCwd, scopeForLoad);
       })
       .catch(() => {});
