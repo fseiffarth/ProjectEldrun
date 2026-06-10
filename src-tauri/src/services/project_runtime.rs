@@ -8,7 +8,7 @@ use crate::commands::workspace::WorkspaceStateArc;
 use crate::schema::project::TabEntry;
 use crate::schema::session::{FileTabSession, LayoutSession, ProjectState};
 use crate::schema::time_log::TimeLogEntry;
-use crate::services::{download_routing, restore_service, terminal_service, window_service};
+use crate::services::{restore_service, terminal_service, window_service};
 use crate::services::terminal_service::eldrun_sessions_dir;
 use crate::storage;
 
@@ -50,9 +50,7 @@ pub struct ProjectRuntimeSwitchedPayload {
 /// Execute a full project-runtime switch.
 ///
 /// `previous_local_file` and `next_local_file` are the paths to the respective
-/// `project.json` files.  `next_project_dir` is the directory that should
-/// receive the `~/eldrun/downloads` symlink; pass the root work dir when
-/// switching to the root scope (project_id == None).
+/// `project.json` files.
 pub fn switch(
     app: &AppHandle,
     workspace: &WorkspaceStateArc,
@@ -61,7 +59,6 @@ pub fn switch(
     previous_project_id: Option<&str>,
     previous_local_file: Option<&str>,
     next_local_file: Option<&str>,
-    next_project_dir: &str,
     snapshot: &PreviousProjectSnapshot,
 ) -> Result<ProjectRuntimeSwitchedPayload, String> {
     // 1. Flush elapsed time for the previous project.
@@ -103,12 +100,7 @@ pub fn switch(
         window_service::save_window_session(local_file, &prev_reg_ids);
     }
 
-    // 5. Point ~/eldrun/downloads at the next project (or root work dir).
-    if let Err(e) = download_routing::route_downloads(next_project_dir) {
-        eprintln!("ProjectRuntime: download routing: {e}");
-    }
-
-    // 6. Load next project terminal session.
+    // 5. Load next project terminal session.
     let next_terminal_session = next_local_file
         .map(terminal_service::load_terminal_session)
         .unwrap_or_default();
@@ -116,17 +108,17 @@ pub fn switch(
         .map(terminal_service::load_open_apps)
         .unwrap_or_default();
 
-    // 7. Load next project file tab + layout sessions.
+    // 6. Load next project file tab + layout sessions.
     let (next_file_tabs, next_right_panel_folder) = next_local_file
         .map(load_file_tab_session)
         .unwrap_or_default();
 
-    // 8. Restore standalone project apps.
+    // 7. Restore standalone project apps.
     if let Some(next_id) = project_id {
         restore_service::restore_project_apps(win_registry, &next_open_apps, next_id);
     }
 
-    // 9. Show next project-owned windows (including freshly restored ones).
+    // 8. Show next project-owned windows (including freshly restored ones).
     {
         let next_wids = {
             let wins = win_registry.lock().unwrap();
@@ -136,7 +128,7 @@ pub fn switch(
         window_service::show_windows(&*ws.backend, &next_wids);
     }
 
-    // 10. Collect opened window IDs for the payload.
+    // 9. Collect opened window IDs for the payload.
     let opened_window_ids = {
         let wins = win_registry.lock().unwrap();
         window_service::project_tracked_ids(&wins.windows, project_id)

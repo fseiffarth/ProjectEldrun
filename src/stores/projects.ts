@@ -109,8 +109,9 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       .then((payload) => {
         if (payload.tabLayout.length > 0) {
           const scopeKey = id ?? "root";
-          const liveTabs = useTabsStore.getState().tabsByScope[scopeKey];
-          if (!liveTabs || liveTabs.length === 0) {
+          // Only restore from disk if this scope was never initialized this session.
+          // An existing empty [] means the user intentionally closed all tabs.
+          if (!(scopeKey in useTabsStore.getState().tabsByScope)) {
             useTabsStore.getState().loadFromLayout(payload.tabLayout, projectCwd, scopeKey);
           }
         }

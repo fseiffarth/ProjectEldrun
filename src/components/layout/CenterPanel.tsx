@@ -2,9 +2,8 @@ import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TerminalView } from "../terminal/TerminalView";
 import { FileBrowser } from "../files/FileBrowser";
-import { useTabsStore, cmdToKind, type TabKind } from "../../stores/tabs";
+import { useTabsStore, type TabKind } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
-import { useSettingsStore } from "../../stores/settings";
 import { resolveProjectDirectory } from "../../types";
 
 export function CenterPanel() {
@@ -12,44 +11,33 @@ export function CenterPanel() {
   const scope = useTabsStore((s) => s.scope);
   const activeKey = useTabsStore((s) => s.activeKey);
   const setScope = useTabsStore((s) => s.setScope);
-  const ensureTab = useTabsStore((s) => s.ensureTab);
   const loadFromLayout = useTabsStore((s) => s.loadFromLayout);
   const tabs = useTabsStore((s) => s.tabs);
   const saveLayout = useTabsStore((s) => s.saveLayout);
   const updateTabEnv = useTabsStore((s) => s.updateTabEnv);
 
-  const { projects, activeId, switchGeneration } = useProjectsStore();
-  const settings = useSettingsStore((s) => s.settings);
+  const { projects, activeId } = useProjectsStore();
 
   const activeProject = projects.find((p) => p.id === activeId);
   const localFile = activeProject?.local_file as string | undefined;
   const projectCwd = resolveProjectDirectory(activeProject);
 
-  const agentCmd = settings?.default_agent_cmd ?? "claude";
-
   useEffect(() => {
     const nextScope = activeId ?? "root";
     setScope(nextScope);
 
-    // Already have live tabs for this scope — just switch, nothing to spawn.
-    if ((useTabsStore.getState().tabsByScope[nextScope]?.length ?? 0) > 0) return;
-
     if (!activeId || !localFile) {
-      // Root context: only spawn on explicit switch.
-      if (switchGeneration === 0) return;
-      invoke<string>("root_work_dir")
-        .then((cwd) => {
-          const kind = cmdToKind(agentCmd);
-          ensureTab(
-            { label: agentCmd, cmd: agentCmd, args: [], cwd, kind },
-            (tab) => tab.kind === kind && tab.cwd === cwd,
-          );
-        })
-        .catch(() => {});
+      // Root context: never auto-spawn; leave empty until the user opens a tab.
       return;
     }
 
-    // Project context: try to restore saved tab layout first.
+    // Scope was already initialized this session (tabs may be empty by user intent).
+    // Trust in-memory state rather than re-reading disk — avoids restoring
+    // intentionally-closed tabs, and eliminates a race where load_project reads
+    // stale project.json before switch_project_runtime has written the empty layout.
+    if (nextScope in useTabsStore.getState().tabsByScope) return;
+
+    // Project context: restore saved tab layout from disk (first visit this session).
     // Capture the scope now so the async chain always writes to the right
     // scope bucket even if the user switches projects before it resolves.
     const scopeForLoad = nextScope;
@@ -59,11 +47,11 @@ export function CenterPanel() {
         const raw = proj.tab_layout as LayoutEntry[] | undefined;
         if (!raw || raw.length === 0) return;
         // Guard: don't overwrite tabs that switch_project_runtime already loaded.
-        if ((useTabsStore.getState().tabsByScope[scopeForLoad]?.length ?? 0) > 0) return;
+        if (scopeForLoad in useTabsStore.getState().tabsByScope) return;
         loadFromLayout(raw, projectCwd, scopeForLoad);
       })
       .catch(() => {});
-  }, [activeId, projectCwd, localFile, agentCmd, switchGeneration, setScope, ensureTab, loadFromLayout]);
+  }, [activeId, projectCwd, localFile, setScope, loadFromLayout]);
 
   // Re-hydrate local_agent tabs that were saved without VIBE_HOME/VIBE_ACTIVE_MODEL.
   useEffect(() => {

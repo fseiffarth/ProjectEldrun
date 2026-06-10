@@ -51,8 +51,22 @@ export function AppShell() {
   }, [flushTimer]);
 
   // Periodically commit elapsed time so a crash doesn't lose the whole session.
+  // If the tick fires much later than expected the system was likely sleeping;
+  // reset the timer start so sleep duration isn't counted as usage.
   useEffect(() => {
-    const id = setInterval(() => { void flushTimer(); }, 60_000);
+    const INTERVAL = 60_000;
+    let lastTickAt = Date.now();
+    const id = setInterval(() => {
+      const now = Date.now();
+      if (now - lastTickAt > 2 * INTERVAL) {
+        useTimerStore.setState((s) => ({
+          appStartedAt: s.paused ? null : now,
+          projectStartedAt: s.paused ? null : now,
+        }));
+      }
+      lastTickAt = now;
+      void flushTimer();
+    }, INTERVAL);
     return () => clearInterval(id);
   }, [flushTimer]);
 
@@ -141,7 +155,7 @@ export function AppShell() {
           onMouseEnter={() => !panelsHidden && reveal(bottomCloseTimer, setBottomOpen)}
           onMouseLeave={() => scheduleClose(bottomCloseTimer, setBottomOpen)}
         >
-          <BottomBar />
+          <BottomBar open={revealBottom} />
         </div>
       </div>
     </div>

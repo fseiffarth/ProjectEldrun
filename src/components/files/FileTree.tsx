@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useWindowsStore } from "../../stores/windows";
-import { type FileEntry, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries } from "./fileUtils";
+import { useTabsStore } from "../../stores/tabs";
+import { type FileEntry, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, STANDARD_PROJECT_FILES } from "./fileUtils";
 
 function sizeCategory(bytes: number): string {
   if (bytes < 10 * 1024) return "size-small";
@@ -24,6 +25,7 @@ interface Props {
 
 type GitStatusMap = Record<string, string>;
 type EntryContextMenu = { x: number; y: number; entry: FileEntry } | null;
+type DeleteConfirm = { entry: FileEntry; relPath: string } | null;
 
 export const STATUS_COLOR: Record<string, string> = {
   staged:    "#e3b341", // yellow – staged for commit
@@ -34,6 +36,10 @@ export const STATUS_COLOR: Record<string, string> = {
 
 function pathToFileUri(path: string): string {
   return `file://${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export function FileTree({
@@ -52,14 +58,17 @@ export function FileTree({
   const [error, setError] = useState<string | null>(null);
   const [gitStatuses, setGitStatuses] = useState<GitStatusMap>({});
   const [isDragOver, setIsDragOver] = useState(false);
+  const [separateScaffold, setSeparateScaffold] = useState(true);
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
   const { openFile } = useWindowsStore();
+  const addTab = useTabsStore((s) => s.addTab);
 
   const entries = useMemo(
     () => visibleEntries(rawEntries, {
       showHidden,
-      showStandardFiles: false,
+      showStandardFiles: true,
       sortKey,
       descending,
       hiddenEndings,
@@ -173,6 +182,42 @@ export function FileTree({
     }
   }
 
+  function promptDelete(entry: FileEntry) {
+    setContextMenu(null);
+    setDeleteConfirm({ entry, relPath: relForEntry(entry) });
+  }
+
+  async function confirmDelete() {
+    if (!deleteConfirm) return;
+    const target = deleteConfirm;
+    setDeleteConfirm(null);
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke(target.entry.is_dir ? "delete_dir" : "delete_file", {
+        projectDir,
+        relPath: target.relPath,
+      });
+      await load(relPath);
+    } catch (err) {
+      setError(String(err));
+      setLoading(false);
+    }
+  }
+
+  function runShellScript(event: React.MouseEvent<HTMLButtonElement>, entry: FileEntry) {
+    event.preventDefault();
+    event.stopPropagation();
+    const scriptRel = relFromAbs(projectDir, entry.path);
+    addTab({
+      label: entry.name,
+      cmd: "bash",
+      cwd: projectDir,
+      kind: "shell",
+      initialInput: `bash ${shellQuote(scriptRel)}`,
+    });
+  }
+
   function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
     if (e.dataTransfer.types.includes("Files")) {
       e.preventDefault();
@@ -232,39 +277,73 @@ export function FileTree({
       )}
       {loading && <div className="file-tree-loading">Loading…</div>}
       {error && <div className="file-tree-error">{error}</div>}
-      {entries.map((e) => {
-        const status = gitStatuses[e.name];
-        const barColor = status ? STATUS_COLOR[status] : undefined;
-        const sizeClass = !e.is_dir ? sizeCategory(e.size) : "";
+      <label className="file-tree-scaffold-toggle">
+        <input type="checkbox" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
+        Separate scaffold
+      </label>
+      {(() => {
+        const isRoot = !relPath && separateScaffold;
+        const regular = isRoot ? entries.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : entries;
+        const standard = isRoot ? entries.filter((e) => STANDARD_PROJECT_FILES.has(e.name)) : [];
+
+        function renderEntry(e: FileEntry, isScaffold = false) {
+          const status = gitStatuses[e.name];
+          const barColor = status ? STATUS_COLOR[status] : undefined;
+          const sizeClass = !e.is_dir ? sizeCategory(e.size) : "";
+          const canRun = !e.is_dir && e.extension === ".sh";
+          return (
+            <div
+              key={e.path}
+              className={`file-entry ${e.is_dir ? "dir" : "file"}${isScaffold ? " scaffold" : ""}`}
+              onClick={() => handleClick(e)}
+              onContextMenu={(ev) => showEntryContextMenu(ev, e)}
+              draggable
+              onDragStart={(ev) => handleEntryDragStart(ev, e)}
+              onMouseEnter={(ev) => handleEntryMouseEnter(ev, e)}
+              onMouseLeave={() => setTooltip(null)}
+            >
+              <span
+                style={{
+                  width: 3,
+                  alignSelf: "stretch",
+                  borderRadius: 2,
+                  marginRight: 4,
+                  flexShrink: 0,
+                  background: barColor ?? "transparent",
+                }}
+              />
+              {canRun && (
+                <button
+                  type="button"
+                  className="file-run-btn"
+                  title={`Run ${e.name}`}
+                  aria-label={`Run ${e.name}`}
+                  onClick={(ev) => runShellScript(ev, e)}
+                >
+                  ▶
+                </button>
+              )}
+              <span className="file-icon">{e.is_dir ? folderIcon() : fileIcon(e.extension)}</span>
+              <span className="file-name">{e.name}</span>
+              {!e.is_dir && (
+                <span className={`file-size ${sizeClass}`}>{fmtSize(e.size)}</span>
+              )}
+            </div>
+          );
+        }
+
         return (
-          <div
-            key={e.path}
-            className={`file-entry ${e.is_dir ? "dir" : "file"}`}
-            onClick={() => handleClick(e)}
-            onContextMenu={(ev) => showEntryContextMenu(ev, e)}
-            draggable
-            onDragStart={(ev) => handleEntryDragStart(ev, e)}
-            onMouseEnter={(ev) => handleEntryMouseEnter(ev, e)}
-            onMouseLeave={() => setTooltip(null)}
-          >
-            <span
-              style={{
-                width: 3,
-                alignSelf: "stretch",
-                borderRadius: 2,
-                marginRight: 4,
-                flexShrink: 0,
-                background: barColor ?? "transparent",
-              }}
-            />
-            <span className="file-icon">{e.is_dir ? folderIcon() : fileIcon(e.extension)}</span>
-            <span className="file-name">{e.name}</span>
-            {!e.is_dir && (
-              <span className={`file-size ${sizeClass}`}>{fmtSize(e.size)}</span>
+          <>
+            {regular.map((e) => renderEntry(e, false))}
+            {standard.length > 0 && (
+              <>
+                <div className="file-tree-section-divider">scaffold</div>
+                {standard.map((e) => renderEntry(e, true))}
+              </>
             )}
-          </div>
+          </>
         );
-      })}
+      })()}
       {contextMenu && createPortal(
         <div
           className="context-menu file-browser-context-menu"
@@ -282,7 +361,27 @@ export function FileTree({
           <button onClick={() => updateGitignore(contextMenu.entry, "unignore")}>
             Show from .gitignore
           </button>
+          <hr />
+          <button className="danger" onClick={() => promptDelete(contextMenu.entry)}>
+            Delete
+          </button>
           <button onClick={() => setContextMenu(null)}>Cancel</button>
+        </div>,
+        document.body,
+      )}
+      {deleteConfirm && createPortal(
+        <div className="modal-backdrop" onMouseDown={() => setDeleteConfirm(null)}>
+          <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
+            <h2>Delete {deleteConfirm.entry.is_dir ? "Folder" : "File"}</h2>
+            <p>
+              Delete <strong>{deleteConfirm.entry.name}</strong>? This permanently removes it from the project.
+            </p>
+            <div className="file-delete-path">{deleteConfirm.relPath}</div>
+            <div className="file-delete-actions">
+              <button type="button" onClick={() => setDeleteConfirm(null)}>Cancel</button>
+              <button type="button" className="danger" onClick={confirmDelete}>Delete</button>
+            </div>
+          </div>
         </div>,
         document.body,
       )}

@@ -144,12 +144,17 @@ fn create_project_preserves_existing_scaffolds() {
         let req = CreateProjectRequest {
             name: "create-project".to_string(),
             directory: target.path().to_string_lossy().to_string(),
+            description: Some("Create description".to_string()),
             git_type: None,
         };
 
         let entry = create_project(req).expect("create project");
         assert_eq!(entry.name, "create-project");
         assert_eq!(entry.status, "inactive");
+        assert_eq!(
+            entry.extra.get("description").and_then(|v| v.as_str()),
+            Some("Create description")
+        );
         assert_eq!(
             entry.local_file,
             target.path().join("project.json").to_string_lossy()
@@ -172,6 +177,7 @@ fn import_project_copy_creates_missing_scaffolds_without_overwriting_existing_on
         let req = ImportProjectRequest {
             source_dir: source.path().to_string_lossy().to_string(),
             name: "copy-project".to_string(),
+            description: Some("Copy description".to_string()),
             git_type: None,
             mode: "copy".to_string(),
             scaffold_fill_modes: None,
@@ -186,6 +192,10 @@ fn import_project_copy_creates_missing_scaffolds_without_overwriting_existing_on
 
         assert_eq!(entry.name, "copy-project");
         assert_eq!(entry.status, "inactive");
+        assert_eq!(
+            entry.extra.get("description").and_then(|v| v.as_str()),
+            Some("Copy description")
+        );
         assert_eq!(entry.local_file, target.join("project.json").to_string_lossy());
         assert!(source.path().exists(), "copy must keep the original source");
         assert!(source.path().join("notes.txt").exists(), "copy must keep source files");
@@ -206,6 +216,7 @@ fn import_project_move_creates_missing_scaffolds_without_overwriting_existing_on
         let req = ImportProjectRequest {
             source_dir: source.path().to_string_lossy().to_string(),
             name: "move-project".to_string(),
+            description: None,
             git_type: None,
             mode: "move".to_string(),
             scaffold_fill_modes: None,
@@ -239,6 +250,7 @@ fn import_project_keep_creates_missing_scaffolds_in_place_without_overwriting_ex
         let req = ImportProjectRequest {
             source_dir: source.path().to_string_lossy().to_string(),
             name: "keep-project".to_string(),
+            description: Some("Keep description".to_string()),
             git_type: None,
             mode: "keep".to_string(),
             scaffold_fill_modes: None,
@@ -249,6 +261,10 @@ fn import_project_keep_creates_missing_scaffolds_in_place_without_overwriting_ex
 
         assert_eq!(entry.name, "keep-project");
         assert_eq!(entry.status, "inactive");
+        assert_eq!(
+            entry.extra.get("description").and_then(|v| v.as_str()),
+            Some("Keep description")
+        );
         assert_eq!(entry.local_file, source.path().join("project.json").to_string_lossy());
         assert!(source.path().exists(), "keep must keep the source directory");
 

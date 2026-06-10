@@ -10,11 +10,12 @@ export interface FileEntry {
 }
 
 export const STANDARD_PROJECT_FILES = new Set([
+  "README.md",
+  "ROADMAP.md",
+  "TODO.md",
   "AGENTS.md",
   "CLAUDE.md",
   "GEMINI.md",
-  "TODO.md",
-  "ROADMAP.md",
   "STATUS.md",
   "DOCUMENTATION.md",
   ".gitignore",

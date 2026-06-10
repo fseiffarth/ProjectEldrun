@@ -11,6 +11,7 @@ use eldrun_lib::commands::apps::{
     TrackedWindow, WindowRegistry, ORIGIN_GLOBAL_APP, ORIGIN_MANUAL_LAUNCH,
     ORIGIN_MIDDLE_FILE_BROWSER, ORIGIN_RESTORED, ORIGIN_RIGHT_FILE_TREE,
 };
+use eldrun_lib::platform::{WorkspaceBackend, WorkspaceInfo};
 use eldrun_lib::schema::project::{OpenApp, Project, TabEntry};
 use eldrun_lib::services::terminal_service;
 use eldrun_lib::services::window_service;
@@ -47,6 +48,55 @@ fn make_registry(windows: Vec<TrackedWindow>) -> Arc<Mutex<WindowRegistry>> {
         reg.windows.insert(w.id.clone(), w);
     }
     Arc::new(Mutex::new(reg))
+}
+
+#[derive(Default)]
+struct RecordingBackend {
+    calls: Mutex<Vec<(String, u64)>>,
+}
+
+impl RecordingBackend {
+    fn calls(&self) -> Vec<(String, u64)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl WorkspaceBackend for RecordingBackend {
+    fn name(&self) -> &'static str {
+        "recording"
+    }
+
+    fn info(&self) -> WorkspaceInfo {
+        WorkspaceInfo {
+            label: "test".to_string(),
+            current_desktop: None,
+            desktop_count: None,
+        }
+    }
+
+    fn show_window(&self, window_id: u64) -> Result<(), String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("show".to_string(), window_id));
+        Ok(())
+    }
+
+    fn hide_window(&self, window_id: u64) -> Result<(), String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("hide".to_string(), window_id));
+        Ok(())
+    }
+
+    fn make_sticky(&self, _eldrun_pid: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn cleanup(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 // ── window_service ────────────────────────────────────────────────────────
@@ -422,6 +472,62 @@ fn switch_hides_previous_project_windows_using_null_backend() {
 }
 
 #[test]
+fn switch_uses_hide_show_as_workspace_backend_boundary() {
+    let windows: HashMap<String, TrackedWindow> = [
+        tracked("prev-file", Some("prev"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        tracked("prev-restored", Some("prev"), ORIGIN_RESTORED, Some(11)),
+        tracked("prev-global", Some("prev"), ORIGIN_GLOBAL_APP, Some(12)),
+        tracked("prev-manual", Some("prev"), ORIGIN_MANUAL_LAUNCH, Some(13)),
+        tracked("next-file", Some("next"), ORIGIN_MIDDLE_FILE_BROWSER, Some(20)),
+        tracked("next-restored", Some("next"), ORIGIN_RESTORED, Some(21)),
+        tracked("root-file", None, ORIGIN_RIGHT_FILE_TREE, Some(30)),
+    ]
+    .into_iter()
+    .map(|w| (w.id.clone(), w))
+    .collect();
+
+    let mut previous_ids = window_service::project_window_ids(&windows, Some("prev"));
+    previous_ids.sort();
+    let mut current_ids = window_service::project_window_ids(&windows, Some("next"));
+    current_ids.sort();
+
+    let backend = RecordingBackend::default();
+    window_service::hide_windows(&backend, &previous_ids);
+    window_service::show_windows(&backend, &current_ids);
+
+    assert_eq!(
+        backend.calls(),
+        vec![
+            ("hide".to_string(), 10),
+            ("hide".to_string(), 11),
+            ("show".to_string(), 20),
+            ("show".to_string(), 21),
+        ],
+        "project switching must be wired through hide_window/show_window only"
+    );
+}
+
+#[test]
+fn default_switch_to_project_delegates_to_hide_show() {
+    let backend = RecordingBackend::default();
+
+    backend
+        .switch_to_project(Some("next"), Some("prev"), &[10, 11], &[20, 21])
+        .unwrap();
+
+    assert_eq!(
+        backend.calls(),
+        vec![
+            ("hide".to_string(), 10),
+            ("hide".to_string(), 11),
+            ("show".to_string(), 20),
+            ("show".to_string(), 21),
+        ],
+        "legacy switch_to_project must remain a thin hide/show helper"
+    );
+}
+
+#[test]
 fn switch_ignores_global_app_and_manual_windows_when_hiding() {
     use eldrun_lib::platform::null::NullBackend;
 
@@ -472,41 +578,6 @@ fn switch_root_runtime_uses_none_project_id() {
     let backend = NullBackend;
     window_service::hide_windows(&backend, &root_ids);
     window_service::show_windows(&backend, &root_ids);
-}
-
-#[test]
-fn switch_downloads_symlink_updated_for_new_project() {
-    use std::env;
-    use std::sync::Mutex;
-    use std::sync::OnceLock;
-
-    // Serialise symlink tests that mutate HOME.
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-
-    let tmp = TempDir::new().unwrap();
-    let fake_home = tmp.path().to_str().unwrap().to_string();
-    let old_home = env::var("HOME").ok();
-
-    // SAFETY: only called while holding the test-serialisation lock.
-    unsafe { env::set_var("HOME", &fake_home) };
-
-    let target_dir = tmp.path().join("target_project");
-    std::fs::create_dir_all(&target_dir).unwrap();
-    let target_str = target_dir.to_string_lossy().to_string();
-
-    let result = eldrun_lib::services::download_routing::route_downloads(&target_str);
-
-    unsafe {
-        match old_home {
-            Some(h) => env::set_var("HOME", h),
-            None => env::remove_var("HOME"),
-        }
-    }
-
-    assert!(result.is_ok(), "download routing must succeed: {:?}", result);
-    let link = tmp.path().join("eldrun/downloads");
-    assert!(link.exists() || link.is_symlink(), "symlink must be created");
 }
 
 #[test]

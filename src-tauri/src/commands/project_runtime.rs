@@ -13,8 +13,7 @@ use crate::storage;
 
 /// Switch the active project runtime.
 ///
-/// Replaces the `switch_project_windows` round-trip: saves the previous
-/// project snapshot, hides its windows, routes downloads, restores the next
+/// Saves the previous project snapshot, hides its windows, restores the next
 /// project's apps and windows, and emits `project-runtime-switched`.
 #[tauri::command]
 pub fn switch_project_runtime(
@@ -45,28 +44,6 @@ pub fn switch_project_runtime(
         .and_then(find_local_file);
     let next_local_file = project_id.as_deref().and_then(find_local_file);
 
-    // Derive the download target directory.
-    let root_dir_buf = storage::root_work_dir();
-    let root_dir_str = root_dir_buf.to_string_lossy().into_owned();
-    let next_project_dir: String = project_id.as_deref()
-        .and_then(|id| projects.iter().find(|p| p.id == id))
-        .map(|entry| {
-            // Prefer the `directory` extra field; fall back to deriving from local_file.
-            entry
-                .extra
-                .get("directory")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| {
-                    if entry.local_file.ends_with("/project.json") {
-                        entry.local_file[..entry.local_file.len() - "/project.json".len()].to_string()
-                    } else {
-                        entry.local_file.clone()
-                    }
-                })
-        })
-        .unwrap_or(root_dir_str);
-
     crate::services::project_runtime::switch(
         &app,
         workspace.inner(),
@@ -75,7 +52,6 @@ pub fn switch_project_runtime(
         previous_project_id.as_deref(),
         previous_local_file.as_deref(),
         next_local_file.as_deref(),
-        &next_project_dir,
         &previous_snapshot,
     )
 }

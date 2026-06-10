@@ -98,17 +98,17 @@ current integration state.
 
 ### CLI agents (xterm.js terminal tabs)
 
-| Agent | Integrated | Tested | Notes |
-|-------|-----------|--------|-------|
-| **Claude** (`claude`) | Yes | Yes | Default agent command. Full tab lifecycle, layout persistence, project-scoped sandbox env. |
-| **Codex** (`codex`) | Yes | Yes | Selectable as default agent command in Settings. Same tab lifecycle as Claude. |
-| **Gemini** (`gemini`) | Yes | Yes | Selectable as default agent command in Settings. Same tab lifecycle as Claude and Codex. |
-| **Vibe** (`vibe`) | Yes | No | Listed as a selectable agent command; same tab lifecycle. |
-| **Ollama via Vibe** (`vibe` + local model) | Yes | Partial | Installed Ollama models appear under Local Agents. Each local tab gets an isolated per-model `VIBE_HOME` under `~/.local/share/eldrun/vibe_local/`. |
-| **Shell** | Yes | Yes | Plain interactive shell tab in the project directory. |
-| Mistral CLI | No | No | Not integrated. Can be used in a plain shell tab. |
-| Qwen CLI | No | No | Not integrated. |
-| Grok CLI | No | No | Not integrated. |
+| Agent                                      | Integrated | Tested  | Notes                                                                                                                                               |
+| ------------------------------------------ | ---------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Claude** (`claude`)                      | Yes        | Yes     | Default agent command. Full tab lifecycle, layout persistence, project-scoped sandbox env.                                                          |
+| **Codex** (`codex`)                        | Yes        | Yes     | Selectable as default agent command in Settings. Same tab lifecycle as Claude.                                                                      |
+| **Gemini** (`gemini`)                      | Yes        | Yes     | Selectable as default agent command in Settings. Same tab lifecycle as Claude and Codex.                                                            |
+| **Vibe** (`vibe`)                          | Yes        | No      | Listed as a selectable agent command; same tab lifecycle.                                                                                           |
+| **Ollama via Vibe** (`vibe` + local model) | Yes        | Partial | Installed Ollama models appear under Local Agents. Each local tab gets an isolated per-model `VIBE_HOME` under `~/.local/share/eldrun/vibe_local/`. |
+| **Shell**                                  | Yes        | Yes     | Plain interactive shell tab in the project directory.                                                                                               |
+| Mistral CLI                                | No         | No      | Not integrated. Can be used in a plain shell tab.                                                                                                   |
+| Qwen CLI                                   | No         | No      | Not integrated.                                                                                                                                     |
+| Grok CLI                                   | No         | No      | Not integrated.                                                                                                                                     |
 
 The active agent command (`claude`, `codex`, `gemini`, or `vibe`) is set in
 Settings. If the configured command is not found in `$PATH`, Eldrun falls back
@@ -127,13 +127,13 @@ configuration.
 
 ## Platform Support
 
-| Platform | Status | Notes |
-|----------|--------|-------|
-| **Linux — X11** | Yes | Two-desktop workspace parking model (EWMH/xcb). Primary development target. |
-| **Linux — KDE Wayland** | Yes | Per-project virtual desktop model via KWin DBus scripting. KDE 5 and KDE 6 supported. |
-| **Linux — other Wayland** | Partial | Null backend (no workspace switching, no sticky windows). Terminal and file management work. |
-| **Windows** | Experimental shell | Null workspace backend. No native window/default-app/download integrations. |
-| **macOS** | Experimental shell | Null workspace backend. No native window/default-app/download integrations. |
+| Platform                  | Status             | Notes                                                                                        |
+| ------------------------- | ------------------ | -------------------------------------------------------------------------------------------- |
+| **Linux — X11**           | Yes                | Two-desktop workspace parking model (EWMH/xcb). Primary development target.                  |
+| **Linux — KDE Wayland**   | Yes                | Per-project virtual desktop model via KWin DBus scripting. KDE 5 and KDE 6 supported.        |
+| **Linux — other Wayland** | Partial            | Null backend (no workspace switching, no sticky windows). Terminal and file management work. |
+| **Windows**               | Experimental shell | Null workspace backend. No native window/default-app/download integrations.                  |
+| **macOS**                 | Experimental shell | Null workspace backend. No native window/default-app/download integrations.                  |
 
 ## Main Features
 

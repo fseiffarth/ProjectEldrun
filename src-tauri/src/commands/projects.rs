@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -372,6 +373,9 @@ pub fn scaffold_project(dir: &Path) -> std::io::Result<()> {
     if !cs.exists() {
         fs::write(cs, CLAUDE_SETTINGS)?;
     }
+    if !dir.join(".git").exists() {
+        let _ = Command::new("git").args(["init"]).current_dir(dir).output();
+    }
     Ok(())
 }
 
@@ -389,6 +393,11 @@ fn scaffold_preview(dir: &Path) -> Vec<ScaffoldPreviewItem> {
         path: ".gitignore".to_string(),
         exists: dir.join(".gitignore").exists(),
         kind: "file".to_string(),
+    });
+    items.push(ScaffoldPreviewItem {
+        path: ".git".to_string(),
+        exists: dir.join(".git").is_dir(),
+        kind: "directory".to_string(),
     });
     items.push(ScaffoldPreviewItem {
         path: ".claude/settings.json".to_string(),
@@ -412,6 +421,7 @@ pub fn preview_project_scaffold(source_dir: String) -> Result<Vec<ScaffoldPrevie
 pub struct CreateProjectRequest {
     pub name: String,
     pub directory: String,
+    pub description: Option<String>,
     pub git_type: Option<String>,
 }
 
@@ -423,11 +433,13 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
     let id = uuid_v4();
     let now = chrono_now();
     let git_type = req.git_type.unwrap_or_else(|| "private".to_string());
+    let description = clean_description(req.description);
 
     let project = Project {
         id: id.clone(),
         name: req.name.clone(),
         directory: req.directory.clone(),
+        description: description.clone(),
         git_type: Some(git_type.clone()),
         created_at: Some(now),
         ..Default::default()
@@ -444,7 +456,7 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
         vec![]
     };
     let position = next_position(&list);
-    let extra = project_extra(req.directory, git_type);
+    let extra = project_extra(req.directory, git_type, description);
 
     let entry = ProjectEntry {
         id: id.clone(),
@@ -465,6 +477,7 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
 pub struct ImportProjectRequest {
     pub source_dir: String,
     pub name: String,
+    pub description: Option<String>,
     pub git_type: Option<String>,
     pub mode: String,
     pub scaffold_fill_modes: Option<HashMap<String, String>>,
@@ -533,12 +546,16 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
     let id = uuid_v4();
     let now = chrono_now();
     let git_type = req.git_type.unwrap_or_else(|| "private".to_string());
+    let requested_description = clean_description(req.description);
 
     let project = if project_file.exists() {
         let mut existing: Project = storage::read_json(&project_file).unwrap_or_default();
         existing.id = id.clone();
         existing.name = req.name.clone();
         existing.directory = directory.clone();
+        if requested_description.is_some() {
+            existing.description = requested_description.clone();
+        }
         existing.git_type = Some(git_type.clone());
         existing
     } else {
@@ -546,6 +563,7 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
             id: id.clone(),
             name: req.name.clone(),
             directory: directory.clone(),
+            description: requested_description.clone(),
             git_type: Some(git_type.clone()),
             created_at: Some(now),
             ..Default::default()
@@ -554,7 +572,8 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
     storage::write_json(&project_file, &project).map_err(|e| e.to_string())?;
 
     let position = next_position(&list);
-    let extra = project_extra(directory, git_type);
+    let description = project.description.clone();
+    let extra = project_extra(directory, git_type, description);
     let entry = ProjectEntry {
         id,
         name: req.name,
@@ -593,11 +612,30 @@ fn next_position(list: &ProjectsList) -> i64 {
     list.iter().map(|p| p.position).max().unwrap_or(0) + 10
 }
 
-fn project_extra(directory: String, git_type: String) -> HashMap<String, Value> {
-    HashMap::from([
+fn project_extra(
+    directory: String,
+    git_type: String,
+    description: Option<String>,
+) -> HashMap<String, Value> {
+    let mut extra = HashMap::from([
         ("directory".to_string(), Value::String(directory)),
         ("git_type".to_string(), Value::String(git_type)),
-    ])
+    ]);
+    if let Some(description) = description {
+        extra.insert("description".to_string(), Value::String(description));
+    }
+    extra
+}
+
+fn clean_description(description: Option<String>) -> Option<String> {
+    description.and_then(|description| {
+        let description = description.trim().to_string();
+        if description.is_empty() {
+            None
+        } else {
+            Some(description)
+        }
+    })
 }
 
 fn canonical(path: &str) -> Result<PathBuf, String> {
@@ -951,6 +989,26 @@ mod tests {
         scaffold_project(tmp.path()).unwrap();
         scaffold_project(tmp.path()).unwrap(); // second call must not error
         assert!(tmp.path().join("TODO.md").exists());
+    }
+
+    #[test]
+    fn scaffold_preview_reports_git_directory_status() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let missing = scaffold_preview(tmp.path())
+            .into_iter()
+            .find(|item| item.path == ".git")
+            .expect(".git preview item");
+        assert!(!missing.exists);
+        assert_eq!(missing.kind, "directory");
+
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let present = scaffold_preview(tmp.path())
+            .into_iter()
+            .find(|item| item.path == ".git")
+            .expect(".git preview item");
+        assert!(present.exists);
+        assert_eq!(present.kind, "directory");
     }
 
     #[test]

@@ -26,6 +26,10 @@ function formatTime(secs: number): string {
   return `${m}m`;
 }
 
+function projectDescription(project: ProjectEntry): string {
+  return typeof project.description === "string" ? project.description.trim() : "";
+}
+
 const ORBIT_R = 4;
 const ORBIT_DOTS = [0, 120, 240].map((deg) => {
   const rad = (deg * Math.PI) / 180;
@@ -98,6 +102,7 @@ export function ProjectPill({ project, active, onClick, onClose }: Props) {
   const [showActivity, setShowActivity] = useState(false);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
+  const description = projectDescription(project);
 
   const timerPaused = useTimerStore((s) => s.paused);
   const timerActiveId = useTimerStore((s) => s.activeProjectId);
@@ -148,6 +153,7 @@ export function ProjectPill({ project, active, onClick, onClose }: Props) {
           className="project-pill-popup"
           style={{ left: popupPos.x, top: popupPos.y }}
         >
+          {description && <span className="pill-popup-description">{description}</span>}
           {dir && <span className="pill-popup-path">{dir}</span>}
           <span className={`pill-popup-status ${project.status === "inactive" ? "inactive" : "active"}`}>
             {statusLabel(project.status)}

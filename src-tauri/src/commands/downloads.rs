@@ -1,12 +1,4 @@
-//! Download routing — ~/eldrun/downloads symlink management.
-//!
-//! The current Python app edits Firefox/Chromium preferences to point their
-//! download directories at ~/eldrun/downloads, which is a symlink that follows
-//! the active project. This module preserves that behavior with safeguards:
-//! - Backup of browser preference files before modification.
-//! - File-lock awareness (skip if prefs.js is locked by running Firefox).
-//! - Profile detection (searches standard profile directories).
-//! - The ~/eldrun/downloads symlink always follows the active project.
+//! Browser download preference reset — restores the default ~/Downloads folder.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,15 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths;
 
-// ── Symlink management ────────────────────────────────────────────────────
-
-/// Ensure ~/eldrun/downloads symlink points at the given project directory.
-#[tauri::command]
-pub fn update_downloads_symlink(project_dir: String) -> Result<(), String> {
-    crate::services::download_routing::route_downloads(&project_dir)
-}
-
-/// Platform-appropriate home directory.
 fn home_dir() -> String {
     paths::home_dir_string()
 }
@@ -33,13 +16,12 @@ fn home_dir() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadsStatus {
-    pub symlink_ok: bool,
     pub firefox_updated: bool,
     pub chromium_updated: bool,
     pub notes: Vec<String>,
 }
 
-/// Update browser download preferences to ~/eldrun/downloads.
+/// Reset browser download preferences to the default ~/Downloads folder.
 /// Creates backups and skips locked files.
 #[tauri::command]
 pub fn configure_browser_downloads() -> Result<DownloadsStatus, String> {
@@ -49,16 +31,12 @@ pub fn configure_browser_downloads() -> Result<DownloadsStatus, String> {
     } else {
         '/'
     };
-    let target = format!("{home}{sep}eldrun{sep}downloads");
+    let target = format!("{home}{sep}Downloads");
     let mut status = DownloadsStatus {
-        symlink_ok: false,
         firefox_updated: false,
         chromium_updated: false,
         notes: Vec::new(),
     };
-
-    let link = PathBuf::from(&home).join("eldrun").join("downloads");
-    status.symlink_ok = link.exists() && fs::read_link(&link).is_ok();
 
     let ff_base = firefox_profile_base();
     if ff_base.exists() {
@@ -191,7 +169,6 @@ fn find_firefox_profiles(ff_base: &Path) -> Vec<PathBuf> {
             }
         }
     }
-    // Also check profiles.ini.
     let ini = ff_base.join("profiles.ini");
     if let Ok(content) = fs::read_to_string(&ini) {
         for line in content.lines() {

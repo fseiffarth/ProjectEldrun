@@ -670,6 +670,14 @@ input {
   text-align: left;
 }
 
+.pill-popup-description {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+  max-width: 320px;
+  white-space: normal;
+}
+
 .pill-popup-status {
   font-size: 11px;
   font-weight: 600;
@@ -960,6 +968,14 @@ input {
   border-color: var(--accent);
 }
 
+.context-menu button.danger {
+  color: var(--danger);
+}
+
+.context-menu button.danger:hover {
+  border-color: var(--danger);
+}
+
 .context-menu hr {
   height: 1px;
   margin: 4px 0;
@@ -1017,6 +1033,57 @@ input {
 
 .file-entry:hover { background-color: var(--pill-hover-bg); }
 
+.file-run-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--success) 70%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--success);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-run-btn:hover {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  border-color: var(--success);
+}
+
+.file-tree-section-divider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 4px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-color, rgba(255,255,255,0.12));
+}
+
+.file-entry.scaffold {
+  opacity: 0.65;
+}
+
+.file-tree-scaffold-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
 .file-tree.drag-over {
   outline: 2px dashed var(--accent, #58a6ff);
   outline-offset: -2px;
@@ -1051,6 +1118,62 @@ input {
   margin-right: 8px;
   display: inline-block;
   width: 5.5em;
+}
+
+.file-delete-dialog {
+  width: min(360px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.42);
+}
+
+.file-delete-dialog h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.file-delete-dialog p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.file-delete-path {
+  padding: 7px 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.file-delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.file-delete-actions button {
+  border: 1px solid var(--control-border);
+  padding: 7px 10px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.file-delete-actions button:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.file-delete-actions button.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--bg-main);
 }
 
 /* ── Center file browser ─────────────────────────────────────────────── */
@@ -1212,6 +1335,30 @@ input {
 
 .file-browser-list {
   min-width: 720px;
+}
+
+.file-browser-section-divider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 8px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-color, rgba(255,255,255,0.12));
+  grid-column: 1 / -1;
+}
+
+.file-browser-row.scaffold,
+.file-browser-tile.scaffold {
+  opacity: 0.65;
+}
+
+.file-browser-section-divider--icons {
+  width: 100%;
 }
 
 .file-browser-list-head,
@@ -1847,6 +1994,8 @@ input {
 .filetype-settings-row input:focus,
 .project-dialog input:hover,
 .project-dialog input:focus,
+.project-dialog textarea:hover,
+.project-dialog textarea:focus,
 .project-dialog select:hover,
 .project-dialog select:focus {
   border-color: var(--accent);
@@ -2020,13 +2169,42 @@ input {
 }
 
 .project-dialog input,
-.project-dialog select {
+.project-dialog select,
+.project-dialog textarea {
   height: 34px;
   border: 1px solid var(--control-border);
   border-radius: 0;
   background: var(--control-bg);
   color: var(--text-primary);
   padding: 0 8px;
+}
+
+.project-dialog textarea {
+  min-height: 72px;
+  padding: 8px;
+  resize: vertical;
+}
+
+.project-description-field {
+  gap: 6px !important;
+}
+
+.project-description-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.project-description-header span {
+  min-width: 0;
+}
+
+.project-description-header select {
+  width: auto;
+  min-width: 118px;
+  max-width: 160px;
+  height: 28px;
 }
 
 .folder-picker-row {
@@ -2178,10 +2356,20 @@ input {
   cursor: default;
 }
 
+.scaffold-row-status {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: right;
+}
+
 @media (max-width: 640px) {
   .scaffold-fill-all-row,
   .scaffold-row {
     grid-template-columns: 1fr;
+  }
+
+  .scaffold-row-status {
+    text-align: left;
   }
 }
 

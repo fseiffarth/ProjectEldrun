@@ -26,16 +26,6 @@ impl WorkspaceBackend for NullBackend {
         Ok(())
     }
 
-    fn switch_to_project(
-        &self,
-        _project_id: Option<&str>,
-        _previous_project_id: Option<&str>,
-        _previous_window_ids: &[u64],
-        _current_window_ids: &[u64],
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
     fn make_sticky(&self, _eldrun_pid: u32) -> Result<(), String> {
         Ok(())
     }

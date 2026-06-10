@@ -40,6 +40,12 @@ impl WorkspaceBackend for WindowsBackend {
 
     fn show_window(&self, window_id: u64) -> Result<(), String> {
         let hwnd = hwnd_from_u64(window_id)?;
+        if !is_window(hwnd) {
+            return Ok(());
+        }
+        if let Ok(desktop_id) = current_desktop_id() {
+            let _ = move_window_to_desktop(hwnd, desktop_id);
+        }
         restore_and_raise(hwnd);
         Ok(())
     }
@@ -51,32 +57,6 @@ impl WorkspaceBackend for WindowsBackend {
                 let _ = ShowWindow(hwnd, SW_HIDE);
             }
         }
-        Ok(())
-    }
-
-    fn switch_to_project(
-        &self,
-        _project_id: Option<&str>,
-        _previous_project_id: Option<&str>,
-        previous_window_ids: &[u64],
-        current_window_ids: &[u64],
-    ) -> Result<(), String> {
-        for &window_id in previous_window_ids {
-            self.hide_window(window_id)?;
-        }
-
-        let desktop = current_desktop_id().ok();
-        for &window_id in current_window_ids {
-            let hwnd = hwnd_from_u64(window_id)?;
-            if !is_window(hwnd) {
-                continue;
-            }
-            if let Some(desktop_id) = desktop {
-                let _ = move_window_to_desktop(hwnd, desktop_id);
-            }
-            restore_and_raise(hwnd);
-        }
-
         Ok(())
     }
 

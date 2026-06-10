@@ -73,6 +73,7 @@ export function collectScaffoldAgentFills(
   const filesByAgent = new Map<string, string[]>();
   for (const item of preview) {
     if (item.exists) continue;
+    if (item.kind !== "file") continue;
     const fillMode = fillModes[item.path] ?? "none";
     if (!AGENT_SCAFFOLD_FILL_MODES.has(fillMode)) continue;
     const agent = agentForScaffoldFillMode(fillMode, defaultAgentCmd);
@@ -98,7 +99,19 @@ export function buildScaffoldFillPrompt(files: string[]) {
   ].join("\n");
 }
 
-export function BottomBar() {
+export function buildDescriptionFillPrompt(projectName: string) {
+  return [
+    `Write a concise Eldrun project description for "${projectName}".`,
+    "",
+    "Instructions:",
+    "- Inspect the project first so the description reflects the actual codebase and purpose.",
+    "- Update project.json by setting the top-level description field.",
+    "- Keep it to one or two practical sentences suitable for a project switcher hover popup.",
+    "- Preserve unrelated existing content and formatting where practical.",
+  ].join("\n");
+}
+
+export function BottomBar({ open = true }: { open?: boolean }) {
   const { projects, activeId, setActive, addProject, deactivateProject } = useProjectsStore();
   const [showSettings, setShowSettings] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
@@ -106,6 +119,15 @@ export function BottomBar() {
   const [ollamaInstalled, setOllamaInstalled] = useState(false);
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [dialog, setDialog] = useState<"new" | "import" | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setShowSettingsMenu(false);
+      setShowAddMenu(false);
+      setShowSettings(false);
+      setDialog(null);
+    }
+  }, [open]);
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLDivElement>(null);
 
@@ -819,6 +841,8 @@ function ProjectDialog({
   const defaultAgentCmd = useSettingsStore((s) => s.settings?.default_agent_cmd ?? "claude");
   const [projectsRoot, setProjectsRoot] = useState("");
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [descriptionFillMode, setDescriptionFillMode] = useState("manual");
   const [gitType, setGitType] = useState("private");
   const [mode, setMode] = useState("keep");
   const [sourceDir, setSourceDir] = useState("");
@@ -883,6 +907,12 @@ function ProjectDialog({
     return collectScaffoldAgentFills(scaffoldPreview, scaffoldFillModes, defaultAgentCmd);
   };
 
+  const selectedDescriptionAgent = () => {
+    if (!AGENT_SCAFFOLD_FILL_MODES.has(descriptionFillMode)) return "";
+    const agent = agentForScaffoldFillMode(descriptionFillMode, defaultAgentCmd);
+    return TERMINAL_OPTIONS.includes(agent) ? agent : "claude";
+  };
+
   const openScaffoldAgentTabs = async (project: ProjectEntry, filesByAgent: Map<string, string[]>) => {
     if (filesByAgent.size === 0) return;
     const projectCwd = resolveProjectDirectory(project);
@@ -909,21 +939,47 @@ function ProjectDialog({
     }
   };
 
+  const openDescriptionAgentTab = async (project: ProjectEntry, cmd: string) => {
+    if (!cmd) return;
+    const projectCwd = resolveProjectDirectory(project);
+    if (!projectCwd) return;
+
+    const promptPath = `.eldrun/project-description-${cmd.replace(/[^a-z0-9_-]/gi, "-")}.md`;
+    await invoke("write_project_file", {
+      projectDir: projectCwd,
+      relPath: promptPath,
+      content: buildDescriptionFillPrompt(project.name),
+    });
+    const tabsStore = useTabsStore.getState();
+    tabsStore.setScope(project.id);
+    tabsStore.addTab({
+      label: `Fill description (${cmd})`,
+      cmd,
+      args: [],
+      env: {},
+      initialInput: `Read ${promptPath} and complete the project description task described there.`,
+      cwd: projectCwd,
+      kind: cmdToKind(cmd),
+    });
+  };
+
   const submit = async () => {
     setError("");
     setBusy(true);
     try {
       const scaffoldAgentFills = kind === "import" ? selectedScaffoldAgentFills() : new Map<string, string[]>();
+      const descriptionAgent = selectedDescriptionAgent();
       const project =
         kind === "new"
           ? await invoke<ProjectEntry>("create_project", {
-              req: { name, directory: targetDir, gitType },
+              req: { name, directory: targetDir, description, gitType },
             })
           : await invoke<ProjectEntry>("import_project", {
-              req: { sourceDir, name, gitType, mode, scaffoldFillModes, manualValidationConfirmed },
+              req: { sourceDir, name, description, gitType, mode, scaffoldFillModes, manualValidationConfirmed },
             });
       await onProject(project);
       await openScaffoldAgentTabs(project, scaffoldAgentFills);
+      await openDescriptionAgentTab(project, descriptionAgent);
       onClose();
     } catch (err) {
       setError(String(err));
@@ -942,16 +998,21 @@ function ProjectDialog({
           (mode === "keep" || manualValidationConfirmed),
         );
 
-  const missingScaffoldCount = scaffoldPreview.filter((item) => !item.exists).length;
+  const missingFillableScaffoldCount = scaffoldPreview.filter((item) => !item.exists && item.kind === "file").length;
 
   const applyScaffoldFillAll = (fillMode: string) => {
     setScaffoldFillModes((current) => {
       const next = { ...current };
       for (const item of scaffoldPreview) {
-        if (!item.exists) next[item.path] = fillMode;
+        if (!item.exists && item.kind === "file") next[item.path] = fillMode;
       }
       return next;
     });
+  };
+
+  const scaffoldStatusText = (item: ScaffoldPreviewItem) => {
+    if (item.path === ".git") return item.exists ? "Already there" : "Missing";
+    return item.exists ? "Already there, will be kept" : "Missing, will be added";
   };
 
   return (
@@ -978,6 +1039,33 @@ function ProjectDialog({
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && canSubmit && !busy) void submit();
+              if (e.key === "Escape") onClose();
+            }}
+          />
+        </label>
+
+        <label className="project-description-field">
+          <div className="project-description-header">
+            <span>Project description</span>
+            <select
+              aria-label="Project description fill mode"
+              value={descriptionFillMode}
+              onChange={(e) => setDescriptionFillMode(e.target.value)}
+            >
+              <option value="manual">Manual</option>
+              <option value="agent_choice">Agent choice</option>
+              <option value="claude">Claude</option>
+              <option value="codex">Codex</option>
+              <option value="gemini">Gemini</option>
+              <option value="vibe">Mistral</option>
+            </select>
+          </div>
+          <textarea
+            value={description}
+            placeholder="What this project is for"
+            rows={3}
+            onChange={(e) => setDescription(e.target.value)}
+            onKeyDown={(e) => {
               if (e.key === "Escape") onClose();
             }}
           />
@@ -1033,11 +1121,11 @@ function ProjectDialog({
               <span>Fill all</span>
               <select
                 value=""
-                disabled={missingScaffoldCount === 0}
+                disabled={missingFillableScaffoldCount === 0}
                 onChange={(e) => applyScaffoldFillAll(e.target.value)}
               >
                 <option value="" disabled>
-                  {missingScaffoldCount === 0 ? "No missing files" : "Choose fill mode..."}
+                  {missingFillableScaffoldCount === 0 ? "No missing files" : "Choose fill mode..."}
                 </option>
                 {SCAFFOLD_FILL_OPTIONS.map((option) => (
                   <option value={option.value} key={option.value}>{option.label}</option>
@@ -1050,19 +1138,23 @@ function ProjectDialog({
                 <div className="scaffold-row" key={item.path}>
                   <div className="scaffold-file">
                     <span>{item.path}</span>
-                    <small>{item.exists ? "Already there, will be kept" : "Missing, will be added"}</small>
+                    <small>{scaffoldStatusText(item)}</small>
                   </div>
-                  <select
-                    value={item.exists ? "none" : scaffoldFillModes[item.path] ?? "none"}
-                    disabled={item.exists}
-                    onChange={(e) =>
-                      setScaffoldFillModes((current) => ({ ...current, [item.path]: e.target.value }))
-                    }
-                  >
-                    {SCAFFOLD_FILL_OPTIONS.map((option) => (
-                      <option value={option.value} key={option.value}>{option.label}</option>
-                    ))}
-                  </select>
+                  {item.kind === "file" ? (
+                    <select
+                      value={item.exists ? "none" : scaffoldFillModes[item.path] ?? "none"}
+                      disabled={item.exists}
+                      onChange={(e) =>
+                        setScaffoldFillModes((current) => ({ ...current, [item.path]: e.target.value }))
+                      }
+                    >
+                      {SCAFFOLD_FILL_OPTIONS.map((option) => (
+                        <option value={option.value} key={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="scaffold-row-status">Status only</span>
+                  )}
                 </div>
               ))}
               {!sourceDir && <div className="scaffold-empty">Choose a source folder to preview scaffold files.</div>}

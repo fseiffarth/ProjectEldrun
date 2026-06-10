@@ -24,6 +24,7 @@ export interface ProjectEntry {
   position: number;
   local_file: string;
   directory?: string;
+  description?: string;
   [key: string]: unknown;
 }
 

@@ -2,14 +2,12 @@
 //!
 //! Matches the Python kde_kwin.py (X11 path) behavior:
 //! - Two desktops: desktop 0 = active project, desktop 1 = parked windows.
-//! - Switching projects moves old project windows to desktop 1 and restores
-//!   new project windows from desktop 1 to desktop 0.
-//! - Protected WM_CLASS names are never moved; any that drift to desktop 1
-//!   are rescued back to desktop 0 on each switch.
+//! - Hiding a project window parks it on desktop 1; showing one restores it
+//!   to desktop 0.
+//! - Protected WM_CLASS names are never moved.
 //! - All window management uses ClientMessage events (proper EWMH), not
 //!   ChangeProperty, so KWin intercepts and honors the requests.
 
-use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
@@ -24,7 +22,6 @@ use super::{WorkspaceBackend, WorkspaceInfo};
 
 const ACTIVE_DESKTOP: u32 = 0;
 const PARKED_DESKTOP: u32 = 1;
-const ROOT_PROJECT_ID: &str = "__eldrun_root__";
 
 const PROTECTED_CLASSES: &[&str] = &[
     "eldrun",
@@ -39,8 +36,6 @@ pub struct X11Backend {
     conn: Connection,
     screen_num: i32,
     atoms: Atoms,
-    /// Maps project_id → windows currently parked on desktop 1.
-    parked: Mutex<HashMap<String, Vec<Window>>>,
     original_desktop_count: u32,
     cinnamon: Option<CinnamonWorkspaceState>,
     cleaned_up: Mutex<bool>,
@@ -81,7 +76,6 @@ impl X11Backend {
             conn,
             screen_num,
             atoms,
-            parked: Mutex::new(HashMap::new()),
             original_desktop_count,
             cinnamon,
             cleaned_up: Mutex::new(false),
@@ -108,93 +102,15 @@ impl WorkspaceBackend for X11Backend {
         }
     }
 
-    fn switch_to_project(
-        &self,
-        project_id: Option<&str>,
-        previous_project_id: Option<&str>,
-        previous_window_ids: &[u64],
-        current_window_ids: &[u64],
-    ) -> Result<(), String> {
-        let project_id = project_id.unwrap_or(ROOT_PROJECT_ID);
-        let previous_project_id = previous_project_id.unwrap_or(ROOT_PROJECT_ID);
-        ensure_desktop_count(&self.conn, self.screen_num, &self.atoms, 2)?;
-        let all_windows = list_client_windows(&self.conn, self.screen_num, &self.atoms)?;
-        let mut parked = self.parked.lock().unwrap();
-        let all_window_ids: HashSet<u32> = all_windows.iter().map(Window::resource_id).collect();
-
-        let mut ws1_set = HashSet::new();
-        for &wid in &all_windows {
-            match get_window_desktop(&self.conn, wid, &self.atoms) {
-                Some(d) if d == PARKED_DESKTOP => {
-                    ws1_set.insert(wid);
-                }
-                _ => {} // sticky or other desktops — leave untouched
-            }
-        }
-
-        let previous_windows: Vec<Window> = previous_window_ids
-            .iter()
-            .copied()
-            .filter_map(window_from_u64)
-            .filter(|id| all_window_ids.contains(&id.resource_id()))
-            .filter(|&wid| !is_protected(&self.conn, wid))
-            .collect();
-
-        for &wid in &previous_windows {
-            if let Err(e) = self.move_window(wid, PARKED_DESKTOP) {
-                eprintln!("{e}");
-            }
-        }
-        parked.insert(previous_project_id.to_string(), previous_windows.clone());
-
-        let mut effective_ws1 = ws1_set;
-        for wid in previous_windows {
-            effective_ws1.insert(wid);
-        }
-
-        // Rescue any protected windows that drifted to desktop 1.
-        let ws1_snapshot: Vec<Window> = effective_ws1.iter().copied().collect();
-        for wid in ws1_snapshot {
-            if is_protected(&self.conn, wid) {
-                if let Err(e) = self.move_window(wid, ACTIVE_DESKTOP) {
-                    eprintln!("{e}");
-                }
-                effective_ws1.remove(&wid);
-            }
-        }
-
-        let mut restore_windows: Vec<Window> = current_window_ids
-            .iter()
-            .copied()
-            .filter_map(window_from_u64)
-            .filter(|id| all_window_ids.contains(&id.resource_id()))
-            .collect();
-        if let Some(project_wins) = parked.get(project_id) {
-            restore_windows.extend(project_wins.iter().copied());
-        }
-        restore_windows.sort_by_key(|wid| wid.resource_id());
-        restore_windows.dedup_by_key(|wid| wid.resource_id());
-
-        for wid in restore_windows {
-            if effective_ws1.contains(&wid) && !is_protected(&self.conn, wid) {
-                if let Err(e) = self.move_window(wid, ACTIVE_DESKTOP) {
-                    eprintln!("{e}");
-                }
-            }
-        }
-
-        // Switch active virtual desktop to 0.
-        switch_current_desktop(&self.conn, self.screen_num, &self.atoms, ACTIVE_DESKTOP)?;
-        self.conn.flush().ok();
-        Ok(())
-    }
-
     fn show_window(&self, window_id: u64) -> Result<(), String> {
         let wid =
             window_from_u64(window_id).ok_or_else(|| format!("invalid x11 window id {window_id}"))?;
         if is_protected(&self.conn, wid) {
             return Ok(());
         }
+        ensure_desktop_count(&self.conn, self.screen_num, &self.atoms, 2)?;
+        self.move_window(wid, ACTIVE_DESKTOP)?;
+        switch_current_desktop(&self.conn, self.screen_num, &self.atoms, ACTIVE_DESKTOP)?;
         self.conn
             .send_and_check_request(&x::MapWindow { window: wid })
             .map_err(|e| e.to_string())?;
@@ -213,10 +129,8 @@ impl WorkspaceBackend for X11Backend {
         if is_protected(&self.conn, wid) {
             return Ok(());
         }
-        self.conn
-            .send_and_check_request(&x::UnmapWindow { window: wid })
-            .map_err(|e| e.to_string())?;
-        self.conn.flush().map_err(|e| e.to_string())
+        ensure_desktop_count(&self.conn, self.screen_num, &self.atoms, 2)?;
+        self.move_window(wid, PARKED_DESKTOP)
     }
 
     fn make_sticky(&self, _eldrun_pid: u32) -> Result<(), String> {
@@ -231,15 +145,19 @@ impl WorkspaceBackend for X11Backend {
         *cleaned_up = true;
         drop(cleaned_up);
 
-        let parked = self.parked.lock().unwrap();
-        for windows in parked.values() {
-            for &wid in windows {
+        if let Ok(windows) = list_client_windows(&self.conn, self.screen_num, &self.atoms) {
+            for wid in windows {
+                if get_window_desktop(&self.conn, wid, &self.atoms) != Some(PARKED_DESKTOP) {
+                    continue;
+                }
+                if is_protected(&self.conn, wid) {
+                    continue;
+                }
                 if let Err(e) = self.move_window(wid, ACTIVE_DESKTOP) {
                     eprintln!("{e}");
                 }
             }
         }
-        drop(parked);
 
         if self.original_desktop_count < 2 {
             request_desktop_count(

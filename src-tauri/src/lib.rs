@@ -223,7 +223,6 @@ pub fn run() {
             commands::git::git_unpushed_commits,
             commands::git::git_add_path,
             // Downloads
-            commands::downloads::update_downloads_symlink,
             commands::downloads::configure_browser_downloads,
             // Ollama local models
             commands::ollama::list_ollama_models,

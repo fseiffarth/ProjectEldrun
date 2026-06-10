@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   agentForScaffoldFillMode,
+  buildDescriptionFillPrompt,
   buildScaffoldFillPrompt,
   collectScaffoldAgentFills,
 } from "../components/layout/BottomBar";
@@ -18,12 +19,14 @@ describe("scaffold agent fill guidance", () => {
         { path: "TODO.md", exists: false, kind: "file" },
         { path: "README.md", exists: false, kind: "file" },
         { path: "CLAUDE.md", exists: true, kind: "file" },
+        { path: ".git", exists: false, kind: "directory" },
       ],
       {
         "AGENTS.md": "agent_choice",
         "TODO.md": "codex",
         "README.md": "manual",
         "CLAUDE.md": "claude",
+        ".git": "codex",
       },
       "claude",
     );
@@ -40,5 +43,13 @@ describe("scaffold agent fill guidance", () => {
     expect(prompt).toContain("Inspect the project first");
     expect(prompt).toContain("- AGENTS.md");
     expect(prompt).toContain("- TODO.md");
+  });
+
+  it("builds a concrete prompt for agent-filled project descriptions", () => {
+    const prompt = buildDescriptionFillPrompt("Example");
+
+    expect(prompt).toContain("Example");
+    expect(prompt).toContain("top-level description field");
+    expect(prompt).toContain("project switcher hover popup");
   });
 });

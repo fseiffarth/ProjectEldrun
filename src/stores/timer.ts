@@ -106,10 +106,14 @@ export const useTimerStore = create<TimerStore>((set, get) => ({
   flush: async () => {
     const s = get();
     const now = Date.now();
+    // Never attribute more seconds to today than have actually elapsed since
+    // UTC midnight. This prevents overnight gaps (app started yesterday, first
+    // flush fires today) from bloating today's total.
+    const todayStartMs = Math.floor(now / 86400000) * 86400000;
     const appElapsed = !s.paused && s.appStartedAt != null
-      ? (now - s.appStartedAt) / 1000 : 0;
+      ? Math.min((now - s.appStartedAt) / 1000, (now - todayStartMs) / 1000) : 0;
     const projElapsed = !s.paused && s.projectStartedAt != null && s.activeProjectId
-      ? (now - s.projectStartedAt) / 1000 : 0;
+      ? Math.min((now - s.projectStartedAt) / 1000, (now - todayStartMs) / 1000) : 0;
     await Promise.all([
       appElapsed > 0
         ? invoke("timer_flush_app", { secs: appElapsed }).catch(() => {})
