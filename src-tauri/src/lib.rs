@@ -55,37 +55,8 @@ fn iso_now() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let (y, mo, d, h, mi, s) = epoch_to_utc(secs);
+    let (y, mo, d, h, mi, s) = storage::epoch_to_utc(secs);
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
-}
-
-pub(crate) fn epoch_to_utc(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    let mut days = secs / 86400;
-    let mut year = 1970u64;
-    loop {
-        let dy = if is_leap_year(year) { 366 } else { 365 };
-        if days < dy { break; }
-        days -= dy;
-        year += 1;
-    }
-    let month_lens: [u64; 12] = [
-        31, if is_leap_year(year) { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
-    ];
-    let mut month = 1u64;
-    for &ml in &month_lens {
-        if days < ml { break; }
-        days -= ml;
-        month += 1;
-    }
-    (year, month, days + 1, h, m, s)
-}
-
-pub(crate) fn is_leap_year(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 /// Register async-signal-safe handlers for fatal signals.
@@ -248,90 +219,10 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    // ── is_leap_year ───────────────────────────────────────────────────────
-
     #[test]
-    fn year_divisible_by_4_is_leap() {
-        assert!(is_leap_year(2024));
-        assert!(is_leap_year(2000));
-        assert!(is_leap_year(1600));
-    }
-
-    #[test]
-    fn year_divisible_by_100_but_not_400_is_not_leap() {
-        assert!(!is_leap_year(1900));
-        assert!(!is_leap_year(1800));
-        assert!(!is_leap_year(2100));
-    }
-
-    #[test]
-    fn year_not_divisible_by_4_is_not_leap() {
-        assert!(!is_leap_year(2023));
-        assert!(!is_leap_year(2025));
-        assert!(!is_leap_year(1999));
-    }
-
-    #[test]
-    fn year_2000_is_leap() {
-        assert!(is_leap_year(2000));
-    }
-
-    // ── epoch_to_utc ───────────────────────────────────────────────────────
-
-    #[test]
-    fn epoch_zero_is_unix_epoch() {
-        let (y, mo, d, h, m, s) = epoch_to_utc(0);
-        assert_eq!((y, mo, d, h, m, s), (1970, 1, 1, 0, 0, 0));
-    }
-
-    #[test]
-    fn epoch_midnight_jan_2_1970() {
-        let (y, mo, d, h, m, s) = epoch_to_utc(86400);
-        assert_eq!((y, mo, d, h, m, s), (1970, 1, 2, 0, 0, 0));
-    }
-
-    #[test]
-    fn epoch_end_of_1970() {
-        // Dec 31 1970 23:59:59 = 86400*365 - 1 = 31535999
-        let (y, mo, d, ..) = epoch_to_utc(31535999);
-        assert_eq!((y, mo, d), (1970, 12, 31));
-    }
-
-    #[test]
-    fn epoch_jan_1_2000() {
-        // 2000-01-01T00:00:00Z = 946684800
-        let (y, mo, d, h, m, s) = epoch_to_utc(946684800);
-        assert_eq!((y, mo, d, h, m, s), (2000, 1, 1, 0, 0, 0));
-    }
-
-    #[test]
-    fn epoch_feb_29_leap_year() {
-        // 2000-02-29T00:00:00Z = 951782400
-        let (y, mo, d, ..) = epoch_to_utc(951782400);
-        assert_eq!((y, mo, d), (2000, 2, 29));
-    }
-
-    #[test]
-    fn epoch_time_components_are_correct() {
-        // 1717414496 = 2024-06-03T11:34:56Z (verified: 1717372800 + 41696)
-        let (y, mo, d, h, m, s) = epoch_to_utc(1717414496);
-        assert_eq!((y, mo, d), (2024, 6, 3));
-        assert_eq!((h, m, s), (11, 34, 56));
-    }
-
-    #[test]
-    fn epoch_seconds_wrap_at_60() {
-        let (_, _, _, _, _, s) = epoch_to_utc(59);
-        assert_eq!(s, 59);
-        let (_, _, _, _, _, s2) = epoch_to_utc(60);
-        assert_eq!(s2, 0);
-    }
-
-    #[test]
-    fn epoch_minutes_wrap_at_60() {
-        let (_, _, _, _, m, _) = epoch_to_utc(3599); // 59m59s
-        assert_eq!(m, 59);
-        let (_, _, _, _, m2, _) = epoch_to_utc(3600); // 1h0m0s
-        assert_eq!(m2, 0);
+    fn iso_now_uses_z_suffix() {
+        let s = iso_now();
+        assert!(s.ends_with('Z'), "crash-log timestamps end with Z: {s}");
+        assert!(s.contains('T'));
     }
 }

@@ -326,7 +326,7 @@ fn window_from_u64(window_id: u64) -> Option<Window> {
     u32::try_from(window_id).ok().map(Window::new)
 }
 
-fn intern_atom(conn: &Connection, name: &[u8]) -> Result<Atom, String> {
+pub(crate) fn intern_atom(conn: &Connection, name: &[u8]) -> Result<Atom, String> {
     conn.wait_for_reply(conn.send_request(&x::InternAtom {
         only_if_exists: false,
         name,
@@ -448,10 +448,17 @@ fn is_protected(conn: &Connection, wid: Window) -> bool {
     is_protected_class(&class)
 }
 
-/// Pure string check — exposed for unit tests.
+/// Pure string check — shared with the app launcher's window scanner.
+///
+/// WM_CLASS raw bytes hold NUL-separated instance/class strings; reverse-DNS
+/// names like "org.kde.plasmashell" are common. Matching whole segments
+/// (split on NUL and name separators) instead of raw substrings keeps an app
+/// merely *containing* a protected token (e.g. "kwinter") parkable.
 pub(crate) fn is_protected_class(wm_class_raw: &str) -> bool {
-    let lower = wm_class_raw.to_lowercase();
-    PROTECTED_CLASSES.iter().any(|p| lower.contains(*p))
+    wm_class_raw
+        .to_lowercase()
+        .split(['\0', '.', '-', '_', ' '])
+        .any(|segment| PROTECTED_CLASSES.contains(&segment))
 }
 
 
@@ -632,10 +639,17 @@ mod tests {
     }
 
     #[test]
-    fn protected_class_substring_match() {
-        // WM_CLASS raw bytes may contain extra null chars; substring search must
-        // still find the protected token.
+    fn protected_class_reverse_dns_match() {
+        // Reverse-DNS WM_CLASS names must still match the protected token.
         assert!(is_protected_class("org.kde.plasmashell\0plasmashell\0"));
+    }
+
+    #[test]
+    fn class_merely_containing_protected_token_is_parkable() {
+        // Segment matching, not substring matching: an unrelated app whose name
+        // happens to contain "kwin"/"eldrun" must remain parkable.
+        assert!(!is_protected_class("kwinter\0Kwinter\0"));
+        assert!(!is_protected_class("eldrunner\0Eldrunner\0"));
     }
 
     // ── window_from_u64 ────────────────────────────────────────────────────

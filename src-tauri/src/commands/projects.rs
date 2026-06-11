@@ -159,13 +159,26 @@ pub fn list_project_paths(project_dir: String) -> Result<Vec<ProjectPathEntry>, 
 }
 
 /// Rename a file or directory — path must stay inside the project root.
+/// `new_name` must be a bare file name; renames never move entries between
+/// directories.
 #[tauri::command]
 pub fn rename_path(project_dir: String, old_rel: String, new_name: String) -> Result<(), String> {
+    let new_name = new_name.trim();
+    if new_name.is_empty()
+        || new_name == "."
+        || new_name == ".."
+        || new_name.contains('/')
+        || new_name.contains('\\')
+        || new_name.contains('\0')
+    {
+        return Err(format!("invalid file name '{new_name}'"));
+    }
+
     let root = canonical(&project_dir)?;
     let old = canonical(&root.join(&old_rel).to_string_lossy().to_string())?;
     enforce_confinement(&root, &old)?;
 
-    let new = old.parent().ok_or("no parent")?.join(&new_name);
+    let new = old.parent().ok_or("no parent")?.join(new_name);
     // New path must also stay inside root.
     let new_c = canonical_or_new(&new);
     enforce_confinement(&root, &new_c)?;
@@ -812,14 +825,7 @@ fn uuid_v4() -> String {
 }
 
 fn chrono_now() -> String {
-    // ISO-8601 without chrono dep (added in Phase 4 if needed).
-    // Basic UTC timestamp.
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("{secs}+00:00")
+    storage::iso_now()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -1024,6 +1030,40 @@ mod tests {
         let content =
             std::fs::read_to_string(tmp.path().join(".eldrun/scaffold-fill-claude.md")).unwrap();
         assert_eq!(content, "fill AGENTS.md");
+    }
+
+    // ── rename_path ────────────────────────────────────────────────────────
+
+    #[test]
+    fn rename_path_renames_file_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("old.txt"), "content").unwrap();
+
+        rename_path(
+            tmp.path().to_string_lossy().to_string(),
+            "old.txt".to_string(),
+            "new.txt".to_string(),
+        )
+        .unwrap();
+
+        assert!(!tmp.path().join("old.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("new.txt")).unwrap(),
+            "content"
+        );
+    }
+
+    #[test]
+    fn rename_path_rejects_non_bare_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "x").unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
+
+        for bad in ["", " ", ".", "..", "sub/name", "..\\name", "a\0b"] {
+            let err = rename_path(dir.clone(), "a.txt".to_string(), bad.to_string());
+            assert!(err.is_err(), "name {bad:?} must be rejected");
+        }
+        assert!(tmp.path().join("a.txt").exists(), "file must be untouched");
     }
 
     #[test]

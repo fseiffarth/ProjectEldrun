@@ -5,14 +5,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use eldrun_lib::commands::apps::{
-    TrackedWindow, WindowRegistry, ORIGIN_GLOBAL_APP, ORIGIN_MANUAL_LAUNCH,
+    TrackedWindow, ORIGIN_GLOBAL_APP, ORIGIN_MANUAL_LAUNCH,
     ORIGIN_MIDDLE_FILE_BROWSER, ORIGIN_RESTORED, ORIGIN_RIGHT_FILE_TREE,
 };
 use eldrun_lib::platform::{WorkspaceBackend, WorkspaceInfo};
-use eldrun_lib::schema::project::{OpenApp, Project, TabEntry};
+use eldrun_lib::schema::project::{Project, TabEntry};
 use eldrun_lib::services::terminal_service;
 use eldrun_lib::services::window_service;
 use tempfile::TempDir;
@@ -40,14 +40,6 @@ fn tracked(
         window_id,
         origin: origin.to_string(),
     }
-}
-
-fn make_registry(windows: Vec<TrackedWindow>) -> Arc<Mutex<WindowRegistry>> {
-    let mut reg = WindowRegistry::default();
-    for w in windows {
-        reg.windows.insert(w.id.clone(), w);
-    }
-    Arc::new(Mutex::new(reg))
 }
 
 #[derive(Default)]

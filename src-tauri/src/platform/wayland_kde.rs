@@ -63,8 +63,9 @@ impl WorkspaceBackend for KdeWaylandBackend {
     fn info(&self) -> WorkspaceInfo {
         let current = self.current_desktop_id().unwrap_or_else(|| "?".to_string());
         let count = self.list_desktop_ids().len();
+        let short: String = current.chars().take(8).collect();
         WorkspaceInfo {
-            label: format!("KDE vd {}", &current[..current.len().min(8)]),
+            label: format!("KDE vd {short}"),
             current_desktop: None, // IDs are UUIDs, not indices.
             desktop_count: Some(count),
         }

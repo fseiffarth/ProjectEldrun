@@ -142,11 +142,33 @@ pub fn launch_app(
     )
 }
 
+/// Icon lookups walk desktop-entry and icon-theme directories recursively, so
+/// results (including misses) are cached per exec for the app's lifetime.
+static ICON_CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+
 #[tauri::command]
 pub fn resolve_app_icon(exec: String) -> Option<String> {
+    if let Some(cached) = ICON_CACHE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .get(&exec)
+    {
+        return cached.clone();
+    }
+    let icon = resolve_app_icon_uncached(&exec);
+    ICON_CACHE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(exec, icon.clone());
+    icon
+}
+
+fn resolve_app_icon_uncached(exec: &str) -> Option<String> {
     #[cfg(target_os = "windows")]
     {
-        if let Some(icon) = resolve_windows_app_icon(&exec) {
+        if let Some(icon) = resolve_windows_app_icon(exec) {
             return Some(icon);
         }
     }
@@ -820,8 +842,8 @@ fn x11_client_windows() -> Result<Vec<X11ClientWindow>, String> {
         .nth(screen_num as usize)
         .ok_or_else(|| "missing x11 screen".to_string())?
         .root();
-    let net_client_list = intern_atom(&conn, b"_NET_CLIENT_LIST")?;
-    let net_wm_pid = intern_atom(&conn, b"_NET_WM_PID")?;
+    let net_client_list = crate::platform::x11::intern_atom(&conn, b"_NET_CLIENT_LIST")?;
+    let net_wm_pid = crate::platform::x11::intern_atom(&conn, b"_NET_WM_PID")?;
     let reply = conn
         .wait_for_reply(conn.send_request(&x::GetProperty {
             delete: false,
@@ -842,16 +864,6 @@ fn x11_client_windows() -> Result<Vec<X11ClientWindow>, String> {
             protected: is_protected_window(&conn, window),
         })
         .collect())
-}
-
-#[cfg(target_os = "linux")]
-fn intern_atom(conn: &xcb::Connection, name: &[u8]) -> Result<xcb::x::Atom, String> {
-    conn.wait_for_reply(conn.send_request(&xcb::x::InternAtom {
-        only_if_exists: false,
-        name,
-    }))
-    .map(|r| r.atom())
-    .map_err(|e| format!("InternAtom {}: {e}", String::from_utf8_lossy(name)))
 }
 
 #[cfg(target_os = "linux")]
@@ -880,12 +892,10 @@ fn is_protected_window(conn: &xcb::Connection, window: xcb::x::Window) -> bool {
             long_length: 64,
         }))
         .ok()
-        .map(|r| String::from_utf8_lossy(r.value::<u8>()).to_lowercase())
+        .map(|r| String::from_utf8_lossy(r.value::<u8>()).into_owned())
         .unwrap_or_default();
 
-    ["eldrun", "plasmashell", "kwin", "cinnamon"]
-        .iter()
-        .any(|protected| class.contains(protected))
+    crate::platform::x11::is_protected_class(&class)
 }
 
 #[cfg(test)]

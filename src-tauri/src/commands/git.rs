@@ -218,7 +218,7 @@ pub fn git_file_statuses(
 #[tauri::command]
 pub fn git_add_path(project_dir: String, rel_path: String) -> Result<(), String> {
     let out = Command::new("git")
-        .args(["add", &rel_path])
+        .args(["add", "--", &rel_path])
         .current_dir(&project_dir)
         .output()
         .map_err(|e| e.to_string())?;
