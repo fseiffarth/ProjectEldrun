@@ -61,6 +61,8 @@ function mergeEndings(...groups: string[][]): string[] {
 
 export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
   const { projects, activeId } = useProjectsStore();
+  const rightPanelFolderByProject = useProjectsStore((s) => s.rightPanelFolderByProject);
+  const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
   const { windows, refresh, untrack } = useWindowsStore();
   const settings = useSettingsStore((s) => s.settings);
   const [view, setView] = useState<View>("files");
@@ -107,6 +109,7 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
   const activeProject = projects.find((p) => p.id === activeId);
   const projectDir = resolveProjectDirectory(activeProject);
   const localFile = activeProject?.local_file;
+  const rightPanelFolder = activeId ? rightPanelFolderByProject[activeId] ?? "" : "";
 
   useEffect(() => {
     if (open && activeId) {
@@ -400,6 +403,10 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
                 hiddenEndings={hiddenEndings}
                 hiddenPaths={hiddenPaths}
                 shownPaths={shownPaths}
+                initialRelPath={rightPanelFolder}
+                onRelPathChange={(folder) => {
+                  if (activeId) setRightPanelFolder(activeId, folder);
+                }}
               />
             )}
           </div>

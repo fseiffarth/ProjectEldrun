@@ -19,10 +19,12 @@ interface ProjectsStore {
   loaded: boolean;
   rootDir: string | null;
   switchToast: string | null;
+  rightPanelFolderByProject: Record<string, string>;
   /** Incremented only on explicit setActive calls, never by load(). */
   switchGeneration: number;
   load: () => Promise<void>;
   setActive: (id: string | null) => Promise<void>;
+  setRightPanelFolder: (projectId: string, folder: string) => void;
   clearSwitchToast: () => void;
   addProject: (project: ProjectEntry) => Promise<void>;
   deactivateProject: (id: string) => Promise<void>;
@@ -34,6 +36,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   loaded: false,
   rootDir: null,
   switchToast: null,
+  rightPanelFolderByProject: {},
   switchGeneration: 0,
 
   load: async () => {
@@ -101,7 +104,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
         tabLayout: tabs.map((t) => ({ key: t.key, label: t.label, cmd: t.cmd, cwd: t.cwd })),
         activeTabIndex,
         fileTabs: [],
-        rightPanelFolder: null,
+        rightPanelFolder: previousId ? get().rightPanelFolderByProject[previousId] ?? null : null,
         activeLayoutMetadata: null,
         flushSecs: 0.0,
       },
@@ -115,10 +118,22 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
             useTabsStore.getState().loadFromLayout(payload.tabLayout, projectCwd, scopeKey);
           }
         }
+        if (id && payload.rightPanelFolder !== null) {
+          get().setRightPanelFolder(id, payload.rightPanelFolder);
+        }
       })
       .catch((error) => {
         console.warn("switch_project_runtime failed", error);
       });
+  },
+
+  setRightPanelFolder: (projectId, folder) => {
+    set((state) => ({
+      rightPanelFolderByProject: {
+        ...state.rightPanelFolderByProject,
+        [projectId]: folder,
+      },
+    }));
   },
 
   clearSwitchToast: () => set({ switchToast: null }),

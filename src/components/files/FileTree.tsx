@@ -21,6 +21,8 @@ interface Props {
   hiddenEndings?: string[];
   hiddenPaths?: string[];
   shownPaths?: string[];
+  initialRelPath?: string | null;
+  onRelPathChange?: (relPath: string) => void;
 }
 
 type GitStatusMap = Record<string, string>;
@@ -51,6 +53,8 @@ export function FileTree({
   hiddenEndings = [],
   hiddenPaths = [],
   shownPaths = [],
+  initialRelPath = "",
+  onRelPathChange,
 }: Props) {
   const [rawEntries, setRawEntries] = useState<FileEntry[]>([]);
   const [relPath, setRelPath] = useState("");
@@ -81,7 +85,7 @@ export function FileTree({
 
   useEffect(() => {
     if (!projectDir) return;
-    load("");
+    load(initialRelPath ?? "");
   }, [projectDir]);
 
   async function load(rel: string) {
@@ -94,6 +98,7 @@ export function FileTree({
       });
       setRawEntries(result);
       setRelPath(rel);
+      onRelPathChange?.(rel);
       const statuses = await invoke<GitStatusMap>("git_file_statuses", {
         projectDir,
         relPath: rel,
@@ -187,6 +192,25 @@ export function FileTree({
     setDeleteConfirm({ entry, relPath: relForEntry(entry) });
   }
 
+  async function renameEntry(entry: FileEntry) {
+    setContextMenu(null);
+    const nextName = window.prompt("Rename to:", entry.name);
+    if (!nextName?.trim() || nextName.trim() === entry.name) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke("rename_path", {
+        projectDir,
+        oldRel: relForEntry(entry),
+        newName: nextName.trim(),
+      });
+      await load(relPath);
+    } catch (err) {
+      setError(String(err));
+      setLoading(false);
+    }
+  }
+
   async function confirmDelete() {
     if (!deleteConfirm) return;
     const target = deleteConfirm;
@@ -277,10 +301,12 @@ export function FileTree({
       )}
       {loading && <div className="file-tree-loading">Loading…</div>}
       {error && <div className="file-tree-error">{error}</div>}
-      <label className="file-tree-scaffold-toggle">
-        <input type="checkbox" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
-        Separate scaffold
-      </label>
+      {!relPath && (
+        <label className="file-tree-scaffold-toggle">
+          <input type="checkbox" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
+          Separate scaffold
+        </label>
+      )}
       {(() => {
         const isRoot = !relPath && separateScaffold;
         const regular = isRoot ? entries.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : entries;
@@ -362,6 +388,9 @@ export function FileTree({
             Show from .gitignore
           </button>
           <hr />
+          <button onClick={() => renameEntry(contextMenu.entry)}>
+            Rename
+          </button>
           <button className="danger" onClick={() => promptDelete(contextMenu.entry)}>
             Delete
           </button>
