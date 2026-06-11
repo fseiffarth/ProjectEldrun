@@ -37,6 +37,11 @@ fn install_crash_logger() {
     unsafe { install_signal_handlers(&path) };
 }
 
+/// Append one entry to crash.log in the state dir.
+pub(crate) fn crash_log_append(msg: &str) {
+    append_to_log(&storage::state_dir().join("crash.log"), msg);
+}
+
 fn append_to_log(path: &std::path::Path, msg: &str) {
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -49,7 +54,7 @@ fn append_to_log(path: &std::path::Path, msg: &str) {
 }
 
 /// Human-readable ISO 8601 UTC timestamp with no external dependencies.
-fn iso_now() -> String {
+pub(crate) fn iso_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -113,8 +118,53 @@ fn sig_write(fd: i32, buf: &[u8]) {
     unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
 }
 
+/// Webview renderer crashes (e.g. WebKitWebProcess SIGBUS) happen in a child
+/// process, so the signal handlers above never fire and the window keeps
+/// showing its last frame — an apparent freeze. Hook WebKit's
+/// web-process-terminated signal to log the reason to crash.log and reload
+/// the page, which respawns the renderer.
+#[cfg(target_os = "linux")]
+fn install_webview_crash_reporter(app: &tauri::App) {
+    use tauri::Manager;
+    use webkit2gtk::{WebProcessTerminationReason, WebViewExt};
+
+    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    const MAX_RELOADS: u32 = 5;
+
+    for window in app.webview_windows().values() {
+        let label = window.label().to_string();
+        let _ = window.with_webview(move |webview| {
+            let label = label.clone();
+            webview
+                .inner()
+                .connect_web_process_terminated(move |view, reason| {
+                    let msg = format!(
+                        "=== WEBVIEW '{label}' TERMINATED {} reason={reason:?} ===",
+                        iso_now()
+                    );
+                    crash_log_append(&msg);
+                    eprintln!("{msg}");
+                    if reason == WebProcessTerminationReason::TerminatedByApi {
+                        return;
+                    }
+                    if RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS {
+                        view.reload();
+                    }
+                });
+        });
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKit's DMA-BUF renderer SIGBUSes inside Mesa on some driver stacks
+    // (seen 2026-06-11 with Mesa 26.0.3: renderer died, window froze). Fall
+    // back to shared-memory rendering unless the user explicitly overrides.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     install_crash_logger();
 
     let pty_registry: RegistryState = Arc::new(Mutex::new(PtyRegistry::default()));
@@ -125,6 +175,11 @@ pub fn run() {
         .manage(pty_registry)
         .manage(win_registry)
         .manage(workspace)
+        .setup(|_app| {
+            #[cfg(target_os = "linux")]
+            install_webview_crash_reporter(_app);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // Settings
             commands::settings::get_settings,
@@ -193,6 +248,8 @@ pub fn run() {
             commands::git::git_file_statuses,
             commands::git::git_unpushed_commits,
             commands::git::git_add_path,
+            // Crash reporting
+            commands::crash::report_frontend_error,
             // Downloads
             commands::downloads::configure_browser_downloads,
             // Ollama local models

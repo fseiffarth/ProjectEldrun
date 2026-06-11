@@ -29,6 +29,9 @@ opener = "0.8.4"
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "4"
 xcb = { version = "1", features = ["randr"] }
+# Same crate/version wry uses; needed to hook web-process-terminated on the
+# raw WebKitWebView for the webview crash reporter.
+webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [

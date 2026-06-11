@@ -1,4 +1,5 @@
 pub mod apps;
+pub mod crash;
 pub mod default_apps;
 pub mod downloads;
 pub mod git;
