@@ -142,9 +142,14 @@ pub fn git_commit(project_dir: String, message: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Returns a map of `relative_path → status` for all entries under `rel_path`.
-/// Status values: "staged" | "modified" | "untracked" | "ignored"
-/// For directories the "worst" child status bubbles up.
+/// Returns a map of `relative_path → status` for all entries directly under `rel_path`.
+/// Status values (highest priority first when bubbled up to a directory):
+///   "modified"  – tracked file with unstaged working-tree changes (red bar)
+///   "untracked" – new, not yet tracked (red bar)
+///   "staged"    – staged, not yet committed (orange bar)
+///   "unpushed"  – committed locally but not pushed to upstream (green ↑)
+///   "ignored"   – ignored by git (gray ✕)
+/// For directories the highest-priority child status bubbles up.
 #[tauri::command]
 pub fn git_file_statuses(
     project_dir: String,
@@ -160,54 +165,84 @@ pub fn git_file_statuses(
         .current_dir(&project_dir)
         .output()
         .map_err(|e| e.to_string())?;
+    let porcelain = String::from_utf8_lossy(&out.stdout).into_owned();
 
-    let text = String::from_utf8_lossy(&out.stdout);
     // prefix used to filter entries under rel_path
     let prefix = if rel_path.is_empty() { String::new() } else { format!("{rel_path}/") };
 
-    // Priority: staged > untracked > modified > ignored
     fn priority(s: &str) -> u8 {
         match s {
+            "modified"  => 5,
+            "untracked" => 4,
             "staged"    => 3,
-            "untracked" => 2,
-            "modified"  => 1,
-            _           => 0, // ignored
+            "unpushed"  => 2,
+            "ignored"   => 1,
+            _           => 0,
         }
     }
 
     let mut map: HashMap<String, String> = HashMap::new();
-
-    for line in text.lines() {
-        if line.len() < 4 { continue; }
-        let xy = &line[..2];
-        let raw_path = line[3..].trim_matches('"');
+    // Record `raw_path → status`, bubbling the highest-priority status up to the
+    // top-level entry directly under `rel_path`.
+    let mut record = |raw_path: &str, status: &str| {
         let file_path = if raw_path.contains(" -> ") {
             raw_path.split(" -> ").last().unwrap_or(raw_path).trim_matches('"')
         } else {
-            raw_path
-        };
-
-        let status = match xy {
-            "!!" => "ignored",
-            "??" => "untracked",
-            s if s.chars().next().map(|c| c != ' ').unwrap_or(false) => "staged",
-            _ => "modified",
+            raw_path.trim_matches('"')
         };
 
         let rel = if prefix.is_empty() {
-            file_path.to_string()
+            file_path
         } else if let Some(stripped) = file_path.strip_prefix(&prefix) {
-            stripped.to_string()
+            stripped
+        } else {
+            return;
+        };
+
+        let top = rel.split('/').next().unwrap_or(rel);
+        if top.is_empty() { return; }
+
+        let cur = map.get(top).map(|s| priority(s.as_str())).unwrap_or(0);
+        if priority(status) > cur {
+            map.insert(top.to_string(), status.to_string());
+        }
+    };
+
+    for line in porcelain.lines() {
+        if line.len() < 4 { continue; }
+        let bytes = line.as_bytes();
+        let (x, y) = (bytes[0], bytes[1]);
+        let raw_path = &line[3..];
+
+        let status = if x == b'!' && y == b'!' {
+            "ignored"
+        } else if x == b'?' && y == b'?' {
+            "untracked"
+        } else if y != b' ' {
+            // Unstaged working-tree change (also covers partly-staged like "MM").
+            "modified"
+        } else if x != b' ' {
+            "staged"
         } else {
             continue;
         };
+        record(raw_path, status);
+    }
 
-        let top = rel.split('/').next().unwrap_or(&rel).to_string();
-        if top.is_empty() { continue; }
-
-        let cur_priority = map.get(&top).map(|s| priority(s.as_str())).unwrap_or(0);
-        if priority(status) > cur_priority {
-            map.insert(top, status.to_string());
+    // Files in commits that exist locally but are not on the upstream branch.
+    if let Ok(out) = Command::new("git")
+        .args(["log", "@{u}..", "--name-only", "--pretty=format:"])
+        .current_dir(&project_dir)
+        .output()
+    {
+        if out.status.success() {
+            let committed = String::from_utf8_lossy(&out.stdout).into_owned();
+            for line in committed.lines() {
+                let p = line.trim();
+                if !p.is_empty() {
+                    record(p, "unpushed");
+                }
+            }
         }
     }
 
@@ -261,4 +296,168 @@ pub fn git_push(project_dir: String) -> Result<String, String> {
         return Err(if stderr.is_empty() { stdout } else { stderr });
     }
     Ok(if stdout.is_empty() { stderr } else { stdout })
+}
+
+// ── Git history & branches ──────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct GitCommit {
+    pub hash: String,
+    pub short: String,
+    pub subject: String,
+    pub author: String,
+    pub date: String,
+    pub refs: String,
+    pub is_head: bool,
+    /// Full hashes of this commit's parents (2+ for merge commits), oldest-first
+    /// as reported by git. Empty for the root commit.
+    pub parents: Vec<String>,
+}
+
+fn git_head_hash(project_dir: &str) -> Option<String> {
+    Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(project_dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// Returns the most recent commits (default 100) as one-line summaries.
+/// Returns an empty vec for a non-git directory or a repo with no commits yet.
+#[tauri::command]
+pub fn git_log(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>, String> {
+    let dir = Path::new(&project_dir);
+    if !dir.join(".git").exists() {
+        return Ok(vec![]);
+    }
+    let max = limit.unwrap_or(100);
+    // Fields separated by US (0x1f) so subjects can contain anything but a newline.
+    let fmt = "--pretty=format:%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ar\u{1f}%D\u{1f}%P";
+    let out = Command::new("git")
+        .args(["log", &format!("--max-count={max}"), fmt])
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        // Empty repository (no commits) — not an error for our purposes.
+        return Ok(vec![]);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let head = git_head_hash(&project_dir);
+    let mut commits = Vec::new();
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split('\u{1f}').collect();
+        if parts.len() < 7 {
+            continue;
+        }
+        let hash = parts[0].to_string();
+        let is_head = head.as_deref() == Some(hash.as_str());
+        let parents = parts[6]
+            .split_whitespace()
+            .map(|p| p.to_string())
+            .collect();
+        commits.push(GitCommit {
+            hash,
+            short: parts[1].to_string(),
+            subject: parts[2].to_string(),
+            author: parts[3].to_string(),
+            date: parts[4].to_string(),
+            refs: parts[5].to_string(),
+            is_head,
+            parents,
+        });
+    }
+    Ok(commits)
+}
+
+#[derive(serde::Serialize)]
+pub struct GitBranch {
+    pub name: String,
+    pub is_current: bool,
+    pub is_remote: bool,
+}
+
+/// Lists local and remote-tracking branches.
+#[tauri::command]
+pub fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
+    let dir = Path::new(&project_dir);
+    if !dir.join(".git").exists() {
+        return Ok(vec![]);
+    }
+    let fmt = "--format=%(if)%(HEAD)%(then)*%(else) %(end)\u{1f}%(refname:short)\u{1f}%(refname)";
+    let out = Command::new("git")
+        .args(["branch", "-a", fmt])
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut branches = Vec::new();
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split('\u{1f}').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let name = parts[1].to_string();
+        // Skip the symbolic remote HEAD pointer (e.g. "origin/HEAD").
+        if name.ends_with("/HEAD") {
+            continue;
+        }
+        branches.push(GitBranch {
+            is_current: parts[0] == "*",
+            is_remote: parts[2].starts_with("refs/remotes/"),
+            name,
+        });
+    }
+    Ok(branches)
+}
+
+/// Checks out a branch name or commit hash. Surfaces git's stderr on failure
+/// (e.g. when the working tree has conflicting uncommitted changes).
+#[tauri::command]
+pub fn git_checkout(project_dir: String, target: String) -> Result<String, String> {
+    let out = Command::new("git")
+        .args(["checkout", &target])
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if !out.status.success() {
+        return Err(if stderr.is_empty() { stdout } else { stderr });
+    }
+    Ok(if stdout.is_empty() { stderr } else { stdout })
+}
+
+/// Returns the full commit message (subject + body) for a single commit.
+#[tauri::command]
+pub fn git_commit_message(project_dir: String, hash: String) -> Result<String, String> {
+    let out = Command::new("git")
+        .args(["log", "-1", "--pretty=format:%B", &hash])
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Rewords the most recent commit (HEAD) via `git commit --amend`. Only valid
+/// for the latest commit; rewording older commits would require a rebase.
+#[tauri::command]
+pub fn git_reword_head(project_dir: String, message: String) -> Result<(), String> {
+    if message.trim().is_empty() {
+        return Err("Commit message cannot be empty".to_string());
+    }
+    let out = Command::new("git")
+        .args(["commit", "--amend", "-m", &message])
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(())
 }

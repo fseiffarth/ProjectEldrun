@@ -196,6 +196,9 @@ export function BottomBar({ open = true }: { open?: boolean }) {
           setShowSettingsMenu(false);
           setShowAddMenu(false);
         }}
+        // Suppress the webview's default Reload/Inspect menu over the bar so a
+        // right-click only ever surfaces our own pill context menu.
+        onContextMenu={(e) => e.preventDefault()}
       >
         <button
           className={`bottom-root-btn ${activeId === null ? "active" : ""}`}
@@ -387,6 +390,15 @@ function SettingsDialog({
                 type="checkbox"
                 checked={settings?.workspace_management ?? false}
                 onChange={(e) => void updateSettings({ workspace_management: e.target.checked })}
+              />
+            </label>
+
+            <label className="settings-switch-row">
+              <span>Run scripts in background</span>
+              <input
+                type="checkbox"
+                checked={settings?.run_scripts_in_background ?? true}
+                onChange={(e) => void updateSettings({ run_scripts_in_background: e.target.checked })}
               />
             </label>
 

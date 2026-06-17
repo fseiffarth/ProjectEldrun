@@ -155,7 +155,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // don't put the agent in the wrong directory after a project move/rename.
       const isAgent = kind === "agent" || kind === "local_agent";
       return {
-        key: t.key,
+        // Saved keys are only unique within the session that wrote them — two
+        // projects can persist the same key (e.g. both saved "agent-1"). Keys
+        // double as PTY ids, so always mint a fresh one on restore.
+        key: nextKey(kind),
         label: t.label,
         cmd: t.cmd,
         args: [],
@@ -164,11 +167,6 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         kind,
       };
     });
-    // Prevent key collisions: advance the counter past any restored key numbers.
-    for (const t of tabs) {
-      const n = parseInt(t.key.split("-").pop() ?? "0", 10);
-      if (!isNaN(n) && n > _keyCounter) _keyCounter = n;
-    }
     const activeKey = tabs[0]?.key ?? null;
     set((s) => {
       // Use the explicitly requested scope when provided; this prevents a race

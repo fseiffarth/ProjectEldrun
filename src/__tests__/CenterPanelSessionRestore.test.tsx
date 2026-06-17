@@ -92,7 +92,23 @@ describe("loadFromLayout — scope isolation", () => {
 
     // Still has the original live tab, not the stale one
     expect(useTabsStore.getState().tabsByScope["project-b"]).toHaveLength(1);
-    expect(useTabsStore.getState().tabsByScope["project-b"][0].key).toBe("agent-live");
+    expect(useTabsStore.getState().tabsByScope["project-b"][0].cwd).toBe("/correct");
+  });
+
+  it("restoring the same saved key into two scopes yields distinct keys (PTY id collision)", () => {
+    // Two projects can both have persisted "agent-1" (the key counter resets
+    // every session). Restored tabs must never share a key, otherwise both
+    // projects attach to the same PTY.
+    const savedLayout = [
+      { key: "agent-1", label: "claude", cmd: "claude", cwd: "/stale", kind: "agent" as const },
+    ];
+
+    useTabsStore.getState().loadFromLayout(savedLayout, "/gedpaths", "project-gedpaths");
+    useTabsStore.getState().loadFromLayout(savedLayout, "/libgraph", "project-libgraph");
+
+    const a = useTabsStore.getState().tabsByScope["project-gedpaths"][0];
+    const b = useTabsStore.getState().tabsByScope["project-libgraph"][0];
+    expect(a.key).not.toBe(b.key);
   });
 
   it("flat tabs and activeKey reflect targetScope when targetScope equals current scope", () => {
@@ -107,7 +123,7 @@ describe("loadFromLayout — scope isolation", () => {
 
     const state = useTabsStore.getState();
     expect(state.tabs).toHaveLength(2);
-    expect(state.activeKey).toBe("agent-c1");
+    expect(state.activeKey).toBe(state.tabs[0].key);
     expect(state.tabs[0].cwd).toBe("/project-c-dir");
     expect(state.tabs[1].cwd).toBe("/project-c-dir");
   });
@@ -155,7 +171,7 @@ describe("dual-path loading race — CenterPanel guard", () => {
     }
 
     expect(useTabsStore.getState().tabsByScope["project-b"]).toHaveLength(1);
-    expect(useTabsStore.getState().tabsByScope["project-b"][0].key).toBe("agent-s1");
+    expect(useTabsStore.getState().tabsByScope["project-b"][0].label).toBe("claude");
   });
 
   it("load_project wins: switch_project_runtime guard prevents second loadFromLayout call", () => {

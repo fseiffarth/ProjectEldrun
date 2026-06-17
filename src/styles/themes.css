@@ -554,6 +554,217 @@ input {
   color: var(--text-primary);
 }
 
+/* ── Git history view ────────────────────────────────────────────────── */
+.git-history {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+}
+
+.git-history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.git-history-branch {
+  flex: 1;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-history-mode {
+  font-size: 10px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.git-branch-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.git-branch-pill {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.git-branch-pill:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.git-branch-pill.current {
+  border-color: var(--accent);
+  background: var(--pill-active-bg);
+  color: var(--accent);
+  cursor: default;
+}
+
+.git-branch-pill.remote {
+  opacity: 0.7;
+  border-style: dashed;
+}
+
+.git-commit-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.git-commit-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 6px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  width: 100%;
+}
+
+.git-commit-row:hover {
+  background: var(--pill-active-bg);
+}
+
+.git-commit-row.head {
+  border-left: 2px solid var(--accent);
+}
+
+/* Graph mode: rows are a fixed height with no vertical padding so the lane
+   lines drawn per-row meet seamlessly across row boundaries. */
+.git-commit-list.graph .git-commit-row {
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+  padding-left: 0;
+  height: 22px;
+}
+
+.git-commit-list.graph .git-commit-row.head {
+  border-left: none;
+}
+
+.git-graph-cell {
+  display: block;
+  align-self: stretch;
+}
+
+.git-commit-hash {
+  font-family: monospace;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.git-commit-subject {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-commit-ref {
+  flex-shrink: 0;
+  font-size: 9px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg-base, #111);
+  white-space: nowrap;
+}
+
+.git-commit-date {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Commit-message window */
+.commit-window {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 12px 14px;
+  width: min(560px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.commit-window-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.commit-window-message {
+  width: 100%;
+  font-family: monospace;
+  font-size: 12px;
+  background: var(--bg-base, #111);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 6px 8px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.commit-window-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.commit-window-actions button {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.commit-window-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.commit-window-actions button.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.commit-window-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* ── Bottom bar ──────────────────────────────────────────────────────── */
 .bottom-bar {
   height: 48px;
@@ -696,6 +907,11 @@ input {
   color: var(--text-secondary);
   display: flex;
   align-items: center;
+}
+
+.pill-popup-cpu {
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 /* ── Bottom bar action buttons ──────────────────────────────────────── */
@@ -990,11 +1206,21 @@ input {
   padding: 4px;
 }
 
+.file-tree-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1px;
+  width: 100%;
+  padding: 2px 4px 4px;
+  font-size: 12px;
+}
+
 .file-tree-up {
   display: flex;
   align-items: center;
-  width: 100%;
-  padding: 4px 8px;
+  padding: 2px 6px;
+  margin-right: 2px;
   background: transparent;
   border: none;
   cursor: pointer;
@@ -1004,6 +1230,34 @@ input {
 }
 
 .file-tree-up:hover { background-color: var(--pill-hover-bg); }
+
+.file-tree-crumb {
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-radius: 4px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tree-crumb:hover { background-color: var(--pill-hover-bg); }
+
+.file-tree-crumb.current {
+  color: var(--text-primary);
+  cursor: default;
+}
+
+.file-tree-crumb.current:hover { background-color: transparent; }
+
+.file-tree-crumb-sep {
+  color: var(--text-muted);
+  font-size: 11px;
+}
 
 .file-tree-loading,
 .file-tree-empty {
@@ -1021,7 +1275,7 @@ input {
 
 .file-entry {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   padding: 3px 8px;
   border-radius: 4px;
@@ -1053,6 +1307,25 @@ input {
 .file-run-btn:hover {
   background: color-mix(in srgb, var(--success) 14%, transparent);
   border-color: var(--success);
+}
+
+.file-run-btn.running {
+  cursor: default;
+  border-color: color-mix(in srgb, var(--success) 70%, transparent);
+  background: transparent;
+}
+
+.file-run-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--success) 30%, transparent);
+  border-top-color: var(--success);
+  animation: file-run-spin 0.7s linear infinite;
+}
+
+@keyframes file-run-spin {
+  to { transform: rotate(360deg); }
 }
 
 .file-tree-section-divider {
@@ -1091,9 +1364,9 @@ input {
   background: rgba(88, 166, 255, 0.06);
 }
 
-.file-icon { font-size: 12px; flex-shrink: 0; }
-.file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-size { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+.file-icon { font-size: 12px; flex-shrink: 0; line-height: 1.3; }
+.file-name { flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; line-height: 1.3; }
+.file-size { font-size: 10px; color: var(--text-muted); flex-shrink: 0; line-height: 1.3; }
 .file-size.size-small  { color: var(--text-muted); }
 .file-size.size-medium { color: #e3b341; }
 .file-size.size-large  { color: #f0883e; }
@@ -2398,6 +2671,14 @@ input {
   fill: var(--accent);
 }
 
+/* Running-task indicator on a project pill — green to read as "live work". */
+.pill-running-spinner {
+  margin-left: 6px;
+}
+.pill-running-spinner .orbit-dot {
+  fill: var(--success, #45c46a);
+}
+
 /* ── Activity calendar ───────────────────────────────────────────────── */
 .activity-calendar {
   display: flex;
@@ -2687,6 +2968,15 @@ input {
   color: var(--text-muted);
   padding: 12px 0;
   text-align: center;
+}
+
+/* Compact reuse of the project-dialog chrome for the pill description editor. */
+.edit-description-window {
+  width: min(440px, calc(100vw - 32px));
+}
+.edit-description-window textarea {
+  width: 100%;
+  min-height: 90px;
 }
 
 /* ── Project-switch toast ──────────────────────────────────────────────── */

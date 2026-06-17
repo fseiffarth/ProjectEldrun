@@ -4,6 +4,8 @@ pub mod platform;
 pub mod schema;
 pub mod services;
 pub mod storage;
+#[cfg(target_os = "linux")]
+pub mod sysstat;
 pub mod terminal;
 
 use std::sync::{Arc, Mutex};
@@ -191,6 +193,7 @@ pub fn run() {
             commands::projects::save_projects,
             commands::projects::load_project,
             commands::projects::save_project,
+            commands::projects::set_project_description,
             commands::projects::save_tab_layout,
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
@@ -220,6 +223,7 @@ pub fn run() {
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
             commands::terminal::pty_kill,
+            commands::terminal::project_cpu_percent,
             // External apps / window tracking
             commands::apps::launch_app,
             commands::apps::resolve_app_icon,
@@ -228,6 +232,7 @@ pub fn run() {
             commands::apps::untrack_window,
             commands::apps::check_pid_alive,
             commands::apps::restore_open_apps,
+            commands::apps::run_script_detached,
             // Workspace / network
             commands::workspace::workspace_info,
             commands::workspace::workspace_switch,
@@ -239,6 +244,8 @@ pub fn run() {
             commands::workspace::network_conn_type,
             // Project-runtime switching (replaces switch_project_windows)
             commands::project_runtime::switch_project_runtime,
+            commands::project_runtime::load_right_panel_folder,
+            commands::project_runtime::save_right_panel_folder,
             // Git
             commands::git::git_status,
             commands::git::git_add_all,
@@ -248,6 +255,11 @@ pub fn run() {
             commands::git::git_file_statuses,
             commands::git::git_unpushed_commits,
             commands::git::git_add_path,
+            commands::git::git_log,
+            commands::git::git_branches,
+            commands::git::git_checkout,
+            commands::git::git_commit_message,
+            commands::git::git_reword_head,
             // Crash reporting
             commands::crash::report_frontend_error,
             // Downloads

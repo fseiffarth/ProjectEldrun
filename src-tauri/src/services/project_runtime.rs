@@ -80,7 +80,34 @@ pub fn switch(
         save_previous_sessions(local_file, previous_project_id, snapshot);
     }
 
-    // 3. Hide previous project-owned windows.
+    // 3. Load the next project's session data (terminal, apps, file tabs).
+    //    This is the only part the frontend waits on, so it runs before the
+    //    slow window hide/show below.
+    let next_terminal_session = next_local_file
+        .map(terminal_service::load_terminal_session)
+        .unwrap_or_default();
+    let next_open_apps = next_local_file
+        .map(terminal_service::load_open_apps)
+        .unwrap_or_default();
+    let (next_file_tabs, next_right_panel_folder) = next_local_file
+        .map(load_file_tab_session)
+        .unwrap_or_default();
+
+    // 4. Emit the layout payload now so the frontend restores tabs immediately,
+    //    without waiting on window management. `opened_window_ids` is filled in
+    //    on the returned payload below; the frontend doesn't use it, so the
+    //    early event leaves it empty.
+    let payload = ProjectRuntimeSwitchedPayload {
+        project_id: project_id.map(String::from),
+        tab_layout: next_terminal_session.tab_layout,
+        active_tab_index: next_terminal_session.active_tab_index,
+        file_tabs: next_file_tabs,
+        right_panel_folder: next_right_panel_folder,
+        opened_window_ids: vec![],
+    };
+    let _ = app.emit("project-runtime-switched", payload.clone());
+
+    // 5. Hide previous project-owned windows.
     //    Acquire WindowRegistry before WorkspaceState (lock order).
     {
         let prev_wids = {
@@ -91,7 +118,7 @@ pub fn switch(
         window_service::hide_windows(&*ws.backend, &prev_wids);
     }
 
-    // 4. Save previous window session IDs to .eldrun/sessions/windows.json.
+    // 6. Save previous window session IDs to .eldrun/sessions/windows.json.
     if let Some(local_file) = previous_local_file {
         let prev_reg_ids = {
             let wins = win_registry.lock().unwrap();
@@ -99,19 +126,6 @@ pub fn switch(
         };
         window_service::save_window_session(local_file, &prev_reg_ids);
     }
-
-    // 5. Load next project terminal session.
-    let next_terminal_session = next_local_file
-        .map(terminal_service::load_terminal_session)
-        .unwrap_or_default();
-    let next_open_apps = next_local_file
-        .map(terminal_service::load_open_apps)
-        .unwrap_or_default();
-
-    // 6. Load next project file tab + layout sessions.
-    let (next_file_tabs, next_right_panel_folder) = next_local_file
-        .map(load_file_tab_session)
-        .unwrap_or_default();
 
     // 7. Restore standalone project apps.
     if let Some(next_id) = project_id {
@@ -128,23 +142,16 @@ pub fn switch(
         window_service::show_windows(&*ws.backend, &next_wids);
     }
 
-    // 9. Collect opened window IDs for the payload.
+    // 9. Collect opened window IDs and return the completed payload.
     let opened_window_ids = {
         let wins = win_registry.lock().unwrap();
         window_service::project_tracked_ids(&wins.windows, project_id)
     };
 
-    let payload = ProjectRuntimeSwitchedPayload {
-        project_id: project_id.map(String::from),
-        tab_layout: next_terminal_session.tab_layout,
-        active_tab_index: next_terminal_session.active_tab_index,
-        file_tabs: next_file_tabs,
-        right_panel_folder: next_right_panel_folder,
+    Ok(ProjectRuntimeSwitchedPayload {
         opened_window_ids,
-    };
-
-    let _ = app.emit("project-runtime-switched", payload.clone());
-    Ok(payload)
+        ..payload
+    })
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -190,6 +197,29 @@ fn save_previous_sessions(
             }
         }
     }
+}
+
+/// Load just the right-panel subfolder for a project from its session file.
+/// Used to restore the panel view at startup, before any project switch occurs.
+pub fn load_right_panel_folder(local_file: &str) -> Option<String> {
+    load_file_tab_session(local_file).1
+}
+
+/// Persist the right-panel subfolder for a project, preserving any other
+/// fields already stored in `.eldrun/sessions/filetabs.json`. Lets the active
+/// project's panel view survive a restart even without a project switch.
+pub fn save_right_panel_folder(local_file: &str, folder: Option<String>) -> Result<(), String> {
+    let Some(sessions_dir) = eldrun_sessions_dir(local_file) else {
+        return Err("cannot resolve project sessions directory".into());
+    };
+    let path = sessions_dir.join("filetabs.json");
+    let mut session: FileTabSession = if path.exists() {
+        storage::read_json(&path).unwrap_or_default()
+    } else {
+        FileTabSession::default()
+    };
+    session.right_panel_folder = folder;
+    storage::write_json(&path, &session).map_err(|e| e.to_string())
 }
 
 /// Load file tabs and right-panel folder from `.eldrun/sessions/filetabs.json`.

@@ -29,6 +29,53 @@ pub fn save_projects(projects: ProjectsList) -> Result<(), String> {
     storage::write_json(&path, &projects).map_err(|e| e.to_string())
 }
 
+/// Update a project's description in both `projects.json` (the pill list) and
+/// the project's own `project.json`, keeping the two in sync. An empty/blank
+/// description clears the field. Returns the cleaned description (or null).
+#[tauri::command]
+pub fn set_project_description(
+    project_id: String,
+    description: Option<String>,
+) -> Result<Option<String>, String> {
+    let cleaned = clean_description(description);
+
+    // projects.json — find the entry and update its flattened `description`.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    match &cleaned {
+        Some(d) => {
+            entry
+                .extra
+                .insert("description".to_string(), Value::String(d.clone()));
+        }
+        None => {
+            entry.extra.remove("description");
+        }
+    }
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project file consistent (best effort: a
+    // missing file is not fatal since the list is the source of truth for pills).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            project.description = cleaned.clone();
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(cleaned)
+}
+
 // ── Per-project project.json ───────────────────────────────────────────────
 
 #[tauri::command]
@@ -145,7 +192,7 @@ pub fn list_dir(project_dir: String, rel_path: String) -> Result<Vec<FileEntry>,
 pub fn list_project_endings(project_dir: String) -> Result<Vec<String>, String> {
     let root = canonical(&project_dir)?;
     let mut endings = BTreeSet::new();
-    collect_project_endings(&root, &root, &mut endings)?;
+    collect_project_endings(&root, &root, 0, &mut endings)?;
     Ok(endings.into_iter().collect())
 }
 
@@ -153,7 +200,7 @@ pub fn list_project_endings(project_dir: String) -> Result<Vec<String>, String> 
 pub fn list_project_paths(project_dir: String) -> Result<Vec<ProjectPathEntry>, String> {
     let root = canonical(&project_dir)?;
     let mut paths = Vec::new();
-    collect_project_paths(&root, &root, "", &mut paths)?;
+    collect_project_paths(&root, &root, "", 0, &mut paths)?;
     paths.sort_by_key(|entry| (!entry.is_dir, entry.path.to_lowercase()));
     Ok(paths)
 }
@@ -698,18 +745,27 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
 fn collect_project_endings(
     root: &Path,
     dir: &Path,
+    depth: usize,
     endings: &mut BTreeSet<String>,
 ) -> Result<(), String> {
     enforce_confinement(root, dir)?;
+    if depth >= MAX_SCAN_DEPTH {
+        return Ok(());
+    }
     let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if path.is_dir() {
+        // Use the dir entry's own file type so symlinks are never followed —
+        // a self-referential symlink (e.g. `repo -> .`) would otherwise recurse
+        // until the path length limit. `Path::is_dir()` follows symlinks; this
+        // does not.
+        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        if is_dir {
             if should_skip_ending_scan_dir(&name) {
                 continue;
             }
-            collect_project_endings(root, &path, endings)?;
+            collect_project_endings(root, &path, depth + 1, endings)?;
         } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             endings.insert(format!(".{ext}"));
         }
@@ -756,9 +812,13 @@ fn collect_project_paths(
     root: &Path,
     dir: &Path,
     rel_dir: &str,
+    depth: usize,
     paths: &mut Vec<ProjectPathEntry>,
 ) -> Result<(), String> {
     enforce_confinement(root, dir)?;
+    if depth >= MAX_SCAN_DEPTH {
+        return Ok(());
+    }
     let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -771,17 +831,25 @@ fn collect_project_paths(
         } else {
             format!("{rel_dir}/{name}")
         };
-        let is_dir = path.is_dir();
+        // `entry.file_type()` does not follow symlinks; a symlinked directory is
+        // reported as a non-directory so we never recurse through it (and so a
+        // self-referential symlink can't loop). See collect_project_endings.
+        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
         paths.push(ProjectPathEntry {
             path: rel_path.clone(),
             is_dir,
         });
         if is_dir && !should_skip_ending_scan_dir(&name) {
-            collect_project_paths(root, &path, &rel_path, paths)?;
+            collect_project_paths(root, &path, &rel_path, depth + 1, paths)?;
         }
     }
     Ok(())
 }
+
+/// Hard cap on recursive project-tree scan depth. Guards against pathological
+/// trees (deep nesting, symlink chains) wedging a scan even though symlinks are
+/// no longer followed.
+const MAX_SCAN_DEPTH: usize = 64;
 
 fn should_skip_ending_scan_dir(name: &str) -> bool {
     matches!(
@@ -995,6 +1063,26 @@ mod tests {
         scaffold_project(tmp.path()).unwrap();
         scaffold_project(tmp.path()).unwrap(); // second call must not error
         assert!(tmp.path().join("TODO.md").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn list_project_endings_does_not_follow_self_symlink() {
+        // A symlink pointing back at the project root (`repo -> .`) must not
+        // cause the recursive ending scan to loop. Before the fix this hung
+        // until the OS path-length limit, walking the tree hundreds of times.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/lib.py"), "x = 1").unwrap();
+        std::os::unix::fs::symlink(tmp.path(), tmp.path().join("repo")).unwrap();
+
+        let endings =
+            list_project_endings(tmp.path().to_string_lossy().to_string()).unwrap();
+
+        // Real file endings are collected; the self-symlink is never entered.
+        assert!(endings.contains(&".rs".to_string()));
+        assert!(endings.contains(&".py".to_string()));
     }
 
     #[test]

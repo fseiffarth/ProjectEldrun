@@ -1,32 +1,63 @@
 # Eldrun
 
-Eldrun is a Tauri 2 + React + TypeScript desktop workspace for AI-assisted
-development. It keeps a root control terminal, one terminal per active project,
-a bottom project switcher, a right-side file browser, global app launching,
-time tracking, local Ollama model management, and optional KDE/X11 workspace
-integration in one window.
+**The problem:** when you develop several projects at once, every project's
+windows — browsers, terminals, file managers, docs, agents — pile up on one
+desktop. Switching from project A to project B means hunting through dozens of
+windows for the handful that belong to where you're going, and losing the rest
+in the noise.
 
-The goal is to make AI-assisted development feel less like a pile of terminals
-and more like an operational cockpit: one root control terminal for managing the
-workspace, one or more agent terminals per project, a persistent project bar, a
-hover-revealed file panel, and cross-project app controls that stay available
-while you move between projects.
+**Eldrun's model:** you don't open applications, you open projects. Selecting a
+project swaps the whole desktop to that project's context — its windows come
+forward, the previous project's windows are parked out of the way, the
+downloads folder and default-app mappings re-route, and time tracking switches.
+One project visible at a time, everything else cleanly out of sight.
+
+Inside each project, Eldrun is an operational cockpit: a root control terminal
+for managing the workspace, one or more agent terminals scoped to the project
+(Claude, Codex, Gemini, or a local Ollama model), a persistent project bar, a
+hover-revealed file panel, and cross-project app controls that stay available as
+you move between projects. It is built with Tauri 2 + React + TypeScript, with
+optional KDE/X11 workspace integration.
 
 ## Vision
 
-Eldrun is intended to become a project-centric desktop layer, not just an app
-that launches or embeds other apps. The user-facing model is:
+Eldrun is a project-centric desktop layer, not just an app that launches or
+embeds other apps. The user-facing model is:
 
 > Select a project → Eldrun restores that project's working context.
 
-That context should eventually include terminals, files, apps, windows, Git
-state, notes, AI/task metadata, layout, and workflow state. The current
-implementation is focused on Linux (X11 and KDE Wayland) because that provides
-the fastest path to reliable window control. The longer-term direction is a
-stable Eldrun core with desktop/compositor backends for Cinnamon X11,
-KDE/KWin, Hyprland, GNOME Shell, i3, Sway, and other Wayland environments.
+The core product is the window/workspace layer: projects own their windows and
+desktop context, and switching projects swaps that context as one unit. The
+agent terminals, file panel, and app launcher ride on top of that layer — they
+are what lives inside a project once its desktop is restored. That context
+should eventually include terminals, files, apps, windows, Git state, notes,
+AI/task metadata, layout, and workflow state.
+
+The current implementation is focused on Linux (X11 and KDE Wayland) because
+that provides the fastest path to reliable window control. The longer-term
+direction is a stable Eldrun core with desktop/compositor backends for Cinnamon
+X11, KDE/KWin, Hyprland, GNOME Shell, i3, Sway, and other Wayland environments.
 
 See [VISION.md](VISION.md) for the full strategy and platform rationale.
+
+## How Eldrun compares
+
+Agent orchestrators (Vibe Kanban, Conductor, Claude Squad, the Claude Code
+desktop app) manage agent *processes inside a repo* — task delegation, git
+worktrees, diff review, merge flow. They are excellent at parallelizing work
+within one codebase, but they have no notion of your desktop: they won't move
+your windows, re-route downloads, or switch default apps when you change focus.
+
+Manual approaches cover only one slice each: KDE Activities and one virtual
+desktop per project handle windows but have no project model and no restore;
+tmux and scripts like `workon` restore terminal layouts but ignore everything
+outside the terminal.
+
+Eldrun occupies the gap none of them fill: project ownership of *windows and
+desktop context*, with agent terminals built in. It is complementary to the
+task orchestrators rather than a replacement — you can run one inside an Eldrun
+project terminal for parallel task delegation while Eldrun handles switching the
+desktop between projects.
 
 ![Current Eldrun screen](screenshots/eldrun-current.png)
 
@@ -137,16 +168,27 @@ configuration.
 
 ## Main Features
 
+### Project desktop (the differentiator)
+
+- **Workspace management**: X11 two-desktop parking model and KDE Wayland
+  per-project virtual desktop model; global app windows stay visible across
+  all project switches.
+- **External window tracking**: file opens use `xdg-open`; launched windows are
+  tracked by PID and shown in the right panel instead of embedded in the UI.
+- **Downloads routing**: `~/eldrun/downloads` symlink always points to the active
+  project's `tmp/downloads/`; Firefox and Chromium preferences are updated
+  automatically.
+- **Default app mapping**: file extensions use per-project overrides, global
+  defaults, system MIME defaults, or a manual "Open With" picker.
+- **Time tracking**: Eldrun records active project sessions and shows today's
+  elapsed time on project pills.
+
+### Project cockpit
+
 - **Agent-terminal orchestration**: create Claude, Codex, Gemini, or plain shell
   tabs from the tab bar; create local Ollama-backed Vibe tabs from installed
   models; rename, close, and reorder them by drag and drop. Tab layout is
   persisted per project.
-- **Ollama model management**: the Settings Ollama panel shows installed
-  models, running CPU/GPU state, parameter and quantization details, plus
-  catalog install, update, unload, and delete controls.
-- **Hover-revealed panels**: the global app bar, right file panel, and bottom
-  project switcher all appear on pointer hover and disappear when the pointer
-  leaves, keeping the center terminal unobstructed.
 - **Root control terminal**: opens in `~/eldrun/root/` with workspace-level
   context files.
 - **Project terminals**: each active project gets a PTY tab scoped to its
@@ -160,20 +202,17 @@ configuration.
 - **Global app toolbar**: cross-project roles (Browser, Mail, Calendar, File
   Manager, Password Manager, Notes, Screenshot, etc.) with launch-or-raise and
   icon resolution.
-- **External window tracking**: file opens use `xdg-open`; launched windows are
-  tracked by PID and shown in the right panel instead of embedded in the UI.
-- **Default app mapping**: file extensions use per-project overrides, global
-  defaults, system MIME defaults, or a manual "Open With" picker.
-- **Time tracking**: Eldrun records active project sessions and shows today's
-  elapsed time on project pills.
+- **Ollama model management**: the Settings Ollama panel shows installed
+  models, running CPU/GPU state, parameter and quantization details, plus
+  catalog install, update, unload, and delete controls.
+- **Hover-revealed panels**: the global app bar, right file panel, and bottom
+  project switcher all appear on pointer hover and disappear when the pointer
+  leaves, keeping the center terminal unobstructed.
+
+### Platform and packaging
+
 - **Network indicator**: probes connectivity and shows online/offline plus wired
   or wireless state.
-- **Workspace management**: X11 two-desktop parking model and KDE Wayland
-  per-project virtual desktop model; global app windows stay visible across
-  all project switches.
-- **Downloads routing**: `~/eldrun/downloads` symlink always points to the active
-  project's `tmp/downloads/`; Firefox and Chromium preferences are updated
-  automatically.
 - **Keyboard shortcuts**: `F11` toggles fullscreen; `Super` toggles all panels.
 - **Crash logging**: Rust panic hook appends to `~/.local/share/eldrun/crash.log`.
 - **Packaging**: Debian `.deb` and AppImage targets.

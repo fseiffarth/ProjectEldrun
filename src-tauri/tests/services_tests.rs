@@ -168,6 +168,37 @@ fn write_project_json(dir: &std::path::Path, project: &Project) -> PathBuf {
 }
 
 #[test]
+fn save_and_load_right_panel_folder_roundtrip() {
+    use eldrun_lib::services::project_runtime;
+    let tmp = TempDir::new().unwrap();
+    let project = Project {
+        id: "test-id".to_string(),
+        name: "Test".to_string(),
+        directory: tmp.path().to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let local_file = write_project_json(tmp.path(), &project);
+    let local_file_str = local_file.to_string_lossy().to_string();
+
+    // No session file yet -> nothing saved.
+    assert_eq!(project_runtime::load_right_panel_folder(&local_file_str), None);
+
+    project_runtime::save_right_panel_folder(&local_file_str, Some("src/components".to_string()))
+        .unwrap();
+    assert_eq!(
+        project_runtime::load_right_panel_folder(&local_file_str),
+        Some("src/components".to_string())
+    );
+
+    // Overwrite with a different folder (simulates navigating elsewhere).
+    project_runtime::save_right_panel_folder(&local_file_str, Some("docs".to_string())).unwrap();
+    assert_eq!(
+        project_runtime::load_right_panel_folder(&local_file_str),
+        Some("docs".to_string())
+    );
+}
+
+#[test]
 fn save_and_load_tab_layout_roundtrip() {
     let tmp = TempDir::new().unwrap();
     let project = Project {

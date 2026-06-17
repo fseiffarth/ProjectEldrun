@@ -88,6 +88,16 @@ impl PtyRegistry {
         child: Box<dyn Child + Send + Sync>,
         dead: Arc<AtomicBool>,
     ) {
+        // A spawn that reuses an id must not leak the previous child process,
+        // and must keep its crash history so the crash-loop guard stays armed.
+        let crash_times = match self.entries.remove(&id) {
+            Some(mut old) => {
+                old.dead.store(true, Ordering::SeqCst);
+                let _ = old.child.kill();
+                old.crash_times
+            }
+            None => Vec::new(),
+        };
         self.entries.insert(
             id,
             PtyEntry {
@@ -95,7 +105,7 @@ impl PtyRegistry {
                 writer,
                 child,
                 dead,
-                crash_times: Vec::new(),
+                crash_times,
             },
         );
     }
@@ -112,6 +122,11 @@ impl PtyRegistry {
             e.dead.store(true, Ordering::SeqCst);
             let _ = e.child.kill();
         }
+    }
+
+    /// OS process id of the child for `id`, if it is still tracked.
+    pub fn pid(&self, id: &str) -> Option<u32> {
+        self.entries.get(id).and_then(|e| e.child.process_id())
     }
 
     pub fn check_crash_loop(&mut self, id: &str) -> bool {

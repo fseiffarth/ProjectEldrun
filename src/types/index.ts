@@ -12,6 +12,7 @@ export interface Settings {
   git_token?: string;
   color_scheme?: string;
   default_agent_cmd?: string;
+  run_scripts_in_background?: boolean;
   global_apps?: Record<string, GlobalAppEntry>;
   [key: string]: unknown;
 }

@@ -1,6 +1,6 @@
 /**
  * Tests for git status color bars:
- * - STATUS_COLOR mapping (untracked/modified=red, staged=yellow, ignored=gray)
+ * - STATUS_COLOR mapping (untracked/modified=red, staged=orange, unpushed=green, ignored=gray)
  * - RightPanel git action buttons have correct color bars
  * - Hovering a button shows the relevant staged/unpushed list
  */
@@ -63,8 +63,12 @@ describe("STATUS_COLOR", () => {
     expect(STATUS_COLOR.modified).toBe("#f85149");
   });
 
-  it("staged is yellow (#e3b341)", () => {
-    expect(STATUS_COLOR.staged).toBe("#e3b341");
+  it("staged is orange (#d29922)", () => {
+    expect(STATUS_COLOR.staged).toBe("#d29922");
+  });
+
+  it("unpushed is green (#3fb950)", () => {
+    expect(STATUS_COLOR.unpushed).toBe("#3fb950");
   });
 
   it("ignored is dim gray (#6e7681)", () => {

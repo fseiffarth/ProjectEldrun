@@ -6,12 +6,14 @@ import {
   type MutableRefObject,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
+import { notePtyOutput, useActivityStore } from "../../stores/activity";
 import { BottomBar } from "./BottomBar";
 import { CenterPanel } from "./CenterPanel";
 import { GlobalAppBar } from "./GlobalAppBar";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
-import { useProjectsStore } from "../../stores/projects";
+import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useTimerStore } from "../../stores/timer";
 import { useKeyboard } from "../../hooks/useKeyboard";
@@ -38,6 +40,16 @@ export function AppShell() {
     loadProjects();
     getCurrentWindow().setFullscreen(true).catch(() => {});
   }, [loadSettings, loadProjects]);
+
+  // Apply tab layout / right-panel restores emitted by the backend's
+  // project-runtime switch (which runs off the UI thread).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listenProjectRuntimeSwitched()
+      .then((fn) => { unlisten = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); };
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -69,6 +81,20 @@ export function AppShell() {
     }, INTERVAL);
     return () => clearInterval(id);
   }, [flushTimer]);
+
+  // Track per-project terminal activity for the running-task pill indicator.
+  // One global listener covers background projects too (their PTYs keep
+  // emitting even while their tab views are unmounted).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<{ id: string }>("terminal-output", (ev) => {
+      notePtyOutput(ev.payload.id);
+    })
+      .then((fn) => { unlisten = fn; })
+      .catch(() => {});
+    const id = setInterval(() => useActivityStore.getState().recompute(), 300);
+    return () => { unlisten?.(); clearInterval(id); };
+  }, []);
 
   useEffect(() => {
     if (projectsLoaded) {

@@ -42,6 +42,10 @@ pub struct Settings {
     pub ollama_autostart: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_agent_cmd: Option<String>,
+    /// When true (the default), running a `.sh` from the right panel spawns it
+    /// as a detached background process instead of opening a terminal tab.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_scripts_in_background: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_apps: Option<HashMap<String, GlobalAppEntry>>,
     #[serde(flatten)]

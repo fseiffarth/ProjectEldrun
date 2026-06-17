@@ -87,6 +87,9 @@ export function visibleEntries(
     })
     .filter((entry) => {
       const entryRelPath = normalizeRulePath(relPath ? `${relPath}/${entry.name}` : entry.name);
+      // `.gitignore` stays visible by default so it can be opened directly; the
+      // hiddenPaths / hiddenEndings filters above still apply to it.
+      if (entry.name === ".gitignore") return true;
       return shownPaths.has(entryRelPath) || options.showHidden || !entry.name.startsWith(".");
     })
     .filter((entry) => {

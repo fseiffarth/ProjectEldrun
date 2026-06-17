@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { FileTree } from "../files/FileTree";
+import { GitHistory } from "../files/GitHistory";
 import { useProjectsStore } from "../../stores/projects";
 import { useWindowsStore } from "../../stores/windows";
 import { useSettingsStore } from "../../stores/settings";
@@ -22,7 +23,7 @@ interface Props {
   onMouseLeave?: () => void;
 }
 
-type View = "files" | "windows";
+type View = "files" | "windows" | "git";
 type ProjectJson = Record<string, unknown>;
 
 const PANEL_HIDDEN_ENDINGS_KEY = "panel_hidden_endings";
@@ -257,13 +258,17 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
         <span style={{ flex: 1 }}>
           {activeProject ? activeProject.name : "Files"}
         </span>
-        <button
-          className="tab-add-btn"
-          style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
-          onClick={() => setView(view === "files" ? "windows" : "files")}
-        >
-          {view === "files" ? "Apps" : "Files"}
-        </button>
+        {(["files", "git", "windows"] as View[]).map((v) => (
+          <button
+            key={v}
+            className={`tab-add-btn${view === v ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: v === "files" ? 0 : 2 }}
+            aria-pressed={view === v}
+            onClick={() => setView(v)}
+          >
+            {v === "files" ? "Files" : v === "git" ? "Git" : "Apps"}
+          </button>
+        ))}
         {activeId && (
           <button
             className="tab-add-btn"
@@ -288,7 +293,7 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
                   title="Confirm commit"
                   onMouseEnter={() => setHoveredBtn("commit")}
                 >
-                  <span data-testid="commit-bar" style={{ width: 3, alignSelf: "stretch", borderRadius: 2, marginRight: 4, flexShrink: 0, background: "#e3b341" }} />
+                  <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
                   <span>↵</span>
                   <span className="git-btn-label">Confirm</span>
                 </button>
@@ -311,7 +316,7 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
                   title={`Stage all changes (${gitStatus.unstaged + gitStatus.untracked} unstaged)`}
                   onMouseEnter={() => setHoveredBtn("add")}
                 >
-                  <span data-testid="add-bar" style={{ width: 3, alignSelf: "stretch", borderRadius: 2, marginRight: 4, flexShrink: 0, background: "#f85149" }} />
+                  <span data-testid="add-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#f85149" }} />
                   <span>⊕</span>
                   <span className="git-btn-label">Add{gitStatus.unstaged + gitStatus.untracked > 0 ? ` (${gitStatus.unstaged + gitStatus.untracked})` : ""}</span>
                 </button>
@@ -322,7 +327,7 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
                   title={gitStatus.staged === 0 ? "No staged changes" : `Commit ${gitStatus.staged} staged`}
                   onMouseEnter={() => setHoveredBtn("commit")}
                 >
-                  <span data-testid="commit-bar" style={{ width: 3, alignSelf: "stretch", borderRadius: 2, marginRight: 4, flexShrink: 0, background: "#e3b341" }} />
+                  <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
                   <span>✔</span>
                   <span className="git-btn-label">Commit{gitStatus.staged > 0 ? ` (${gitStatus.staged})` : ""}</span>
                 </button>
@@ -334,7 +339,7 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
                     title="Push to remote"
                     onMouseEnter={() => setHoveredBtn("push")}
                   >
-                    <span data-testid="push-bar" style={{ width: 3, alignSelf: "stretch", borderRadius: 2, marginRight: 4, flexShrink: 0, background: "#3fb950" }} />
+                    <span data-testid="push-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#3fb950" }} />
                     <span>⬆</span>
                     <span className="git-btn-label">Push</span>
                   </button>
@@ -379,7 +384,13 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
         </>
       )}
 
-      {view === "files" ? (
+      {view === "git" && (
+        <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
+          <GitHistory projectDir={projectDir} onChanged={() => projectDir && refreshGit(projectDir)} />
+        </div>
+      )}
+
+      {view === "files" && (
         <>
           <div className="right-panel-sort">
             {(["name", "size", "type", "created", "modified"] as SortKey[]).map((key) => (
@@ -411,7 +422,9 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
             )}
           </div>
         </>
-      ) : (
+      )}
+
+      {view === "windows" && (
         <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 4 }}>
           {windows.length === 0 ? (
             <div className="file-tree-empty">No opened windows</div>

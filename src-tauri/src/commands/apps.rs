@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -272,6 +272,42 @@ pub fn open_file(
         window_id,
         origin,
     )
+}
+
+/// Run a shell script as a fire-and-forget detached process.
+///
+/// Used by the right-panel "run in background" mode: the script is spawned with
+/// `bash <path>`, stdio fully detached, and is not tracked as a window or tab.
+/// No output is surfaced — callers that want to watch a script should open a
+/// terminal tab instead. When a `run_id` is supplied, a background thread waits
+/// for the process and emits a `script-finished` event (`{ runId, success }`)
+/// so the UI can show a running animation that clears on completion.
+#[tauri::command]
+pub fn run_script_detached(
+    app: tauri::AppHandle,
+    script_path: String,
+    cwd: Option<String>,
+    run_id: Option<String>,
+) -> Result<(), String> {
+    let mut cmd = Command::new("bash");
+    cmd.arg(&script_path);
+    if let Some(dir) = cwd.as_deref().filter(|d| !d.is_empty()) {
+        cmd.current_dir(dir);
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().map_err(|e| format!("run {script_path}: {e}"))?;
+    if let Some(run_id) = run_id {
+        std::thread::spawn(move || {
+            let success = child.wait().map(|s| s.success()).unwrap_or(false);
+            let _ = app.emit(
+                "script-finished",
+                serde_json::json!({ "runId": run_id, "success": success }),
+            );
+        });
+    }
+    Ok(())
 }
 
 struct DesktopEntry {

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { resolveProjectDirectory, type ProjectEntry } from "../types";
 import { useTabsStore } from "./tabs";
@@ -28,6 +29,7 @@ interface ProjectsStore {
   clearSwitchToast: () => void;
   addProject: (project: ProjectEntry) => Promise<void>;
   deactivateProject: (id: string) => Promise<void>;
+  updateProjectDescription: (id: string, description: string) => Promise<void>;
 }
 
 export const useProjectsStore = create<ProjectsStore>((set, get) => ({
@@ -46,11 +48,27 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     ]);
     const projects = [...raw].sort((a, b) => a.position - b.position);
     const current = projects.find((p) => p.status === "current");
+    const activeId = current?.id ?? projects[0]?.id ?? null;
+    // Restore the active project's right-panel subfolder before any component
+    // mounts, so the file tree opens straight to the saved folder on startup.
+    // (Switching projects already restores via switch_project_runtime; this
+    // covers the initially-active project, which never triggers a switch.)
+    const rightPanelFolderByProject: Record<string, string> = {};
+    const activeLocalFile = activeId
+      ? projects.find((p) => p.id === activeId)?.local_file
+      : undefined;
+    if (activeId && activeLocalFile) {
+      const folder = await invoke<string | null>("load_right_panel_folder", {
+        localFile: activeLocalFile,
+      }).catch(() => null);
+      if (folder) rightPanelFolderByProject[activeId] = folder;
+    }
     set({
       projects,
       loaded: true,
       rootDir,
-      activeId: current?.id ?? projects[0]?.id ?? null,
+      activeId,
+      rightPanelFolderByProject,
     });
   },
 
@@ -89,15 +107,16 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     });
     await invoke<void>("save_projects", { projects: nextProjects });
     void useTimerStore.getState().setProject(id);
-    const nextProject = id !== null ? nextProjects.find((p) => p.id === id) : null;
-    const projectCwd = resolveProjectDirectory(nextProject);
     const tabsStore = useTabsStore.getState();
     const tabs = tabsStore.tabs;
     const activeTabIndex = Math.max(
       0,
       tabs.findIndex((t) => t.key === tabsStore.activeKey),
     );
-    invoke<ProjectRuntimeSwitchedPayload>("switch_project_runtime", {
+    // Fire-and-forget: the switch runs on a backend worker thread and returns
+    // immediately. The resulting tab layout / right-panel folder arrives via the
+    // `project-runtime-switched` event, handled by listenProjectRuntimeSwitched.
+    invoke("switch_project_runtime", {
       projectId: id,
       previousProjectId: previousId,
       previousSnapshot: {
@@ -108,23 +127,9 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
         activeLayoutMetadata: null,
         flushSecs: 0.0,
       },
-    })
-      .then((payload) => {
-        if (payload.tabLayout.length > 0) {
-          const scopeKey = id ?? "root";
-          // Only restore from disk if this scope was never initialized this session.
-          // An existing empty [] means the user intentionally closed all tabs.
-          if (!(scopeKey in useTabsStore.getState().tabsByScope)) {
-            useTabsStore.getState().loadFromLayout(payload.tabLayout, projectCwd, scopeKey);
-          }
-        }
-        if (id && payload.rightPanelFolder !== null) {
-          get().setRightPanelFolder(id, payload.rightPanelFolder);
-        }
-      })
-      .catch((error) => {
-        console.warn("switch_project_runtime failed", error);
-      });
+    }).catch((error) => {
+      console.warn("switch_project_runtime failed", error);
+    });
   },
 
   setRightPanelFolder: (projectId, folder) => {
@@ -134,6 +139,13 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
         [projectId]: folder,
       },
     }));
+    // Persist immediately so the panel view survives a restart even if the user
+    // quits without switching projects. Re-saving the same value on restore or
+    // project switch is harmless and idempotent.
+    const localFile = get().projects.find((p) => p.id === projectId)?.local_file;
+    if (localFile) {
+      void invoke("save_right_panel_folder", { localFile, folder }).catch(() => {});
+    }
   },
 
   clearSwitchToast: () => set({ switchToast: null }),
@@ -167,4 +179,42 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       await useProjectsStore.getState().setActive(nextActiveId);
     }
   },
+
+  updateProjectDescription: async (id, description) => {
+    // Backend cleans (trims, empties → null) and writes projects.json +
+    // project.json; mirror the cleaned value into local state.
+    const cleaned = await invoke<string | null>("set_project_description", {
+      projectId: id,
+      description,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id ? { ...project, description: cleaned ?? undefined } : project,
+      ),
+    }));
+  },
 }));
+
+/// Listen for the backend's `project-runtime-switched` event and apply the
+/// restored tab layout + right-panel folder. The switch runs on a backend
+/// worker thread (see `switch_project_runtime`), so its result arrives here
+/// asynchronously rather than as the return value of the invoke in setActive.
+/// Register once at app startup; returns an unlisten function.
+export function listenProjectRuntimeSwitched(): Promise<() => void> {
+  return listen<ProjectRuntimeSwitchedPayload>("project-runtime-switched", (ev) => {
+    const payload = ev.payload;
+    const scopeKey = payload.projectId ?? "root";
+    const tabsStore = useTabsStore.getState();
+    // Only restore from disk if this scope was never initialized this session.
+    // An existing (possibly empty) entry means the user's in-memory tabs win.
+    if (payload.tabLayout.length > 0 && !(scopeKey in tabsStore.tabsByScope)) {
+      const project = payload.projectId
+        ? useProjectsStore.getState().projects.find((p) => p.id === payload.projectId) ?? null
+        : null;
+      tabsStore.loadFromLayout(payload.tabLayout, resolveProjectDirectory(project), scopeKey);
+    }
+    if (payload.projectId && payload.rightPanelFolder !== null) {
+      useProjectsStore.getState().setRightPanelFolder(payload.projectId, payload.rightPanelFolder);
+    }
+  });
+}

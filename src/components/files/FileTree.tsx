@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useWindowsStore } from "../../stores/windows";
 import { useTabsStore } from "../../stores/tabs";
+import { useSettingsStore } from "../../stores/settings";
 import { type FileEntry, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, STANDARD_PROJECT_FILES } from "./fileUtils";
 
 function sizeCategory(bytes: number): string {
@@ -26,15 +28,53 @@ interface Props {
 }
 
 type GitStatusMap = Record<string, string>;
-type EntryContextMenu = { x: number; y: number; entry: FileEntry } | null;
+type EntryContextMenu = { x: number; y: number; entry: FileEntry | null } | null;
 type DeleteConfirm = { entry: FileEntry; relPath: string } | null;
 
 export const STATUS_COLOR: Record<string, string> = {
-  staged:    "#e3b341", // yellow – staged for commit
-  untracked: "#f85149", // red
-  modified:  "#f85149", // red
-  ignored:   "#6e7681", // dim gray
+  modified:  "#f85149", // red – tracked, unstaged working-tree change
+  untracked: "#f85149", // red – new, not yet tracked
+  staged:    "#d29922", // orange – staged, not committed
+  unpushed:  "#3fb950", // green – committed locally, not pushed
+  ignored:   "#6e7681", // dim gray – ignored by git
 };
+
+const STATUS_TITLE: Record<string, string> = {
+  modified:  "Modified — unstaged changes",
+  untracked: "Untracked — not yet added",
+  staged:    "Staged — not yet committed",
+  unpushed:  "Committed — not yet pushed",
+  ignored:   "Ignored by git",
+};
+
+/** Marker shown to the left of a tree entry for its git status.
+ *  Ignored → gray ✕ glyph; unpushed → green ↑ glyph; everything else → a
+ *  colored dot (red unstaged/untracked, orange staged); clean → empty slot. */
+function GitMarker({ status }: { status: string | undefined }) {
+  const slot: React.CSSProperties = {
+    width: 11,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    marginRight: 3,
+    fontSize: 11,
+    lineHeight: 1,
+  };
+  if (status === "ignored" || status === "unpushed") {
+    return (
+      <span style={{ ...slot, color: STATUS_COLOR[status] }} title={STATUS_TITLE[status]}>
+        {status === "ignored" ? "✕" : "↑"}
+      </span>
+    );
+  }
+  const color = status ? STATUS_COLOR[status] : undefined;
+  return (
+    <span style={slot} title={status ? STATUS_TITLE[status] : undefined}>
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: color ?? "transparent" }} />
+    </span>
+  );
+}
 
 function pathToFileUri(path: string): string {
   return `file://${path.split("/").map(encodeURIComponent).join("/")}`;
@@ -66,8 +106,10 @@ export function FileTree({
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
+  const [runningScripts, setRunningScripts] = useState<Set<string>>(new Set());
   const { openFile } = useWindowsStore();
   const addTab = useTabsStore((s) => s.addTab);
+  const runInBackground = useSettingsStore((s) => s.settings?.run_scripts_in_background ?? true);
 
   const entries = useMemo(
     () => visibleEntries(rawEntries, {
@@ -87,6 +129,20 @@ export function FileTree({
     if (!projectDir) return;
     load(initialRelPath ?? "");
   }, [projectDir]);
+
+  // Clear the running animation when a detached script finishes (run_id is the
+  // script's absolute path, see runShellScript).
+  useEffect(() => {
+    const unlisten = listen<{ runId: string; success: boolean }>("script-finished", (e) => {
+      setRunningScripts((prev) => {
+        if (!prev.has(e.payload.runId)) return prev;
+        const next = new Set(prev);
+        next.delete(e.payload.runId);
+        return next;
+      });
+    });
+    return () => { void unlisten.then((off) => off()); };
+  }, []);
 
   async function load(rel: string) {
     setLoading(true);
@@ -211,6 +267,33 @@ export function FileTree({
     }
   }
 
+  async function createEntry(kind: "file" | "dir") {
+    setContextMenu(null);
+    const label = kind === "file" ? "New file name:" : "New folder name:";
+    const name = window.prompt(label, "");
+    const trimmed = name?.trim();
+    if (!trimmed) return;
+    const rel = relPath ? `${relPath}/${trimmed}` : trimmed;
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke(kind === "file" ? "create_file" : "create_dir", {
+        projectDir,
+        relPath: rel,
+      });
+      await load(relPath);
+    } catch (err) {
+      setError(String(err));
+      setLoading(false);
+    }
+  }
+
+  function showRootContextMenu(e: React.MouseEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setTooltip(null);
+    setContextMenu({ x: e.clientX, y: e.clientY, entry: null });
+  }
+
   async function confirmDelete() {
     if (!deleteConfirm) return;
     const target = deleteConfirm;
@@ -232,6 +315,21 @@ export function FileTree({
   function runShellScript(event: React.MouseEvent<HTMLButtonElement>, entry: FileEntry) {
     event.preventDefault();
     event.stopPropagation();
+    if (runInBackground) {
+      // Detached spawn: no tab, no captured output. The backend emits
+      // `script-finished` (run_id = entry.path) when it exits so the run button
+      // can show a spinner for the duration.
+      setRunningScripts((prev) => new Set(prev).add(entry.path));
+      void invoke("run_script_detached", { scriptPath: entry.path, cwd: projectDir, runId: entry.path })
+        .catch(() => {
+          setRunningScripts((prev) => {
+            const next = new Set(prev);
+            next.delete(entry.path);
+            return next;
+          });
+        });
+      return;
+    }
     const scriptRel = relFromAbs(projectDir, entry.path);
     addTab({
       label: entry.name,
@@ -293,11 +391,29 @@ export function FileTree({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       onMouseDown={() => setContextMenu(null)}
+      onContextMenu={showRootContextMenu}
     >
       {relPath && (
-        <button className="file-tree-up" onClick={goUp} title="Go up">
-          ↑ ..
-        </button>
+        <div className="file-tree-breadcrumb">
+          <button className="file-tree-up" onClick={goUp} title="Go up">↑</button>
+          <button className="file-tree-crumb" onClick={() => load("")} title="Project root">⌂</button>
+          {relPath.split("/").filter(Boolean).map((seg, i, arr) => {
+            const target = arr.slice(0, i + 1).join("/");
+            const isLast = i === arr.length - 1;
+            return (
+              <React.Fragment key={target}>
+                <span className="file-tree-crumb-sep">/</span>
+                <button
+                  className={`file-tree-crumb${isLast ? " current" : ""}`}
+                  onClick={() => { if (!isLast) load(target); }}
+                  title={target}
+                >
+                  {seg}
+                </button>
+              </React.Fragment>
+            );
+          })}
+        </div>
       )}
       {loading && <div className="file-tree-loading">Loading…</div>}
       {error && <div className="file-tree-error">{error}</div>}
@@ -314,9 +430,9 @@ export function FileTree({
 
         function renderEntry(e: FileEntry, isScaffold = false) {
           const status = gitStatuses[e.name];
-          const barColor = status ? STATUS_COLOR[status] : undefined;
           const sizeClass = !e.is_dir ? sizeCategory(e.size) : "";
           const canRun = !e.is_dir && e.extension === ".sh";
+          const isRunning = runningScripts.has(e.path);
           return (
             <div
               key={e.path}
@@ -328,29 +444,21 @@ export function FileTree({
               onMouseEnter={(ev) => handleEntryMouseEnter(ev, e)}
               onMouseLeave={() => setTooltip(null)}
             >
-              <span
-                style={{
-                  width: 3,
-                  alignSelf: "stretch",
-                  borderRadius: 2,
-                  marginRight: 4,
-                  flexShrink: 0,
-                  background: barColor ?? "transparent",
-                }}
-              />
+              <GitMarker status={status} />
               {canRun && (
                 <button
                   type="button"
-                  className="file-run-btn"
-                  title={`Run ${e.name}`}
-                  aria-label={`Run ${e.name}`}
+                  className={`file-run-btn${isRunning ? " running" : ""}`}
+                  title={isRunning ? `Running ${e.name}…` : `Run ${e.name}`}
+                  aria-label={isRunning ? `Running ${e.name}` : `Run ${e.name}`}
                   onClick={(ev) => runShellScript(ev, e)}
+                  disabled={isRunning}
                 >
-                  ▶
+                  {isRunning ? <span className="file-run-spinner" /> : "▶"}
                 </button>
               )}
               <span className="file-icon">{e.is_dir ? folderIcon() : fileIcon(e.extension)}</span>
-              <span className="file-name">{e.name}</span>
+              <span className="file-name" title={e.name}>{e.name}</span>
               {!e.is_dir && (
                 <span className={`file-size ${sizeClass}`}>{fmtSize(e.size)}</span>
               )}
@@ -376,24 +484,39 @@ export function FileTree({
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          {gitStatuses[contextMenu.entry.name] !== "staged" && gitStatuses[contextMenu.entry.name] !== "ignored" && (
-            <button onClick={() => stageEntry(contextMenu.entry)}>
-              Stage (git add)
-            </button>
-          )}
-          <button onClick={() => updateGitignore(contextMenu.entry, "ignore")}>
-            Add to .gitignore
+          <button onClick={() => createEntry("file")}>
+            New File
           </button>
-          <button onClick={() => updateGitignore(contextMenu.entry, "unignore")}>
-            Show from .gitignore
+          <button onClick={() => createEntry("dir")}>
+            New Folder
           </button>
-          <hr />
-          <button onClick={() => renameEntry(contextMenu.entry)}>
-            Rename
-          </button>
-          <button className="danger" onClick={() => promptDelete(contextMenu.entry)}>
-            Delete
-          </button>
+          {contextMenu.entry && (() => {
+            const entry = contextMenu.entry;
+            const status = gitStatuses[entry.name];
+            return (
+              <>
+                <hr />
+                {(status === "modified" || status === "untracked") && (
+                  <button onClick={() => stageEntry(entry)}>
+                    Stage (git add)
+                  </button>
+                )}
+                <button onClick={() => updateGitignore(entry, "ignore")}>
+                  Add to .gitignore
+                </button>
+                <button onClick={() => updateGitignore(entry, "unignore")}>
+                  Show from .gitignore
+                </button>
+                <hr />
+                <button onClick={() => renameEntry(entry)}>
+                  Rename
+                </button>
+                <button className="danger" onClick={() => promptDelete(entry)}>
+                  Delete
+                </button>
+              </>
+            );
+          })()}
           <button onClick={() => setContextMenu(null)}>Cancel</button>
         </div>,
         document.body,

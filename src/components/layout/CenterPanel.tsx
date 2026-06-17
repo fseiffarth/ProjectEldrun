@@ -97,7 +97,10 @@ export function CenterPanel() {
         ) : (
           <TerminalView
             key={`${scopeKey}/${tab.key}`}
-            id={tab.key}
+            // PTY ids must include the scope: tab keys alone can collide across
+            // projects (restored layouts), which would attach two projects'
+            // terminals to the same PTY stream.
+            id={`${scopeKey}:${tab.key}`}
             cmd={tab.cmd}
             args={tab.args ?? []}
             env={tab.env ?? {}}

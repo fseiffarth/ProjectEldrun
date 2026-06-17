@@ -10,7 +10,7 @@ import { WindowControls } from "../header/WindowControls";
 import { TabBar } from "../tabs/TabBar";
 import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory } from "../../types";
-import logo from "../../assets/logo.png";
+import logo from "../../assets/logo.svg";
 
 interface WorkspaceInfo {
   label: string;
