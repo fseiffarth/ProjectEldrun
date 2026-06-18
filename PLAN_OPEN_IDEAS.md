@@ -2,16 +2,18 @@
 
 ## Context
 
-`open_ideas.md` holds 25 loose ideas spanning the right file-tree panel, the
+`open_ideas.md` holds 28 loose ideas spanning the right file-tree panel, the
 bottom project switcher, X11/KDE workspace switching, project import/publishing,
-git tooling, branding, and session restore. The goal of this plan is **not** to
+git tooling, drag-and-drop reordering, remote/SSH projects, branding, and
+session restore. The goal of this plan is **not** to
 implement everything at once, but to organize the ideas into coherent groups
 with stable numbers so you can say "do #14" and I can act on a well-scoped unit.
 
 Exploration confirmed several ideas are partially built already — those notes are
 called out per item so we don't rebuild existing infrastructure.
 
-Numbering is **global and stable** (1–25). Groups are ordered roughly by
+Numbering is **global and stable** (1–28); new ideas are appended with new
+numbers so existing references never shift. Groups are ordered roughly by
 suggested sequence (quick wins and prerequisites first), but you can pick any
 item in any order.
 
@@ -207,13 +209,59 @@ backend `commands/terminal.rs` (`project_cpu_percent`), `commands/projects.rs`
 
 ---
 
+## Group L — Drag & Drop Reordering (new feature)
+*Files: `src/stores/tabs.ts` (already has a `reorder(from, to)` action),
+`src/components/layout/CenterPanel.tsx` (tab bar — no drag handlers yet);
+`src/stores/projects.ts` (projects carry a `position` field and are sorted by
+it, but there is no reorder/persist action), `BottomBar.tsx`/`ProjectPill.tsx`,
+backend `save_projects`.*
+
+26. **Drag-and-drop tab reordering.** Make center-panel tabs draggable to
+    reorder. The store side is already done — `useTabsStore.reorder(from, to)`
+    splices and writes back per-scope — so the work is the tab-bar drag UI in
+    `CenterPanel.tsx` (HTML5 drag events or a small DnD helper) wired to
+    `reorder`, plus persisting via the existing `saveLayout`.
+
+27. **Drag-and-drop project ordering.** Make bottom-panel project pills sortable
+    by drag-and-drop. Projects already have a `position` field and render sorted
+    by it, so this needs a new reorder action in `projects.ts` that rewrites
+    `position` for the affected pills and calls `save_projects`, plus drag
+    handlers on `ProjectPill`. Shares interaction patterns with the project-box
+    drag-drop in #13 (Group E) — worth doing before or alongside it.
+
+---
+
+## Group M — Remote / SSH Projects (new feature)
+*Files: `src-tauri/src/schema/project.rs` (project model is local-only:
+`directory` is a local path, no host/remote fields), `services/project_runtime.rs`,
+`terminal/` (PTY cwd), `commands/projects.rs` (create/import), file-tree
+commands. No remote/SSH concept exists today.*
+
+28. **SSH-based projects (remote path, local agent).** Support a project whose
+    source tree lives on a **remote host** while the agent (e.g. Claude) still
+    runs on the local machine. Open question to resolve when picked: how the
+    remote path is exposed locally — most likely an `sshfs`/remote-mount so the
+    existing local `directory`, file tree, terminal cwd, and git commands keep
+    working unchanged, versus running tooling over `ssh` remotely. Needs new
+    host/remote fields in the project schema, mount lifecycle in
+    `project_runtime`, and import/create UI. Net-new; scope to be defined.
+
+---
+
 ## Suggested sequencing (optional)
 
-- **Quick wins first:** 1, 2, 3, 6, 10, 12, 20, 25(branding=#25).
-- **Then correctness:** 4 → 5, 14, 15/16/17 (X11 stability).
-- **Then larger features:** 7 (git history) → 8, 9 (running indicator),
-  11 (cpu/gpu), 13 (project boxes), 18 (KDE i3), 22 (publish), 23 (worktree),
-  24 (session restore).
+Sequencing is **group-wise** — tackle whole groups in this order, since items
+within a group share files and context:
+
+- **Already done:** A (file tree & nav), B (git markers), C (git history),
+  D (project-pill polish), K (branding).
+- **Quick wins next:** F (layout fix — single z-index/positioning change),
+  then L (drag-and-drop reordering — the tabs store half is already built).
+- **Then correctness/stability:** G (X11/KDE workspace switching) — the
+  highest-risk area; do #15/#16/#17 together.
+- **Then larger features:** H (project model, import & publishing) →
+  E (project boxes, builds on L's drag-drop) → I (git worktree) →
+  J (session restore) → M (remote/SSH projects, largest net-new backend).
 
 ## Verification approach (per item, when implemented)
 

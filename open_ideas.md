@@ -7,6 +7,7 @@
 - workspace switching keep/store window z-order 
 - workspace in kde plasma i3-style?
 - add git worktree support
+- make tabs drag and droppable
 - right panel, add create folder, file on right click
 - right panel: long folder file names must be shown in total somehow (scrolling on hover?)
 - right panel: when beeing in project subfolder show parents (better navigation)
@@ -19,7 +20,9 @@
 - bottom panel: right click on projects add change description button for changing a project description
 - bottom panel project hover: show cpu/gpu percentage of this project (apps, terminals, shells)
 - bottom panel: no reload inspect on right click 
+- bottom panel: make projects sortable by drag and drop
 - bottom panel: right click, make project box (renamable, ProjectBox1, ProjectBox2, for meta-project management, drag drop behaviour, e.g., PaperBox, CodingBox)
 - no intersection between buttom panel and right panel make right end above bottom
 - check windows, macos working, kde plasma (workspaces)
 - restore/resume agent sessions (possible?)
+- include ssh based projects, i.e. remote path but claude running on this machine is this possible?
