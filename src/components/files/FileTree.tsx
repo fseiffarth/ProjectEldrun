@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { useWindowsStore } from "../../stores/windows";
 import { useTabsStore } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
-import { type FileEntry, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, STANDARD_PROJECT_FILES } from "./fileUtils";
+import { useActivityStore } from "../../stores/activity";
+import { type FileEntry, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, STANDARD_PROJECT_FILES } from "./fileUtils";
 
 function sizeCategory(bytes: number): string {
   if (bytes < 10 * 1024) return "size-small";
@@ -103,13 +103,15 @@ export function FileTree({
   const [gitStatuses, setGitStatuses] = useState<GitStatusMap>({});
   const [isDragOver, setIsDragOver] = useState(false);
   const [separateScaffold, setSeparateScaffold] = useState(true);
+  const [hiddenExpanded, setHiddenExpanded] = useState(false);
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
-  const [runningScripts, setRunningScripts] = useState<Set<string>>(new Set());
   const { openFile } = useWindowsStore();
   const addTab = useTabsStore((s) => s.addTab);
   const runInBackground = useSettingsStore((s) => s.settings?.run_scripts_in_background ?? true);
+  const runningScripts = useActivityStore((s) => s.runningScripts);
+  const runScript = useActivityStore((s) => s.runScript);
 
   const entries = useMemo(
     () => visibleEntries(rawEntries, {
@@ -125,24 +127,26 @@ export function FileTree({
     [rawEntries, showHidden, sortKey, descending, hiddenEndings, relPath, hiddenPaths, shownPaths],
   );
 
+  // Dotfiles hidden from the inline tree, surfaced in a collapsed section so they
+  // stay discoverable without flooding the tree (TODO group N #29). Shown
+  // independently of the scaffold split — see the render below.
+  const hidden = useMemo(
+    () => hiddenEntries(rawEntries, {
+      showHidden,
+      sortKey,
+      descending,
+      hiddenEndings,
+      relPath,
+      hiddenPaths,
+      shownPaths,
+    }),
+    [rawEntries, showHidden, sortKey, descending, hiddenEndings, relPath, hiddenPaths, shownPaths],
+  );
+
   useEffect(() => {
     if (!projectDir) return;
     load(initialRelPath ?? "");
   }, [projectDir]);
-
-  // Clear the running animation when a detached script finishes (run_id is the
-  // script's absolute path, see runShellScript).
-  useEffect(() => {
-    const unlisten = listen<{ runId: string; success: boolean }>("script-finished", (e) => {
-      setRunningScripts((prev) => {
-        if (!prev.has(e.payload.runId)) return prev;
-        const next = new Set(prev);
-        next.delete(e.payload.runId);
-        return next;
-      });
-    });
-    return () => { void unlisten.then((off) => off()); };
-  }, []);
 
   async function load(rel: string) {
     setLoading(true);
@@ -316,18 +320,10 @@ export function FileTree({
     event.preventDefault();
     event.stopPropagation();
     if (runInBackground) {
-      // Detached spawn: no tab, no captured output. The backend emits
-      // `script-finished` (run_id = entry.path) when it exits so the run button
-      // can show a spinner for the duration.
-      setRunningScripts((prev) => new Set(prev).add(entry.path));
-      void invoke("run_script_detached", { scriptPath: entry.path, cwd: projectDir, runId: entry.path })
-        .catch(() => {
-          setRunningScripts((prev) => {
-            const next = new Set(prev);
-            next.delete(entry.path);
-            return next;
-          });
-        });
+      // Detached spawn: no tab, no captured output. The activity store tracks
+      // the run (and the app-lifetime `script-finished` listener clears it) so
+      // the spinner survives right-panel hide/show — see TODO group R #34.
+      runScript(entry.path, projectDir);
       return;
     }
     const scriptRel = relFromAbs(projectDir, entry.path);
@@ -473,6 +469,21 @@ export function FileTree({
               <>
                 <div className="file-tree-section-divider">scaffold</div>
                 {standard.map((e) => renderEntry(e, true))}
+              </>
+            )}
+            {hidden.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  className="file-tree-section-divider file-tree-hidden-toggle"
+                  aria-expanded={hiddenExpanded}
+                  onClick={() => setHiddenExpanded((v) => !v)}
+                  title={hiddenExpanded ? "Collapse hidden files" : "Expand hidden files"}
+                >
+                  <span className="file-tree-hidden-caret">{hiddenExpanded ? "▾" : "▸"}</span>
+                  hidden ({hidden.length})
+                </button>
+                {hiddenExpanded && hidden.map((e) => renderEntry(e, true))}
               </>
             )}
           </>

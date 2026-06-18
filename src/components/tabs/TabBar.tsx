@@ -34,9 +34,15 @@ interface Props {
 }
 
 export function TabBar({ projectCwd }: Props) {
-  const { tabs, activeKey, setActive, renameTab, addTab, ensureTab, removeTab } = useTabsStore();
+  const { tabs, activeKey, grid, setActive, renameTab, addTab, ensureTab, removeTab, reorder, toggleGrid } = useTabsStore();
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [tabMenu, setTabMenu] = useState<{ key: string; x: number; y: number } | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  // Source index lives in a ref too: dataTransfer.getData() is unreadable during
+  // dragover (only drop), and reading React state inside the drag closures can be
+  // stale, so the ref is the source of truth for the actual reorder on drop.
+  const dragIndexRef = useRef<number | null>(null);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [ollamaLoading, setOllamaLoading] = useState(false);
   const [ollamaError, setOllamaError] = useState<string | null>(null);
@@ -135,17 +141,56 @@ export function TabBar({ projectCwd }: Props) {
     setTabMenu(null);
   }
 
+  function handleTabDrop(targetIndex: number) {
+    const from = dragIndexRef.current;
+    if (from !== null && from !== targetIndex) {
+      // reorder() updates the store; CenterPanel's debounced effect persists it.
+      reorder(from, targetIndex);
+    }
+    dragIndexRef.current = null;
+    setDragIndex(null);
+    setDragOverIndex(null);
+  }
+
   return (
     <div className="tab-bar">
-      {tabs.map((tab) => {
+      {tabs.map((tab, index) => {
         const isActive = tab.key === activeKey;
         return (
           <div
             key={tab.key}
-            className={`tab ${isActive ? "active" : ""}`}
+            className={`tab ${isActive ? "active" : ""}${dragOverIndex === index ? " drag-over" : ""}${dragIndex === index ? " dragging" : ""}`}
             style={isActive ? { boxShadow: `inset 0 3px 0 ${TAB_ACCENT[tab.kind]}` } : {}}
+            draggable
             onClick={() => setActive(tab.key)}
             onContextMenu={(e) => showTabMenu(e, tab.key)}
+            onDragStart={(e) => {
+              dragIndexRef.current = index;
+              setDragIndex(index);
+              e.dataTransfer.effectAllowed = "move";
+              // Some webviews refuse to start a drag without payload data.
+              e.dataTransfer.setData("text/plain", String(index));
+            }}
+            onDragOver={(e) => {
+              // Always allow the drop; without preventDefault the browser
+              // cancels it and onDrop never fires.
+              if (dragIndexRef.current === null) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (dragOverIndex !== index) setDragOverIndex(index);
+            }}
+            onDragLeave={() => {
+              if (dragOverIndex === index) setDragOverIndex(null);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              handleTabDrop(index);
+            }}
+            onDragEnd={() => {
+              dragIndexRef.current = null;
+              setDragIndex(null);
+              setDragOverIndex(null);
+            }}
           >
             <span className="tab-label">{tab.label}</span>
             <button
@@ -166,6 +211,14 @@ export function TabBar({ projectCwd }: Props) {
           onClick={openAddMenu}
         >
           +
+        </button>
+        <button
+          className={`tab-grid-btn${grid ? " active" : ""}`}
+          title={grid ? "Single view" : "Grid view"}
+          disabled={tabs.length < 2}
+          onClick={() => toggleGrid()}
+        >
+          ▦
         </button>
       </div>
       {menuOpen && menuPos && createPortal(

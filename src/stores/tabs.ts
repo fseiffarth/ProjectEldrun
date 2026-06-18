@@ -20,10 +20,13 @@ interface TabsStore {
   scope: string;
   tabsByScope: Record<string, TabEntry[]>;
   activeKeyByScope: Record<string, string | null>;
+  gridByScope: Record<string, boolean>;
   tabs: TabEntry[];
   activeKey: string | null;
+  grid: boolean;
   setScope: (scope: string) => void;
   setActive: (key: string) => void;
+  toggleGrid: () => void;
   renameTab: (key: string, label: string) => void;
   addTab: (tab: Omit<TabEntry, "key">) => TabEntry;
   ensureTab: (
@@ -54,14 +57,17 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   scope: "root",
   tabsByScope: {},
   activeKeyByScope: {},
+  gridByScope: {},
   tabs: [],
   activeKey: null,
+  grid: false,
 
   setScope: (scope) => {
     set((s) => ({
       scope,
       tabs: s.tabsByScope[scope] ?? [],
       activeKey: s.activeKeyByScope[scope] ?? null,
+      grid: s.gridByScope[scope] ?? false,
     }));
   },
 
@@ -70,6 +76,16 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       activeKey: key,
       activeKeyByScope: { ...s.activeKeyByScope, [s.scope]: key },
     }));
+  },
+
+  toggleGrid: () => {
+    set((s) => {
+      const grid = !(s.gridByScope[s.scope] ?? false);
+      return {
+        grid,
+        gridByScope: { ...s.gridByScope, [s.scope]: grid },
+      };
+    });
   },
 
   renameTab: (key, label) => {

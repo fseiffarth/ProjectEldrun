@@ -62,6 +62,25 @@ pub struct TabEntry {
     pub extra: HashMap<String, Value>,
 }
 
+/// Remote (SSH) location metadata. A project is "remote" iff this is present.
+/// The project's `directory` then points at the local sshfs mountpoint while
+/// the bytes live on `host:remote_path`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteSpec {
+    /// SSH user, e.g. "alice"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// SSH host, e.g. "build.example.com"
+    pub host: String,
+    /// SSH port; None = default 22
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Absolute path on the remote host that is the project root
+    pub remote_path: String,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
 /// Per-project `project.json` file.
 ///
 /// Most fields are optional because projects created by older app versions may
@@ -102,6 +121,8 @@ pub struct Project {
     pub open_apps: Option<Vec<OpenApp>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tab_layout: Option<Vec<TabEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteSpec>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

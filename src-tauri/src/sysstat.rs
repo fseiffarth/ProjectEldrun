@@ -94,3 +94,39 @@ fn read_proc_time(pid: u32) -> Option<u64> {
     let stime: u64 = fields.get(12)?.parse().ok()?;
     Some(utime + stime)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clk_tck_is_positive() {
+        assert!(clk_tck() > 0, "USER_HZ must be positive");
+    }
+
+    #[test]
+    fn descendant_pids_includes_its_own_root() {
+        let me = std::process::id();
+        let pids = descendant_pids(&[me]);
+        assert!(pids.contains(&me), "descendant set must contain the root pid itself");
+    }
+
+    #[test]
+    fn descendant_pids_empty_for_no_roots() {
+        assert!(descendant_pids(&[]).is_empty());
+    }
+
+    #[test]
+    fn sum_jiffies_counts_a_live_process_and_skips_dead_ones() {
+        let me = std::process::id();
+        // Burn a little CPU so this process has measurable user time.
+        let mut acc: u64 = 0;
+        for i in 0..2_000_000u64 {
+            acc = acc.wrapping_add(i);
+        }
+        assert!(acc > 0);
+        assert!(sum_jiffies(&[me]) > 0, "the running test process should report jiffies");
+        // A pid that cannot exist contributes nothing rather than panicking.
+        assert_eq!(sum_jiffies(&[u32::MAX]), 0);
+    }
+}

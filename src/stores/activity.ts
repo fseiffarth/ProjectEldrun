@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { useTabsStore } from "./tabs";
 
@@ -21,15 +23,37 @@ export function _clearPtyActivityForTest() {
   for (const k of Object.keys(lastOutputByPty)) delete lastOutputByPty[k];
 }
 
+function withoutScript(set: Set<string>, scriptPath: string): Set<string> {
+  if (!set.has(scriptPath)) return set;
+  const next = new Set(set);
+  next.delete(scriptPath);
+  return next;
+}
+
 interface ActivityStore {
   /** project scope ("root" or project id) → has a running task right now. */
   busyByScope: Record<string, boolean>;
   /** Recompute `busyByScope` from recent PTY output. Call on an interval. */
   recompute: () => void;
+  /** Absolute paths of `.sh` scripts currently running detached. The run_id
+   *  used with the backend is the script's absolute path (see runScript). */
+  runningScripts: Set<string>;
+  /** Spawn a `.sh` script detached and track it so the run button can show a
+   *  spinner until the backend emits `script-finished`. */
+  runScript: (scriptPath: string, cwd: string) => void;
 }
 
 export const useActivityStore = create<ActivityStore>((set, get) => ({
   busyByScope: {},
+  runningScripts: new Set(),
+
+  runScript: (scriptPath, cwd) => {
+    set((s) => ({ runningScripts: new Set(s.runningScripts).add(scriptPath) }));
+    void invoke("run_script_detached", { scriptPath, cwd, runId: scriptPath })
+      .catch(() => {
+        set((s) => ({ runningScripts: withoutScript(s.runningScripts, scriptPath) }));
+      });
+  },
 
   recompute: () => {
     const now = Date.now();
@@ -54,3 +78,16 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     if (changed) set({ busyByScope: next });
   },
 }));
+
+// App-lifetime listener: clears the run animation when a detached script
+// finishes (run_id is the script's absolute path). Lives in the store rather
+// than in FileTree so the run state survives right-panel hide/show, which
+// unmounts the tree — see TODO group R #34. Guarded so non-Tauri contexts
+// (e.g. unit tests, where the IPC bridge is absent) don't throw on import.
+if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+  void listen<{ runId: string; success: boolean }>("script-finished", (e) => {
+    useActivityStore.setState((s) => ({
+      runningScripts: withoutScript(s.runningScripts, e.payload.runId),
+    }));
+  }).catch(() => {});
+}

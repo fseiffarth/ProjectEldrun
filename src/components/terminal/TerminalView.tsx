@@ -24,7 +24,11 @@ interface Props {
   env?: Record<string, string>;
   initialInput?: string;
   cwd: string;
-  active: boolean;
+  // Whether this pane is laid out on screen (single-mode active tab, or any
+  // pane in grid mode). Drives display + xterm fit.
+  visible: boolean;
+  // Whether this pane holds keyboard focus / shows the active highlight.
+  focused: boolean;
 }
 
 function terminalTheme(scheme: string | undefined) {
@@ -75,7 +79,7 @@ function terminalTheme(scheme: string | undefined) {
   };
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, active }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, visible, focused }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -211,13 +215,24 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     }
   }, [colorScheme]);
 
-  // Re-fit when the tab becomes visible.
+  // Re-fit when the pane becomes visible or its cell geometry changes (grid
+  // layout switches). The container ResizeObserver covers most resizes, but a
+  // hidden→visible transition doesn't always fire it, so fit explicitly here.
   useEffect(() => {
-    if (active && fitRef.current && termRef.current) {
+    if (visible && fitRef.current && termRef.current) {
       fitRef.current.fit();
-      termRef.current.focus();
+      invoke("pty_resize", {
+        id,
+        cols: termRef.current.cols,
+        rows: termRef.current.rows,
+      }).catch(() => {});
     }
-  }, [active]);
+  }, [visible, id]);
+
+  // Take keyboard focus only when this pane is the focused one.
+  useEffect(() => {
+    if (focused && termRef.current) termRef.current.focus();
+  }, [focused]);
 
   return (
     <div
@@ -225,8 +240,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       style={{
         flex: 1,
         minHeight: 0,
+        minWidth: 0,
         position: "relative",
-        display: active ? "flex" : "none",
+        display: "flex",
         flexDirection: "column",
         background: colorScheme === "light" || colorScheme === "fancy_light" ? "#ffffff" : "#0d1117",
       }}

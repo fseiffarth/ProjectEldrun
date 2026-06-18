@@ -13,7 +13,10 @@ interface Props {
   active: boolean;
   onClick: () => void;
   onClose: () => void;
+  onReorder: (fromId: string, toId: string) => void;
 }
+
+const PILL_DRAG_TYPE = "application/x-eldrun-project";
 
 function statusLabel(status: string): string {
   if (status === "current") return "Current";
@@ -156,13 +159,99 @@ function EditDescriptionWindow({
   );
 }
 
-export function ProjectPill({ project, active, onClick, onClose }: Props) {
+function gitTypeLabel(gitType: unknown): string {
+  switch (gitType) {
+    case "remote-public":
+      return "Remote · public";
+    case "remote-private":
+      return "Remote · private";
+    default:
+      return "Local only (no remote)";
+  }
+}
+
+function PublishWindow({
+  project,
+  onPublish,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onPublish: (visibility: "public" | "private") => Promise<string>;
+  onClose: () => void;
+}) {
+  const [visibility, setVisibility] = useState<"public" | "private">(
+    project.git_type === "remote-public" ? "public" : "private",
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState("");
+  const isRemoteWork = Boolean(project.remote);
+
+  const publish = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const output = await onPublish(visibility);
+      setResult(output || "Published.");
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{project.name} — Publish to GitHub</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="project-dialog-path">
+          Current: {gitTypeLabel(project.git_type)}
+          {isRemoteWork && " · runs on the work-remote host"}
+        </div>
+        <label>
+          Repository visibility
+          <select
+            value={visibility}
+            disabled={busy || Boolean(result)}
+            onChange={(e) => setVisibility(e.target.value as "public" | "private")}
+          >
+            <option value="private">private</option>
+            <option value="public">public</option>
+          </select>
+        </label>
+        <div className="project-dialog-path">
+          Runs <code>gh repo create {project.name} --{visibility} --source=. --push</code>.
+          Requires <code>gh</code> installed and authenticated.
+        </div>
+        {error && <div className="project-dialog-error">{error}</div>}
+        {result && <div className="scaffold-empty">{result}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose}>{result ? "Close" : "Cancel"}</button>
+          {!result && (
+            <button type="button" disabled={busy} onClick={() => void publish()}>
+              {busy ? "Publishing…" : "Publish"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+export function ProjectPill({ project, active, onClick, onClose, onReorder }: Props) {
   const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
   const [timeToday, setTimeToday] = useState<number | null>(null);
   const [cpu, setCpu] = useState<number | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
   const [showActivity, setShowActivity] = useState(false);
   const [editDescription, setEditDescription] = useState(false);
+  const [showPublish, setShowPublish] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
   const description = projectDescription(project);
@@ -173,6 +262,7 @@ export function ProjectPill({ project, active, onClick, onClose }: Props) {
   const isLiveProject = timerActiveId === project.id;
   const busy = useActivityStore((s) => s.busyByScope[project.id] ?? false);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
+  const publishProject = useProjectsStore((s) => s.publishProject);
 
   // Live per-project CPU%: polled only while the hover popup is open. Keyed on
   // the project's PTY ids (the backend resolves them to child PIDs + descendants).
@@ -285,6 +375,14 @@ export function ProjectPill({ project, active, onClick, onClose }: Props) {
           >
             Edit description
           </button>
+          <button
+            onClick={() => {
+              setContextMenu(null);
+              setShowPublish(true);
+            }}
+          >
+            Publish to GitHub…
+          </button>
         </div>,
         document.body,
       )}
@@ -303,12 +401,44 @@ export function ProjectPill({ project, active, onClick, onClose }: Props) {
         />
       )}
 
+      {/* Publish-to-GitHub window */}
+      {showPublish && (
+        <PublishWindow
+          project={project}
+          onPublish={(visibility) => publishProject(project.id, visibility)}
+          onClose={() => setShowPublish(false)}
+        />
+      )}
+
       <div
         ref={pillRef}
-        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}`}
+        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${dragOver ? " drag-over" : ""}${dragging ? " dragging" : ""}`}
+        draggable
         onMouseEnter={handleMouseEnter}
         onMouseLeave={() => { setPopupPos(null); setTimeToday(null); setCpu(null); }}
         onContextMenu={handleContextMenu}
+        onDragStart={(e) => {
+          // Hide the hover popup so it doesn't linger as a drag ghost.
+          setPopupPos(null);
+          setDragging(true);
+          e.dataTransfer.setData(PILL_DRAG_TYPE, project.id);
+          e.dataTransfer.effectAllowed = "move";
+        }}
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (!dragOver) setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          setDragOver(false);
+          const fromId = e.dataTransfer.getData(PILL_DRAG_TYPE);
+          if (!fromId || fromId === project.id) return;
+          e.preventDefault();
+          onReorder(fromId, project.id);
+        }}
+        onDragEnd={() => { setDragOver(false); setDragging(false); }}
       >
         <button className="pill-main" onClick={onClick}>
           <span className="pill-folder-icon" aria-hidden>{timerPaused ? "⏸" : "📁"}</span>

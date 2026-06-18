@@ -10,7 +10,9 @@ export function CenterPanel() {
   const tabsByScope = useTabsStore((s) => s.tabsByScope);
   const scope = useTabsStore((s) => s.scope);
   const activeKey = useTabsStore((s) => s.activeKey);
+  const grid = useTabsStore((s) => s.grid);
   const setScope = useTabsStore((s) => s.setScope);
+  const setActive = useTabsStore((s) => s.setActive);
   const loadFromLayout = useTabsStore((s) => s.loadFromLayout);
   const tabs = useTabsStore((s) => s.tabs);
   const saveLayout = useTabsStore((s) => s.saveLayout);
@@ -82,34 +84,64 @@ export function CenterPanel() {
   const allTabs = Object.entries(tabsByScope).flatMap(([s, tabs]) =>
     tabs.map((tab) => ({ tab, scopeKey: s })),
   );
-  const hasVisibleTab = (tabsByScope[scope]?.length ?? 0) > 0;
+  const scopeTabCount = tabsByScope[scope]?.length ?? 0;
+  const hasVisibleTab = scopeTabCount > 0;
+  // Grid is only meaningful with more than one pane in the current scope.
+  const gridMode = grid && scopeTabCount > 1;
+  const cols = gridMode ? Math.ceil(Math.sqrt(scopeTabCount)) : 1;
+  const rows = gridMode ? Math.ceil(scopeTabCount / cols) : 1;
+  const gridStyle = gridMode
+    ? {
+        display: "grid",
+        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+        gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+        gap: "1px",
+      }
+    : undefined;
 
   return (
-    <div className="center-panel">
-      {allTabs.map(({ tab, scopeKey }) => (
-        tab.kind === "files" ? (
-          <FileBrowser
+    <div className={`center-panel${gridMode ? " grid-mode" : ""}`} style={gridStyle}>
+      {allTabs.map(({ tab, scopeKey }) => {
+        const isCurrentScope = scopeKey === scope;
+        // In grid mode every current-scope pane is laid out; otherwise only the
+        // active tab is. The active tab is always the focused one.
+        const focused = isCurrentScope && tab.key === activeKey;
+        const visible = isCurrentScope && (gridMode || focused);
+        const paneClass =
+          "center-pane" + (visible ? " visible" : "") + (gridMode && focused ? " focused" : "");
+        return (
+          <div
             key={`${scopeKey}/${tab.key}`}
-            projectDir={tab.cwd}
-            projectId={scopeKey === "root" ? null : scopeKey}
-            active={scopeKey === scope && tab.key === activeKey}
-          />
-        ) : (
-          <TerminalView
-            key={`${scopeKey}/${tab.key}`}
-            // PTY ids must include the scope: tab keys alone can collide across
-            // projects (restored layouts), which would attach two projects'
-            // terminals to the same PTY stream.
-            id={`${scopeKey}:${tab.key}`}
-            cmd={tab.cmd}
-            args={tab.args ?? []}
-            env={tab.env ?? {}}
-            initialInput={tab.initialInput}
-            cwd={tab.cwd}
-            active={scopeKey === scope && tab.key === activeKey}
-          />
-        )
-      ))}
+            className={paneClass}
+            // In grid mode, clicking a pane makes it the focused/active tab.
+            onMouseDownCapture={
+              gridMode && !focused ? () => setActive(tab.key) : undefined
+            }
+          >
+            {tab.kind === "files" ? (
+              <FileBrowser
+                projectDir={tab.cwd}
+                projectId={scopeKey === "root" ? null : scopeKey}
+                active={visible}
+              />
+            ) : (
+              <TerminalView
+                // PTY ids must include the scope: tab keys alone can collide
+                // across projects (restored layouts), which would attach two
+                // projects' terminals to the same PTY stream.
+                id={`${scopeKey}:${tab.key}`}
+                cmd={tab.cmd}
+                args={tab.args ?? []}
+                env={tab.env ?? {}}
+                initialInput={tab.initialInput}
+                cwd={tab.cwd}
+                visible={visible}
+                focused={focused}
+              />
+            )}
+          </div>
+        );
+      })}
       {!hasVisibleTab && (
         <div className="center-placeholder">No active project terminal</div>
       )}

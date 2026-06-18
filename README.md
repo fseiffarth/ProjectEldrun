@@ -38,7 +38,7 @@ that provides the fastest path to reliable window control. The longer-term
 direction is a stable Eldrun core with desktop/compositor backends for Cinnamon
 X11, KDE/KWin, Hyprland, GNOME Shell, i3, Sway, and other Wayland environments.
 
-See [VISION.md](VISION.md) for the full strategy and platform rationale.
+See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
 
 ## How Eldrun compares
 
@@ -88,6 +88,7 @@ desktop between projects.
 
 - Linux desktop (X11 or KDE Wayland)
 - Rust toolchain (`rustup`) and Node 18+
+- `sshfs` + FUSE (optional, only for remote/SSH projects)
 
 ```bash
 # Install Rust
@@ -195,6 +196,12 @@ configuration.
   directory, with best-effort project-local XDG sandbox paths.
 - **Project creation and import**: the `+` button creates a new git-backed
   project or imports an existing directory (keep in place, copy, or move).
+- **Remote (SSH) projects**: optionally point a project at a remote host. Enter
+  an SSH address (`user@host[:port]`), connect, and browse the remote filesystem
+  in-app to pick the project root. Eldrun `sshfs`-mounts it locally so the file
+  tree, terminal cwd, and git work unchanged. Auth uses your existing SSH
+  setup (keys / agent / `~/.ssh/config`, `BatchMode`); requires `sshfs`/FUSE on
+  the local machine.
 - **Bottom project bar**: search, switch, and close projects; hover over a pill
   to see the project path, status, and today's active time.
 - **Right file panel**: browse, open, create, rename, delete, and reveal project

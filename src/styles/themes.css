@@ -362,6 +362,28 @@ input {
   font-size: 12px;
 }
 
+/* Each tab renders into a pane wrapper. In single mode panes stack absolutely
+   and only the active one is shown; in grid mode they become grid items. */
+.center-pane {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.center-pane.visible { display: flex; }
+
+.center-panel.grid-mode .center-pane {
+  position: relative;
+  inset: auto;
+}
+
+.center-panel.grid-mode .center-pane.focused {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
 /* ── Right panel overlay ──────────────────────────────────────────────── */
 .right-panel {
   position: absolute;
@@ -804,6 +826,33 @@ input {
   border-color: var(--text-muted);
 }
 
+.project-pill.dragging {
+  opacity: 0.45;
+  transform: scale(0.94);
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+
+/* Make room before the drop target and show a pulsing insertion bar. */
+.project-pill.drag-over {
+  position: relative;
+  margin-left: 8px;
+  border-color: var(--accent);
+  transition: margin-left 0.14s ease;
+}
+
+.project-pill.drag-over::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: drag-insert-pulse 0.85s ease-in-out infinite;
+}
+
 .project-pill.active {
   background-color: var(--pill-active-bg);
   border-color: var(--pill-active-border);
@@ -1052,6 +1101,37 @@ input {
 .tab.active .tab-close { opacity: 1; }
 .tab-close:hover { background-color: var(--pill-hover-bg); color: var(--text-primary); }
 
+.tab.dragging {
+  opacity: 0.45;
+  transform: scale(0.94);
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+
+/* Make room before the drop target and show a pulsing insertion bar. */
+.tab.drag-over {
+  position: relative;
+  padding-left: 20px;
+  transition: padding-left 0.14s ease;
+}
+
+.tab.drag-over::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: drag-insert-pulse 0.85s ease-in-out infinite;
+}
+
+@keyframes drag-insert-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
 /* ── New-tab button + dropdown ───────────────────────────────────────── */
 .tab-new-wrap {
   position: relative;
@@ -1088,6 +1168,36 @@ input {
   border-left-color: var(--control-border);
   border-right-color: var(--control-border);
 }
+
+.tab-grid-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 0;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.tab-grid-btn:hover:not(:disabled) {
+  background: var(--pill-hover-bg);
+  color: var(--text-primary);
+  border-top-color: var(--accent);
+  border-left-color: var(--control-border);
+  border-right-color: var(--control-border);
+}
+
+.tab-grid-btn.active { color: var(--accent); }
+
+.tab-grid-btn:disabled { opacity: 0.35; cursor: default; }
 
 .tab-new-menu {
   position: absolute;
@@ -1344,6 +1454,25 @@ input {
 
 .file-entry.scaffold {
   opacity: 0.65;
+}
+
+.file-tree-hidden-toggle {
+  width: 100%;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border-color, rgba(255,255,255,0.12));
+  cursor: pointer;
+  text-align: left;
+}
+
+.file-tree-hidden-toggle:hover {
+  color: var(--text-primary);
+}
+
+.file-tree-hidden-caret {
+  display: inline-block;
+  width: 9px;
+  font-size: 9px;
 }
 
 .file-tree-scaffold-toggle {
@@ -2309,6 +2438,57 @@ input {
   line-height: 1.35;
 }
 
+.help-backdrop {
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+
+.help-dialog {
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(80vh, calc(100vh - 64px));
+}
+
+.help-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.help-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+.help-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.help-row dt {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.help-row dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+@media (max-width: 520px) {
+  .help-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
 .project-settings-dialog {
   width: min(460px, calc(100vw - 32px));
 }
@@ -2569,12 +2749,21 @@ input {
   color: var(--text-primary) !important;
 }
 
-.manual-validation-row input[type="checkbox"] {
+.manual-validation-row input[type="checkbox"],
+.skip-scaffold-row input[type="checkbox"] {
   width: 16px;
   height: 16px;
   padding: 0;
   flex: 0 0 auto;
   accent-color: var(--accent);
+}
+
+.skip-scaffold-row {
+  min-height: 28px;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  color: var(--text-primary) !important;
 }
 
 .scaffold-fill-all-row {
@@ -2644,6 +2833,113 @@ input {
   .scaffold-row-status {
     text-align: left;
   }
+}
+
+.ssh-optional-hint {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.ssh-address-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.remote-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+}
+
+.remote-browser-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.remote-up-btn {
+  flex: 0 0 auto;
+}
+
+.remote-breadcrumb {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.remote-browser-header button {
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  padding: 5px 9px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.remote-browser-header button:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.remote-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+}
+
+.remote-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.remote-entry + .remote-entry {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.remote-entry.is-dir {
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.remote-entry.is-dir:hover {
+  background: var(--control-hover-bg);
+}
+
+.remote-entry.is-file {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.remote-entry-icon {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.remote-entry-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-chosen {
+  color: var(--text-muted);
+  font-size: 12px;
+  word-break: break-all;
 }
 
 .project-dialog-actions {

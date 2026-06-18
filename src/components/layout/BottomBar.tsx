@@ -7,7 +7,7 @@ import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { cmdToKind, useTabsStore } from "../../stores/tabs";
-import type { GlobalAppEntry, ProjectEntry, Theme } from "../../types";
+import type { GlobalAppEntry, ProjectEntry, RemoteEntry, Theme } from "../../types";
 import { resolveProjectDirectory, THEMES } from "../../types";
 
 const TERMINAL_OPTIONS = ["claude", "codex", "gemini", "vibe"];
@@ -47,6 +47,49 @@ const SCAFFOLD_FILL_OPTIONS = [
 ];
 
 const AGENT_SCAFFOLD_FILL_MODES = new Set(["agent_choice", "claude", "codex", "gemini", "vibe"]);
+
+interface ParsedSshAddress {
+  user: string | null;
+  host: string;
+  port: number | null;
+}
+
+/**
+ * Parse an SSH address of the form `[user@]host[:port]` (e.g. `me@box:2222`,
+ * `box`, `me@box`). Returns null if no host can be extracted or the port is
+ * not a valid number. The empty string yields null (= local, unchanged flow).
+ */
+function parseSshAddress(raw: string): ParsedSshAddress | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  let user: string | null = null;
+  let rest = trimmed;
+  const at = rest.indexOf("@");
+  if (at >= 0) {
+    user = rest.slice(0, at) || null;
+    rest = rest.slice(at + 1);
+  }
+  let port: number | null = null;
+  const colon = rest.lastIndexOf(":");
+  if (colon >= 0) {
+    const portStr = rest.slice(colon + 1);
+    const parsed = Number(portStr);
+    if (!portStr || !Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+      return null;
+    }
+    port = parsed;
+    rest = rest.slice(0, colon);
+  }
+  const host = rest.trim();
+  if (!host) return null;
+  return { user, host, port };
+}
+
+/** Join a remote directory path with a child segment using POSIX separators. */
+function joinRemotePath(base: string, child: string): string {
+  if (!base || base === "/") return `/${child}`;
+  return `${base.replace(/\/+$/, "")}/${child}`;
+}
 
 function sanitizeName(name: string) {
   return name
@@ -112,10 +155,11 @@ export function buildDescriptionFillPrompt(projectName: string) {
 }
 
 export function BottomBar({ open = true }: { open?: boolean }) {
-  const { projects, activeId, setActive, addProject, deactivateProject } = useProjectsStore();
+  const { projects, activeId, setActive, addProject, deactivateProject, reorderProjects } = useProjectsStore();
   const [showSettings, setShowSettings] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<"main" | "global" | "filetypes" | "ollama">("main");
+  const [showHelp, setShowHelp] = useState(false);
   const [ollamaInstalled, setOllamaInstalled] = useState(false);
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [dialog, setDialog] = useState<"new" | "import" | null>(null);
@@ -125,6 +169,7 @@ export function BottomBar({ open = true }: { open?: boolean }) {
       setShowSettingsMenu(false);
       setShowAddMenu(false);
       setShowSettings(false);
+      setShowHelp(false);
       setDialog(null);
     }
   }, [open]);
@@ -169,6 +214,11 @@ export function BottomBar({ open = true }: { open?: boolean }) {
     <>
       {showSettings && createPortal(
         <SettingsDialog onClose={() => setShowSettings(false)} initialPanel={settingsPanel} />,
+        document.body,
+      )}
+
+      {showHelp && createPortal(
+        <HelpDialog onClose={() => setShowHelp(false)} />,
         document.body,
       )}
 
@@ -256,6 +306,7 @@ export function BottomBar({ open = true }: { open?: boolean }) {
               active={p.id === activeId}
               onClick={() => setActive(p.id)}
               onClose={() => deactivateProject(p.id)}
+              onReorder={(fromId, toId) => void reorderProjects(fromId, toId)}
             />
           ))}
         </div>
@@ -288,6 +339,20 @@ export function BottomBar({ open = true }: { open?: boolean }) {
 
         <div className="bottom-add-wrap" onClick={(e) => e.stopPropagation()}>
           <button
+            className="bottom-action-btn"
+            title="Help &amp; feature guide"
+            onClick={() => {
+              setShowSettingsMenu(false);
+              setShowAddMenu(false);
+              setShowHelp(true);
+            }}
+          >
+            ?
+          </button>
+        </div>
+
+        <div className="bottom-add-wrap" onClick={(e) => e.stopPropagation()}>
+          <button
             className="bottom-add-btn"
             title="Add or import project"
             onClick={() => {
@@ -310,6 +375,95 @@ export function BottomBar({ open = true }: { open?: boolean }) {
         </div>
       </div>
     </>
+  );
+}
+
+interface HelpItem {
+  term: string;
+  desc: string;
+}
+
+interface HelpSection {
+  title: string;
+  intro?: string;
+  items: HelpItem[];
+}
+
+const HELP_SECTIONS: HelpSection[] = [
+  {
+    title: "Workspace layout",
+    intro:
+      "Eldrun keeps your AI-assisted development in a single window. Press Super while Eldrun is focused to toggle the panels, and F11 for fullscreen.",
+    items: [
+      { term: "Root terminal (▣)", desc: "The control terminal that always lives at ~/eldrun/root/, independent of any project." },
+      { term: "Project pills", desc: "One pill per active project in the bottom bar. Click to switch; each project keeps its own terminal and tabs. Drag pills to reorder them." },
+      { term: "Center panel & tabs", desc: "The active project's terminals. Right-click the tab bar to add a Claude/Codex/Gemini agent or a plain shell, rename, or close tabs. Drag tabs to reorder." },
+      { term: "Right file panel", desc: "A file-tree overlay for the active project. Open files, rename, and toggle hidden file types. The panel remembers the last folder per project." },
+    ],
+  },
+  {
+    title: "Projects",
+    items: [
+      { term: "Add (+)", desc: "Create a New Project (scaffolds files and a git repo under ~/eldrun/projects/) or Import an existing folder without touching its contents." },
+      { term: "Search inactive", desc: "The search box finds projects that aren't currently open; pick one to activate its pill and terminal." },
+      { term: "Remote (SSH) projects", desc: "Projects on a remote host are sshfs-mounted locally and behave like any other project. Requires sshfs/FUSE installed." },
+      { term: "Tasks", desc: "Right-click a tab to set, complete, or clear an agent task. Tasks persist in the project's project.json and can seed a new agent's prompt." },
+    ],
+  },
+  {
+    title: "AI & terminals",
+    items: [
+      { term: "Default agent", desc: "Choose the default terminal command (claude, codex, gemini, vibe) in Settings. Missing commands fall back to a shell; closed agents respawn." },
+      { term: "Ollama models", desc: "When Ollama is installed, the gear menu shows local models. Ctrl+K opens the local-model prompt dialog for the active context." },
+    ],
+  },
+  {
+    title: "Settings & extras",
+    items: [
+      { term: "Settings (⚙)", desc: "Theme, default agent, Git hosting profile/token, workspace management, background scripts, and debug mode." },
+      { term: "Workspace integration", desc: "Optional KDE/X11 virtual-desktop isolation per project when workspace management is enabled." },
+      { term: "Time tracking", desc: "Eldrun records active session time so you can see how long you spend per project." },
+    ],
+  },
+];
+
+function HelpDialog({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop help-backdrop" onMouseDown={onClose}>
+      <div className="settings-dialog help-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>Eldrun Help</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+
+        <p className="settings-help">
+          A quick guide to what each part of Eldrun does. Hover the toolbar buttons for shortcuts too.
+        </p>
+
+        {HELP_SECTIONS.map((section) => (
+          <div key={section.title} className="help-section">
+            <div className="settings-section-title">{section.title}</div>
+            {section.intro && <p className="settings-help">{section.intro}</p>}
+            <dl className="help-list">
+              {section.items.map((item) => (
+                <div key={item.term} className="help-row">
+                  <dt>{item.term}</dt>
+                  <dd>{item.desc}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -855,8 +1009,9 @@ function ProjectDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [descriptionFillMode, setDescriptionFillMode] = useState("manual");
-  const [gitType, setGitType] = useState("private");
+  const [gitType, setGitType] = useState("local");
   const [mode, setMode] = useState("keep");
+  const [skipScaffold, setSkipScaffold] = useState(false);
   const [sourceDir, setSourceDir] = useState("");
   const [scaffoldPreview, setScaffoldPreview] = useState<ScaffoldPreviewItem[]>([]);
   const [scaffoldFillModes, setScaffoldFillModes] = useState<Record<string, string>>({});
@@ -864,6 +1019,20 @@ function ProjectDialog({
   const [manualValidationConfirmed, setManualValidationConfirmed] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // --- SSH / remote project support (optional) ---
+  const [sshAddress, setSshAddress] = useState("");
+  const [sshStatus, setSshStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
+  const [sshError, setSshError] = useState("");
+  // The SSH address that was successfully connected (frozen at connect time so
+  // edits to the input don't silently change which host we browse/submit to).
+  const [remoteConn, setRemoteConn] = useState<ParsedSshAddress | null>(null);
+  const [remoteBrowsePath, setRemoteBrowsePath] = useState("");
+  const [remoteEntries, setRemoteEntries] = useState<RemoteEntry[]>([]);
+  const [remoteListBusy, setRemoteListBusy] = useState(false);
+  const [remoteListError, setRemoteListError] = useState("");
+  // The remote folder the user committed to via "Use this folder".
+  const [remoteChosenPath, setRemoteChosenPath] = useState("");
+  const isRemote = sshStatus === "connected" && remoteConn !== null;
   const safeName = sanitizeName(name);
   const targetDir = safeName && projectsRoot ? `${projectsRoot}/${safeName}` : "";
 
@@ -912,6 +1081,113 @@ function ProjectDialog({
       if (!name.trim()) {
         setName(picked.split("/").filter(Boolean).pop() ?? "");
       }
+    }
+  };
+
+  const chooseLocation = async () => {
+    const picked = await open({ directory: true, multiple: false, defaultPath: projectsRoot || undefined });
+    if (typeof picked === "string") {
+      setProjectsRoot(picked.replace(/\/+$/, ""));
+    }
+  };
+
+  // Disconnect/reset the remote session when the user edits the SSH address.
+  const onSshAddressChange = (value: string) => {
+    setSshAddress(value);
+    if (sshStatus !== "idle") {
+      setSshStatus("idle");
+      setSshError("");
+      setRemoteConn(null);
+      setRemoteEntries([]);
+      setRemoteBrowsePath("");
+      setRemoteChosenPath("");
+      setRemoteListError("");
+    }
+  };
+
+  const connectSsh = async () => {
+    const parsed = parseSshAddress(sshAddress);
+    if (!parsed) {
+      setSshStatus("error");
+      setSshError("Enter an address like user@host or host:2222");
+      return;
+    }
+    setSshStatus("connecting");
+    setSshError("");
+    setRemoteChosenPath("");
+    try {
+      await invoke<void>("ssh_connect", {
+        user: parsed.user,
+        host: parsed.host,
+        port: parsed.port,
+      });
+      const startDir = await invoke<string>("ssh_default_dir", {
+        user: parsed.user,
+        host: parsed.host,
+        port: parsed.port,
+      }).catch(() => "");
+      setRemoteConn(parsed);
+      setSshStatus("connected");
+      setRemoteBrowsePath(startDir || "");
+    } catch (err) {
+      setSshStatus("error");
+      setSshError(String(err));
+      setRemoteConn(null);
+    }
+  };
+
+  // Refresh the remote folder listing whenever the browse path changes.
+  useEffect(() => {
+    if (sshStatus !== "connected" || !remoteConn) {
+      setRemoteEntries([]);
+      return;
+    }
+    let cancelled = false;
+    setRemoteListBusy(true);
+    setRemoteListError("");
+    invoke<RemoteEntry[]>("ssh_list_dir", {
+      user: remoteConn.user,
+      host: remoteConn.host,
+      port: remoteConn.port,
+      path: remoteBrowsePath,
+    })
+      .then((entries) => {
+        if (cancelled) return;
+        setRemoteEntries(entries);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setRemoteEntries([]);
+        setRemoteListError(String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setRemoteListBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sshStatus, remoteConn, remoteBrowsePath]);
+
+  const enterRemoteFolder = (entry: RemoteEntry) => {
+    if (!entry.is_dir) return;
+    setRemoteBrowsePath(joinRemotePath(remoteBrowsePath, entry.name));
+  };
+
+  const remoteGoUp = () => {
+    const path = remoteBrowsePath.replace(/\/+$/, "");
+    if (!path || path === "/") {
+      setRemoteBrowsePath("/");
+      return;
+    }
+    const idx = path.lastIndexOf("/");
+    setRemoteBrowsePath(idx <= 0 ? "/" : path.slice(0, idx));
+  };
+
+  const useThisRemoteFolder = () => {
+    setRemoteChosenPath(remoteBrowsePath || "/");
+    if (kind === "import" && !name.trim()) {
+      const segs = (remoteBrowsePath || "").split("/").filter(Boolean);
+      if (segs.length) setName(segs[segs.length - 1]);
     }
   };
 
@@ -979,15 +1255,47 @@ function ProjectDialog({
     setError("");
     setBusy(true);
     try {
-      const scaffoldAgentFills = kind === "import" ? selectedScaffoldAgentFills() : new Map<string, string[]>();
+      // Remote scaffold filling runs over the local mount; for v1 we skip the
+      // local-disk-only scaffold-fill agent tabs on import when remote.
+      const scaffoldAgentFills =
+        kind === "import" && !isRemote && !skipScaffold
+          ? selectedScaffoldAgentFills()
+          : new Map<string, string[]>();
       const descriptionAgent = selectedDescriptionAgent();
+      // Build the remote spec for the create/import request when an SSH session
+      // is connected. NEW: the project name becomes a subdir under the browsed
+      // path. IMPORT: the browsed path IS the project root.
+      const remoteSpec =
+        isRemote && remoteConn
+          ? {
+              user: remoteConn.user ?? undefined,
+              host: remoteConn.host,
+              port: remoteConn.port ?? undefined,
+              remote_path:
+                kind === "new"
+                  ? joinRemotePath(remoteChosenPath, safeName)
+                  : remoteChosenPath,
+            }
+          : undefined;
       const project =
         kind === "new"
           ? await invoke<ProjectEntry>("create_project", {
-              req: { name, directory: targetDir, description, gitType },
+              req: { name, directory: targetDir, description, gitType, remote: remoteSpec },
             })
           : await invoke<ProjectEntry>("import_project", {
-              req: { sourceDir, name, description, gitType, mode, scaffoldFillModes, manualValidationConfirmed },
+              req: {
+                // Backend ignores sourceDir for remote but the field is required;
+                // pass the browsed remote path as a stand-in.
+                sourceDir: isRemote ? remoteChosenPath : sourceDir,
+                name,
+                description,
+                gitType,
+                mode: isRemote ? "keep" : mode,
+                scaffoldFillModes,
+                manualValidationConfirmed,
+                skipScaffold,
+                remote: remoteSpec,
+              },
             });
       await onProject(project);
       await openScaffoldAgentTabs(project, scaffoldAgentFills);
@@ -1000,8 +1308,11 @@ function ProjectDialog({
     }
   };
 
-  const canSubmit =
-    kind === "new"
+  const canSubmit = isRemote
+    ? kind === "new"
+      ? Boolean(name.trim() && safeName && remoteChosenPath)
+      : Boolean(name.trim() && remoteChosenPath)
+    : kind === "new"
       ? Boolean(name.trim() && targetDir && safeName)
       : Boolean(
           name.trim() &&
@@ -1032,12 +1343,107 @@ function ProjectDialog({
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <h2>{kind === "new" ? "New Project" : "Import Project"}</h2>
 
-        {kind === "import" && (
+        <label>
+          SSH address <span className="ssh-optional-hint">(optional)</span>
+          <div className="folder-picker-row">
+            <input
+              className="ssh-address-input"
+              value={sshAddress}
+              placeholder="user@host or host:2222 (leave empty for local)"
+              onChange={(e) => onSshAddressChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
+                  e.preventDefault();
+                  void connectSsh();
+                }
+                if (e.key === "Escape") onClose();
+              }}
+            />
+            <button
+              type="button"
+              disabled={!sshAddress.trim() || sshStatus === "connecting"}
+              onClick={() => void connectSsh()}
+            >
+              {sshStatus === "connecting"
+                ? "Connecting..."
+                : sshStatus === "connected"
+                  ? "Connected"
+                  : "Connect"}
+            </button>
+          </div>
+        </label>
+        {sshStatus === "error" && sshError && (
+          <div className="project-dialog-error">{sshError}</div>
+        )}
+
+        {isRemote && (
+          <div className="remote-browser" role="group" aria-label="Remote folder browser">
+            <div className="remote-browser-header">
+              <button type="button" className="remote-up-btn" onClick={remoteGoUp} title="Go up">
+                ..
+              </button>
+              <span className="remote-breadcrumb" title={remoteBrowsePath}>
+                {remoteBrowsePath || "/"}
+              </span>
+              <button type="button" onClick={useThisRemoteFolder}>
+                Use this folder
+              </button>
+            </div>
+            <div className="remote-list">
+              {remoteListBusy && <div className="scaffold-empty">Listing...</div>}
+              {!remoteListBusy && remoteListError && (
+                <div className="project-dialog-error">{remoteListError}</div>
+              )}
+              {!remoteListBusy && !remoteListError && remoteEntries.length === 0 && (
+                <div className="scaffold-empty">Empty folder.</div>
+              )}
+              {!remoteListBusy &&
+                !remoteListError &&
+                remoteEntries.map((entry) => (
+                  <div
+                    key={entry.name}
+                    className={`remote-entry ${entry.is_dir ? "is-dir" : "is-file"}`}
+                    role={entry.is_dir ? "button" : undefined}
+                    tabIndex={entry.is_dir ? 0 : undefined}
+                    onClick={() => enterRemoteFolder(entry)}
+                    onKeyDown={(e) => {
+                      if (entry.is_dir && (e.key === "Enter" || e.key === " ")) {
+                        e.preventDefault();
+                        enterRemoteFolder(entry);
+                      }
+                    }}
+                  >
+                    <span className="remote-entry-icon">{entry.is_dir ? "[ ]" : "·"}</span>
+                    <span className="remote-entry-name">{entry.name}</span>
+                  </div>
+                ))}
+            </div>
+            <div className="remote-chosen">
+              {remoteChosenPath
+                ? kind === "new"
+                  ? `Will create: ${joinRemotePath(remoteChosenPath, safeName || "<name>")}`
+                  : `Selected: ${remoteChosenPath}`
+                : "Browse to a folder, then click “Use this folder”."}
+            </div>
+          </div>
+        )}
+
+        {kind === "import" && !isRemote && (
           <label>
             Source folder
             <div className="folder-picker-row">
               <span title={sourceDir}>{sourceDir || "No folder selected"}</span>
               <button type="button" onClick={chooseFolder}>Browse...</button>
+            </div>
+          </label>
+        )}
+
+        {kind === "new" && !isRemote && (
+          <label>
+            Location
+            <div className="folder-picker-row">
+              <span title={projectsRoot}>{projectsRoot || "No folder selected"}</span>
+              <button type="button" onClick={chooseLocation}>Browse...</button>
             </div>
           </label>
         )}
@@ -1084,14 +1490,15 @@ function ProjectDialog({
         </label>
 
         <label>
-          Visibility
+          Git push target
           <select value={gitType} onChange={(e) => setGitType(e.target.value)}>
-            <option value="private">private</option>
-            <option value="public">public</option>
+            <option value="local">Local only (no remote)</option>
+            <option value="remote-private">Remote · private</option>
+            <option value="remote-public">Remote · public</option>
           </select>
         </label>
 
-        {kind === "import" && (
+        {kind === "import" && !isRemote && (
           <label>
             Import mode
             <select value={mode} onChange={(e) => setMode(e.target.value)}>
@@ -1102,7 +1509,24 @@ function ProjectDialog({
           </label>
         )}
 
+        {kind === "import" && isRemote && (
+          <div className="project-dialog-path">
+            Remote import keeps the folder in place on the remote host.
+          </div>
+        )}
+
         {kind === "import" && (
+          <label className="skip-scaffold-row">
+            <input
+              type="checkbox"
+              checked={skipScaffold}
+              onChange={(e) => setSkipScaffold(e.target.checked)}
+            />
+            Skip scaffolding (project already has its own files)
+          </label>
+        )}
+
+        {kind === "import" && !isRemote && !skipScaffold && (
           <div className="scaffold-popover" role="group" aria-label="Import scaffold guidance">
             <div className="scaffold-popover-title">Import guidance</div>
             <ol className="scaffold-steps">
@@ -1179,13 +1603,19 @@ function ProjectDialog({
         )}
 
         <div className="project-dialog-path">
-          {kind === "new" || mode !== "keep"
-            ? targetDir
-              ? `Destination: ${targetDir}`
+          {isRemote
+            ? remoteChosenPath
+              ? kind === "new"
+                ? `Remote destination: ${joinRemotePath(remoteChosenPath, safeName || "<name>")}`
+                : `Remote location: ${remoteChosenPath}`
               : ""
-            : sourceDir
-              ? `Location: ${sourceDir}`
-              : ""}
+            : kind === "new" || mode !== "keep"
+              ? targetDir
+                ? `Destination: ${targetDir}`
+                : ""
+              : sourceDir
+                ? `Location: ${sourceDir}`
+                : ""}
         </div>
         {error && <div className="project-dialog-error">{error}</div>}
 

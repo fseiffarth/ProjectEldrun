@@ -197,12 +197,20 @@ pub fn run() {
             commands::projects::save_tab_layout,
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
+            commands::projects::open_in_file_manager,
             commands::projects::list_project_endings,
             commands::projects::list_project_paths,
             commands::projects::create_project,
             commands::projects::preview_project_scaffold,
             commands::projects::import_project,
             commands::projects::get_time_today,
+            // SSH / remote projects
+            commands::ssh::ssh_connect,
+            commands::ssh::ssh_default_dir,
+            commands::ssh::ssh_list_dir,
+            commands::ssh::ensure_project_mounted,
+            // GitHub publishing
+            commands::github::github_publish,
             // Timer flush + activity
             commands::timer::timer_flush_app,
             commands::timer::timer_flush_project,
@@ -278,8 +286,15 @@ pub fn run() {
             commands::ollama::list_installable_models,
         ])
         .plugin(tauri_plugin_dialog::init())
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // Tear down any sshfs mounts for remote projects when the app exits
+            // so the user isn't left with stale FUSE mounts after shutdown.
+            if let tauri::RunEvent::Exit = event {
+                services::ssh_mount::unmount_all();
+            }
+        });
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

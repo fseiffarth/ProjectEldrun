@@ -112,6 +112,13 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
   const localFile = activeProject?.local_file;
   const rightPanelFolder = activeId ? rightPanelFolderByProject[activeId] ?? "" : "";
 
+  const openInOsBrowser = () => {
+    if (!projectDir) return;
+    const sub = rightPanelFolder.replace(/^\/+|\/+$/g, "");
+    const path = sub ? `${projectDir.replace(/\/+$/, "")}/${sub}` : projectDir;
+    invoke("open_in_file_manager", { path }).catch((e) => console.error("open_in_file_manager", e));
+  };
+
   useEffect(() => {
     if (open && activeId) {
       refresh(activeId);
@@ -269,6 +276,16 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
             {v === "files" ? "Files" : v === "git" ? "Git" : "Apps"}
           </button>
         ))}
+        {projectDir && (
+          <button
+            className="tab-add-btn"
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            onClick={openInOsBrowser}
+            title="Open folder in file manager"
+          >
+            ⧉
+          </button>
+        )}
         {activeId && (
           <button
             className="tab-add-btn"

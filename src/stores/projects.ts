@@ -25,11 +25,13 @@ interface ProjectsStore {
   switchGeneration: number;
   load: () => Promise<void>;
   setActive: (id: string | null) => Promise<void>;
+  reorderProjects: (fromId: string, toId: string) => Promise<void>;
   setRightPanelFolder: (projectId: string, folder: string) => void;
   clearSwitchToast: () => void;
   addProject: (project: ProjectEntry) => Promise<void>;
   deactivateProject: (id: string) => Promise<void>;
   updateProjectDescription: (id: string, description: string) => Promise<void>;
+  publishProject: (id: string, visibility: "public" | "private") => Promise<string>;
 }
 
 export const useProjectsStore = create<ProjectsStore>((set, get) => ({
@@ -70,6 +72,19 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       activeId,
       rightPanelFolderByProject,
     });
+    // The initially-active project never fires a switch (which is what mounts
+    // remote projects on activation). If it is remote, ensure its sshfs mount
+    // is up so the file tree / terminal see its bytes. Best-effort and
+    // non-fatal: a remote host may be offline at boot, which must not block or
+    // crash app start — re-switching to the project later will retry the mount.
+    if (activeId) {
+      const active = projects.find((p) => p.id === activeId);
+      if (active?.remote) {
+        void invoke("ensure_project_mounted", { projectId: activeId }).catch(
+          (error) => console.warn("ensure_project_mounted (startup) failed", error),
+        );
+      }
+    }
   },
 
   setActive: async (id) => {
@@ -132,6 +147,43 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     });
   },
 
+  reorderProjects: async (fromId, toId) => {
+    if (fromId === toId) return;
+    const byPosition = (a: ProjectEntry, b: ProjectEntry) => a.position - b.position;
+    let nextProjects: ProjectEntry[] = [];
+    let changed = false;
+    set((state) => {
+      const active = state.projects
+        .filter((p) => p.status !== "inactive")
+        .sort(byPosition);
+      const inactive = state.projects
+        .filter((p) => p.status === "inactive")
+        .sort(byPosition);
+      const fromIdx = active.findIndex((p) => p.id === fromId);
+      const toIdx = active.findIndex((p) => p.id === toId);
+      if (fromIdx < 0 || toIdx < 0) return {};
+      const reordered = [...active];
+      const [moved] = reordered.splice(fromIdx, 1);
+      reordered.splice(toIdx, 0, moved);
+      // Renumber every project with gap-spaced positions so values stay unique:
+      // active pills in their new drag order first, inactive ones after.
+      const positionById = new Map(
+        [...reordered, ...inactive].map((p, i) => [p.id, (i + 1) * 10]),
+      );
+      nextProjects = state.projects.map((p) => {
+        const position = positionById.get(p.id);
+        return position !== undefined && position !== p.position
+          ? { ...p, position }
+          : p;
+      });
+      changed = true;
+      return { projects: nextProjects };
+    });
+    if (changed) {
+      await invoke<void>("save_projects", { projects: nextProjects });
+    }
+  },
+
   setRightPanelFolder: (projectId, folder) => {
     set((state) => ({
       rightPanelFolderByProject: {
@@ -192,6 +244,20 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
         project.id === id ? { ...project, description: cleaned ?? undefined } : project,
       ),
     }));
+  },
+
+  publishProject: async (id, visibility) => {
+    // Backend runs `gh repo create … --push` (locally, or over ssh for a
+    // work-remote project) and writes the new push target into projects.json +
+    // project.json; mirror it into local state. Returns gh's stdout (repo URL).
+    const output = await invoke<string>("github_publish", { projectId: id, visibility });
+    const gitType = `remote-${visibility}`;
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id ? { ...project, git_type: gitType } : project,
+      ),
+    }));
+    return output;
   },
 }));
 

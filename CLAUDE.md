@@ -10,8 +10,12 @@ Stack: Rust (Tauri 2), React 18, TypeScript, Zustand, xterm.js, Tailwind CSS.
 ## Running
 
 Do not launch Eldrun from Claude or any other agent terminal for verification.
-Opening a second Eldrun instance can corrupt workspace state. Ask the user to
-run or restart the existing instance when runtime validation is needed.
+Opening a second Eldrun instance can corrupt workspace state.
+
+Frontend (`src/`) changes hot-reload in the running instance, so no restart is
+needed to see TSX/CSS edits — do not ask the user to restart for these. Only
+backend (`src-tauri/`) changes require the user to rebuild/restart the existing
+instance; ask them to do that when runtime validation of Rust changes is needed.
 
 Runtime launch commands are intentionally omitted from this Claude context.
 
@@ -50,6 +54,8 @@ Runtime launch commands are intentionally omitted from this Claude context.
 | `platform/null.rs` | No-op platform fallback. |
 | `terminal/` | PTY management and terminal I/O commands. |
 | `commands/` | Tauri command handlers exposed to the frontend. |
+| `commands/ssh.rs` | SSH commands for remote projects (`ssh_connect`, `ssh_default_dir`, `ssh_list_dir`, `ensure_project_mounted`). |
+| `services/ssh_mount.rs` | sshfs mount lifecycle for remote projects (mount/unmount, mountpoint derivation, arg validation). |
 
 ## Persistence
 
@@ -58,6 +64,11 @@ Runtime launch commands are intentionally omitted from this Claude context.
 - Global Eldrun state lives in `~/.local/share/eldrun/`:
   `projects.json`, `settings.json`, `default_apps.json`, `time_log.json`, and
   `active_session.json`.
+- Remote (SSH) projects are sshfs-mounted under
+  `~/.local/share/eldrun/mounts/<project-id>/`; that mountpoint becomes the
+  project's `directory`. Such projects carry a `remote` spec (`user?`, `host`,
+  `port?`, `remote_path`) in their `project.json` and mirrored into the
+  `projects.json` entry's `extra`. Requires `sshfs`/FUSE locally.
 - Project-local state lives in each project's `project.json`.
 - New/imported projects receive `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
   `.claude/settings.json`, `.gitignore`, `TODO.md`, `ROADMAP.md`, `STATUS.md`,
@@ -87,8 +98,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
    GitHub Releases are only published for `v0.<minor>.0` tags, so patch-only
    bumps like `0.1.1 -> 0.1.2` do not create a release.
 
-5. Do not start Eldrun from Claude. Ask the user to restart the existing
-   instance for runtime verification.
+5. Do not start Eldrun from Claude. Frontend (`src/`) edits hot-reload in the
+   running instance — no restart needed. Only ask the user to rebuild/restart
+   for backend (`src-tauri/`) changes.
 
 Useful keys: `F11` toggles fullscreen; `Super` toggles panels while Eldrun is
 focused.

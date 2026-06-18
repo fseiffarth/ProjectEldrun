@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::paths;
-use crate::schema::project::Project;
+use crate::schema::project::{Project, RemoteSpec};
 use crate::schema::projects::{ProjectEntry, ProjectsList};
 use crate::schema::time_log::TimeLog;
+use crate::services::ssh_mount;
 use crate::storage;
 
 // ── Project list ──────────────────────────────────────────────────────────
@@ -20,7 +21,36 @@ pub fn get_projects() -> Result<ProjectsList, String> {
     if !path.exists() {
         return Ok(vec![]);
     }
-    storage::read_json(&path).map_err(|e| e.to_string())
+    let mut list: ProjectsList = storage::read_json(&path).map_err(|e| e.to_string())?;
+    // Migrate legacy git_type values (private/public) to the local/remote model
+    // in-memory so the frontend always sees canonical values. Persisted on the
+    // next natural save (no surprise write from a read command).
+    for entry in list.iter_mut() {
+        if let Some(Value::String(gt)) = entry.extra.get("git_type") {
+            let norm = normalize_git_type(gt);
+            if &norm != gt {
+                entry
+                    .extra
+                    .insert("git_type".to_string(), Value::String(norm));
+            }
+        }
+    }
+    Ok(list)
+}
+
+/// Normalize a `git_type` value to the local/remote model used since Group D.
+/// Legacy values map private → remote-private, public → remote-public; the
+/// canonical values pass through; anything unrecognized falls back to "local".
+pub(crate) fn normalize_git_type(value: &str) -> String {
+    match value.trim() {
+        "private" => "remote-private",
+        "public" => "remote-public",
+        "local" => "local",
+        "remote-private" => "remote-private",
+        "remote-public" => "remote-public",
+        _ => "local",
+    }
+    .to_string()
 }
 
 #[tauri::command]
@@ -81,7 +111,11 @@ pub fn set_project_description(
 #[tauri::command]
 pub fn load_project(local_file: String) -> Result<Project, String> {
     let path = PathBuf::from(&local_file);
-    storage::read_json(&path).map_err(|e| e.to_string())
+    let mut project: Project = storage::read_json(&path).map_err(|e| e.to_string())?;
+    if let Some(gt) = project.git_type.as_deref() {
+        project.git_type = Some(normalize_git_type(gt));
+    }
+    Ok(project)
 }
 
 #[tauri::command]
@@ -107,6 +141,16 @@ pub fn root_work_dir() -> String {
 #[tauri::command]
 pub fn projects_root_dir() -> String {
     projects_root().to_string_lossy().to_string()
+}
+
+/// Open a directory in the OS file manager (Files/Finder/Explorer).
+#[tauri::command]
+pub fn open_in_file_manager(path: String) -> Result<(), String> {
+    let dir = PathBuf::from(&path);
+    if !dir.is_dir() {
+        return Err(format!("Not a directory: {path}"));
+    }
+    opener::open(&dir).map_err(|e| e.to_string())
 }
 
 // ── File tree ─────────────────────────────────────────────────────────────
@@ -483,25 +527,39 @@ pub struct CreateProjectRequest {
     pub directory: String,
     pub description: Option<String>,
     pub git_type: Option<String>,
+    /// When present the project is remote: `directory` is ignored and the
+    /// project root becomes the local sshfs mountpoint for `remote`.
+    #[serde(default)]
+    pub remote: Option<RemoteSpec>,
 }
 
 #[tauri::command]
 pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String> {
-    let dir = PathBuf::from(&req.directory);
+    let id = uuid_v4();
+
+    // For remote projects the working directory is the sshfs mountpoint; for
+    // local projects it is the chosen directory. Establish the mount first so
+    // scaffolding writes onto the remote filesystem.
+    let dir = match req.remote.as_ref() {
+        Some(remote) => ssh_mount::mount(remote, &id)?,
+        None => PathBuf::from(&req.directory),
+    };
+    let directory = dir.to_string_lossy().to_string();
+
     scaffold_project(&dir).map_err(|e| e.to_string())?;
 
-    let id = uuid_v4();
     let now = chrono_now();
-    let git_type = req.git_type.unwrap_or_else(|| "private".to_string());
+    let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
     let description = clean_description(req.description);
 
     let project = Project {
         id: id.clone(),
         name: req.name.clone(),
-        directory: req.directory.clone(),
+        directory: directory.clone(),
         description: description.clone(),
         git_type: Some(git_type.clone()),
         created_at: Some(now),
+        remote: req.remote.clone(),
         ..Default::default()
     };
 
@@ -516,7 +574,7 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
         vec![]
     };
     let position = next_position(&list);
-    let extra = project_extra(req.directory, git_type, description);
+    let extra = project_extra(directory, git_type, description, req.remote.as_ref());
 
     let entry = ProjectEntry {
         id: id.clone(),
@@ -542,12 +600,34 @@ pub struct ImportProjectRequest {
     pub mode: String,
     pub scaffold_fill_modes: Option<HashMap<String, String>>,
     pub manual_validation_confirmed: Option<bool>,
+    /// Skip writing the Eldrun scaffold (and `git init`) — for importing
+    /// projects that already carry their own files. `project.json` is still
+    /// created/updated so the project registers normally.
+    #[serde(default)]
+    pub skip_scaffold: bool,
+    /// When present the project is remote: `source_dir` is the already-mounted
+    /// remote directory and the only supported `mode` is "keep".
+    #[serde(default)]
+    pub remote: Option<RemoteSpec>,
 }
 
 #[tauri::command]
 pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String> {
     if req.name.trim().is_empty() {
         return Err("Project name is invalid".to_string());
+    }
+
+    // Generate the id up front: remote imports mount under it before we touch
+    // the filesystem.
+    let id = uuid_v4();
+
+    if let Some(remote) = req.remote.clone() {
+        if req.mode != "keep" {
+            return Err("Remote imports must use 'keep' mode (copy/move are not supported)".to_string());
+        }
+        // Establish (or reuse) the sshfs mount; the mountpoint is the project root.
+        let mountpoint = ssh_mount::mount(&remote, &id)?;
+        return finish_import(req, id, mountpoint, Some(remote));
     }
 
     let source = PathBuf::from(&req.source_dir);
@@ -559,8 +639,6 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
     {
         return Err("Copy and move imports require manual validation".to_string());
     }
-
-    let _scaffold_fill_modes = req.scaffold_fill_modes.unwrap_or_default();
 
     let target = match req.mode.as_str() {
         "keep" => source,
@@ -584,6 +662,20 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
         other => return Err(format!("Unknown import mode: {other}")),
     };
 
+    finish_import(req, id, target, None)
+}
+
+/// Shared tail of `import_project`: scaffold over `target`, build/merge the
+/// `project.json`, register the entry in `projects.json`, and return it.
+/// `remote` is `Some` for remote imports (where `target` is the mountpoint).
+fn finish_import(
+    req: ImportProjectRequest,
+    id: String,
+    target: PathBuf,
+    remote: Option<RemoteSpec>,
+) -> Result<ProjectEntry, String> {
+    let _scaffold_fill_modes = req.scaffold_fill_modes.unwrap_or_default();
+
     let directory = target.to_string_lossy().to_string();
     let project_file = target.join("project.json");
     let project_file_s = project_file.to_string_lossy().to_string();
@@ -601,11 +693,12 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
         return Err("Project is already registered".to_string());
     }
 
-    scaffold_project(&target).map_err(|e| e.to_string())?;
+    if !req.skip_scaffold {
+        scaffold_project(&target).map_err(|e| e.to_string())?;
+    }
 
-    let id = uuid_v4();
     let now = chrono_now();
-    let git_type = req.git_type.unwrap_or_else(|| "private".to_string());
+    let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
     let requested_description = clean_description(req.description);
 
     let project = if project_file.exists() {
@@ -617,6 +710,7 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
             existing.description = requested_description.clone();
         }
         existing.git_type = Some(git_type.clone());
+        existing.remote = remote.clone();
         existing
     } else {
         Project {
@@ -626,6 +720,7 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
             description: requested_description.clone(),
             git_type: Some(git_type.clone()),
             created_at: Some(now),
+            remote: remote.clone(),
             ..Default::default()
         }
     };
@@ -633,7 +728,7 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
 
     let position = next_position(&list);
     let description = project.description.clone();
-    let extra = project_extra(directory, git_type, description);
+    let extra = project_extra(directory, git_type, description, remote.as_ref());
     let entry = ProjectEntry {
         id,
         name: req.name,
@@ -676,6 +771,7 @@ fn project_extra(
     directory: String,
     git_type: String,
     description: Option<String>,
+    remote: Option<&RemoteSpec>,
 ) -> HashMap<String, Value> {
     let mut extra = HashMap::from([
         ("directory".to_string(), Value::String(directory)),
@@ -683,6 +779,14 @@ fn project_extra(
     ]);
     if let Some(description) = description {
         extra.insert("description".to_string(), Value::String(description));
+    }
+    // Mirror the remote spec into the pill-list entry (like `directory`/
+    // `git_type`) so the frontend can flag remote projects without reading
+    // each project.json. Serialization should never fail for a plain struct.
+    if let Some(remote) = remote {
+        if let Ok(value) = serde_json::to_value(remote) {
+            extra.insert("remote".to_string(), value);
+        }
     }
     extra
 }
@@ -955,6 +1059,28 @@ mod tests {
         let result = sanitize_name("café");
         assert!(!result.contains("é"), "unicode must be replaced");
         assert!(!result.contains("--"), "consecutive dashes collapsed");
+    }
+
+    // ── normalize_git_type ─────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_git_type_migrates_legacy_values() {
+        assert_eq!(normalize_git_type("private"), "remote-private");
+        assert_eq!(normalize_git_type("public"), "remote-public");
+    }
+
+    #[test]
+    fn normalize_git_type_passes_through_canonical_values() {
+        assert_eq!(normalize_git_type("local"), "local");
+        assert_eq!(normalize_git_type("remote-private"), "remote-private");
+        assert_eq!(normalize_git_type("remote-public"), "remote-public");
+    }
+
+    #[test]
+    fn normalize_git_type_unknown_falls_back_to_local() {
+        assert_eq!(normalize_git_type(""), "local");
+        assert_eq!(normalize_git_type("weird"), "local");
+        assert_eq!(normalize_git_type("  public  "), "remote-public");
     }
 
     // ── enforce_confinement ────────────────────────────────────────────────

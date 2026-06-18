@@ -41,6 +41,8 @@ vi.mock("../stores/projects", () => ({
       projects: [],
     }),
   ),
+  // AppShell subscribes to runtime-switch events on mount; provide a no-op.
+  listenProjectRuntimeSwitched: vi.fn().mockResolvedValue(() => {}),
 }));
 vi.mock("../stores/settings", () => ({
   useSettingsStore: vi.fn((sel: (s: object) => unknown) =>

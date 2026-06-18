@@ -17,6 +17,18 @@ export interface Settings {
   [key: string]: unknown;
 }
 
+export interface RemoteSpec {
+  user?: string;
+  host: string;
+  port?: number;
+  remote_path: string;
+}
+
+export interface RemoteEntry {
+  name: string;
+  is_dir: boolean;
+}
+
 export interface ProjectEntry {
   id: string;
   name: string;
@@ -26,6 +38,7 @@ export interface ProjectEntry {
   local_file: string;
   directory?: string;
   description?: string;
+  remote?: RemoteSpec;
   [key: string]: unknown;
 }
 
