@@ -2,12 +2,55 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { resolveProjectDirectory, type ProjectEntry } from "../types";
-import { useTabsStore } from "./tabs";
+import {
+  cmdToKind,
+  isRestorableTab,
+  pruneSavedTree,
+  serializeTree,
+  useTabsStore,
+  type SavedLayoutTree,
+  type TabKind,
+} from "./tabs";
 import { useTimerStore } from "./timer";
+import { useVpnPromptStore } from "./vpnPrompt";
+
+/**
+ * If `project` is VPN-gated, ensure its OpenVPN tunnel is up before any sshfs
+ * mount / ssh runs. The password is prompted each time (never persisted). Best
+ * effort: a cancelled prompt or a failed connect is logged and we proceed, so a
+ * VPN hiccup degrades to the same "host unreachable" path as an offline host
+ * rather than blocking activation.
+ */
+async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<void> {
+  const config = project?.remote?.openvpn?.config;
+  if (!config) return;
+  try {
+    const up = await invoke<boolean>("openvpn_status", { config }).catch(() => false);
+    if (up) return;
+    const password = await useVpnPromptStore.getState().request(config, project!.name);
+    await invoke("openvpn_connect", { config, password });
+  } catch (error) {
+    console.warn("OpenVPN connect skipped/failed", error);
+  }
+}
 
 interface ProjectRuntimeSwitchedPayload {
   projectId: string | null;
-  tabLayout: Array<{ key: string; label: string; cmd: string; cwd: string }>;
+  tabLayout: Array<{
+    key: string;
+    label: string;
+    cmd: string;
+    cwd: string;
+    kind?: TabKind;
+    sessionId?: string;
+    env?: Record<string, string>;
+    embedPath?: string;
+    embedExec?: string;
+    viewer?: "pdf" | "image" | "markdown" | "text";
+  }>;
+  // Opaque split/group layout tree (camelCased by the backend's serde rename);
+  // absent → restored as a single group.
+  tabGroups: SavedLayoutTree | null;
   activeTabIndex: number;
   fileTabs: unknown[];
   rightPanelFolder: string | null;
@@ -80,9 +123,12 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     if (activeId) {
       const active = projects.find((p) => p.id === activeId);
       if (active?.remote) {
-        void invoke("ensure_project_mounted", { projectId: activeId }).catch(
-          (error) => console.warn("ensure_project_mounted (startup) failed", error),
-        );
+        void (async () => {
+          await ensureVpnIfNeeded(active);
+          await invoke("ensure_project_mounted", { projectId: activeId }).catch(
+            (error) => console.warn("ensure_project_mounted (startup) failed", error),
+          );
+        })();
       }
     }
   },
@@ -123,11 +169,27 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     await invoke<void>("save_projects", { projects: nextProjects });
     void useTimerStore.getState().setProject(id);
     const tabsStore = useTabsStore.getState();
-    const tabs = tabsStore.tabs;
+    // Persist restorable tabs across a switch: shell/files, resumable agent
+    // tabs (Claude with a sessionId), and in-app file-viewer embeds. Other agent
+    // tabs (and external-app embeds) are dropped from the snapshot and the tree
+    // is pruned to match (mirrors saveLayout). See isRestorableTab.
+    const tabs = tabsStore.tabs.filter((t) => isRestorableTab(t));
+    const keepKeys = new Set(tabs.map((t) => t.key));
     const activeTabIndex = Math.max(
       0,
       tabs.findIndex((t) => t.key === tabsStore.activeKey),
     );
+    // Serialize the current split/group tree so a switch round-trips the layout.
+    // Without this the backend persists `tab_groups: None`, flattening the tiling.
+    // Uses the store's canonical serializer (shared with saveLayout) so the
+    // switch snapshot and the on-disk `tab_groups` always agree.
+    const tabGroups = pruneSavedTree(serializeTree(tabsStore.layout), keepKeys);
+    // Bring up the VPN (if this project is VPN-gated) before the switch mounts
+    // its sshfs filesystem. Prompts for the password each time; non-blocking on
+    // failure (the mount then degrades like an offline host).
+    if (id !== null) {
+      await ensureVpnIfNeeded(nextProjects.find((p) => p.id === id));
+    }
     // Fire-and-forget: the switch runs on a backend worker thread and returns
     // immediately. The resulting tab layout / right-panel folder arrives via the
     // `project-runtime-switched` event, handled by listenProjectRuntimeSwitched.
@@ -135,7 +197,19 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       previousProjectId: previousId,
       previousSnapshot: {
-        tabLayout: tabs.map((t) => ({ key: t.key, label: t.label, cmd: t.cmd, cwd: t.cwd })),
+        tabLayout: tabs.map((t) => ({
+          key: t.key,
+          label: t.label,
+          cmd: t.cmd,
+          cwd: t.cwd,
+          kind: t.kind,
+          env: t.env ?? {},
+          sessionId: t.sessionId,
+          embedPath: t.embedPath,
+          embedExec: t.embedExec,
+          viewer: t.viewer,
+        })),
+        tabGroups,
         activeTabIndex,
         fileTabs: [],
         rightPanelFolder: previousId ? get().rightPanelFolderByProject[previousId] ?? null : null,
@@ -271,13 +345,32 @@ export function listenProjectRuntimeSwitched(): Promise<() => void> {
     const payload = ev.payload;
     const scopeKey = payload.projectId ?? "root";
     const tabsStore = useTabsStore.getState();
+    // Keep shell/files tabs, resumable agent tabs (Claude with a sessionId), and
+    // in-app file-viewer embeds; other agent tabs (and external-app embeds) are
+    // dropped (no session to restore). Newer snapshots carry `kind`/`sessionId`;
+    // fall back to deriving the kind from the command. The saved groups tree
+    // self-heals — loadFromLayout drops any tree key absent from the (filtered)
+    // tab list.
+    const restorable = payload.tabLayout.filter((t) =>
+      isRestorableTab({
+        kind: t.kind ?? cmdToKind(t.cmd),
+        cmd: t.cmd,
+        sessionId: t.sessionId,
+        viewer: t.viewer,
+      }),
+    );
     // Only restore from disk if this scope was never initialized this session.
     // An existing (possibly empty) entry means the user's in-memory tabs win.
-    if (payload.tabLayout.length > 0 && !(scopeKey in tabsStore.tabsByScope)) {
+    if (restorable.length > 0 && !(scopeKey in tabsStore.tabsByScope)) {
       const project = payload.projectId
         ? useProjectsStore.getState().projects.find((p) => p.id === payload.projectId) ?? null
         : null;
-      tabsStore.loadFromLayout(payload.tabLayout, resolveProjectDirectory(project), scopeKey);
+      tabsStore.loadFromLayout(
+        restorable,
+        resolveProjectDirectory(project),
+        scopeKey,
+        payload.tabGroups ?? undefined,
+      );
     }
     if (payload.projectId && payload.rightPanelFolder !== null) {
       useProjectsStore.getState().setRightPanelFolder(payload.projectId, payload.rightPanelFolder);

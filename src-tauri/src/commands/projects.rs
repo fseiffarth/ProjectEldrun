@@ -129,8 +129,10 @@ pub fn save_project(local_file: String, project: Project) -> Result<(), String> 
 pub fn save_tab_layout(
     local_file: String,
     tabs: Vec<crate::schema::project::TabEntry>,
+    groups: Option<Value>,
+    sessions: Option<Value>,
 ) -> Result<(), String> {
-    crate::services::terminal_service::save_tab_layout(&local_file, &tabs)
+    crate::services::terminal_service::save_tab_layout(&local_file, &tabs, groups, sessions)
 }
 
 #[tauri::command]
@@ -430,6 +432,81 @@ pub fn detect_mime(path: String) -> Result<String, String> {
         .and_then(|e| e.to_str())
         .map(|e| mime_guess::from_ext(e).first_or_octet_stream().to_string())
         .unwrap_or_else(|| "application/octet-stream".to_string()))
+}
+
+// ── Read file contents for in-app viewers (Group K #40) ───────────────────
+
+/// Largest text file we will load into an in-app viewer (8 MiB). Larger files
+/// are refused rather than risking a multi-MB string crossing the IPC bridge.
+const MAX_TEXT_VIEW_BYTES: u64 = 8 * 1024 * 1024;
+/// Largest binary (PDF) we will load into the in-app viewer (64 MiB).
+const MAX_BINARY_VIEW_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Read an absolute file path as UTF-8 text for the in-app text/markdown viewer.
+///
+/// Takes an absolute path (the same `FileEntry.path` the file tree already uses
+/// to open files externally), so no project confinement applies. Refuses files
+/// over `MAX_TEXT_VIEW_BYTES` and files that are not valid UTF-8 (binary).
+#[tauri::command]
+pub fn read_file_text(path: String) -> Result<String, String> {
+    let p = PathBuf::from(&path);
+    let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a file".to_string());
+    }
+    if meta.len() > MAX_TEXT_VIEW_BYTES {
+        return Err(format!(
+            "file too large to view ({} bytes; limit {})",
+            meta.len(),
+            MAX_TEXT_VIEW_BYTES
+        ));
+    }
+    let bytes = fs::read(&p).map_err(|e| e.to_string())?;
+    String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8 text".to_string())
+}
+
+/// Write UTF-8 text to an absolute file path from the in-app editor.
+///
+/// Counterpart to `read_file_text`: takes the same absolute `FileEntry.path`,
+/// refuses to grow a file past `MAX_TEXT_VIEW_BYTES`, and only writes to an
+/// existing regular file (the editor edits files opened from the tree; it never
+/// creates new paths). No project confinement, matching the read side.
+#[tauri::command]
+pub fn write_file_text(path: String, content: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a file".to_string());
+    }
+    if content.len() as u64 > MAX_TEXT_VIEW_BYTES {
+        return Err(format!(
+            "content too large to save ({} bytes; limit {})",
+            content.len(),
+            MAX_TEXT_VIEW_BYTES
+        ));
+    }
+    fs::write(&p, content).map_err(|e| e.to_string())
+}
+
+/// Read an absolute file path as raw bytes for the in-app PDF viewer.
+///
+/// Refuses files over `MAX_BINARY_VIEW_BYTES`. The frontend wraps the returned
+/// bytes in a Blob URL so the PDF renders in-tab without an external viewer.
+#[tauri::command]
+pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
+    let p = PathBuf::from(&path);
+    let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a file".to_string());
+    }
+    if meta.len() > MAX_BINARY_VIEW_BYTES {
+        return Err(format!(
+            "file too large to view ({} bytes; limit {})",
+            meta.len(),
+            MAX_BINARY_VIEW_BYTES
+        ));
+    }
+    fs::read(&p).map_err(|e| e.to_string())
 }
 
 // ── Scaffold new project ───────────────────────────────────────────────────

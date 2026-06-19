@@ -216,6 +216,7 @@ fn save_and_load_tab_layout_roundtrip() {
             label: "Terminal".to_string(),
             cmd: "bash".to_string(),
             cwd: "/home/user".to_string(),
+            session_id: None,
             extra: Default::default(),
         },
         TabEntry {
@@ -223,16 +224,72 @@ fn save_and_load_tab_layout_roundtrip() {
             label: "Claude".to_string(),
             cmd: "claude".to_string(),
             cwd: "/home/user/project".to_string(),
+            session_id: None,
             extra: Default::default(),
         },
     ];
 
-    terminal_service::save_tab_layout(&local_file_str, &tabs).unwrap();
+    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None).unwrap();
     let loaded = terminal_service::load_tab_layout(&local_file_str);
 
     assert_eq!(loaded.len(), 2);
     assert_eq!(loaded[0].key, "shell-1");
     assert_eq!(loaded[1].cmd, "claude");
+}
+
+#[test]
+fn save_tab_layout_round_trips_agent_session_id() {
+    let tmp = TempDir::new().unwrap();
+    let project = Project {
+        id: "resume-id".to_string(),
+        name: "Resume".to_string(),
+        directory: tmp.path().to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let local_file = write_project_json(tmp.path(), &project);
+    let local_file_str = local_file.to_string_lossy().to_string();
+
+    let session_id = "22222222-2222-4222-8222-222222222222".to_string();
+    let tabs = vec![
+        TabEntry {
+            key: "shell-1".to_string(),
+            label: "Terminal".to_string(),
+            cmd: "bash".to_string(),
+            cwd: "/home/user".to_string(),
+            session_id: None,
+            extra: Default::default(),
+        },
+        TabEntry {
+            key: "agent-2".to_string(),
+            label: "Claude".to_string(),
+            cmd: "claude".to_string(),
+            cwd: "/home/user/project".to_string(),
+            session_id: Some(session_id.clone()),
+            extra: Default::default(),
+        },
+    ];
+
+    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None).unwrap();
+    let loaded = terminal_service::load_tab_layout(&local_file_str);
+
+    assert_eq!(loaded.len(), 2);
+    // Shell tab carries no session id.
+    assert_eq!(loaded[0].session_id, None);
+    // The agent tab's session id survives the round-trip.
+    assert_eq!(loaded[1].cmd, "claude");
+    assert_eq!(loaded[1].session_id, Some(session_id));
+
+    // The on-disk JSON uses the camelCase `sessionId` key.
+    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
+    let raw = serde_json::to_value(&reloaded).unwrap();
+    assert_eq!(
+        raw["tab_layout"][1]["sessionId"],
+        serde_json::json!("22222222-2222-4222-8222-222222222222")
+    );
+    assert!(
+        raw["tab_layout"][0].get("sessionId").is_none(),
+        "shell tab must omit sessionId when None"
+    );
 }
 
 #[test]
@@ -253,14 +310,46 @@ fn save_tab_layout_preserves_other_project_fields() {
         label: "Shell".to_string(),
         cmd: "bash".to_string(),
         cwd: "/tmp".to_string(),
+        session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_tab_layout(&local_file_str, &tabs).unwrap();
+    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None).unwrap();
 
     let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
     assert_eq!(reloaded.id, "preserve-me");
     assert_eq!(reloaded.name, "MyProject");
     assert_eq!(reloaded.status.as_deref(), Some("active"));
+}
+
+#[test]
+fn save_tab_layout_persists_open_session_uuids() {
+    let tmp = TempDir::new().unwrap();
+    let project = Project {
+        id: "sessions".to_string(),
+        name: "Sessions".to_string(),
+        directory: tmp.path().to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let local_file = write_project_json(tmp.path(), &project);
+    let path_str = local_file.to_string_lossy().to_string();
+
+    let sessions = serde_json::json!([
+        { "sessionId": "11111111-1111-4111-8111-111111111111", "cmd": "claude", "label": "Claude" }
+    ]);
+    terminal_service::save_tab_layout(&path_str, &[], None, Some(sessions.clone())).unwrap();
+
+    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
+    assert_eq!(reloaded.open_tab_sessions, Some(sessions));
+
+    // A subsequent layout save with `None` (the project-switch path) must leave
+    // the stored UUIDs untouched, while `Some([])` clears them.
+    terminal_service::save_terminal_session(&path_str, &[], 0, None).unwrap();
+    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
+    assert!(reloaded.open_tab_sessions.is_some());
+
+    terminal_service::save_tab_layout(&path_str, &[], None, Some(serde_json::json!([]))).unwrap();
+    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
+    assert_eq!(reloaded.open_tab_sessions, None);
 }
 
 #[test]
@@ -295,6 +384,7 @@ fn save_empty_tabs_clears_layout_field() {
             label: "Old".to_string(),
             cmd: "bash".to_string(),
             cwd: "/tmp".to_string(),
+            session_id: None,
             extra: Default::default(),
         }]),
         ..Default::default()
@@ -302,7 +392,7 @@ fn save_empty_tabs_clears_layout_field() {
     let local_file = write_project_json(tmp.path(), &project);
     let path_str = local_file.to_string_lossy().to_string();
 
-    terminal_service::save_tab_layout(&path_str, &[]).unwrap();
+    terminal_service::save_tab_layout(&path_str, &[], None, None).unwrap();
 
     let loaded = terminal_service::load_tab_layout(&path_str);
     assert!(loaded.is_empty());
@@ -327,9 +417,10 @@ fn save_terminal_session_writes_eldrun_file() {
         label: "Shell".to_string(),
         cmd: "bash".to_string(),
         cwd: "/tmp".to_string(),
+        session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_terminal_session(&path_str, &tabs, 0).unwrap();
+    terminal_service::save_terminal_session(&path_str, &tabs, 0, None).unwrap();
 
     let session_path = tmp.path().join(".eldrun/sessions/terminals.json");
     assert!(session_path.exists(), ".eldrun/sessions/terminals.json must be written");
@@ -353,6 +444,7 @@ fn load_terminal_session_prefers_eldrun_over_project_json() {
             label: "Old".to_string(),
             cmd: "bash".to_string(),
             cwd: "/tmp".to_string(),
+            session_id: None,
             extra: Default::default(),
         }]),
         ..Default::default()
@@ -369,9 +461,11 @@ fn load_terminal_session_prefers_eldrun_over_project_json() {
             label: "New".to_string(),
             cmd: "claude".to_string(),
             cwd: "/home/user".to_string(),
+            session_id: None,
             extra: Default::default(),
         }],
         active_tab_index: 0,
+        tab_groups: None,
         extra: Default::default(),
     };
     eldrun_lib::storage::write_json(&sessions_dir.join("terminals.json"), &session).unwrap();
@@ -393,6 +487,7 @@ fn load_tab_layout_falls_back_to_project_json_when_no_eldrun() {
             label: "Fallback".to_string(),
             cmd: "bash".to_string(),
             cwd: "/tmp".to_string(),
+            session_id: None,
             extra: Default::default(),
         }]),
         ..Default::default()
@@ -460,9 +555,10 @@ fn switch_saves_tab_layout_to_project_json() {
         label: "T1".to_string(),
         cmd: "bash".to_string(),
         cwd: "/tmp".to_string(),
+        session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_terminal_session(&path_str, &tabs, 0).unwrap();
+    terminal_service::save_terminal_session(&path_str, &tabs, 0, None).unwrap();
 
     // project.json must have been updated.
     let saved: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
@@ -621,6 +717,7 @@ fn switch_next_project_tab_layout_loaded_after_save() {
             label: "N1".to_string(),
             cmd: "bash".to_string(),
             cwd: "/tmp".to_string(),
+            session_id: None,
             extra: Default::default(),
         },
         TabEntry {
@@ -628,10 +725,11 @@ fn switch_next_project_tab_layout_loaded_after_save() {
             label: "Claude".to_string(),
             cmd: "claude".to_string(),
             cwd: "/tmp".to_string(),
+            session_id: None,
             extra: Default::default(),
         },
     ];
-    terminal_service::save_terminal_session(&path_str, &tabs, 1).unwrap();
+    terminal_service::save_terminal_session(&path_str, &tabs, 1, None).unwrap();
 
     let session = terminal_service::load_terminal_session(&path_str);
     assert_eq!(session.tab_layout.len(), 2);

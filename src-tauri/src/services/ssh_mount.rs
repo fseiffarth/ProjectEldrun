@@ -63,7 +63,7 @@ pub fn ssh_base_args(
 }
 
 /// Render the `[user@]host` SSH target as a single, validated argv item.
-fn ssh_target(user: &Option<String>, host: &str) -> Result<String, String> {
+pub fn ssh_target(user: &Option<String>, host: &str) -> Result<String, String> {
     let host = host.trim();
     if host.is_empty() {
         return Err("host must not be empty".to_string());
@@ -97,6 +97,13 @@ pub fn mounts_root() -> PathBuf {
 /// True if `sshfs` is available on `PATH`.
 pub fn sshfs_available() -> bool {
     which_exists("sshfs")
+}
+
+/// True if `sshpass` is available on `PATH`. Required for password auth, which
+/// otherwise cannot run non-interactively (ssh reads the passphrase from the
+/// controlling TTY, which we do not have).
+pub fn sshpass_available() -> bool {
+    which_exists("sshpass")
 }
 
 fn which_exists(bin: &str) -> bool {
@@ -284,6 +291,7 @@ mod tests {
             host: host.to_string(),
             port,
             remote_path: remote_path.to_string(),
+            openvpn: None,
             extra: HashMap::new(),
         }
     }

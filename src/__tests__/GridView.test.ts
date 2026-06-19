@@ -1,54 +1,67 @@
 /**
- * Tests for per-scope grid-view state in the tabs store (TODO Group K, #35).
- *
- * Grid mode is tracked per scope so each project independently shows either a
- * single active terminal or all its terminals laid out in a grid. toggleGrid()
- * flips the current scope's flag and mirrors it into the flat `grid` shortcut;
- * setScope() must restore the target scope's flag.
+ * The old per-scope grid-view toggle (TODO Group K, #35) was replaced by the
+ * tiling split-subwindow model. There is no longer a `grid` flag; arrangement
+ * lives in a per-scope layout tree. These tests pin the surviving behaviour the
+ * grid tests used to guard: layout/active state is tracked per scope and is
+ * restored when the scope is switched back.
  */
-import { describe, it, expect, beforeEach } from "vitest";
-import { vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-import { useTabsStore } from "../stores/tabs";
+import { useTabsStore, type GroupNode } from "../stores/tabs";
 
-describe("tabs store — grid view", () => {
+function tab(key: string) {
+  return { key, label: key, cmd: "bash", cwd: "/p", kind: "shell" as const };
+}
+
+describe("tabs store — per-scope layout state", () => {
   beforeEach(() => {
     useTabsStore.setState({
       scope: "project-a",
       tabsByScope: {},
-      activeKeyByScope: {},
-      gridByScope: {},
+      layoutByScope: {},
+      focusedGroupByScope: {},
       tabs: [],
+      layout: null,
+      focusedGroupId: null,
       activeKey: null,
-      grid: false,
     });
   });
 
-  it("toggleGrid flips the current scope and mirrors into the flat shortcut", () => {
-    expect(useTabsStore.getState().grid).toBe(false);
-
-    useTabsStore.getState().toggleGrid();
-    let state = useTabsStore.getState();
-    expect(state.grid).toBe(true);
-    expect(state.gridByScope["project-a"]).toBe(true);
-
-    useTabsStore.getState().toggleGrid();
-    state = useTabsStore.getState();
-    expect(state.grid).toBe(false);
-    expect(state.gridByScope["project-a"]).toBe(false);
+  it("the grid flag and its actions no longer exist on the store", () => {
+    const s = useTabsStore.getState() as unknown as Record<string, unknown>;
+    expect(s.grid).toBeUndefined();
+    expect(s.toggleGrid).toBeUndefined();
+    expect(s.setGrid).toBeUndefined();
+    expect(s.gridByScope).toBeUndefined();
   });
 
-  it("grid mode is per-scope and restored on setScope", () => {
-    useTabsStore.getState().toggleGrid(); // project-a -> grid on
+  it("each scope keeps its own layout tree", () => {
+    useTabsStore.getState().addTab(tab("a")); // project-a gets a root group
+    const aLayout = useTabsStore.getState().layout as GroupNode;
+    expect(aLayout.type).toBe("group");
+    expect(aLayout.tabKeys.length).toBe(1);
 
     useTabsStore.getState().setScope("project-b");
-    // project-b has never toggled grid → off, and project-a's flag is untouched.
-    expect(useTabsStore.getState().grid).toBe(false);
-    expect(useTabsStore.getState().gridByScope["project-a"]).toBe(true);
+    // project-b is uninitialized → empty.
+    expect(useTabsStore.getState().layout).toBeNull();
+    expect(useTabsStore.getState().tabs).toEqual([]);
+    // project-a's layout is untouched.
+    expect(useTabsStore.getState().layoutByScope["project-a"]).toBeTruthy();
+  });
+
+  it("restores a scope's layout + active tab on setScope", () => {
+    const a1 = useTabsStore.getState().addTab(tab("a1"));
+    useTabsStore.getState().addTab(tab("a2"));
+    useTabsStore.getState().setActive(a1.key);
+    expect(useTabsStore.getState().activeKey).toBe(a1.key);
+
+    useTabsStore.getState().setScope("project-b");
+    expect(useTabsStore.getState().activeKey).toBeNull();
 
     useTabsStore.getState().setScope("project-a");
-    expect(useTabsStore.getState().grid).toBe(true);
+    expect(useTabsStore.getState().activeKey).toBe(a1.key);
+    expect((useTabsStore.getState().layout as GroupNode).tabKeys.length).toBe(2);
   });
 });

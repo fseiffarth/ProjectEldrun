@@ -30,8 +30,11 @@ describe("loadFromLayout — scope isolation", () => {
     useTabsStore.setState({
       scope: "project-a",
       tabsByScope: {},
-      activeKeyByScope: {},
+      layoutByScope: {},
+      focusedGroupByScope: {},
       tabs: [],
+      layout: null,
+      focusedGroupId: null,
       activeKey: null,
     });
   });
@@ -143,8 +146,11 @@ describe("dual-path loading race — CenterPanel guard", () => {
     useTabsStore.setState({
       scope: "project-b",
       tabsByScope: {},
-      activeKeyByScope: {},
+      layoutByScope: {},
+      focusedGroupByScope: {},
       tabs: [],
+      layout: null,
+      focusedGroupId: null,
       activeKey: null,
     });
   });
@@ -250,5 +256,78 @@ describe("dual-path loading race — CenterPanel guard", () => {
 
     // Agent must still have the correct cwd set by switch_project_runtime
     expect(useTabsStore.getState().tabsByScope["project-b"]![0].cwd).toBe(correctCwd);
+  });
+});
+
+/**
+ * Resume-on-restore: a resumable agent tab (Claude with a sessionId) must come
+ * back launched with `--resume <id>` so its conversation resumes; a non-resumable
+ * agent (no map entry, or no sessionId) must NOT receive resume args.
+ */
+describe("loadFromLayout — resume args", () => {
+  beforeEach(() => {
+    useTabsStore.setState({
+      scope: "project-r",
+      tabsByScope: {},
+      layoutByScope: {},
+      focusedGroupByScope: {},
+      tabs: [],
+      layout: null,
+      focusedGroupId: null,
+      activeKey: null,
+    });
+  });
+
+  it("resumable Claude agent restores with --resume <id> and carries sessionId", () => {
+    const sid = "11111111-2222-3333-4444-555555555555";
+    const layout = [
+      { key: "agent-1", label: "claude", cmd: "claude", cwd: "/stale", kind: "agent" as const, sessionId: sid },
+    ];
+
+    useTabsStore.getState().loadFromLayout(layout, "/project-r-dir", "project-r");
+
+    const tab = useTabsStore.getState().tabsByScope["project-r"]![0];
+    expect(tab.args).toEqual(["--resume", sid]);
+    expect(tab.sessionId).toBe(sid);
+  });
+
+  it("resumable Codex agent restores with NO frontend args (backend injects resume) and carries sessionId", () => {
+    const sid = "codex-tab-key-1";
+    const layout = [
+      { key: "agent-1", label: "codex", cmd: "codex", cwd: "/stale", kind: "agent" as const, sessionId: sid },
+    ];
+
+    useTabsStore.getState().loadFromLayout(layout, "/project-r-dir", "project-r");
+
+    const tab = useTabsStore.getState().tabsByScope["project-r"]![0];
+    // Codex's sessionId is only the ELDRUN_TAB_UID key, not a Codex session id,
+    // so the frontend passes no resume args; the backend resolves the live id.
+    expect(tab.args).toEqual([]);
+    expect(tab.sessionId).toBe(sid);
+  });
+
+  it("Claude agent without a sessionId gets no resume args", () => {
+    const layout = [
+      { key: "agent-1", label: "claude", cmd: "claude", cwd: "/stale", kind: "agent" as const },
+    ];
+
+    useTabsStore.getState().loadFromLayout(layout, "/project-r-dir", "project-r");
+
+    const tab = useTabsStore.getState().tabsByScope["project-r"]![0];
+    expect(tab.args).toEqual([]);
+    expect(tab.sessionId).toBeUndefined();
+  });
+
+  it("non-resumable agent (gemini) with a sessionId gets no resume args", () => {
+    const layout = [
+      { key: "agent-1", label: "gemini", cmd: "gemini", cwd: "/stale", kind: "agent" as const, sessionId: "abc" },
+    ];
+
+    useTabsStore.getState().loadFromLayout(layout, "/project-r-dir", "project-r");
+
+    const tab = useTabsStore.getState().tabsByScope["project-r"]![0];
+    expect(tab.args).toEqual([]);
+    // sessionId is still carried through (durable), but no resume launch.
+    expect(tab.sessionId).toBe("abc");
   });
 });

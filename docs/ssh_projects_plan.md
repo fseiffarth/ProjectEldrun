@@ -3,6 +3,11 @@
 Status: **implemented** (code complete; runtime QA pending — agents cannot
 launch Eldrun). Built by a 4-agent sequential team.
 
+The mount / browse / scaffold v1 below is code-complete. A **remote-execution
+layer** (`services/ssh_exec.rs` + `services/openvpn.rs`) was added on top of it —
+see *Remote execution model* below for its decided design and the open gaps that
+remain to be coded.
+
 ## Implemented
 
 Final files / commands as shipped:
@@ -22,7 +27,7 @@ Final files / commands as shipped:
 - `src-tauri/src/lib.rs` — registers the four SSH commands; switches to
   `.build(...).run(closure)` so `RunEvent::Exit` calls `unmount_all()`.
 - `src/types/index.ts` — `RemoteSpec` / `RemoteEntry` types, `ProjectEntry.remote`.
-- `src/components/layout/BottomBar.tsx` — SSH-address field + Connect + in-app
+- `src/components/layout/ProjectSwitcher.tsx` — SSH-address field + Connect + in-app
   remote folder browser; builds the `remote` spec for create/import.
 - `src/stores/projects.ts` — `load()` best-effort calls `ensure_project_mounted`
   for the initially-active remote project (startup mount; non-blocking).
@@ -39,9 +44,70 @@ Follow-ups / out of scope:
   is added it should call `ssh_mount::unmount(&mountpoint_for(id))`. Until then,
   stale mounts are torn down on the next app exit (`unmount_all`). See the NOTE
   in `services/ssh_mount.rs`.
-- **Password / interactive auth** — out of scope for v1 (`BatchMode=yes`).
+- **Password auth** — implemented (stage 2). A "Remote (SSH) project" checkbox
+  in the New/Import dialog reveals the SSH address, an optional password field,
+  and Connect. A blank password keeps key/agent auth (`BatchMode=yes`); a
+  non-empty one authenticates via `sshpass -e ssh` (password passed in the
+  `SSHPASS` env var, never argv) with password-only ssh options. `ssh_connect`,
+  `ssh_default_dir`, and `ssh_list_dir` take an optional `password`. Requires
+  `sshpass` locally; a clear error surfaces if it is missing.
+  - Follow-up: the sshfs **mount** path (`ssh_mount.rs`) still uses
+    `BatchMode=yes`, so a password-only host connects + browses but cannot yet
+    be mounted on create/import. Threading the password into `sshfs` is the
+    next stage.
 - **Runtime QA** — connect → browse → create/import → terminal/file-tree must be
   validated live by the user.
+
+---
+
+## Remote execution model (decided 2026-06-19)
+
+The v1 above mounts the remote bytes and runs the agent **locally** against the
+mount. That is fine for editing/browsing, but pipelines would then run on the
+*local* machine — wrong compute, wrong env, slow over sshfs. For a real compute
+remote (GPUs, data, project-specific env) the agent must execute **on the
+remote**.
+
+**Decision: agents run on the remote host.** `services/ssh_exec.rs` already
+implements this — `wrap_pty_options` rewrites any spawn whose cwd is under the
+sshfs mounts root into `ssh -tt [-p port] [user@]host '<remote_command>'`,
+multiplexed over a ControlMaster socket
+(`<state_dir>/ssh-control/cm-%C`, `ControlPersist=600`). `remote_subdir` maps the
+local mount cwd back to the remote path; `remote_command` builds
+`cd <dir> && export … && exec <cli> …`. sshfs stays — but **only** for Eldrun's
+own file tree / git / `list_dir`; the agent itself touches the remote files
+natively. VPN-gated hosts connect first via `services/openvpn.rs` (pkexec +
+owner-only askpass temp file + ready-marker wait, `disconnect_all` on exit) when
+`RemoteSpec.openvpn` is set.
+
+Alternatives considered and rejected:
+
+- **Local CLI + sshfs only** — no remote install, but execution is local;
+  pipelines run on the wrong machine. Insufficient.
+- **Local CLI + per-command `ssh host -- …` helper** — no remote install, but no
+  persistent remote shell state and sshfs-slow file ops; lossy.
+
+Consequence: a **userspace** agent-CLI install on the remote is load-bearing
+(no root; nothing sensitive persisted). Auth uses the remote's **own** `~/.claude`
+login (interactive `claude login` on first run in the PTY), **not** a forwarded
+API key.
+
+### Open gaps (the "update code later" workstream)
+
+1. ✅ **Login-shell PATH for agent tabs.** `remote_command` now runs agent tabs
+   through `exec "${SHELL:-/bin/bash}" -lc '<quoted cli + args>'`, so a userspace
+   CLI on `~/.local/bin`/nvm/pyenv is on PATH. Shell tabs keep `$SHELL -l`.
+2. ✅ **Auto-bootstrap + detect.** `services/remote_agents.rs` holds a per-agent
+   recipe table (`bin` / `install` / `manual_hint`); `bootstrap_prelude` is
+   folded into `remote_command`'s `-lc` script for recognised agents (probe →
+   userspace install → re-probe → `exit 127` + hint), so detection/install and
+   first-run login all run live in the PTY. No separate command needed.
+3. ✅ **Auth hygiene.** `remote_command` strips `AGENT_AUTH_ENV`
+   (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
+   `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`) from the exported env so
+   a local key can't clobber the remote's own login.
+4. **Generalize** the `remote_agents` recipe table to Codex, Gemini, Vibe (add a
+   row each); keep honoring `local_only` (local Ollama agents are never wrapped).
 
 ---
 
@@ -75,7 +141,7 @@ The flow is:
   v1.)
 - **Team model = sequential phased.** Four agents run one after another on a
   clean working tree; no parallel edits to the shared files
-  (`commands/projects.rs`, `BottomBar.tsx`, schema).
+  (`commands/projects.rs`, `ProjectSwitcher.tsx`, schema).
 
 ## Data model
 
@@ -142,7 +208,7 @@ All new commands registered in `lib.rs`.
 
 ## Frontend (dialog)
 
-`BottomBar.tsx` project dialog (`kind: "new" | "import"`):
+`ProjectSwitcher.tsx` project dialog (`kind: "new" | "import"`):
 
 - New optional **"SSH address"** input + **Connect** button (both new/import).
 - States: `idle → connecting → connected | error`.
@@ -192,7 +258,7 @@ Each agent runs on a clean tree built from the prior agent's committed work, typ
 
 **Agent 3 — Frontend dialog + remote browser.**
 - `types/index.ts`: `RemoteSpec`/`RemoteEntry`, `ProjectEntry.remote`.
-- `BottomBar.tsx`: SSH field, Connect, remote browser component, wire to the
+- `ProjectSwitcher.tsx`: SSH field, Connect, remote browser component, wire to the
   final create/import request shape; disable copy/move for remote.
 - `npx tsc --noEmit` green; keep styling consistent with the existing dialog.
 

@@ -1,6 +1,6 @@
 //! Lightweight per-process CPU sampling via `/proc` (Linux only).
 //!
-//! Used to surface a project's live CPU usage in the bottom-bar pill popup.
+//! Used to surface a project's live CPU usage in the project-switcher pill popup.
 //! A project's "processes" are the PTY child shells plus every descendant they
 //! have spawned (an agent CLI, its subprocesses, etc.), so usage reflects the
 //! whole working tree rooted at the project's terminals.

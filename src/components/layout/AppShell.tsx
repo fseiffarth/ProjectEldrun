@@ -8,11 +8,10 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { notePtyOutput, useActivityStore } from "../../stores/activity";
-import { BottomBar } from "./BottomBar";
 import { CenterPanel } from "./CenterPanel";
-import { GlobalAppBar } from "./GlobalAppBar";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
+import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useTimerStore } from "../../stores/timer";
@@ -20,6 +19,9 @@ import { useKeyboard } from "../../hooks/useKeyboard";
 
 export function AppShell() {
   const loadSettings = useSettingsStore((s) => s.load);
+  const settingsLoaded = useSettingsStore((s) => s.loaded);
+  const pinnedSetting = useSettingsStore((s) => s.settings?.right_panel_pinned ?? false);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
   const loadProjects = useProjectsStore((s) => s.load);
   const projectsLoaded = useProjectsStore((s) => s.loaded);
   const activeId = useProjectsStore((s) => s.activeId);
@@ -29,17 +31,27 @@ export function AppShell() {
   const flushTimer = useTimerStore((s) => s.flush);
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
-  const [bottomOpen, setBottomOpen] = useState(false);
-  const [globalOpen, setGlobalOpen] = useState(false);
+  const [rightPinned, setRightPinned] = useState(false);
   const rightCloseTimer = useRef<number | null>(null);
-  const bottomCloseTimer = useRef<number | null>(null);
-  const globalCloseTimer = useRef<number | null>(null);
 
   useEffect(() => {
     loadSettings();
     loadProjects();
     getCurrentWindow().setFullscreen(true).catch(() => {});
   }, [loadSettings, loadProjects]);
+
+  // Restore the pinned state once settings finish loading.
+  useEffect(() => {
+    if (settingsLoaded) setRightPinned(pinnedSetting);
+  }, [settingsLoaded, pinnedSetting]);
+
+  const togglePin = () => {
+    setRightPinned((v) => {
+      const next = !v;
+      void updateSettings({ right_panel_pinned: next });
+      return next;
+    });
+  };
 
   // Apply tab layout / right-panel restores emitted by the backend's
   // project-runtime switch (which runs off the UI thread).
@@ -135,9 +147,7 @@ export function AppShell() {
 
   useKeyboard({ onTogglePanels: () => setPanelsHidden((v) => !v) });
 
-  const revealRight = activeId !== null && !panelsHidden && rightOpen;
-  const revealBottom = !panelsHidden && bottomOpen;
-  const revealGlobal = !panelsHidden && globalOpen;
+  const revealRight = activeId !== null && !panelsHidden && (rightOpen || rightPinned);
 
   const handleBodyMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (activeId === null || panelsHidden || rightOpen) return;
@@ -152,38 +162,22 @@ export function AppShell() {
       {switchToast != null && (
         <div key={switchToast} className="project-switch-toast">{switchToast}</div>
       )}
-      <div className="app-body" onMouseMove={handleBodyMouseMove}>
+      <div
+        className={`app-body${revealRight && rightPinned ? " right-docked" : ""}`}
+        onMouseMove={handleBodyMouseMove}
+      >
         <CenterPanel />
-        <div
-          className={`global-apps-area ${revealGlobal ? "open" : ""}`}
-          onMouseEnter={() => !panelsHidden && reveal(globalCloseTimer, setGlobalOpen)}
-          onMouseLeave={() => scheduleClose(globalCloseTimer, setGlobalOpen)}
-        >
-          <div className={`global-apps-toggle-bar ${revealGlobal ? "panel-open" : ""}`} />
-          {revealGlobal && <GlobalAppBar />}
-        </div>
         {activeId !== null && !panelsHidden && (
           <RightPanel
             open={revealRight}
+            pinned={rightPinned}
+            onTogglePin={togglePin}
             onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
-            onMouseLeave={() => scheduleClose(rightCloseTimer, setRightOpen)}
+            onMouseLeave={() => !rightPinned && scheduleClose(rightCloseTimer, setRightOpen)}
           />
         )}
-        {!panelsHidden && (
-          <div
-            className={`bottom-toggle-strip ${revealBottom ? "panel-open" : ""}`}
-            onMouseEnter={() => reveal(bottomCloseTimer, setBottomOpen)}
-            onMouseLeave={() => scheduleClose(bottomCloseTimer, setBottomOpen)}
-          />
-        )}
-        <div
-          className={`bottom-bar-wrap ${revealBottom ? "open" : ""}`}
-          onMouseEnter={() => !panelsHidden && reveal(bottomCloseTimer, setBottomOpen)}
-          onMouseLeave={() => scheduleClose(bottomCloseTimer, setBottomOpen)}
-        >
-          <BottomBar open={revealBottom} />
-        </div>
       </div>
+      <VpnPasswordPrompt />
     </div>
   );
 }

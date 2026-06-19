@@ -33,7 +33,11 @@ function withoutScript(set: Set<string>, scriptPath: string): Set<string> {
 interface ActivityStore {
   /** project scope ("root" or project id) → has a running task right now. */
   busyByScope: Record<string, boolean>;
-  /** Recompute `busyByScope` from recent PTY output. Call on an interval. */
+  /** PTY/tab id → that individual tab is actively producing output right now.
+   *  Drives the per-tab "working" animation in the tab bar. */
+  busyByTab: Record<string, boolean>;
+  /** Recompute `busyByScope`/`busyByTab` from recent PTY output. Call on an
+   *  interval. */
   recompute: () => void;
   /** Absolute paths of `.sh` scripts currently running detached. The run_id
    *  used with the backend is the script's absolute path (see runScript). */
@@ -45,6 +49,7 @@ interface ActivityStore {
 
 export const useActivityStore = create<ActivityStore>((set, get) => ({
   busyByScope: {},
+  busyByTab: {},
   runningScripts: new Set(),
 
   runScript: (scriptPath, cwd) => {
@@ -58,24 +63,35 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
   recompute: () => {
     const now = Date.now();
     const { tabsByScope } = useTabsStore.getState();
-    const prev = get().busyByScope;
-    const next: Record<string, boolean> = {};
+    const prevScope = get().busyByScope;
+    const prevTab = get().busyByTab;
+    const nextScope: Record<string, boolean> = {};
+    const nextTab: Record<string, boolean> = {};
     let changed = false;
 
     for (const [scope, tabs] of Object.entries(tabsByScope)) {
-      const busy = tabs.some((t) => {
+      let scopeBusy = false;
+      for (const t of tabs) {
         const ts = lastOutputByPty[t.key];
-        return ts !== undefined && now - ts < BUSY_WINDOW_MS;
-      });
-      if (busy) next[scope] = true;
-      if ((prev[scope] ?? false) !== busy) changed = true;
+        const tabBusy = ts !== undefined && now - ts < BUSY_WINDOW_MS;
+        if (tabBusy) {
+          nextTab[t.key] = true;
+          scopeBusy = true;
+        }
+        if ((prevTab[t.key] ?? false) !== tabBusy) changed = true;
+      }
+      if (scopeBusy) nextScope[scope] = true;
+      if ((prevScope[scope] ?? false) !== scopeBusy) changed = true;
     }
-    // A scope that was busy and is now gone/idle also counts as a change.
-    for (const scope of Object.keys(prev)) {
-      if (!(scope in next) && prev[scope]) changed = true;
+    // A scope/tab that was busy and is now gone or idle also counts as a change.
+    for (const scope of Object.keys(prevScope)) {
+      if (!(scope in nextScope) && prevScope[scope]) changed = true;
+    }
+    for (const tab of Object.keys(prevTab)) {
+      if (!(tab in nextTab) && prevTab[tab]) changed = true;
     }
 
-    if (changed) set({ busyByScope: next });
+    if (changed) set({ busyByScope: nextScope, busyByTab: nextTab });
   },
 }));
 

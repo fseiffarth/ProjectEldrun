@@ -19,6 +19,8 @@ interface GitStatus {
 
 interface Props {
   open: boolean;
+  pinned?: boolean;
+  onTogglePin?: () => void;
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
 }
@@ -60,7 +62,7 @@ function mergeEndings(...groups: string[][]): string[] {
   return [...endings.values()].sort((a, b) => a.localeCompare(b));
 }
 
-export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
+export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLeave }: Props) {
   const { projects, activeId } = useProjectsStore();
   const rightPanelFolderByProject = useProjectsStore((s) => s.rightPanelFolderByProject);
   const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
@@ -262,6 +264,16 @@ export function RightPanel({ open, onMouseEnter, onMouseLeave }: Props) {
       onMouseLeave={onMouseLeave}
     >
       <div className="right-panel-header">
+        {onTogglePin && (
+          <button
+            className={`right-panel-pin${pinned ? " pinned" : ""}`}
+            aria-pressed={pinned}
+            onClick={onTogglePin}
+            title={pinned ? "Unpin panel (allow auto-hide)" : "Pin panel open"}
+          >
+            📌
+          </button>
+        )}
         <span style={{ flex: 1 }}>
           {activeProject ? activeProject.name : "Files"}
         </span>

@@ -1,13 +1,23 @@
 use std::path::{Path, PathBuf};
 
+use serde_json::Value;
+
 use crate::schema::project::{OpenApp, TabEntry};
 use crate::schema::session::TerminalSession;
 use crate::storage;
 
 /// Save tab layout into a project.json, preserving all other fields.
 /// Also mirrors the layout to `.eldrun/sessions/terminals.json`.
-pub fn save_tab_layout(local_file: &str, tabs: &[TabEntry]) -> Result<(), String> {
-    write_terminal_session(local_file, tabs, 0)
+/// `groups` is the opaque split/group layout tree (None clears it).
+/// `sessions` is the opaque list of open agent-session UUIDs: `Some([])` clears
+/// it, `Some(list)` replaces it, and `None` leaves the stored value untouched.
+pub fn save_tab_layout(
+    local_file: &str,
+    tabs: &[TabEntry],
+    groups: Option<Value>,
+    sessions: Option<Value>,
+) -> Result<(), String> {
+    write_terminal_session(local_file, tabs, 0, groups, sessions)
 }
 
 /// Save tab layout with the active tab index.
@@ -17,14 +27,19 @@ pub fn save_terminal_session(
     local_file: &str,
     tabs: &[TabEntry],
     active_tab_index: usize,
+    groups: Option<Value>,
 ) -> Result<(), String> {
-    write_terminal_session(local_file, tabs, active_tab_index)
+    // The project-switch snapshot carries no session list; leave the persisted
+    // UUIDs untouched (the active project's debounced save_tab_layout owns them).
+    write_terminal_session(local_file, tabs, active_tab_index, groups, None)
 }
 
 fn write_terminal_session(
     local_file: &str,
     tabs: &[TabEntry],
     active_tab_index: usize,
+    groups: Option<Value>,
+    sessions: Option<Value>,
 ) -> Result<(), String> {
     let path = PathBuf::from(local_file);
     let mut project: crate::schema::project::Project =
@@ -34,6 +49,15 @@ fn write_terminal_session(
     } else {
         Some(tabs.to_vec())
     };
+    // Clear the tree when there are no tabs; otherwise persist what was sent
+    // (a missing tree is tolerated → frontend rebuilds a single group on load).
+    project.tab_groups = if tabs.is_empty() { None } else { groups.clone() };
+    // Only touch the persisted session UUIDs when a list was supplied; an empty
+    // list clears them, a missing list (None) preserves what's on disk.
+    if let Some(sessions) = sessions {
+        let is_empty = sessions.as_array().is_some_and(|a| a.is_empty());
+        project.open_tab_sessions = if is_empty { None } else { Some(sessions) };
+    }
     storage::write_json(&path, &project).map_err(|e| e.to_string())?;
 
     // Mirror to .eldrun/sessions/terminals.json.
@@ -41,6 +65,7 @@ fn write_terminal_session(
         let session = TerminalSession {
             tab_layout: tabs.to_vec(),
             active_tab_index,
+            tab_groups: if tabs.is_empty() { None } else { groups.clone() },
             extra: Default::default(),
         };
         if let Err(e) = storage::write_json(&sessions_dir.join("terminals.json"), &session) {
@@ -64,9 +89,11 @@ pub fn load_terminal_session(local_file: &str) -> TerminalSession {
     if let Some(session) = read_session_file(local_file) {
         return session;
     }
+    let (tab_layout, tab_groups) = read_project_tab_state(local_file);
     TerminalSession {
-        tab_layout: read_project_tab_layout(local_file),
+        tab_layout,
         active_tab_index: 0,
+        tab_groups,
         extra: Default::default(),
     }
 }
@@ -83,12 +110,13 @@ fn read_session_file(local_file: &str) -> Option<TerminalSession> {
     None
 }
 
-fn read_project_tab_layout(local_file: &str) -> Vec<TabEntry> {
+/// Read both the flat tab layout and the opaque layout tree from project.json.
+fn read_project_tab_state(local_file: &str) -> (Vec<TabEntry>, Option<Value>) {
     let path = PathBuf::from(local_file);
-    storage::read_json::<crate::schema::project::Project>(&path)
-        .ok()
-        .and_then(|p| p.tab_layout)
-        .unwrap_or_default()
+    match storage::read_json::<crate::schema::project::Project>(&path) {
+        Ok(p) => (p.tab_layout.unwrap_or_default(), p.tab_groups),
+        Err(_) => (Vec::new(), None),
+    }
 }
 
 /// Load open_apps list from a project.json.

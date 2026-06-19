@@ -31,6 +31,61 @@ export const INTERNAL_PROJECT_FILES = new Set([
 
 export type SortKey = "name" | "type" | "size" | "created" | "modified";
 
+/** Which built-in Eldrun viewer can render a file in-tab (drag from the right
+ *  panel onto a tab bar). Independent of any external default app. */
+export type InternalViewer = "pdf" | "image" | "markdown" | "text";
+
+const MARKDOWN_EXTS = new Set([".md", ".markdown", ".mdown", ".mkd", ".mdx"]);
+
+// Raster image formats the webview renders natively via a Blob URL. SVG stays
+// in TEXT_EXTS so its XML source can be read/edited instead.
+const IMAGE_EXTS = new Set([
+  ".png", ".jpg", ".jpeg", ".jfif", ".gif", ".webp", ".bmp", ".ico",
+  ".avif", ".apng",
+]);
+
+// Extensions we treat as plain text for the built-in text viewer. Kept broad but
+// explicit so binaries never slip in; extensionless well-known text files are
+// handled by TEXT_FILENAMES below.
+const TEXT_EXTS = new Set([
+  ".txt", ".text", ".log", ".csv", ".tsv", ".json", ".jsonc", ".json5",
+  ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env", ".properties",
+  ".xml", ".svg", ".html", ".htm", ".css", ".scss", ".sass", ".less",
+  ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".rs", ".py", ".pyi",
+  ".rb", ".go", ".c", ".h", ".cpp", ".cc", ".hpp", ".cxx", ".java", ".kt",
+  ".kts", ".swift", ".m", ".mm", ".cs", ".php", ".pl", ".lua", ".r",
+  ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".sql", ".graphql", ".gql",
+  ".vue", ".svelte", ".astro", ".dart", ".ex", ".exs", ".erl", ".hs", ".elm",
+  ".clj", ".scala", ".groovy", ".gradle", ".dockerfile", ".gitignore",
+  ".gitattributes", ".editorconfig", ".diff", ".patch", ".rst", ".tex", ".bib",
+]);
+
+// Extensionless filenames that are conventionally plain text.
+const TEXT_FILENAMES = new Set([
+  "dockerfile", "makefile", "license", "licence", "readme", "authors",
+  "contributing", "changelog", "notice", "copying", "install", ".gitignore",
+  ".gitattributes", ".editorconfig", ".env", ".npmrc", ".nvmrc", ".prettierrc",
+  ".eslintrc", ".babelrc",
+]);
+
+/**
+ * The built-in viewer that should render `entry` in-tab, or null if none.
+ *
+ * PDFs, markdown, and text files always resolve to a viewer so they can be
+ * dragged onto a tab bar regardless of (and independent of) whatever external
+ * app is the system default — see TODO Group K #40.
+ */
+export function internalViewerFor(entry: FileEntry): InternalViewer | null {
+  if (entry.is_dir) return null;
+  const ext = (entry.extension ?? "").toLowerCase();
+  if (ext === ".pdf") return "pdf";
+  if (IMAGE_EXTS.has(ext)) return "image";
+  if (MARKDOWN_EXTS.has(ext)) return "markdown";
+  if (ext && TEXT_EXTS.has(ext)) return "text";
+  if (!ext && TEXT_FILENAMES.has(entry.name.toLowerCase())) return "text";
+  return null;
+}
+
 export function joinRel(base: string, name: string): string {
   return base ? `${base}/${name}` : name;
 }

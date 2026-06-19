@@ -25,6 +25,13 @@ function readStringList(project: ProjectJson | null, key: string): string[] {
 }
 
 type ViewMode = "list" | "icons";
+const SORT_LABELS: Record<SortKey, string> = {
+  name: "Name",
+  type: "Type",
+  size: "Size",
+  modified: "Modified",
+  created: "Created",
+};
 type ContextMenuState =
   | { kind: "entry"; x: number; y: number; path: string }
   | { kind: "background"; x: number; y: number };
@@ -52,6 +59,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   const [shownPaths, setShownPaths] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [descending, setDescending] = useState(false);
   const [query, setQuery] = useState("");
   const [pathEntry, setPathEntry] = useState("");
@@ -99,6 +107,20 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
       document.removeEventListener("keydown", onKey);
     };
   }, [contextMenu]);
+
+  useEffect(() => {
+    if (!sortMenuOpen) return;
+    const close = () => setSortMenuOpen(false);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [sortMenuOpen]);
 
   const displayed = useMemo(
     () => visibleEntries(entries, {
@@ -329,12 +351,32 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
         <label><input type="checkbox" checked={showStandardFiles} onChange={(e) => setShowStandardFiles(e.target.checked)} /> Scaffold</label>
         <label><input type="checkbox" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} /> Separate scaffold</label>
         <label><input type="checkbox" checked={showUserHidden} onChange={(e) => setShowUserHidden(e.target.checked)} /> User hidden</label>
-        <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
-          <option value="name">Name</option>
-          <option value="type">Type</option>
-          <option value="size">Size</option>
-          <option value="modified">Modified</option>
-        </select>
+        <div className="file-browser-sort" onMouseDown={(e) => e.stopPropagation()}>
+          <button
+            className="file-browser-sort-trigger"
+            onClick={() => setSortMenuOpen((v) => !v)}
+            title="Sort by"
+          >
+            {SORT_LABELS[sortKey]}
+            <span className="file-browser-sort-caret">▾</span>
+          </button>
+          {sortMenuOpen && (
+            <div className="context-menu file-browser-sort-menu">
+              {(Object.keys(SORT_LABELS) as SortKey[]).map((key) => (
+                <button
+                  key={key}
+                  className={key === sortKey ? "selected" : ""}
+                  onClick={() => {
+                    setSortKey(key);
+                    setSortMenuOpen(false);
+                  }}
+                >
+                  {SORT_LABELS[key]}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button onClick={() => setDescending((v) => !v)}>{descending ? "Desc" : "Asc"}</button>
       </div>
 

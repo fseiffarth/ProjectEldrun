@@ -180,6 +180,11 @@ pub fn run() {
         .setup(|_app| {
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
+            // Install the global Claude SessionStart hook so Eldrun can follow a
+            // tab's live session id across `/clear` (see services::agent_session).
+            if let Err(e) = services::agent_session::install_session_start_hook() {
+                eprintln!("agent_session: install SessionStart hook: {e}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -209,6 +214,11 @@ pub fn run() {
             commands::ssh::ssh_default_dir,
             commands::ssh::ssh_list_dir,
             commands::ssh::ensure_project_mounted,
+            // OpenVPN tunnels for VPN-gated remote projects
+            commands::openvpn::openvpn_connect,
+            commands::openvpn::openvpn_disconnect,
+            commands::openvpn::openvpn_status,
+            commands::openvpn::openvpn_store_config,
             // GitHub publishing
             commands::github::github_publish,
             // Timer flush + activity
@@ -226,6 +236,12 @@ pub fn run() {
             commands::projects::update_gitignore_rule,
             commands::projects::create_dir,
             commands::projects::detect_mime,
+            commands::projects::read_file_text,
+            commands::projects::write_file_text,
+            commands::projects::read_file_bytes,
+            // LaTeX view / compile (gated on a TeX engine being on PATH)
+            commands::tex::tex_capability,
+            commands::tex::compile_tex,
             // Terminal
             commands::terminal::pty_spawn,
             commands::terminal::pty_write,
@@ -241,6 +257,7 @@ pub fn run() {
             commands::apps::check_pid_alive,
             commands::apps::restore_open_apps,
             commands::apps::run_script_detached,
+            commands::apps::embed_capability,
             // Workspace / network
             commands::workspace::workspace_info,
             commands::workspace::workspace_switch,
@@ -293,6 +310,9 @@ pub fn run() {
             // so the user isn't left with stale FUSE mounts after shutdown.
             if let tauri::RunEvent::Exit = event {
                 services::ssh_mount::unmount_all();
+                // Tear down any OpenVPN tunnels brought up for VPN-gated
+                // remote projects so no privileged tunnel outlives the app.
+                services::openvpn::disconnect_all();
             }
         });
 }

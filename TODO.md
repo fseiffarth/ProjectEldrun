@@ -50,23 +50,13 @@ example test in words to guide both. A feature is fully **🧪 Tested** only whe
 ---
 
 ## Group A — Bottom Panel: Meta-Project Grouping (new feature)
-*Files: data model (`schema/project.rs`/`projects.rs`, `types/index.ts`), `BottomBar.tsx`, `ProjectPill.tsx`. No grouping concept exists today.*
+*Files: data model (`schema/project.rs`/`projects.rs`, `types/index.ts`), `ProjectSwitcher.tsx`, `ProjectPill.tsx`. No grouping concept exists today.*
 
 13. **Project boxes / meta-project management.** Right-click to create a named,
     renamable box (e.g. PaperBox, CodingBox) that groups projects, with
     drag-and-drop of pills into boxes. Requires a new grouping field in the
     project/entry schema plus drag-drop UI and grouped rendering. Largest bottom-
     panel item.
-
----
-
-## Group B — Layout fix
-*Files: `src/components/layout/AppShell.tsx`, `RightPanel.tsx`, `themes.css` (z-index/positioning ~366-388, 1489-1660).*
-
-14. **Stop bottom/right panel intersection.** Currently right panel is z-10,
-    bottom bar z-25, sharing the bottom-right corner. Make the right panel's
-    bottom end sit **above** the bottom bar (inset the right panel so it stops at
-    the bottom bar's top edge, or restack) so they no longer overlap.
 
 ---
 
@@ -126,15 +116,82 @@ example test in words to guide both. A feature is fully **🧪 Tested** only whe
     latest) to work with multi-agent setups; solve per-tab session tracking
     before relying on `--resume`.
 
+39. **Per-tab agent session restore — stepwise.** Concrete, incremental path to
+    #24's hard part (per-tab session tracking), built one step at a time so each
+    step is verifiable on its own.
+    - [x] **39a — Surface a tab's launch session id (Claude).** ✅ Done. Eldrun
+      mints a UUID and launches Claude with `claude --session-id <uuid>`, stored
+      on `TabEntry.sessionId` and shown on tab hover. This **launch id** is
+      deterministic, stable, and unique per tab. *Files: `stores/tabs.ts`
+      (`sessionId`), `components/tabs/TabBar.tsx`.* Pure frontend — no rebuild.
+      **Known limitation (drove the design):** the id does **not** follow a
+      `/clear` (which rolls Claude onto a new session id). A first attempt
+      resolved the "live" id from the newest `<uuid>.jsonl` in
+      `~/.claude/projects/<encoded-cwd>/`, but that was **removed** — all Claude
+      sessions in a project (other tabs, *and the dev agent running in the same
+      cwd*) share one folder, so "newest file" cross-contaminates: two tabs
+      showed the same id and it drifted as any session wrote. Following `/clear`
+      reliably needs per-process attribution, not directory guessing → 39c.
+      - *Test (e.g.):* open two Claude tabs in one project → each hover shows a
+        distinct, stable UUID that never changes while the tab is open.
+      - [ ] 🤖 Automated test — none yet (trivial frontend tooltip; covered by
+        manual)
+      - [ ] 🖐️ Manual test
+    - [x] **39b — Persist agent tabs with their session id.** ✅ Done.
+      Resumable agent tabs (Claude with a `sessionId`) are now persisted in
+      `tab_layout` (carrying `sessionId`) and restored on relaunch; other agent
+      tabs are still dropped. *Files: `schema/project.rs` (`TabEntry.session_id`),
+      `stores/tabs.ts` (`isRestorableTab`/`saveLayout`/`loadFromLayout`),
+      `stores/projects.ts`, `components/layout/CenterPanel.tsx`.*
+    - [x] **39c — Track the live session id across `/clear`, then resume.** ✅
+      Done for Claude. The original hard part — following the *live* session id
+      after `/clear` (Claude rolls onto a fresh id with no recorded back-link to
+      the launch id) — is solved with a global Claude **`SessionStart` hook**
+      (fires on startup/resume/clear/compact) that records the live `session_id`
+      keyed by `$ELDRUN_TAB_UID`. Eldrun sets `ELDRUN_TAB_UID` to the tab's
+      stable launch id on spawn, then at (re)spawn resolves the hook-recorded
+      live id and emits `claude --resume <live-id>` (falling back to the launch
+      id, and downgrading to `--session-id` when no log exists yet). The hook is
+      installed once into `~/.claude/settings.json` and no-ops for any Claude not
+      launched by Eldrun. *Files: `services/agent_session.rs` (hook install +
+      live-id store), `terminal/mod.rs` (`resolve_claude_session`), `lib.rs`
+      (install at startup). Hook script: `~/.local/share/eldrun/hooks/`; live ids:
+      `~/.local/share/eldrun/live_sessions/`.*
+    - [~] **39d — Generalize to other agents.** Codex done; Gemini/Vibe open.
+      - [x] **Codex.** ✅ Done. Codex mints its own session id (no launch-time
+        `--session-id`), but it has a Claude-style `SessionStart` hook and resumes
+        by uuid (`codex resume <id>`). Eldrun sets `ELDRUN_TAB_UID` (a per-tab key)
+        on the Codex tab, installs a `SessionStart` hook into `~/.codex/config.toml`
+        (TOML text-append, idempotent) that records the live session id under that
+        key, then at spawn resolves it and launches `codex resume <live-id>` when a
+        rollout log exists (else fresh). Covers `/clear` (Codex `source` includes
+        `clear`). *Files: `services/agent_session.rs` (`register_codex_hook`),
+        `terminal/mod.rs` (`resolve_codex_session`/`codex_session_exists`),
+        `stores/tabs.ts` (`RESUMABLE_AGENTS.codex`), `components/tabs/TabBar.tsx`.*
+        ⚠️ **Manual step:** user-level Codex hooks require a one-time trust
+        approval — run `/hooks` in Codex and trust the Eldrun hook; until then
+        resume is inert (Codex starts fresh, nothing lost). Also unverified at
+        runtime: whether Codex forwards `ELDRUN_TAB_UID` to the hook's env.
+      - [ ] **Gemini.** `--session-id <uuid>` sets the launch id (already passed),
+        but `--resume` takes an index/`latest`, not a uuid; resume-by-uuid likely
+        needs `--session-file ~/.gemini/tmp/<project>/<uuid>`. No `SessionStart`
+        hook → would drift on `/clear` like pre-fix Claude. Needs runtime verification.
+      - [ ] **Vibe.** `--resume <id>` works but Vibe mints its own id with no
+        launch-id control and no hook mechanism found, so per-tab tracking would
+        need the rejected newest-session-file heuristic. Deferred.
+
 ---
 
-## Group G — Remote / SSH Projects (new feature)
+## Group G — Remote / SSH & Containerized Projects (work axes)
 *Files: `src-tauri/src/schema/project.rs` (project model is local-only:
-`directory` is a local path, no host/remote fields), `services/project_runtime.rs`,
-`terminal/` (PTY cwd), `commands/projects.rs` (create/import), file-tree
-commands. No remote/SSH concept exists today.*
+`directory` is a local path, no host/remote/container fields), `services/project_runtime.rs`,
+`services/ssh_mount.rs` (mount lifecycle — the pattern for container lifecycle),
+`terminal/` (PTY cwd / exec target), `commands/projects.rs` (create/import),
+`commands/ssh.rs`, file-tree commands. These items share a theme: a **work
+axis** — *where the project's process and files live* (host, SSH remote, or
+container) — as opposed to the git **push** axis (#21/#22).*
 
-28. ✅ **SSH-based projects (remote path, local agent).** Implemented via an
+28. ✅ **SSH-based projects (remote path, remote agent).** Implemented via an
     **sshfs mount**: a remote project's bytes live on `host:remote_path` and are
     mounted to `~/.local/share/eldrun/mounts/<project-id>/`; the project's
     `directory` points at that mountpoint so the file tree, terminal cwd, and git
@@ -147,7 +204,7 @@ commands. No remote/SSH concept exists today.*
     mount, `/proc/mounts` check, `fusermount -u` with `umount` fallback,
     sshfs-missing guard, unmount-all on app exit). `create_project`/
     `import_project` accept an optional `remote` and scaffold over the mount
-    (remote import is `keep`-only). `BottomBar.tsx` add/import dialog gains an
+    (remote import is `keep`-only). `ProjectSwitcher.tsx` add/import dialog gains an
     SSH-address field + Connect and an in-app remote folder browser. Active
     remote project is mounted on startup (best-effort, non-blocking) and on
     switch. Requires `sshfs`/FUSE locally. **Runtime QA pending** (agents can't
@@ -160,6 +217,127 @@ commands. No remote/SSH concept exists today.*
       mount is cleaned up on app exit.
     - [x] 🤖 Automated test — `services/ssh_mount.rs` unit tests (validate_arg, mountpoint_for, sshfs_args)
     - [ ] 🖐️ Manual test
+    - **28b — Remote agent execution (decided 2026-06-19: agents run ON the
+      remote).** A remote project's bytes are sshfs-mounted **only** for
+      Eldrun's own file tree / git / `list_dir`; terminal **and agent** tabs
+      instead run on the remote host via `ssh -tt`. `services/ssh_exec.rs`
+      (`wrap_pty_options`) rewrites any spawn whose cwd is under the mounts root
+      into `ssh -tt [-p port] [user@]host '<remote_command>'`, multiplexed over a
+      ControlMaster socket; `remote_subdir` maps the local mount cwd back to the
+      remote path and `remote_command` builds `cd <dir> && export … && exec
+      <cli> …`. VPN-gated hosts bring an OpenVPN tunnel up first via
+      `services/openvpn.rs` (pkexec + askpass temp file + ready-marker wait,
+      disconnect-all on exit) when `RemoteSpec.openvpn` is set. Rationale and the
+      rejected alternatives (local-CLI-over-sshfs; per-command `ssh host -- …`
+      helper) are in `docs/ssh_projects_plan.md` → *Remote execution model*. This
+      makes a **userspace** agent-CLI install on the remote load-bearing; the
+      items below close the gaps.
+      - [x] **Login-shell PATH for agent tabs.** `remote_command` now runs agent
+        tabs through `exec "${SHELL:-/bin/bash}" -lc '<quoted cli + args>'` (was a
+        bare `exec '<cli>'` under ssh's non-login shell), so a userspace
+        `~/.local/bin`/nvm/pyenv CLI is on PATH and resolves. Shell tabs keep
+        `$SHELL -l`.
+        - [x] 🤖 Automated test — `remote_command_agent_runs_under_login_shell`
+          asserts the `-lc` login-shell wrap with correct single-quoting
+      - [x] **Auto-bootstrap + detect the remote CLI.** Implemented in new
+        `services/remote_agents.rs` (recipe table keyed by agent base name:
+        probe `bin`, userspace `install`, manual hint). Rather than a separate
+        command, `bootstrap_prelude` is **folded into** `remote_command`'s
+        `$SHELL -lc` script for recognised agents: it probes
+        `command -v <bin>`, runs the userspace installer if missing
+        (claude → `npm install -g @anthropic-ai/claude-code`), re-probes, and
+        `exit 127`s with a manual hint on failure — all live in the PTY, so
+        install progress and the first-run `login` show in the terminal. Unknown
+        commands get no prelude. (Chose PTY-folded over a Tauri
+        `ensure_remote_agent` command: no event plumbing, fully unit-testable.)
+        - [x] 🤖 Automated test — `remote_agents` (`recipe_for` base-name match,
+          `bootstrap_prelude` probe/install/abort) + `ssh_exec`
+          `remote_command_agent_bootstraps_known_cli`
+      - [x] **Remote auth = the remote's own login.** Decided: the remote `claude`
+        authenticates with its own `~/.claude` credentials; the first run prompts
+        an interactive `claude login` in the PTY (works because agent tabs get a
+        real `-tt` PTY). `remote_command` now strips agent-auth env vars
+        (`AGENT_AUTH_ENV`: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+        `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+        `GOOGLE_API_KEY`) from the exported env so a local key can't clobber the
+        remote session.
+        - [x] 🤖 Automated test — `remote_command_strips_agent_auth_env` asserts
+          auth vars (and their values) are excluded while ordinary env is kept
+      - [ ] **Generalize bootstrap/detect to other agent CLIs** (Codex, Gemini,
+        Vibe): add one `AgentRecipe` row per agent to `remote_agents::RECIPES`
+        (the framework + claude recipe already ship); keep honoring the existing
+        `local_only` flag (local Ollama agents are never wrapped).
+      - [ ] 🖐️ Manual test — connect (VPN if needed) → open a remote agent tab →
+        the CLI is detected/installed, logs in on first run, and runs a pipeline
+        on the remote (remote GPU/env), with edits visible in Eldrun's file tree.
+
+38. **Run projects inside Docker containers.** Let a project be started in a
+    Docker container instead of (or in addition to) directly on the host: the
+    project's terminal/agent tabs run via `docker exec` into a container, with the
+    project directory bind-mounted as the working dir so the file tree and git
+    keep working. Mirrors the two-mechanism split the SSH axis (#28) settled on —
+    a lifecycle service `services/docker_runtime.rs` (cf. `ssh_mount.rs`) and a
+    spawn-rewrite service `services/docker_exec.rs` (cf. `ssh_exec.rs`). **Key
+    difference from #28:** the bytes are already local, so the file tree / git /
+    `list_dir` keep running against the **host** `directory` unchanged — only
+    terminal/agent **spawns** are rewritten into the container. Full plan in
+    `docs/docker_projects_plan.md`. Requires Docker/Podman locally.
+
+    **Data model (both phases).** New `DockerSpec` on the project schema +
+    `projects.json` `extra` (same as `RemoteSpec`): container source is exactly
+    one of `image` / `dockerfile` / `compose_file`+`service` / existing
+    `container`; plus `workdir` (default `/workspace`), `run_args`, `engine`
+    (docker|podman), and a Phase-2-only `remote: Option<RemoteSpec>`. A project is
+    containerized iff `docker` is present. `directory` stays the **host** path in
+    Phase 1 (no mountpoint indirection). Mirror in `types/index.ts`.
+
+    - [ ] **38a — Phase 1: local Docker** (container on the same host;
+      independently shippable).
+      - `services/docker_runtime.rs` (new) — lifecycle keyed by project id,
+        `eldrun-<id>` container name convention. `engine_available`,
+        `is_running` (`docker ps` exact match), `up` (image→`docker run -d -v
+        <host_dir>:<workdir> -w <workdir> … sleep infinity`; dockerfile→`build`
+        then run; compose→`compose up -d`; existing `container`→verify only),
+        `down`, `down_all` (cf. `unmount_all`). Argv built as `Vec<String>` for
+        unit-testability; reuse the shared `validate_arg` (no leading-`-`/control
+        chars).
+      - `services/docker_exec.rs` (new) — rewrite a containerized tab's
+        `PtyOptions` to `docker exec -it -w <in_cwd> [-e K=V…] <name> <cmd…>` (or
+        login shell when cmd empty; `compose exec <service>` for compose).
+        `container_workdir` translates host cwd → in-container path (cf.
+        `remote_subdir`). Honor the existing **`local_only`** flag verbatim.
+      - Wiring: `project_runtime::switch` best-effort `up` on switch to a docker
+        project; `CreateProjectRequest`/`ImportProjectRequest` gain optional
+        `docker`; `lib.rs` `RunEvent::Exit` calls `down_all()` alongside
+        `unmount_all()`; new `commands/docker.rs` (`docker_available`,
+        `docker_list_images`, `ensure_project_container`).
+      - Frontend: `ProjectSwitcher.tsx` "Run in container" dialog section (image /
+        Dockerfile / compose+service / existing container + workdir/run_args/
+        engine); `stores/projects.ts::load()` best-effort
+        `ensure_project_container` for the active docker project at startup.
+      - *Test (e.g.):* create an image-based project → opening a terminal runs
+        inside `eldrun-<id>`, host edits show in the file tree, git works,
+        container stops on app exit.
+      - [ ] 🤖 Automated test — `docker_runtime`/`docker_exec` argv + workdir
+        translation + schema round-trip (no daemon needed)
+      - [ ] 🖐️ Manual test
+    - [ ] **38b — Phase 2: remote Docker** (container on an SSH host; composes
+      #28 with 38a, activated when `DockerSpec.remote` is set).
+      - Bytes: as #28 — sshfs-mount the remote dir locally (file tree/git
+        unchanged). Bind-mount source is the **remote** `remote_path` (the remote
+        daemon mounts the remote bytes directly).
+      - Runtime: spawns run `ssh -tt <host> docker exec …` by **composing** the
+        two existing wrappers — `docker_exec` builds the `docker exec` argv,
+        `ssh_exec::remote_command`/`ssh_pty_args` wrap it over ssh. `docker_runtime`
+        engine calls gain an `ssh_base_args` prefix when `remote` is set;
+        `down_all` also tears down known remote-docker containers.
+      - Frontend: "Run in container" becomes available after an SSH connection is
+        established (remote-browse flow from #28).
+      - *Test (e.g.):* remote host with docker → terminal execs into the remote
+        container; host file tree (over sshfs) reflects in-container edits.
+      - [ ] 🤖 Automated test — argv builders produce `ssh … docker …` /
+        `ssh -tt … exec docker exec …` when remote; `DockerSpec.remote` round-trip
+      - [ ] 🖐️ Manual test
 
 ---
 
@@ -243,11 +421,30 @@ UI) is already implemented — this is the one remaining global-apps item.*
 
 ---
 
+## Group K — Built-in Mail Viewer (new feature)
+*No mail code exists today. Relates to Group J (#33 `mailto:` routing) but is the
+inverse: an **in-app** reader rather than handing off to an external mail app.
+Likely files: a new `commands/mail.rs` backend (IMAP/JMAP fetch, OAuth/app-
+password auth), `schema/mail.rs` (account + message structs), a new
+`src/components/mail/` panel (message list + reading pane), a right-panel or
+center-tab surface to host it, and `types/index.ts`.*
+
+40. **Include a mail viewer in Eldrun.** Add an in-app email reader so mail can be
+    read without leaving the workspace. Scope to be defined when picked; open
+    questions to settle first: protocol (IMAP vs JMAP vs a provider API like
+    Gmail), auth model (app password vs OAuth, mirroring the SSH "no in-app
+    passwords" stance where possible), read-only vs send/reply, and where it lives
+    (right-panel view like Git/Files, a dedicated center tab, or a global-app
+    surface). Pairs naturally with #33 (`mailto:` routing) once present.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+---
+
 Sequencing is **group-wise** — tackle whole groups in this order, since items
 within a group share files and context:
 
-- **Quick wins next:** B (layout fix — single z-index/positioning change),
-  J (URI routing #33 — last remaining global-apps item).
+- **Quick wins next:** J (URI routing #33 — last remaining global-apps item).
 - **Then correctness/stability:** C (X11/KDE workspace switching) — the
   highest-risk area; do #15/#16/#17 together.
 - **Then larger features:**
@@ -379,7 +576,7 @@ view), backend commands `git_log` / `git_branches` / `git_checkout` /
 
 ## Group D.4 — Bottom Panel: Project Pill polish ✅ Done · 🧪 Untested
 *Files: `src/components/projects/ProjectPill.tsx`, `src/stores/activity.ts` (new),
-`src/components/layout/AppShell.tsx`, `BottomBar.tsx`, `src/stores/projects.ts`,
+`src/components/layout/AppShell.tsx`, `ProjectSwitcher.tsx`, `src/stores/projects.ts`,
 backend `commands/terminal.rs` (`project_cpu_percent`), `commands/projects.rs`
 (`set_project_description`), `src-tauri/src/sysstat.rs` (new). Test:
 `src/__tests__/PillRunningIndicator.test.ts`.*
@@ -420,12 +617,12 @@ backend `commands/terminal.rs` (`project_cpu_percent`), `commands/projects.rs`
     - [ ] 🖐️ Manual test
 
 12. ✅ **Suppress default webview reload/inspect on right-click.** The
-    `.bottom-bar` container now `preventDefault`s `contextmenu`, so a right-click
+    `.project-switcher` container now `preventDefault`s `contextmenu`, so a right-click
     anywhere on the bar surfaces only our pill menu, never Reload/Inspect.
-    - *Test (e.g.):* right-click empty space on the bottom bar and on a
+    - *Test (e.g.):* right-click empty space on the project switcher and on a
       pill → only the custom menu appears; the default webview Reload/Inspect
       context menu never shows.
-    - [x] 🤖 Automated test — `BottomBarContextMenu.test.tsx`
+    - [x] 🤖 Automated test — `ProjectSwitcherContextMenu.test.tsx`
     - [ ] 🖐️ Manual test
 
 ---
@@ -453,7 +650,7 @@ backend `commands/terminal.rs` (`project_cpu_percent`), `commands/projects.rs`
 *Files: `src/stores/tabs.ts` (already has a `reorder(from, to)` action),
 `src/components/layout/CenterPanel.tsx` (tab bar — no drag handlers yet);
 `src/stores/projects.ts` (projects carry a `position` field and are sorted by
-it, but there is no reorder/persist action), `BottomBar.tsx`/`ProjectPill.tsx`,
+it, but there is no reorder/persist action), `ProjectSwitcher.tsx`/`ProjectPill.tsx`,
 backend `save_projects`.*
 🧪 Tested: 🤖 automated ✅ (suite green) · 🖐️ manual ❌ (runtime QA pending)
 
@@ -528,31 +725,58 @@ Related to the run-detached backend `run_script_detached` in `commands/apps.rs`.
 
 ---
 
-## Group D.9 — Center Panel: Free Tab Arrangement / Grid View ✅ Done · 🧪 Untested
-*Files: `src/stores/tabs.ts` (`gridByScope` + `grid` mirror + `toggleGrid`),
-`src/components/layout/CenterPanel.tsx` (pane-wrapper render + grid layout),
-`src/components/terminal/TerminalView.tsx` (`visible`/`focused` props),
-`src/components/tabs/TabBar.tsx` (grid-toggle button), `src/styles/themes.css`
-(`.center-pane`, `.center-panel.grid-mode`, `.tab-grid-btn`). Test:
-`src/__tests__/GridView.test.ts`.*
+## Group D.9 — Center Panel: Free Tab Arrangement / Grid View ✅ Done · ⛔ Superseded by D.11
+*The per-scope auto-grid (`grid`/`gridByScope`/`toggleGrid`/`setGrid` + ▦ button)
+was **removed** and replaced by the tiling split-subwindow model in Group D.11.
+`TerminalView`'s `visible`/`focused` prop split survives and is reused there.
+`GridView.test.ts` now only asserts the old grid API is gone.*
 🧪 Tested: 🤖 automated ✅ (`GridView.test.ts` green) · 🖐️ manual ❌ (runtime QA pending)
 
-35. ✅ **Free arrangement of tabs / grid view.** Added a per-scope grid mode to
-    the tabs store (`gridByScope` + `toggleGrid`, restored by `setScope`). A
-    grid-toggle button in the tab bar (enabled once a scope has ≥2 tabs) flips
-    the current project between the single-active-tab view and a grid that lays
-    every pane of that scope out at once (columns = `ceil(sqrt(n))`, equal
-    rows). `CenterPanel` now wraps each tab in a `.center-pane`: in single mode
-    panes stack absolutely with only the active one shown; in grid mode the
-    current scope's panes become CSS-grid items. `TerminalView`'s old `active`
-    prop was split into `visible` (drives display + an xterm `fit()`/`pty_resize`
-    on show, with the container `ResizeObserver` handling cell-geometry changes)
-    and `focused` (keyboard focus + accent outline). All scopes stay mounted so
-    PTYs are never killed; clicking a pane in grid mode focuses its tab.
-    - *Test (e.g.):* with ≥2 tabs, click the grid toggle → all panes show
-      at once in a `ceil(sqrt(n))`-column grid; output keeps streaming (PTYs
-      alive); clicking a pane focuses its tab; toggling back returns to single view.
-    - [x] 🤖 Automated test — `GridView.test.ts`
+35. ✅ ⛔ **Free arrangement of tabs / grid view — superseded.** The original
+    per-scope auto-grid (columns = `ceil(sqrt(n))`) is gone; tab arrangement is
+    now the directional tiling split model (Group D.11 / #36). The reusable
+    `TerminalView` `visible`/`focused` prop split and the all-scopes-mounted pane
+    approach carried over. `GridView.test.ts` was rewritten to assert the grid
+    store API no longer exists.
+    - [x] 🤖 Automated test — `GridView.test.ts` (asserts removal)
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.11 — Center Panel: Tiling Split Subwindows ✅ Done · 🧪 Untested
+*Files: `src/stores/tabs.ts` (layout-tree model: `SplitNode`/`GroupNode`,
+`splitWithTab`/`moveTab`/`reorderInGroup`/`resizeSplit`/`removeTab` collapse,
+`serializeTree`/`deserializeTree`, per-scope `layoutByScope`/`focusedGroupByScope`),
+`src/components/layout/CenterPanel.tsx` (recursive split render + measured-rect
+pane positioning + panel-wide drop tracking), `src/components/tabs/Subwindow.tsx`
+(per-group frame + L/R/T/B/center drop zones), `src/components/tabs/TabBar.tsx`
+(per-group bar, cross-group drag payload `{key, fromGroup}`),
+`src/components/layout/HeaderBar.tsx` (global tab bar removed), `src/stores/projects.ts`
+(threads `tabGroups` through project switch via shared `serializeTree`),
+`src/styles/themes.css` (`.subwindow`, `.split`/`.split-divider`, `.drop-zone`).
+Backend: `schema/project.rs` `tab_groups`, `commands/projects.rs::save_tab_layout`,
+`services/terminal_service.rs`, `schema/session.rs`, `services/project_runtime.rs`.
+Tests: `src/__tests__/SplitLayout.test.ts`.*
+🧪 Tested: 🤖 automated ✅ (`SplitLayout.test.ts` green, 85 vitest + cargo) · 🖐️ manual ❌ (runtime QA pending)
+
+36. ✅ **Tiling split subwindows (directional drag-drop splits).** Reworked the
+    center panel from one header tab bar + auto-grid into a tiling layout of
+    subwindows. Each subwindow (group) owns its tabs and renders its own tab bar;
+    dragging a tab onto another subwindow's edge (L/R/T/B) splits that direction
+    into a new subwindow, onto its center moves the tab in. Splits resize via
+    draggable dividers (`resizeSplit`, clamped, divider-pair math). The layout is
+    a per-scope tree (`layoutByScope`); flat tab payloads stay per-scope so PTYs
+    never unmount. `removeTab`/`moveTab`/`splitWithTab` collapse emptied groups
+    and lone splits and keep focus + `activeKey` on a surviving group. Persisted
+    as `tab_groups` in `project.json` alongside the flat `tab_layout`, round-trips
+    through project switch (`switch_project_runtime`); absent → single group
+    (legacy projects). **Backend rebuild/restart required** for `tab_groups`
+    persistence (per CLAUDE.md; agents can't launch Eldrun).
+    - *Test (e.g.):* drag a tab onto a subwindow's right edge → a 2-way row split
+      with the dragged tab in a new group sized 50/50; close its only tab → split
+      collapses back to one group with focus on the survivor; reload restores the
+      tree from `tab_groups`.
+    - [x] 🤖 Automated test — `SplitLayout.test.ts` (splits/collapse/move/resize/load)
     - [ ] 🖐️ Manual test
 
 ---
@@ -561,7 +785,7 @@ Related to the run-detached backend `run_script_detached` in `commands/apps.rs`.
 *Files: `src-tauri/src/commands/projects.rs` (`normalize_git_type`,
 `ImportProjectRequest.skip_scaffold`, create/import defaults + read-time
 migration), `src-tauri/src/commands/github.rs` (new `github_publish`),
-`lib.rs`/`commands/mod.rs` (registration), `BottomBar.tsx` (push-target select +
+`lib.rs`/`commands/mod.rs` (registration), `ProjectSwitcher.tsx` (push-target select +
 skip-scaffold checkbox), `ProjectPill.tsx` (Publish window + menu),
 `src/stores/projects.ts` (`publishProject`), `src/types/index.ts`,
 `themes.css` (`.skip-scaffold-row`). Tests: `projects_commands.rs`
@@ -608,6 +832,76 @@ skip-scaffold checkbox), `ProjectPill.tsx` (Publish window + menu),
       public → `gh repo create` runs and `git_type` flips to `remote-public` in
       both json files; for an SSH project the command runs over `ssh` on the host.
     - [x] 🤖 Automated test — *partial:* `commands/github.rs` shell_quote unit tests (argv escaping only; full gh/ssh publish flow is manual)
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.12 — Layout fix: project switcher in the top header ✅ Done · 🧪 Untested
+*Files: `src/components/layout/HeaderBar.tsx` (`header-center`),
+`src/components/layout/ProjectSwitcher.tsx` (renamed from the old `BottomBar`),
+`src/components/layout/AppShell.tsx`, `RightPanel.tsx`, `themes.css`.*
+🧪 Tested: 🤖 automated ✅ (`ProjectSwitcherContextMenu.test.tsx` green) · 🖐️ manual ❌ (runtime QA pending)
+
+14. ✅ **Stop bottom/right panel intersection.** Resolved by moving the project
+    switcher out of the bottom overlay into the top header (`HeaderBar`
+    `header-center`); the old `BottomBar` component became `ProjectSwitcher.tsx`.
+    With no bottom bar there is nothing left to overlap the right panel, and the
+    pill menus now open downward.
+    - *Test (e.g.):* the project pills render in the top header; revealing the
+      right panel no longer collides with a bottom bar.
+    - [x] 🤖 Automated test — `ProjectSwitcherContextMenu.test.tsx`
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.13 — Right Panel: Pin / Dock Option ✅ Done · 🧪 Untested
+*Files: `src/components/layout/AppShell.tsx` (hover-reveal/auto-close timers
+`handleBodyMouseMove`/`scheduleClose`, `rightPinned` state), `RightPanel.tsx`
+(`right-panel-header` pin button), `src/stores/settings.ts`
+(`right_panel_pinned`), `src/styles/themes.css` (`.right-panel`/`.app-body`).*
+🧪 Tested: 🤖 automated ✅ (suite green) · 🖐️ manual ❌ (runtime QA pending)
+
+37. ✅ **Pin the right panel open.** A 📌 toggle in the `right-panel-header`
+    keeps the panel persistently open instead of auto-hiding on mouse-leave; when
+    pinned the hover-reveal/auto-close timers are suppressed and the panel takes
+    layout space (no overlap of the center terminal). The pinned flag persists in
+    `settings.json` (`right_panel_pinned`) and is restored on launch.
+    - *Test (e.g.):* click the pin → panel stays open after the cursor leaves;
+      center reflows (no overlap); toggle off → reverts to hover-reveal; restart →
+      pinned state restored.
+    - [x] 🤖 Automated test — covered by the right-panel suite
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.14 — File → Tab: In-App Viewers & Embedded Tabs (Phase 1) ✅ Done · 🧪 Untested
+*Files: drag source `src/components/files/FileTree.tsx`, drop targets
+`src/components/tabs/TabBar.tsx`/`Subwindow.tsx` + `commitFileDrop.ts`,
+`src/stores/tabs.ts` (`"embed"` tab kind, `viewer`/`embedExec`), in-app viewers
+`src/components/embed/FileViewerPane.tsx` + `EmbedPane.tsx`,
+`src/components/files/markdown.ts`, `fileUtils.ts` (`internalViewerFor`),
+backend `commands/apps.rs` (`embed_capability`, default-app resolution),
+`commands/tex.rs` (`tex_capability`/`compile_tex`). Tests:
+`FileDropAddsEmbedTab`/`FileDropEmptyFirstTab`/`FileDropSplitsSubwindow`,
+`EmbedCapabilityGate`, `InternalViewer`, `Markdown`, `embed_capability_tests.rs`.*
+🧪 Tested: 🤖 automated ✅ (suite green) · 🖐️ manual ❌ (runtime QA pending)
+
+40. ✅ **Drag a file from the right panel into a (sub)window's tab bar to open it
+    in a tab (Phase 1).** Dragging a file row onto a subwindow's tab bar opens a
+    new `"embed"` tab **named after the file**. Two backends: files with a
+    built-in viewer (`internalViewerFor` → PDF, image, markdown, or text) render
+    **in-app** via `FileViewerPane` — a zoom/pan image view, a PDF iframe, a
+    markdown Edit/Preview toggle, and an editable code editor (line-number gutter,
+    Tab/Shift+Tab indent, Ctrl+S save). Other files open in their external default
+    app via `EmbedPane`, gated on an `embed_capability` check. Only in-app
+    `viewer` embeds persist/restore across restart. TeX files additionally get a
+    compile affordance when a LaTeX engine is on `PATH` (`tex_capability` /
+    `compile_tex`). **Phase 2 (live X11-reparented frameless embedding) deferred**
+    — see `docs/group_k_plan.md`.
+    - *Test (e.g.):* drag `notes.md` onto a subwindow's tab bar → a `notes.md`
+      tab opens rendering the markdown in-app; drag a `.png` → zoomable image
+      tab; on an unsupported OS/app a non-viewer file opens externally as before.
+    - [x] 🤖 Automated test — `FileDrop*`/`InternalViewer`/`Markdown`/`EmbedCapabilityGate`
     - [ ] 🖐️ Manual test
 
 *This is an organizational plan. Pick an item by its number and I'll produce a

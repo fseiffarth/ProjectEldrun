@@ -4,7 +4,7 @@ import {
   buildDescriptionFillPrompt,
   buildScaffoldFillPrompt,
   collectScaffoldAgentFills,
-} from "../components/layout/BottomBar";
+} from "../components/layout/ProjectSwitcher";
 
 describe("scaffold agent fill guidance", () => {
   it("resolves agent choice to the configured default agent", () => {

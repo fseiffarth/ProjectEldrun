@@ -310,6 +310,165 @@ pub fn run_script_detached(
     Ok(())
 }
 
+// ── Frameless embedding capability (TODO Group K #40, Phase 1) ──────────────
+
+/// Conservative allowlist of app executables (by basename) we'll attempt to
+/// embed frameless into a tab. These are single-window, single-process apps
+/// that map exactly one stable top-level window we can reparent.
+///
+/// CAVEAT — fork-and-exit: an embeddable app MUST keep running under the PID we
+/// spawn and own its top-level directly. Single-instance D-Bus apps
+/// (e.g. `gnome-text-editor`, `kate`) fork a server and exit the launched
+/// process, so our spawned PID dies before mapping a window — there is nothing
+/// to reparent and `find_window_for_pid` would fail. Those remain excluded.
+///
+/// `gedit` and `code` are included by explicit request even though they exhibit
+/// this single-instance behavior (gedit forks a D-Bus server; VS Code is
+/// multi-window Electron and reuses an existing instance). Phase-2 embedding may
+/// need `--new-window`/`--wait`-style flags or a different window-find strategy
+/// to make them reparent reliably; until then they at least get the drag-to-tab
+/// affordance. Keep this list small; expand only after verifying an app maps a
+/// single stable top-level under its own PID.
+pub const EMBEDDABLE_EXECS: &[&str] = &[
+    "xterm", "xev", "mousepad", "okular", "evince", "eog", "feh", "mpv", "qpdfview", "gedit",
+    "code",
+];
+
+/// Whether `exec` (a path or bare command) names an embeddable app, matched by
+/// its basename against `EMBEDDABLE_EXECS`.
+pub fn is_embeddable_exec(exec: &str) -> bool {
+    let base = Path::new(exec)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_else(|| exec.to_lowercase());
+    EMBEDDABLE_EXECS.iter().any(|&e| e == base)
+}
+
+/// Resolve the executable that would open `path`, in precedence order:
+///   1. an explicitly passed `handler`;
+///   2. the project's `default_apps` map, then the global one, keyed by the
+///      file extension (including the leading dot, e.g. `.md`);
+///   3. the system default via `xdg-mime query default <mime>` → the matching
+///      `.desktop` entry's `Exec` first token.
+/// Returns `None` when nothing resolves (capability then degrades to external).
+///
+/// Pure with respect to the app maps (passed in) so it is unit-testable; only
+/// the xdg/mime fallback touches the system.
+pub fn resolve_default_handler(
+    path: &str,
+    handler: Option<&str>,
+    project_apps: Option<&HashMap<String, String>>,
+    global_apps: &HashMap<String, String>,
+) -> Option<String> {
+    if let Some(h) = handler.map(str::trim).filter(|h| !h.is_empty()) {
+        return Some(h.to_string());
+    }
+    let ext = Path::new(path)
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()));
+    if let Some(ext) = ext.as_deref() {
+        if let Some(app) = project_apps.and_then(|m| m.get(ext)) {
+            if !app.is_empty() {
+                return Some(app.clone());
+            }
+        }
+        if let Some(app) = global_apps.get(ext) {
+            if !app.is_empty() {
+                return Some(app.clone());
+            }
+        }
+    }
+    resolve_handler_via_mime(path)
+}
+
+/// System-default handler via `xdg-mime` → `.desktop` `Exec` first token.
+fn resolve_handler_via_mime(path: &str) -> Option<String> {
+    let mime = Command::new("xdg-mime")
+        .args(["query", "filetype", path])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    let desktop = Command::new("xdg-mime")
+        .args(["query", "default", &mime])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    // Locate the named .desktop file and pull its Exec first token.
+    for dir in desktop_app_dirs() {
+        let candidate = dir.join(&desktop);
+        if candidate.exists() {
+            if let Some(entry) = parse_desktop_entry(&candidate) {
+                return Some(entry.exec);
+            }
+        }
+    }
+    None
+}
+
+fn desktop_app_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/usr/share/applications"),
+        PathBuf::from("/usr/local/share/applications"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.insert(0, PathBuf::from(home).join(".local/share/applications"));
+    }
+    dirs
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedCapability {
+    /// OS can host an embedded frameless window (X11 backend, not XWayland).
+    pub os_embeddable: bool,
+    /// The resolved default app is on the conservative allowlist.
+    pub app_embeddable: bool,
+    /// The executable we would embed (or launch externally on fallback).
+    pub resolved_exec: Option<String>,
+}
+
+/// Report whether `path` can be opened as a frameless embedded tab.
+///
+/// `os_embeddable` is true only when the active workspace backend supports
+/// embedding (X11) AND we're not on Wayland (XWayland reparenting is
+/// unreliable). `app_embeddable` is true when the resolved default handler is
+/// on the conservative allowlist. The frontend gates the tab-bar drop target on
+/// `os_embeddable && app_embeddable`; otherwise the file opens externally.
+///
+/// Phase 1: this reports capability only — no reparenting happens yet.
+#[tauri::command]
+pub fn embed_capability(
+    workspace: State<'_, crate::commands::workspace::WorkspaceStateArc>,
+    path: String,
+    handler: Option<String>,
+) -> EmbedCapability {
+    let os_embeddable = {
+        let ws = workspace.lock().unwrap();
+        ws.backend.supports_embedding()
+    } && std::env::var("WAYLAND_DISPLAY").is_err();
+
+    let global_apps = crate::commands::default_apps::get_default_apps()
+        .map(|d| d.0)
+        .unwrap_or_default();
+    // Phase 1 takes no project_id, so only the passed handler / global / mime
+    // resolution apply (project default_apps fold in with Phase 2's wiring).
+    let resolved_exec = resolve_default_handler(&path, handler.as_deref(), None, &global_apps);
+    let app_embeddable = resolved_exec.as_deref().map_or(false, is_embeddable_exec);
+
+    EmbedCapability {
+        os_embeddable,
+        app_embeddable,
+        resolved_exec,
+    }
+}
+
 struct DesktopEntry {
     exec: String,
     icon: String,

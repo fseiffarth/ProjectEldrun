@@ -22,6 +22,9 @@ pub struct PreviousProjectSnapshot {
     pub tab_layout: Vec<TabEntry>,
     #[serde(default)]
     pub active_tab_index: usize,
+    /// Opaque split/group layout tree to persist alongside `tab_layout`.
+    #[serde(default)]
+    pub tab_groups: Option<serde_json::Value>,
     #[serde(default)]
     pub file_tabs: Vec<serde_json::Value>,
     pub right_panel_folder: Option<String>,
@@ -39,6 +42,8 @@ pub struct ProjectRuntimeSwitchedPayload {
     pub project_id: Option<String>,
     pub tab_layout: Vec<TabEntry>,
     pub active_tab_index: usize,
+    /// Opaque split/group layout tree for the next project (None → legacy).
+    pub tab_groups: Option<serde_json::Value>,
     pub file_tabs: Vec<serde_json::Value>,
     pub right_panel_folder: Option<String>,
     /// Registry IDs of all project-owned tracked windows after the switch.
@@ -74,6 +79,7 @@ pub fn switch(
             local_file,
             &snapshot.tab_layout,
             snapshot.active_tab_index,
+            snapshot.tab_groups.clone(),
         ) {
             eprintln!("ProjectRuntime: save tab layout: {e}");
         }
@@ -109,6 +115,7 @@ pub fn switch(
         project_id: project_id.map(String::from),
         tab_layout: next_terminal_session.tab_layout,
         active_tab_index: next_terminal_session.active_tab_index,
+        tab_groups: next_terminal_session.tab_groups,
         file_tabs: next_file_tabs,
         right_panel_folder: next_right_panel_folder,
         opened_window_ids: vec![],

@@ -198,7 +198,7 @@ This preserves "directories first, then case-insensitive name" ordering and lowe
 ### 10. Memoize installed Ollama names
 
 - Priority: Low
-- File: `src/components/layout/BottomBar.tsx:589`
+- File: `src/components/layout/ProjectSwitcher.tsx:589`
 
 `installedNames` is recreated on every render:
 
@@ -295,9 +295,9 @@ fields are all genuinely needed for the same render path.
 ### Save-on-enter handler extraction may reduce readability
 
 - Priority: Low
-- File: `src/components/layout/BottomBar.tsx:331`
-- File: `src/components/layout/BottomBar.tsx:417`
-- File: `src/components/layout/BottomBar.tsx:490`
+- File: `src/components/layout/ProjectSwitcher.tsx:331`
+- File: `src/components/layout/ProjectSwitcher.tsx:417`
+- File: `src/components/layout/ProjectSwitcher.tsx:490`
 
 The repeated `onBlur`/Enter-save pattern is real, but the handlers capture different values and
 types. A generic `makeSaveHandlers` helper could add indirection without much benefit. Leave this

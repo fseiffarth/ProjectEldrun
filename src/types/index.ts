@@ -13,8 +13,15 @@ export interface Settings {
   color_scheme?: string;
   default_agent_cmd?: string;
   run_scripts_in_background?: boolean;
+  /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
+  right_panel_pinned?: boolean;
   global_apps?: Record<string, GlobalAppEntry>;
   [key: string]: unknown;
+}
+
+export interface OpenVpnSpec {
+  /** Absolute path to the local `.ovpn` client config file. */
+  config: string;
 }
 
 export interface RemoteSpec {
@@ -22,6 +29,8 @@ export interface RemoteSpec {
   host: string;
   port?: number;
   remote_path: string;
+  /** Optional OpenVPN tunnel brought up before reaching the host. */
+  openvpn?: OpenVpnSpec;
 }
 
 export interface RemoteEntry {

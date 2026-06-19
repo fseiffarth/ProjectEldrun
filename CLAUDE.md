@@ -31,9 +31,9 @@ Runtime launch commands are intentionally omitted from this Claude context.
 | `src/components/layout/HeaderBar.tsx` | Window drag handle, close/minimize/maximize buttons. |
 | `src/components/layout/GlobalAppBar.tsx` | Global toolbar (app launcher, shortcuts). |
 | `src/components/layout/CenterPanel.tsx` | Terminal stack and tab bar. |
-| `src/components/layout/BottomBar.tsx` | Project pill switcher. |
+| `src/components/layout/ProjectSwitcher.tsx` | Project pill switcher. |
 | `src/components/layout/RightPanel.tsx` | File tree overlay panel. |
-| `src/components/projects/ProjectPill.tsx` | Individual project tab pill in the bottom bar. |
+| `src/components/projects/ProjectPill.tsx` | Individual project tab pill in the project switcher. |
 | `src/components/terminal/TerminalView.tsx` | xterm.js terminal wrapper. |
 | `src/stores/projects.ts` | Zustand store for project list, active project, CRUD. |
 | `src/stores/tabs.ts` | Zustand store for center-panel tabs. |
@@ -69,7 +69,23 @@ Runtime launch commands are intentionally omitted from this Claude context.
   project's `directory`. Such projects carry a `remote` spec (`user?`, `host`,
   `port?`, `remote_path`) in their `project.json` and mirrored into the
   `projects.json` entry's `extra`. Requires `sshfs`/FUSE locally.
-- Project-local state lives in each project's `project.json`.
+- Project-local state lives in each project's `project.json`. This includes the
+  per-project tab layout (`tab_layout`/`tab_groups`). Shell/files tabs are always
+  restored on relaunch; agent tabs are normally dropped, **except resumable agent
+  tabs** — Claude and Codex tabs that carry a `sessionId` are persisted (with
+  their `sessionId`) and restored, respawning the agent so the prior conversation
+  comes back (see `isRestorableTab`/`RESUMABLE_AGENTS` in `src/stores/tabs.ts`).
+  Mechanism (`services/agent_session.rs`, installed at startup): Eldrun installs a
+  `SessionStart` hook — into `~/.claude/settings.json` (JSON) and
+  `~/.codex/config.toml` (TOML text-append) — that records each tab's live
+  `session_id` under `~/.local/share/eldrun/live_sessions/<key>`, keyed by the
+  `ELDRUN_TAB_UID` env var Eldrun sets on the agent. At spawn,
+  `terminal::resolve_{claude,codex}_session` reads that to resume the *current*
+  session, following a `/clear`. For Claude the key is its launch id
+  (`--session-id`); Codex mints its own id so the key is a separate per-tab uuid
+  and the backend injects `codex resume <live-id>`. **Codex caveat:** user-level
+  Codex hooks need a one-time trust (`/hooks` in Codex) before they run. Gemini
+  and Vibe are still dropped (TODO 39d).
 - New/imported projects receive `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
   `.claude/settings.json`, `.gitignore`, `TODO.md`, `ROADMAP.md`, `STATUS.md`,
   and `README.md` when missing.

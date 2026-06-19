@@ -58,7 +58,7 @@ vi.mock("../stores/timer", () => ({
 // Stub heavy child components to avoid bootstrapping terminals / xterm / etc.
 vi.mock("../components/layout/HeaderBar", () => ({ HeaderBar: () => null }));
 vi.mock("../components/layout/CenterPanel", () => ({ CenterPanel: () => null }));
-vi.mock("../components/layout/BottomBar", () => ({ BottomBar: () => null }));
+vi.mock("../components/layout/ProjectSwitcher", () => ({ ProjectSwitcher: () => null }));
 vi.mock("../components/layout/RightPanel", () => ({ RightPanel: () => null }));
 vi.mock("../components/layout/GlobalAppBar", () => ({ GlobalAppBar: () => null }));
 vi.mock("../hooks/useKeyboard", () => ({ useKeyboard: vi.fn() }));

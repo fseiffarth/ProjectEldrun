@@ -16,7 +16,7 @@ use crate::schema::projects::ProjectsList;
 use crate::storage;
 // The validation + base-argv helpers live in `services::ssh_mount` so the
 // `ssh` and `sshfs` commands share a single validated implementation.
-use crate::services::ssh_mount::{self, ssh_base_args, validate_arg};
+use crate::services::ssh_mount::{self, ssh_base_args, ssh_target, sshpass_available, validate_arg};
 
 /// One entry in a remote directory listing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -25,26 +25,90 @@ pub struct RemoteEntry {
     pub is_dir: bool,
 }
 
-/// Run `ssh <base> <remote_argv...>` and return stdout on success, or the
-/// trimmed stderr on failure.
-fn run_ssh(base: Vec<String>, remote: &[&str]) -> Result<String, String> {
-    let mut cmd = Command::new("ssh");
-    cmd.args(&base);
-    cmd.args(remote);
-
+/// Run a built command, returning stdout on success or the trimmed stderr (or a
+/// generic message) on failure. `what` names the binary for error messages.
+fn capture(mut cmd: Command, what: &str) -> Result<String, String> {
     let output = cmd
         .output()
-        .map_err(|e| format!("failed to run ssh: {e}"))?;
+        .map_err(|e| format!("failed to run {what}: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if stderr.is_empty() {
-            return Err("ssh command failed".to_string());
+            return Err(format!("{what} command failed"));
         }
         return Err(stderr);
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Build the password-auth ssh argv: BatchMode off and only the password method
+/// enabled, so ssh never falls back to (or hangs on) keys/keyboard-interactive.
+/// The target `[user@]host` is validated and rendered as a single argv item.
+fn ssh_password_base_args(
+    user: &Option<String>,
+    host: &str,
+    port: Option<u16>,
+) -> Result<Vec<String>, String> {
+    let mut args: Vec<String> = vec![
+        "-o".to_string(),
+        "BatchMode=no".to_string(),
+        "-o".to_string(),
+        "ConnectTimeout=10".to_string(),
+        "-o".to_string(),
+        "PreferredAuthentications=password".to_string(),
+        "-o".to_string(),
+        "PubkeyAuthentication=no".to_string(),
+        "-o".to_string(),
+        "NumberOfPasswordPrompts=1".to_string(),
+    ];
+    if let Some(port) = port {
+        args.push("-p".to_string());
+        args.push(port.to_string());
+    }
+    args.push(ssh_target(user, host)?);
+    Ok(args)
+}
+
+/// Run an ssh command against `[user@]host[:port]`, choosing the auth method by
+/// whether a non-empty `password` was supplied:
+///   - password present → `sshpass -e ssh …` (password read from the `SSHPASS`
+///     env var so it never appears in the process's argv), password-only auth;
+///   - otherwise → key/agent auth in `BatchMode=yes` (the original v1 flow).
+/// Returns ssh stdout on success or the trimmed stderr on failure.
+fn run_ssh_auth(
+    user: &Option<String>,
+    host: &str,
+    port: Option<u16>,
+    password: Option<&str>,
+    remote: &[&str],
+) -> Result<String, String> {
+    match password.filter(|p| !p.is_empty()) {
+        Some(pw) => {
+            if !sshpass_available() {
+                return Err(
+                    "sshpass not found — install sshpass to use password auth, or set up SSH keys"
+                        .to_string(),
+                );
+            }
+            let base = ssh_password_base_args(user, host, port)?;
+            let mut cmd = Command::new("sshpass");
+            cmd.arg("-e"); // read the password from the SSHPASS env var
+            cmd.env("SSHPASS", pw);
+            cmd.arg("ssh");
+            cmd.args(&base);
+            cmd.args(remote);
+            capture(cmd, "sshpass")
+        }
+        None => {
+            let base = ssh_base_args(user, host, port)?;
+            let mut cmd = Command::new("ssh");
+            cmd.args(&base);
+            cmd.args(remote);
+            capture(cmd, "ssh")
+        }
+    }
 }
 
 /// Parse `ls -1Ap` output into entries. A trailing `/` marks a directory; we
@@ -77,12 +141,17 @@ fn parse_ls_output(stdout: &str) -> Vec<RemoteEntry> {
     entries
 }
 
-/// Verify the remote host is reachable over SSH (non-interactive). Returns the
-/// trimmed ssh stderr as the error on failure.
+/// Verify the remote host is reachable over SSH (non-interactive). With a
+/// non-empty `password`, authenticates via `sshpass`; otherwise uses key/agent
+/// auth. Returns the trimmed ssh stderr as the error on failure.
 #[tauri::command]
-pub fn ssh_connect(user: Option<String>, host: String, port: Option<u16>) -> Result<(), String> {
-    let base = ssh_base_args(&user, &host, port)?;
-    run_ssh(base, &["true"]).map(|_| ())
+pub fn ssh_connect(
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+    password: Option<String>,
+) -> Result<(), String> {
+    run_ssh_auth(&user, &host, port, password.as_deref(), &["true"]).map(|_| ())
 }
 
 /// Return the remote `$HOME` (via `pwd`) as the browser's start location.
@@ -91,9 +160,9 @@ pub fn ssh_default_dir(
     user: Option<String>,
     host: String,
     port: Option<u16>,
+    password: Option<String>,
 ) -> Result<String, String> {
-    let base = ssh_base_args(&user, &host, port)?;
-    let stdout = run_ssh(base, &["pwd"])?;
+    let stdout = run_ssh_auth(&user, &host, port, password.as_deref(), &["pwd"])?;
     let path = stdout.trim().to_string();
     if path.is_empty() {
         return Err("remote pwd returned no path".to_string());
@@ -107,17 +176,17 @@ pub fn ssh_list_dir(
     user: Option<String>,
     host: String,
     port: Option<u16>,
+    password: Option<String>,
     path: String,
 ) -> Result<Vec<RemoteEntry>, String> {
-    let base = ssh_base_args(&user, &host, port)?;
-
+    let pw = password.as_deref();
     let path = path.trim();
     let stdout = if path.is_empty() {
         // No path → list the remote home directory.
-        run_ssh(base, &["ls", "-1Ap", "--"])?
+        run_ssh_auth(&user, &host, port, pw, &["ls", "-1Ap", "--"])?
     } else {
         validate_arg("path", path)?;
-        run_ssh(base, &["ls", "-1Ap", "--", path])?
+        run_ssh_auth(&user, &host, port, pw, &["ls", "-1Ap", "--", path])?
     };
 
     Ok(parse_ls_output(&stdout))
@@ -142,7 +211,7 @@ pub fn ensure_project_mounted(project_id: String) -> Result<String, String> {
 
 /// Load a project's `project.json` by its id, resolving `local_file` from the
 /// global `projects.json` list.
-fn load_project_by_id(project_id: &str) -> Result<Project, String> {
+pub(crate) fn load_project_by_id(project_id: &str) -> Result<Project, String> {
     let list_path = storage::state_dir().join("projects.json");
     let list: ProjectsList = if list_path.exists() {
         storage::read_json(&list_path).map_err(|e| e.to_string())?
@@ -282,5 +351,27 @@ mod tests {
         assert!(validate_arg("path", "/home/user/projects").is_ok());
         assert!(validate_arg("path", "-rf").is_err());
         assert!(validate_arg("path", "a\nb").is_err());
+    }
+
+    // ── ssh_password_base_args ─────────────────────────────────────────────
+
+    #[test]
+    fn password_args_disable_batchmode_and_pin_password_auth() {
+        let args = ssh_password_base_args(&Some("me".to_string()), "host.example", None).unwrap();
+        assert_eq!(args.last().unwrap(), "me@host.example");
+        assert!(args.iter().any(|a| a == "BatchMode=no"));
+        assert!(args.iter().any(|a| a == "PreferredAuthentications=password"));
+        assert!(args.iter().any(|a| a == "PubkeyAuthentication=no"));
+        // Must never enable BatchMode=yes (that would block the password prompt).
+        assert!(!args.iter().any(|a| a == "BatchMode=yes"));
+    }
+
+    #[test]
+    fn password_args_include_port_and_reject_bad_target() {
+        let args = ssh_password_base_args(&None, "host", Some(2222)).unwrap();
+        let pos = args.iter().position(|a| a == "-p").expect("-p present");
+        assert_eq!(args[pos + 1], "2222");
+        assert!(ssh_password_base_args(&None, "-evil", None).is_err());
+        assert!(ssh_password_base_args(&Some("-evil".to_string()), "host", None).is_err());
     }
 }

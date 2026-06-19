@@ -12,6 +12,10 @@ pub struct TerminalSession {
     pub tab_layout: Vec<TabEntry>,
     #[serde(default)]
     pub active_tab_index: usize,
+    /// Opaque split/group layout tree (frontend-owned). Absent for legacy
+    /// sessions, where the frontend rebuilds a single root group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_groups: Option<Value>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

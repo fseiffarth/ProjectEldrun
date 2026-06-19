@@ -7,6 +7,7 @@ import { useActivityStore } from "../../stores/activity";
 import { useProjectsStore } from "../../stores/projects";
 import { useTabsStore } from "../../stores/tabs";
 import { ActivityCalendar } from "./ActivityCalendar";
+import { OrbitSpinner } from "../common/OrbitSpinner";
 
 interface Props {
   project: ProjectEntry;
@@ -38,28 +39,6 @@ function projectDescription(project: ProjectEntry): string {
 
 function formatCpu(pct: number): string {
   return pct < 0.1 ? "idle" : `${pct.toFixed(1)}%`;
-}
-
-const ORBIT_R = 4;
-const ORBIT_DOTS = [0, 120, 240].map((deg) => {
-  const rad = (deg * Math.PI) / 180;
-  return { cx: ORBIT_R * Math.sin(rad), cy: -ORBIT_R * Math.cos(rad) };
-});
-
-function OrbitSpinner({ className }: { className?: string }) {
-  return (
-    <svg
-      width={12}
-      height={12}
-      viewBox="-6 -6 12 12"
-      className={`orbit-spinner${className ? ` ${className}` : ""}`}
-      aria-hidden
-    >
-      {ORBIT_DOTS.map(({ cx, cy }, i) => (
-        <circle key={i} cx={cx} cy={cy} r={1.4} className="orbit-dot" />
-      ))}
-    </svg>
-  );
 }
 
 interface ContextMenuPos { x: number; y: number }
@@ -301,7 +280,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder }: Pr
     if (contextMenu) return;
     if (!pillRef.current) return;
     const r = pillRef.current.getBoundingClientRect();
-    setPopupPos({ x: r.left + r.width / 2, y: r.top });
+    setPopupPos({ x: r.left + r.width / 2, y: r.bottom });
     try {
       if (isLiveProject) {
         setTimeToday(getProjectSecs());
@@ -318,9 +297,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder }: Pr
     e.preventDefault();
     e.stopPropagation();
     setPopupPos(null);
-    // Anchor to the top of the pill so the menu opens upward, above the bar
+    // Anchor to the bottom of the pill so the menu opens downward, below the bar
     const y = pillRef.current
-      ? pillRef.current.getBoundingClientRect().top
+      ? pillRef.current.getBoundingClientRect().bottom
       : e.clientY;
     setContextMenu({ x: e.clientX, y });
   };
@@ -356,7 +335,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder }: Pr
       {contextMenu && createPortal(
         <div
           className="context-menu"
-          style={{ left: contextMenu.x, top: contextMenu.y, transform: "translateY(-100%)" }}
+          style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
           <button

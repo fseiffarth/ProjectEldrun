@@ -88,6 +88,12 @@ impl WorkspaceBackend for X11Backend {
         "x11"
     }
 
+    fn supports_embedding(&self) -> bool {
+        // X11 is the only backend that can reparent an external app's top-level
+        // into an Eldrun-owned container for frameless in-tab embedding.
+        true
+    }
+
     fn info(&self) -> WorkspaceInfo {
         let current =
             get_cardinal(&self.conn, self.screen_num, self.atoms.net_current_desktop)

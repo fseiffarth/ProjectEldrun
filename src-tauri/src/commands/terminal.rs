@@ -25,6 +25,12 @@ pub async fn pty_spawn(
         opts.cwd = root_dir.to_string_lossy().into_owned();
     }
 
+    // For remote (SSH) projects, rewrite the spawn to run on the remote host
+    // via `ssh -tt`. No-op for local projects or `local_only` tabs.
+    if !opts.local_only {
+        crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
+    }
+
     // Crash-loop guard.
     {
         let mut reg = registry.lock().unwrap();

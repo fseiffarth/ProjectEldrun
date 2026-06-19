@@ -31,7 +31,7 @@ describe("activity store running indicator", () => {
     vi.useFakeTimers();
     seedTabs();
     _clearPtyActivityForTest();
-    useActivityStore.setState({ busyByScope: {} });
+    useActivityStore.setState({ busyByScope: {}, busyByTab: {} });
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -59,5 +59,16 @@ describe("activity store running indicator", () => {
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().busyByScope["proj-b"]).toBe(true);
     expect(useActivityStore.getState().busyByScope["proj-a"] ?? false).toBe(false);
+  });
+
+  it("flags the individual tab that emitted output and clears when stale", () => {
+    notePtyOutput("agent-1");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().busyByTab["agent-1"]).toBe(true);
+    expect(useActivityStore.getState().busyByTab["shell-1"]).toBeUndefined();
+
+    vi.advanceTimersByTime(1000); // > BUSY_WINDOW_MS (800)
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().busyByTab["agent-1"] ?? false).toBe(false);
   });
 });

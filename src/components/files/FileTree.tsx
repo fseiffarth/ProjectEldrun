@@ -3,9 +3,11 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useWindowsStore } from "../../stores/windows";
 import { useTabsStore } from "../../stores/tabs";
+import { useDragStore, type EmbedCap } from "../../stores/drag";
+import { commitFileDrop } from "../tabs/commitFileDrop";
 import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
-import { type FileEntry, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, STANDARD_PROJECT_FILES } from "./fileUtils";
+import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, STANDARD_PROJECT_FILES } from "./fileUtils";
 
 function sizeCategory(bytes: number): string {
   if (bytes < 10 * 1024) return "size-small";
@@ -30,6 +32,39 @@ interface Props {
 type GitStatusMap = Record<string, string>;
 type EntryContextMenu = { x: number; y: number; entry: FileEntry | null } | null;
 type DeleteConfirm = { entry: FileEntry; relPath: string } | null;
+
+/** Which TeX tools are on PATH; mirrors the backend `TexCapability`. */
+type TexCapability = {
+  available: boolean;
+  engines: string[];
+  bibtex: boolean;
+  latexmk: boolean;
+};
+
+type TexCompileResult = {
+  success: boolean;
+  pdf_path: string | null;
+  engine: string;
+  log: string;
+};
+
+// TeX tooling is PATH-global, so probe the backend once per app run and share
+// the result across every FileTree instance.
+let texCapPromise: Promise<TexCapability> | null = null;
+function getTexCapability(): Promise<TexCapability> {
+  if (!texCapPromise) {
+    texCapPromise = invoke<TexCapability>("tex_capability").catch(
+      () => ({ available: false, engines: [], bibtex: false, latexmk: false }),
+    );
+  }
+  return texCapPromise;
+}
+
+/** Last meaningful line of a build log, for a terse error message. */
+function lastLogLine(log: string): string {
+  const lines = log.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines[lines.length - 1] ?? "";
+}
 
 export const STATUS_COLOR: Record<string, string> = {
   modified:  "#f85149", // red – tracked, unstaged working-tree change
@@ -97,6 +132,11 @@ export function FileTree({
   onRelPathChange,
 }: Props) {
   const [rawEntries, setRawEntries] = useState<FileEntry[]>([]);
+  // Which files can be embedded as a frameless in-tab app (Group K #40). Keyed
+  // by extension (default-app resolution is per-mime/extension), so we only
+  // query the backend once per distinct extension. Only embeddable files get the
+  // drag-to-tab affordance (3D hover + pointer drag); the rest open on dblclick.
+  const [embedByExt, setEmbedByExt] = useState<Record<string, boolean>>({});
   const [relPath, setRelPath] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -107,6 +147,10 @@ export function FileTree({
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
+  // TeX toolchain presence (null until probed); absolute paths of .tex files
+  // currently compiling, for the inline build spinner.
+  const [texCap, setTexCap] = useState<TexCapability | null>(null);
+  const [compiling, setCompiling] = useState<Set<string>>(new Set());
   const { openFile } = useWindowsStore();
   const addTab = useTabsStore((s) => s.addTab);
   const runInBackground = useSettingsStore((s) => s.settings?.run_scripts_in_background ?? true);
@@ -142,6 +186,53 @@ export function FileTree({
     }),
     [rawEntries, showHidden, sortKey, descending, hiddenEndings, relPath, hiddenPaths, shownPaths],
   );
+
+  // Resolve embed capability for any not-yet-known file extension in view. One
+  // backend call per distinct extension; results cached in embedByExt.
+  useEffect(() => {
+    const unknown = new Map<string, string>(); // ext → a sample path
+    for (const e of entries) {
+      if (e.is_dir) continue;
+      const ext = e.extension ?? "";
+      if (!(ext in embedByExt) && !unknown.has(ext)) unknown.set(ext, e.path);
+    }
+    if (unknown.size === 0) return;
+    let cancelled = false;
+    (async () => {
+      const updates: Record<string, boolean> = {};
+      for (const [ext, path] of unknown) {
+        try {
+          const cap = await invoke<EmbedCap>("embed_capability", { path, handler: null });
+          updates[ext] = cap.os_embeddable && cap.app_embeddable;
+        } catch {
+          updates[ext] = false;
+        }
+      }
+      if (!cancelled) setEmbedByExt((m) => ({ ...m, ...updates }));
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries]);
+
+  const isEmbeddable = (e: FileEntry): boolean =>
+    !e.is_dir && embedByExt[e.extension ?? ""] === true;
+
+  // A file can be dragged onto a tab bar if either: it opens in a built-in
+  // viewer (pdf/markdown/text — always, independent of any external app), or its
+  // external default handler is embeddable. The built-in viewer wins when both
+  // apply, so PDFs/text/markdown never depend on the configured external app.
+  const draggableToTab = (e: FileEntry): InternalViewer | "embed" | null => {
+    if (e.is_dir) return null;
+    const viewer = internalViewerFor(e);
+    if (viewer) return viewer;
+    return isEmbeddable(e) ? "embed" : null;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    getTexCapability().then((cap) => { if (!cancelled) setTexCap(cap); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (!projectDir) return;
@@ -203,6 +294,74 @@ export function FileTree({
         `${entry.mime || "application/octet-stream"}:${entry.name}:${fileUri}`,
       );
     }
+  }
+
+  // Start a pointer-based drag from a file row, mirroring TabBar.onTabPointerDown.
+  // HTML5 native DnD is unreliable on WebKitGTK (it hijacks the pointer stream
+  // and fires pointercancel), so once the pointer crosses a 5px threshold we
+  // drive a "file" drag from plain window listeners. On drop, commitFileDrop
+  // either opens the file as a frameless embed tab (capability permitting) or
+  // falls back to an external launch.
+  //
+  // R6: we e.preventDefault() here to suppress native DnD and the row's
+  // `draggable`/onDragStart is disabled for files (see renderEntry), so both
+  // can't fire. The commit fires from THIS handler's window-pointerup — the
+  // only listener guaranteed to see the release before pointer capture on
+  // WebKitGTK — never from CenterPanel.
+  function onEntryPointerDown(
+    e: React.PointerEvent,
+    entry: FileEntry,
+    viewer: InternalViewer | null,
+  ) {
+    if (e.button !== 0 || entry.is_dir) return;
+    // Let the inline run (▶) button own its own clicks — don't seed a drag or
+    // swallow the click when the press lands on it.
+    if ((e.target as HTMLElement).closest(".file-run-btn")) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let dragging = false;
+
+    const onMove = (ev: PointerEvent) => {
+      if (!dragging) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
+        dragging = true;
+        useDragStore.getState().startFileDrag({
+          label: entry.name,
+          pointerX: ev.clientX,
+          pointerY: ev.clientY,
+          filePath: entry.path,
+          fileName: entry.name,
+          viewer: viewer ?? undefined,
+        });
+        // Built-in viewers render in-app and need no external handler, so skip
+        // the embed-capability probe for them. For other embeddable files,
+        // prefetch the capability so the drop can resolve embed-vs-external.
+        if (!viewer) {
+          invoke<EmbedCap>("embed_capability", { path: entry.path, handler: null })
+            .then((cap) => useDragStore.getState().setEmbedCap(cap))
+            .catch(() => useDragStore.getState().setEmbedCap(null));
+        }
+      }
+      useDragStore.getState().move(ev.clientX, ev.clientY);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      if (!dragging) {
+        // Never moved → a plain click does NOT open. Opening a file is a
+        // double-click (onDoubleClick → handleClick); dragging it onto a tab bar
+        // is the other gesture. So a single click is a no-op here.
+        return;
+      }
+      const d = useDragStore.getState().drag;
+      if (d != null) {
+        commitFileDrop(d, projectId, projectDir);
+        useDragStore.getState().end();
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   }
 
   function relForEntry(entry: FileEntry): string {
@@ -336,6 +495,56 @@ export function FileTree({
     });
   }
 
+  /** Open (or refresh) the in-app PDF viewer tab for a freshly compiled PDF.
+   *  The viewer reads the bytes once on mount, so on a recompile we drop any
+   *  existing tab for this path and add a fresh one to pick up the new output. */
+  function openPdfTab(pdfPath: string) {
+    const store = useTabsStore.getState();
+    const prior = store.tabs.find(
+      (t) => t.kind === "embed" && t.viewer === "pdf" && t.embedPath === pdfPath,
+    );
+    if (prior) store.removeTab(prior.key);
+    store.addTab({
+      label: pdfPath.split("/").filter(Boolean).pop() ?? pdfPath,
+      cmd: "",
+      cwd: projectDir,
+      kind: "embed",
+      embedPath: pdfPath,
+      viewer: "pdf",
+    });
+  }
+
+  /** Compile a .tex file to PDF, then refresh the tree (the PDF appears) and
+   *  optionally open it in the in-app viewer. Build feedback is the inline
+   *  spinner on the row; failures surface in the tree error banner. */
+  async function compileTex(entry: FileEntry, openPdf: boolean) {
+    setContextMenu(null);
+    if (compiling.has(entry.path)) return;
+    setCompiling((s) => new Set(s).add(entry.path));
+    setError(null);
+    try {
+      const res = await invoke<TexCompileResult>("compile_tex", {
+        path: entry.path,
+        engine: null,
+      });
+      if (!res.success) {
+        const detail = lastLogLine(res.log);
+        setError(`Compile failed for ${entry.name}${detail ? `: ${detail}` : ""}`);
+        return;
+      }
+      await load(relPath);
+      if (openPdf && res.pdf_path) openPdfTab(res.pdf_path);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setCompiling((s) => {
+        const next = new Set(s);
+        next.delete(entry.path);
+        return next;
+      });
+    }
+  }
+
   function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
     if (e.dataTransfer.types.includes("Files")) {
       e.preventDefault();
@@ -429,14 +638,28 @@ export function FileTree({
           const sizeClass = !e.is_dir ? sizeCategory(e.size) : "";
           const canRun = !e.is_dir && e.extension === ".sh";
           const isRunning = runningScripts.has(e.path);
+          const isCompiling = compiling.has(e.path);
+          const dragTarget = draggableToTab(e);
+          const viewer = dragTarget === "embed" ? null : dragTarget;
           return (
             <div
               key={e.path}
-              className={`file-entry ${e.is_dir ? "dir" : "file"}${isScaffold ? " scaffold" : ""}`}
-              onClick={() => handleClick(e)}
+              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold ? " scaffold" : ""}`}
+              // Dirs: single-click navigates + native DnD (file export).
+              // Drag-to-tab files (built-in viewer OR embeddable handler):
+              // pointer-based drag onto a tab bar (R6 — native DnD disabled so it
+              // can't hijack the pointer / open a browser drag), opened by
+              // double-click.
+              // Other files: not draggable at all (no pointer drag, no native
+              // drag), opened by double-click.
+              onClick={e.is_dir ? () => handleClick(e) : undefined}
+              onDoubleClick={e.is_dir ? undefined : () => handleClick(e)}
               onContextMenu={(ev) => showEntryContextMenu(ev, e)}
-              draggable
-              onDragStart={(ev) => handleEntryDragStart(ev, e)}
+              draggable={e.is_dir}
+              onDragStart={
+                e.is_dir ? (ev) => handleEntryDragStart(ev, e) : (ev) => ev.preventDefault()
+              }
+              onPointerDown={dragTarget ? (ev) => onEntryPointerDown(ev, e, viewer) : undefined}
               onMouseEnter={(ev) => handleEntryMouseEnter(ev, e)}
               onMouseLeave={() => setTooltip(null)}
             >
@@ -452,6 +675,15 @@ export function FileTree({
                 >
                   {isRunning ? <span className="file-run-spinner" /> : "▶"}
                 </button>
+              )}
+              {isCompiling && (
+                <span
+                  className="file-run-btn running"
+                  title={`Compiling ${e.name}…`}
+                  aria-label={`Compiling ${e.name}`}
+                >
+                  <span className="file-run-spinner" />
+                </span>
               )}
               <span className="file-icon">{e.is_dir ? folderIcon() : fileIcon(e.extension)}</span>
               <span className="file-name" title={e.name}>{e.name}</span>
@@ -504,9 +736,27 @@ export function FileTree({
           {contextMenu.entry && (() => {
             const entry = contextMenu.entry;
             const status = gitStatuses[entry.name];
+            const isTex = !entry.is_dir && entry.extension === ".tex";
             return (
               <>
                 <hr />
+                {isTex && texCap?.available && (
+                  <>
+                    <button
+                      onClick={() => compileTex(entry, true)}
+                      disabled={compiling.has(entry.path)}
+                    >
+                      Compile &amp; View PDF
+                    </button>
+                    <button
+                      onClick={() => compileTex(entry, false)}
+                      disabled={compiling.has(entry.path)}
+                    >
+                      Compile PDF
+                    </button>
+                    <hr />
+                  </>
+                )}
                 {(status === "modified" || status === "untracked") && (
                   <button onClick={() => stageEntry(entry)}>
                     Stage (git add)

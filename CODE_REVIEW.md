@@ -158,15 +158,15 @@ for the same concept. Consolidate on one (`storage::iso_now`) and have crash-log
 call it, or document why the suffix differs deliberately.
 
 ### 3.4 Name sanitization duplicated across Rust and TS — Low
-`sanitize_name` (`projects.rs:709`) and `sanitizeName` (`BottomBar.tsx:51`)
+`sanitize_name` (`projects.rs:709`) and `sanitizeName` (`ProjectSwitcher.tsx:51`)
 implement the same rule. The frontend computes `targetDir` from its copy
-(`BottomBar.tsx:868`) while the backend re-derives the directory in move/copy
+(`ProjectSwitcher.tsx:868`) while the backend re-derives the directory in move/copy
 import from its own. If the two ever diverge the destination shown to the user
 won't match what the backend creates. Treat the backend as source of truth and
 have the frontend display the backend-returned path, or share the rule.
 
 ### 3.5 Two byte formatters — Low
-`fmtBytes` (`BottomBar.tsx:619`) and `fmtSize` (`components/files/fileUtils.ts`)
+`fmtBytes` (`ProjectSwitcher.tsx:619`) and `fmtSize` (`components/files/fileUtils.ts`)
 both format byte counts. Minor; unify if convenient.
 
 ---
@@ -184,7 +184,7 @@ Fix: write to a temp file in the same directory and `fs::rename` over the target
 
 ### 4.2 `git_token` stored in plaintext and unused — Medium (security)
 `schema/settings.rs:31` persists `git_token` to `settings.json` in plaintext, and
-the Settings UI captures it (`BottomBar.tsx:328`/`348`). But `grep` shows the
+the Settings UI captures it (`ProjectSwitcher.tsx:328`/`348`). But `grep` shows the
 token is **never** sent to any git command — it is dead aside from being a
 plaintext secret on disk. Either remove the field, or, if a feature is intended,
 store it in the OS keyring (e.g. `keyring` crate / `tauri-plugin-stronghold`)

@@ -7,9 +7,9 @@ import { Clock } from "../header/Clock";
 import { ConnTypeIcon } from "../header/ConnTypeIcon";
 import { StatusLamp } from "../header/StatusLamp";
 import { WindowControls } from "../header/WindowControls";
-import { TabBar } from "../tabs/TabBar";
+import { ProjectSwitcher } from "./ProjectSwitcher";
+import { GlobalAppMenu } from "./GlobalAppMenu";
 import { useProjectsStore } from "../../stores/projects";
-import { resolveProjectDirectory } from "../../types";
 import logo from "../../assets/logo.svg";
 
 interface WorkspaceInfo {
@@ -43,10 +43,8 @@ function handleDrag(e: React.MouseEvent) {
 export function HeaderBar() {
   const [online, setOnline] = useState(navigator.onLine);
   const [connType, setConnType] = useState<string | null>(null);
-  const { projects, activeId } = useProjectsStore();
-
-  const activeProject = projects.find((p) => p.id === activeId);
-  const projectCwd = resolveProjectDirectory(activeProject);
+  const activeId = useProjectsStore((s) => s.activeId);
+  const setActive = useProjectsStore((s) => s.setActive);
 
   useEffect(() => {
     invoke<WorkspaceInfo>("workspace_info").catch(() => {});
@@ -81,7 +79,15 @@ export function HeaderBar() {
   return (
     <header className="app-header" onMouseDown={handleDrag}>
       <div className="header-left" data-tauri-drag-region>
-        <img src={logo} alt="Eldrun" className="app-logo" />
+        <button
+          type="button"
+          className={`root-logo-btn no-drag ${activeId === null ? "active" : ""}`}
+          title="Root terminal"
+          aria-label="Root terminal"
+          onClick={() => void setActive(null)}
+        >
+          <img src={logo} alt="Eldrun" className="app-logo" />
+        </button>
         <StatusLamp online={online} />
         <div className="app-version-stack">
           {isDev && <span className="debug-badge">DEBUG</span>}
@@ -91,7 +97,8 @@ export function HeaderBar() {
       </div>
 
       <div className="header-center no-drag">
-        <TabBar projectCwd={projectCwd} />
+        <GlobalAppMenu />
+        <ProjectSwitcher open />
       </div>
       <div className="header-right no-drag">
         <AppTimerDisplay />

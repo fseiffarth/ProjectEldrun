@@ -154,12 +154,11 @@ export function buildDescriptionFillPrompt(projectName: string) {
   ].join("\n");
 }
 
-export function BottomBar({ open = true }: { open?: boolean }) {
+export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const { projects, activeId, setActive, addProject, deactivateProject, reorderProjects } = useProjectsStore();
   const [showSettings, setShowSettings] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
-  const [settingsPanel, setSettingsPanel] = useState<"main" | "global" | "filetypes" | "ollama">("main");
-  const [showHelp, setShowHelp] = useState(false);
+  const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>("main");
   const [ollamaInstalled, setOllamaInstalled] = useState(false);
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [dialog, setDialog] = useState<"new" | "import" | null>(null);
@@ -169,12 +168,13 @@ export function BottomBar({ open = true }: { open?: boolean }) {
       setShowSettingsMenu(false);
       setShowAddMenu(false);
       setShowSettings(false);
-      setShowHelp(false);
       setDialog(null);
     }
   }, [open]);
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLDivElement>(null);
+  const pillsScrollRef = useRef<HTMLDivElement>(null);
+  const [pillOverflow, setPillOverflow] = useState({ left: false, right: false });
 
   useEffect(() => {
     invoke<boolean>("ollama_is_installed").then(setOllamaInstalled).catch(() => {});
@@ -205,20 +205,60 @@ export function BottomBar({ open = true }: { open?: boolean }) {
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, []);
 
+  // Drive the edge-fade affordance: mark which side(s) of the pill row have
+  // scrolled-off pills so CSS can fade only that edge. Re-checks on scroll,
+  // window resize, and whenever the set of active pills changes.
+  useEffect(() => {
+    const el = pillsScrollRef.current;
+    if (!el) return;
+    const update = () => {
+      const maxScroll = el.scrollWidth - el.clientWidth;
+      setPillOverflow({
+        left: el.scrollLeft > 1,
+        right: el.scrollLeft < maxScroll - 1,
+      });
+    };
+    // Redirect vertical wheel motion to horizontal scroll so the mouse wheel
+    // moves the pill row when hovering it (the webview doesn't do this on its
+    // own). Non-passive so preventDefault can suppress the no-op vertical scroll.
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaX !== 0) return;
+      if (el.scrollWidth <= el.clientWidth) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    el.addEventListener("wheel", onWheel, { passive: false });
+    // ResizeObserver is absent in jsdom (tests); guard so the effect no-ops it
+    // there while the scroll/wheel/resize listeners still wire up.
+    const ro =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    ro?.observe(el);
+    window.addEventListener("resize", update);
+    return () => {
+      el.removeEventListener("scroll", update);
+      el.removeEventListener("wheel", onWheel);
+      ro?.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [activeProjects.length]);
+
   const activateSearchResult = (project: ProjectEntry) => {
     setQuery("");
     void setActive(project.id);
+  };
+
+  const scrollPills = (dir: -1 | 1) => {
+    const el = pillsScrollRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: "smooth" });
   };
 
   return (
     <>
       {showSettings && createPortal(
         <SettingsDialog onClose={() => setShowSettings(false)} initialPanel={settingsPanel} />,
-        document.body,
-      )}
-
-      {showHelp && createPortal(
-        <HelpDialog onClose={() => setShowHelp(false)} />,
         document.body,
       )}
 
@@ -240,7 +280,7 @@ export function BottomBar({ open = true }: { open?: boolean }) {
       )}
 
       <div
-        className="bottom-bar"
+        className="project-switcher"
         onClick={() => {
           setShowSettings(false);
           setShowSettingsMenu(false);
@@ -250,17 +290,6 @@ export function BottomBar({ open = true }: { open?: boolean }) {
         // right-click only ever surfaces our own pill context menu.
         onContextMenu={(e) => e.preventDefault()}
       >
-        <button
-          className={`bottom-root-btn ${activeId === null ? "active" : ""}`}
-          title="Root terminal"
-          onClick={(e) => {
-            e.stopPropagation();
-            void setActive(null);
-          }}
-        >
-          ▣
-        </button>
-
         <div className="project-search-wrap" ref={searchRef} onClick={(e) => e.stopPropagation()}>
           <input
             className="project-search-entry"
@@ -297,24 +326,54 @@ export function BottomBar({ open = true }: { open?: boolean }) {
           )}
         </div>
 
-        <div className="bottom-separator" />
-        <div className="project-pills-scroll">
-          {activeProjects.map((p) => (
-            <ProjectPill
-              key={p.id}
-              project={p}
-              active={p.id === activeId}
-              onClick={() => setActive(p.id)}
-              onClose={() => deactivateProject(p.id)}
-              onReorder={(fromId, toId) => void reorderProjects(fromId, toId)}
-            />
-          ))}
-        </div>
-        <div className="bottom-separator" />
-
-        <div className="bottom-add-wrap" onClick={(e) => e.stopPropagation()}>
+        <div className="project-switcher-separator" />
+        <div
+          className={`project-pills-region${pillOverflow.left ? " overflow-left" : ""}${
+            pillOverflow.right ? " overflow-right" : ""
+          }`}
+        >
           <button
-            className="bottom-action-btn"
+            type="button"
+            className="pills-scroll-btn left"
+            tabIndex={-1}
+            aria-label="Scroll projects left"
+            onClick={(e) => {
+              e.stopPropagation();
+              scrollPills(-1);
+            }}
+          >
+            ‹
+          </button>
+          <div className="project-pills-scroll" ref={pillsScrollRef}>
+            {activeProjects.map((p) => (
+              <ProjectPill
+                key={p.id}
+                project={p}
+                active={p.id === activeId}
+                onClick={() => setActive(p.id)}
+                onClose={() => deactivateProject(p.id)}
+                onReorder={(fromId, toId) => void reorderProjects(fromId, toId)}
+              />
+            ))}
+          </div>
+          <button
+            type="button"
+            className="pills-scroll-btn right"
+            tabIndex={-1}
+            aria-label="Scroll projects right"
+            onClick={(e) => {
+              e.stopPropagation();
+              scrollPills(1);
+            }}
+          >
+            ›
+          </button>
+        </div>
+        <div className="project-switcher-separator" />
+
+        <div className="project-switcher-add-wrap" onClick={(e) => e.stopPropagation()}>
+          <button
+            className="project-switcher-action-btn"
             title="Settings"
             onClick={() => {
               setShowAddMenu(false);
@@ -324,7 +383,7 @@ export function BottomBar({ open = true }: { open?: boolean }) {
             ⚙
           </button>
           {showSettingsMenu && (
-            <div className="bottom-add-menu">
+            <div className="project-switcher-add-menu">
               <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("main"); setShowSettings(true); }}>
                 Settings
               </button>
@@ -333,27 +392,17 @@ export function BottomBar({ open = true }: { open?: boolean }) {
                   Ollama Models
                 </button>
               )}
+              <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("help"); setShowSettings(true); }}>
+                Feature Guide
+              </button>
             </div>
           )}
         </div>
 
-        <div className="bottom-add-wrap" onClick={(e) => e.stopPropagation()}>
-          <button
-            className="bottom-action-btn"
-            title="Help &amp; feature guide"
-            onClick={() => {
-              setShowSettingsMenu(false);
-              setShowAddMenu(false);
-              setShowHelp(true);
-            }}
-          >
-            ?
-          </button>
-        </div>
 
-        <div className="bottom-add-wrap" onClick={(e) => e.stopPropagation()}>
+        <div className="project-switcher-add-wrap" onClick={(e) => e.stopPropagation()}>
           <button
-            className="bottom-add-btn"
+            className="project-switcher-add-btn"
             title="Add or import project"
             onClick={() => {
               setShowSettings(false);
@@ -363,7 +412,7 @@ export function BottomBar({ open = true }: { open?: boolean }) {
             +
           </button>
           {showAddMenu && (
-            <div className="bottom-add-menu">
+            <div className="project-switcher-add-menu">
               <button onClick={() => { setShowAddMenu(false); setDialog("new"); }}>
                 New Project
               </button>
@@ -396,7 +445,7 @@ const HELP_SECTIONS: HelpSection[] = [
       "Eldrun keeps your AI-assisted development in a single window. Press Super while Eldrun is focused to toggle the panels, and F11 for fullscreen.",
     items: [
       { term: "Root terminal (▣)", desc: "The control terminal that always lives at ~/eldrun/root/, independent of any project." },
-      { term: "Project pills", desc: "One pill per active project in the bottom bar. Click to switch; each project keeps its own terminal and tabs. Drag pills to reorder them." },
+      { term: "Project pills", desc: "One pill per active project in the project switcher. Click to switch; each project keeps its own terminal and tabs. Drag pills to reorder them." },
       { term: "Center panel & tabs", desc: "The active project's terminals. Right-click the tab bar to add a Claude/Codex/Gemini agent or a plain shell, rename, or close tabs. Drag tabs to reorder." },
       { term: "Right file panel", desc: "A file-tree overlay for the active project. Open files, rename, and toggle hidden file types. The panel remembers the last folder per project." },
     ],
@@ -427,47 +476,37 @@ const HELP_SECTIONS: HelpSection[] = [
   },
 ];
 
-function HelpDialog({ onClose }: { onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
+function HelpPanel({ onBack }: { onBack: () => void }) {
   return (
-    <div className="modal-backdrop help-backdrop" onMouseDown={onClose}>
-      <div className="settings-dialog help-dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="settings-title-row">
-          <h2>Eldrun Help</h2>
-          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
-        </div>
-
-        <p className="settings-help">
-          A quick guide to what each part of Eldrun does. Hover the toolbar buttons for shortcuts too.
-        </p>
-
-        {HELP_SECTIONS.map((section) => (
-          <div key={section.title} className="help-section">
-            <div className="settings-section-title">{section.title}</div>
-            {section.intro && <p className="settings-help">{section.intro}</p>}
-            <dl className="help-list">
-              {section.items.map((item) => (
-                <div key={item.term} className="help-row">
-                  <dt>{item.term}</dt>
-                  <dd>{item.desc}</dd>
-                </div>
-              ))}
-            </dl>
-          </div>
-        ))}
+    <>
+      <div className="settings-title-row">
+        <h2>Eldrun Help</h2>
+        <button type="button" onClick={onBack}>Back</button>
       </div>
-    </div>
+
+      <p className="settings-help">
+        A quick guide to what each part of Eldrun does. Hover the toolbar buttons for shortcuts too.
+      </p>
+
+      {HELP_SECTIONS.map((section) => (
+        <div key={section.title} className="help-section">
+          <div className="settings-section-title">{section.title}</div>
+          {section.intro && <p className="settings-help">{section.intro}</p>}
+          <dl className="help-list">
+            {section.items.map((item) => (
+              <div key={item.term} className="help-row">
+                <dt>{item.term}</dt>
+                <dd>{item.desc}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ))}
+    </>
   );
 }
 
-type SettingsPanel = "main" | "global" | "filetypes" | "ollama";
+type SettingsPanel = "main" | "global" | "filetypes" | "ollama" | "help";
 
 function SettingsDialog({
   onClose,
@@ -598,12 +637,14 @@ function SettingsDialog({
               {ollamaInstalled && (
                 <button type="button" onClick={() => setPanel("ollama")}>Ollama...</button>
               )}
+              <button type="button" onClick={() => setPanel("help")}>Feature Guide...</button>
             </div>
           </>
         )}
         {panel === "global" && <GlobalAppsSettings onBack={() => setPanel("main")} />}
         {panel === "filetypes" && <FileTypeSettings onBack={() => setPanel("main")} />}
         {panel === "ollama" && <OllamaPanel onBack={() => setPanel("main")} />}
+        {panel === "help" && <HelpPanel onBack={() => setPanel("main")} />}
       </div>
     </div>
   );
@@ -1020,18 +1061,33 @@ function ProjectDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   // --- SSH / remote project support (optional) ---
+  // Whether this is a remote (SSH) project. The whole SSH section — address,
+  // password, connect, and the remote browser — only appears when this is on.
+  const [isRemoteProject, setIsRemoteProject] = useState(false);
   const [sshAddress, setSshAddress] = useState("");
+  const [sshPassword, setSshPassword] = useState("");
   const [sshStatus, setSshStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
   const [sshError, setSshError] = useState("");
   // The SSH address that was successfully connected (frozen at connect time so
   // edits to the input don't silently change which host we browse/submit to).
   const [remoteConn, setRemoteConn] = useState<ParsedSshAddress | null>(null);
+  // The password that was used for the successful connect, frozen so the remote
+  // listing always reuses the same credential the connection was made with.
+  const [remotePassword, setRemotePassword] = useState("");
   const [remoteBrowsePath, setRemoteBrowsePath] = useState("");
   const [remoteEntries, setRemoteEntries] = useState<RemoteEntry[]>([]);
   const [remoteListBusy, setRemoteListBusy] = useState(false);
   const [remoteListError, setRemoteListError] = useState("");
   // The remote folder the user committed to via "Use this folder".
   const [remoteChosenPath, setRemoteChosenPath] = useState("");
+  // --- Optional OpenVPN tunnel for VPN-gated remote hosts ---
+  // `vpnConfig` holds the Eldrun-stored `.ovpn` path (the picked file is copied
+  // into Eldrun on selection). The password is transient — never persisted.
+  const [vpnEnabled, setVpnEnabled] = useState(false);
+  const [vpnConfig, setVpnConfig] = useState("");
+  const [vpnPassword, setVpnPassword] = useState("");
+  const [vpnStatus, setVpnStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
+  const [vpnError, setVpnError] = useState("");
   const isRemote = sshStatus === "connected" && remoteConn !== null;
   const safeName = sanitizeName(name);
   const targetDir = safeName && projectsRoot ? `${projectsRoot}/${safeName}` : "";
@@ -1091,18 +1147,78 @@ function ProjectDialog({
     }
   };
 
+  // Drop any live remote session back to the disconnected state. Called when
+  // the user edits a credential (address/password) or unchecks "remote".
+  const resetSshSession = () => {
+    setSshStatus("idle");
+    setSshError("");
+    setRemoteConn(null);
+    setRemotePassword("");
+    setRemoteEntries([]);
+    setRemoteBrowsePath("");
+    setRemoteChosenPath("");
+    setRemoteListError("");
+  };
+
+  // Toggle remote mode. Turning it off tears down the SSH session and clears the
+  // entered credentials so the dialog falls back to the local create/import flow.
+  const toggleRemoteProject = (checked: boolean) => {
+    setIsRemoteProject(checked);
+    if (!checked) {
+      setSshAddress("");
+      setSshPassword("");
+      resetSshSession();
+      setVpnEnabled(false);
+      setVpnConfig("");
+      setVpnPassword("");
+      setVpnStatus("idle");
+      setVpnError("");
+    }
+  };
+
+  // Pick a `.ovpn` config and copy it into Eldrun so the project no longer
+  // depends on the original file's location (stored on first use).
+  const browseVpnConfig = async () => {
+    const picked = await open({
+      multiple: false,
+      filters: [{ name: "OpenVPN config", extensions: ["ovpn", "conf"] }],
+    });
+    if (typeof picked !== "string") return;
+    try {
+      const stored = await invoke<string>("openvpn_store_config", { config: picked });
+      setVpnConfig(stored);
+      setVpnStatus("idle");
+      setVpnError("");
+    } catch (e) {
+      setVpnError(String(e));
+    }
+  };
+
+  // Bring the tunnel up now so a VPN-gated host becomes reachable for browsing.
+  const connectVpn = async () => {
+    if (!vpnConfig) return;
+    setVpnStatus("connecting");
+    setVpnError("");
+    try {
+      await invoke("openvpn_connect", { config: vpnConfig, password: vpnPassword });
+      setVpnStatus("connected");
+    } catch (e) {
+      setVpnStatus("error");
+      setVpnError(String(e));
+    }
+  };
+
   // Disconnect/reset the remote session when the user edits the SSH address.
   const onSshAddressChange = (value: string) => {
     setSshAddress(value);
-    if (sshStatus !== "idle") {
-      setSshStatus("idle");
-      setSshError("");
-      setRemoteConn(null);
-      setRemoteEntries([]);
-      setRemoteBrowsePath("");
-      setRemoteChosenPath("");
-      setRemoteListError("");
-    }
+    if (sshStatus !== "idle") resetSshSession();
+  };
+
+  // Editing the password also invalidates a live session — the next connect
+  // must re-authenticate with the new credential.
+  const onSshPasswordChange = (value: string) => {
+    setSshPassword(value);
+    if (sshStatus !== "idle") resetSshSession();
   };
 
   const connectSsh = async () => {
@@ -1112,6 +1228,8 @@ function ProjectDialog({
       setSshError("Enter an address like user@host or host:2222");
       return;
     }
+    // Empty password → key/agent auth (Option<String> None on the backend).
+    const password = sshPassword ? sshPassword : null;
     setSshStatus("connecting");
     setSshError("");
     setRemoteChosenPath("");
@@ -1120,13 +1238,16 @@ function ProjectDialog({
         user: parsed.user,
         host: parsed.host,
         port: parsed.port,
+        password,
       });
       const startDir = await invoke<string>("ssh_default_dir", {
         user: parsed.user,
         host: parsed.host,
         port: parsed.port,
+        password,
       }).catch(() => "");
       setRemoteConn(parsed);
+      setRemotePassword(sshPassword);
       setSshStatus("connected");
       setRemoteBrowsePath(startDir || "");
     } catch (err) {
@@ -1149,6 +1270,7 @@ function ProjectDialog({
       user: remoteConn.user,
       host: remoteConn.host,
       port: remoteConn.port,
+      password: remotePassword ? remotePassword : null,
       path: remoteBrowsePath,
     })
       .then((entries) => {
@@ -1166,7 +1288,7 @@ function ProjectDialog({
     return () => {
       cancelled = true;
     };
-  }, [sshStatus, remoteConn, remoteBrowsePath]);
+  }, [sshStatus, remoteConn, remotePassword, remoteBrowsePath]);
 
   const enterRemoteFolder = (entry: RemoteEntry) => {
     if (!entry.is_dir) return;
@@ -1275,6 +1397,7 @@ function ProjectDialog({
                 kind === "new"
                   ? joinRemotePath(remoteChosenPath, safeName)
                   : remoteChosenPath,
+              openvpn: vpnEnabled && vpnConfig ? { config: vpnConfig } : undefined,
             }
           : undefined;
       const project =
@@ -1308,10 +1431,13 @@ function ProjectDialog({
     }
   };
 
-  const canSubmit = isRemote
-    ? kind === "new"
-      ? Boolean(name.trim() && safeName && remoteChosenPath)
-      : Boolean(name.trim() && remoteChosenPath)
+  const canSubmit = isRemoteProject
+    ? // Remote mode: must be connected and have a chosen remote folder.
+      !isRemote
+      ? false
+      : kind === "new"
+        ? Boolean(name.trim() && safeName && remoteChosenPath)
+        : Boolean(name.trim() && remoteChosenPath)
     : kind === "new"
       ? Boolean(name.trim() && targetDir && safeName)
       : Boolean(
@@ -1343,37 +1469,132 @@ function ProjectDialog({
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <h2>{kind === "new" ? "New Project" : "Import Project"}</h2>
 
-        <label>
-          SSH address <span className="ssh-optional-hint">(optional)</span>
-          <div className="folder-picker-row">
-            <input
-              className="ssh-address-input"
-              value={sshAddress}
-              placeholder="user@host or host:2222 (leave empty for local)"
-              onChange={(e) => onSshAddressChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
-                  e.preventDefault();
-                  void connectSsh();
-                }
-                if (e.key === "Escape") onClose();
-              }}
-            />
-            <button
-              type="button"
-              disabled={!sshAddress.trim() || sshStatus === "connecting"}
-              onClick={() => void connectSsh()}
-            >
-              {sshStatus === "connecting"
-                ? "Connecting..."
-                : sshStatus === "connected"
-                  ? "Connected"
-                  : "Connect"}
-            </button>
-          </div>
+        <label className="remote-project-toggle">
+          <input
+            type="checkbox"
+            checked={isRemoteProject}
+            onChange={(e) => toggleRemoteProject(e.target.checked)}
+          />
+          Remote (SSH) project
         </label>
-        {sshStatus === "error" && sshError && (
-          <div className="project-dialog-error">{sshError}</div>
+
+        {isRemoteProject && (
+          <div className="ssh-connect-fields" role="group" aria-label="OpenVPN tunnel">
+            <label className="remote-project-toggle vpn-toggle">
+              <input
+                type="checkbox"
+                checked={vpnEnabled}
+                onChange={(e) => {
+                  setVpnEnabled(e.target.checked);
+                  if (!e.target.checked) {
+                    setVpnPassword("");
+                    setVpnStatus("idle");
+                    setVpnError("");
+                  }
+                }}
+              />
+              Connect via OpenVPN
+            </label>
+            {vpnEnabled && (
+              <>
+                <label>
+                  OpenVPN config{" "}
+                  <span className="ssh-optional-hint">(copied into Eldrun on selection)</span>
+                  <div className="folder-picker-row">
+                    <input
+                      className="ssh-address-input"
+                      readOnly
+                      value={vpnConfig}
+                      placeholder="No .ovpn selected"
+                      title={vpnConfig}
+                    />
+                    <button type="button" onClick={() => void browseVpnConfig()}>
+                      Browse…
+                    </button>
+                  </div>
+                </label>
+                <label>
+                  VPN password{" "}
+                  <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
+                  <div className="folder-picker-row">
+                    <input
+                      className="ssh-password-input"
+                      type="password"
+                      value={vpnPassword}
+                      placeholder="VPN passphrase"
+                      onChange={(e) => {
+                        setVpnPassword(e.target.value);
+                        if (vpnStatus !== "idle") setVpnStatus("idle");
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={!vpnConfig || vpnStatus === "connecting"}
+                      onClick={() => void connectVpn()}
+                    >
+                      {vpnStatus === "connecting"
+                        ? "Connecting…"
+                        : vpnStatus === "connected"
+                          ? "Connected"
+                          : "Connect VPN"}
+                    </button>
+                  </div>
+                </label>
+                {vpnStatus === "error" && vpnError && (
+                  <div className="project-dialog-error">{vpnError}</div>
+                )}
+              </>
+            )}
+            <label>
+              SSH address
+              <input
+                className="ssh-address-input"
+                value={sshAddress}
+                placeholder="user@host or host:2222"
+                onChange={(e) => onSshAddressChange(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
+                    e.preventDefault();
+                    void connectSsh();
+                  }
+                  if (e.key === "Escape") onClose();
+                }}
+              />
+            </label>
+            <label>
+              Password <span className="ssh-optional-hint">(blank uses SSH key)</span>
+              <div className="folder-picker-row">
+                <input
+                  className="ssh-password-input"
+                  type="password"
+                  value={sshPassword}
+                  placeholder="leave empty for key/agent auth"
+                  onChange={(e) => onSshPasswordChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
+                      e.preventDefault();
+                      void connectSsh();
+                    }
+                    if (e.key === "Escape") onClose();
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={!sshAddress.trim() || sshStatus === "connecting"}
+                  onClick={() => void connectSsh()}
+                >
+                  {sshStatus === "connecting"
+                    ? "Connecting..."
+                    : sshStatus === "connected"
+                      ? "Connected"
+                      : "Connect"}
+                </button>
+              </div>
+            </label>
+            {sshStatus === "error" && sshError && (
+              <div className="project-dialog-error">{sshError}</div>
+            )}
+          </div>
         )}
 
         {isRemote && (
@@ -1428,7 +1649,7 @@ function ProjectDialog({
           </div>
         )}
 
-        {kind === "import" && !isRemote && (
+        {kind === "import" && !isRemoteProject && (
           <label>
             Source folder
             <div className="folder-picker-row">
@@ -1438,7 +1659,7 @@ function ProjectDialog({
           </label>
         )}
 
-        {kind === "new" && !isRemote && (
+        {kind === "new" && !isRemoteProject && (
           <label>
             Location
             <div className="folder-picker-row">
@@ -1498,7 +1719,7 @@ function ProjectDialog({
           </select>
         </label>
 
-        {kind === "import" && !isRemote && (
+        {kind === "import" && !isRemoteProject && (
           <label>
             Import mode
             <select value={mode} onChange={(e) => setMode(e.target.value)}>
@@ -1509,7 +1730,7 @@ function ProjectDialog({
           </label>
         )}
 
-        {kind === "import" && isRemote && (
+        {kind === "import" && isRemoteProject && (
           <div className="project-dialog-path">
             Remote import keeps the folder in place on the remote host.
           </div>
@@ -1522,11 +1743,11 @@ function ProjectDialog({
               checked={skipScaffold}
               onChange={(e) => setSkipScaffold(e.target.checked)}
             />
-            Skip scaffolding (project already has its own files)
+            Skip scaffolding (do not generate any scaffold files)
           </label>
         )}
 
-        {kind === "import" && !isRemote && !skipScaffold && (
+        {kind === "import" && !isRemoteProject && !skipScaffold && (
           <div className="scaffold-popover" role="group" aria-label="Import scaffold guidance">
             <div className="scaffold-popover-title">Import guidance</div>
             <ol className="scaffold-steps">

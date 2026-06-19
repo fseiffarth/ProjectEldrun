@@ -63,16 +63,14 @@ desktop between projects.
 
 ```text
 +------------------------------------------------------------------+
-| status/network        agent + terminal tabs       app controls   |
+| status/network    project switcher pills    app controls         |
 +------------------------------------------------------------------+
 | global cross-project app toolbar (hover to reveal)               |
 +------------------------------------------------------------------+
 |                                                                  |
-| xterm.js terminal or file browser                                | right panel
-|                                                                  | (hover to
-|                                                                  |  reveal)
-+------------------------------------------------------------------+
-| project switcher / bottom bar (hover to reveal)                  |
+| tiling subwindows: each owns its own tab bar (terminal / agent / | right panel
+| file viewer), split L/R/T/B by dragging tabs onto pane edges     | (hover or
+|                                                                  |  pin open)
 +------------------------------------------------------------------+
 ```
 
@@ -150,6 +148,14 @@ config, cache, data, state, and temp locations under
 `<project>/.eldrun/sandbox/`. The root orchestration terminal keeps the normal
 workspace environment.
 
+**Session resume.** Claude and Codex tabs that carry a session id are persisted
+across restarts and respawned with their prior conversation. Eldrun installs a
+`SessionStart` hook (into `~/.claude/settings.json` and `~/.codex/config.toml`)
+that records each tab's live session id keyed by an `ELDRUN_TAB_UID` env var, so
+resume follows the live session even across a `/clear`. (Codex hooks need a
+one-time `/hooks` trust before they fire; Gemini and Vibe tabs are still
+dropped.)
+
 Local Ollama models are available from the tab `+` menu when Ollama is
 installed and reachable. Eldrun can start the Ollama service, list installed
 models, and create a `vibe` tab for a selected model. The per-model `VIBE_HOME`
@@ -190,6 +196,11 @@ configuration.
   tabs from the tab bar; create local Ollama-backed Vibe tabs from installed
   models; rename, close, and reorder them by drag and drop. Tab layout is
   persisted per project.
+- **Tiling subwindows**: the center panel is a tiling layout — drag a tab onto
+  another subwindow's left/right/top/bottom edge to split that direction into a
+  new pane, or onto its center to move the tab in. Splits resize with draggable
+  dividers, each subwindow keeps its own tab bar, and the whole tree is persisted
+  per project.
 - **Root control terminal**: opens in `~/eldrun/root/` with workspace-level
   context files.
 - **Project terminals**: each active project gets a PTY tab scoped to its
@@ -199,38 +210,56 @@ configuration.
 - **Remote (SSH) projects**: optionally point a project at a remote host. Enter
   an SSH address (`user@host[:port]`), connect, and browse the remote filesystem
   in-app to pick the project root. Eldrun `sshfs`-mounts it locally so the file
-  tree, terminal cwd, and git work unchanged. Auth uses your existing SSH
-  setup (keys / agent / `~/.ssh/config`, `BatchMode`); requires `sshfs`/FUSE on
-  the local machine.
-- **Bottom project bar**: search, switch, and close projects; hover over a pill
-  to see the project path, status, and today's active time.
+  tree, terminal cwd, and git work unchanged. Terminal and agent tabs run **on
+  the remote host** over `ssh -tt` (multiplexed over a ControlMaster socket),
+  with the agent CLI auto-detected/bootstrapped on the remote and authenticated
+  with the remote's own login. VPN-gated hosts bring up an OpenVPN tunnel first.
+  Auth uses your existing SSH setup (keys / agent / `~/.ssh/config`,
+  `BatchMode`); requires `sshfs`/FUSE on the local machine.
+- **Project switcher**: search, switch, and close projects; a running-task
+  indicator spins on pills with live terminal output (even backgrounded
+  projects); hover over a pill to see the project path, status, today's active
+  time, and live CPU%.
 - **Right file panel**: browse, open, create, rename, delete, and reveal project
-  files. A second view lists tracked external windows.
+  files, with a breadcrumb trail and per-file git status markers (modified,
+  untracked, staged, committed-but-unpushed, ignored). A "Git" view shows the
+  current branch, clickable branch pills for checkout, and a commit list whose
+  entries open an editable commit-message window (amend HEAD, agent-generated
+  messages, or checkout). The panel can be pinned open instead of hover-revealed.
+  Additional views list tracked external windows.
+- **In-app file viewers**: drag a file from the tree onto a subwindow's tab bar
+  to open it in a tab. Markdown, images (zoom/pan), PDFs, and text/code (an
+  editable editor with line numbers and Ctrl+S save) render with built-in
+  viewers; other types open in their external default app. LaTeX sources gain a
+  compile action when a TeX engine is on `PATH`.
 - **Global app toolbar**: cross-project roles (Browser, Mail, Calendar, File
   Manager, Password Manager, Notes, Screenshot, etc.) with launch-or-raise and
   icon resolution.
 - **Ollama model management**: the Settings Ollama panel shows installed
   models, running CPU/GPU state, parameter and quantization details, plus
   catalog install, update, unload, and delete controls.
-- **Hover-revealed panels**: the global app bar, right file panel, and bottom
-  project switcher all appear on pointer hover and disappear when the pointer
-  leaves, keeping the center terminal unobstructed.
+- **Hover-revealed panels**: the global app bar and right file panel appear on
+  pointer hover and disappear when the pointer leaves, keeping the center
+  terminal unobstructed; the right panel can also be pinned permanently open.
 
 ### Platform and packaging
 
 - **Network indicator**: probes connectivity and shows online/offline plus wired
   or wireless state.
-- **Keyboard shortcuts**: `F11` toggles fullscreen; `Super` toggles all panels.
+- **Keyboard shortcuts**: Eldrun opens fullscreen by default; `F11` toggles
+  fullscreen; `Super` toggles all panels.
 - **Crash logging**: Rust panic hook appends to `~/.local/share/eldrun/crash.log`.
 - **Packaging**: Debian `.deb` and AppImage targets.
 
 ## Current Limits
 
-- X11 window embedding is not supported in the Tauri WebView; file opens use
-  `xdg-open` and are tracked as external windows.
+- Live X11 window embedding (frameless reparenting of an external app into a
+  tab) is not yet implemented; files render in built-in in-app viewers where
+  available, otherwise open via `xdg-open` and are tracked as external windows.
 - KDE Wayland workspace management needs live-session QA.
-- Extra terminal tab layout is persisted per project but does not survive PTY
-  process exits (terminals respawn; the tab slot remains).
+- Terminal/tab layout is persisted per project; shell, file-viewer, and
+  resumable Claude/Codex agent tabs are restored on relaunch, but other agent
+  tabs (Gemini, Vibe) and live PTY scrollback are not.
 - Non-KDE Wayland compositors fall back to the null backend.
 
 ## Project Storage

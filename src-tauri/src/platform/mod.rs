@@ -56,6 +56,13 @@ pub trait WorkspaceBackend: Send + Sync {
         }
         Ok(())
     }
+    /// Whether this backend can host a frameless embedded external window
+    /// (e.g. via X11 reparenting). Only X11 returns true; every other backend
+    /// (null, KDE-Wayland, Windows) degrades the file→tab embed feature to a
+    /// plain external launch. Default false so new backends are safe.
+    fn supports_embedding(&self) -> bool {
+        false
+    }
     /// Called at startup to make Eldrun visible on all desktops (sticky).
     fn make_sticky(&self, eldrun_pid: u32) -> Result<(), String>;
     /// Called when the app exits — restore original desktop configuration.
