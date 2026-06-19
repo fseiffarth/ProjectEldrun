@@ -25,6 +25,12 @@ pub async fn pty_spawn(
         opts.cwd = root_dir.to_string_lossy().into_owned();
     }
 
+    // For remote (SSH) projects, rewrite the spawn to run on the remote host
+    // via `ssh -tt`. No-op for local projects or `local_only` tabs.
+    if !opts.local_only {
+        crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
+    }
+
     // Crash-loop guard.
     {
         let mut reg = registry.lock().unwrap();
@@ -66,4 +72,46 @@ pub async fn pty_resize(
 pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<(), String> {
     registry.lock().unwrap().kill(&id);
     Ok(())
+}
+
+/// Live CPU usage (percent of a single core; may exceed 100 on multi-core work)
+/// for the processes rooted at the given PTYs and all their descendants.
+///
+/// Samples `/proc` jiffies twice over a short interval. Linux-only; other
+/// platforms return 0.0 so the UI can simply hide the figure.
+#[tauri::command]
+pub async fn project_cpu_percent(
+    registry: State<'_, RegistryState>,
+    pty_ids: Vec<String>,
+) -> Result<f64, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use crate::sysstat;
+
+        let roots: Vec<u32> = {
+            let reg = registry.lock().unwrap();
+            pty_ids.iter().filter_map(|id| reg.pid(id)).collect()
+        };
+        if roots.is_empty() {
+            return Ok(0.0);
+        }
+
+        // Resolve the process tree once, then sample its busy time across a
+        // fixed window. Newly spawned children mid-window simply contribute
+        // less; that is acceptable for a coarse live readout.
+        let pids = sysstat::descendant_pids(&roots);
+        let interval = std::time::Duration::from_millis(300);
+        let t0 = sysstat::sum_jiffies(&pids);
+        tokio::time::sleep(interval).await;
+        let t1 = sysstat::sum_jiffies(&pids);
+
+        let busy_secs = t1.saturating_sub(t0) as f64 / sysstat::clk_tck() as f64;
+        let pct = busy_secs / interval.as_secs_f64() * 100.0;
+        Ok((pct * 10.0).round() / 10.0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (registry, pty_ids);
+        Ok(0.0)
+    }
 }

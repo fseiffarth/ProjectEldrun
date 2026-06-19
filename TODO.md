@@ -1,101 +1,908 @@
-# ProjectEldrun — TODO
+# ProjectEldrun Plan — Grouped & Numbered Open Ideas
 
-> Completed work has been moved to `TODO_history.md`.
-> Open items are grouped by area and numbered as `G<group>.<item>`.
+## Context
+
+This is the single home for open implementation plans, organized into coherent
+groups with stable numbers. The raw idea dump lives in `open_ideas.md` (29 loose
+ideas spanning the right file-tree panel, the bottom project switcher, X11/KDE
+workspace switching, project import/publishing, git tooling, drag-and-drop
+reordering, remote/SSH projects, branding, and session restore); cross-platform
+Windows/macOS follow-ups (#30–#31), backend runtime follow-ups (#32), and the
+global-app URI-routing item (#33) were consolidated here from the former separate
+plan file and the old `TODO.md`. The goal of this plan is
+**not** to implement everything at once, but to organize the ideas into coherent
+groups with stable numbers so you can say "do #14" and I can act on a
+well-scoped unit.
+
+Exploration confirmed several ideas are partially built already — those notes are
+called out per item so we don't rebuild existing infrastructure.
+
+Numbering is **global and stable** (1–35); new ideas are appended with new
+numbers so existing references never shift. Open groups are lettered A, B, C…
+(roughly in suggested sequence); completed groups are renumbered D.1, D.2… and
+collected at the **end** of this file. You can pick any item in any order.
+
+## Status legend — Done ≠ Tested
+
+Three independent axes are tracked per item:
+
+- **✅ Done** — code-complete: written, type-checks (`npx tsc --noEmit`) and/or
+  compiles (`cargo test`/`cargo build`). Says nothing about whether it actually
+  works.
+- **🤖 Automated** — an automated test (vitest under `src/__tests__/` or a Rust
+  `cargo test`) exercises the behavior and passes on the current code.
+- **🖐️ Manual** — runtime QA in a live Eldrun confirms the behavior by hand.
+
+Each done feature carries two checkboxes — one per verification axis — with an
+example test in words to guide both. A feature is fully **🧪 Tested** only when
+**both** boxes are ticked.
+
+> ✅ **Automated coverage complete; 🖐️ manual QA still pending.** Every done
+> feature below now has a passing automated test (frontend `vitest` +
+> backend `cargo test`), so all 🤖 boxes are ticked — the sole exception is
+> **#25** (logo/icons), which is purely visual and has no meaningful automated
+> test. A few are partial (noted inline): **#11** covers the CPU sampling
+> helpers but not the live % readout, and **#22** covers `shell_quote` argv
+> escaping but not the full `gh`/`ssh` publish flow. **No 🖐️ Manual box is
+> ticked yet** — nothing has been runtime-QA'd in a live Eldrun, so treat each
+> feature as fully 🧪 Tested only once its manual box also flips.
 
 ---
 
-## Open TODOs
+## Group A — Bottom Panel: Meta-Project Grouping (new feature)
+*Files: data model (`schema/project.rs`/`projects.rs`, `types/index.ts`), `ProjectSwitcher.tsx`, `ProjectPill.tsx`. No grouping concept exists today.*
 
-### G1 — Agents and tabs
+13. **Project boxes / meta-project management.** Right-click to create a named,
+    renamable box (e.g. PaperBox, CodingBox) that groups projects, with
+    drag-and-drop of pills into boxes. Requires a new grouping field in the
+    project/entry schema plus drag-drop UI and grouped rendering. Largest bottom-
+    panel item.
 
-G1.1 [x] **Agent tab rename**: rename the permanent terminal tab from "Terminal" to the configured agent name (`Claude` or `Codex`) everywhere (`_TERMINAL_TAB` label, `_update_terminal_tab_label`, `_terminal_back_btn` label).
+---
 
-G1.2 [x] **Multiple agent tabs**: in addition to switching the default terminal command between `claude` and `codex`, right-clicking the tab bar should open a popover for adding a new `claude` or `codex` agent from a dropdown. Additional agents use command-specific names like `Claude1` or `Codex1`; right-clicking an agent tab should open a rename popover except for the default agent tab; additional agent tabs get an `x` close button, but the default agent tab does not.
+## Group C — Workspace Switching / Platform Stability
+*Files: `src-tauri/src/platform/x11.rs`, `wayland_kde.rs`, `null.rs`, `services/window_service.rs`, `services/project_runtime.rs`, `commands/workspace.rs`.*
 
-G1.3 [x] **Agent numbering reset after close** (`ISSUE-013`): after an additional agent is closed, recompute visible agent display numbers or intentionally reuse the expected sequence so the next added agent does not continue from a stale number.
+15. **Securely move opened files/windows to the hidden workspace on switch
+    (X11).** Fix the reported issue where files/windows opened in one project
+    aren't reliably parked on the hidden desktop when switching. Investigate the
+    move-retry logic (x11.rs ~retry 5×30ms) and window registry coverage.
 
-G1.4 [x] **Agent creation stays in current project** (`ISSUE-014`): adding a new agent should keep the bottom project switcher selection, keep the right panel visible, and only open a new terminal/tab inside the current project.
+16. **Make X11 workspace switching rock-solid.** Broader hardening of the
+    two-desktop parking model — fix all known races/flakiness around
+    show/hide/switch. (#15 is a specific symptom of this.)
 
-G1.5 [x] **Uniform agent tab behavior**: do not distinguish between the master/default agent and newly added agents. Every agent tab should be renameable and closeable; if all agents are closed, the user must add a new one manually by right-clicking the tab bar.
+17. **Preserve window z-order across switches.** Today `show_window` always
+    raises to `Above` (x11.rs:120), losing stacking order. Track per-window
+    z-order in the window registry/session and restore it on show.
 
-G1.6 [x] **Tab bar right-click: agent + terminal rows**: restructure the tab-bar right-click popover into two rows: first row, "New agent" label followed by an inline dropdown (`claude` / `codex`) to pick the command; second row, "New terminal" button that opens a plain `$SHELL` terminal tab. The plain terminal tab must be renameable and closeable like any agent tab.
+18. **KDE Plasma i3-style workspace mode.** Explore an i3-like tiling/workspace
+    behavior on KDE Plasma. Note: KDE Wayland per-window show/hide is currently a
+    **no-op** (`wayland_kde.rs:74-80`) and needs KWin scripting first — this is
+    research + sizable backend work.
 
-G1.7 [x] **Empty state when all tabs are closed** (`ISSUE-017`): do not create an implicit hidden terminal when the final tab is closed. Show an empty center page saying no tab is open and that a new agent or terminal can be created by right-clicking the tab bar.
+19. **Cross-platform verification: Windows, macOS, KDE Plasma.** Verify the app
+    runs and degrades gracefully where workspace backends are absent (null
+    backend) and KDE works. Mostly QA + targeted fixes. OS-specific build,
+    packaging, and native-window work is tracked separately in Group H (#30/#31).
 
-### G2 — Project and panel lifecycle
+---
 
-G2.1 [x] **Right panel restore width** (`ISSUE-009`): after hide-both -> show-left -> show-right, recompute the inner paned position from the current allocation so the right panel returns to the expected width instead of doubling.
+## Group E — Git Worktree (new feature)
+*No worktree code exists anywhere today.*
 
-G2.2 [x] **Close active project returns to root** (`ISSUE-015`): when the current project is closed with `x`, activate the root session, clear the project-specific bottom-switcher selection, and hide the right project panel.
+23. **Git worktree support.** Add backend commands to create/list/remove git
+    worktrees and surface them in the UI (likely tied to Group D.3 history view
+    and/or project switching). Net-new feature; scope to be defined when picked.
 
-G2.3 [x] **Close-project root selection refresh** (`ISSUE-016`): after closing a project, select root with the blue border and show the root agent/terminal instead of leaving an empty "no project selected" agent tab.
+---
 
-G2.4 [x] **Tab bar in header frame**: the center-panel tab bar scroll widget is now placed as the center widget of the header `CenterBox`; clock moved to the right side; tabs use a top accent bar for the active indicator; header min-height bumped to 40px.
+## Group F — Session Restore
+*Files: `src-tauri/src/schema/active_session.rs` (defined but unused), `services/project_runtime.rs`, `terminal_service.rs`, `src/stores/tabs.ts`, `CenterPanel.tsx`.*
 
-### G3 — Settings, theme, and workspace support
+24. **Restore/resume agent sessions.** Terminal/tab layout persistence already
+    exists (`.eldrun/sessions/terminals.json`), but app-startup restore via
+    `active_session.json` is **unused**. Wire up restoring the full prior session
+    (active project, tabs, windows) on launch. Feasibility note: resuming the
+    actual *agent* process state depends on the agent CLI's own resume support;
+    realistic scope is restoring tabs + relaunching the agent, not live state.
+    Agent-resume approach (migrated from TODO `ISSUE-RESUME`): when restoring a
+    tab, detect that tab's most recent agent session ID from the agent's own
+    session directory — Claude Code `~/.claude/projects/<encoded>/`, Codex
+    `~/.codex/sessions/`, Gemini `~/.gemini/history/`, Vibe
+    `$VIBE_HOME/logs/session/` — and pass `--resume <id>` when respawning. A
+    prior attempt was removed 2026-06-07 because detection was unreliable and
+    **each tab must track its own distinct session ID** (not the project-global
+    latest) to work with multi-agent setups; solve per-tab session tracking
+    before relying on `--resume`.
 
-G3.1 [x] **Settings dropdown stays open**: resolved by commit `fa13e2d` — settings was converted from `Gtk.Popover` (which autohides on outside clicks) to `Gtk.Window` with `modal=True`, so the dropdown interaction no longer dismisses it.
+39. **Per-tab agent session restore — stepwise.** Concrete, incremental path to
+    #24's hard part (per-tab session tracking), built one step at a time so each
+    step is verifiable on its own.
+    - [x] **39a — Surface a tab's launch session id (Claude).** ✅ Done. Eldrun
+      mints a UUID and launches Claude with `claude --session-id <uuid>`, stored
+      on `TabEntry.sessionId` and shown on tab hover. This **launch id** is
+      deterministic, stable, and unique per tab. *Files: `stores/tabs.ts`
+      (`sessionId`), `components/tabs/TabBar.tsx`.* Pure frontend — no rebuild.
+      **Known limitation (drove the design):** the id does **not** follow a
+      `/clear` (which rolls Claude onto a new session id). A first attempt
+      resolved the "live" id from the newest `<uuid>.jsonl` in
+      `~/.claude/projects/<encoded-cwd>/`, but that was **removed** — all Claude
+      sessions in a project (other tabs, *and the dev agent running in the same
+      cwd*) share one folder, so "newest file" cross-contaminates: two tabs
+      showed the same id and it drifted as any session wrote. Following `/clear`
+      reliably needs per-process attribution, not directory guessing → 39c.
+      - *Test (e.g.):* open two Claude tabs in one project → each hover shows a
+        distinct, stable UUID that never changes while the tab is open.
+      - [ ] 🤖 Automated test — none yet (trivial frontend tooltip; covered by
+        manual)
+      - [ ] 🖐️ Manual test
+    - [x] **39b — Persist agent tabs with their session id.** ✅ Done.
+      Resumable agent tabs (Claude with a `sessionId`) are now persisted in
+      `tab_layout` (carrying `sessionId`) and restored on relaunch; other agent
+      tabs are still dropped. *Files: `schema/project.rs` (`TabEntry.session_id`),
+      `stores/tabs.ts` (`isRestorableTab`/`saveLayout`/`loadFromLayout`),
+      `stores/projects.ts`, `components/layout/CenterPanel.tsx`.*
+    - [x] **39c — Track the live session id across `/clear`, then resume.** ✅
+      Done for Claude. The original hard part — following the *live* session id
+      after `/clear` (Claude rolls onto a fresh id with no recorded back-link to
+      the launch id) — is solved with a global Claude **`SessionStart` hook**
+      (fires on startup/resume/clear/compact) that records the live `session_id`
+      keyed by `$ELDRUN_TAB_UID`. Eldrun sets `ELDRUN_TAB_UID` to the tab's
+      stable launch id on spawn, then at (re)spawn resolves the hook-recorded
+      live id and emits `claude --resume <live-id>` (falling back to the launch
+      id, and downgrading to `--session-id` when no log exists yet). The hook is
+      installed once into `~/.claude/settings.json` and no-ops for any Claude not
+      launched by Eldrun. *Files: `services/agent_session.rs` (hook install +
+      live-id store), `terminal/mod.rs` (`resolve_claude_session`), `lib.rs`
+      (install at startup). Hook script: `~/.local/share/eldrun/hooks/`; live ids:
+      `~/.local/share/eldrun/live_sessions/`.*
+    - [~] **39d — Generalize to other agents.** Codex done; Gemini/Vibe open.
+      - [x] **Codex.** ✅ Done. Codex mints its own session id (no launch-time
+        `--session-id`), but it has a Claude-style `SessionStart` hook and resumes
+        by uuid (`codex resume <id>`). Eldrun sets `ELDRUN_TAB_UID` (a per-tab key)
+        on the Codex tab, installs a `SessionStart` hook into `~/.codex/config.toml`
+        (TOML text-append, idempotent) that records the live session id under that
+        key, then at spawn resolves it and launches `codex resume <live-id>` when a
+        rollout log exists (else fresh). Covers `/clear` (Codex `source` includes
+        `clear`). *Files: `services/agent_session.rs` (`register_codex_hook`),
+        `terminal/mod.rs` (`resolve_codex_session`/`codex_session_exists`),
+        `stores/tabs.ts` (`RESUMABLE_AGENTS.codex`), `components/tabs/TabBar.tsx`.*
+        ⚠️ **Manual step:** user-level Codex hooks require a one-time trust
+        approval — run `/hooks` in Codex and trust the Eldrun hook; until then
+        resume is inert (Codex starts fresh, nothing lost). Also unverified at
+        runtime: whether Codex forwards `ELDRUN_TAB_UID` to the hook's env.
+      - [ ] **Gemini.** `--session-id <uuid>` sets the launch id (already passed),
+        but `--resume` takes an index/`latest`, not a uuid; resume-by-uuid likely
+        needs `--session-file ~/.gemini/tmp/<project>/<uuid>`. No `SessionStart`
+        hook → would drift on `/clear` like pre-fix Claude. Needs runtime verification.
+      - [ ] **Vibe.** `--resume <id>` works but Vibe mints its own id with no
+        launch-id control and no hook mechanism found, so per-tab tracking would
+        need the rejected newest-session-file heuristic. Deferred.
 
-G3.2 [ ] **Standalone app theme env**: pass `GTK_THEME=Adwaita:dark` or `GTK_THEME=Adwaita` in the `env` dict of `subprocess.Popen` at launch, derived from `settings_manager.get("color_scheme")`.
+---
 
-G3.3 [x] **Workspace toggle takes effect immediately**: when the "Manage workspaces" setting is turned on mid-session, allocate workspaces for already-active projects without requiring a restart.
+## Group G — Remote / SSH & Containerized Projects (work axes)
+*Files: `src-tauri/src/schema/project.rs` (project model is local-only:
+`directory` is a local path, no host/remote/container fields), `services/project_runtime.rs`,
+`services/ssh_mount.rs` (mount lifecycle — the pattern for container lifecycle),
+`terminal/` (PTY cwd / exec target), `commands/projects.rs` (create/import),
+`commands/ssh.rs`, file-tree commands. These items share a theme: a **work
+axis** — *where the project's process and files live* (host, SSH remote, or
+container) — as opposed to the git **push** axis (#21/#22).*
 
-G3.4 [x] **GNOME workspace support**: use `org.gnome.Shell` `Eval` or `Meta.WorkspaceManager`; fall back to `wmctrl -s <idx>` if DBus is unavailable.
+28. ✅ **SSH-based projects (remote path, remote agent).** Implemented via an
+    **sshfs mount**: a remote project's bytes live on `host:remote_path` and are
+    mounted to `~/.local/share/eldrun/mounts/<project-id>/`; the project's
+    `directory` points at that mountpoint so the file tree, terminal cwd, and git
+    keep working unchanged. New `RemoteSpec` (`user?`, `host`, `port?`,
+    `remote_path`) on the project schema + `projects.json` `extra`. New
+    `commands/ssh.rs` (`ssh_connect`, `ssh_default_dir`, `ssh_list_dir`,
+    `ensure_project_mounted`) shells out to system `ssh` in `BatchMode=yes`
+    (keys/agent/`~/.ssh/config` are the source of truth; no in-app passwords).
+    New `services/ssh_mount.rs` handles mount/unmount lifecycle (idempotent
+    mount, `/proc/mounts` check, `fusermount -u` with `umount` fallback,
+    sshfs-missing guard, unmount-all on app exit). `create_project`/
+    `import_project` accept an optional `remote` and scaffold over the mount
+    (remote import is `keep`-only). `ProjectSwitcher.tsx` add/import dialog gains an
+    SSH-address field + Connect and an in-app remote folder browser. Active
+    remote project is mounted on startup (best-effort, non-blocking) and on
+    switch. Requires `sshfs`/FUSE locally. **Runtime QA pending** (agents can't
+    launch Eldrun); password/interactive auth out of scope for v1;
+    project-removal unmount is a follow-up (no delete command exists yet — stale
+    mounts are cleaned up on next app exit). See `docs/ssh_projects_plan.md`.
+    - *Test (e.g.):* add a project via SSH address against a key-auth host
+      → folder browser lists the remote dir, the project mounts under
+      `mounts/<id>/`, terminal cwd + file tree work on the remote files, and the
+      mount is cleaned up on app exit.
+    - [x] 🤖 Automated test — `services/ssh_mount.rs` unit tests (validate_arg, mountpoint_for, sshfs_args)
+    - [ ] 🖐️ Manual test
+    - **28b — Remote agent execution (decided 2026-06-19: agents run ON the
+      remote).** A remote project's bytes are sshfs-mounted **only** for
+      Eldrun's own file tree / git / `list_dir`; terminal **and agent** tabs
+      instead run on the remote host via `ssh -tt`. `services/ssh_exec.rs`
+      (`wrap_pty_options`) rewrites any spawn whose cwd is under the mounts root
+      into `ssh -tt [-p port] [user@]host '<remote_command>'`, multiplexed over a
+      ControlMaster socket; `remote_subdir` maps the local mount cwd back to the
+      remote path and `remote_command` builds `cd <dir> && export … && exec
+      <cli> …`. VPN-gated hosts bring an OpenVPN tunnel up first via
+      `services/openvpn.rs` (pkexec + askpass temp file + ready-marker wait,
+      disconnect-all on exit) when `RemoteSpec.openvpn` is set. Rationale and the
+      rejected alternatives (local-CLI-over-sshfs; per-command `ssh host -- …`
+      helper) are in `docs/ssh_projects_plan.md` → *Remote execution model*. This
+      makes a **userspace** agent-CLI install on the remote load-bearing; the
+      items below close the gaps.
+      - [x] **Login-shell PATH for agent tabs.** `remote_command` now runs agent
+        tabs through `exec "${SHELL:-/bin/bash}" -lc '<quoted cli + args>'` (was a
+        bare `exec '<cli>'` under ssh's non-login shell), so a userspace
+        `~/.local/bin`/nvm/pyenv CLI is on PATH and resolves. Shell tabs keep
+        `$SHELL -l`.
+        - [x] 🤖 Automated test — `remote_command_agent_runs_under_login_shell`
+          asserts the `-lc` login-shell wrap with correct single-quoting
+      - [x] **Auto-bootstrap + detect the remote CLI.** Implemented in new
+        `services/remote_agents.rs` (recipe table keyed by agent base name:
+        probe `bin`, userspace `install`, manual hint). Rather than a separate
+        command, `bootstrap_prelude` is **folded into** `remote_command`'s
+        `$SHELL -lc` script for recognised agents: it probes
+        `command -v <bin>`, runs the userspace installer if missing
+        (claude → `npm install -g @anthropic-ai/claude-code`), re-probes, and
+        `exit 127`s with a manual hint on failure — all live in the PTY, so
+        install progress and the first-run `login` show in the terminal. Unknown
+        commands get no prelude. (Chose PTY-folded over a Tauri
+        `ensure_remote_agent` command: no event plumbing, fully unit-testable.)
+        - [x] 🤖 Automated test — `remote_agents` (`recipe_for` base-name match,
+          `bootstrap_prelude` probe/install/abort) + `ssh_exec`
+          `remote_command_agent_bootstraps_known_cli`
+      - [x] **Remote auth = the remote's own login.** Decided: the remote `claude`
+        authenticates with its own `~/.claude` credentials; the first run prompts
+        an interactive `claude login` in the PTY (works because agent tabs get a
+        real `-tt` PTY). `remote_command` now strips agent-auth env vars
+        (`AGENT_AUTH_ENV`: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+        `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+        `GOOGLE_API_KEY`) from the exported env so a local key can't clobber the
+        remote session.
+        - [x] 🤖 Automated test — `remote_command_strips_agent_auth_env` asserts
+          auth vars (and their values) are excluded while ordinary env is kept
+      - [ ] **Generalize bootstrap/detect to other agent CLIs** (Codex, Gemini,
+        Vibe): add one `AgentRecipe` row per agent to `remote_agents::RECIPES`
+        (the framework + claude recipe already ship); keep honoring the existing
+        `local_only` flag (local Ollama agents are never wrapped).
+      - [ ] 🖐️ Manual test — connect (VPN if needed) → open a remote agent tab →
+        the CLI is detected/installed, logs in on first run, and runs a pipeline
+        on the remote (remote GPU/env), with edits visible in Eldrun's file tree.
 
-G3.5 [ ] **Embedded app theme propagation**: on theme toggle in `_on_toggle_theme`, iterate open embed tabs and send an XSETTINGS `Net/ThemeName` change via `python-xlib`; fall back to a no-op if the window is gone.
+38. **Run projects inside Docker containers.** Let a project be started in a
+    Docker container instead of (or in addition to) directly on the host: the
+    project's terminal/agent tabs run via `docker exec` into a container, with the
+    project directory bind-mounted as the working dir so the file tree and git
+    keep working. Mirrors the two-mechanism split the SSH axis (#28) settled on —
+    a lifecycle service `services/docker_runtime.rs` (cf. `ssh_mount.rs`) and a
+    spawn-rewrite service `services/docker_exec.rs` (cf. `ssh_exec.rs`). **Key
+    difference from #28:** the bytes are already local, so the file tree / git /
+    `list_dir` keep running against the **host** `directory` unchanged — only
+    terminal/agent **spawns** are rewritten into the container. Full plan in
+    `docs/docker_projects_plan.md`. Requires Docker/Podman locally.
 
-G3.6 [x] **Fancy bright/dark split**: expose separate `Fancy Dark` and `Fancy Bright` settings values while keeping legacy `fancy` as a `fancy_dark` alias.
+    **Data model (both phases).** New `DockerSpec` on the project schema +
+    `projects.json` `extra` (same as `RemoteSpec`): container source is exactly
+    one of `image` / `dockerfile` / `compose_file`+`service` / existing
+    `container`; plus `workdir` (default `/workspace`), `run_args`, `engine`
+    (docker|podman), and a Phase-2-only `remote: Option<RemoteSpec>`. A project is
+    containerized iff `docker` is present. `directory` stays the **host** path in
+    Phase 1 (no mountpoint indirection). Mirror in `types/index.ts`.
 
-### G4 — Open apps and embedding
+    - [ ] **38a — Phase 1: local Docker** (container on the same host;
+      independently shippable).
+      - `services/docker_runtime.rs` (new) — lifecycle keyed by project id,
+        `eldrun-<id>` container name convention. `engine_available`,
+        `is_running` (`docker ps` exact match), `up` (image→`docker run -d -v
+        <host_dir>:<workdir> -w <workdir> … sleep infinity`; dockerfile→`build`
+        then run; compose→`compose up -d`; existing `container`→verify only),
+        `down`, `down_all` (cf. `unmount_all`). Argv built as `Vec<String>` for
+        unit-testability; reuse the shared `validate_arg` (no leading-`-`/control
+        chars).
+      - `services/docker_exec.rs` (new) — rewrite a containerized tab's
+        `PtyOptions` to `docker exec -it -w <in_cwd> [-e K=V…] <name> <cmd…>` (or
+        login shell when cmd empty; `compose exec <service>` for compose).
+        `container_workdir` translates host cwd → in-container path (cf.
+        `remote_subdir`). Honor the existing **`local_only`** flag verbatim.
+      - Wiring: `project_runtime::switch` best-effort `up` on switch to a docker
+        project; `CreateProjectRequest`/`ImportProjectRequest` gain optional
+        `docker`; `lib.rs` `RunEvent::Exit` calls `down_all()` alongside
+        `unmount_all()`; new `commands/docker.rs` (`docker_available`,
+        `docker_list_images`, `ensure_project_container`).
+      - Frontend: `ProjectSwitcher.tsx` "Run in container" dialog section (image /
+        Dockerfile / compose+service / existing container + workdir/run_args/
+        engine); `stores/projects.ts::load()` best-effort
+        `ensure_project_container` for the active docker project at startup.
+      - *Test (e.g.):* create an image-based project → opening a terminal runs
+        inside `eldrun-<id>`, host edits show in the file tree, git works,
+        container stops on app exit.
+      - [ ] 🤖 Automated test — `docker_runtime`/`docker_exec` argv + workdir
+        translation + schema round-trip (no daemon needed)
+      - [ ] 🖐️ Manual test
+    - [ ] **38b — Phase 2: remote Docker** (container on an SSH host; composes
+      #28 with 38a, activated when `DockerSpec.remote` is set).
+      - Bytes: as #28 — sshfs-mount the remote dir locally (file tree/git
+        unchanged). Bind-mount source is the **remote** `remote_path` (the remote
+        daemon mounts the remote bytes directly).
+      - Runtime: spawns run `ssh -tt <host> docker exec …` by **composing** the
+        two existing wrappers — `docker_exec` builds the `docker exec` argv,
+        `ssh_exec::remote_command`/`ssh_pty_args` wrap it over ssh. `docker_runtime`
+        engine calls gain an `ssh_base_args` prefix when `remote` is set;
+        `down_all` also tears down known remote-docker containers.
+      - Frontend: "Run in container" becomes available after an SSH connection is
+        established (remote-browse flow from #28).
+      - *Test (e.g.):* remote host with docker → terminal execs into the remote
+        container; host file tree (over sshfs) reflects in-container edits.
+      - [ ] 🤖 Automated test — argv builders produce `ssh … docker …` /
+        `ssh -tt … exec docker exec …` when remote; `DockerSpec.remote` round-trip
+      - [ ] 🖐️ Manual test
 
-G4.1 [ ] **Standalone open-app mode field** (`ISSUE-008`): add `"mode": "standalone"` to `project.json["open_apps"]` entries written for standalone windows; existing entries without the field default to `"embed"`.
+---
 
-G4.2 [ ] **Resolve built-in app defaults**: at startup, resolve the system defaults with `xdg-settings get default-web-browser`, `xdg-mime query default x-scheme-handler/mailto`, and the default calendar `.desktop` file; skip silently if not found.
+## Group H — Cross-Platform: Windows & macOS Support (new feature)
+*Files: `src-tauri/src/platform/*`, `services/`,
+`terminal/` (PTY), `commands/` (downloads, crash logging), `src-tauri/tauri.conf.json`
+(bundle targets), `.github/workflows/ci-cd.yml` (package jobs). Both OSes already
+have cross-platform foundations — platform-aware state paths, default-shell
+fallback, browser profile paths, network detection — so this is follow-up work,
+not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
 
-G4.3 [ ] **Permanent built-in app tabs**: add non-closeable icon tabs for Browser (`web-browser-symbolic`), Mail (`mail-client-symbolic`), and Calendar (`x-office-calendar-symbolic`) in the tab bar; grey out any whose default app is not found.
+30. **Windows support follow-ups.** Windows is past the compile stage (state
+    paths, shell fallback, browser profiles, network detection, app-icon
+    helpers, NSIS packaging, and a Windows CI package job all exist). Remaining:
+    validate a real build/runtime on Win 10 1903+ and Win 11 (incl. ConPTY
+    behavior in xterm.js); decide whether to replace the command-based PID
+    liveness check with a native Windows API; add native window tracking
+    (`EnumWindows` + `GetWindowThreadProcessId`) if project-owned standalone
+    windows need reliable show/hide; decide on a Windows unhandled-exception
+    crash hook (current crash logging is Unix-oriented); document/improve
+    download routing where directory symlinks need Developer Mode or elevation;
+    and QA browser download-preference editing across Firefox/Chrome/Chromium/
+    Chrome Beta profile layouts.
 
-G4.4 [ ] **Project-scoped open-app list** (`ISSUE-002`): filter the open-apps panel so it only shows windows whose process cwd belongs to the current project instead of showing all normal desktop windows.
+31. **macOS support follow-ups.** macOS has initial cross-platform code (state
+    paths, default shell, browser profiles, network detection, Unix symlinks,
+    null workspace-backend fallback). Remaining: add bundle support when
+    distribution is needed (`dmg`/`app` target, `minimumSystemVersion`, CI
+    artifact handling); add Hardened Runtime entitlements **only** if
+    signing/notarization is pursued — do **not** enable App Sandbox (PTY needs
+    unrestricted POSIX PTY access); validate a real build on Apple Silicon (and
+    Intel if needed); add native app-icon resolution for `.app` bundles if the UI
+    needs resolved macOS icons; add native window tracking (Accessibility APIs or
+    `CGWindowList`) only if project-owned standalone windows need reliable
+    show/hide; and keep the null workspace backend as the default unless a clear
+    need justifies Accessibility permissions or private APIs.
 
-G4.5 [ ] **Open-app standalone baseline** (`ISSUE-008`, Stage 1): make file opening reliable without embedding first by launching the app with `subprocess.Popen([app, path])` and recording the entry in `project.json["open_apps"]`.
+---
 
-G4.6 [ ] **Standalone app restore** (`ISSUE-008`): on project re-activation, relaunch entries with `"mode": "standalone"` via `subprocess.Popen` without any embed probe; entries with `"mode": "embed"` or no field go through the full two-path probe again.
+## Group I — Backend Runtime Follow-Ups
+*Files: `src-tauri/src/services/` (`project_runtime.rs`, `terminal_service.rs`,
+`window_service.rs`), `commands/`, `.eldrun/sessions/` mirrors, `schema/`. The
+first backend runtime boundary pass is implemented: project switching is
+coordinated through `switch_project_runtime`, core services live under
+`services/`, tab/file/layout/window metadata is mirrored into
+`.eldrun/sessions/`, download routing is part of switching, and the old
+`switch_project_windows` command is deprecated. Related to #24 (session restore),
+but backend-owned.*
 
-G4.7 [ ] **Built-in app dispatch**: each resolved Browser, Mail, and Calendar app goes through the two-strategy dispatch: embed frameless if viable, else open standalone and add to the open-windows list.
+32. **Backend runtime follow-ups.** Remaining backend-side work on the runtime
+    boundary, each independently pickable:
+    - Backend-owned PTY resurrection after app restart, including dead-session
+      detection and a clear frontend policy (respawn, mark dead, or manual
+      restart).
+    - Terminal/agent transcript storage if restart recovery needs readable
+      historical output rather than metadata-only restoration.
+    - Promote `.eldrun/` runtime files from optional mirrors to the primary
+      source once compatibility reads from `project.json` are validated.
+    - Durable project-window metadata under `.eldrun/sessions/windows.json`
+      beyond registry IDs (window role/origin, restore command, optional file
+      target, future geometry/focus fields).
+    - Move file-navigation runtime state backend-side once switching is stable:
+      center file tabs, right-panel folder, breadcrumbs, history.
+    - Focused tests for backend runtime switching with mocked services
+      (time flushing, old-project save, project-window hide/show, download
+      routing, root runtime handling, no respawn of already-live tabs).
 
-G4.8 [ ] **Embedding pipeline hardening and verification** (`ISSUE-001`, `ISSUE-008`, Stages 2-3): define the center panel XID as the embedding target, retry reparenting after launch, restore the terminal page on failure, reconnect `AppRow` clicks, and verify a live file-open/reparent/close flow end-to-end.
+---
 
-### G6 — Global cross-project apps
+## Group J — Global Apps: URI Scheme Routing (new feature)
+*Files: `src/components/layout/GlobalAppBar.tsx` (roles + launch-or-raise),
+`src-tauri/src/commands/apps.rs` (`launch_app`, `open_file`), terminal/file-tree
+link handling. The global-apps suite (role registry, launch-or-raise, settings
+UI) is already implemented — this is the one remaining global-apps item.*
 
-These roles are not owned by any single project. They must remain visible across workspaces and must never be moved to a project workspace. Each role can be individually shown or hidden in the header toolbar via the Settings window. G4.2, G4.3, and G4.7 are superseded by this group.
+33. **URI scheme routing** (migrated from TODO `G6.7`). Intercept `http://`,
+    `https://`, `mailto:`, and `webcal:` links opened from within terminals or
+    the file tree and route them through the global-app launch-or-raise flow
+    (`launch_app`, keyed by the `browser` / `mail` / `calendar` roles) instead of
+    a bare `xdg-open` call, so links open in the user's configured global app.
 
-| Role | Key | System resolution | Typical app |
-|------|-----|------------------|-------------|
-| Browser | `browser` | `xdg-settings get default-web-browser` | `firefox`, `chromium` |
-| Mail | `mail` | `xdg-mime query default x-scheme-handler/mailto` | `thunderbird`, `evolution` |
-| Calendar | `calendar` | `xdg-mime query default text/calendar` | `gnome-calendar`, `evolution` |
-| Print Manager | `print_manager` | `system-config-printer` in `$PATH` or CUPS at `localhost:631` | `system-config-printer` |
-| File Manager | `file_manager` | `xdg-mime query default inode/directory` | `nautilus`, `thunar`, `nemo` |
-| Password Manager | `password_manager` | check `$PATH` for `keepassxc`, `bitwarden-desktop`, `1password` | `keepassxc`, `bitwarden` |
-| Video Conferencing | `video_conf` | check `$PATH` for `zoom`, `teams`, `webex` | `zoom`, `teams` |
-| Media Player | `media_player` | `xdg-mime query default audio/mpeg` | `rhythmbox`, `vlc` |
-| System Monitor | `system_monitor` | check `$PATH` for `gnome-system-monitor`, `ksysguard` | `gnome-system-monitor` |
-| Note-taking | `notes` | check `$PATH` for `obsidian`, `zettlr`, `gedit` | `obsidian`, `zettlr` |
-| Screenshot | `screenshot` | check `$PATH` for `flameshot`, `gnome-screenshot` | `flameshot` |
-| Screen Recorder | `screen_recorder` | check `$PATH` for `obs`, `kazam`, `simplescreenrecorder` | `obs` |
+---
 
-G6.1 [x] **Global app registry**: add `settings.json["global_apps"]` as an object with one entry per role containing `exec` (resolved or user-set command) and `visible` (bool, default `true`); entirely separate from the file-extension `DefaultAppsManager` map.
+## Group K — Built-in Mail Viewer (new feature)
+*No mail code exists today. Relates to Group J (#33 `mailto:` routing) but is the
+inverse: an **in-app** reader rather than handing off to an external mail app.
+Likely files: a new `commands/mail.rs` backend (IMAP/JMAP fetch, OAuth/app-
+password auth), `schema/mail.rs` (account + message structs), a new
+`src/components/mail/` panel (message list + reading pane), a right-panel or
+center-tab surface to host it, and `types/index.ts`.*
 
-G6.2 [x] **Startup resolution from system defaults**: at startup populate any missing `exec` fields using the system resolution method per role (see table above); use `xdg-settings`, `xdg-mime`, and `$PATH` probes; fall back to `xdg-open` for the browser role only; skip silently for unresolvable roles without touching their `visible` flag. Supersedes G4.2.
+40. **Include a mail viewer in Eldrun.** Add an in-app email reader so mail can be
+    read without leaving the workspace. Scope to be defined when picked; open
+    questions to settle first: protocol (IMAP vs JMAP vs a provider API like
+    Gmail), auth model (app password vs OAuth, mirroring the SSH "no in-app
+    passwords" stance where possible), read-only vs send/reply, and where it lives
+    (right-panel view like Git/Files, a dedicated center tab, or a global-app
+    surface). Pairs naturally with #33 (`mailto:` routing) once present.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
 
-G6.3 [x] **Settings UI for global apps**: add a "Global Apps" section in the Settings window; one row per role with: a checkbox controlling `visible`, the role label, the resolved executable (editable inline or via "Choose…" app-picker), and a "not found" dim label when unresolved; toggling the checkbox immediately updates `settings.json` and refreshes the header toolbar. The checkbox is enabled regardless of whether the app was resolved so users can pre-configure roles before installing the app.
+---
 
-G6.4 [x] **Launch-or-raise (singleton)**: when a global app is triggered, scan `_NET_CLIENT_LIST` for an existing window matching `_NET_WM_PID` or `WM_CLASS`; raise it with `_NET_ACTIVE_WINDOW` if found; otherwise launch a fresh instance via `subprocess.Popen` and poll for its window as in `_poll_for_standalone`.
+Sequencing is **group-wise** — tackle whole groups in this order, since items
+within a group share files and context:
 
-G6.5 [x] **Sticky window after launch**: after a global app window is found or launched, set `_NET_WM_DESKTOP = 0xFFFFFFFF` (all-desktops) via Xlib so it stays visible on every workspace; explicitly skip `_move_to_project_workspace` for global app windows.
+- **Quick wins next:** J (URI routing #33 — last remaining global-apps item).
+- **Then correctness/stability:** C (X11/KDE workspace switching) — the
+  highest-risk area; do #15/#16/#17 together.
+- **Then larger features:**
+  A (project boxes, builds on the done drag-drop) → E (git worktree) →
+  F (session restore) → G (remote/SSH projects, largest net-new backend).
+- **Cross-platform (parallel track):** H (Windows #30 / macOS #31 follow-ups) —
+  validate builds & packaging per OS; can proceed alongside the above.
+- **Backend runtime (ongoing):** I (#32) — backend-owned runtime hardening
+  (PTY resurrection, `.eldrun/` promotion, durable window metadata, tests);
+  pairs with F (session restore).
 
-G6.6 [x] **Global-app toolbar row**: add a slim `Gtk.Box` row between the header bar and the center panel (inside `EldrunWindow`'s main vertical layout); render one `Gtk.Button` per role whose `visible` flag is `true`, each carrying only a symbolic icon (`web-browser-symbolic`, `mail-symbolic`, `x-office-calendar-symbolic`, `printer-symbolic`, `system-file-manager-symbolic`, `dialog-password-symbolic`, `camera-web-symbolic`, `audio-x-generic-symbolic`, `utilities-system-monitor-symbolic`, `accessories-text-editor-symbolic`, `applets-screenshooter-symbolic`, `video-display-symbolic`); set `flat` CSS class and a tooltip with the role name; grey out (insensitive) buttons whose `exec` is unresolved; hide the entire row when no roles are visible; clicking any button triggers the G6.4 launch-or-raise flow; toolbar rebuilds live when `visible` flags change in Settings. Supersedes G4.3.
+## Verification approach (per item, when implemented)
 
-G6.7 [ ] **URI scheme routing**: intercept `http://`, `https://`, `mailto:`, and `webcal:` links opened from within terminals or the file tree and route them through the G6.4 global app launcher instead of a bare `xdg-open` call. Supersedes G4.7.
+- Frontend changes: `npx tsc --noEmit`, plus existing/added tests under
+  `src/__tests__/` (e.g. the session-restore test for Group F).
+- Backend changes: `cargo test --manifest-path src-tauri/Cargo.toml`.
+- Runtime validation: **do not** launch Eldrun from the agent — ask you to
+  restart your running instance to verify workspace/window/UI behavior.
 
-G6.8 [x] **Right-click configure popover stays visible**: the global-apps toolbar hides when the mouse leaves the toolbar box (250 ms debounce via `_toolbar_leave`); opening a `Gtk.Popover` on a toolbar button causes a spurious toolbar-leave event because the popover is a separate surface — the toolbar hides, destroying the parent button and dismissing the popover. Fix: add `_toolbar_popover_open` flag (mirroring `_bottom_context_menu_open`); set it `True` before `popover.popup()` in `_show_global_app_edit_popover`; clear it in a `closed` signal handler that also hides the revealer if the pointer has left; guard `_toolbar_leave._hide()` with `not self._toolbar_popover_open`.
+---
+
+# ✅ Done (code-complete) — 🤖 Automated ✅ · 🖐️ Manual pending
+
+Code-complete groups, renumbered D.1, D.2… and kept at the end of the file. Item
+numbers stay global and stable. **All groups below are ✅ Done with passing 🤖
+automated tests** (except #25, visual-only); **🖐️ manual/runtime QA is still
+pending** across the board — see the Status legend at the top. Each group's
+`🧪 Tested:` line and each feature's two checkboxes track the two axes; a feature
+is fully 🧪 Tested only once its 🖐️ Manual box is also ticked after live QA.
+
+## Group D.1 — Right Panel: File Tree & Navigation ✅ Done · 🧪 Untested
+*Files: `src/components/files/FileTree.tsx`, `fileUtils.ts`, `RightPanel.tsx`, `src/styles/themes.css`. Backend create/delete commands already exist in `commands/projects.rs`.*
+🧪 Tested: 🤖 automated ✅ (suite green) · 🖐️ manual ❌ (runtime QA pending)
+
+1. ✅ **Create file / folder from right-click.** Added "New File" + "New Folder"
+   entries to the entry context menu, plus an empty-area context menu so files
+   can be created in an empty folder. Both reuse the `window.prompt` pattern and
+   call the existing `create_file` / `create_dir` commands, then reload.
+   - *Test (e.g.):* right-click a folder → "New File", type a name → the
+     file appears in the tree **and** on disk; repeat via the empty-area menu
+     inside an empty folder to confirm creation there too.
+   - [x] 🤖 Automated test — `FileTreeNav.test.tsx`
+   - [ ] 🖐️ Manual test
+
+2. ✅ **Show long file/folder names in full.** Added a native `title={e.name}` to
+   the `.file-name` span so the full name shows on hover (CSS ellipsis kept).
+   - *Test (e.g.):* create a file with a very long name → the row shows a
+     truncated name with ellipsis, and hovering it surfaces the full name in a
+     native tooltip.
+   - [x] 🤖 Automated test — `FileTreeNav.test.tsx`
+   - [ ] 🖐️ Manual test
+
+3. ✅ **Show parent folders when inside a subfolder.** Replaced the single
+   "↑ .." button with a breadcrumb trail (up arrow, project-root `⌂` crumb, and
+   each path segment separated by `/`), each segment clickable to jump directly.
+   - *Test (e.g.):* navigate two levels deep → breadcrumb shows
+     `⌂ / sub / subsub`; click the middle `sub` crumb → tree jumps to that folder
+     and the breadcrumb trims accordingly.
+   - [x] 🤖 Automated test — `FileTreeNav.test.tsx`
+   - [ ] 🖐️ Manual test
+
+---
+
+## Group D.2 — Right Panel: Git Status Markers ✅ Done · 🧪 Untested
+*Files: `src-tauri/src/commands/git.rs` (`git_file_statuses`), `FileTree.tsx` (`STATUS_COLOR`, `GitMarker`), `fileUtils.ts`.*
+🧪 Tested: 🤖 automated ✅ (suite green) · 🖐️ manual ❌ (runtime QA pending)
+
+4. ✅ **Fix incorrect git colors.** Rewrote the porcelain parsing so the
+   working-tree column (Y) decides "modified" before the index column (X) decides
+   "staged" — partly-staged files like `MM` now read as modified (red) rather
+   than masquerading as fully-staged. Bubbling priority is now
+   modified > untracked > staged > unpushed > ignored.
+   - *Test (e.g.):* stage a file then edit it again (porcelain `MM`) →
+     its tree marker is red (modified), not orange (staged), and the containing
+     folder bubbles up to red.
+   - [x] 🤖 Automated test — `GitStatusColors.test.tsx` (STATUS_COLOR mapping)
+   - [ ] 🖐️ Manual test
+
+5. ✅ **Richer marker scheme.** `git_file_statuses` now also marks
+   committed-but-unpushed files via `git log @{u}..`. Markers: gitignored → gray
+   ✕ glyph; unstaged/untracked → red bar; staged → orange bar; unpushed → green
+   ↑ glyph; clean/pushed → no marker. (Ignored uses a gray ✕ rather than red to
+   avoid flooding the tree with alarm-colored marks on `target/`, `node_modules/`
+   etc.; trivially switchable in `STATUS_COLOR`.)
+   - *Test (e.g.):* set up one file in each state (ignored, untracked,
+     staged, committed-but-unpushed, clean) → each shows the right glyph/color:
+     gray ✕, red bar, orange bar, green ↑, no marker respectively.
+   - [x] 🤖 Automated test — `GitStatusColors.test.tsx` (STATUS_COLOR mapping)
+   - [ ] 🖐️ Manual test
+
+6. ✅ **Show `.gitignore` in the tree.** `visibleEntries` now keeps `.gitignore`
+   visible by default while still honoring the `panel_hidden_*` filters.
+   - *Test (e.g.):* in a project with a `.gitignore`, confirm it stays
+     visible in the tree even with default hidden-file filtering on, while other
+     `panel_hidden_*` matches remain hidden.
+   - [x] 🤖 Automated test — `GitignoreVisible.test.ts`
+   - [ ] 🖐️ Manual test
+
+---
+
+## Group D.3 — Right Panel: Git History & Commit UI ✅ Done · 🧪 Untested
+*Files: `src/components/files/GitHistory.tsx` (new), `RightPanel.tsx` (new "Git"
+view), backend commands `git_log` / `git_branches` / `git_checkout` /
+`git_commit_message` / `git_reword_head` in `commands/git.rs`.*
+🧪 Tested: 🤖 automated ✅ (suite green) · 🖐️ manual ❌ (runtime QA pending)
+
+7. ✅ **Git history view.** New "Git" tab in the right-panel header shows the
+   current branch, clickable local/remote branch pills (checkout), and a commit
+   list (short hash, subject, ref badges, relative date; HEAD marked). Backend
+   `git_log`, `git_branches`, `git_checkout` added.
+   - *Test (e.g.):* open the Git tab → current branch is shown, the commit
+     list matches `git log`, HEAD is marked, and clicking another branch pill
+     checks it out (tree/branch label update).
+   - [x] 🤖 Automated test — `GitHistory.test.tsx`
+   - [ ] 🖐️ Manual test
+
+8. ✅ **Click a commit → commit-message window.** Clicking a commit opens a modal
+   showing its full message. For HEAD it is editable with a "Generate (agent)"
+   action (reuses `git_generate_commit_message`) and "Save (amend)"
+   (`git_reword_head`); older commits are read-only. A "Checkout" action checks
+   out the commit (detached). Full message fetched via `git_commit_message`.
+   - *Test (e.g.):* click HEAD → modal is editable, edit + "Save (amend)"
+     rewrites the commit message; click an older commit → read-only; "Checkout"
+     puts the repo in detached HEAD at that commit.
+   - [x] 🤖 Automated test — `GitHistory.test.tsx`
+   - [ ] 🖐️ Manual test
+
+---
+
+## Group D.4 — Bottom Panel: Project Pill polish ✅ Done · 🧪 Untested
+*Files: `src/components/projects/ProjectPill.tsx`, `src/stores/activity.ts` (new),
+`src/components/layout/AppShell.tsx`, `ProjectSwitcher.tsx`, `src/stores/projects.ts`,
+backend `commands/terminal.rs` (`project_cpu_percent`), `commands/projects.rs`
+(`set_project_description`), `src-tauri/src/sysstat.rs` (new). Test:
+`src/__tests__/PillRunningIndicator.test.ts`.*
+🧪 Tested: 🤖 automated ✅ (suite green; #11 CPU% core helpers only) · 🖐️ manual ❌ (runtime QA pending)
+
+9. ✅ **Running-task indicator on pills.** New `activity` store derives a
+   per-scope "busy" flag from live PTY output: a single global `terminal-output`
+   listener in `AppShell` stamps each PTY's last-output time (covers backgrounded
+   projects too), and a 300 ms tick recomputes `busyByScope`. Busy pills show the
+   three-dot `OrbitSpinner` tinted green (`.pill-running-spinner`).
+   - *Test (e.g.):* start a long-running command in a **backgrounded**
+     project's terminal → that pill shows the green spinner within ~300 ms; when
+     output stops, the spinner clears shortly after.
+   - [x] 🤖 Automated test — `PillRunningIndicator.test.ts`
+   - [ ] 🖐️ Manual test
+
+10. ✅ **Right-click → change description.** Pill context menu gains "Edit
+    description" opening a small textarea dialog. Saving calls the new
+    `set_project_description` command, which writes both `projects.json` (the
+    pill list) and the project's `project.json`, then mirrors the cleaned value
+    into the store.
+    - *Test (e.g.):* right-click a pill → "Edit description", save new
+      text → both `projects.json` and that project's `project.json` are updated
+      on disk and the hover popup shows the new description.
+    - [x] 🤖 Automated test — `projects_commands.rs::set_project_description_writes_both_projects_json_and_project_json`
+    - [ ] 🖐️ Manual test
+
+11. ✅ **Hover → per-project CPU %.** Hover popup now shows live CPU%, polled
+    every 1.5 s while open. New `project_cpu_percent` command (backed by the
+    `sysstat` `/proc` module) resolves the project's PTY ids → child PIDs +
+    descendants and samples jiffies over a 300 ms window. CPU-only by design;
+    per-process GPU isn't reliably attributable on Linux, so the existing Ollama
+    VRAM tracking stays as the GPU signal. No-op (returns 0) off Linux.
+    - *Test (e.g.):* hover a pill whose project runs a CPU-busy process →
+      popup shows a non-zero CPU% refreshing ~every 1.5 s; an idle project reads
+      ~0%; on non-Linux it returns 0 without erroring.
+    - [x] 🤖 Automated test — *partial:* `sysstat.rs` unit tests (clk_tck, descendant_pids self-inclusion/empty, sum_jiffies live+dead pid); live % readout is manual
+    - [ ] 🖐️ Manual test
+
+12. ✅ **Suppress default webview reload/inspect on right-click.** The
+    `.project-switcher` container now `preventDefault`s `contextmenu`, so a right-click
+    anywhere on the bar surfaces only our pill menu, never Reload/Inspect.
+    - *Test (e.g.):* right-click empty space on the project switcher and on a
+      pill → only the custom menu appears; the default webview Reload/Inspect
+      context menu never shows.
+    - [x] 🤖 Automated test — `ProjectSwitcherContextMenu.test.tsx`
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.5 — Branding ✅ Done · 🧪 Untested
+*Files: `src/assets/logo.svg` (new), `src/components/layout/HeaderBar.tsx`, `src-tauri/icons/*`.*
+🧪 Tested: 🤖 automated — N/A (purely visual) · 🖐️ manual ❌ (icons/header not visually verified in a live build)
+
+25. ✅ **Redraw the Eldrun logo in SVG.** Recreated the logo as a clean,
+    symmetric vector (`logo.svg`): green circuit "tree of life" ring, split
+    trunk, mirrored branch traces with node terminals, and the gold spark — left
+    half authored and mirrored across the centre line. Header now imports the SVG
+    (`logo.png` removed). OS app icons (`32x32`, `128x128`, `128x128@2x`,
+    `icon.ico`, `icon.icns`) regenerated from the vector via `tauri icon`, which
+    also fixed the previously mis-sized (all 650×650) raster icons.
+    - *Test (e.g.):* launch a packaged build → the header renders the new
+      SVG logo crisply, and the OS app/taskbar icon shows at correct sizes (not a
+      stretched 650×650 blob).
+    - [ ] 🤖 Automated test — *N/A: purely visual; manual only*
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.6 — Drag & Drop Reordering ✅ Done · 🧪 Untested
+*Files: `src/stores/tabs.ts` (already has a `reorder(from, to)` action),
+`src/components/layout/CenterPanel.tsx` (tab bar — no drag handlers yet);
+`src/stores/projects.ts` (projects carry a `position` field and are sorted by
+it, but there is no reorder/persist action), `ProjectSwitcher.tsx`/`ProjectPill.tsx`,
+backend `save_projects`.*
+🧪 Tested: 🤖 automated ✅ (suite green) · 🖐️ manual ❌ (runtime QA pending)
+
+26. ✅ **Drag-and-drop tab reordering.** Tabs in `TabBar.tsx` are now `draggable`
+    with HTML5 drag handlers that call `useTabsStore.reorder(from, to)` on drop.
+    Persistence is automatic — `CenterPanel`'s debounced `saveLayout` effect runs
+    whenever `tabs` changes. Drag feedback via `.tab.dragging` / `.tab.drag-over`.
+    - *Test (e.g.):* drag a tab to a new slot → order updates with drag
+      feedback; reopen the app → the new tab order persisted (saveLayout fired).
+    - [x] 🤖 Automated test — `TabReorder.test.ts`
+    - [ ] 🖐️ Manual test
+
+27. ✅ **Drag-and-drop project ordering.** Pills in `ProjectPill.tsx` are now
+    `draggable` (source id carried in `dataTransfer`); dropping on another pill
+    calls the new `reorderProjects(fromId, toId)` action in `projects.ts`, which
+    splices the active-pill order, renumbers every project's `position` with
+    gap-spaced values (active pills first, inactive after), and persists via
+    `save_projects`. Drag feedback via `.project-pill.drag-over`.
+    - *Test (e.g.):* drag one pill onto another → pills reorder, `position`
+      values are renumbered (active first, inactive after) and written via
+      `save_projects`; restart → order survives.
+    - [x] 🤖 Automated test — `ProjectReorder.test.ts`
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.7 — Right Panel: Hidden Files Section ✅ Done · 🧪 Untested
+*Files: `src/components/files/FileTree.tsx` (the `separateScaffold` split at
+~426-480 and the "scaffold" `file-tree-section-divider`), `fileUtils.ts`
+(`visibleEntries`, `STANDARD_PROJECT_FILES`), `src/styles/themes.css`.*
+🧪 Tested: 🤖 automated ✅ (`HiddenFilesSection.test.ts` green) · 🖐️ manual ❌ (runtime QA pending)
+
+29. ✅ **Collapsible hidden-files section under scaffold.** Keep the existing
+    show/hide filtering (`showHidden` toggle + `hiddenEndings`/`hiddenPaths` in
+    `visibleEntries`) exactly as-is. **Additionally**, when a scaffold section is
+    shown, render a third grouped section **below** the scaffold divider that
+    gathers the hidden folders/files, collapsed (minimized) by default with a
+    click-to-expand header. This is an addition to the existing
+    `separateScaffold` rendering (a parallel `hidden` bucket + a collapsed
+    `<details>`-style divider), not a replacement of the binary show/hide
+    toggle — so hidden items stay discoverable without flooding the tree, and
+    the toggle still works for users who want them inline or fully hidden.
+    - *Test (e.g.):* in a project with hidden files, the scaffold view
+      shows a collapsed "hidden" section below the divider; clicking its header
+      expands it; the existing show/hide toggle still works independently.
+    - [x] 🤖 Automated test — `HiddenFilesSection.test.ts`
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.8 — Right Panel: Persist Script-Run Animation ✅ Done · 🧪 Untested
+*Files: `src/components/files/FileTree.tsx` (`runningScripts` state + the
+`script-finished` listener at ~136, `runShellScript`, `.file-run-spinner`),
+`src/components/layout/RightPanel.tsx` (renders `<FileTree>` only `{open && …}`).
+Related to the run-detached backend `run_script_detached` in `commands/apps.rs`.*
+🧪 Tested: 🤖 automated ✅ (`ScriptRunState.test.ts` green) · 🖐️ manual ❌ (runtime QA pending)
+
+34. ✅ **Keep the `.sh` run animation alive when the right panel hides.** Today
+    `FileTree` is mounted only while the panel is open (RightPanel
+    `{open && (<FileTree…>)}`), so hiding the panel unmounts the tree and drops
+    both the local `runningScripts` set and the `script-finished` subscription —
+    when reopened, a still-running script shows no spinner and a completed run is
+    never reflected. Lift the running-scripts state and the `script-finished`
+    listener out of `FileTree` into a persistent owner (a small store like
+    `activity.ts`, or an `AppShell`-level listener) so the run animation/state
+    survives panel hide/show and the button re-renders correctly on reopen.
+    - *Test (e.g.):* run a long `.sh`, hide the right panel, reopen →
+      spinner is still active; let it finish while hidden → on reopen the button
+      shows the finished (non-spinning) state.
+    - [x] 🤖 Automated test — `ScriptRunState.test.ts`
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.9 — Center Panel: Free Tab Arrangement / Grid View ✅ Done · ⛔ Superseded by D.11
+*The per-scope auto-grid (`grid`/`gridByScope`/`toggleGrid`/`setGrid` + ▦ button)
+was **removed** and replaced by the tiling split-subwindow model in Group D.11.
+`TerminalView`'s `visible`/`focused` prop split survives and is reused there.
+`GridView.test.ts` now only asserts the old grid API is gone.*
+🧪 Tested: 🤖 automated ✅ (`GridView.test.ts` green) · 🖐️ manual ❌ (runtime QA pending)
+
+35. ✅ ⛔ **Free arrangement of tabs / grid view — superseded.** The original
+    per-scope auto-grid (columns = `ceil(sqrt(n))`) is gone; tab arrangement is
+    now the directional tiling split model (Group D.11 / #36). The reusable
+    `TerminalView` `visible`/`focused` prop split and the all-scopes-mounted pane
+    approach carried over. `GridView.test.ts` was rewritten to assert the grid
+    store API no longer exists.
+    - [x] 🤖 Automated test — `GridView.test.ts` (asserts removal)
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.11 — Center Panel: Tiling Split Subwindows ✅ Done · 🧪 Untested
+*Files: `src/stores/tabs.ts` (layout-tree model: `SplitNode`/`GroupNode`,
+`splitWithTab`/`moveTab`/`reorderInGroup`/`resizeSplit`/`removeTab` collapse,
+`serializeTree`/`deserializeTree`, per-scope `layoutByScope`/`focusedGroupByScope`),
+`src/components/layout/CenterPanel.tsx` (recursive split render + measured-rect
+pane positioning + panel-wide drop tracking), `src/components/tabs/Subwindow.tsx`
+(per-group frame + L/R/T/B/center drop zones), `src/components/tabs/TabBar.tsx`
+(per-group bar, cross-group drag payload `{key, fromGroup}`),
+`src/components/layout/HeaderBar.tsx` (global tab bar removed), `src/stores/projects.ts`
+(threads `tabGroups` through project switch via shared `serializeTree`),
+`src/styles/themes.css` (`.subwindow`, `.split`/`.split-divider`, `.drop-zone`).
+Backend: `schema/project.rs` `tab_groups`, `commands/projects.rs::save_tab_layout`,
+`services/terminal_service.rs`, `schema/session.rs`, `services/project_runtime.rs`.
+Tests: `src/__tests__/SplitLayout.test.ts`.*
+🧪 Tested: 🤖 automated ✅ (`SplitLayout.test.ts` green, 85 vitest + cargo) · 🖐️ manual ❌ (runtime QA pending)
+
+36. ✅ **Tiling split subwindows (directional drag-drop splits).** Reworked the
+    center panel from one header tab bar + auto-grid into a tiling layout of
+    subwindows. Each subwindow (group) owns its tabs and renders its own tab bar;
+    dragging a tab onto another subwindow's edge (L/R/T/B) splits that direction
+    into a new subwindow, onto its center moves the tab in. Splits resize via
+    draggable dividers (`resizeSplit`, clamped, divider-pair math). The layout is
+    a per-scope tree (`layoutByScope`); flat tab payloads stay per-scope so PTYs
+    never unmount. `removeTab`/`moveTab`/`splitWithTab` collapse emptied groups
+    and lone splits and keep focus + `activeKey` on a surviving group. Persisted
+    as `tab_groups` in `project.json` alongside the flat `tab_layout`, round-trips
+    through project switch (`switch_project_runtime`); absent → single group
+    (legacy projects). **Backend rebuild/restart required** for `tab_groups`
+    persistence (per CLAUDE.md; agents can't launch Eldrun).
+    - *Test (e.g.):* drag a tab onto a subwindow's right edge → a 2-way row split
+      with the dragged tab in a new group sized 50/50; close its only tab → split
+      collapses back to one group with focus on the survivor; reload restores the
+      tree from `tab_groups`.
+    - [x] 🤖 Automated test — `SplitLayout.test.ts` (splits/collapse/move/resize/load)
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.10 — Project Model, Import & Publishing ✅ Done · 🧪 Untested
+*Files: `src-tauri/src/commands/projects.rs` (`normalize_git_type`,
+`ImportProjectRequest.skip_scaffold`, create/import defaults + read-time
+migration), `src-tauri/src/commands/github.rs` (new `github_publish`),
+`lib.rs`/`commands/mod.rs` (registration), `ProjectSwitcher.tsx` (push-target select +
+skip-scaffold checkbox), `ProjectPill.tsx` (Publish window + menu),
+`src/stores/projects.ts` (`publishProject`), `src/types/index.ts`,
+`themes.css` (`.skip-scaffold-row`). Tests: `projects_commands.rs`
+(`import_project_skip_scaffold_…`), unit tests for `normalize_git_type` and
+`shell_quote`.*
+🧪 Tested: 🤖 automated ✅ (suite green; #22 publish = shell_quote only) · 🖐️ manual ❌ (`github_publish` runtime QA pending)
+
+20. ✅ **No-scaffold option for import.** `ImportProjectRequest` gained a
+    `skip_scaffold` flag (default false); `finish_import` now gates the
+    `scaffold_project` call (and its `git init`) on it, still writing
+    `project.json` so the project registers. The import dialog shows a "Skip
+    scaffolding (project already has its own files)" checkbox that also hides the
+    scaffold-fill guidance and suppresses the scaffold-fill agent tabs.
+    - *Test (e.g.):* import an existing repo with "Skip scaffolding"
+      checked → no `AGENTS.md`/`CLAUDE.md`/etc. added and no `git init`, but
+      `project.json` is written so it registers (cf. `import_project_skip_scaffold_…`).
+    - [x] 🤖 Automated test — `projects_commands.rs::import_project_skip_scaffold_does_not_add_missing_scaffold_files`
+    - [ ] 🖐️ Manual test
+
+21. ✅ **Rename public/private → local/remote (push-target axis).** `git_type`
+    now models the git **push** target — distinct from the SSH **work**-remote —
+    with three values: `local`, `remote-private`, `remote-public`. New projects
+    default to `local`. A `normalize_git_type` helper migrates legacy values
+    (private → remote-private, public → remote-public) on read in `get_projects`
+    / `load_project` and canonicalizes writes. The dialog's "Git push target"
+    select offers the three options.
+    - *Test (e.g.):* a legacy project with `git_type: "private"` loads as
+      `remote-private` via `get_projects`; a brand-new project defaults to
+      `local` (cf. the `normalize_git_type` unit test).
+    - [x] 🤖 Automated test — `commands/projects.rs` normalize_git_type unit tests
+    - [ ] 🖐️ Manual test
+
+22. ✅ **"Make repo public" publish flow.** New `github_publish(project_id,
+    visibility)` command shells out to `gh repo create <name> --public|--private
+    --source=. --remote=origin --push`. For SSH work-remote projects it runs over
+    `ssh` on the host where the bytes live (reusing `ssh_base_args`/`validate_arg`
+    + single-quoted remote argv). On success it records `git_type =
+    remote-<visibility>` in both `projects.json` and `project.json`. Surfaced via
+    a "Publish to GitHub…" entry in the project-pill context menu opening a
+    visibility-picker window; the store's `publishProject` mirrors the new push
+    target into state. Requires `gh` installed + authenticated. **Runtime QA
+    pending** (agents can't launch Eldrun).
+    - *Test (e.g.):* on a local project, "Publish to GitHub…" → pick
+      public → `gh repo create` runs and `git_type` flips to `remote-public` in
+      both json files; for an SSH project the command runs over `ssh` on the host.
+    - [x] 🤖 Automated test — *partial:* `commands/github.rs` shell_quote unit tests (argv escaping only; full gh/ssh publish flow is manual)
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.12 — Layout fix: project switcher in the top header ✅ Done · 🧪 Untested
+*Files: `src/components/layout/HeaderBar.tsx` (`header-center`),
+`src/components/layout/ProjectSwitcher.tsx` (renamed from the old `BottomBar`),
+`src/components/layout/AppShell.tsx`, `RightPanel.tsx`, `themes.css`.*
+🧪 Tested: 🤖 automated ✅ (`ProjectSwitcherContextMenu.test.tsx` green) · 🖐️ manual ❌ (runtime QA pending)
+
+14. ✅ **Stop bottom/right panel intersection.** Resolved by moving the project
+    switcher out of the bottom overlay into the top header (`HeaderBar`
+    `header-center`); the old `BottomBar` component became `ProjectSwitcher.tsx`.
+    With no bottom bar there is nothing left to overlap the right panel, and the
+    pill menus now open downward.
+    - *Test (e.g.):* the project pills render in the top header; revealing the
+      right panel no longer collides with a bottom bar.
+    - [x] 🤖 Automated test — `ProjectSwitcherContextMenu.test.tsx`
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.13 — Right Panel: Pin / Dock Option ✅ Done · 🧪 Untested
+*Files: `src/components/layout/AppShell.tsx` (hover-reveal/auto-close timers
+`handleBodyMouseMove`/`scheduleClose`, `rightPinned` state), `RightPanel.tsx`
+(`right-panel-header` pin button), `src/stores/settings.ts`
+(`right_panel_pinned`), `src/styles/themes.css` (`.right-panel`/`.app-body`).*
+🧪 Tested: 🤖 automated ✅ (suite green) · 🖐️ manual ❌ (runtime QA pending)
+
+37. ✅ **Pin the right panel open.** A 📌 toggle in the `right-panel-header`
+    keeps the panel persistently open instead of auto-hiding on mouse-leave; when
+    pinned the hover-reveal/auto-close timers are suppressed and the panel takes
+    layout space (no overlap of the center terminal). The pinned flag persists in
+    `settings.json` (`right_panel_pinned`) and is restored on launch.
+    - *Test (e.g.):* click the pin → panel stays open after the cursor leaves;
+      center reflows (no overlap); toggle off → reverts to hover-reveal; restart →
+      pinned state restored.
+    - [x] 🤖 Automated test — covered by the right-panel suite
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group D.14 — File → Tab: In-App Viewers & Embedded Tabs (Phase 1) ✅ Done · 🧪 Untested
+*Files: drag source `src/components/files/FileTree.tsx`, drop targets
+`src/components/tabs/TabBar.tsx`/`Subwindow.tsx` + `commitFileDrop.ts`,
+`src/stores/tabs.ts` (`"embed"` tab kind, `viewer`/`embedExec`), in-app viewers
+`src/components/embed/FileViewerPane.tsx` + `EmbedPane.tsx`,
+`src/components/files/markdown.ts`, `fileUtils.ts` (`internalViewerFor`),
+backend `commands/apps.rs` (`embed_capability`, default-app resolution),
+`commands/tex.rs` (`tex_capability`/`compile_tex`). Tests:
+`FileDropAddsEmbedTab`/`FileDropEmptyFirstTab`/`FileDropSplitsSubwindow`,
+`EmbedCapabilityGate`, `InternalViewer`, `Markdown`, `embed_capability_tests.rs`.*
+🧪 Tested: 🤖 automated ✅ (suite green) · 🖐️ manual ❌ (runtime QA pending)
+
+40. ✅ **Drag a file from the right panel into a (sub)window's tab bar to open it
+    in a tab (Phase 1).** Dragging a file row onto a subwindow's tab bar opens a
+    new `"embed"` tab **named after the file**. Two backends: files with a
+    built-in viewer (`internalViewerFor` → PDF, image, markdown, or text) render
+    **in-app** via `FileViewerPane` — a zoom/pan image view, a PDF iframe, a
+    markdown Edit/Preview toggle, and an editable code editor (line-number gutter,
+    Tab/Shift+Tab indent, Ctrl+S save). Other files open in their external default
+    app via `EmbedPane`, gated on an `embed_capability` check. Only in-app
+    `viewer` embeds persist/restore across restart. TeX files additionally get a
+    compile affordance when a LaTeX engine is on `PATH` (`tex_capability` /
+    `compile_tex`). **Phase 2 (live X11-reparented frameless embedding) deferred**
+    — see `docs/group_k_plan.md`.
+    - *Test (e.g.):* drag `notes.md` onto a subwindow's tab bar → a `notes.md`
+      tab opens rendering the markdown in-app; drag a `.png` → zoomable image
+      tab; on an unsupported OS/app a non-viewer file opens externally as before.
+    - [x] 🤖 Automated test — `FileDrop*`/`InternalViewer`/`Markdown`/`EmbedCapabilityGate`
+    - [ ] 🖐️ Manual test
+
+*This is an organizational plan. Pick an item by its number and I'll produce a
+focused implementation plan + changes for just that item.*

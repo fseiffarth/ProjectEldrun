@@ -22,8 +22,16 @@ interface Props {
   cmd: string;
   args?: string[];
   env?: Record<string, string>;
+  initialInput?: string;
   cwd: string;
-  active: boolean;
+  // When true, never run this tab over ssh even for remote projects (e.g.
+  // locally-bound Ollama agents). Forwarded to the backend spawn.
+  localOnly?: boolean;
+  // Whether this pane is laid out on screen (single-mode active tab, or any
+  // pane in grid mode). Drives display + xterm fit.
+  visible: boolean;
+  // Whether this pane holds keyboard focus / shows the active highlight.
+  focused: boolean;
 }
 
 function terminalTheme(scheme: string | undefined) {
@@ -74,7 +82,13 @@ function terminalTheme(scheme: string | undefined) {
   };
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Props) {
+// While a pane is hidden xterm has no renderer to write into, so its PTY output
+// is buffered until the terminal is first opened. Cap the retained text so a
+// chatty background agent can't grow this without bound; xterm trims to its own
+// scrollback on flush anyway.
+const PENDING_OUTPUT_CAP = 1_000_000;
+
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, visible, focused }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -82,6 +96,22 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
   const unlistenOutput = useRef<(() => void) | null>(null);
   const unlistenReady = useRef<(() => void) | null>(null);
   const unlistenExit = useRef<(() => void) | null>(null);
+  const initialInputSent = useRef(false);
+  const initialEnterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const firstOutputAt = useRef<number | null>(null);
+  // xterm crashes if opened/written into a zero-size or display:none element
+  // (its renderer never initializes, so syncScrollArea dereferences undefined).
+  // Panes start hidden — and even the active pane is display:none until its rect
+  // is measured — so we defer term.open()/fit() until the container has a layout
+  // box, buffering PTY output until then. `doFitRef` lets the visibility effect
+  // reach the open/fit logic that lives in the mount effect's scope.
+  const openedRef = useRef(false);
+  const pendingOutput = useRef("");
+  const doFitRef = useRef<(() => void) | null>(null);
+  const visibleRef = useRef(visible);
+  const focusedRef = useRef(focused);
+  visibleRef.current = visible;
+  focusedRef.current = focused;
   const argsKey = JSON.stringify(args);
   const envKey = JSON.stringify(env);
 
@@ -102,11 +132,49 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
     const links = new WebLinksAddon();
     term.loadAddon(fit);
     term.loadAddon(links);
-    term.open(containerRef.current);
-    fit.fit();
 
     termRef.current = term;
     fitRef.current = fit;
+    openedRef.current = false;
+    pendingOutput.current = "";
+
+    // Write PTY output to the terminal once it is open; buffer it otherwise so a
+    // hidden pane doesn't lose its scrollback (and doesn't crash xterm's
+    // not-yet-initialized renderer).
+    const writeTerm = (data: string) => {
+      if (openedRef.current) {
+        term.write(data);
+      } else {
+        pendingOutput.current += data;
+        if (pendingOutput.current.length > PENDING_OUTPUT_CAP) {
+          pendingOutput.current = pendingOutput.current.slice(-PENDING_OUTPUT_CAP);
+        }
+      }
+    };
+
+    // True only when the container is actually laid out (visible, non-zero size).
+    const hasLayout = () => {
+      const el = containerRef.current;
+      return (
+        !!el && el.offsetParent !== null && el.clientWidth > 0 && el.clientHeight > 0
+      );
+    };
+
+    // Open the terminal into its container the first time the pane is visible and
+    // sized, then flush any output buffered while it was hidden.
+    const tryOpen = () => {
+      if (openedRef.current || cancelled) return;
+      if (!visibleRef.current || !hasLayout() || !containerRef.current) return;
+      term.open(containerRef.current);
+      openedRef.current = true;
+      fit.fit();
+      if (pendingOutput.current) {
+        term.write(pendingOutput.current);
+        pendingOutput.current = "";
+      }
+      invoke("pty_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
+      if (focusedRef.current) term.focus();
+    };
 
     // Wire keyboard input → PTY write.
     term.onData((data) => {
@@ -119,14 +187,50 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
         "terminal-output",
         (ev: Event<TerminalOutput>) => {
           if (ev.payload.id === id) {
-            termRef.current?.write(ev.payload.data);
+            // Record when the spawned program first produces output — used to
+            // tell when an agent TUI has actually started so we don't type the
+            // initialInput before it can accept keystrokes (see below).
+            if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
+            writeTerm(ev.payload.data);
           }
         },
       );
 
       const readyListener = await listen("terminal-ready", (ev: Event<{ id: string }>) => {
         if (ev.payload.id === id) {
-          termRef.current?.write("\r\n");
+          writeTerm("\r\n");
+          if (initialInput && !initialInputSent.current) {
+            initialInputSent.current = true;
+            // `terminal-ready` fires as soon as the PTY is spawned, but an agent
+            // TUI (Claude, etc.) needs a beat to boot before it reads stdin.
+            // Typing the command immediately means the keystrokes/Enter land
+            // before the input box is live, so the text appears but never
+            // submits. Wait until the program has produced output for a short
+            // cushion (boot done) — capped by a hard timeout — then type the
+            // text and submit it with a single Enter (CR) a beat later, as a
+            // separate write so a trailing newline isn't swallowed by the TUI's
+            // bracketed-paste/buffered input handling.
+            const READY_CUSHION_MS = 1200;
+            const MAX_WAIT_MS = 5000;
+            const scheduledAt = Date.now();
+            const typeWhenReady = () => {
+              if (cancelled) return;
+              const elapsed = Date.now() - scheduledAt;
+              const firstOut = firstOutputAt.current;
+              const ready =
+                firstOut !== null && Date.now() - firstOut >= READY_CUSHION_MS;
+              if (!ready && elapsed < MAX_WAIT_MS) {
+                initialEnterTimer.current = setTimeout(typeWhenReady, 100);
+                return;
+              }
+              const text = Array.from(new TextEncoder().encode(initialInput));
+              invoke("pty_write", { id, data: text }).catch(console.error);
+              initialEnterTimer.current = setTimeout(() => {
+                invoke("pty_write", { id, data: [0x0d] }).catch(console.error);
+              }, 200);
+            };
+            typeWhenReady();
+          }
         }
       });
 
@@ -134,9 +238,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
         "terminal-exit",
         (ev: Event<TerminalExit>) => {
           if (ev.payload.id === id) {
-            termRef.current?.write(
-              "\r\n\x1b[33m[process exited]\x1b[0m\r\n",
-            );
+            writeTerm("\r\n\x1b[33m[process exited]\x1b[0m\r\n");
           }
         },
       );
@@ -154,20 +256,27 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
 
       try {
         await invoke("pty_spawn", {
-          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows },
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly },
         });
       } catch (e) {
         if (!cancelled) {
-          term.write(`\r\n\x1b[31m[spawn error: ${e}]\x1b[0m\r\n`);
+          writeTerm(`\r\n\x1b[31m[spawn error: ${e}]\x1b[0m\r\n`);
         }
       }
     };
 
     setupAndSpawn();
 
-    // Resize observer — handles container-level resizes (e.g. panel open/close).
+    // Resize observer — handles container-level resizes (e.g. panel open/close)
+    // and the hidden→visible transition (display:none→flex changes the box from
+    // zero to its measured size, which fires the observer). While still unopened
+    // this opens the terminal once it gains a layout box; afterwards it refits.
     const doFit = () => {
-      if (fitRef.current && termRef.current) {
+      if (!openedRef.current) {
+        tryOpen();
+        return;
+      }
+      if (fitRef.current && termRef.current && hasLayout()) {
         fitRef.current.fit();
         invoke("pty_resize", {
           id,
@@ -176,6 +285,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
         }).catch(() => {});
       }
     };
+    doFitRef.current = doFit;
     const ro = new ResizeObserver(doFit);
     if (containerRef.current) ro.observe(containerRef.current);
 
@@ -185,8 +295,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
 
     return () => {
       cancelled = true;
+      if (initialEnterTimer.current) clearTimeout(initialEnterTimer.current);
       window.removeEventListener("resize", doFit);
       ro.disconnect();
+      doFitRef.current = null;
       unlistenOutput.current?.();
       unlistenReady.current?.();
       unlistenExit.current?.();
@@ -196,7 +308,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
       invoke("pty_kill", { id }).catch(() => {});
       term.dispose();
     };
-  }, [id, cmd, cwd, argsKey, envKey]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly]);
 
   useEffect(() => {
     if (termRef.current) {
@@ -204,13 +316,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
     }
   }, [colorScheme]);
 
-  // Re-fit when the tab becomes visible.
+  // Open (first time) or re-fit when the pane becomes visible or its cell
+  // geometry changes (grid layout switches). The container ResizeObserver covers
+  // most resizes, but a hidden→visible transition doesn't always fire it, so
+  // drive the open/fit logic explicitly here.
   useEffect(() => {
-    if (active && fitRef.current && termRef.current) {
-      fitRef.current.fit();
-      termRef.current.focus();
-    }
-  }, [active]);
+    if (visible) doFitRef.current?.();
+  }, [visible, id]);
+
+  // Take keyboard focus only when this pane is the focused one (and opened).
+  useEffect(() => {
+    if (focused && openedRef.current && termRef.current) termRef.current.focus();
+  }, [focused]);
 
   return (
     <div
@@ -218,8 +335,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, cwd, active }: Prop
       style={{
         flex: 1,
         minHeight: 0,
+        minWidth: 0,
         position: "relative",
-        display: active ? "flex" : "none",
+        display: "flex",
         flexDirection: "column",
         background: colorScheme === "light" || colorScheme === "fancy_light" ? "#ffffff" : "#0d1117",
       }}

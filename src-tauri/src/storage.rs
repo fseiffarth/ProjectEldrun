@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::Path;
 
+use crate::paths;
+
 /// Read and deserialize a JSON file.
 pub fn read_json<T>(path: &Path) -> Result<T, Box<dyn std::error::Error>>
 where
@@ -32,8 +34,8 @@ where
 pub fn state_dir() -> std::path::PathBuf {
     if cfg!(target_os = "windows") {
         let base = std::env::var("APPDATA")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| "C:\\Users\\Default".to_string());
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| paths::home_dir());
         std::path::PathBuf::from(base).join("eldrun")
     } else if cfg!(target_os = "macos") {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -52,62 +54,63 @@ pub fn state_dir() -> std::path::PathBuf {
 
 /// Working directory for terminals that are not attached to a project.
 pub fn root_work_dir() -> std::path::PathBuf {
-    let home = if cfg!(target_os = "windows") {
-        std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".to_string())
-    } else {
-        std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
-    };
-    std::path::PathBuf::from(home).join("eldrun").join("root")
+    paths::root_work_dir()
+}
+
+fn now_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Current date in UTC as "YYYY-MM-DD".
 pub fn today_utc() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let days = (secs / 86400) as i64;
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
+    let (y, m, d, ..) = epoch_to_utc(now_secs());
     format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// Current timestamp as ISO-8601 UTC string (seconds precision).
 pub fn iso_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let total = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let s = total % 60;
-    let m = (total / 60) % 60;
-    let h = (total / 3600) % 24;
-    let mut days = total / 86400;
+    let (y, mo, d, h, mi, s) = epoch_to_utc(now_secs());
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}+00:00")
+}
+
+/// Convert a Unix timestamp to UTC calendar fields:
+/// (year, month, day, hour, minute, second).
+pub(crate) fn epoch_to_utc(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let mut days = secs / 86400;
     let mut year = 1970u64;
     loop {
-        let dy = if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 };
-        if days < dy { break; }
+        let dy = if is_leap_year(year) { 366 } else { 365 };
+        if days < dy {
+            break;
+        }
         days -= dy;
         year += 1;
     }
-    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    let month_lens: [u64; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_lens: [u64; 12] = [
+        31,
+        if is_leap_year(year) { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
     let mut month = 1u64;
     for &ml in &month_lens {
-        if days < ml { break; }
+        if days < ml {
+            break;
+        }
         days -= ml;
         month += 1;
     }
-    format!("{year:04}-{month:02}-{:02}T{h:02}:{m:02}:{s:02}+00:00", days + 1)
+    (year, month, days + 1, h, m, s)
+}
+
+pub(crate) fn is_leap_year(y: u64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -156,7 +159,102 @@ mod tests {
         let today = today_utc();
         let now = iso_now();
         let year = &today[..4];
-        assert!(now.starts_with(year), "iso_now year must match today: now={now} today={today}");
+        assert!(
+            now.starts_with(year),
+            "iso_now year must match today: now={now} today={today}"
+        );
+    }
+
+    // ── is_leap_year ───────────────────────────────────────────────────────
+
+    #[test]
+    fn year_divisible_by_4_is_leap() {
+        assert!(is_leap_year(2024));
+        assert!(is_leap_year(2000));
+        assert!(is_leap_year(1600));
+    }
+
+    #[test]
+    fn year_divisible_by_100_but_not_400_is_not_leap() {
+        assert!(!is_leap_year(1900));
+        assert!(!is_leap_year(1800));
+        assert!(!is_leap_year(2100));
+    }
+
+    #[test]
+    fn year_not_divisible_by_4_is_not_leap() {
+        assert!(!is_leap_year(2023));
+        assert!(!is_leap_year(2025));
+        assert!(!is_leap_year(1999));
+    }
+
+    // ── epoch_to_utc ───────────────────────────────────────────────────────
+
+    #[test]
+    fn epoch_zero_is_unix_epoch() {
+        let (y, mo, d, h, m, s) = epoch_to_utc(0);
+        assert_eq!((y, mo, d, h, m, s), (1970, 1, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn epoch_midnight_jan_2_1970() {
+        let (y, mo, d, h, m, s) = epoch_to_utc(86400);
+        assert_eq!((y, mo, d, h, m, s), (1970, 1, 2, 0, 0, 0));
+    }
+
+    #[test]
+    fn epoch_end_of_1970() {
+        // Dec 31 1970 23:59:59 = 86400*365 - 1 = 31535999
+        let (y, mo, d, ..) = epoch_to_utc(31535999);
+        assert_eq!((y, mo, d), (1970, 12, 31));
+    }
+
+    #[test]
+    fn epoch_jan_1_2000() {
+        // 2000-01-01T00:00:00Z = 946684800
+        let (y, mo, d, h, m, s) = epoch_to_utc(946684800);
+        assert_eq!((y, mo, d, h, m, s), (2000, 1, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn epoch_feb_29_leap_year() {
+        // 2000-02-29T00:00:00Z = 951782400
+        let (y, mo, d, ..) = epoch_to_utc(951782400);
+        assert_eq!((y, mo, d), (2000, 2, 29));
+    }
+
+    #[test]
+    fn epoch_time_components_are_correct() {
+        // 1717414496 = 2024-06-03T11:34:56Z (verified: 1717372800 + 41696)
+        let (y, mo, d, h, m, s) = epoch_to_utc(1717414496);
+        assert_eq!((y, mo, d), (2024, 6, 3));
+        assert_eq!((h, m, s), (11, 34, 56));
+    }
+
+    #[test]
+    fn epoch_seconds_wrap_at_60() {
+        let (_, _, _, _, _, s) = epoch_to_utc(59);
+        assert_eq!(s, 59);
+        let (_, _, _, _, _, s2) = epoch_to_utc(60);
+        assert_eq!(s2, 0);
+    }
+
+    #[test]
+    fn epoch_minutes_wrap_at_60() {
+        let (_, _, _, _, m, _) = epoch_to_utc(3599); // 59m59s
+        assert_eq!(m, 59);
+        let (_, _, _, _, m2, _) = epoch_to_utc(3600); // 1h0m0s
+        assert_eq!(m2, 0);
+    }
+
+    #[test]
+    fn today_and_iso_now_agree_on_the_date() {
+        let today = today_utc();
+        let now = iso_now();
+        assert!(
+            now.starts_with(&today),
+            "iso_now must share today_utc's date: now={now} today={today}"
+        );
     }
 
     // ── state_dir ─────────────────────────────────────────────────────────
@@ -180,7 +278,11 @@ mod tests {
     #[test]
     fn root_work_dir_parent_is_eldrun() {
         let dir = root_work_dir();
-        let parent = dir.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("");
+        let parent = dir
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
         assert_eq!(parent, "eldrun");
     }
 
@@ -218,7 +320,8 @@ mod tests {
 
     #[test]
     fn read_json_error_on_missing_file() {
-        let result: Result<Vec<String>, _> = read_json(std::path::Path::new("/nonexistent/file.json"));
+        let result: Result<Vec<String>, _> =
+            read_json(std::path::Path::new("/nonexistent/file.json"));
         assert!(result.is_err());
     }
 

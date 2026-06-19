@@ -17,8 +17,9 @@ Last reviewed: 2026-06-06
 - Local Ollama support: installed models appear as Local Agent tab choices,
   local tabs run through Vibe with isolated per-model `VIBE_HOME` configs, and
   the Settings Ollama panel can list, install/update, unload, and delete models.
-- Hover-revealed UI: all three side panels (global app bar, right file panel,
-  bottom bar) appear on pointer hover and auto-close when the pointer leaves.
+- Hover-revealed UI: the two side panels (global app bar, right file panel)
+  appear on pointer hover and auto-close when the pointer leaves; the project
+  switcher lives in the top header bar.
 - Project pill hover shows path, status, and today's active time.
 - Tab layout is persisted per project in `project.json["tab_layout"]`.
 - External window tracking replaces X11 embedding; file opens use `xdg-open`.

@@ -33,20 +33,36 @@ pub struct WorkspaceInfo {
 pub trait WorkspaceBackend: Send + Sync {
     fn name(&self) -> &'static str;
     fn info(&self) -> WorkspaceInfo;
+    /// Make a tracked window visible according to this backend's workspace
+    /// model. X11 moves it to desktop 0; other backends may restore/raise it.
     fn show_window(&self, window_id: u64) -> Result<(), String>;
+    /// Hide a tracked window according to this backend's workspace model. X11
+    /// parks it on desktop 1, the Eldrun hidden workspace.
     fn hide_window(&self, window_id: u64) -> Result<(), String>;
-    /// Bring `project_id`'s windows to the foreground desktop and park the
-    /// previous project's windows on the hidden desktop. `None` targets the
-    /// root terminal workspace.
-    /// `previous_project_id` is the project being deactivated, with `None`
-    /// representing the root terminal workspace.
+    /// Compatibility helper for older command paths. Backend implementations
+    /// should normally only need to implement show_window/hide_window.
     fn switch_to_project(
         &self,
-        project_id: Option<&str>,
-        previous_project_id: Option<&str>,
+        _project_id: Option<&str>,
+        _previous_project_id: Option<&str>,
         previous_window_ids: &[u64],
         current_window_ids: &[u64],
-    ) -> Result<(), String>;
+    ) -> Result<(), String> {
+        for &window_id in previous_window_ids {
+            self.hide_window(window_id)?;
+        }
+        for &window_id in current_window_ids {
+            self.show_window(window_id)?;
+        }
+        Ok(())
+    }
+    /// Whether this backend can host a frameless embedded external window
+    /// (e.g. via X11 reparenting). Only X11 returns true; every other backend
+    /// (null, KDE-Wayland, Windows) degrades the file→tab embed feature to a
+    /// plain external launch. Default false so new backends are safe.
+    fn supports_embedding(&self) -> bool {
+        false
+    }
     /// Called at startup to make Eldrun visible on all desktops (sticky).
     fn make_sticky(&self, eldrun_pid: u32) -> Result<(), String>;
     /// Called when the app exits — restore original desktop configuration.

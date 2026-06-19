@@ -1,10 +1,16 @@
 pub mod apps;
+pub mod crash;
 pub mod default_apps;
 pub mod downloads;
+pub mod git;
+pub mod github;
 pub mod ollama;
+pub mod openvpn;
 pub mod project_runtime;
 pub mod projects;
 pub mod settings;
+pub mod ssh;
 pub mod terminal;
+pub mod tex;
 pub mod timer;
 pub mod workspace;

@@ -58,6 +58,47 @@ pub struct TabEntry {
     pub label: String,
     pub cmd: String,
     pub cwd: String,
+    /// Agent session UUID for resumable agent tabs (e.g. Claude's
+    /// `--session-id <uuid>`), persisted so the session can be resumed on
+    /// restore via `--resume <uuid>`. Absent for shell/files tabs and
+    /// non-resumable agents. Serialized as `sessionId`.
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// Remote (SSH) location metadata. A project is "remote" iff this is present.
+/// The project's `directory` then points at the local sshfs mountpoint while
+/// the bytes live on `host:remote_path`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteSpec {
+    /// SSH user, e.g. "alice"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// SSH host, e.g. "build.example.com"
+    pub host: String,
+    /// SSH port; None = default 22
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Absolute path on the remote host that is the project root
+    pub remote_path: String,
+    /// Optional OpenVPN tunnel to bring up before reaching `host`. When present,
+    /// the tunnel is connected (password prompted at activation, never stored)
+    /// before the sshfs mount / ssh sessions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openvpn: Option<OpenVpnSpec>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// Optional OpenVPN tunnel for reaching a remote project's host. Only the
+/// client config path is persisted; the password is prompted each time the
+/// tunnel is brought up and is never written to disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenVpnSpec {
+    /// Absolute path to the local `.ovpn` client config file.
+    pub config: String,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -72,6 +113,8 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub directory: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,6 +143,19 @@ pub struct Project {
     pub open_apps: Option<Vec<OpenApp>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tab_layout: Option<Vec<TabEntry>>,
+    /// Serialized split/group layout tree (opaque to the backend — the frontend
+    /// owns its shape; `Value` round-trips it safely). Absent for legacy
+    /// projects, in which case the frontend rebuilds a single root group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tab_groups: Option<serde_json::Value>,
+    /// Session UUIDs of agent tabs that were open (e.g. Claude's
+    /// `--session-id <uuid>`), persisted so a session can be resumed later.
+    /// The restore path does not consume this yet — it only keeps the UUIDs
+    /// durable. Opaque shape owned by the frontend (round-tripped via `Value`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_tab_sessions: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteSpec>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

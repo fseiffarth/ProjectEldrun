@@ -5,6 +5,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::commands::apps::{opened_windows_for_project, TrackedWindow, WindowRegistryState};
 use crate::platform::{detect_backend, WorkspaceBackend, WorkspaceInfo};
+use crate::services::window_service;
 
 pub struct WorkspaceState {
     pub backend: Box<dyn WorkspaceBackend>,
@@ -36,36 +37,20 @@ pub fn workspace_switch(
     let (previous_window_ids, current_window_ids) = {
         let windows = windows.lock().unwrap();
         let previous_window_ids =
-            workspace_window_ids(&windows.windows, previous_project_id.as_deref());
-        let current_window_ids = workspace_window_ids(&windows.windows, project_id.as_deref());
+            window_service::project_window_ids(&windows.windows, previous_project_id.as_deref());
+        let current_window_ids =
+            window_service::project_window_ids(&windows.windows, project_id.as_deref());
         (previous_window_ids, current_window_ids)
     };
 
-    state
-        .lock()
-        .unwrap()
-        .backend
-        .switch_to_project(
-            project_id.as_deref(),
-            previous_project_id.as_deref(),
-            &previous_window_ids,
-            &current_window_ids,
-        )?;
+    {
+        let workspace = state.lock().unwrap();
+        window_service::hide_windows(&*workspace.backend, &previous_window_ids);
+        window_service::show_windows(&*workspace.backend, &current_window_ids);
+    }
     let info = state.lock().unwrap().backend.info();
     let _ = app.emit("workspace-changed", info);
     Ok(())
-}
-
-fn workspace_window_ids(
-    windows: &std::collections::HashMap<String, crate::commands::apps::TrackedWindow>,
-    project_id: Option<&str>,
-) -> Vec<u64> {
-    windows
-        .values()
-        .filter(|window| window.role.is_none())
-        .filter(|window| window.project_id.as_deref() == project_id)
-        .filter_map(|window| window.window_id)
-        .collect()
 }
 
 #[tauri::command]

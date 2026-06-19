@@ -12,8 +12,30 @@ export interface Settings {
   git_token?: string;
   color_scheme?: string;
   default_agent_cmd?: string;
+  run_scripts_in_background?: boolean;
+  /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
+  right_panel_pinned?: boolean;
   global_apps?: Record<string, GlobalAppEntry>;
   [key: string]: unknown;
+}
+
+export interface OpenVpnSpec {
+  /** Absolute path to the local `.ovpn` client config file. */
+  config: string;
+}
+
+export interface RemoteSpec {
+  user?: string;
+  host: string;
+  port?: number;
+  remote_path: string;
+  /** Optional OpenVPN tunnel brought up before reaching the host. */
+  openvpn?: OpenVpnSpec;
+}
+
+export interface RemoteEntry {
+  name: string;
+  is_dir: boolean;
 }
 
 export interface ProjectEntry {
@@ -24,6 +46,8 @@ export interface ProjectEntry {
   position: number;
   local_file: string;
   directory?: string;
+  description?: string;
+  remote?: RemoteSpec;
   [key: string]: unknown;
 }
 

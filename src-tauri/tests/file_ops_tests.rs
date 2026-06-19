@@ -4,7 +4,6 @@
 /// All tests use a tempdir so no real project state is touched.
 
 use std::fs;
-use std::path::Path;
 
 use eldrun_lib::commands::projects::{
     create_dir, create_file, delete_dir, delete_file, list_dir, rename_path, scaffold_project,
@@ -326,7 +325,7 @@ fn scaffold_project_integration_creates_full_structure() {
         "TODO.md",
         "ROADMAP.md",
         "STATUS.md",
-        "DOCUMENTATION.md",
+        "README.md",
         ".gitignore",
         ".claude/settings.json",
     ] {

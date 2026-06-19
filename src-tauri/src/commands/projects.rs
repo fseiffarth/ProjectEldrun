@@ -1,13 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::schema::project::Project;
+use crate::paths;
+use crate::schema::project::{Project, RemoteSpec};
 use crate::schema::projects::{ProjectEntry, ProjectsList};
 use crate::schema::time_log::TimeLog;
+use crate::services::ssh_mount;
 use crate::storage;
 
 // ── Project list ──────────────────────────────────────────────────────────
@@ -18,7 +21,36 @@ pub fn get_projects() -> Result<ProjectsList, String> {
     if !path.exists() {
         return Ok(vec![]);
     }
-    storage::read_json(&path).map_err(|e| e.to_string())
+    let mut list: ProjectsList = storage::read_json(&path).map_err(|e| e.to_string())?;
+    // Migrate legacy git_type values (private/public) to the local/remote model
+    // in-memory so the frontend always sees canonical values. Persisted on the
+    // next natural save (no surprise write from a read command).
+    for entry in list.iter_mut() {
+        if let Some(Value::String(gt)) = entry.extra.get("git_type") {
+            let norm = normalize_git_type(gt);
+            if &norm != gt {
+                entry
+                    .extra
+                    .insert("git_type".to_string(), Value::String(norm));
+            }
+        }
+    }
+    Ok(list)
+}
+
+/// Normalize a `git_type` value to the local/remote model used since Group D.
+/// Legacy values map private → remote-private, public → remote-public; the
+/// canonical values pass through; anything unrecognized falls back to "local".
+pub(crate) fn normalize_git_type(value: &str) -> String {
+    match value.trim() {
+        "private" => "remote-private",
+        "public" => "remote-public",
+        "local" => "local",
+        "remote-private" => "remote-private",
+        "remote-public" => "remote-public",
+        _ => "local",
+    }
+    .to_string()
 }
 
 #[tauri::command]
@@ -27,12 +59,63 @@ pub fn save_projects(projects: ProjectsList) -> Result<(), String> {
     storage::write_json(&path, &projects).map_err(|e| e.to_string())
 }
 
+/// Update a project's description in both `projects.json` (the pill list) and
+/// the project's own `project.json`, keeping the two in sync. An empty/blank
+/// description clears the field. Returns the cleaned description (or null).
+#[tauri::command]
+pub fn set_project_description(
+    project_id: String,
+    description: Option<String>,
+) -> Result<Option<String>, String> {
+    let cleaned = clean_description(description);
+
+    // projects.json — find the entry and update its flattened `description`.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    match &cleaned {
+        Some(d) => {
+            entry
+                .extra
+                .insert("description".to_string(), Value::String(d.clone()));
+        }
+        None => {
+            entry.extra.remove("description");
+        }
+    }
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project file consistent (best effort: a
+    // missing file is not fatal since the list is the source of truth for pills).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            project.description = cleaned.clone();
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(cleaned)
+}
+
 // ── Per-project project.json ───────────────────────────────────────────────
 
 #[tauri::command]
 pub fn load_project(local_file: String) -> Result<Project, String> {
     let path = PathBuf::from(&local_file);
-    storage::read_json(&path).map_err(|e| e.to_string())
+    let mut project: Project = storage::read_json(&path).map_err(|e| e.to_string())?;
+    if let Some(gt) = project.git_type.as_deref() {
+        project.git_type = Some(normalize_git_type(gt));
+    }
+    Ok(project)
 }
 
 #[tauri::command]
@@ -46,210 +129,10 @@ pub fn save_project(local_file: String, project: Project) -> Result<(), String> 
 pub fn save_tab_layout(
     local_file: String,
     tabs: Vec<crate::schema::project::TabEntry>,
+    groups: Option<Value>,
+    sessions: Option<Value>,
 ) -> Result<(), String> {
-    crate::services::terminal_service::save_tab_layout(&local_file, &tabs)
-}
-
-/// Debug: clear all project session state from disk (tabs, open_apps, session files).
-#[tauri::command]
-pub fn clear_project_session(local_file: String) -> Result<(), String> {
-    use crate::services::terminal_service::eldrun_sessions_dir;
-
-    let path = PathBuf::from(&local_file);
-    let mut project: Project = storage::read_json(&path).unwrap_or_default();
-    project.tab_layout = None;
-    project.open_apps = None;
-    storage::write_json(&path, &project).map_err(|e| e.to_string())?;
-
-    if let Some(sessions_dir) = eldrun_sessions_dir(&local_file) {
-        for file in &["terminals.json", "windows.json", "filetabs.json"] {
-            let p = sessions_dir.join(file);
-            if p.exists() {
-                let _ = fs::remove_file(&p);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Detect the most recent session ID for any supported agent CLI.
-///
-/// - `agent_cmd`: the command name ("claude", "codex", "gemini", "vibe")
-/// - `project_dir`: the project's working directory
-/// - `vibe_home`: optional VIBE_HOME override (used for local Ollama agent tabs)
-#[tauri::command]
-pub fn detect_agent_session_id(
-    agent_cmd: String,
-    project_dir: String,
-    vibe_home: Option<String>,
-) -> Option<String> {
-    match agent_cmd.as_str() {
-        "claude" => detect_claude_session(&project_dir),
-        "codex"  => detect_codex_session(&project_dir),
-        "gemini" => detect_gemini_session(&project_dir),
-        "vibe"   => detect_vibe_session(&project_dir, vibe_home.as_deref()),
-        _        => None,
-    }
-}
-
-/// Claude: `~/.claude/projects/<encoded-path>/<session-id>.jsonl`
-/// Path encoding: every `/` → `-`.
-fn detect_claude_session(project_dir: &str) -> Option<String> {
-    let encoded = project_dir.replace('/', "-");
-    let home = std::env::var("HOME").ok()?;
-    let dir = PathBuf::from(home).join(".claude").join("projects").join(&encoded);
-    most_recent_jsonl_stem(&dir)
-}
-
-/// Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`
-/// Each file starts with a `session_meta` line containing `id` and `cwd`.
-/// We walk newest date directories first and return the first session whose
-/// cwd matches `project_dir`.
-fn detect_codex_session(project_dir: &str) -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let root = PathBuf::from(home).join(".codex").join("sessions");
-    if !root.is_dir() {
-        return None;
-    }
-
-    // Collect every JSONL file with its modification time, then sort newest first.
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-    collect_jsonl_files(&root, &mut files);
-    files.sort_by(|a, b| b.0.cmp(&a.0));
-
-    for (_, path) in files {
-        if let Some(id) = read_codex_session_id_for_dir(&path, project_dir) {
-            return Some(id);
-        }
-    }
-    None
-}
-
-/// Gemini stores per-project history under `~/.gemini/history/<name>/` where
-/// the name mapping lives in `~/.gemini/projects.json`.  The resume flag
-/// accepts "latest" which always picks the most recent session, so we just
-/// confirm a history entry exists for this project and return the sentinel.
-fn detect_gemini_session(project_dir: &str) -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let gemini_home = PathBuf::from(home).join(".gemini");
-
-    // Resolve project name from projects.json.
-    let projects_file = gemini_home.join("projects.json");
-    let content = fs::read_to_string(&projects_file).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let name = v["projects"]
-        .as_object()?
-        .iter()
-        .find(|(k, _)| k.as_str() == project_dir)
-        .map(|(_, v)| v.as_str().unwrap_or("").to_owned())?;
-
-    let history_dir = gemini_home.join("history").join(&name);
-    if history_dir.is_dir() { Some("latest".to_string()) } else { None }
-}
-
-/// Vibe: `$VIBE_HOME/logs/session/<dir>/meta.json`
-/// `meta.json` has `session_id` and `environment.working_directory`.
-fn detect_vibe_session(project_dir: &str, vibe_home: Option<&str>) -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let base = match vibe_home {
-        Some(h) if !h.is_empty() => PathBuf::from(h),
-        _ => PathBuf::from(&home).join(".vibe"),
-    };
-    let sessions_dir = base.join("logs").join("session");
-    if !sessions_dir.is_dir() {
-        return None;
-    }
-
-    let mut best: Option<(std::time::SystemTime, String)> = None;
-    for entry in fs::read_dir(&sessions_dir).ok()?.flatten() {
-        if !entry.file_type().map_or(false, |t| t.is_dir()) {
-            continue;
-        }
-        let meta_path = entry.path().join("meta.json");
-        if !meta_path.exists() {
-            continue;
-        }
-        let content = match fs::read_to_string(&meta_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let v: serde_json::Value = match serde_json::from_str(&content) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let cwd = v["environment"]["working_directory"].as_str().unwrap_or("");
-        if cwd != project_dir {
-            continue;
-        }
-        let session_id = match v["session_id"].as_str() {
-            Some(id) => id.to_owned(),
-            None => continue,
-        };
-        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
-            if best.as_ref().map_or(true, |(t, _)| modified > *t) {
-                best = Some((modified, session_id));
-            }
-        }
-    }
-    best.map(|(_, id)| id)
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────
-
-/// Return the stem (filename without `.jsonl`) of the most recently modified
-/// `.jsonl` file in `dir`.
-fn most_recent_jsonl_stem(dir: &PathBuf) -> Option<String> {
-    if !dir.is_dir() {
-        return None;
-    }
-    let mut latest: Option<(std::time::SystemTime, String)> = None;
-    for entry in fs::read_dir(dir).ok()?.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".jsonl") {
-            continue;
-        }
-        let stem = name[..name.len() - 6].to_string();
-        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
-            if latest.as_ref().map_or(true, |(t, _)| modified > *t) {
-                latest = Some((modified, stem));
-            }
-        }
-    }
-    latest.map(|(_, stem)| stem)
-}
-
-/// Recursively collect all `.jsonl` files under `dir` along with their mtime.
-fn collect_jsonl_files(dir: &PathBuf, out: &mut Vec<(std::time::SystemTime, PathBuf)>) {
-    let Ok(rd) = fs::read_dir(dir) else { return };
-    for entry in rd.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_jsonl_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
-                out.push((modified, path));
-            }
-        }
-    }
-}
-
-/// Read the first `session_meta` line of a codex JSONL file and return the
-/// session `id` if `cwd` matches `project_dir`.
-fn read_codex_session_id_for_dir(path: &PathBuf, project_dir: &str) -> Option<String> {
-    use std::io::{BufRead, BufReader};
-    let file = fs::File::open(path).ok()?;
-    for line in BufReader::new(file).lines().take(5).flatten() {
-        let v: serde_json::Value = serde_json::from_str(&line).ok()?;
-        if v["type"].as_str() != Some("session_meta") {
-            continue;
-        }
-        let payload = &v["payload"];
-        if payload["cwd"].as_str() != Some(project_dir) {
-            return None;
-        }
-        return payload["id"].as_str().map(String::from);
-    }
-    None
+    crate::services::terminal_service::save_tab_layout(&local_file, &tabs, groups, sessions)
 }
 
 #[tauri::command]
@@ -262,6 +145,16 @@ pub fn projects_root_dir() -> String {
     projects_root().to_string_lossy().to_string()
 }
 
+/// Open a directory in the OS file manager (Files/Finder/Explorer).
+#[tauri::command]
+pub fn open_in_file_manager(path: String) -> Result<(), String> {
+    let dir = PathBuf::from(&path);
+    if !dir.is_dir() {
+        return Err(format!("Not a directory: {path}"));
+    }
+    opener::open(&dir).map_err(|e| e.to_string())
+}
+
 // ── File tree ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,8 +164,15 @@ pub struct FileEntry {
     pub is_dir: bool,
     pub size: u64,
     pub modified_secs: Option<u64>,
+    pub created_secs: Option<u64>,
     pub extension: Option<String>,
     pub mime: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectPathEntry {
+    pub path: String,
+    pub is_dir: bool,
 }
 
 /// List directory contents — validates the path stays inside the project root.
@@ -305,9 +205,11 @@ pub fn list_dir(project_dir: String, rel_path: String) -> Result<Vec<FileEntry>,
             .extension()
             .and_then(|e| e.to_str())
             .map(|s| format!(".{s}"));
-        let mime = ext
-            .as_deref()
-            .map(|e| mime_guess::from_ext(&e[1..]).first_or_octet_stream().to_string());
+        let mime = ext.as_deref().map(|e| {
+            mime_guess::from_ext(&e[1..])
+                .first_or_octet_stream()
+                .to_string()
+        });
 
         result.push(FileEntry {
             name,
@@ -319,30 +221,57 @@ pub fn list_dir(project_dir: String, rel_path: String) -> Result<Vec<FileEntry>,
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs()),
+            created_secs: meta
+                .created()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs()),
             extension: ext,
             mime,
         });
     }
-    result.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    result.sort_by_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
     Ok(result)
 }
 
-/// Rename a file or directory — path must stay inside the project root.
 #[tauri::command]
-pub fn rename_path(
-    project_dir: String,
-    old_rel: String,
-    new_name: String,
-) -> Result<(), String> {
+pub fn list_project_endings(project_dir: String) -> Result<Vec<String>, String> {
+    let root = canonical(&project_dir)?;
+    let mut endings = BTreeSet::new();
+    collect_project_endings(&root, &root, 0, &mut endings)?;
+    Ok(endings.into_iter().collect())
+}
+
+#[tauri::command]
+pub fn list_project_paths(project_dir: String) -> Result<Vec<ProjectPathEntry>, String> {
+    let root = canonical(&project_dir)?;
+    let mut paths = Vec::new();
+    collect_project_paths(&root, &root, "", 0, &mut paths)?;
+    paths.sort_by_key(|entry| (!entry.is_dir, entry.path.to_lowercase()));
+    Ok(paths)
+}
+
+/// Rename a file or directory — path must stay inside the project root.
+/// `new_name` must be a bare file name; renames never move entries between
+/// directories.
+#[tauri::command]
+pub fn rename_path(project_dir: String, old_rel: String, new_name: String) -> Result<(), String> {
+    let new_name = new_name.trim();
+    if new_name.is_empty()
+        || new_name == "."
+        || new_name == ".."
+        || new_name.contains('/')
+        || new_name.contains('\\')
+        || new_name.contains('\0')
+    {
+        return Err(format!("invalid file name '{new_name}'"));
+    }
+
     let root = canonical(&project_dir)?;
     let old = canonical(&root.join(&old_rel).to_string_lossy().to_string())?;
     enforce_confinement(&root, &old)?;
 
-    let new = old.parent().ok_or("no parent")?.join(&new_name);
+    let new = old.parent().ok_or("no parent")?.join(new_name);
     // New path must also stay inside root.
     let new_c = canonical_or_new(&new);
     enforce_confinement(&root, &new_c)?;
@@ -390,7 +319,87 @@ pub fn create_file(project_dir: String, rel_path: String) -> Result<(), String> 
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::File::create(&target).map(|_| ()).map_err(|e| e.to_string())
+    fs::File::create(&target)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Write a text file inside the project.
+#[tauri::command]
+pub fn write_project_file(
+    project_dir: String,
+    rel_path: String,
+    content: String,
+) -> Result<(), String> {
+    let root = canonical(&project_dir)?;
+    let target = root.join(&rel_path);
+    let target_c = canonical_or_new(&target);
+    enforce_confinement(&root, &target_c)?;
+
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&target, content).map_err(|e| e.to_string())
+}
+
+/// Write raw bytes to a file inside the project (used for drag-and-drop uploads).
+#[tauri::command]
+pub fn write_project_file_bytes(
+    project_dir: String,
+    rel_path: String,
+    content: Vec<u8>,
+) -> Result<(), String> {
+    let root = canonical(&project_dir)?;
+    let target = root.join(&rel_path);
+    let target_c = canonical_or_new(&target);
+    enforce_confinement(&root, &target_c)?;
+
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&target, &content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_gitignore_rule(
+    project_dir: String,
+    rel_path: String,
+    is_dir: bool,
+    action: String,
+) -> Result<(), String> {
+    let root = canonical(&project_dir)?;
+    let clean_rel = normalize_project_rel_path(&rel_path)?;
+    let target_c = canonical_or_new(&root.join(&clean_rel));
+    enforce_confinement(&root, &target_c)?;
+
+    let gitignore_path = root.join(".gitignore");
+    let existing = fs::read_to_string(&gitignore_path).unwrap_or_default();
+    let mut lines: Vec<String> = existing.lines().map(|line| line.to_string()).collect();
+    let new_rules = match action.as_str() {
+        "ignore" => gitignore_ignore_rules(&clean_rel, is_dir),
+        "unignore" => gitignore_unignore_rules(&clean_rel, is_dir),
+        other => return Err(format!("unknown gitignore action: {other}")),
+    };
+    let inverse_rules = match action.as_str() {
+        "ignore" => gitignore_unignore_rules(&clean_rel, is_dir),
+        "unignore" => gitignore_ignore_rules(&clean_rel, is_dir),
+        _ => Vec::new(),
+    };
+
+    lines.retain(|line| {
+        let trimmed = line.trim();
+        !new_rules.iter().any(|rule| rule == trimmed)
+            && !inverse_rules.iter().any(|rule| rule == trimmed)
+    });
+    if !lines.is_empty() && lines.last().is_some_and(|line| !line.trim().is_empty()) {
+        lines.push(String::new());
+    }
+    lines.extend(new_rules);
+    let mut next = lines.join("\n");
+    if !next.is_empty() {
+        next.push('\n');
+    }
+    fs::write(&gitignore_path, next).map_err(|e| e.to_string())
 }
 
 /// Create a new directory inside the project.
@@ -425,6 +434,81 @@ pub fn detect_mime(path: String) -> Result<String, String> {
         .unwrap_or_else(|| "application/octet-stream".to_string()))
 }
 
+// ── Read file contents for in-app viewers (Group K #40) ───────────────────
+
+/// Largest text file we will load into an in-app viewer (8 MiB). Larger files
+/// are refused rather than risking a multi-MB string crossing the IPC bridge.
+const MAX_TEXT_VIEW_BYTES: u64 = 8 * 1024 * 1024;
+/// Largest binary (PDF) we will load into the in-app viewer (64 MiB).
+const MAX_BINARY_VIEW_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Read an absolute file path as UTF-8 text for the in-app text/markdown viewer.
+///
+/// Takes an absolute path (the same `FileEntry.path` the file tree already uses
+/// to open files externally), so no project confinement applies. Refuses files
+/// over `MAX_TEXT_VIEW_BYTES` and files that are not valid UTF-8 (binary).
+#[tauri::command]
+pub fn read_file_text(path: String) -> Result<String, String> {
+    let p = PathBuf::from(&path);
+    let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a file".to_string());
+    }
+    if meta.len() > MAX_TEXT_VIEW_BYTES {
+        return Err(format!(
+            "file too large to view ({} bytes; limit {})",
+            meta.len(),
+            MAX_TEXT_VIEW_BYTES
+        ));
+    }
+    let bytes = fs::read(&p).map_err(|e| e.to_string())?;
+    String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8 text".to_string())
+}
+
+/// Write UTF-8 text to an absolute file path from the in-app editor.
+///
+/// Counterpart to `read_file_text`: takes the same absolute `FileEntry.path`,
+/// refuses to grow a file past `MAX_TEXT_VIEW_BYTES`, and only writes to an
+/// existing regular file (the editor edits files opened from the tree; it never
+/// creates new paths). No project confinement, matching the read side.
+#[tauri::command]
+pub fn write_file_text(path: String, content: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a file".to_string());
+    }
+    if content.len() as u64 > MAX_TEXT_VIEW_BYTES {
+        return Err(format!(
+            "content too large to save ({} bytes; limit {})",
+            content.len(),
+            MAX_TEXT_VIEW_BYTES
+        ));
+    }
+    fs::write(&p, content).map_err(|e| e.to_string())
+}
+
+/// Read an absolute file path as raw bytes for the in-app PDF viewer.
+///
+/// Refuses files over `MAX_BINARY_VIEW_BYTES`. The frontend wraps the returned
+/// bytes in a Blob URL so the PDF renders in-tab without an external viewer.
+#[tauri::command]
+pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
+    let p = PathBuf::from(&path);
+    let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a file".to_string());
+    }
+    if meta.len() > MAX_BINARY_VIEW_BYTES {
+        return Err(format!(
+            "file too large to view ({} bytes; limit {})",
+            meta.len(),
+            MAX_BINARY_VIEW_BYTES
+        ));
+    }
+    fs::read(&p).map_err(|e| e.to_string())
+}
+
 // ── Scaffold new project ───────────────────────────────────────────────────
 
 const SCAFFOLD_FILES: &[(&str, &str)] = &[
@@ -434,13 +518,21 @@ const SCAFFOLD_FILES: &[(&str, &str)] = &[
     ("TODO.md", "# TODO\n"),
     ("ROADMAP.md", "# Roadmap\n"),
     ("STATUS.md", "# Status\n"),
+    ("README.md", "# Project\n"),
     ("DOCUMENTATION.md", "# Documentation\n"),
 ];
 
-const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\n.DS_Store\n*.log\n.eldrun/\n";
+const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\n";
 
-const CLAUDE_SETTINGS: &str =
-    r#"{"permissions":{"allow":[],"deny":[]}}"#;
+const CLAUDE_SETTINGS: &str = r#"{"permissions":{"allow":[],"deny":[]}}"#;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScaffoldPreviewItem {
+    pub path: String,
+    pub exists: bool,
+    pub kind: String,
+}
 
 /// Write the standard Eldrun project scaffold into a directory.
 pub fn scaffold_project(dir: &Path) -> std::io::Result<()> {
@@ -462,7 +554,47 @@ pub fn scaffold_project(dir: &Path) -> std::io::Result<()> {
     if !cs.exists() {
         fs::write(cs, CLAUDE_SETTINGS)?;
     }
+    if !dir.join(".git").exists() {
+        let _ = Command::new("git").args(["init"]).current_dir(dir).output();
+    }
     Ok(())
+}
+
+fn scaffold_preview(dir: &Path) -> Vec<ScaffoldPreviewItem> {
+    let mut items = SCAFFOLD_FILES
+        .iter()
+        .map(|(name, _)| ScaffoldPreviewItem {
+            path: (*name).to_string(),
+            exists: dir.join(name).exists(),
+            kind: "file".to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    items.push(ScaffoldPreviewItem {
+        path: ".gitignore".to_string(),
+        exists: dir.join(".gitignore").exists(),
+        kind: "file".to_string(),
+    });
+    items.push(ScaffoldPreviewItem {
+        path: ".git".to_string(),
+        exists: dir.join(".git").is_dir(),
+        kind: "directory".to_string(),
+    });
+    items.push(ScaffoldPreviewItem {
+        path: ".claude/settings.json".to_string(),
+        exists: dir.join(".claude/settings.json").exists(),
+        kind: "file".to_string(),
+    });
+    items
+}
+
+#[tauri::command]
+pub fn preview_project_scaffold(source_dir: String) -> Result<Vec<ScaffoldPreviewItem>, String> {
+    let source = PathBuf::from(source_dir);
+    if !source.is_dir() {
+        return Err("Source folder does not exist".to_string());
+    }
+    Ok(scaffold_preview(&source))
 }
 
 #[derive(Debug, Deserialize)]
@@ -470,24 +602,41 @@ pub fn scaffold_project(dir: &Path) -> std::io::Result<()> {
 pub struct CreateProjectRequest {
     pub name: String,
     pub directory: String,
+    pub description: Option<String>,
     pub git_type: Option<String>,
+    /// When present the project is remote: `directory` is ignored and the
+    /// project root becomes the local sshfs mountpoint for `remote`.
+    #[serde(default)]
+    pub remote: Option<RemoteSpec>,
 }
 
 #[tauri::command]
 pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String> {
-    let dir = PathBuf::from(&req.directory);
+    let id = uuid_v4();
+
+    // For remote projects the working directory is the sshfs mountpoint; for
+    // local projects it is the chosen directory. Establish the mount first so
+    // scaffolding writes onto the remote filesystem.
+    let dir = match req.remote.as_ref() {
+        Some(remote) => ssh_mount::mount(remote, &id)?,
+        None => PathBuf::from(&req.directory),
+    };
+    let directory = dir.to_string_lossy().to_string();
+
     scaffold_project(&dir).map_err(|e| e.to_string())?;
 
-    let id = uuid_v4();
     let now = chrono_now();
-    let git_type = req.git_type.unwrap_or_else(|| "private".to_string());
+    let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
+    let description = clean_description(req.description);
 
     let project = Project {
         id: id.clone(),
         name: req.name.clone(),
-        directory: req.directory.clone(),
+        directory: directory.clone(),
+        description: description.clone(),
         git_type: Some(git_type.clone()),
         created_at: Some(now),
+        remote: req.remote.clone(),
         ..Default::default()
     };
 
@@ -501,16 +650,14 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
     } else {
         vec![]
     };
-    let max_pos = list.iter().map(|p| p.position).max().unwrap_or(0);
-    let mut extra = HashMap::new();
-    extra.insert("directory".to_string(), Value::String(req.directory));
-    extra.insert("git_type".to_string(), Value::String(git_type));
+    let position = next_position(&list);
+    let extra = project_extra(directory, git_type, description, req.remote.as_ref());
 
     let entry = ProjectEntry {
         id: id.clone(),
         name: req.name,
         status: "inactive".to_string(),
-        position: max_pos + 10,
+        position,
         local_file: project_file.to_string_lossy().to_string(),
         extra,
     };
@@ -525,8 +672,20 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
 pub struct ImportProjectRequest {
     pub source_dir: String,
     pub name: String,
+    pub description: Option<String>,
     pub git_type: Option<String>,
     pub mode: String,
+    pub scaffold_fill_modes: Option<HashMap<String, String>>,
+    pub manual_validation_confirmed: Option<bool>,
+    /// Skip writing the Eldrun scaffold (and `git init`) — for importing
+    /// projects that already carry their own files. `project.json` is still
+    /// created/updated so the project registers normally.
+    #[serde(default)]
+    pub skip_scaffold: bool,
+    /// When present the project is remote: `source_dir` is the already-mounted
+    /// remote directory and the only supported `mode` is "keep".
+    #[serde(default)]
+    pub remote: Option<RemoteSpec>,
 }
 
 #[tauri::command]
@@ -535,9 +694,27 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
         return Err("Project name is invalid".to_string());
     }
 
+    // Generate the id up front: remote imports mount under it before we touch
+    // the filesystem.
+    let id = uuid_v4();
+
+    if let Some(remote) = req.remote.clone() {
+        if req.mode != "keep" {
+            return Err("Remote imports must use 'keep' mode (copy/move are not supported)".to_string());
+        }
+        // Establish (or reuse) the sshfs mount; the mountpoint is the project root.
+        let mountpoint = ssh_mount::mount(&remote, &id)?;
+        return finish_import(req, id, mountpoint, Some(remote));
+    }
+
     let source = PathBuf::from(&req.source_dir);
     if !source.is_dir() {
         return Err("Source folder does not exist".to_string());
+    }
+
+    if matches!(req.mode.as_str(), "copy" | "move") && req.manual_validation_confirmed != Some(true)
+    {
+        return Err("Copy and move imports require manual validation".to_string());
     }
 
     let target = match req.mode.as_str() {
@@ -562,6 +739,20 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
         other => return Err(format!("Unknown import mode: {other}")),
     };
 
+    finish_import(req, id, target, None)
+}
+
+/// Shared tail of `import_project`: scaffold over `target`, build/merge the
+/// `project.json`, register the entry in `projects.json`, and return it.
+/// `remote` is `Some` for remote imports (where `target` is the mountpoint).
+fn finish_import(
+    req: ImportProjectRequest,
+    id: String,
+    target: PathBuf,
+    remote: Option<RemoteSpec>,
+) -> Result<ProjectEntry, String> {
+    let _scaffold_fill_modes = req.scaffold_fill_modes.unwrap_or_default();
+
     let directory = target.to_string_lossy().to_string();
     let project_file = target.join("project.json");
     let project_file_s = project_file.to_string_lossy().to_string();
@@ -579,40 +770,47 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
         return Err("Project is already registered".to_string());
     }
 
-    scaffold_project(&target).map_err(|e| e.to_string())?;
+    if !req.skip_scaffold {
+        scaffold_project(&target).map_err(|e| e.to_string())?;
+    }
 
-    let id = uuid_v4();
     let now = chrono_now();
-    let git_type = req.git_type.unwrap_or_else(|| "private".to_string());
+    let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
+    let requested_description = clean_description(req.description);
 
     let project = if project_file.exists() {
         let mut existing: Project = storage::read_json(&project_file).unwrap_or_default();
         existing.id = id.clone();
         existing.name = req.name.clone();
         existing.directory = directory.clone();
+        if requested_description.is_some() {
+            existing.description = requested_description.clone();
+        }
         existing.git_type = Some(git_type.clone());
+        existing.remote = remote.clone();
         existing
     } else {
         Project {
             id: id.clone(),
             name: req.name.clone(),
             directory: directory.clone(),
+            description: requested_description.clone(),
             git_type: Some(git_type.clone()),
             created_at: Some(now),
+            remote: remote.clone(),
             ..Default::default()
         }
     };
     storage::write_json(&project_file, &project).map_err(|e| e.to_string())?;
 
-    let max_pos = list.iter().map(|p| p.position).max().unwrap_or(0);
-    let mut extra = HashMap::new();
-    extra.insert("directory".to_string(), Value::String(directory));
-    extra.insert("git_type".to_string(), Value::String(git_type));
+    let position = next_position(&list);
+    let description = project.description.clone();
+    let extra = project_extra(directory, git_type, description, remote.as_ref());
     let entry = ProjectEntry {
         id,
         name: req.name,
         status: "inactive".to_string(),
-        position: max_pos + 10,
+        position,
         local_file: project_file_s,
         extra,
     };
@@ -633,50 +831,73 @@ pub fn get_time_today(project_id: String) -> f64 {
         Ok(l) => l,
         Err(_) => return 0.0,
     };
-    let today = today_utc();
+    let today = storage::today_utc();
     log.iter()
         .filter(|e| e.project_id == project_id && e.date == today)
         .map(|e| e.duration_s)
         .sum()
 }
 
-fn today_utc() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let days = (secs / 86400) as i64;
-    // Howard Hinnant's civil_from_days algorithm
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+fn next_position(list: &ProjectsList) -> i64 {
+    list.iter().map(|p| p.position).max().unwrap_or(0) + 10
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────
+fn project_extra(
+    directory: String,
+    git_type: String,
+    description: Option<String>,
+    remote: Option<&RemoteSpec>,
+) -> HashMap<String, Value> {
+    let mut extra = HashMap::from([
+        ("directory".to_string(), Value::String(directory)),
+        ("git_type".to_string(), Value::String(git_type)),
+    ]);
+    if let Some(description) = description {
+        extra.insert("description".to_string(), Value::String(description));
+    }
+    // Mirror the remote spec into the pill-list entry (like `directory`/
+    // `git_type`) so the frontend can flag remote projects without reading
+    // each project.json. Serialization should never fail for a plain struct.
+    if let Some(remote) = remote {
+        if let Ok(value) = serde_json::to_value(remote) {
+            extra.insert("remote".to_string(), value);
+        }
+    }
+    extra
+}
+
+fn clean_description(description: Option<String>) -> Option<String> {
+    description.and_then(|description| {
+        let description = description.trim().to_string();
+        if description.is_empty() {
+            None
+        } else {
+            Some(description)
+        }
+    })
+}
 
 fn canonical(path: &str) -> Result<PathBuf, String> {
     fs::canonicalize(path).map_err(|e| format!("canonicalize {path}: {e}"))
 }
 
 fn projects_root() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    PathBuf::from(home).join("eldrun").join("projects")
+    paths::projects_root()
 }
 
 pub(crate) fn sanitize_name(name: &str) -> String {
     name.trim()
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|part| !part.is_empty())
@@ -700,6 +921,122 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn collect_project_endings(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    endings: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    enforce_confinement(root, dir)?;
+    if depth >= MAX_SCAN_DEPTH {
+        return Ok(());
+    }
+    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Use the dir entry's own file type so symlinks are never followed —
+        // a self-referential symlink (e.g. `repo -> .`) would otherwise recurse
+        // until the path length limit. `Path::is_dir()` follows symlinks; this
+        // does not.
+        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        if is_dir {
+            if should_skip_ending_scan_dir(&name) {
+                continue;
+            }
+            collect_project_endings(root, &path, depth + 1, endings)?;
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            endings.insert(format!(".{ext}"));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_project_rel_path(rel: &str) -> Result<String, String> {
+    let p = std::path::Path::new(rel);
+    for component in p.components() {
+        match component {
+            std::path::Component::ParentDir | std::path::Component::RootDir => {
+                return Err(format!("invalid path component in '{rel}'"));
+            }
+            _ => {}
+        }
+    }
+    Ok(rel.trim_start_matches('/').to_string())
+}
+
+fn gitignore_ignore_rules(rel_path: &str, is_dir: bool) -> Vec<String> {
+    let rule = if is_dir {
+        format!("/{rel_path}/")
+    } else {
+        format!("/{rel_path}")
+    };
+    vec![rule]
+}
+
+fn gitignore_unignore_rules(rel_path: &str, is_dir: bool) -> Vec<String> {
+    let mut rules = Vec::new();
+    let parts: Vec<&str> = rel_path.split('/').filter(|part| !part.is_empty()).collect();
+    let parent_count = if is_dir { parts.len() } else { parts.len().saturating_sub(1) };
+    for i in 0..parent_count {
+        rules.push(format!("!/{}/", parts[..=i].join("/")));
+    }
+    if !is_dir {
+        rules.push(format!("!/{rel_path}"));
+    }
+    rules
+}
+
+fn collect_project_paths(
+    root: &Path,
+    dir: &Path,
+    rel_dir: &str,
+    depth: usize,
+    paths: &mut Vec<ProjectPathEntry>,
+) -> Result<(), String> {
+    enforce_confinement(root, dir)?;
+    if depth >= MAX_SCAN_DEPTH {
+        return Ok(());
+    }
+    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".eldrun" {
+            continue;
+        }
+        let rel_path = if rel_dir.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel_dir}/{name}")
+        };
+        // `entry.file_type()` does not follow symlinks; a symlinked directory is
+        // reported as a non-directory so we never recurse through it (and so a
+        // self-referential symlink can't loop). See collect_project_endings.
+        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        paths.push(ProjectPathEntry {
+            path: rel_path.clone(),
+            is_dir,
+        });
+        if is_dir && !should_skip_ending_scan_dir(&name) {
+            collect_project_paths(root, &path, &rel_path, depth + 1, paths)?;
+        }
+    }
+    Ok(())
+}
+
+/// Hard cap on recursive project-tree scan depth. Guards against pathological
+/// trees (deep nesting, symlink chains) wedging a scan even though symlinks are
+/// no longer followed.
+const MAX_SCAN_DEPTH: usize = 64;
+
+fn should_skip_ending_scan_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | ".eldrun" | "node_modules" | "target" | "dist" | "build" | ".next" | ".cache"
+    )
 }
 
 fn canonical_or_new(path: &Path) -> PathBuf {
@@ -737,14 +1074,7 @@ fn uuid_v4() -> String {
 }
 
 fn chrono_now() -> String {
-    // ISO-8601 without chrono dep (added in Phase 4 if needed).
-    // Basic UTC timestamp.
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("{secs}+00:00")
+    storage::iso_now()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -808,6 +1138,28 @@ mod tests {
         assert!(!result.contains("--"), "consecutive dashes collapsed");
     }
 
+    // ── normalize_git_type ─────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_git_type_migrates_legacy_values() {
+        assert_eq!(normalize_git_type("private"), "remote-private");
+        assert_eq!(normalize_git_type("public"), "remote-public");
+    }
+
+    #[test]
+    fn normalize_git_type_passes_through_canonical_values() {
+        assert_eq!(normalize_git_type("local"), "local");
+        assert_eq!(normalize_git_type("remote-private"), "remote-private");
+        assert_eq!(normalize_git_type("remote-public"), "remote-public");
+    }
+
+    #[test]
+    fn normalize_git_type_unknown_falls_back_to_local() {
+        assert_eq!(normalize_git_type(""), "local");
+        assert_eq!(normalize_git_type("weird"), "local");
+        assert_eq!(normalize_git_type("  public  "), "remote-public");
+    }
+
     // ── enforce_confinement ────────────────────────────────────────────────
 
     #[test]
@@ -849,7 +1201,10 @@ mod tests {
         let root = PathBuf::from("/tmp/project");
         let escape = PathBuf::from("/etc/passwd");
         let err = enforce_confinement(&root, &escape).unwrap_err();
-        assert!(err.contains("/tmp/project"), "error must mention root: {err}");
+        assert!(
+            err.contains("/tmp/project"),
+            "error must mention root: {err}"
+        );
     }
 
     // ── scaffold_project ───────────────────────────────────────────────────
@@ -859,8 +1214,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         scaffold_project(tmp.path()).unwrap();
 
-        for name in &["AGENTS.md", "CLAUDE.md", "GEMINI.md", "TODO.md",
-                       "ROADMAP.md", "STATUS.md", "DOCUMENTATION.md", ".gitignore"] {
+        for name in &[
+            "AGENTS.md",
+            "CLAUDE.md",
+            "GEMINI.md",
+            "TODO.md",
+            "ROADMAP.md",
+            "STATUS.md",
+            "README.md",
+            ".gitignore",
+        ] {
             assert!(tmp.path().join(name).exists(), "missing: {name}");
         }
         assert!(tmp.path().join(".claude/settings.json").exists());
@@ -875,7 +1238,10 @@ mod tests {
         scaffold_project(tmp.path()).unwrap();
 
         let content = std::fs::read_to_string(&todo_path).unwrap();
-        assert_eq!(content, "original content", "existing file must not be overwritten");
+        assert_eq!(
+            content, "original content",
+            "existing file must not be overwritten"
+        );
     }
 
     #[test]
@@ -888,7 +1254,10 @@ mod tests {
         scaffold_project(tmp.path()).unwrap();
 
         let content = std::fs::read_to_string(&cs).unwrap();
-        assert!(content.contains("custom"), "custom settings must not be overwritten");
+        assert!(
+            content.contains("custom"),
+            "custom settings must not be overwritten"
+        );
     }
 
     #[test]
@@ -897,5 +1266,107 @@ mod tests {
         scaffold_project(tmp.path()).unwrap();
         scaffold_project(tmp.path()).unwrap(); // second call must not error
         assert!(tmp.path().join("TODO.md").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn list_project_endings_does_not_follow_self_symlink() {
+        // A symlink pointing back at the project root (`repo -> .`) must not
+        // cause the recursive ending scan to loop. Before the fix this hung
+        // until the OS path-length limit, walking the tree hundreds of times.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/lib.py"), "x = 1").unwrap();
+        std::os::unix::fs::symlink(tmp.path(), tmp.path().join("repo")).unwrap();
+
+        let endings =
+            list_project_endings(tmp.path().to_string_lossy().to_string()).unwrap();
+
+        // Real file endings are collected; the self-symlink is never entered.
+        assert!(endings.contains(&".rs".to_string()));
+        assert!(endings.contains(&".py".to_string()));
+    }
+
+    #[test]
+    fn scaffold_preview_reports_git_directory_status() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let missing = scaffold_preview(tmp.path())
+            .into_iter()
+            .find(|item| item.path == ".git")
+            .expect(".git preview item");
+        assert!(!missing.exists);
+        assert_eq!(missing.kind, "directory");
+
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let present = scaffold_preview(tmp.path())
+            .into_iter()
+            .find(|item| item.path == ".git")
+            .expect(".git preview item");
+        assert!(present.exists);
+        assert_eq!(present.kind, "directory");
+    }
+
+    #[test]
+    fn write_project_file_creates_nested_file_inside_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_file(
+            tmp.path().to_string_lossy().to_string(),
+            ".eldrun/scaffold-fill-claude.md".to_string(),
+            "fill AGENTS.md".to_string(),
+        )
+        .unwrap();
+
+        let content =
+            std::fs::read_to_string(tmp.path().join(".eldrun/scaffold-fill-claude.md")).unwrap();
+        assert_eq!(content, "fill AGENTS.md");
+    }
+
+    // ── rename_path ────────────────────────────────────────────────────────
+
+    #[test]
+    fn rename_path_renames_file_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("old.txt"), "content").unwrap();
+
+        rename_path(
+            tmp.path().to_string_lossy().to_string(),
+            "old.txt".to_string(),
+            "new.txt".to_string(),
+        )
+        .unwrap();
+
+        assert!(!tmp.path().join("old.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("new.txt")).unwrap(),
+            "content"
+        );
+    }
+
+    #[test]
+    fn rename_path_rejects_non_bare_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "x").unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
+
+        for bad in ["", " ", ".", "..", "sub/name", "..\\name", "a\0b"] {
+            let err = rename_path(dir.clone(), "a.txt".to_string(), bad.to_string());
+            assert!(err.is_err(), "name {bad:?} must be rejected");
+        }
+        assert!(tmp.path().join("a.txt").exists(), "file must be untouched");
+    }
+
+    #[test]
+    fn write_project_file_blocks_parent_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = write_project_file(
+            tmp.path().to_string_lossy().to_string(),
+            "../outside.md".to_string(),
+            "escape".to_string(),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("escapes project root"), "unexpected error: {err}");
     }
 }

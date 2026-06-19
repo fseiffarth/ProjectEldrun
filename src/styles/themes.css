@@ -17,6 +17,39 @@ html, body, #root {
   background: var(--bg-main);
 }
 
+/* ── Global scrollbar baseline ───────────────────────────────────────────
+   Theme every scrollable surface so none fall back to the native (white)
+   WebKitGTK scrollbar in dark themes. More specific rules below (e.g.
+   .file-browser-main) still win on the surfaces they target. */
+* {
+  scrollbar-color: var(--border-color) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border-color);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 6px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--accent);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* ── Activity calendar color levels (shared across themes) ──────────── */
 /* Override per-theme below where contrast requires it. */
 
@@ -183,12 +216,20 @@ input {
   display: flex;
   position: relative;
   overflow: hidden;
+  transition: padding-right 0.2s ease;
+}
+
+/* When the right panel is pinned it docks into layout: inset the body by the
+   panel width so the center panel reflows instead of being overlaid. The panel
+   is absolutely positioned at right:0, so it fills the freed padding region. */
+.app-body.right-docked {
+  padding-right: 280px;
 }
 
 /* ── Header bar ─────────────────────────────────────────────────────── */
 .app-header {
-  height: 40px;
-  min-height: 40px;
+  height: 44px;
+  min-height: 44px;
   background: var(--bg-header);
   box-shadow: 0 1px 0 var(--border-color);
   display: flex;
@@ -228,25 +269,50 @@ input {
 .wm-controls {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-shrink: 0;
 }
 
 .wm-btn {
-  width: 18px;
-  height: 18px;
-  border-radius: 0;
-  border: none;
+  position: relative;
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.18);
   cursor: pointer;
   flex-shrink: 0;
-  transition: opacity 0.1s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: filter 0.12s ease, transform 0.08s ease;
 }
 
-.wm-btn:hover { opacity: 0.8; }
-.wm-btn:active { opacity: 0.6; }
+.wm-btn:hover { filter: brightness(1.12); }
+.wm-btn:active { transform: scale(0.92); filter: brightness(0.9); }
+.wm-btn:focus-visible {
+  outline: 2px solid var(--accent, #58a6ff);
+  outline-offset: 2px;
+}
+
 .wm-close    { background-color: var(--wm-close); }
 .wm-minimize { background-color: var(--wm-minimize); }
 .wm-maximize { background-color: var(--wm-maximize); }
+
+/* Glyphs revealed when hovering anywhere over the group. */
+.wm-btn::before {
+  content: "";
+  color: rgba(0, 0, 0, 0.55);
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 700;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.wm-controls:hover .wm-btn::before { opacity: 1; }
+.wm-close::before    { content: "\00d7"; }   /* × */
+.wm-minimize::before { content: "\2013"; }   /* – */
+.wm-maximize::before { content: "\002b"; }  /* + */
 
 /* ── App logo ────────────────────────────────────────────────────────── */
 .app-logo {
@@ -254,7 +320,32 @@ input {
   width: 20px;
   object-fit: contain;
   flex-shrink: 0;
+}
+
+/* The logo doubles as the root-terminal switch button. */
+.root-logo-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
   margin-right: 2px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 0.1s, border-color 0.1s;
+}
+
+.root-logo-btn:hover {
+  background: var(--control-bg);
+  border-color: var(--control-border);
+}
+
+.root-logo-btn.active {
+  background: var(--pill-active-bg);
+  border-color: var(--pill-active-border);
+  box-shadow: inset 0 3px 0 var(--accent);
 }
 
 /* ── Status lamp (● dot) ─────────────────────────────────────────────── */
@@ -362,6 +453,478 @@ input {
   font-size: 12px;
 }
 
+/* ── Built-in file viewers (pdf / markdown / text) ───────────────────────── */
+
+.file-viewer {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.file-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.file-viewer-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.file-viewer-open-external {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.file-viewer-open-external:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* Edit/Preview segmented toggle for the markdown viewer. */
+.file-viewer-modes {
+  display: inline-flex;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.file-viewer-mode {
+  background: transparent;
+  color: var(--text-muted);
+  border: 0;
+  padding: 1px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.file-viewer-mode + .file-viewer-mode {
+  border-left: 1px solid var(--border-color);
+}
+
+.file-viewer-mode.active {
+  background: var(--accent, #4493f8);
+  color: #fff;
+}
+
+.file-viewer-save {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 1px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.file-viewer-save:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.file-viewer-save:not(:disabled):hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.file-viewer-editor {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 10px 12px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  tab-size: 2;
+}
+
+/* Zoom controls in the image viewer header. */
+.file-viewer-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.file-viewer-zoom-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-viewer-zoom-btn.file-viewer-zoom-text {
+  font-size: 10px;
+}
+
+.file-viewer-zoom-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.file-viewer-zoom-btn:not(:disabled):hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.file-viewer-zoom-level {
+  min-width: 38px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Image viewer: a clipped viewport over a checkerboard so transparency shows.
+   The <img> inside is positioned by a JS-driven transform (zoom/pan). */
+.file-viewer-image-body {
+  overflow: hidden;
+}
+
+.file-viewer-image-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  background-color: var(--bg-panel);
+  background-image:
+    linear-gradient(45deg, rgba(127, 127, 127, 0.12) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(127, 127, 127, 0.12) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(127, 127, 127, 0.12) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(127, 127, 127, 0.12) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+}
+
+.file-viewer-image-viewport.dragging {
+  cursor: grabbing;
+}
+
+.file-viewer-image {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: none;
+  max-height: none;
+  user-select: none;
+  -webkit-user-drag: none;
+  will-change: transform;
+}
+
+.file-viewer-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.file-viewer-loading,
+.file-viewer-error {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.file-viewer-error {
+  color: var(--danger, #f85149);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Code editor: a line-number gutter beside a scrolling monospace textarea. The
+   gutter is scroll-synced from JS (file-viewer-gutter has no scrollbar), so the
+   body must not scroll — the textarea owns the scroll. Font metrics (size 12px,
+   line-height 18px, 10px top padding) are shared so the numbers stay aligned. */
+.file-viewer-code-body {
+  overflow: hidden;
+}
+
+.file-viewer-code {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.file-viewer-gutter {
+  flex-shrink: 0;
+  overflow: hidden;
+  padding: 10px 8px 10px 10px;
+  text-align: right;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border-color);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.file-viewer-gutter-line {
+  height: 18px;
+}
+
+.file-viewer-code-editor {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  height: 100%;
+  line-height: 18px;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 4;
+}
+
+.file-viewer-pdf {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+/* Rendered markdown. */
+.markdown-body {
+  padding: 14px 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 860px;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: 1.2em 0 0.5em;
+  line-height: 1.25;
+}
+
+.markdown-body h1 { font-size: 1.7em; border-bottom: 1px solid var(--border-color); padding-bottom: 0.3em; }
+.markdown-body h2 { font-size: 1.4em; border-bottom: 1px solid var(--border-color); padding-bottom: 0.25em; }
+.markdown-body h3 { font-size: 1.2em; }
+.markdown-body h4 { font-size: 1.05em; }
+
+.markdown-body p { margin: 0.6em 0; }
+
+.markdown-body a { color: var(--accent, #4493f8); text-decoration: none; }
+.markdown-body a:hover { text-decoration: underline; }
+
+.markdown-body code {
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 0.88em;
+  background: var(--bg-input, rgba(127, 127, 127, 0.15));
+  padding: 0.12em 0.35em;
+  border-radius: 3px;
+}
+
+.markdown-body pre {
+  background: var(--bg-input, rgba(127, 127, 127, 0.12));
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 0.7em 0;
+}
+
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+
+.markdown-body blockquote {
+  margin: 0.7em 0;
+  padding: 0.1em 0.9em;
+  border-left: 3px solid var(--border-color);
+  color: var(--text-muted);
+}
+
+.markdown-body ul,
+.markdown-body ol { margin: 0.5em 0; padding-left: 1.6em; }
+.markdown-body li { margin: 0.2em 0; }
+
+.markdown-body hr {
+  border: 0;
+  border-top: 1px solid var(--border-color);
+  margin: 1.2em 0;
+}
+
+.markdown-body img { max-width: 100%; }
+
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 0.7em 0;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border-color);
+  padding: 4px 8px;
+}
+
+/* ── Tiling subwindows ───────────────────────────────────────────────────── */
+
+/* A split node: a flex container of children with dividers between them. The
+   layout tree (subwindow frames) fills the panel; the pane layer overlays it. */
+.split {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.split-child {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+/* Children of a split need their own relative coordinate space so a nested
+   subwindow/split can fill them via absolute insets. The top-level layout node
+   (a direct child of the center panel) fills the panel the same way — otherwise
+   a single-group subwindow collapses to its tab-bar height and the pane layer
+   overlays the tabs. */
+.split-child > .subwindow,
+.split-child > .split,
+.center-panel > .subwindow,
+.center-panel > .split {
+  position: absolute;
+  inset: 0;
+}
+
+/* Resize divider between two split children. Wide hit area, thin visual line. */
+.split-divider {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 4;
+  background: var(--control-border);
+  transition: background-color 0.12s;
+}
+.split-divider-row {
+  width: 5px;
+  cursor: col-resize;
+}
+.split-divider-column {
+  height: 5px;
+  cursor: row-resize;
+}
+.split-divider:hover,
+.split-divider:active {
+  background: var(--accent);
+}
+
+/* A subwindow: per-group tab bar over its pane region. */
+.subwindow {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--bg-main);
+}
+.subwindow.focused {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.subwindow-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Empty measured slot the pane layer positions panes over. */
+.subwindow-pane-slot {
+  position: absolute;
+  inset: 0;
+}
+
+/* Pane layer holds all PTYs (every scope), positioned over group bodies. The
+   wrapper is click-through; individual panes re-enable pointer events. While a
+   tab is being dragged the whole layer goes click-through so hit-testing falls
+   to the drop zones rendered in the subwindow bodies beneath. */
+.pane-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+/* During a tab drag, panes go click-through so elementFromPoint can reach the
+   tab bars / subwindow bodies underneath for the hit-test. */
+.center-panel.dragging .pane-layer,
+.center-panel.dragging .center-pane {
+  pointer-events: none;
+}
+
+/* Each pane is absolutely positioned by CenterPanel to a group's body rect.
+   Hidden panes keep their PTY mounted via display:none. */
+.center-pane {
+  position: absolute;
+  flex-direction: column;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+/* ── Split preview (shown while a tab is being dragged over a subwindow) ──── */
+/* CenterPanel's hit-test sets the hovered group's edge; CenterPanel renders this
+   overlay (NOT the subwindow — it must paint above the pane layer) at the half
+   (or whole, for center) the drop would carve out, in panel-relative px. z-index
+   sits above the pane layer (z-index:2) so the opaque terminal doesn't hide it.
+   A plain rgba fill is used over color-mix (which doesn't render reliably on this
+   WebKitGTK build) so the darkening is always visible. The left/top/width/height
+   transition makes the preview glide as the targeted edge changes. */
+.split-preview {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.28);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  transition: left 0.12s ease, top 0.12s ease, width 0.12s ease, height 0.12s ease;
+}
+
+/* Floating label following the pointer during a tab drag. */
+.tab-drag-ghost {
+  position: fixed;
+  z-index: 9999;
+  transform: translate(8px, 8px);
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--control-hover-bg);
+  border: 1px solid var(--accent);
+  color: var(--text-primary);
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+
 /* ── Right panel overlay ──────────────────────────────────────────────── */
 .right-panel {
   position: absolute;
@@ -440,6 +1003,8 @@ input {
 }
 
 .right-panel-header {
+  display: flex;
+  align-items: center;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
   font-size: 11px;
@@ -449,21 +1014,370 @@ input {
   letter-spacing: 0.5px;
 }
 
-/* ── Bottom bar ──────────────────────────────────────────────────────── */
-.bottom-bar {
-  height: 48px;
-  min-height: 48px;
-  background-color: var(--bg-panel);
-  border-top: 1px solid var(--border-color);
-  display: flex;
+.right-panel-pin {
+  display: inline-flex;
   align-items: center;
-  padding: 0 8px;
-  gap: 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 8px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.04));
+  color: var(--text-secondary);
+  cursor: pointer;
+  filter: grayscale(1) opacity(0.6);
+  transition: filter 0.12s ease, background 0.12s ease, border-color 0.12s ease;
 }
 
-.bottom-bar::-webkit-scrollbar { height: 0; }
+.right-panel-pin:hover {
+  filter: grayscale(0) opacity(1);
+  border-color: var(--accent, #58a6ff);
+}
+
+.right-panel-pin.pinned {
+  filter: none;
+  background: var(--accent, #58a6ff);
+  border-color: var(--accent, #58a6ff);
+  box-shadow: 0 0 0 1px var(--accent, #58a6ff);
+}
+
+.right-panel-sort {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.sort-key-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 2px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.sort-key-btn:hover {
+  color: var(--text-secondary);
+  background: var(--pill-hover-bg);
+}
+
+.sort-key-btn.active {
+  color: var(--accent, #58a6ff);
+  font-weight: 700;
+}
+
+/* ── Git action buttons ──────────────────────────────────────────────── */
+.git-action-bar {
+  display: flex;
+  gap: 3px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.git-action-btn {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 3px 7px;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: inherit;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+  flex: 1;
+  justify-content: center;
+}
+
+.git-action-btn:hover {
+  background: var(--pill-active-bg);
+  color: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.git-action-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.git-btn-label {
+  display: none;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.git-action-btn:hover .git-btn-label {
+  display: inline;
+}
+
+.git-hover-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 200;
+  background: var(--bg-panel, #1e1e1e);
+  border: 1px solid var(--border-color);
+  border-top: none;
+  max-height: 160px;
+  overflow-y: auto;
+  font-size: 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.git-hover-item {
+  padding: 2px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+/* ── Git history view ────────────────────────────────────────────────── */
+.git-history {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+}
+
+.git-history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.git-history-branch {
+  flex: 1;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-history-mode {
+  font-size: 10px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.git-branch-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.git-branch-pill {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.git-branch-pill:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.git-branch-pill.current {
+  border-color: var(--accent);
+  background: var(--pill-active-bg);
+  color: var(--accent);
+  cursor: default;
+}
+
+.git-branch-pill.remote {
+  opacity: 0.7;
+  border-style: dashed;
+}
+
+.git-commit-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.git-commit-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 6px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  width: 100%;
+}
+
+.git-commit-row:hover {
+  background: var(--pill-active-bg);
+}
+
+.git-commit-row.head {
+  border-left: 2px solid var(--accent);
+}
+
+/* Graph mode: rows are a fixed height with no vertical padding so the lane
+   lines drawn per-row meet seamlessly across row boundaries. */
+.git-commit-list.graph .git-commit-row {
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+  padding-left: 0;
+  height: 22px;
+}
+
+.git-commit-list.graph .git-commit-row.head {
+  border-left: none;
+}
+
+.git-graph-cell {
+  display: block;
+  align-self: stretch;
+}
+
+.git-commit-hash {
+  font-family: monospace;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.git-commit-subject {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-commit-ref {
+  flex-shrink: 0;
+  font-size: 9px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg-base, #111);
+  white-space: nowrap;
+}
+
+.git-commit-date {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Commit-message window */
+.commit-window {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 12px 14px;
+  width: min(560px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.commit-window-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.commit-window-message {
+  width: 100%;
+  font-family: monospace;
+  font-size: 12px;
+  background: var(--bg-base, #111);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 6px 8px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.commit-window-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.commit-window-actions button {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.commit-window-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.commit-window-actions button.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.commit-window-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Project switcher bar (lives inside .header-center) ───────────────── */
+.project-switcher {
+  height: 100%;
+  background-color: transparent;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  gap: 4px;
+  /* Fill the header-center track and stay shrinkable so the pill row can never
+     push past it into the right-side clock/controls. min-width:0 lets the
+     flex children (notably .project-pills-scroll) shrink below content size. */
+  flex: 1;
+  min-width: 0;
+  /* visible so the add/settings dropdown menus can spill below the header;
+     horizontal pill overflow is handled by .project-pills-scroll. */
+  overflow: visible;
+}
+
+.project-switcher::-webkit-scrollbar { height: 0; }
 
 /* ── Project pill ────────────────────────────────────────────────────── */
 .project-pill {
@@ -486,6 +1400,33 @@ input {
   background-color: var(--control-hover-bg);
   color: var(--text-primary);
   border-color: var(--text-muted);
+}
+
+.project-pill.dragging {
+  opacity: 0.45;
+  transform: scale(0.94);
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+
+/* Make room before the drop target and show a pulsing insertion bar. */
+.project-pill.drag-over {
+  position: relative;
+  margin-left: 8px;
+  border-color: var(--accent);
+  transition: margin-left 0.14s ease;
+}
+
+.project-pill.drag-over::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: drag-insert-pulse 0.85s ease-in-out infinite;
 }
 
 .project-pill.active {
@@ -541,7 +1482,7 @@ input {
 /* ── Project pill popup ─────────────────────────────────────────────── */
 .project-pill-popup {
   position: fixed;
-  transform: translate(-50%, calc(-100% - 6px));
+  transform: translate(-50%, 6px);
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -565,6 +1506,14 @@ input {
   text-align: left;
 }
 
+.pill-popup-description {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+  max-width: 320px;
+  white-space: normal;
+}
+
 .pill-popup-status {
   font-size: 11px;
   font-weight: 600;
@@ -585,8 +1534,13 @@ input {
   align-items: center;
 }
 
-/* ── Bottom bar action buttons ──────────────────────────────────────── */
-.bottom-action-btn {
+.pill-popup-cpu {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* ── Project switcher action buttons ──────────────────────────────────────── */
+.project-switcher-action-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -602,7 +1556,7 @@ input {
   flex-shrink: 0;
 }
 
-.bottom-action-btn:hover {
+.project-switcher-action-btn:hover {
   background-color: var(--pill-hover-bg);
   color: var(--text-primary);
 }
@@ -654,8 +1608,16 @@ input {
   padding: 0 4px;
   gap: 2px;
   overflow-x: auto;
-  flex: 1;
+  /* A fixed-height strip at the top of its subwindow. NOT flex:1 — the tab bar
+     lives inside the column-flex `.subwindow`, so growing would let it eat the
+     pane's vertical space and float the tabs to mid-window. */
+  flex: 0 0 auto;
   min-width: 0;
+  min-height: 32px;
+  /* Distinct from the pane (`--bg-main`) so the bar reads as its own strip; the
+     bottom border + the active tab's `--bg-main` blend keep the divide crisp. */
+  background-color: var(--bg-panel);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .tab-bar::-webkit-scrollbar { height: 0; }
@@ -676,8 +1638,12 @@ input {
   border-radius: 0;
   margin-bottom: 0;
   margin-top: 0;
-  transition: background-color 0.15s, color 0.15s;
+  transition: background-color 0.15s, color 0.15s, margin 0.14s ease,
+    max-width 0.14s ease, padding 0.14s ease;
   user-select: none;
+  /* Don't let the webview claim the pointer for a pan/select gesture — on
+     WebKitGTK that turns a drag's release into pointercancel, not pointerup. */
+  touch-action: none;
 }
 
 .tab:hover {
@@ -697,9 +1663,40 @@ input {
   border-bottom-color: var(--bg-main);
   position: relative;
   z-index: 11;
+  /* Overlap the bar's bottom border so the active tab merges into the pane
+     (`--bg-main`) below, visually breaking out of the panel-colored strip. */
+  margin-bottom: -1px;
 }
 
 .tab-label { flex: 1; min-width: 0; }
+
+/* ── Working tab indicator ───────────────────────────────────────────────
+   Shown while a tab's PTY is actively streaming output (busy agent/terminal).
+   A small rotating orbit spinner sits before the label, tinted with the tab
+   kind's accent; the label itself gently pulses so background work is visible
+   without competing with the active tab. */
+.tab-working {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.tab-working-spinner {
+  margin-left: 0;
+}
+
+.tab-working-spinner .orbit-dot {
+  fill: currentColor;
+}
+
+.tab.working .tab-label {
+  animation: tab-working-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tab-working-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
 
 .tab-close {
   display: flex;
@@ -722,6 +1719,47 @@ input {
 .tab:hover .tab-close,
 .tab.active .tab-close { opacity: 1; }
 .tab-close:hover { background-color: var(--pill-hover-bg); color: var(--text-primary); }
+
+/* Per-subwindow close (×), shown in the tab bar when >1 subwindow exists.
+   The bar scrolls horizontally when tabs overflow; pin this button to the right
+   edge (sticky + flex-shrink:0) so it never scrolls out of reach and stays
+   clickable regardless of how many tabs the group holds. The panel-colored
+   background keeps overflowing tabs from showing through behind it. */
+.subwindow-close {
+  margin-left: auto;
+  align-self: center;
+  position: sticky;
+  right: 0;
+  flex-shrink: 0;
+  z-index: 12;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+}
+.subwindow-close:hover {
+  background: var(--pill-hover-bg);
+  color: var(--danger);
+}
+
+/* The dragged tab collapses out of the row so its old slot closes and the only
+   opening is the gap that slides open at the drop target. */
+.tab.dragging {
+  max-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  margin: 0;
+  border-color: transparent;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
 
 /* ── New-tab button + dropdown ───────────────────────────────────────── */
 .tab-new-wrap {
@@ -855,6 +1893,14 @@ input {
   border-color: var(--accent);
 }
 
+.context-menu button.danger {
+  color: var(--danger);
+}
+
+.context-menu button.danger:hover {
+  border-color: var(--danger);
+}
+
 .context-menu hr {
   height: 1px;
   margin: 4px 0;
@@ -862,16 +1908,75 @@ input {
   background: var(--border-subtle);
 }
 
+/* ── File browser sort dropdown (custom; native <select> popups can't be
+   themed on WebKitGTK) ─────────────────────────────────────────────────── */
+.file-browser-sort {
+  position: relative;
+  display: inline-flex;
+}
+
+.file-browser-sort-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.file-browser-sort-caret {
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.file-browser-sort-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  min-width: 120px;
+}
+
+.file-browser-actions .file-browser-sort-menu button {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 5px 9px;
+  text-align: left;
+  border: 1px solid transparent;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.file-browser-actions .file-browser-sort-menu button:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.file-browser-actions .file-browser-sort-menu button.selected {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* ── File tree ────────────────────────────────────────────────────────── */
 .file-tree {
+  min-height: 100%;
+  box-sizing: border-box;
   padding: 4px;
+}
+
+.file-tree-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1px;
+  width: 100%;
+  padding: 2px 4px 4px;
+  font-size: 12px;
 }
 
 .file-tree-up {
   display: flex;
   align-items: center;
-  width: 100%;
-  padding: 4px 8px;
+  padding: 2px 6px;
+  margin-right: 2px;
   background: transparent;
   border: none;
   cursor: pointer;
@@ -881,6 +1986,34 @@ input {
 }
 
 .file-tree-up:hover { background-color: var(--pill-hover-bg); }
+
+.file-tree-crumb {
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-radius: 4px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tree-crumb:hover { background-color: var(--pill-hover-bg); }
+
+.file-tree-crumb.current {
+  color: var(--text-primary);
+  cursor: default;
+}
+
+.file-tree-crumb.current:hover { background-color: transparent; }
+
+.file-tree-crumb-sep {
+  color: var(--text-muted);
+  font-size: 11px;
+}
 
 .file-tree-loading,
 .file-tree-empty {
@@ -898,7 +2031,7 @@ input {
 
 .file-entry {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   padding: 3px 8px;
   border-radius: 4px;
@@ -910,9 +2043,221 @@ input {
 
 .file-entry:hover { background-color: var(--pill-hover-bg); }
 
-.file-icon { font-size: 12px; flex-shrink: 0; }
-.file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-size { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+/* Files never start a native (browser) drag — embeddable ones use a pointer
+   drag to a tab bar, non-embeddable ones aren't draggable at all. Suppress the
+   webview's built-in drag of the row text/icon. Dirs keep native DnD (export). */
+.file-entry.file,
+.file-entry.file * {
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+
+/* Only EMBEDDABLE files can be dragged onto a subwindow's tab bar (Group K).
+   Give just those a subtle 3D "pop up" on hover so the drag affordance is
+   discoverable; non-embeddable files get no effect, signalling they're not
+   draggable (they open on double-click). */
+.file-entry.file.embeddable {
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease,
+    background-color 120ms ease;
+  transform: translateZ(0);
+}
+.file-entry.file.embeddable:hover {
+  position: relative;
+  z-index: 2;
+  cursor: grab;
+  transform: translateY(-2px) scale(1.02);
+  box-shadow:
+    0 5px 12px rgba(0, 0, 0, 0.35),
+    0 1px 3px rgba(0, 0, 0, 0.25);
+}
+.file-entry.file.embeddable:active {
+  cursor: grabbing;
+  transform: translateY(0) scale(1.0);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.file-run-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--success) 70%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--success);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-run-btn:hover {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  border-color: var(--success);
+}
+
+.file-run-btn.running {
+  cursor: default;
+  border-color: color-mix(in srgb, var(--success) 70%, transparent);
+  background: transparent;
+}
+
+.file-run-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--success) 30%, transparent);
+  border-top-color: var(--success);
+  animation: file-run-spin 0.7s linear infinite;
+}
+
+@keyframes file-run-spin {
+  to { transform: rotate(360deg); }
+}
+
+.file-tree-section-divider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 4px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-color, rgba(255,255,255,0.12));
+}
+
+.file-entry.scaffold {
+  opacity: 0.65;
+}
+
+.file-tree-hidden-toggle {
+  width: 100%;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border-color, rgba(255,255,255,0.12));
+  cursor: pointer;
+  text-align: left;
+}
+
+.file-tree-hidden-toggle:hover {
+  color: var(--text-primary);
+}
+
+.file-tree-hidden-caret {
+  display: inline-block;
+  width: 9px;
+  font-size: 9px;
+}
+
+.file-tree-scaffold-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.file-tree.drag-over {
+  outline: 2px dashed var(--accent, #58a6ff);
+  outline-offset: -2px;
+  border-radius: 6px;
+  background: rgba(88, 166, 255, 0.06);
+}
+
+.file-icon { font-size: 12px; flex-shrink: 0; line-height: 1.3; }
+.file-name { flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; line-height: 1.3; }
+.file-size { font-size: 10px; color: var(--text-muted); flex-shrink: 0; line-height: 1.3; }
+.file-size.size-small  { color: var(--text-muted); }
+.file-size.size-medium { color: #e3b341; }
+.file-size.size-large  { color: #f0883e; }
+.file-size.size-huge   { color: #f85149; }
+
+.file-tooltip {
+  position: fixed;
+  z-index: 9999;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-primary);
+  pointer-events: none;
+  white-space: nowrap;
+  line-height: 1.8;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.file-tooltip-label {
+  color: var(--text-muted);
+  margin-right: 8px;
+  display: inline-block;
+  width: 5.5em;
+}
+
+.file-delete-dialog {
+  width: min(360px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.42);
+}
+
+.file-delete-dialog h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.file-delete-dialog p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.file-delete-path {
+  padding: 7px 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.file-delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.file-delete-actions button {
+  border: 1px solid var(--control-border);
+  padding: 7px 10px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.file-delete-actions button:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.file-delete-actions button.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--bg-main);
+}
 
 /* ── Center file browser ─────────────────────────────────────────────── */
 .file-browser {
@@ -1075,6 +2420,30 @@ input {
   min-width: 720px;
 }
 
+.file-browser-section-divider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 8px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-color, rgba(255,255,255,0.12));
+  grid-column: 1 / -1;
+}
+
+.file-browser-row.scaffold,
+.file-browser-tile.scaffold {
+  opacity: 0.65;
+}
+
+.file-browser-section-divider--icons {
+  width: 100%;
+}
+
 .file-browser-list-head,
 .file-browser-row {
   display: grid;
@@ -1181,67 +2550,46 @@ input {
 }
 
 /* ── Migrated main-branch app bars and hover strips ─────────────────── */
-.global-apps-area {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 5px;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  overflow: hidden;
-  pointer-events: auto;
-}
-
-.global-apps-area.open {
-  height: auto;
-}
-
-.global-apps-toggle-bar,
-.bottom-toggle-strip {
-  background: transparent;
-  transition: background-color 0.15s ease;
-}
-
-.global-apps-toggle-bar {
-  height: 8px;
-  min-height: 8px;
+/* ── Global-app launcher (header button + hover dropdown) ─────────────── */
+.global-apps-menu {
   position: relative;
-  overflow: visible;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 
-.global-apps-toggle-bar::after {
-  content: "▾";
+.global-apps-menu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  border-radius: 0;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.global-apps-menu-btn:hover,
+.global-apps-menu-btn[aria-expanded="true"] {
+  background: var(--control-hover-bg);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* Drops straight down from the button, aligned to its right edge so it
+   stays clear of the clock/window controls. */
+.global-apps-menu-dropdown {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 10px;
-  line-height: 1;
-  color: var(--accent);
-  opacity: 0.25;
-  pointer-events: none;
-  transition: opacity 0.15s ease;
+  top: 100%;
+  left: 0;
+  z-index: 90;
 }
 
-.global-apps-toggle-bar:hover::after {
-  opacity: 0.75;
-}
-
-.global-apps-toggle-bar.panel-open::after {
-  opacity: 0;
-}
-
-.global-apps-toggle-bar:hover,
-.bottom-toggle-strip:hover {
-  background: var(--accent);
-}
-
-.global-apps-toggle-bar.panel-open:hover,
-.bottom-toggle-strip.panel-open:hover {
-  background: transparent;
+.global-apps-menu-dropdown .global-apps-toolbar {
+  border-top: 1px solid var(--border-color);
 }
 
 .global-apps-toolbar {
@@ -1330,15 +2678,6 @@ input {
   margin-top: 8px;
 }
 
-.bottom-toggle-strip {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 16px;
-  z-index: 21;
-}
-
 .right-panel {
   pointer-events: none;
 }
@@ -1347,35 +2686,9 @@ input {
   pointer-events: auto;
 }
 
-.bottom-bar-wrap {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 25;
-  transform: translateY(48px);
-  transition: transform 0.2s ease;
-}
-
-.bottom-bar-wrap.open {
-  transform: translateY(0);
-}
-
-.bottom-bar {
-  height: 48px;
-  min-height: 48px;
-  background-color: var(--bg-panel);
-  border-top: 1px solid var(--border-color);
-  display: flex;
-  align-items: center;
-  padding: 4px 6px;
-  gap: 4px;
-  overflow: visible;
-}
-
-.bottom-root-btn,
-.bottom-action-btn,
-.bottom-add-btn {
+.project-switcher-root-btn,
+.project-switcher-action-btn,
+.project-switcher-add-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1387,38 +2700,38 @@ input {
   flex-shrink: 0;
 }
 
-.bottom-root-btn,
-.bottom-action-btn {
+.project-switcher-root-btn,
+.project-switcher-action-btn {
   background: var(--control-bg);
   color: var(--text-secondary);
 }
 
-.bottom-root-btn:hover,
-.bottom-action-btn:hover {
+.project-switcher-root-btn:hover,
+.project-switcher-action-btn:hover {
   background: var(--control-hover-bg);
   color: var(--text-primary);
   border-color: var(--text-muted);
 }
 
-.bottom-root-btn.active {
+.project-switcher-root-btn.active {
   background: var(--pill-active-bg);
   color: var(--text-primary);
   border-color: var(--pill-active-border);
   box-shadow: inset 0 3px 0 var(--accent);
 }
 
-.bottom-add-btn {
+.project-switcher-add-btn {
   background: var(--accent);
   color: var(--bg-main);
   font-size: 20px;
   border-color: var(--accent);
 }
 
-.bottom-add-btn:hover {
+.project-switcher-add-btn:hover {
   background: var(--accent-hover);
 }
 
-.bottom-separator {
+.project-switcher-separator {
   width: 1px;
   height: 32px;
   background: var(--border-subtle);
@@ -1435,8 +2748,102 @@ input {
   overflow-x: auto;
   overflow-y: hidden;
   height: 40px;
+  /* Edge fades hint that more pills are scrollable off-screen. The fade is only
+     applied on the side that actually has hidden pills (toggled from JS via the
+     data-overflow-* attributes) so a flush, non-overflowing row stays crisp. A
+     vertical mouse wheel scrolls this horizontally in the webview, so no
+     visible scrollbar is needed. */
+  --pills-fade-left: 0px;
+  --pills-fade-right: 0px;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--pills-fade-left),
+    #000 calc(100% - var(--pills-fade-right)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--pills-fade-left),
+    #000 calc(100% - var(--pills-fade-right)),
+    transparent 100%
+  );
 }
 
+.project-pills-region.overflow-left .project-pills-scroll {
+  --pills-fade-left: 28px;
+}
+
+.project-pills-region.overflow-right .project-pills-scroll {
+  --pills-fade-right: 28px;
+}
+
+/* Relative track holding the scrollable pill row plus the edge chevrons. */
+.project-pills-region {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+/* Chevron overlays that appear over whichever edge has hidden pills. They sit
+   above the pill row and scroll it on click, giving a clear "more this way"
+   cue beyond the edge fade. */
+.pills-scroll-btn {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 22px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  z-index: 2;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-primary);
+  background: var(--bg-header);
+  transition: color 0.1s;
+}
+
+.pills-scroll-btn:hover {
+  color: var(--accent);
+}
+
+.pills-scroll-btn.left {
+  left: 0;
+  justify-content: flex-start;
+  background: linear-gradient(
+    to right,
+    var(--bg-header) 55%,
+    transparent 100%
+  );
+}
+
+.pills-scroll-btn.right {
+  right: 0;
+  justify-content: flex-end;
+  background: linear-gradient(
+    to left,
+    var(--bg-header) 55%,
+    transparent 100%
+  );
+}
+
+.project-pills-region.overflow-left .pills-scroll-btn.left {
+  display: flex;
+}
+
+.project-pills-region.overflow-right .pills-scroll-btn.right {
+  display: flex;
+}
+
+/* Hidden scrollbar — overflow is conveyed by the edge fade above and wheel
+   scrolling, keeping the pills at full height inside the 40px row. */
 .project-pills-scroll::-webkit-scrollbar {
   height: 0;
 }
@@ -1488,7 +2895,7 @@ input {
 
 .project-search-popover {
   position: absolute;
-  bottom: 46px;
+  top: calc(100% + 4px);
   left: 0;
   width: min(360px, 80vw);
   max-height: 420px;
@@ -1533,15 +2940,15 @@ input {
   font-size: 12px;
 }
 
-.bottom-add-wrap {
+.project-switcher-add-wrap {
   position: relative;
   flex-shrink: 0;
 }
 
-.bottom-add-menu {
+.project-switcher-add-menu {
   position: absolute;
   right: 0;
-  bottom: 46px;
+  top: calc(100% + 4px);
   min-width: 150px;
   display: flex;
   flex-direction: column;
@@ -1554,7 +2961,7 @@ input {
   z-index: 60;
 }
 
-.bottom-add-menu button {
+.project-switcher-add-menu button {
   border: 1px solid transparent;
   border-radius: 0;
   padding: 7px 9px;
@@ -1565,7 +2972,7 @@ input {
   cursor: pointer;
 }
 
-.bottom-add-menu button:hover {
+.project-switcher-add-menu button:hover {
   background: var(--control-hover-bg);
   color: var(--text-primary) !important;
   -webkit-text-fill-color: var(--text-primary);
@@ -1583,7 +2990,9 @@ input {
 }
 
 .project-dialog {
-  width: min(460px, calc(100vw - 32px));
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(820px, calc(100vh - 40px));
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1706,6 +3115,8 @@ input {
 .filetype-settings-row input:focus,
 .project-dialog input:hover,
 .project-dialog input:focus,
+.project-dialog textarea:hover,
+.project-dialog textarea:focus,
 .project-dialog select:hover,
 .project-dialog select:focus {
   border-color: var(--accent);
@@ -1713,7 +3124,8 @@ input {
 }
 
 .settings-row select option,
-.project-dialog select option {
+.project-dialog select option,
+.file-browser-actions select option {
   background: var(--bg-panel);
   color: var(--text-primary);
 }
@@ -1744,6 +3156,130 @@ input {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.help-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.help-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+.help-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.help-row dt {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.help-row dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+@media (max-width: 520px) {
+  .help-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
+.project-settings-dialog {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.project-ending-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-ending-form input {
+  flex: 1;
+  height: 34px;
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  padding: 0 9px;
+}
+
+.project-ending-form input:hover,
+.project-ending-form input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.project-ending-form button {
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 7px 10px;
+}
+
+.project-ending-form button:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.settings-list.project-ending-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 4px 10px;
+  max-height: min(360px, calc(100vh - 300px));
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.project-ending-toggle {
+  min-height: 32px;
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: center;
+}
+
+.project-ending-toggle:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.project-ending-toggle.is-hidden {
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-color: var(--border-subtle);
+}
+
+.settings-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings-error {
+  color: var(--danger, #f85149);
+  font-size: 12px;
+  word-break: break-word;
 }
 
 .settings-list {
@@ -1795,7 +3331,8 @@ input {
 }
 
 .project-dialog input,
-.project-dialog select {
+.project-dialog select,
+.project-dialog textarea {
   height: 34px;
   border: 1px solid var(--control-border);
   border-radius: 0;
@@ -1804,10 +3341,73 @@ input {
   padding: 0 8px;
 }
 
+.project-dialog textarea {
+  min-height: 72px;
+  padding: 8px;
+  resize: vertical;
+}
+
+.project-description-field {
+  gap: 6px !important;
+}
+
+.project-description-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.project-description-header span {
+  min-width: 0;
+}
+
+.project-description-header select {
+  width: auto;
+  min-width: 118px;
+  max-width: 160px;
+  height: 28px;
+}
+
 .folder-picker-row {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* OpenVPN activation password prompt */
+.vpn-prompt-dialog {
+  max-width: 380px;
+}
+
+.vpn-prompt-text {
+  color: var(--text-primary);
+  margin: 0 0 8px;
+}
+
+.vpn-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.vpn-prompt-actions button {
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  padding: 7px 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.vpn-prompt-actions button.primary {
+  background: var(--accent, var(--control-border));
+  color: var(--text-primary);
+}
+
+.vpn-toggle {
+  margin-bottom: 4px;
 }
 
 .folder-picker-row span {
@@ -1859,6 +3459,258 @@ input {
   word-break: break-word;
 }
 
+.scaffold-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+}
+
+.scaffold-popover-title {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.scaffold-steps {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.scaffold-steps li + li {
+  margin-top: 3px;
+}
+
+.manual-validation-row {
+  min-height: 28px;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  color: var(--text-primary) !important;
+}
+
+.manual-validation-row input[type="checkbox"],
+.skip-scaffold-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.skip-scaffold-row {
+  min-height: 28px;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  color: var(--text-primary) !important;
+}
+
+.scaffold-fill-all-row {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 210px);
+  gap: 10px !important;
+  align-items: center;
+  color: var(--text-primary) !important;
+}
+
+.scaffold-fill-all-row span {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.scaffold-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scaffold-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 210px);
+  gap: 10px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+}
+
+.scaffold-file {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scaffold-file span {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.scaffold-file small,
+.scaffold-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.scaffold-row select:disabled {
+  opacity: 0.62;
+  cursor: default;
+}
+
+.scaffold-row-status {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+@media (max-width: 640px) {
+  .scaffold-fill-all-row,
+  .scaffold-row {
+    grid-template-columns: 1fr;
+  }
+
+  .scaffold-row-status {
+    text-align: left;
+  }
+}
+
+.ssh-optional-hint {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.remote-project-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.remote-project-toggle input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
+.ssh-connect-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+}
+
+.ssh-address-input,
+.ssh-password-input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+
+.remote-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+}
+
+.remote-browser-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.remote-up-btn {
+  flex: 0 0 auto;
+}
+
+.remote-breadcrumb {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.remote-browser-header button {
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  padding: 5px 9px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.remote-browser-header button:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.remote-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+}
+
+.remote-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.remote-entry + .remote-entry {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.remote-entry.is-dir {
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.remote-entry.is-dir:hover {
+  background: var(--control-hover-bg);
+}
+
+.remote-entry.is-file {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.remote-entry-icon {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.remote-entry-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-chosen {
+  color: var(--text-muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
 .project-dialog-actions {
   display: flex;
   justify-content: flex-end;
@@ -1882,6 +3734,14 @@ input {
 
 .orbit-dot {
   fill: var(--accent);
+}
+
+/* Running-task indicator on a project pill — green to read as "live work". */
+.pill-running-spinner {
+  margin-left: 6px;
+}
+.pill-running-spinner .orbit-dot {
+  fill: var(--success, #45c46a);
 }
 
 /* ── Activity calendar ───────────────────────────────────────────────── */
@@ -1990,6 +3850,13 @@ input {
   font-size: 12px;
   color: var(--text-muted);
   padding: 4px 0;
+}
+
+.ollama-section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .ollama-action-btn {
@@ -2166,6 +4033,15 @@ input {
   color: var(--text-muted);
   padding: 12px 0;
   text-align: center;
+}
+
+/* Compact reuse of the project-dialog chrome for the pill description editor. */
+.edit-description-window {
+  width: min(440px, calc(100vw - 32px));
+}
+.edit-description-window textarea {
+  width: 100%;
+  min-height: 90px;
 }
 
 /* ── Project-switch toast ──────────────────────────────────────────────── */

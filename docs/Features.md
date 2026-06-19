@@ -51,7 +51,7 @@ independently before marking the broader feature in later sections as done.
 | New project | Directory creation | Implemented | [ ] | [ ] | [ ] | Project directory is created under managed project root. |
 | New project | Git init | Implemented | [ ] | [ ] | [ ] | New project has `.git/` and initial scaffold commit. |
 | New project | Scaffold files | Implemented | [ ] | [ ] | [ ] | Required scaffold files exist after create. |
-| New project | Registry update | Implemented | [ ] | [ ] | [ ] | Project appears in `projects.json` and bottom bar. |
+| New project | Registry update | Implemented | [ ] | [ ] | [ ] | Project appears in `projects.json` and project switcher. |
 | New project | Terminal activation | Implemented | [ ] | [ ] | [ ] | Newly created project opens its terminal immediately. |
 | Import | Folder chooser | Implemented | [ ] | [ ] | [ ] | Folder chooser selects source directory. |
 | Import | Name prefill | Implemented | [ ] | [ ] | [ ] | Project name starts from selected folder name. |
@@ -72,7 +72,10 @@ independently before marking the broader feature in later sections as done.
 | Default terminal | Agent command setting | Implemented | [ ] | [ ] | [ ] | Default command follows Settings (`claude`/`codex`). |
 | Default terminal | Missing command fallback | Implemented | [ ] | [ ] | [ ] | Missing command falls back to shell. |
 | Default terminal | Respawn on exit | Implemented | [ ] | [ ] | [ ] | Closing terminal child respawns it. |
-| Tab bar | Header placement | Implemented | [ ] | [ ] | [ ] | Tab strip is in header center and remains visible. |
+| Tab bar | Per-subwindow placement | Implemented | [ ] | [ ] | [ ] | Each tiling subwindow renders its own tab bar; header no longer hosts a global tab strip. |
+| Tab bar | Split subwindow (drag to edge) | Implemented | [ ] | [ ] | [ ] | Dragging a tab onto a subwindow's L/R/T/B edge splits that direction into a new subwindow holding the tab. |
+| Tab bar | Move tab across subwindows | Implemented | [ ] | [ ] | [ ] | Dragging a tab onto another subwindow's center merges it into that group; emptied groups/splits collapse. |
+| Tab bar | Resize split | Implemented | [ ] | [ ] | [ ] | Dragging the divider between subwindows resizes them (clamped, ratios persist as fractions). |
 | Tab bar | Add Claude/Codex | Implemented | [ ] | [ ] | [ ] | Right-click tab bar adds selected CLI agent. |
 | Tab bar | Add shell terminal | Implemented | [ ] | [ ] | [ ] | Right-click tab bar adds plain terminal tab. |
 | Tab bar | Rename tab | Implemented | [ ] | [ ] | [ ] | Right-click tab can rename. |

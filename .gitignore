@@ -30,7 +30,6 @@ project.json
 
 # Rust / Cargo
 target/
-Cargo.lock
 
 # Node / frontend (Phase 2+)
 node_modules/

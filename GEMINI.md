@@ -18,7 +18,7 @@ Eldrun is a Tauri-based desktop workspace for AI-assisted development. It provid
 | Path | Purpose |
 |------|---------|
 | `src/App.tsx` | Main entry point, renders `AppShell`. |
-| `src/components/layout/` | Layout components: `AppShell`, `HeaderBar`, `CenterPanel`, `RightPanel`, `BottomBar`. |
+| `src/components/layout/` | Layout components: `AppShell`, `HeaderBar`, `CenterPanel`, `RightPanel`, `ProjectSwitcher`. |
 | `src/components/terminal/` | `TerminalView` using xterm.js. |
 | `src/components/files/` | `FileBrowser` and `FileTree`. |
 | `src/stores/` | Zustand stores: `projects.ts`, `tabs.ts`, `settings.ts`, `windows.ts`. |

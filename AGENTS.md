@@ -14,7 +14,7 @@ integration.
 - The Tauri/Rust backend is under `src-tauri/`.
 - Frontend layout lives mainly in `src/components/layout/`, especially
   `AppShell.tsx`, `HeaderBar.tsx`, `CenterPanel.tsx`, `RightPanel.tsx`,
-  `BottomBar.tsx`, and `GlobalAppBar.tsx`.
+  `ProjectSwitcher.tsx`, and `GlobalAppBar.tsx`.
 - Terminal UI lives in `src/components/terminal/TerminalView.tsx`; terminal
   backend commands live in `src-tauri/src/commands/terminal.rs` and
   `src-tauri/src/terminal/`.

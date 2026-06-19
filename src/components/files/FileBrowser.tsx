@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useWindowsStore } from "../../stores/windows";
+import { useProjectsStore } from "../../stores/projects";
 import {
   type FileEntry,
   type SortKey,
+  STANDARD_PROJECT_FILES,
   fileIcon,
   folderIcon,
   fmtModified,
@@ -14,7 +16,22 @@ import {
   visibleEntries,
 } from "./fileUtils";
 
+type ProjectJson = Record<string, unknown>;
+
+function readStringList(project: ProjectJson | null, key: string): string[] {
+  const raw = project?.[key];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item): item is string => typeof item === "string");
+}
+
 type ViewMode = "list" | "icons";
+const SORT_LABELS: Record<SortKey, string> = {
+  name: "Name",
+  type: "Type",
+  size: "Size",
+  modified: "Modified",
+  created: "Created",
+};
 type ContextMenuState =
   | { kind: "entry"; x: number; y: number; path: string }
   | { kind: "background"; x: number; y: number };
@@ -27,21 +44,50 @@ interface Props {
 
 export function FileBrowser({ projectDir, projectId, active }: Props) {
   const { openFile } = useWindowsStore();
+  const projects = useProjectsStore((s) => s.projects);
   const [relPath, setRelPath] = useState("");
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [history, setHistory] = useState<string[]>([]);
   const [future, setFuture] = useState<string[]>([]);
   const [showHidden, setShowHidden] = useState(false);
-  const [showStandardFiles, setShowStandardFiles] = useState(false);
+  const [showStandardFiles, setShowStandardFiles] = useState(true);
+  const [separateScaffold, setSeparateScaffold] = useState(true);
+  const [showUserHidden, setShowUserHidden] = useState(false);
+  const [hiddenEndings, setHiddenEndings] = useState<string[]>([]);
+  const [hiddenPaths, setHiddenPaths] = useState<string[]>([]);
+  const [shownPaths, setShownPaths] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [descending, setDescending] = useState(false);
   const [query, setQuery] = useState("");
   const [pathEntry, setPathEntry] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+
+  const localFile = projects.find((p) => p.id === projectId)?.local_file ?? null;
+
+  useEffect(() => {
+    if (!localFile) {
+      setHiddenEndings([]);
+      setHiddenPaths([]);
+      setShownPaths([]);
+      return;
+    }
+    invoke<ProjectJson>("load_project", { localFile })
+      .then((project) => {
+        setHiddenEndings(readStringList(project, "panel_hidden_endings"));
+        setHiddenPaths(readStringList(project, "panel_hidden_paths"));
+        setShownPaths(readStringList(project, "panel_shown_paths"));
+      })
+      .catch(() => {
+        setHiddenEndings([]);
+        setHiddenPaths([]);
+        setShownPaths([]);
+      });
+  }, [localFile]);
 
   useEffect(() => {
     if (!projectDir) return;
@@ -62,9 +108,33 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
     };
   }, [contextMenu]);
 
+  useEffect(() => {
+    if (!sortMenuOpen) return;
+    const close = () => setSortMenuOpen(false);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [sortMenuOpen]);
+
   const displayed = useMemo(
-    () => visibleEntries(entries, { showHidden, showStandardFiles, query, sortKey, descending }),
-    [entries, showHidden, showStandardFiles, query, sortKey, descending],
+    () => visibleEntries(entries, {
+      showHidden,
+      showStandardFiles,
+      query,
+      sortKey,
+      descending,
+      relPath,
+      hiddenEndings: showUserHidden ? [] : hiddenEndings,
+      hiddenPaths: showUserHidden ? [] : hiddenPaths,
+      shownPaths: showUserHidden ? [] : shownPaths,
+    }),
+    [entries, showHidden, showStandardFiles, query, sortKey, descending, relPath, showUserHidden, hiddenEndings, hiddenPaths, shownPaths],
   );
 
   async function load(nextRel: string, options: { replace?: boolean } = {}) {
@@ -279,12 +349,34 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
         <button onClick={revealSelected} disabled={!canMutate}>Reveal</button>
         <label><input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /> Hidden</label>
         <label><input type="checkbox" checked={showStandardFiles} onChange={(e) => setShowStandardFiles(e.target.checked)} /> Scaffold</label>
-        <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
-          <option value="name">Name</option>
-          <option value="type">Type</option>
-          <option value="size">Size</option>
-          <option value="modified">Modified</option>
-        </select>
+        <label><input type="checkbox" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} /> Separate scaffold</label>
+        <label><input type="checkbox" checked={showUserHidden} onChange={(e) => setShowUserHidden(e.target.checked)} /> User hidden</label>
+        <div className="file-browser-sort" onMouseDown={(e) => e.stopPropagation()}>
+          <button
+            className="file-browser-sort-trigger"
+            onClick={() => setSortMenuOpen((v) => !v)}
+            title="Sort by"
+          >
+            {SORT_LABELS[sortKey]}
+            <span className="file-browser-sort-caret">▾</span>
+          </button>
+          {sortMenuOpen && (
+            <div className="context-menu file-browser-sort-menu">
+              {(Object.keys(SORT_LABELS) as SortKey[]).map((key) => (
+                <button
+                  key={key}
+                  className={key === sortKey ? "selected" : ""}
+                  onClick={() => {
+                    setSortKey(key);
+                    setSortMenuOpen(false);
+                  }}
+                >
+                  {SORT_LABELS[key]}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button onClick={() => setDescending((v) => !v)}>{descending ? "Desc" : "Asc"}</button>
       </div>
 
@@ -301,15 +393,16 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
           {loading && <div className="file-browser-message">Loading...</div>}
           {error && <div className="file-browser-error">{error}</div>}
           {!loading && displayed.length === 0 && <div className="file-browser-message">No files</div>}
-          {viewMode === "list" ? (
-            <div className="file-browser-list">
-              <div className="file-browser-list-head">
-                <span>Name</span><span>Type</span><span>Size</span><span>Modified</span>
-              </div>
-              {displayed.map((entry) => (
+          {(() => {
+            const splitScaffold = !relPath && showStandardFiles && separateScaffold;
+            const regular = splitScaffold ? displayed.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : displayed;
+            const scaffold = splitScaffold ? displayed.filter((e) => STANDARD_PROJECT_FILES.has(e.name)) : [];
+
+            function renderListRow(entry: FileEntry, isScaffold = false) {
+              return (
                 <div
                   key={entry.path}
-                  className={`file-browser-row ${selected.has(entry.path) ? "selected" : ""}`}
+                  className={`file-browser-row${selected.has(entry.path) ? " selected" : ""}${isScaffold ? " scaffold" : ""}`}
                   onClick={(e) => toggleSelected(entry, e.ctrlKey || e.metaKey)}
                   onDoubleClick={() => activate(entry)}
                   onContextMenu={(e) => showEntryContextMenu(e, entry)}
@@ -319,14 +412,14 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                   <span>{entry.is_dir ? "" : fmtSize(entry.size)}</span>
                   <span>{fmtModified(entry.modified_secs)}</span>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div className="file-browser-icons">
-              {displayed.map((entry) => (
+              );
+            }
+
+            function renderIconTile(entry: FileEntry, isScaffold = false) {
+              return (
                 <button
                   key={entry.path}
-                  className={`file-browser-tile ${selected.has(entry.path) ? "selected" : ""}`}
+                  className={`file-browser-tile${selected.has(entry.path) ? " selected" : ""}${isScaffold ? " scaffold" : ""}`}
                   onClick={(e) => toggleSelected(entry, e.ctrlKey || e.metaKey)}
                   onDoubleClick={() => activate(entry)}
                   onContextMenu={(e) => showEntryContextMenu(e, entry)}
@@ -334,9 +427,34 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
                   <span>{entry.is_dir ? folderIcon() : fileIcon(entry.extension)}</span>
                   <b>{entry.name}</b>
                 </button>
-              ))}
-            </div>
-          )}
+              );
+            }
+
+            return viewMode === "list" ? (
+              <div className="file-browser-list">
+                <div className="file-browser-list-head">
+                  <span>Name</span><span>Type</span><span>Size</span><span>Modified</span>
+                </div>
+                {regular.map((e) => renderListRow(e, false))}
+                {scaffold.length > 0 && (
+                  <>
+                    <div className="file-browser-section-divider">scaffold</div>
+                    {scaffold.map((e) => renderListRow(e, true))}
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="file-browser-icons">
+                {regular.map((e) => renderIconTile(e, false))}
+                {scaffold.length > 0 && (
+                  <>
+                    <div className="file-browser-section-divider file-browser-section-divider--icons">scaffold</div>
+                    {scaffold.map((e) => renderIconTile(e, true))}
+                  </>
+                )}
+              </div>
+            );
+          })()}
           {contextMenu && (
             <div
               className="context-menu file-browser-context-menu"

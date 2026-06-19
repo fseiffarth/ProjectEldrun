@@ -108,9 +108,10 @@ The active layout is a single fullscreen orchestration surface:
 +------------------------------------------------------------------+
 ```
 
-All three side panels — global app bar (left), right file panel, and bottom
-project switcher — appear on pointer hover and auto-close after the pointer
-leaves. `Super` hides all panels simultaneously; `F11` toggles fullscreen.
+The two side panels — global app bar (left) and right file panel — appear on
+pointer hover and auto-close after the pointer leaves; the project switcher now
+lives in the top header bar. `Super` hides the panels simultaneously; `F11`
+toggles fullscreen.
 
 ### Header Bar
 
@@ -202,9 +203,10 @@ The panel has two views toggled by buttons in its header:
 
 The panel is only rendered when a project is active and panels are not hidden.
 
-### Bottom Project Bar
+### Project Switcher
 
-`BottomBar.tsx` is a hover-revealed strip along the bottom of the app body.
+`ProjectSwitcher.tsx` is the project-switcher strip in the top header bar
+(rendered inside `header-center` by `HeaderBar.tsx`).
 
 Contents:
 
@@ -355,7 +357,7 @@ Tauri v2 Application
     |   +-- CenterPanel.tsx Terminal/file-browser stack and tab scoping
     |   +-- GlobalAppBar.tsx  Cross-project app toolbar (hover-revealed)
     |   +-- RightPanel.tsx  File tree + tracked windows (hover-revealed)
-    |   +-- BottomBar.tsx   Project pills, search, settings (hover-revealed)
+    |   +-- ProjectSwitcher.tsx   Project pills, search, settings (hover-revealed)
     +-- components/terminal/
     |   +-- TerminalView.tsx  xterm.js PTY wrapper
     +-- components/files/
@@ -422,7 +424,7 @@ Each entry:
 | `id` | Stable UUID. |
 | `name` | Display name. |
 | `status` | `current`, `active`, or `inactive`. At most one `current`. |
-| `position` | Bottom-bar ordering weight; lower appears earlier. |
+| `position` | Project-switcher ordering weight; lower appears earlier. |
 | `local_file` | Path to the project-local metadata file. |
 
 ### Project-Local `project.json`
@@ -531,7 +533,7 @@ session and removed.
 
 1. `AppShell` mounts; loads settings and projects from the backend.
 2. `getCurrentWindow().setFullscreen(true)` is called after the window is ready.
-3. Projects marked `current` or `active` appear as bottom-bar pills.
+3. Projects marked `current` or `active` appear as project-switcher pills.
 4. The project marked `current` is the initial active scope; if none, root.
 5. Workspace management (if enabled) allocates desktops for visible projects.
 6. Network monitoring begins; `network-status-changed` events drive the status

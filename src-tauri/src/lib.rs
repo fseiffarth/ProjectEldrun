@@ -1,8 +1,11 @@
 pub mod commands;
+pub mod paths;
 pub mod platform;
 pub mod schema;
 pub mod services;
 pub mod storage;
+#[cfg(target_os = "linux")]
+pub mod sysstat;
 pub mod terminal;
 
 use std::sync::{Arc, Mutex};
@@ -36,6 +39,11 @@ fn install_crash_logger() {
     unsafe { install_signal_handlers(&path) };
 }
 
+/// Append one entry to crash.log in the state dir.
+pub(crate) fn crash_log_append(msg: &str) {
+    append_to_log(&storage::state_dir().join("crash.log"), msg);
+}
+
 fn append_to_log(path: &std::path::Path, msg: &str) {
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -48,43 +56,14 @@ fn append_to_log(path: &std::path::Path, msg: &str) {
 }
 
 /// Human-readable ISO 8601 UTC timestamp with no external dependencies.
-fn iso_now() -> String {
+pub(crate) fn iso_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let (y, mo, d, h, mi, s) = epoch_to_utc(secs);
+    let (y, mo, d, h, mi, s) = storage::epoch_to_utc(secs);
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
-}
-
-pub(crate) fn epoch_to_utc(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    let mut days = secs / 86400;
-    let mut year = 1970u64;
-    loop {
-        let dy = if is_leap_year(year) { 366 } else { 365 };
-        if days < dy { break; }
-        days -= dy;
-        year += 1;
-    }
-    let month_lens: [u64; 12] = [
-        31, if is_leap_year(year) { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
-    ];
-    let mut month = 1u64;
-    for &ml in &month_lens {
-        if days < ml { break; }
-        days -= ml;
-        month += 1;
-    }
-    (year, month, days + 1, h, m, s)
-}
-
-pub(crate) fn is_leap_year(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 /// Register async-signal-safe handlers for fatal signals.
@@ -141,8 +120,53 @@ fn sig_write(fd: i32, buf: &[u8]) {
     unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
 }
 
+/// Webview renderer crashes (e.g. WebKitWebProcess SIGBUS) happen in a child
+/// process, so the signal handlers above never fire and the window keeps
+/// showing its last frame — an apparent freeze. Hook WebKit's
+/// web-process-terminated signal to log the reason to crash.log and reload
+/// the page, which respawns the renderer.
+#[cfg(target_os = "linux")]
+fn install_webview_crash_reporter(app: &tauri::App) {
+    use tauri::Manager;
+    use webkit2gtk::{WebProcessTerminationReason, WebViewExt};
+
+    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    const MAX_RELOADS: u32 = 5;
+
+    for window in app.webview_windows().values() {
+        let label = window.label().to_string();
+        let _ = window.with_webview(move |webview| {
+            let label = label.clone();
+            webview
+                .inner()
+                .connect_web_process_terminated(move |view, reason| {
+                    let msg = format!(
+                        "=== WEBVIEW '{label}' TERMINATED {} reason={reason:?} ===",
+                        iso_now()
+                    );
+                    crash_log_append(&msg);
+                    eprintln!("{msg}");
+                    if reason == WebProcessTerminationReason::TerminatedByApi {
+                        return;
+                    }
+                    if RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS {
+                        view.reload();
+                    }
+                });
+        });
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKit's DMA-BUF renderer SIGBUSes inside Mesa on some driver stacks
+    // (seen 2026-06-11 with Mesa 26.0.3: renderer died, window froze). Fall
+    // back to shared-memory rendering unless the user explicitly overrides.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     install_crash_logger();
 
     let pty_registry: RegistryState = Arc::new(Mutex::new(PtyRegistry::default()));
@@ -153,6 +177,16 @@ pub fn run() {
         .manage(pty_registry)
         .manage(win_registry)
         .manage(workspace)
+        .setup(|_app| {
+            #[cfg(target_os = "linux")]
+            install_webview_crash_reporter(_app);
+            // Install the global Claude SessionStart hook so Eldrun can follow a
+            // tab's live session id across `/clear` (see services::agent_session).
+            if let Err(e) = services::agent_session::install_session_start_hook() {
+                eprintln!("agent_session: install SessionStart hook: {e}");
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // Settings
             commands::settings::get_settings,
@@ -164,14 +198,29 @@ pub fn run() {
             commands::projects::save_projects,
             commands::projects::load_project,
             commands::projects::save_project,
+            commands::projects::set_project_description,
             commands::projects::save_tab_layout,
-            commands::projects::clear_project_session,
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
+            commands::projects::open_in_file_manager,
+            commands::projects::list_project_endings,
+            commands::projects::list_project_paths,
             commands::projects::create_project,
+            commands::projects::preview_project_scaffold,
             commands::projects::import_project,
             commands::projects::get_time_today,
-            commands::projects::detect_agent_session_id,
+            // SSH / remote projects
+            commands::ssh::ssh_connect,
+            commands::ssh::ssh_default_dir,
+            commands::ssh::ssh_list_dir,
+            commands::ssh::ensure_project_mounted,
+            // OpenVPN tunnels for VPN-gated remote projects
+            commands::openvpn::openvpn_connect,
+            commands::openvpn::openvpn_disconnect,
+            commands::openvpn::openvpn_status,
+            commands::openvpn::openvpn_store_config,
+            // GitHub publishing
+            commands::github::github_publish,
             // Timer flush + activity
             commands::timer::timer_flush_app,
             commands::timer::timer_flush_project,
@@ -182,13 +231,23 @@ pub fn run() {
             commands::projects::delete_file,
             commands::projects::delete_dir,
             commands::projects::create_file,
+            commands::projects::write_project_file,
+            commands::projects::write_project_file_bytes,
+            commands::projects::update_gitignore_rule,
             commands::projects::create_dir,
             commands::projects::detect_mime,
+            commands::projects::read_file_text,
+            commands::projects::write_file_text,
+            commands::projects::read_file_bytes,
+            // LaTeX view / compile (gated on a TeX engine being on PATH)
+            commands::tex::tex_capability,
+            commands::tex::compile_tex,
             // Terminal
             commands::terminal::pty_spawn,
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
             commands::terminal::pty_kill,
+            commands::terminal::project_cpu_percent,
             // External apps / window tracking
             commands::apps::launch_app,
             commands::apps::resolve_app_icon,
@@ -197,6 +256,8 @@ pub fn run() {
             commands::apps::untrack_window,
             commands::apps::check_pid_alive,
             commands::apps::restore_open_apps,
+            commands::apps::run_script_detached,
+            commands::apps::embed_capability,
             // Workspace / network
             commands::workspace::workspace_info,
             commands::workspace::workspace_switch,
@@ -208,8 +269,25 @@ pub fn run() {
             commands::workspace::network_conn_type,
             // Project-runtime switching (replaces switch_project_windows)
             commands::project_runtime::switch_project_runtime,
+            commands::project_runtime::load_right_panel_folder,
+            commands::project_runtime::save_right_panel_folder,
+            // Git
+            commands::git::git_status,
+            commands::git::git_add_all,
+            commands::git::git_generate_commit_message,
+            commands::git::git_commit,
+            commands::git::git_push,
+            commands::git::git_file_statuses,
+            commands::git::git_unpushed_commits,
+            commands::git::git_add_path,
+            commands::git::git_log,
+            commands::git::git_branches,
+            commands::git::git_checkout,
+            commands::git::git_commit_message,
+            commands::git::git_reword_head,
+            // Crash reporting
+            commands::crash::report_frontend_error,
             // Downloads
-            commands::downloads::update_downloads_symlink,
             commands::downloads::configure_browser_downloads,
             // Ollama local models
             commands::ollama::list_ollama_models,
@@ -225,8 +303,18 @@ pub fn run() {
             commands::ollama::list_installable_models,
         ])
         .plugin(tauri_plugin_dialog::init())
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // Tear down any sshfs mounts for remote projects when the app exits
+            // so the user isn't left with stale FUSE mounts after shutdown.
+            if let tauri::RunEvent::Exit = event {
+                services::ssh_mount::unmount_all();
+                // Tear down any OpenVPN tunnels brought up for VPN-gated
+                // remote projects so no privileged tunnel outlives the app.
+                services::openvpn::disconnect_all();
+            }
+        });
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -235,90 +323,10 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    // ── is_leap_year ───────────────────────────────────────────────────────
-
     #[test]
-    fn year_divisible_by_4_is_leap() {
-        assert!(is_leap_year(2024));
-        assert!(is_leap_year(2000));
-        assert!(is_leap_year(1600));
-    }
-
-    #[test]
-    fn year_divisible_by_100_but_not_400_is_not_leap() {
-        assert!(!is_leap_year(1900));
-        assert!(!is_leap_year(1800));
-        assert!(!is_leap_year(2100));
-    }
-
-    #[test]
-    fn year_not_divisible_by_4_is_not_leap() {
-        assert!(!is_leap_year(2023));
-        assert!(!is_leap_year(2025));
-        assert!(!is_leap_year(1999));
-    }
-
-    #[test]
-    fn year_2000_is_leap() {
-        assert!(is_leap_year(2000));
-    }
-
-    // ── epoch_to_utc ───────────────────────────────────────────────────────
-
-    #[test]
-    fn epoch_zero_is_unix_epoch() {
-        let (y, mo, d, h, m, s) = epoch_to_utc(0);
-        assert_eq!((y, mo, d, h, m, s), (1970, 1, 1, 0, 0, 0));
-    }
-
-    #[test]
-    fn epoch_midnight_jan_2_1970() {
-        let (y, mo, d, h, m, s) = epoch_to_utc(86400);
-        assert_eq!((y, mo, d, h, m, s), (1970, 1, 2, 0, 0, 0));
-    }
-
-    #[test]
-    fn epoch_end_of_1970() {
-        // Dec 31 1970 23:59:59 = 86400*365 - 1 = 31535999
-        let (y, mo, d, ..) = epoch_to_utc(31535999);
-        assert_eq!((y, mo, d), (1970, 12, 31));
-    }
-
-    #[test]
-    fn epoch_jan_1_2000() {
-        // 2000-01-01T00:00:00Z = 946684800
-        let (y, mo, d, h, m, s) = epoch_to_utc(946684800);
-        assert_eq!((y, mo, d, h, m, s), (2000, 1, 1, 0, 0, 0));
-    }
-
-    #[test]
-    fn epoch_feb_29_leap_year() {
-        // 2000-02-29T00:00:00Z = 951782400
-        let (y, mo, d, ..) = epoch_to_utc(951782400);
-        assert_eq!((y, mo, d), (2000, 2, 29));
-    }
-
-    #[test]
-    fn epoch_time_components_are_correct() {
-        // 1717414496 = 2024-06-03T11:34:56Z (verified: 1717372800 + 41696)
-        let (y, mo, d, h, m, s) = epoch_to_utc(1717414496);
-        assert_eq!((y, mo, d), (2024, 6, 3));
-        assert_eq!((h, m, s), (11, 34, 56));
-    }
-
-    #[test]
-    fn epoch_seconds_wrap_at_60() {
-        let (_, _, _, _, _, s) = epoch_to_utc(59);
-        assert_eq!(s, 59);
-        let (_, _, _, _, _, s2) = epoch_to_utc(60);
-        assert_eq!(s2, 0);
-    }
-
-    #[test]
-    fn epoch_minutes_wrap_at_60() {
-        let (_, _, _, _, m, _) = epoch_to_utc(3599); // 59m59s
-        assert_eq!(m, 59);
-        let (_, _, _, _, m2, _) = epoch_to_utc(3600); // 1h0m0s
-        assert_eq!(m2, 0);
+    fn iso_now_uses_z_suffix() {
+        let s = iso_now();
+        assert!(s.ends_with('Z'), "crash-log timestamps end with Z: {s}");
+        assert!(s.contains('T'));
     }
 }

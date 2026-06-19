@@ -4,6 +4,17 @@ This file captures product direction and sequencing. Concrete implementation
 tasks live in `TODO.md`; current status and validation notes live in
 `STATUS.md`; current behavior and architecture live in `DOCUMENTATION.md`.
 
+## Deferred Features
+
+- **Agent session resume**: on project restore, detect the most-recent agent
+  session file (`.claude/projects/<encoded-path>/*.jsonl`, codex sessions dir,
+  `.gemini/history/`, vibe `$VIBE_HOME/logs/session/`) and pass `--resume <id>`
+  when spawning the restored agent tab so the conversation continues across
+  Eldrun restarts. Removed (2026-06-07) because detection was unreliable and
+  the `--resume` flag conflicted with fresh-start behavior the user wanted.
+  Also needs multi-tab disambiguation (each tab must track its own session ID,
+  not the project-global most-recent one).
+
 ## Near Term
 
 - Live-session QA: terminal resize/exit/paste, project switch, workspace

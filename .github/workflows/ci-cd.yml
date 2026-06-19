@@ -79,6 +79,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Run backend tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
       - name: Build release bundles
         run: npm run tauri:build -- --bundles nsis
 

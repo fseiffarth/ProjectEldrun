@@ -1,12 +1,56 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { resolveProjectDirectory, type ProjectEntry } from "../types";
-import { useTabsStore } from "./tabs";
+import {
+  cmdToKind,
+  isRestorableTab,
+  pruneSavedTree,
+  serializeTree,
+  useTabsStore,
+  type SavedLayoutTree,
+  type TabKind,
+} from "./tabs";
 import { useTimerStore } from "./timer";
+import { useVpnPromptStore } from "./vpnPrompt";
+
+/**
+ * If `project` is VPN-gated, ensure its OpenVPN tunnel is up before any sshfs
+ * mount / ssh runs. The password is prompted each time (never persisted). Best
+ * effort: a cancelled prompt or a failed connect is logged and we proceed, so a
+ * VPN hiccup degrades to the same "host unreachable" path as an offline host
+ * rather than blocking activation.
+ */
+async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<void> {
+  const config = project?.remote?.openvpn?.config;
+  if (!config) return;
+  try {
+    const up = await invoke<boolean>("openvpn_status", { config }).catch(() => false);
+    if (up) return;
+    const password = await useVpnPromptStore.getState().request(config, project!.name);
+    await invoke("openvpn_connect", { config, password });
+  } catch (error) {
+    console.warn("OpenVPN connect skipped/failed", error);
+  }
+}
 
 interface ProjectRuntimeSwitchedPayload {
   projectId: string | null;
-  tabLayout: Array<{ key: string; label: string; cmd: string; cwd: string }>;
+  tabLayout: Array<{
+    key: string;
+    label: string;
+    cmd: string;
+    cwd: string;
+    kind?: TabKind;
+    sessionId?: string;
+    env?: Record<string, string>;
+    embedPath?: string;
+    embedExec?: string;
+    viewer?: "pdf" | "image" | "markdown" | "text";
+  }>;
+  // Opaque split/group layout tree (camelCased by the backend's serde rename);
+  // absent → restored as a single group.
+  tabGroups: SavedLayoutTree | null;
   activeTabIndex: number;
   fileTabs: unknown[];
   rightPanelFolder: string | null;
@@ -19,13 +63,18 @@ interface ProjectsStore {
   loaded: boolean;
   rootDir: string | null;
   switchToast: string | null;
+  rightPanelFolderByProject: Record<string, string>;
   /** Incremented only on explicit setActive calls, never by load(). */
   switchGeneration: number;
   load: () => Promise<void>;
   setActive: (id: string | null) => Promise<void>;
+  reorderProjects: (fromId: string, toId: string) => Promise<void>;
+  setRightPanelFolder: (projectId: string, folder: string) => void;
   clearSwitchToast: () => void;
   addProject: (project: ProjectEntry) => Promise<void>;
   deactivateProject: (id: string) => Promise<void>;
+  updateProjectDescription: (id: string, description: string) => Promise<void>;
+  publishProject: (id: string, visibility: "public" | "private") => Promise<string>;
 }
 
 export const useProjectsStore = create<ProjectsStore>((set, get) => ({
@@ -34,6 +83,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   loaded: false,
   rootDir: null,
   switchToast: null,
+  rightPanelFolderByProject: {},
   switchGeneration: 0,
 
   load: async () => {
@@ -43,12 +93,44 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     ]);
     const projects = [...raw].sort((a, b) => a.position - b.position);
     const current = projects.find((p) => p.status === "current");
+    const activeId = current?.id ?? projects[0]?.id ?? null;
+    // Restore the active project's right-panel subfolder before any component
+    // mounts, so the file tree opens straight to the saved folder on startup.
+    // (Switching projects already restores via switch_project_runtime; this
+    // covers the initially-active project, which never triggers a switch.)
+    const rightPanelFolderByProject: Record<string, string> = {};
+    const activeLocalFile = activeId
+      ? projects.find((p) => p.id === activeId)?.local_file
+      : undefined;
+    if (activeId && activeLocalFile) {
+      const folder = await invoke<string | null>("load_right_panel_folder", {
+        localFile: activeLocalFile,
+      }).catch(() => null);
+      if (folder) rightPanelFolderByProject[activeId] = folder;
+    }
     set({
       projects,
       loaded: true,
       rootDir,
-      activeId: current?.id ?? projects[0]?.id ?? null,
+      activeId,
+      rightPanelFolderByProject,
     });
+    // The initially-active project never fires a switch (which is what mounts
+    // remote projects on activation). If it is remote, ensure its sshfs mount
+    // is up so the file tree / terminal see its bytes. Best-effort and
+    // non-fatal: a remote host may be offline at boot, which must not block or
+    // crash app start — re-switching to the project later will retry the mount.
+    if (activeId) {
+      const active = projects.find((p) => p.id === activeId);
+      if (active?.remote) {
+        void (async () => {
+          await ensureVpnIfNeeded(active);
+          await invoke("ensure_project_mounted", { projectId: activeId }).catch(
+            (error) => console.warn("ensure_project_mounted (startup) failed", error),
+          );
+        })();
+      }
+    }
   },
 
   setActive: async (id) => {
@@ -86,38 +168,110 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     });
     await invoke<void>("save_projects", { projects: nextProjects });
     void useTimerStore.getState().setProject(id);
-    const nextProject = id !== null ? nextProjects.find((p) => p.id === id) : null;
-    const projectCwd = resolveProjectDirectory(nextProject);
     const tabsStore = useTabsStore.getState();
-    const tabs = tabsStore.tabs;
+    // Persist restorable tabs across a switch: shell/files, resumable agent
+    // tabs (Claude with a sessionId), and in-app file-viewer embeds. Other agent
+    // tabs (and external-app embeds) are dropped from the snapshot and the tree
+    // is pruned to match (mirrors saveLayout). See isRestorableTab.
+    const tabs = tabsStore.tabs.filter((t) => isRestorableTab(t));
+    const keepKeys = new Set(tabs.map((t) => t.key));
     const activeTabIndex = Math.max(
       0,
       tabs.findIndex((t) => t.key === tabsStore.activeKey),
     );
-    invoke<ProjectRuntimeSwitchedPayload>("switch_project_runtime", {
+    // Serialize the current split/group tree so a switch round-trips the layout.
+    // Without this the backend persists `tab_groups: None`, flattening the tiling.
+    // Uses the store's canonical serializer (shared with saveLayout) so the
+    // switch snapshot and the on-disk `tab_groups` always agree.
+    const tabGroups = pruneSavedTree(serializeTree(tabsStore.layout), keepKeys);
+    // Bring up the VPN (if this project is VPN-gated) before the switch mounts
+    // its sshfs filesystem. Prompts for the password each time; non-blocking on
+    // failure (the mount then degrades like an offline host).
+    if (id !== null) {
+      await ensureVpnIfNeeded(nextProjects.find((p) => p.id === id));
+    }
+    // Fire-and-forget: the switch runs on a backend worker thread and returns
+    // immediately. The resulting tab layout / right-panel folder arrives via the
+    // `project-runtime-switched` event, handled by listenProjectRuntimeSwitched.
+    invoke("switch_project_runtime", {
       projectId: id,
       previousProjectId: previousId,
       previousSnapshot: {
-        tabLayout: tabs.map((t) => ({ key: t.key, label: t.label, cmd: t.cmd, cwd: t.cwd })),
+        tabLayout: tabs.map((t) => ({
+          key: t.key,
+          label: t.label,
+          cmd: t.cmd,
+          cwd: t.cwd,
+          kind: t.kind,
+          env: t.env ?? {},
+          sessionId: t.sessionId,
+          embedPath: t.embedPath,
+          embedExec: t.embedExec,
+          viewer: t.viewer,
+        })),
+        tabGroups,
         activeTabIndex,
         fileTabs: [],
-        rightPanelFolder: null,
+        rightPanelFolder: previousId ? get().rightPanelFolderByProject[previousId] ?? null : null,
         activeLayoutMetadata: null,
         flushSecs: 0.0,
       },
-    })
-      .then((payload) => {
-        if (payload.tabLayout.length > 0) {
-          const scopeKey = id ?? "root";
-          const liveTabs = useTabsStore.getState().tabsByScope[scopeKey];
-          if (!liveTabs || liveTabs.length === 0) {
-            useTabsStore.getState().loadFromLayout(payload.tabLayout, projectCwd);
-          }
-        }
-      })
-      .catch((error) => {
-        console.warn("switch_project_runtime failed", error);
+    }).catch((error) => {
+      console.warn("switch_project_runtime failed", error);
+    });
+  },
+
+  reorderProjects: async (fromId, toId) => {
+    if (fromId === toId) return;
+    const byPosition = (a: ProjectEntry, b: ProjectEntry) => a.position - b.position;
+    let nextProjects: ProjectEntry[] = [];
+    let changed = false;
+    set((state) => {
+      const active = state.projects
+        .filter((p) => p.status !== "inactive")
+        .sort(byPosition);
+      const inactive = state.projects
+        .filter((p) => p.status === "inactive")
+        .sort(byPosition);
+      const fromIdx = active.findIndex((p) => p.id === fromId);
+      const toIdx = active.findIndex((p) => p.id === toId);
+      if (fromIdx < 0 || toIdx < 0) return {};
+      const reordered = [...active];
+      const [moved] = reordered.splice(fromIdx, 1);
+      reordered.splice(toIdx, 0, moved);
+      // Renumber every project with gap-spaced positions so values stay unique:
+      // active pills in their new drag order first, inactive ones after.
+      const positionById = new Map(
+        [...reordered, ...inactive].map((p, i) => [p.id, (i + 1) * 10]),
+      );
+      nextProjects = state.projects.map((p) => {
+        const position = positionById.get(p.id);
+        return position !== undefined && position !== p.position
+          ? { ...p, position }
+          : p;
       });
+      changed = true;
+      return { projects: nextProjects };
+    });
+    if (changed) {
+      await invoke<void>("save_projects", { projects: nextProjects });
+    }
+  },
+
+  setRightPanelFolder: (projectId, folder) => {
+    set((state) => ({
+      rightPanelFolderByProject: {
+        ...state.rightPanelFolderByProject,
+        [projectId]: folder,
+      },
+    }));
+    // Persist immediately so the panel view survives a restart even if the user
+    // quits without switching projects. Re-saving the same value on restore or
+    // project switch is harmless and idempotent.
+    const localFile = get().projects.find((p) => p.id === projectId)?.local_file;
+    if (localFile) {
+      void invoke("save_right_panel_folder", { localFile, folder }).catch(() => {});
+    }
   },
 
   clearSwitchToast: () => set({ switchToast: null }),
@@ -151,4 +305,75 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       await useProjectsStore.getState().setActive(nextActiveId);
     }
   },
+
+  updateProjectDescription: async (id, description) => {
+    // Backend cleans (trims, empties → null) and writes projects.json +
+    // project.json; mirror the cleaned value into local state.
+    const cleaned = await invoke<string | null>("set_project_description", {
+      projectId: id,
+      description,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id ? { ...project, description: cleaned ?? undefined } : project,
+      ),
+    }));
+  },
+
+  publishProject: async (id, visibility) => {
+    // Backend runs `gh repo create … --push` (locally, or over ssh for a
+    // work-remote project) and writes the new push target into projects.json +
+    // project.json; mirror it into local state. Returns gh's stdout (repo URL).
+    const output = await invoke<string>("github_publish", { projectId: id, visibility });
+    const gitType = `remote-${visibility}`;
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id ? { ...project, git_type: gitType } : project,
+      ),
+    }));
+    return output;
+  },
 }));
+
+/// Listen for the backend's `project-runtime-switched` event and apply the
+/// restored tab layout + right-panel folder. The switch runs on a backend
+/// worker thread (see `switch_project_runtime`), so its result arrives here
+/// asynchronously rather than as the return value of the invoke in setActive.
+/// Register once at app startup; returns an unlisten function.
+export function listenProjectRuntimeSwitched(): Promise<() => void> {
+  return listen<ProjectRuntimeSwitchedPayload>("project-runtime-switched", (ev) => {
+    const payload = ev.payload;
+    const scopeKey = payload.projectId ?? "root";
+    const tabsStore = useTabsStore.getState();
+    // Keep shell/files tabs, resumable agent tabs (Claude with a sessionId), and
+    // in-app file-viewer embeds; other agent tabs (and external-app embeds) are
+    // dropped (no session to restore). Newer snapshots carry `kind`/`sessionId`;
+    // fall back to deriving the kind from the command. The saved groups tree
+    // self-heals — loadFromLayout drops any tree key absent from the (filtered)
+    // tab list.
+    const restorable = payload.tabLayout.filter((t) =>
+      isRestorableTab({
+        kind: t.kind ?? cmdToKind(t.cmd),
+        cmd: t.cmd,
+        sessionId: t.sessionId,
+        viewer: t.viewer,
+      }),
+    );
+    // Only restore from disk if this scope was never initialized this session.
+    // An existing (possibly empty) entry means the user's in-memory tabs win.
+    if (restorable.length > 0 && !(scopeKey in tabsStore.tabsByScope)) {
+      const project = payload.projectId
+        ? useProjectsStore.getState().projects.find((p) => p.id === payload.projectId) ?? null
+        : null;
+      tabsStore.loadFromLayout(
+        restorable,
+        resolveProjectDirectory(project),
+        scopeKey,
+        payload.tabGroups ?? undefined,
+      );
+    }
+    if (payload.projectId && payload.rightPanelFolder !== null) {
+      useProjectsStore.getState().setRightPanelFolder(payload.projectId, payload.rightPanelFolder);
+    }
+  });
+}

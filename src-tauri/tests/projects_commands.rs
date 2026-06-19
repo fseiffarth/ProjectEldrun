@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use eldrun_lib::commands::projects::{
-    create_project, get_projects, import_project, CreateProjectRequest, ImportProjectRequest,
+    create_project, get_projects, import_project, load_project, set_project_description,
+    CreateProjectRequest, ImportProjectRequest,
 };
 use tempfile::{Builder, TempDir};
 
@@ -15,8 +16,8 @@ const SCAFFOLDS: &[(&str, &str)] = &[
     ("TODO.md", "# TODO\n"),
     ("ROADMAP.md", "# Roadmap\n"),
     ("STATUS.md", "# Status\n"),
-    ("DOCUMENTATION.md", "# Documentation\n"),
-    (".gitignore", "__pycache__/\n*.pyc\n.venv/\n.DS_Store\n*.log\n.eldrun/\n"),
+    ("README.md", "# Project\n"),
+    (".gitignore", "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\n"),
     (".claude/settings.json", r#"{"permissions":{"allow":[],"deny":[]}}"#),
 ];
 
@@ -144,12 +145,18 @@ fn create_project_preserves_existing_scaffolds() {
         let req = CreateProjectRequest {
             name: "create-project".to_string(),
             directory: target.path().to_string_lossy().to_string(),
+            description: Some("Create description".to_string()),
             git_type: None,
+            remote: None,
         };
 
         let entry = create_project(req).expect("create project");
         assert_eq!(entry.name, "create-project");
         assert_eq!(entry.status, "inactive");
+        assert_eq!(
+            entry.extra.get("description").and_then(|v| v.as_str()),
+            Some("Create description")
+        );
         assert_eq!(
             entry.local_file,
             target.path().join("project.json").to_string_lossy()
@@ -172,8 +179,13 @@ fn import_project_copy_creates_missing_scaffolds_without_overwriting_existing_on
         let req = ImportProjectRequest {
             source_dir: source.path().to_string_lossy().to_string(),
             name: "copy-project".to_string(),
+            description: Some("Copy description".to_string()),
             git_type: None,
             mode: "copy".to_string(),
+            scaffold_fill_modes: None,
+            manual_validation_confirmed: Some(true),
+            skip_scaffold: false,
+            remote: None,
         };
 
         let entry = import_project(req).expect("import copy");
@@ -184,6 +196,10 @@ fn import_project_copy_creates_missing_scaffolds_without_overwriting_existing_on
 
         assert_eq!(entry.name, "copy-project");
         assert_eq!(entry.status, "inactive");
+        assert_eq!(
+            entry.extra.get("description").and_then(|v| v.as_str()),
+            Some("Copy description")
+        );
         assert_eq!(entry.local_file, target.join("project.json").to_string_lossy());
         assert!(source.path().exists(), "copy must keep the original source");
         assert!(source.path().join("notes.txt").exists(), "copy must keep source files");
@@ -204,8 +220,13 @@ fn import_project_move_creates_missing_scaffolds_without_overwriting_existing_on
         let req = ImportProjectRequest {
             source_dir: source.path().to_string_lossy().to_string(),
             name: "move-project".to_string(),
+            description: None,
             git_type: None,
             mode: "move".to_string(),
+            scaffold_fill_modes: None,
+            manual_validation_confirmed: Some(true),
+            skip_scaffold: false,
+            remote: None,
         };
 
         let entry = import_project(req).expect("import move");
@@ -235,14 +256,23 @@ fn import_project_keep_creates_missing_scaffolds_in_place_without_overwriting_ex
         let req = ImportProjectRequest {
             source_dir: source.path().to_string_lossy().to_string(),
             name: "keep-project".to_string(),
+            description: Some("Keep description".to_string()),
             git_type: None,
             mode: "keep".to_string(),
+            scaffold_fill_modes: None,
+            manual_validation_confirmed: None,
+            skip_scaffold: false,
+            remote: None,
         };
 
         let entry = import_project(req).expect("import keep");
 
         assert_eq!(entry.name, "keep-project");
         assert_eq!(entry.status, "inactive");
+        assert_eq!(
+            entry.extra.get("description").and_then(|v| v.as_str()),
+            Some("Keep description")
+        );
         assert_eq!(entry.local_file, source.path().join("project.json").to_string_lossy());
         assert!(source.path().exists(), "keep must keep the source directory");
 
@@ -250,5 +280,89 @@ fn import_project_keep_creates_missing_scaffolds_in_place_without_overwriting_ex
         assert!(source.path().join("notes.txt").exists());
         assert!(source.path().join("nested/info.txt").exists());
         assert_project_registered(&source.path().join("project.json"), "keep-project");
+    });
+}
+
+#[test]
+fn import_project_skip_scaffold_does_not_add_missing_scaffold_files() {
+    with_isolated_home("skip-home", |_| {
+        let source = tempdir_in_test_projects("skip-source");
+        // A bare project with only its own file — no scaffold, no .git.
+        fs::create_dir_all(source.path()).expect("create source dir");
+        fs::write(source.path().join("notes.txt"), "own:notes\n").expect("write notes");
+
+        let req = ImportProjectRequest {
+            source_dir: source.path().to_string_lossy().to_string(),
+            name: "skip-project".to_string(),
+            description: None,
+            git_type: None,
+            mode: "keep".to_string(),
+            scaffold_fill_modes: None,
+            manual_validation_confirmed: None,
+            skip_scaffold: true,
+            remote: None,
+        };
+
+        let entry = import_project(req).expect("import skip-scaffold");
+
+        // Only project.json is written; no scaffold files or git init.
+        assert!(source.path().join("project.json").exists());
+        assert!(source.path().join("notes.txt").exists());
+        for name in &["AGENTS.md", "CLAUDE.md", "TODO.md", "README.md", ".gitignore"] {
+            assert!(
+                !source.path().join(name).exists(),
+                "skip_scaffold must not create {name}"
+            );
+        }
+        assert!(!source.path().join(".git").exists(), "skip_scaffold must not git init");
+        assert_project_registered(&source.path().join("project.json"), "skip-project");
+        // New projects default to the local push target.
+        assert_eq!(
+            entry.extra.get("git_type").and_then(|v| v.as_str()),
+            Some("local")
+        );
+    });
+}
+
+#[test]
+fn set_project_description_writes_both_projects_json_and_project_json() {
+    with_isolated_home("desc-home", |_| {
+        let target = tempdir_in_test_projects("desc-target");
+        seed_project(target.path(), "desc");
+
+        let entry = create_project(CreateProjectRequest {
+            name: "desc-project".to_string(),
+            directory: target.path().to_string_lossy().to_string(),
+            description: Some("original".to_string()),
+            git_type: None,
+            remote: None,
+        })
+        .expect("create project");
+
+        // Update the description.
+        let returned = set_project_description(entry.id.clone(), Some("updated desc".to_string()))
+            .expect("set description");
+        assert_eq!(returned.as_deref(), Some("updated desc"));
+
+        // projects.json (the pill list) reflects it.
+        let listed = get_projects().expect("get projects");
+        let found = listed.iter().find(|p| p.id == entry.id).expect("entry present");
+        assert_eq!(
+            found.extra.get("description").and_then(|v| v.as_str()),
+            Some("updated desc")
+        );
+
+        // project.json (the per-project file) reflects it too.
+        let project = load_project(entry.local_file.clone()).expect("load project");
+        assert_eq!(project.description.as_deref(), Some("updated desc"));
+
+        // Clearing the description removes it from both stores.
+        let cleared = set_project_description(entry.id.clone(), None).expect("clear description");
+        assert!(cleared.is_none());
+        let listed = get_projects().expect("get projects");
+        let found = listed.iter().find(|p| p.id == entry.id).expect("entry present");
+        assert!(found.extra.get("description").is_none());
+        let project = load_project(entry.local_file.clone()).expect("load project");
+        assert!(project.description.is_none());
     });
 }

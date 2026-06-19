@@ -5,13 +5,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use eldrun_lib::commands::apps::{
-    TrackedWindow, WindowRegistry, ORIGIN_GLOBAL_APP, ORIGIN_MANUAL_LAUNCH,
+    TrackedWindow, ORIGIN_GLOBAL_APP, ORIGIN_MANUAL_LAUNCH,
     ORIGIN_MIDDLE_FILE_BROWSER, ORIGIN_RESTORED, ORIGIN_RIGHT_FILE_TREE,
 };
-use eldrun_lib::schema::project::{OpenApp, Project, TabEntry};
+use eldrun_lib::platform::{WorkspaceBackend, WorkspaceInfo};
+use eldrun_lib::schema::project::{Project, TabEntry};
 use eldrun_lib::services::terminal_service;
 use eldrun_lib::services::window_service;
 use tempfile::TempDir;
@@ -41,12 +42,53 @@ fn tracked(
     }
 }
 
-fn make_registry(windows: Vec<TrackedWindow>) -> Arc<Mutex<WindowRegistry>> {
-    let mut reg = WindowRegistry::default();
-    for w in windows {
-        reg.windows.insert(w.id.clone(), w);
+#[derive(Default)]
+struct RecordingBackend {
+    calls: Mutex<Vec<(String, u64)>>,
+}
+
+impl RecordingBackend {
+    fn calls(&self) -> Vec<(String, u64)> {
+        self.calls.lock().unwrap().clone()
     }
-    Arc::new(Mutex::new(reg))
+}
+
+impl WorkspaceBackend for RecordingBackend {
+    fn name(&self) -> &'static str {
+        "recording"
+    }
+
+    fn info(&self) -> WorkspaceInfo {
+        WorkspaceInfo {
+            label: "test".to_string(),
+            current_desktop: None,
+            desktop_count: None,
+        }
+    }
+
+    fn show_window(&self, window_id: u64) -> Result<(), String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("show".to_string(), window_id));
+        Ok(())
+    }
+
+    fn hide_window(&self, window_id: u64) -> Result<(), String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("hide".to_string(), window_id));
+        Ok(())
+    }
+
+    fn make_sticky(&self, _eldrun_pid: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn cleanup(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 // ── window_service ────────────────────────────────────────────────────────
@@ -126,6 +168,37 @@ fn write_project_json(dir: &std::path::Path, project: &Project) -> PathBuf {
 }
 
 #[test]
+fn save_and_load_right_panel_folder_roundtrip() {
+    use eldrun_lib::services::project_runtime;
+    let tmp = TempDir::new().unwrap();
+    let project = Project {
+        id: "test-id".to_string(),
+        name: "Test".to_string(),
+        directory: tmp.path().to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let local_file = write_project_json(tmp.path(), &project);
+    let local_file_str = local_file.to_string_lossy().to_string();
+
+    // No session file yet -> nothing saved.
+    assert_eq!(project_runtime::load_right_panel_folder(&local_file_str), None);
+
+    project_runtime::save_right_panel_folder(&local_file_str, Some("src/components".to_string()))
+        .unwrap();
+    assert_eq!(
+        project_runtime::load_right_panel_folder(&local_file_str),
+        Some("src/components".to_string())
+    );
+
+    // Overwrite with a different folder (simulates navigating elsewhere).
+    project_runtime::save_right_panel_folder(&local_file_str, Some("docs".to_string())).unwrap();
+    assert_eq!(
+        project_runtime::load_right_panel_folder(&local_file_str),
+        Some("docs".to_string())
+    );
+}
+
+#[test]
 fn save_and_load_tab_layout_roundtrip() {
     let tmp = TempDir::new().unwrap();
     let project = Project {
@@ -143,6 +216,7 @@ fn save_and_load_tab_layout_roundtrip() {
             label: "Terminal".to_string(),
             cmd: "bash".to_string(),
             cwd: "/home/user".to_string(),
+            session_id: None,
             extra: Default::default(),
         },
         TabEntry {
@@ -150,16 +224,72 @@ fn save_and_load_tab_layout_roundtrip() {
             label: "Claude".to_string(),
             cmd: "claude".to_string(),
             cwd: "/home/user/project".to_string(),
+            session_id: None,
             extra: Default::default(),
         },
     ];
 
-    terminal_service::save_tab_layout(&local_file_str, &tabs).unwrap();
+    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None).unwrap();
     let loaded = terminal_service::load_tab_layout(&local_file_str);
 
     assert_eq!(loaded.len(), 2);
     assert_eq!(loaded[0].key, "shell-1");
     assert_eq!(loaded[1].cmd, "claude");
+}
+
+#[test]
+fn save_tab_layout_round_trips_agent_session_id() {
+    let tmp = TempDir::new().unwrap();
+    let project = Project {
+        id: "resume-id".to_string(),
+        name: "Resume".to_string(),
+        directory: tmp.path().to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let local_file = write_project_json(tmp.path(), &project);
+    let local_file_str = local_file.to_string_lossy().to_string();
+
+    let session_id = "22222222-2222-4222-8222-222222222222".to_string();
+    let tabs = vec![
+        TabEntry {
+            key: "shell-1".to_string(),
+            label: "Terminal".to_string(),
+            cmd: "bash".to_string(),
+            cwd: "/home/user".to_string(),
+            session_id: None,
+            extra: Default::default(),
+        },
+        TabEntry {
+            key: "agent-2".to_string(),
+            label: "Claude".to_string(),
+            cmd: "claude".to_string(),
+            cwd: "/home/user/project".to_string(),
+            session_id: Some(session_id.clone()),
+            extra: Default::default(),
+        },
+    ];
+
+    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None).unwrap();
+    let loaded = terminal_service::load_tab_layout(&local_file_str);
+
+    assert_eq!(loaded.len(), 2);
+    // Shell tab carries no session id.
+    assert_eq!(loaded[0].session_id, None);
+    // The agent tab's session id survives the round-trip.
+    assert_eq!(loaded[1].cmd, "claude");
+    assert_eq!(loaded[1].session_id, Some(session_id));
+
+    // The on-disk JSON uses the camelCase `sessionId` key.
+    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
+    let raw = serde_json::to_value(&reloaded).unwrap();
+    assert_eq!(
+        raw["tab_layout"][1]["sessionId"],
+        serde_json::json!("22222222-2222-4222-8222-222222222222")
+    );
+    assert!(
+        raw["tab_layout"][0].get("sessionId").is_none(),
+        "shell tab must omit sessionId when None"
+    );
 }
 
 #[test]
@@ -180,14 +310,46 @@ fn save_tab_layout_preserves_other_project_fields() {
         label: "Shell".to_string(),
         cmd: "bash".to_string(),
         cwd: "/tmp".to_string(),
+        session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_tab_layout(&local_file_str, &tabs).unwrap();
+    terminal_service::save_tab_layout(&local_file_str, &tabs, None, None).unwrap();
 
     let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
     assert_eq!(reloaded.id, "preserve-me");
     assert_eq!(reloaded.name, "MyProject");
     assert_eq!(reloaded.status.as_deref(), Some("active"));
+}
+
+#[test]
+fn save_tab_layout_persists_open_session_uuids() {
+    let tmp = TempDir::new().unwrap();
+    let project = Project {
+        id: "sessions".to_string(),
+        name: "Sessions".to_string(),
+        directory: tmp.path().to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let local_file = write_project_json(tmp.path(), &project);
+    let path_str = local_file.to_string_lossy().to_string();
+
+    let sessions = serde_json::json!([
+        { "sessionId": "11111111-1111-4111-8111-111111111111", "cmd": "claude", "label": "Claude" }
+    ]);
+    terminal_service::save_tab_layout(&path_str, &[], None, Some(sessions.clone())).unwrap();
+
+    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
+    assert_eq!(reloaded.open_tab_sessions, Some(sessions));
+
+    // A subsequent layout save with `None` (the project-switch path) must leave
+    // the stored UUIDs untouched, while `Some([])` clears them.
+    terminal_service::save_terminal_session(&path_str, &[], 0, None).unwrap();
+    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
+    assert!(reloaded.open_tab_sessions.is_some());
+
+    terminal_service::save_tab_layout(&path_str, &[], None, Some(serde_json::json!([]))).unwrap();
+    let reloaded: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
+    assert_eq!(reloaded.open_tab_sessions, None);
 }
 
 #[test]
@@ -222,6 +384,7 @@ fn save_empty_tabs_clears_layout_field() {
             label: "Old".to_string(),
             cmd: "bash".to_string(),
             cwd: "/tmp".to_string(),
+            session_id: None,
             extra: Default::default(),
         }]),
         ..Default::default()
@@ -229,7 +392,7 @@ fn save_empty_tabs_clears_layout_field() {
     let local_file = write_project_json(tmp.path(), &project);
     let path_str = local_file.to_string_lossy().to_string();
 
-    terminal_service::save_tab_layout(&path_str, &[]).unwrap();
+    terminal_service::save_tab_layout(&path_str, &[], None, None).unwrap();
 
     let loaded = terminal_service::load_tab_layout(&path_str);
     assert!(loaded.is_empty());
@@ -254,9 +417,10 @@ fn save_terminal_session_writes_eldrun_file() {
         label: "Shell".to_string(),
         cmd: "bash".to_string(),
         cwd: "/tmp".to_string(),
+        session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_terminal_session(&path_str, &tabs, 0).unwrap();
+    terminal_service::save_terminal_session(&path_str, &tabs, 0, None).unwrap();
 
     let session_path = tmp.path().join(".eldrun/sessions/terminals.json");
     assert!(session_path.exists(), ".eldrun/sessions/terminals.json must be written");
@@ -280,6 +444,7 @@ fn load_terminal_session_prefers_eldrun_over_project_json() {
             label: "Old".to_string(),
             cmd: "bash".to_string(),
             cwd: "/tmp".to_string(),
+            session_id: None,
             extra: Default::default(),
         }]),
         ..Default::default()
@@ -296,9 +461,11 @@ fn load_terminal_session_prefers_eldrun_over_project_json() {
             label: "New".to_string(),
             cmd: "claude".to_string(),
             cwd: "/home/user".to_string(),
+            session_id: None,
             extra: Default::default(),
         }],
         active_tab_index: 0,
+        tab_groups: None,
         extra: Default::default(),
     };
     eldrun_lib::storage::write_json(&sessions_dir.join("terminals.json"), &session).unwrap();
@@ -320,6 +487,7 @@ fn load_tab_layout_falls_back_to_project_json_when_no_eldrun() {
             label: "Fallback".to_string(),
             cmd: "bash".to_string(),
             cwd: "/tmp".to_string(),
+            session_id: None,
             extra: Default::default(),
         }]),
         ..Default::default()
@@ -387,9 +555,10 @@ fn switch_saves_tab_layout_to_project_json() {
         label: "T1".to_string(),
         cmd: "bash".to_string(),
         cwd: "/tmp".to_string(),
+        session_id: None,
         extra: Default::default(),
     }];
-    terminal_service::save_terminal_session(&path_str, &tabs, 0).unwrap();
+    terminal_service::save_terminal_session(&path_str, &tabs, 0, None).unwrap();
 
     // project.json must have been updated.
     let saved: Project = eldrun_lib::storage::read_json(&local_file).unwrap();
@@ -419,6 +588,62 @@ fn switch_hides_previous_project_windows_using_null_backend() {
     let backend = NullBackend;
     window_service::hide_windows(&backend, &prev_ids);
     // If we get here without panic the test passes.
+}
+
+#[test]
+fn switch_uses_hide_show_as_workspace_backend_boundary() {
+    let windows: HashMap<String, TrackedWindow> = [
+        tracked("prev-file", Some("prev"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        tracked("prev-restored", Some("prev"), ORIGIN_RESTORED, Some(11)),
+        tracked("prev-global", Some("prev"), ORIGIN_GLOBAL_APP, Some(12)),
+        tracked("prev-manual", Some("prev"), ORIGIN_MANUAL_LAUNCH, Some(13)),
+        tracked("next-file", Some("next"), ORIGIN_MIDDLE_FILE_BROWSER, Some(20)),
+        tracked("next-restored", Some("next"), ORIGIN_RESTORED, Some(21)),
+        tracked("root-file", None, ORIGIN_RIGHT_FILE_TREE, Some(30)),
+    ]
+    .into_iter()
+    .map(|w| (w.id.clone(), w))
+    .collect();
+
+    let mut previous_ids = window_service::project_window_ids(&windows, Some("prev"));
+    previous_ids.sort();
+    let mut current_ids = window_service::project_window_ids(&windows, Some("next"));
+    current_ids.sort();
+
+    let backend = RecordingBackend::default();
+    window_service::hide_windows(&backend, &previous_ids);
+    window_service::show_windows(&backend, &current_ids);
+
+    assert_eq!(
+        backend.calls(),
+        vec![
+            ("hide".to_string(), 10),
+            ("hide".to_string(), 11),
+            ("show".to_string(), 20),
+            ("show".to_string(), 21),
+        ],
+        "project switching must be wired through hide_window/show_window only"
+    );
+}
+
+#[test]
+fn default_switch_to_project_delegates_to_hide_show() {
+    let backend = RecordingBackend::default();
+
+    backend
+        .switch_to_project(Some("next"), Some("prev"), &[10, 11], &[20, 21])
+        .unwrap();
+
+    assert_eq!(
+        backend.calls(),
+        vec![
+            ("hide".to_string(), 10),
+            ("hide".to_string(), 11),
+            ("show".to_string(), 20),
+            ("show".to_string(), 21),
+        ],
+        "legacy switch_to_project must remain a thin hide/show helper"
+    );
 }
 
 #[test]
@@ -475,41 +700,6 @@ fn switch_root_runtime_uses_none_project_id() {
 }
 
 #[test]
-fn switch_downloads_symlink_updated_for_new_project() {
-    use std::env;
-    use std::sync::Mutex;
-    use std::sync::OnceLock;
-
-    // Serialise symlink tests that mutate HOME.
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-
-    let tmp = TempDir::new().unwrap();
-    let fake_home = tmp.path().to_str().unwrap().to_string();
-    let old_home = env::var("HOME").ok();
-
-    // SAFETY: only called while holding the test-serialisation lock.
-    unsafe { env::set_var("HOME", &fake_home) };
-
-    let target_dir = tmp.path().join("target_project");
-    std::fs::create_dir_all(&target_dir).unwrap();
-    let target_str = target_dir.to_string_lossy().to_string();
-
-    let result = eldrun_lib::services::download_routing::route_downloads(&target_str);
-
-    unsafe {
-        match old_home {
-            Some(h) => env::set_var("HOME", h),
-            None => env::remove_var("HOME"),
-        }
-    }
-
-    assert!(result.is_ok(), "download routing must succeed: {:?}", result);
-    let link = tmp.path().join("eldrun/downloads");
-    assert!(link.exists() || link.is_symlink(), "symlink must be created");
-}
-
-#[test]
 fn switch_next_project_tab_layout_loaded_after_save() {
     let tmp = TempDir::new().unwrap();
     let project = Project {
@@ -527,6 +717,7 @@ fn switch_next_project_tab_layout_loaded_after_save() {
             label: "N1".to_string(),
             cmd: "bash".to_string(),
             cwd: "/tmp".to_string(),
+            session_id: None,
             extra: Default::default(),
         },
         TabEntry {
@@ -534,10 +725,11 @@ fn switch_next_project_tab_layout_loaded_after_save() {
             label: "Claude".to_string(),
             cmd: "claude".to_string(),
             cwd: "/tmp".to_string(),
+            session_id: None,
             extra: Default::default(),
         },
     ];
-    terminal_service::save_terminal_session(&path_str, &tabs, 1).unwrap();
+    terminal_service::save_terminal_session(&path_str, &tabs, 1, None).unwrap();
 
     let session = terminal_service::load_terminal_session(&path_str);
     assert_eq!(session.tab_layout.len(), 2);
