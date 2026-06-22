@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   FILES_TAB_CMD,
   useTabsStore,
@@ -78,6 +79,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const ensureTab = useTabsStore((s) => s.ensureTab);
   const removeTab = useTabsStore((s) => s.removeTab);
   const closeGroup = useTabsStore((s) => s.closeGroup);
+  const closeAllTabs = useTabsStore((s) => s.closeAllTabs);
+  const detachGroup = useTabsStore((s) => s.detachGroup);
   // Within-bar reorder visuals are driven by the pointer-drag store so the gap
   // tracks the live drop slot CenterPanel resolves; the dragged tab collapses.
   const dragKey = useDragStore((s) => (s.drag ? s.drag.key : null));
@@ -96,12 +99,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   );
 
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
-  const [tabMenu, setTabMenu] = useState<{ key: string; x: number; y: number } | null>(null);
+  // #56: a right-click on a tab enters inline rename mode for that key (no menu,
+  // no prompt dialog). The label becomes a focused, text-selected <input>.
+  const [editingKey, setEditingKey] = useState<string | null>(null);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [ollamaLoading, setOllamaLoading] = useState(false);
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
-  const tabMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
   const menuOpen = menuPos !== null;
 
@@ -114,20 +118,15 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const activeKey = group?.activeKey ?? null;
 
   useEffect(() => {
-    if (!menuOpen && !tabMenu) return;
+    if (!menuOpen) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (addBtnRef.current?.contains(t)) return;
       if (addMenuRef.current?.contains(t)) return;
-      if (tabMenuRef.current?.contains(t)) return;
       setMenuPos(null);
-      setTabMenu(null);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setMenuPos(null);
-        setTabMenu(null);
-      }
+      if (e.key === "Escape") setMenuPos(null);
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -135,7 +134,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [menuOpen, tabMenu]);
+  }, [menuOpen]);
+
+  // Drop inline-rename mode if the edited tab disappears (closed / moved away).
+  useEffect(() => {
+    if (editingKey && !tabs.some((t) => t.key === editingKey)) {
+      setEditingKey(null);
+    }
+  }, [editingKey, tabs]);
 
   function openAddMenu() {
     if (menuPos) { setMenuPos(null); return; }
@@ -213,19 +219,20 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     }
   }
 
-  function showTabMenu(event: React.MouseEvent, key: string) {
+  // #56: right-click a tab → immediately enter inline rename mode (no menu).
+  function startInlineRename(event: React.MouseEvent, key: string) {
     event.preventDefault();
     event.stopPropagation();
     setMenuPos(null);
-    setTabMenu({ key, x: event.clientX, y: event.clientY });
+    focusGroup(groupId);
+    setEditingKey(key);
   }
 
-  function renameFromMenu(key: string) {
-    const tab = tabs.find((item) => item.key === key);
-    if (!tab) return;
-    const label = window.prompt("Rename tab:", tab.label);
-    if (label?.trim()) renameTab(key, label);
-    setTabMenu(null);
+  function commitRename(key: string, value: string) {
+    // renameTab trims and ignores empty input, so an empty value leaves the
+    // label unchanged.
+    renameTab(key, value);
+    setEditingKey(null);
   }
 
   // Start a pointer-based tab drag once the pointer crosses a 5px threshold.
@@ -237,6 +244,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     tab: (typeof tabs)[number],
   ) {
     if (e.button !== 0) return;
+    // While this tab is being inline-renamed, the label is an <input>: don't
+    // hijack its pointer into a tab drag (lets the caret/selection work).
+    if (editingKey === tab.key) return;
     // Suppress the webview's native text-selection / drag gesture, which on
     // WebKitGTK hijacks the pointer stream and fires pointercancel instead of
     // pointerup mid-drag.
@@ -287,8 +297,54 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     window.addEventListener("pointerup", onUp);
   }
 
+  // #42: grab the subwindow's top frame (the empty tab-bar area) and drag it out
+  // to pop the group into its own OS window — replacing the old ⧉ button. Focuses
+  // immediately on press; once the pointer crosses a small threshold the group
+  // detaches at the cursor and the window manager takes over the move
+  // (`startDragging`), so the popout follows the cursor natively until release.
+  function onBarPointerDown(e: React.PointerEvent) {
+    focusGroup(groupId);
+    if (e.button !== 0) return;
+    // Only the empty bar area is a detach handle — not tabs, the +/close
+    // controls, or an inline rename input.
+    const target = e.target as HTMLElement;
+    if (target.closest(".tab, .tab-new-wrap, button, .tab-label-edit")) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let detaching = false;
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    const onMove = (ev: PointerEvent) => {
+      if (detaching) return;
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 8) return;
+      detaching = true;
+      cleanup();
+      // Spawn the popout under the cursor (offset so the grab point lands on its
+      // top frame), then hand the move to the WM via startDragging — the still-
+      // pressed pointer drives a native window move until release.
+      const bounds = {
+        x: Math.round(ev.screenX - 80),
+        y: Math.round(ev.screenY - 8),
+        w: 900,
+        h: 640,
+      };
+      const label = detachGroup(groupId, { bounds });
+      if (!label) return; // lone group can't detach — abort quietly.
+      WebviewWindow.getByLabel(label)
+        .then((w) => w?.startDragging())
+        .catch(() => {});
+    };
+    const onUp = () => cleanup();
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
   return (
-    <div className="tab-bar" data-group-id={groupId} onMouseDown={() => focusGroup(groupId)}>
+    <div className="tab-bar" data-group-id={groupId} onPointerDown={onBarPointerDown}>
       {tabs.map((tab, index) => {
         const isActive = tab.key === activeKey;
         const isDragging = dragKey === tab.key;
@@ -311,14 +367,15 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         const title = tab.sessionId
           ? `${tab.label} session\n${tab.sessionId}\ncwd: ${tab.cwd}`
           : undefined;
+        const editing = editingKey === tab.key;
         return (
           <div
             key={tab.key}
-            className={`tab ${isActive ? "active" : ""}${working ? " working" : ""}${isDragging ? " dragging" : ""}`}
+            className={`tab ${isActive ? "active" : ""}${working ? " working" : ""}${isDragging ? " dragging" : ""}${editing ? " editing" : ""}`}
             style={style}
             data-tab-index={index}
-            title={title}
-            onContextMenu={(e) => showTabMenu(e, tab.key)}
+            title={editing ? undefined : title}
+            onContextMenu={(e) => startInlineRename(e, tab.key)}
             onPointerDown={(e) => onTabPointerDown(e, tab)}
           >
             {working && (
@@ -330,7 +387,32 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
                 <OrbitSpinner className="tab-working-spinner" />
               </span>
             )}
-            <span className="tab-label">{tab.label}</span>
+            {editing ? (
+              <input
+                className="tab-label-edit"
+                defaultValue={tab.label}
+                autoFocus
+                aria-label="Rename tab"
+                // Mount focused with the whole label selected for a fast retype.
+                ref={(el) => {
+                  if (el) el.select();
+                }}
+                // Keep editing keystrokes / clicks out of drag + activation.
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === "Enter") {
+                    commitRename(tab.key, (e.target as HTMLInputElement).value);
+                  } else if (e.key === "Escape") {
+                    setEditingKey(null);
+                  }
+                }}
+                onBlur={(e) => commitRename(tab.key, e.target.value)}
+              />
+            ) : (
+              <span className="tab-label">{tab.label}</span>
+            )}
             <button
               className="tab-close"
               onClick={(e) => { e.stopPropagation(); removeTab(tab.key); }}
@@ -428,18 +510,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
               {item.label}
             </button>
           ))}
-        </div>,
-        document.body,
-      )}
-      {tabMenu && createPortal(
-        <div
-          ref={tabMenuRef}
-          className="context-menu tab-context-menu"
-          style={{ left: tabMenu.x, top: tabMenu.y }}
-        >
-          <button onClick={() => renameFromMenu(tabMenu.key)}>Rename tab</button>
-          <button onClick={() => { removeTab(tabMenu.key); setTabMenu(null); }}>
-            Close tab
+
+          <div className="tab-new-menu-group-label">Project</div>
+          <button
+            className="tab-new-menu-item"
+            disabled={allTabs.length === 0}
+            onClick={() => {
+              closeAllTabs();
+              setMenuPos(null);
+            }}
+          >
+            <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
+            Close all tabs
           </button>
         </div>,
         document.body,

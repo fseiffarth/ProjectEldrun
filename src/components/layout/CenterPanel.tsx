@@ -1,6 +1,16 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  DETACHED_DRAG_END,
+  DETACHED_DRAG_MOVE,
+  DETACHED_DRAG_START,
+  type DetachedDragEnd,
+  type DetachedDragMove,
+  type DetachedDragStart,
+} from "../../stores/detached";
 import { TerminalView } from "../terminal/TerminalView";
 import { FileBrowser } from "../files/FileBrowser";
 import { EmbedPane } from "../embed/EmbedPane";
@@ -8,6 +18,7 @@ import { FileViewerPane } from "../embed/FileViewerPane";
 import { Subwindow } from "../tabs/Subwindow";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import {
+  DEFAULT_MIN_SUBWINDOW_PX,
   EMPTY_GROUP_ID,
   FILES_TAB_CMD,
   allGroups,
@@ -18,6 +29,7 @@ import {
   type SavedLayoutTree,
   type TabKind,
 } from "../../stores/tabs";
+import { useSettingsStore } from "../../stores/settings";
 import { useDragStore } from "../../stores/drag";
 import { commitDrop } from "../tabs/commitDrop";
 import { useProjectsStore } from "../../stores/projects";
@@ -31,6 +43,47 @@ interface Rect {
   height: number;
 }
 
+/**
+ * #57: open `README.md` in an in-app markdown viewer tab as the default for a
+ * freshly-visited project that has no tabs to restore. Checks existence via the
+ * existing `list_dir` command (no new backend command), then seeds a single
+ * `viewer: "markdown"` embed tab — a restorable embed, so it persists and
+ * re-restores naturally. No-ops if the file is absent or the scope was populated
+ * (by a concurrent switch_project_runtime) while we were checking.
+ */
+export async function openReadmeDefaultTab(projectCwd: string, scope: string): Promise<void> {
+  if (!projectCwd) return;
+  let entries: { name: string; is_dir: boolean }[];
+  try {
+    entries = await invoke<{ name: string; is_dir: boolean }[]>("list_dir", {
+      projectDir: projectCwd,
+      relPath: "",
+    });
+  } catch {
+    return;
+  }
+  const hasReadme = entries.some((e) => !e.is_dir && e.name === "README.md");
+  if (!hasReadme) return;
+  // Re-check the guard: a concurrent switch may have populated the scope while
+  // list_dir was in flight. Never clobber existing tabs.
+  if (scope in useTabsStore.getState().tabsByScope) return;
+  useTabsStore.getState().loadFromLayout(
+    [
+      {
+        key: "readme-default",
+        label: "README.md",
+        cmd: "",
+        cwd: projectCwd,
+        kind: "embed",
+        embedPath: `${projectCwd}/README.md`,
+        viewer: "markdown",
+      },
+    ],
+    projectCwd,
+    scope,
+  );
+}
+
 export function CenterPanel() {
   const tabsByScope = useTabsStore((s) => s.tabsByScope);
   const scope = useTabsStore((s) => s.scope);
@@ -42,6 +95,14 @@ export function CenterPanel() {
   const tabs = useTabsStore((s) => s.tabs);
   const saveLayout = useTabsStore((s) => s.saveLayout);
   const updateTabEnv = useTabsStore((s) => s.updateTabEnv);
+  // #42: popouts to re-open for the current scope (restored docked, then detached).
+  const pendingRespawn = useTabsStore((s) => s.pendingRespawnByScope[s.scope]);
+  const consumePendingRespawn = useTabsStore((s) => s.consumePendingRespawn);
+  const detachGroup = useTabsStore((s) => s.detachGroup);
+  // #62: app-internal fullscreen. When set, only this group's pane is shown,
+  // sized to the whole panel — panes stay MOUNTED (we reposition, never unmount,
+  // so PTYs survive). The frame layer (tab bars/splits) keeps rendering beneath.
+  const fullscreenGroupId = useTabsStore((s) => s.fullscreenGroupId);
 
   const { projects, activeId } = useProjectsStore();
 
@@ -82,8 +143,7 @@ export function CenterPanel() {
     type LayoutEntry = { key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string; env?: Record<string, string>; sessionId?: string; embedPath?: string; embedExec?: string; viewer?: "pdf" | "image" | "markdown" | "text" };
     invoke<Record<string, unknown>>("load_project", { localFile })
       .then((proj) => {
-        const raw = proj.tab_layout as LayoutEntry[] | undefined;
-        if (!raw || raw.length === 0) return;
+        const raw = (proj.tab_layout as LayoutEntry[] | undefined) ?? [];
         // Keep shell/files tabs, resumable agent tabs (Claude with a sessionId,
         // resumed via --resume), and in-app file-viewer embeds; other agent/embed
         // tabs (including external-app embeds) are dropped. Derive kind from the
@@ -97,9 +157,17 @@ export function CenterPanel() {
             viewer: t.viewer,
           }),
         );
-        if (restorable.length === 0) return;
         // Guard: don't overwrite tabs that switch_project_runtime already loaded.
         if (scopeForLoad in useTabsStore.getState().tabsByScope) return;
+        if (restorable.length === 0) {
+          // #57: a freshly-visited project with NO restorable tabs opens its
+          // README.md in an in-app markdown viewer tab by default (never the root
+          // scope; only on first visit, so an intentionally-emptied scope — which
+          // is already "initialized" in tabsByScope, caught by the guard above —
+          // is never re-seeded).
+          void openReadmeDefaultTab(projectCwd, scopeForLoad);
+          return;
+        }
         // `tab_groups` carries the saved split/group tree (absent → single group).
         const groups = proj.tab_groups as SavedLayoutTree | undefined;
         loadFromLayout(restorable, projectCwd, scopeForLoad, groups ?? undefined);
@@ -130,6 +198,19 @@ export function CenterPanel() {
     }, 300);
     return () => window.clearTimeout(timer);
   }, [activeId, localFile, tabs, layout, saveLayout]);
+
+  // #42: re-open popouts that were detached when this scope was last saved. The
+  // groups were restored DOCKED (above) so their panes mount and spawn their
+  // PTYs first; this effect — which runs after those child panes have mounted —
+  // then re-detaches each, reopening the floating window (which attaches to the
+  // now-live PTY). consumePendingRespawn clears the queue so it fires once.
+  useEffect(() => {
+    if (!pendingRespawn || pendingRespawn.length === 0) return;
+    const targets = consumePendingRespawn(scope);
+    for (const t of targets) {
+      detachGroup(t.id, { bounds: t.bounds });
+    }
+  }, [scope, pendingRespawn, consumePendingRespawn, detachGroup]);
 
   // ── Pane-region measurement ───────────────────────────────────────────────
   // Recompute every group body's rect (relative to the panel) so the flat pane
@@ -192,39 +273,26 @@ export function CenterPanel() {
     [],
   );
 
-  // ── Pointer-drag hit-test + drop authority (panel-wide) ───────────────────
-  // While a tab drag is active, window listeners resolve the target under the
-  // pointer each move (a tab bar → within-bar reorder slot, or a subwindow body
-  // → edge split) and commit on release. CenterPanel is the SINGLE drop
-  // authority; TabBar's own pointerup only handles the click case. We avoid
-  // setPointerCapture and rely on `.center-panel.dragging` making panes
-  // pointer-events:none so elementFromPoint can reach the tab bars / bodies.
-  useEffect(() => {
-    if (!dragging) return;
-    const setTarget = useDragStore.getState().setTarget;
-    const move = useDragStore.getState().move;
-
-    // Insertion slot (0..count) a reorder would drop into, mirroring TabBar's
-    // "left half → before, right half → after" rule.
-    const computeReorderIndex = (tabBar: Element, x: number): number => {
-      const tabEls = tabBar.querySelectorAll(".tab");
-      let slot = tabEls.length;
-      tabEls.forEach((el, i) => {
-        const r = el.getBoundingClientRect();
-        if (slot === tabEls.length && x < r.left + r.width / 2) slot = i;
-      });
-      return slot;
-    };
-
-    const resolve = (x: number, y: number) => {
+  // Resolve the drop target under a panel point (client coords) and write it to
+  // the drag store (driving the live preview). Shared by the in-window pointer
+  // drag and the cross-window detached-popout drag (#42), which feeds it pointer
+  // coords streamed from the popout. A tab bar → within-bar reorder slot; a
+  // subwindow body → edge split of that group.
+  const resolveTarget = useCallback(
+    (x: number, y: number) => {
+      const setTarget = useDragStore.getState().setTarget;
+      const computeReorderIndex = (tabBar: Element, px: number): number => {
+        const tabEls = tabBar.querySelectorAll(".tab");
+        let slot = tabEls.length;
+        tabEls.forEach((el, i) => {
+          const r = el.getBoundingClientRect();
+          if (slot === tabEls.length && px < r.left + r.width / 2) slot = i;
+        });
+        return slot;
+      };
       const el = document.elementFromPoint(x, y);
       const tabBar = el?.closest(".tab-bar");
       if (tabBar instanceof HTMLElement && tabBar.dataset.groupId) {
-        // A tab bar always accepts a drop — for both tab drags and file drags.
-        // Files snap to the bar regardless of embed capability: the drop is
-        // always meaningful (it opens the file / creates a tab). The prefetched
-        // capability only decides embed-vs-external at release time, handled in
-        // commitFileDrop.
         setTarget({
           overGroup: null,
           edge: null,
@@ -233,11 +301,6 @@ export function CenterPanel() {
         });
         return;
       }
-      // Not over a tab bar → fall back to the measured group rects and pick the
-      // edge of whichever subwindow body contains the panel-relative point. For
-      // file drags this carves out a new subwindow holding the file's embed tab
-      // (commitFileDrop handles the overGroup/edge case); a tab-bar drop instead
-      // adds the tab into that existing group.
       const panel = panelRef.current;
       if (panel) {
         const base = panel.getBoundingClientRect();
@@ -247,9 +310,6 @@ export function CenterPanel() {
           if (px >= r.left && px <= r.left + r.width && py >= r.top && py <= r.top + r.height) {
             setTarget({
               overGroup: gid,
-              // The empty-state placeholder isn't a real group to split — a drop
-              // anywhere over it just creates the first tab. So always treat it as
-              // a whole-area ("center") target, giving a full-pane drop preview.
               edge:
                 gid === EMPTY_GROUP_ID
                   ? "center"
@@ -262,10 +322,23 @@ export function CenterPanel() {
         }
       }
       setTarget({ overGroup: null, edge: null, reorderGroup: null, reorderIndex: null });
-    };
+    },
+    [groupRects],
+  );
+
+  // ── Pointer-drag hit-test + drop authority (panel-wide) ───────────────────
+  // While a tab drag is active, window listeners resolve the target under the
+  // pointer each move (a tab bar → within-bar reorder slot, or a subwindow body
+  // → edge split) and commit on release. CenterPanel is the SINGLE drop
+  // authority; TabBar's own pointerup only handles the click case. We avoid
+  // setPointerCapture and rely on `.center-panel.dragging` making panes
+  // pointer-events:none so elementFromPoint can reach the tab bars / bodies.
+  useEffect(() => {
+    if (!dragging) return;
+    const move = useDragStore.getState().move;
 
     const onMove = (e: PointerEvent) => {
-      resolve(e.clientX, e.clientY);
+      resolveTarget(e.clientX, e.clientY);
       move(e.clientX, e.clientY);
     };
     // True only when the user explicitly aborts (Escape); a plain pointercancel
@@ -277,7 +350,9 @@ export function CenterPanel() {
       // Bail out here without commit or end() so we never race FileTree and tear
       // the drag down before it commits the drop.
       const d = useDragStore.getState().drag;
-      if (d?.kind === "file") {
+      // File drags commit via FileTree; detached-popout drags commit via the
+      // cross-window END handler (#42). Neither commits here.
+      if (d?.kind === "file" || d?.kind === "detached") {
         return;
       }
       // Commit the LAST resolved target (the one the live preview showed) rather
@@ -320,8 +395,115 @@ export function CenterPanel() {
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("keydown", onKeyDown);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dragging, groupRects]);
+  }, [dragging, resolveTarget]);
+
+  // ── Cross-window drag-to-dock (#42) ───────────────────────────────────────
+  // A popped-out window dragged with Ctrl held streams its pointer (screen CSS
+  // px) to this main window. We map those to our client space, drive the SAME
+  // drop preview as an in-window tab drag (via `resolveTarget` + the drag
+  // store), and dock the group on release. `resolveTarget` is read through a ref
+  // so this listener — mounted once — always hit-tests against current group
+  // rects. Setting the detached drag in the store flips `.center-panel.dragging`
+  // on, which makes panes pointer-events:none so elementFromPoint can reach the
+  // tab bars/bodies. The popout owns the pointer (implicit grab), so the main
+  // window never sees real pointer events during the gesture and the in-window
+  // drag effect above stays inert (its handlers also guard `kind === "detached"`).
+  const resolveTargetRef = useRef(resolveTarget);
+  resolveTargetRef.current = resolveTarget;
+  useEffect(() => {
+    const win = getCurrentWindow();
+    // The main window's content-area origin in screen CSS px. Streamed screen
+    // coords minus this origin give client coords. Refreshed at each drag start
+    // (the main window doesn't move mid-gesture).
+    let origin = { x: 0, y: 0 };
+    const refreshOrigin = async () => {
+      try {
+        const scale = await win.scaleFactor();
+        const pos = await win.innerPosition();
+        const logical = pos.toLogical(scale);
+        origin = { x: logical.x, y: logical.y };
+      } catch {
+        origin = { x: 0, y: 0 };
+      }
+    };
+    const toClient = (screenX: number, screenY: number) => ({
+      x: screenX - origin.x,
+      y: screenY - origin.y,
+    });
+
+    const unsubs: Array<() => void> = [];
+    let cancelled = false;
+    const reg = (p: Promise<() => void>) =>
+      p
+        .then((fn) => {
+          if (cancelled) fn();
+          else unsubs.push(fn);
+        })
+        .catch(() => {});
+
+    reg(
+      listen<DetachedDragStart>(DETACHED_DRAG_START, async (ev) => {
+        const { scope: dScope, groupId, label, screenX, screenY } = ev.payload;
+        await refreshOrigin();
+        const { x, y } = toClient(screenX, screenY);
+        useDragStore.getState().startDetachedDrag({
+          label,
+          pointerX: x,
+          pointerY: y,
+          detachedScope: dScope,
+          detachedGroupId: groupId,
+        });
+        resolveTargetRef.current(x, y);
+      }),
+    );
+
+    reg(
+      listen<DetachedDragMove>(DETACHED_DRAG_MOVE, (ev) => {
+        if (useDragStore.getState().drag?.kind !== "detached") return;
+        const { x, y } = toClient(ev.payload.screenX, ev.payload.screenY);
+        useDragStore.getState().move(x, y);
+        resolveTargetRef.current(x, y);
+      }),
+    );
+
+    reg(
+      listen<DetachedDragEnd>(DETACHED_DRAG_END, (ev) => {
+        const d = useDragStore.getState().drag;
+        if (d?.kind !== "detached") return;
+        // Dock only when released over THIS window's content and not cancelled;
+        // dropping outside the main window (or Escape) leaves the popout floating.
+        const inMain =
+          d.pointerX >= 0 &&
+          d.pointerY >= 0 &&
+          d.pointerX <= window.innerWidth &&
+          d.pointerY <= window.innerHeight;
+        if (!ev.payload.cancelled && inMain && d.detachedGroupId) {
+          const store = useTabsStore.getState();
+          if (d.reorderGroup) {
+            // Released over a tab bar → merge into that group.
+            store.attachGroup(d.detachedGroupId, {
+              targetGroupId: d.reorderGroup,
+              edge: "center",
+            });
+          } else if (d.overGroup && d.edge) {
+            store.attachGroup(d.detachedGroupId, {
+              targetGroupId: d.overGroup,
+              edge: d.edge,
+            });
+          } else {
+            // Over the panel but no resolved target → default placement.
+            store.attachGroup(d.detachedGroupId);
+          }
+        }
+        useDragStore.getState().end();
+      }),
+    );
+
+    return () => {
+      cancelled = true;
+      for (const fn of unsubs) fn();
+    };
+  }, []);
 
   // ── Render the flat pane layer (all tabs, all scopes; never unmounted) ─────
   const allTabs = Object.entries(tabsByScope).flatMap(([s, scopeTabs]) =>
@@ -335,11 +517,19 @@ export function CenterPanel() {
     if (g.activeKey) activeKeyOfGroup.set(g.id, g.activeKey);
     for (const k of g.tabKeys) groupOfKey.set(k, g.id);
   }
+  // #62: fullscreen is active only when the stored group actually exists in the
+  // current scope (a stale id from another scope is ignored). When active, the
+  // fullscreened group's pane is sized to the whole panel and all others hidden.
+  const fsActive = fullscreenGroupId != null && groupRects[fullscreenGroupId] != null;
+  const panelRect = panelRef.current?.getBoundingClientRect();
+  const fullRect: Rect | undefined = panelRect
+    ? { left: 0, top: 0, width: panelRect.width, height: panelRect.height }
+    : undefined;
 
   return (
     <div
       ref={panelRef}
-      className={`center-panel${dragging ? " dragging" : ""}`}
+      className={`center-panel${dragging ? " dragging" : ""}${fsActive ? " fullscreen" : ""}`}
     >
       {/* Subwindow frame layer: the recursive layout tree for the current scope.
           Each group body is an empty measured slot; panes are positioned over
@@ -379,11 +569,20 @@ export function CenterPanel() {
         {allTabs.map(({ tab, scopeKey }) => {
           const isCurrentScope = scopeKey === scope;
           const groupId = isCurrentScope ? groupOfKey.get(tab.key) : undefined;
+          // While a group is fullscreen, only that group's active pane shows.
           const visible =
             isCurrentScope &&
             groupId != null &&
-            activeKeyOfGroup.get(groupId) === tab.key;
-          const rect = groupId ? groupRects[groupId] : undefined;
+            activeKeyOfGroup.get(groupId) === tab.key &&
+            (!fsActive || groupId === fullscreenGroupId);
+          // The fullscreened group's pane is stretched over the whole panel; all
+          // others keep their measured rect (but are hidden by `visible` above).
+          const rect =
+            fsActive && groupId === fullscreenGroupId
+              ? (fullRect ?? (groupId ? groupRects[groupId] : undefined))
+              : groupId
+                ? groupRects[groupId]
+                : undefined;
           const style: React.CSSProperties = visible && rect
             ? {
                 display: "flex",
@@ -391,6 +590,8 @@ export function CenterPanel() {
                 top: rect.top,
                 width: rect.width,
                 height: rect.height,
+                // Lift the fullscreened pane above the frame layer (tab bars).
+                ...(fsActive && groupId === fullscreenGroupId ? { zIndex: 5 } : {}),
               }
             : { display: "none" };
           return (
@@ -407,6 +608,7 @@ export function CenterPanel() {
                     viewer={tab.viewer}
                     path={tab.embedPath ?? ""}
                     projectId={scopeKey === "root" ? null : scopeKey}
+                    tabKey={tab.key}
                     visible={visible}
                   />
                 ) : (
@@ -515,6 +717,10 @@ function LayoutTree(props: TreeProps) {
 function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split" }> }) {
   const { node } = props;
   const containerRef = useRef<HTMLDivElement>(null);
+  // Minimum subwindow size (px) a divider drag may shrink a pane to, per axis,
+  // from global settings (falling back to the built-in default).
+  const minWidth = useSettingsStore((s) => s.settings?.min_subwindow_width) ?? DEFAULT_MIN_SUBWINDOW_PX;
+  const minHeight = useSettingsStore((s) => s.settings?.min_subwindow_height) ?? DEFAULT_MIN_SUBWINDOW_PX;
 
   const startDrag = (dividerIndex: number) => (e: React.PointerEvent) => {
     e.preventDefault();
@@ -539,7 +745,13 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
       // Desired size of the left child of the pair = pointer fraction minus the
       // space taken by everything before the pair.
       const leftSize = wholeFraction - before;
-      props.resizeSplit(node.id, dividerIndex, Math.min(Math.max(leftSize, 0), pair));
+      // Enforce the min subwindow size: neither side of the pair may shrink below
+      // `minPx` (as a fraction of the container). If the pair is too small to fit
+      // both minimums, split it evenly.
+      const minPx = isRow ? minWidth : minHeight;
+      const minFrac = Math.min(minPx / total, pair / 2);
+      const clamped = Math.min(Math.max(leftSize, minFrac), pair - minFrac);
+      props.resizeSplit(node.id, dividerIndex, clamped);
       props.onResized();
     };
     const onUp = (ev: PointerEvent) => {

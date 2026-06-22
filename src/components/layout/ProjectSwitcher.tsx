@@ -2,13 +2,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ProjectPill } from "../projects/ProjectPill";
+import { ProjectPill, PILL_DRAG_TYPE } from "../projects/ProjectPill";
+import { BoxPill } from "../projects/BoxPill";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { useProjectsStore } from "../../stores/projects";
+import { useBoxesStore } from "../../stores/boxes";
 import { useSettingsStore } from "../../stores/settings";
-import { cmdToKind, useTabsStore } from "../../stores/tabs";
-import type { GlobalAppEntry, ProjectEntry, RemoteEntry, Theme } from "../../types";
+import { DEFAULT_MIN_SUBWINDOW_PX, cmdToKind, useTabsStore } from "../../stores/tabs";
+import type { GlobalAppEntry, KeyboardChord, ProjectBox, ProjectEntry, RemoteEntry, SshTooling, Theme } from "../../types";
 import { resolveProjectDirectory, THEMES } from "../../types";
+import {
+  SHORTCUT_DEFS,
+  chordFromEvent,
+  chordLabel,
+  resolveChord,
+  type ShortcutAction,
+  type ShortcutMap,
+} from "../../lib/shortcuts";
 
 const TERMINAL_OPTIONS = ["claude", "codex", "gemini", "vibe"];
 
@@ -154,8 +164,23 @@ export function buildDescriptionFillPrompt(projectName: string) {
   ].join("\n");
 }
 
+type SearchRow =
+  | { kind: "project"; project: ProjectEntry }
+  | { kind: "box"; box: ProjectBox };
+
 export function ProjectSwitcher({ open = true }: { open?: boolean }) {
-  const { projects, activeId, setActive, addProject, deactivateProject, reorderProjects } = useProjectsStore();
+  const { projects, setActive, addProject, deactivateProject, reorderProjects } = useProjectsStore();
+  const boxes = useBoxesStore((s) => s.boxes);
+  const createBox = useBoxesStore((s) => s.createBox);
+  const renameBox = useBoxesStore((s) => s.renameBox);
+  const deleteBox = useBoxesStore((s) => s.deleteBox);
+  const assignToBox = useBoxesStore((s) => s.assignToBox);
+  const openBox = useBoxesStore((s) => s.openBox);
+  // The currently-displayed scope is the single source of truth for which pill
+  // is highlighted (BoxPill keys off it too). Opening a box moves the scope but
+  // not `activeId`, so highlighting on `activeId` would leave the previously
+  // active project pill stuck-on while a box is open — drive it off scope.
+  const scope = useTabsStore((s) => s.scope);
   const [showSettings, setShowSettings] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>("main");
@@ -180,20 +205,81 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     invoke<boolean>("ollama_is_installed").then(setOllamaInstalled).catch(() => {});
   }, []);
 
-  const results = useMemo(() => {
+  const results = useMemo<SearchRow[]>(() => {
     const q = query.trim().toLowerCase();
     if (!q) return [];
-    return projects
+    // Boxes first (distinct rows), then matching inactive projects. Boxes are
+    // opt-in: a box's members stay independently searchable below.
+    const boxRows: SearchRow[] = boxes
+      .filter((b) => b.name.toLowerCase().includes(q))
+      .sort((a, b) => a.position - b.position)
+      .map((box) => ({ kind: "box", box }));
+    const projectRows: SearchRow[] = projects
       .filter((p) => p.status === "inactive")
       .filter((p) => p.name.toLowerCase().includes(q) || projectDirectory(p).toLowerCase().includes(q))
-      .sort((a, b) => a.position - b.position);
-  }, [projects, query]);
+      .sort((a, b) => a.position - b.position)
+      .map((project) => ({ kind: "project", project }));
+    return [...boxRows, ...projectRows];
+  }, [projects, boxes, query]);
 
   const activeProjects = useMemo(() => {
     return projects
       .filter((p) => p.status !== "inactive")
       .sort((a, b) => a.position - b.position);
   }, [projects]);
+
+  // Bucket the active pills into boxes (by `box_id`) + an ungrouped remainder,
+  // interleaved by switcher position. A pill whose `box_id` points at a missing
+  // box (e.g. after a delete the sweep didn't reach) falls back to ungrouped (S1).
+  const boxesById = useMemo(() => {
+    const map = new Map<string, ProjectBox>();
+    for (const b of boxes) map.set(b.id, b);
+    return map;
+  }, [boxes]);
+
+  type SwitcherItem =
+    | { kind: "box"; box: ProjectBox; members: ProjectEntry[]; position: number }
+    | { kind: "project"; project: ProjectEntry; position: number };
+
+  const switcherItems = useMemo<SwitcherItem[]>(() => {
+    const membersByBox = new Map<string, ProjectEntry[]>();
+    const ungrouped: ProjectEntry[] = [];
+    for (const p of activeProjects) {
+      const boxId = typeof p.box_id === "string" ? p.box_id : undefined;
+      if (boxId && boxesById.has(boxId)) {
+        const list = membersByBox.get(boxId) ?? [];
+        list.push(p);
+        membersByBox.set(boxId, list);
+      } else {
+        ungrouped.push(p);
+      }
+    }
+    const items: SwitcherItem[] = [];
+    // Place each box at the position of its first (lowest-position) member so it
+    // interleaves sensibly with ungrouped pills; empty boxes are not rendered in
+    // the pill strip (they remain reachable via search).
+    for (const box of boxes) {
+      const members = membersByBox.get(box.id) ?? [];
+      if (members.length === 0) continue;
+      items.push({ kind: "box", box, members, position: members[0].position });
+    }
+    for (const p of ungrouped) items.push({ kind: "project", project: p, position: p.position });
+    return items.sort((a, b) => a.position - b.position);
+  }, [activeProjects, boxes, boxesById]);
+
+  // Signature of the bucketing so the overflow/edge-fade effect re-runs when
+  // membership moves between a box and ungrouped (not just on count change) (S3).
+  const bucketSignature = useMemo(
+    () =>
+      switcherItems
+        .map((it) =>
+          it.kind === "box"
+            ? `b:${it.box.id}:${it.members.map((m) => m.id).join(",")}`
+            : `p:${it.project.id}`,
+        )
+        .join("|"),
+    [switcherItems],
+  );
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
@@ -242,11 +328,27 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
       ro?.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, [activeProjects.length]);
+    // Re-run when the rendered bucket shape changes (count alone misses a
+    // box ⇄ ungrouped regroup that keeps the same active-pill count) (S3).
+  }, [bucketSignature]);
 
-  const activateSearchResult = (project: ProjectEntry) => {
+  const activateSearchResult = (row: SearchRow) => {
     setQuery("");
-    void setActive(project.id);
+    if (row.kind === "box") {
+      void openBox(row.box.id);
+    } else {
+      void setActive(row.project.id);
+    }
+  };
+
+  // Shift-drop one pill onto another: spin up a fresh box holding both projects
+  // (phone-style "drag onto" grouping). Assign the drop target first, then the
+  // dragged pill, so both land in the new box; the user renames it via the chip.
+  const groupProjects = async (fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    const box = await createBox("New Box");
+    await assignToBox(toId, box.id);
+    await assignToBox(fromId, box.id);
   };
 
   const scrollPills = (dir: -1 | 1) => {
@@ -254,6 +356,27 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     if (!el) return;
     el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: "smooth" });
   };
+
+  // Continuous scroll while a chevron is hovered: rAF loop nudges the pill row
+  // each frame until the pointer leaves (or the component unmounts).
+  const hoverScrollRef = useRef<number | null>(null);
+  const stopHoverScroll = () => {
+    if (hoverScrollRef.current !== null) {
+      cancelAnimationFrame(hoverScrollRef.current);
+      hoverScrollRef.current = null;
+    }
+  };
+  const startHoverScroll = (dir: -1 | 1) => {
+    stopHoverScroll();
+    const step = () => {
+      const el = pillsScrollRef.current;
+      if (!el) return;
+      el.scrollLeft += dir * 6;
+      hoverScrollRef.current = requestAnimationFrame(step);
+    };
+    hoverScrollRef.current = requestAnimationFrame(step);
+  };
+  useEffect(() => stopHoverScroll, []);
 
   return (
     <>
@@ -301,6 +424,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               if (e.key === "Enter" && results.length === 1) {
                 activateSearchResult(results[0]);
               }
+              // (results is a project|box union; activateSearchResult branches.)
               if (e.key === "Escape") {
                 setQuery("");
               }
@@ -311,16 +435,34 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               {results.length === 0 ? (
                 <div className="project-search-empty">No projects</div>
               ) : (
-                results.map((project) => (
-                  <button
-                    key={project.id}
-                    className="project-search-row"
-                    onClick={() => activateSearchResult(project)}
-                  >
-                    <span>{project.name}</span>
-                    {projectDirectory(project) && <small>{projectDirectory(project)}</small>}
-                  </button>
-                ))
+                results.map((row) =>
+                  row.kind === "box" ? (
+                    <button
+                      key={`box:${row.box.id}`}
+                      className="project-search-row is-box"
+                      onClick={() => activateSearchResult(row)}
+                    >
+                      <span>
+                        <span className="project-box-badge" aria-hidden>▣</span> {row.box.name}
+                      </span>
+                      <small>
+                        Box · {row.box.member_ids.length} member
+                        {row.box.member_ids.length === 1 ? "" : "s"}
+                      </small>
+                    </button>
+                  ) : (
+                    <button
+                      key={row.project.id}
+                      className="project-search-row"
+                      onClick={() => activateSearchResult(row)}
+                    >
+                      <span>{row.project.name}</span>
+                      {projectDirectory(row.project) && (
+                        <small>{projectDirectory(row.project)}</small>
+                      )}
+                    </button>
+                  ),
+                )
               )}
             </div>
           )}
@@ -337,6 +479,8 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             className="pills-scroll-btn left"
             tabIndex={-1}
             aria-label="Scroll projects left"
+            onMouseEnter={() => startHoverScroll(-1)}
+            onMouseLeave={stopHoverScroll}
             onClick={(e) => {
               e.stopPropagation();
               scrollPills(-1);
@@ -344,23 +488,57 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           >
             ‹
           </button>
-          <div className="project-pills-scroll" ref={pillsScrollRef}>
-            {activeProjects.map((p) => (
-              <ProjectPill
-                key={p.id}
-                project={p}
-                active={p.id === activeId}
-                onClick={() => setActive(p.id)}
-                onClose={() => deactivateProject(p.id)}
-                onReorder={(fromId, toId) => void reorderProjects(fromId, toId)}
-              />
-            ))}
+          <div
+            className="project-pills-scroll"
+            ref={pillsScrollRef}
+            // Ungrouped drop zone (S4): dropping a pill on the bare strip (not on
+            // a pill or a BoxPill, both of which stopPropagation) ungroups it.
+            onDragOver={(e) => {
+              if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+            }}
+            onDrop={(e) => {
+              if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
+              const fromId = e.dataTransfer.getData(PILL_DRAG_TYPE);
+              if (!fromId) return;
+              e.preventDefault();
+              void assignToBox(fromId, null);
+            }}
+          >
+            {switcherItems.map((item) =>
+              item.kind === "box" ? (
+                <BoxPill
+                  key={`box:${item.box.id}`}
+                  box={item.box}
+                  members={item.members}
+                  onOpen={() => void openBox(item.box.id)}
+                  onAssign={(projectId) => void assignToBox(projectId, item.box.id)}
+                  onSelectMember={(projectId) => void setActive(projectId)}
+                  onRemoveMember={(projectId) => void assignToBox(projectId, null)}
+                  onRename={(name) => void renameBox(item.box.id, name)}
+                  onDelete={() => void deleteBox(item.box.id)}
+                />
+              ) : (
+                <ProjectPill
+                  key={item.project.id}
+                  project={item.project}
+                  active={scope === item.project.id}
+                  onClick={() => setActive(item.project.id)}
+                  onClose={() => deactivateProject(item.project.id)}
+                  onReorder={(fromId, toId) => void reorderProjects(fromId, toId)}
+                  onGroup={(fromId, toId) => void groupProjects(fromId, toId)}
+                />
+              ),
+            )}
           </div>
           <button
             type="button"
             className="pills-scroll-btn right"
             tabIndex={-1}
             aria-label="Scroll projects right"
+            onMouseEnter={() => startHoverScroll(1)}
+            onMouseLeave={stopHoverScroll}
             onClick={(e) => {
               e.stopPropagation();
               scrollPills(1);
@@ -419,6 +597,14 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               <button onClick={() => { setShowAddMenu(false); setDialog("import"); }}>
                 Import Project
               </button>
+              <button
+                onClick={() => {
+                  setShowAddMenu(false);
+                  void createBox("New Box");
+                }}
+              >
+                New Box
+              </button>
             </div>
           )}
         </div>
@@ -476,6 +662,97 @@ const HELP_SECTIONS: HelpSection[] = [
   },
 ];
 
+/**
+ * Group L / #62 — let the user rebind the eight navigation chords. Click a
+ * row's chord button to enter capture mode; the next non-modifier keydown is
+ * stored as the override (persisted to `settings.keyboard_shortcuts`). "Reset"
+ * clears an override back to its built-in default.
+ */
+function ShortcutsSettings({ onBack }: { onBack: () => void }) {
+  const { settings, updateSettings } = useSettingsStore();
+  const overrides = (settings?.keyboard_shortcuts ?? {}) as ShortcutMap;
+  const [capturing, setCapturing] = useState<ShortcutAction | null>(null);
+
+  const saveMap = (next: ShortcutMap) => {
+    void updateSettings({ keyboard_shortcuts: next as Record<string, KeyboardChord> });
+  };
+
+  const rebind = (action: ShortcutAction, chord: KeyboardChord) => {
+    saveMap({ ...overrides, [action]: chord });
+  };
+
+  const reset = (action: ShortcutAction) => {
+    const next = { ...overrides };
+    delete next[action];
+    saveMap(next);
+  };
+
+  // While capturing, the next real key sets the chord. Capture at the window
+  // level so the keystroke is grabbed even though our hidden field, not a
+  // terminal, has focus; ignore lone modifiers so the user can hold them.
+  useEffect(() => {
+    if (!capturing) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setCapturing(null);
+        return;
+      }
+      const chord = chordFromEvent(e);
+      if (!chord) return; // lone modifier — keep waiting
+      e.preventDefault();
+      e.stopPropagation();
+      rebind(capturing, chord);
+      setCapturing(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capturing, overrides]);
+
+  return (
+    <>
+      <div className="settings-title-row">
+        <h2>Keyboard Shortcuts</h2>
+        <button type="button" onClick={onBack}>Back</button>
+      </div>
+      <p className="settings-help">
+        Click a shortcut, then press the new key combination. F11 (OS fullscreen)
+        and Escape (exit fullscreen) are fixed and cannot be rebound.
+      </p>
+      <div className="settings-list">
+        {SHORTCUT_DEFS.map((def) => {
+          const active = capturing === def.action;
+          const effective = resolveChord(def.action, overrides);
+          const isCustom = !!overrides[def.action];
+          return (
+            <div className="settings-row shortcut-row" key={def.action}>
+              <span className="settings-role-label">{def.label}</span>
+              <button
+                type="button"
+                className={`shortcut-capture-btn${active ? " capturing" : ""}`}
+                onClick={() => setCapturing(active ? null : def.action)}
+                title="Click, then press a key combination"
+              >
+                {active ? "Press keys…" : chordLabel(effective)}
+              </button>
+              <button
+                type="button"
+                className="settings-back-btn"
+                disabled={!isCustom}
+                onClick={() => reset(def.action)}
+                title="Reset to default"
+              >
+                Reset
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 function HelpPanel({ onBack }: { onBack: () => void }) {
   return (
     <>
@@ -506,7 +783,7 @@ function HelpPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
-type SettingsPanel = "main" | "global" | "filetypes" | "ollama" | "help";
+type SettingsPanel = "main" | "global" | "filetypes" | "ollama" | "shortcuts" | "help";
 
 function SettingsDialog({
   onClose,
@@ -604,6 +881,46 @@ function SettingsDialog({
               />
             </label>
 
+            <div className="settings-section-title">Layout</div>
+            <p className="settings-help">
+              Smallest a subwindow may be made by dragging a split divider.
+              Defaults to {DEFAULT_MIN_SUBWINDOW_PX}px when left blank.
+            </p>
+            <div className="settings-row">
+              <label htmlFor="min-subwindow-width">Min subwindow width (px)</label>
+              <input
+                id="min-subwindow-width"
+                type="number"
+                min={20}
+                step={10}
+                placeholder={String(DEFAULT_MIN_SUBWINDOW_PX)}
+                value={settings?.min_subwindow_width ?? ""}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  void updateSettings({
+                    min_subwindow_width: Number.isFinite(v) && v >= 20 ? v : undefined,
+                  });
+                }}
+              />
+            </div>
+            <div className="settings-row">
+              <label htmlFor="min-subwindow-height">Min subwindow height (px)</label>
+              <input
+                id="min-subwindow-height"
+                type="number"
+                min={20}
+                step={10}
+                placeholder={String(DEFAULT_MIN_SUBWINDOW_PX)}
+                value={settings?.min_subwindow_height ?? ""}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  void updateSettings({
+                    min_subwindow_height: Number.isFinite(v) && v >= 20 ? v : undefined,
+                  });
+                }}
+              />
+            </div>
+
             <div className="settings-section-title">Git Hosting</div>
             <label className="settings-field">
               Profile URL
@@ -637,6 +954,7 @@ function SettingsDialog({
               {ollamaInstalled && (
                 <button type="button" onClick={() => setPanel("ollama")}>Ollama...</button>
               )}
+              <button type="button" onClick={() => setPanel("shortcuts")}>Keyboard Shortcuts...</button>
               <button type="button" onClick={() => setPanel("help")}>Feature Guide...</button>
             </div>
           </>
@@ -644,6 +962,7 @@ function SettingsDialog({
         {panel === "global" && <GlobalAppsSettings onBack={() => setPanel("main")} />}
         {panel === "filetypes" && <FileTypeSettings onBack={() => setPanel("main")} />}
         {panel === "ollama" && <OllamaPanel onBack={() => setPanel("main")} />}
+        {panel === "shortcuts" && <ShortcutsSettings onBack={() => setPanel("main")} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} />}
       </div>
     </div>
@@ -1064,6 +1383,10 @@ function ProjectDialog({
   // Whether this is a remote (SSH) project. The whole SSH section — address,
   // password, connect, and the remote browser — only appears when this is on.
   const [isRemoteProject, setIsRemoteProject] = useState(false);
+  // Availability of sshfs/sshpass/openvpn, fetched the first time the remote
+  // checkbox is enabled so missing tools are flagged up front rather than only
+  // after a connect/mount fails. `null` until probed.
+  const [sshTooling, setSshTooling] = useState<SshTooling | null>(null);
   const [sshAddress, setSshAddress] = useState("");
   const [sshPassword, setSshPassword] = useState("");
   const [sshStatus, setSshStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
@@ -1164,6 +1487,13 @@ function ProjectDialog({
   // entered credentials so the dialog falls back to the local create/import flow.
   const toggleRemoteProject = (checked: boolean) => {
     setIsRemoteProject(checked);
+    if (checked) {
+      // Probe the remote tooling once so we can warn about anything missing
+      // before the user fills in an address and hits Connect/Create.
+      if (sshTooling === null) {
+        invoke<SshTooling>("ssh_tooling_status").then(setSshTooling).catch(() => {});
+      }
+    }
     if (!checked) {
       setSshAddress("");
       setSshPassword("");
@@ -1477,6 +1807,33 @@ function ProjectDialog({
           />
           Remote (SSH) project
         </label>
+
+        {isRemoteProject && sshTooling && (() => {
+          const warnings: string[] = [];
+          if (!sshTooling.sshfs) {
+            warnings.push(
+              "sshfs not found — remote projects can't be mounted. Install sshfs/FUSE.",
+            );
+          }
+          if (sshPassword && !sshTooling.sshpass) {
+            warnings.push(
+              "sshpass not found — password auth won't work. Install sshpass, or use SSH keys (leave the password blank).",
+            );
+          }
+          if (vpnEnabled && !sshTooling.openvpn) {
+            warnings.push(
+              "openvpn/pkexec not found — VPN-gated hosts can't connect. Install openvpn and polkit.",
+            );
+          }
+          if (warnings.length === 0) return null;
+          return (
+            <div className="ssh-tooling-warning" role="alert">
+              {warnings.map((w) => (
+                <div key={w}>⚠ {w}</div>
+              ))}
+            </div>
+          );
+        })()}
 
         {isRemoteProject && (
           <div className="ssh-connect-fields" role="group" aria-label="OpenVPN tunnel">

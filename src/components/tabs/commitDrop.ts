@@ -1,5 +1,7 @@
 import { type TabDrag } from "../../stores/drag";
 import { findGroupOfTab, useTabsStore } from "../../stores/tabs";
+import { useLinkRoutingStore } from "../../stores/linkRouting";
+import { openLinkedFile } from "../embed/FileViewerPane";
 
 /**
  * Commit a finished tab drag. Reads store actions from getState() so it can live
@@ -15,6 +17,17 @@ import { findGroupOfTab, useTabsStore } from "../../stores/tabs";
  */
 export function commitDrop(d: TabDrag | null) {
   if (!d) return;
+  // #42: a detached-window drag is committed by CenterPanel's cross-window END
+  // handler (via attachGroup), not here — guard so a stray pointerup on the main
+  // window can never mis-commit it as a tab move.
+  if (d.kind === "detached") return;
+  // #50: a link dragged out of a viewer onto a subwindow records a session-only
+  // route (linkingTab, targetPath) → that group, then opens the file there. The
+  // pure routing/open is reused so a click later honours the same target.
+  if (d.kind === "link") {
+    commitLinkDrop(d);
+    return;
+  }
   const store = useTabsStore.getState();
   if (d.reorderGroup && d.reorderIndex != null) {
     if (d.reorderGroup === d.fromGroup) {
@@ -37,4 +50,22 @@ export function commitDrop(d: TabDrag | null) {
       store.splitWithTab(d.key, d.overGroup, d.edge);
     }
   }
+}
+
+/**
+ * Commit a "link" drag (#50): the user dragged a file link onto a subwindow to
+ * make it the session-only target for that link. Record the override route and
+ * open the linked file there. Exported for the unit test.
+ */
+export function commitLinkDrop(d: TabDrag) {
+  if (!d.overGroup || !d.linkTargetPath || !d.linkingTabKey || !d.viewer) return;
+  useLinkRoutingStore
+    .getState()
+    .setRoute(d.linkingTabKey, d.linkTargetPath, d.overGroup);
+  const dir = d.linkTargetPath.slice(0, d.linkTargetPath.lastIndexOf("/")) || "/";
+  openLinkedFile(d.linkingTabKey, dir, {
+    path: d.linkTargetPath,
+    viewer: d.viewer,
+    label: d.linkTargetPath.slice(d.linkTargetPath.lastIndexOf("/") + 1),
+  });
 }

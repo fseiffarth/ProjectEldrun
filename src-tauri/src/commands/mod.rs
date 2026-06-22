@@ -1,7 +1,10 @@
 pub mod apps;
+pub mod boxes;
 pub mod crash;
+pub mod debug;
 pub mod default_apps;
 pub mod downloads;
+pub mod fs_watch;
 pub mod git;
 pub mod github;
 pub mod ollama;
@@ -10,6 +13,7 @@ pub mod project_runtime;
 pub mod projects;
 pub mod settings;
 pub mod ssh;
+pub mod subwindow;
 pub mod terminal;
 pub mod tex;
 pub mod timer;

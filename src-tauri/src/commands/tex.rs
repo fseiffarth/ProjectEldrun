@@ -43,6 +43,40 @@ pub struct TexCompileResult {
     pub engine: String,
     /// Tail of the combined stdout/stderr, for surfacing errors in the UI.
     pub log: String,
+    /// True when the build log shows shell-escape (`\write18`) ran unrestricted
+    /// or actually executed an external command. We never pass `-shell-escape`
+    /// ourselves, so this only trips when a system `texmf.cnf` / `latexmkrc`
+    /// turned it on behind our back — surfaced as a warning in the UI.
+    pub shell_escape: bool,
+}
+
+/// A source location returned by SyncTeX reverse search (`synctex edit`): the
+/// input `.tex` file plus 1-based line/column that produced a clicked PDF point.
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncSource {
+    /// Absolute path to the source file.
+    pub input: String,
+    /// 1-based source line.
+    pub line: u32,
+    /// 1-based source column (0 when SyncTeX did not report one).
+    pub column: u32,
+}
+
+/// A PDF rectangle returned by SyncTeX forward search (`synctex view`): the page
+/// and a box (big points, 72 dpi, origin at the page's top-left) the viewer can
+/// scroll to and highlight.
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncRect {
+    /// 1-based PDF page.
+    pub page: u32,
+    /// Left edge in big points from the page's top-left.
+    pub x: f64,
+    /// Top edge in big points from the page's top-left.
+    pub y: f64,
+    /// Box width in big points.
+    pub w: f64,
+    /// Box height in big points.
+    pub h: f64,
 }
 
 /// True if `bin` resolves on `PATH`.
@@ -84,7 +118,7 @@ struct RunOut {
 }
 
 /// Run `bin args…` with `dir` as the working directory, capturing stdout+stderr.
-fn run_in(dir: &Path, bin: &str, args: &[&str]) -> Result<RunOut, String> {
+fn run_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, bin: &str, args: &[S]) -> Result<RunOut, String> {
     let out = Command::new(bin)
         .args(args)
         .current_dir(dir)
@@ -129,8 +163,92 @@ fn latexmk_flag(engine: Option<&str>) -> &'static str {
     }
 }
 
+/// SECURITY: reject any user-supplied extra flag that could turn on shell-escape
+/// (`\write18`) — compiling untrusted `.tex` must never let document macros run
+/// shell commands. We strip not just `-shell-escape`/`-enable-write18` but any
+/// flag whose text mentions shell-escape / write18 (covers `-shell-escape`,
+/// `--shell-escape`, `-enable-write18`, `-shell-restricted` toggles writing,
+/// engine `-output-directory` variants are allowed separately). Guarded by
+/// `compile_args_never_enable_shell_escape` / `filter_extra_flags_strips_shell_escape`.
+fn flag_enables_shell_escape(arg: &str) -> bool {
+    let a = arg.to_ascii_lowercase();
+    a.contains("shell-escape") || a.contains("shellescape") || a.contains("write18")
+}
+
+/// Filter user-supplied extra flags down to ones that can NEVER enable
+/// shell-escape. Anything mentioning shell-escape / write18 is dropped silently.
+fn filter_extra_flags(extra: &[String]) -> Vec<String> {
+    extra
+        .iter()
+        .filter(|f| !flag_enables_shell_escape(f))
+        .cloned()
+        .collect()
+}
+
+/// Arguments for a `latexmk` build of `file_name` with `engine`. This is the
+/// single source of truth for the latexmk invocation, and it deliberately omits
+/// any shell-escape flag — compiling untrusted `.tex` must never let document
+/// macros run shell commands (guarded by `compile_args_never_enable_shell_escape`).
+///
+/// `out_dir`, when set, becomes latexmk's `-outdir=<dir>` so artefacts (incl. the
+/// PDF) land there. `extra` carries already-filtered user flags (#54).
+fn latexmk_args(engine: Option<&str>, file_name: &str, out_dir: Option<&str>, extra: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        latexmk_flag(engine).to_string(),
+        "-interaction=nonstopmode".to_string(),
+        // Always emit SyncTeX data so the viewer can map between PDF positions
+        // and source lines (forward/reverse search). Harmless when unused.
+        "-synctex=1".to_string(),
+    ];
+    if let Some(dir) = out_dir {
+        args.push(format!("-outdir={dir}"));
+    }
+    for f in extra {
+        args.push(f.clone());
+    }
+    args.push(file_name.to_string());
+    args
+}
+
+/// Arguments for driving a TeX engine directly on `file_name` (the no-latexmk
+/// path). Same shell-escape invariant as `latexmk_args`. `out_dir` maps to the
+/// engine's `-output-directory=<dir>`; `extra` carries filtered user flags.
+fn engine_args(file_name: &str, out_dir: Option<&str>, extra: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-interaction=nonstopmode".to_string(),
+        "-halt-on-error".to_string(),
+        // Emit SyncTeX data for forward/reverse search (see latexmk_args).
+        "-synctex=1".to_string(),
+    ];
+    if let Some(dir) = out_dir {
+        args.push(format!("-output-directory={dir}"));
+    }
+    for f in extra {
+        args.push(f.clone());
+    }
+    args.push(file_name.to_string());
+    args
+}
+
+/// Scan a build log for evidence that shell-escape (`\write18`) was active in an
+/// *unrestricted* way: either explicitly enabled (not the safe "restricted"
+/// default that only allows a fixed whitelist) or an external command actually
+/// executed. Used to warn when a system config enabled it despite our args.
+fn log_shows_shell_escape(log: &str) -> bool {
+    log.lines().any(|line| {
+        let l = line.to_ascii_lowercase();
+        (l.contains("write18 enabled") && !l.contains("restricted"))
+            || (l.contains("runsystem(") && l.contains("executed"))
+    })
+}
+
 #[tauri::command]
-pub fn compile_tex(path: String, engine: Option<String>) -> Result<TexCompileResult, String> {
+pub fn compile_tex(
+    path: String,
+    engine: Option<String>,
+    out_dir: Option<String>,
+    extra_flags: Option<Vec<String>>,
+) -> Result<TexCompileResult, String> {
     let src = fs::canonicalize(&path).map_err(|e| format!("canonicalize {path}: {e}"))?;
     let is_tex = src
         .extension()
@@ -158,10 +276,45 @@ pub fn compile_tex(path: String, engine: Option<String>) -> Result<TexCompileRes
         return Err("no TeX engine found on PATH".to_string());
     }
 
+    // Resolve the optional output directory: a relative path is taken against the
+    // source's directory, an absolute one is used as-is. Created if missing so the
+    // engine can write into it. The PDF then lands there (not beside the source),
+    // so `pdf_path` points into it.
+    let out_dir = out_dir.and_then(|d| {
+        let d = d.trim().to_string();
+        if d.is_empty() {
+            None
+        } else {
+            Some(d)
+        }
+    });
+    let out_path = match &out_dir {
+        Some(d) => {
+            let p = Path::new(d);
+            let abs = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                dir.join(p)
+            };
+            fs::create_dir_all(&abs).map_err(|e| format!("create output dir {}: {e}", abs.display()))?;
+            Some(abs)
+        }
+        None => None,
+    };
+    // The string form passed to the engine/latexmk flags.
+    let out_arg = out_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+
+    // SECURITY: filter user-supplied flags so none can enable shell-escape.
+    let extra = filter_extra_flags(&extra_flags.unwrap_or_default());
+
     // Only honour an explicitly requested engine we actually have; otherwise let
     // latexmk / the first installed engine decide.
     let engine = engine.filter(|e| cap.engines.iter().any(|g| g == e));
-    let pdf = dir.join(format!("{stem}.pdf"));
+    // The PDF lands in the output dir if one was given, else beside the source.
+    let pdf = match &out_path {
+        Some(p) => p.join(format!("{stem}.pdf")),
+        None => dir.join(format!("{stem}.pdf")),
+    };
     let mut log = String::new();
 
     if cap.latexmk {
@@ -169,14 +322,20 @@ pub fn compile_tex(path: String, engine: Option<String>) -> Result<TexCompileRes
         let out = run_in(
             dir,
             "latexmk",
-            &[flag, "-interaction=nonstopmode", file_name],
+            &latexmk_args(engine.as_deref(), file_name, out_arg.as_deref(), &extra),
         )?;
         log.push_str(&out.text);
         let success = out.ok && pdf.exists();
+        if success {
+            // Record this file as the build root for every .tex it pulls in, so
+            // pressing Compile in a child later redirects here (resolve_tex_root).
+            record_root_mappings(&src);
+        }
         return Ok(TexCompileResult {
             success,
             pdf_path: pdf.exists().then(|| pdf.to_string_lossy().into_owned()),
             engine: format!("latexmk {flag}"),
+            shell_escape: log_shows_shell_escape(&log),
             log: tail(&log),
         });
     }
@@ -184,13 +343,21 @@ pub fn compile_tex(path: String, engine: Option<String>) -> Result<TexCompileRes
     // No latexmk: drive the engine directly. First pass, then a bibtex pass when
     // the aux shows citations, then reruns to settle references / ToC.
     let eng = engine.unwrap_or_else(|| cap.engines[0].clone());
-    let engine_args = ["-interaction=nonstopmode", "-halt-on-error", file_name];
+    let engine_args = engine_args(file_name, out_arg.as_deref(), &extra);
 
     let first = run_in(dir, &eng, &engine_args)?;
     log.push_str(&first.text);
 
-    if cap.bibtex && aux_needs_bibtex(&dir.join(format!("{stem}.aux"))) {
-        let bib = run_in(dir, "bibtex", &[stem.as_str()])?;
+    // The aux lands in the output dir too when one is set.
+    let aux = match &out_path {
+        Some(p) => p.join(format!("{stem}.aux")),
+        None => dir.join(format!("{stem}.aux")),
+    };
+    if cap.bibtex && aux_needs_bibtex(&aux) {
+        // bibtex resolves its aux relative to its own CWD; run it in the output
+        // dir when one is set so it finds the aux written there.
+        let bib_dir = out_path.as_deref().unwrap_or(dir);
+        let bib = run_in(bib_dir, "bibtex", &[stem.clone()])?;
         log.push_str(&bib.text);
         for _ in 0..2 {
             log.push_str(&run_in(dir, &eng, &engine_args)?.text);
@@ -200,12 +367,326 @@ pub fn compile_tex(path: String, engine: Option<String>) -> Result<TexCompileRes
         log.push_str(&run_in(dir, &eng, &engine_args)?.text);
     }
 
+    let success = pdf.exists();
+    if success {
+        record_root_mappings(&src);
+    }
     Ok(TexCompileResult {
-        success: pdf.exists(),
+        success,
         pdf_path: pdf.exists().then(|| pdf.to_string_lossy().into_owned()),
         engine: eng,
+        shell_escape: log_shows_shell_escape(&log),
         log: tail(&log),
     })
+}
+
+// ── SyncTeX forward/reverse search ───────────────────────────────────────────
+
+/// Parse the `synctex edit` stdout into a `SyncSource`. The relevant block looks
+/// like:
+/// ```text
+/// SyncTeX result begin
+/// Output:/abs/path/chapter.tex
+/// Line:42
+/// Column:-1
+/// …
+/// SyncTeX result end
+/// ```
+/// `base` is the PDF's directory, used to absolutise a relative `Output:` path.
+fn parse_synctex_edit(out: &str, base: &Path) -> Option<SyncSource> {
+    let mut input: Option<String> = None;
+    let mut line: u32 = 0;
+    let mut column: u32 = 0;
+    for raw in out.lines() {
+        let l = raw.trim();
+        if let Some(v) = l.strip_prefix("Output:") {
+            if input.is_none() {
+                let p = Path::new(v.trim());
+                let abs = if p.is_absolute() { p.to_path_buf() } else { base.join(p) };
+                let abs = fs::canonicalize(&abs).unwrap_or(abs);
+                input = Some(abs.to_string_lossy().into_owned());
+            }
+        } else if let Some(v) = l.strip_prefix("Line:") {
+            if line == 0 {
+                line = v.trim().parse().unwrap_or(0);
+            }
+        } else if let Some(v) = l.strip_prefix("Column:") {
+            if column == 0 {
+                // SyncTeX reports -1 when there is no column; clamp to 0.
+                column = v.trim().parse().unwrap_or(0);
+            }
+        }
+    }
+    let input = input?;
+    if line == 0 {
+        return None;
+    }
+    Some(SyncSource { input, line, column })
+}
+
+/// Reverse search: which source line produced the point `(x, y)` (big points
+/// from the page top-left) on `page` of `pdf`. Returns `Ok(None)` when SyncTeX
+/// is unavailable or has no answer, so the UI can degrade silently.
+#[tauri::command]
+pub fn synctex_edit(pdf: String, page: u32, x: f64, y: f64) -> Result<Option<SyncSource>, String> {
+    let pdf_path = Path::new(&pdf);
+    let dir = pdf_path.parent().unwrap_or_else(|| Path::new("."));
+    if !on_path("synctex") {
+        return Ok(None);
+    }
+    let spec = format!("{page}:{x}:{y}:{pdf}");
+    let out = run_in(dir, "synctex", &["edit", "-o", &spec])?;
+    Ok(parse_synctex_edit(&out.text, dir))
+}
+
+/// Parse the `synctex view` stdout into a `SyncRect`. The first record block:
+/// ```text
+/// SyncTeX result begin
+/// Page:3
+/// x:123.4
+/// y:567.8
+/// h:120.0
+/// v:560.0
+/// W:380.0
+/// H:12.0
+/// …
+/// SyncTeX result end
+/// ```
+/// We use `h`/`v` (box origin) for position and `W`/`H` for size; all in big
+/// points from the page top-left.
+fn parse_synctex_view(out: &str) -> Option<SyncRect> {
+    let mut page: Option<u32> = None;
+    let mut h: Option<f64> = None;
+    let mut v: Option<f64> = None;
+    let mut w: Option<f64> = None;
+    let mut ht: Option<f64> = None;
+    for raw in out.lines() {
+        let l = raw.trim();
+        let set = |slot: &mut Option<f64>, v: &str| {
+            if slot.is_none() {
+                if let Ok(n) = v.trim().parse() {
+                    *slot = Some(n);
+                }
+            }
+        };
+        if let Some(s) = l.strip_prefix("Page:") {
+            if page.is_none() {
+                page = s.trim().parse().ok();
+            }
+        } else if let Some(s) = l.strip_prefix("h:") {
+            set(&mut h, s);
+        } else if let Some(s) = l.strip_prefix("v:") {
+            set(&mut v, s);
+        } else if let Some(s) = l.strip_prefix("W:") {
+            set(&mut w, s);
+        } else if let Some(s) = l.strip_prefix("H:") {
+            set(&mut ht, s);
+        }
+    }
+    Some(SyncRect {
+        page: page?,
+        x: h?,
+        y: v?,
+        w: w.unwrap_or(0.0).abs(),
+        h: ht.unwrap_or(0.0).abs(),
+    })
+}
+
+/// Forward search: where in `pdf` does `input:line:column` land. Returns
+/// `Ok(None)` when SyncTeX is unavailable or has no answer.
+#[tauri::command]
+pub fn synctex_view(
+    pdf: String,
+    input: String,
+    line: u32,
+    column: u32,
+) -> Result<Option<SyncRect>, String> {
+    let pdf_path = Path::new(&pdf);
+    let dir = pdf_path.parent().unwrap_or_else(|| Path::new("."));
+    if !on_path("synctex") {
+        return Ok(None);
+    }
+    let spec = format!("{line}:{column}:{input}");
+    let out = run_in(dir, "synctex", &["view", "-i", &spec, "-o", &pdf])?;
+    Ok(parse_synctex_view(&out.text))
+}
+
+// ── Subtex → main-tex root mapping ───────────────────────────────────────────
+
+/// Commands that pull another `.tex` into the document. Matches the file-include
+/// subset of the frontend's `TEX_REF_COMMANDS` (`src/components/files/tex.ts`).
+const INCLUDE_COMMANDS: &[&str] = &["input", "include", "subfile", "subfileinclude"];
+
+/// Path of the persisted child→root map.
+fn tex_roots_path() -> std::path::PathBuf {
+    crate::storage::state_dir().join("tex_roots.json")
+}
+
+/// Extract the `.tex` files directly included by `source` text. `\input{a}` →
+/// `a.tex`; an explicit extension is kept. Relative paths stay relative (the
+/// caller resolves them against the including file's directory).
+fn parse_includes(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = source.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        // Read the command name after the backslash.
+        let mut j = i + 1;
+        while j < bytes.len() && (bytes[j] as char).is_ascii_alphabetic() {
+            j += 1;
+        }
+        let cmd = &source[i + 1..j];
+        if INCLUDE_COMMANDS.contains(&cmd) && j < bytes.len() && bytes[j] == b'{' {
+            // Read the brace argument.
+            if let Some(close) = source[j + 1..].find('}') {
+                let arg = source[j + 1..j + 1 + close].trim().to_string();
+                if !arg.is_empty() {
+                    let with_ext = if Path::new(&arg).extension().is_some() {
+                        arg
+                    } else {
+                        format!("{arg}.tex")
+                    };
+                    out.push(with_ext);
+                }
+                i = j + 1 + close + 1;
+                continue;
+            }
+        }
+        i = j.max(i + 1);
+    }
+    out
+}
+
+/// Recursively collect every `.tex` file reachable from `root` via include
+/// commands, as canonicalized absolute paths (excluding `root` itself). Bounded
+/// by a visited set and a depth cap so a cyclic `\input` can't loop forever.
+fn scan_tex_includes(root: &Path) -> Vec<std::path::PathBuf> {
+    fn walk(
+        file: &Path,
+        depth: usize,
+        seen: &mut std::collections::HashSet<std::path::PathBuf>,
+        out: &mut Vec<std::path::PathBuf>,
+    ) {
+        if depth > 32 {
+            return;
+        }
+        let Ok(text) = fs::read_to_string(file) else {
+            return;
+        };
+        let dir = file.parent().unwrap_or_else(|| Path::new("."));
+        for rel in parse_includes(&text) {
+            let p = Path::new(&rel);
+            let abs = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
+            let abs = fs::canonicalize(&abs).unwrap_or(abs);
+            if seen.insert(abs.clone()) {
+                out.push(abs.clone());
+                walk(&abs, depth + 1, seen, out);
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    seen.insert(root.clone());
+    let mut out = Vec::new();
+    walk(&root, 0, &mut seen, &mut out);
+    out
+}
+
+/// After a successful compile, persist `child → root` for every `.tex` `root`
+/// includes, so a later Compile in a child builds `root` instead of the
+/// fragment. Best-effort: failures to read/write the map are ignored.
+fn record_root_mappings(root: &Path) {
+    let root_abs = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let children = scan_tex_includes(&root_abs);
+    if children.is_empty() {
+        return;
+    }
+    let path = tex_roots_path();
+    let mut map: std::collections::HashMap<String, String> =
+        crate::storage::read_json(&path).unwrap_or_default();
+    let root_str = root_abs.to_string_lossy().into_owned();
+    // Drop stale entries that pointed at this root but are no longer included.
+    let child_set: std::collections::HashSet<String> = children
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    map.retain(|child, mapped_root| *mapped_root != root_str || child_set.contains(child));
+    for child in &child_set {
+        map.insert(child.clone(), root_str.clone());
+    }
+    let _ = crate::storage::write_json(&path, &map);
+}
+
+/// Read the `% !TEX root = …` magic comment from the head of `source`, resolved
+/// against `dir`. Matches the de-facto editor convention (TeXShop/TeXstudio/…).
+fn magic_root(source: &str, dir: &Path) -> Option<std::path::PathBuf> {
+    for raw in source.lines().take(20) {
+        let l = raw.trim_start();
+        if !l.starts_with('%') {
+            continue;
+        }
+        let body = l.trim_start_matches('%').trim();
+        // Case-insensitive "!TEX root =" / "!TEX root:".
+        let lower = body.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("!tex root") {
+            let rest = rest.trim_start();
+            let rest = rest.strip_prefix('=').or_else(|| rest.strip_prefix(':'))?;
+            // Map back to the original-cased slice for the path value.
+            let val = &body[body.len() - rest.len()..];
+            let val = val.trim();
+            if val.is_empty() {
+                return None;
+            }
+            let p = Path::new(val);
+            let abs = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
+            return Some(fs::canonicalize(&abs).unwrap_or(abs));
+        }
+    }
+    None
+}
+
+/// Resolve the file that should actually be compiled for `path`:
+///   1. an explicit `% !TEX root = …` magic comment, else
+///   2. the stored child→root map (if the root still exists and still includes
+///      this child), else
+///   3. `path` itself.
+#[tauri::command]
+pub fn resolve_tex_root(path: String) -> Result<String, String> {
+    let src = fs::canonicalize(&path).unwrap_or_else(|_| Path::new(&path).to_path_buf());
+    let dir = src.parent().unwrap_or_else(|| Path::new("."));
+
+    // 1. Magic comment wins.
+    if let Ok(text) = fs::read_to_string(&src) {
+        if let Some(root) = magic_root(&text, dir) {
+            if root.exists() {
+                return Ok(root.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    // 2. Stored map, verified.
+    let src_str = src.to_string_lossy().into_owned();
+    if let Ok(map) = crate::storage::read_json::<std::collections::HashMap<String, String>>(
+        &tex_roots_path(),
+    ) {
+        if let Some(root) = map.get(&src_str) {
+            let root_path = Path::new(root);
+            if root_path.exists()
+                && scan_tex_includes(root_path)
+                    .iter()
+                    .any(|c| c.to_string_lossy() == *src_str)
+            {
+                return Ok(root.clone());
+            }
+        }
+    }
+
+    // 3. It is its own root.
+    Ok(src_str)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -220,6 +701,92 @@ mod tests {
         assert_eq!(latexmk_flag(Some("xelatex")), "-pdfxe");
         assert_eq!(latexmk_flag(Some("pdflatex")), "-pdf");
         assert_eq!(latexmk_flag(None), "-pdf");
+    }
+
+    #[test]
+    fn compile_args_never_enable_shell_escape() {
+        // Compiling an untrusted `.tex` must never run the engine with
+        // shell-escape / write18 enabled — that would let document macros
+        // execute arbitrary shell commands. Guard the actual arg builders used
+        // by `compile_tex` (its single source of truth) across every engine.
+        let no_extra: Vec<String> = vec![];
+        for engine in [None, Some("pdflatex"), Some("lualatex"), Some("xelatex")] {
+            let args = latexmk_args(engine, "doc.tex", None, &no_extra);
+            assert!(
+                !args.iter().any(|a| flag_enables_shell_escape(a)),
+                "latexmk args for {engine:?} enable shell-escape: {args:?}",
+            );
+        }
+
+        let direct = engine_args("doc.tex", None, &no_extra);
+        assert!(
+            !direct.iter().any(|a| flag_enables_shell_escape(a)),
+            "direct engine args enable shell-escape: {direct:?}",
+        );
+    }
+
+    #[test]
+    fn filter_extra_flags_strips_shell_escape() {
+        // User-supplied extra flags must never smuggle in shell-escape, in any
+        // of its spellings. Benign flags pass through unchanged.
+        let input: Vec<String> = vec![
+            "-shell-escape".into(),
+            "--shell-escape".into(),
+            "-enable-write18".into(),
+            "-shell-escape=1".into(),
+            "-synctex=1".into(),
+            "-file-line-error".into(),
+        ];
+        let kept = filter_extra_flags(&input);
+        assert!(
+            !kept.iter().any(|f| flag_enables_shell_escape(f)),
+            "filtered flags still enable shell-escape: {kept:?}",
+        );
+        assert!(kept.contains(&"-synctex=1".to_string()));
+        assert!(kept.contains(&"-file-line-error".to_string()));
+        assert_eq!(kept.len(), 2, "only the two benign flags survive: {kept:?}");
+
+        // And the filtered flags, when fed into the arg builders, keep the
+        // shell-escape invariant — even alongside the benign ones.
+        let args = latexmk_args(None, "doc.tex", Some("build"), &kept);
+        assert!(!args.iter().any(|a| flag_enables_shell_escape(a)));
+    }
+
+    #[test]
+    fn out_dir_maps_to_correct_engine_args() {
+        let no_extra: Vec<String> = vec![];
+        // latexmk uses -outdir; the engine uses -output-directory.
+        let mk = latexmk_args(None, "doc.tex", Some("/tmp/out"), &no_extra);
+        assert!(
+            mk.iter().any(|a| a == "-outdir=/tmp/out"),
+            "latexmk should set -outdir: {mk:?}",
+        );
+        let eng = engine_args("doc.tex", Some("/tmp/out"), &no_extra);
+        assert!(
+            eng.iter().any(|a| a == "-output-directory=/tmp/out"),
+            "engine should set -output-directory: {eng:?}",
+        );
+        // No out_dir → neither flag appears.
+        let mk2 = latexmk_args(None, "doc.tex", None, &no_extra);
+        assert!(!mk2.iter().any(|a| a.contains("outdir")));
+    }
+
+    #[test]
+    fn log_shows_shell_escape_distinguishes_restricted() {
+        // The safe default (restricted) must NOT trip the warning.
+        assert!(!log_shows_shell_escape(
+            "This is pdfTeX...\n restricted \\write18 enabled.\n"
+        ));
+        // Unrestricted enablement trips it.
+        assert!(log_shows_shell_escape(
+            "This is pdfTeX...\n \\write18 enabled.\n"
+        ));
+        // An actually-executed external command trips it.
+        assert!(log_shows_shell_escape(
+            "runsystem(rm -rf /tmp/x)...executed.\n"
+        ));
+        // A clean build does not.
+        assert!(!log_shows_shell_escape("Output written on doc.pdf (1 page).\n"));
     }
 
     #[test]
@@ -258,8 +825,108 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let txt = dir.join("notes.txt");
         fs::write(&txt, "hi").unwrap();
-        let err = compile_tex(txt.to_string_lossy().into_owned(), None).unwrap_err();
+        let err = compile_tex(txt.to_string_lossy().into_owned(), None, None, None).unwrap_err();
         assert!(err.contains("not a .tex file"), "got: {err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn arg_builders_always_emit_synctex() {
+        let no_extra: Vec<String> = vec![];
+        let mk = latexmk_args(None, "doc.tex", None, &no_extra);
+        assert!(mk.iter().any(|a| a == "-synctex=1"), "latexmk: {mk:?}");
+        let eng = engine_args("doc.tex", None, &no_extra);
+        assert!(eng.iter().any(|a| a == "-synctex=1"), "engine: {eng:?}");
+    }
+
+    #[test]
+    fn parse_synctex_edit_extracts_source() {
+        let out = "SyncTeX result begin\nOutput:chapter.tex\nLine:42\nColumn:-1\nSyncTeX result end\n";
+        let base = std::env::temp_dir();
+        let s = parse_synctex_edit(out, &base).expect("a source");
+        assert!(s.input.ends_with("chapter.tex"), "input: {}", s.input);
+        assert_eq!(s.line, 42);
+        // Column:-1 (no column) clamps to 0.
+        assert_eq!(s.column, 0);
+    }
+
+    #[test]
+    fn parse_synctex_edit_none_without_output() {
+        // No Output:/Line: block → no answer.
+        assert!(parse_synctex_edit("SyncTeX result begin\nSyncTeX result end\n", Path::new("/")).is_none());
+    }
+
+    #[test]
+    fn parse_synctex_view_extracts_rect() {
+        let out = "SyncTeX result begin\nPage:3\nx:120.0\ny:560.0\nh:121.5\nv:559.0\nW:380.25\nH:12.0\nSyncTeX result end\n";
+        let r = parse_synctex_view(out).expect("a rect");
+        assert_eq!(r.page, 3);
+        assert_eq!(r.x, 121.5);
+        assert_eq!(r.y, 559.0);
+        assert_eq!(r.w, 380.25);
+        assert_eq!(r.h, 12.0);
+    }
+
+    #[test]
+    fn parse_includes_finds_tex_children() {
+        let src = "\\documentclass{article}\n\\begin{document}\n\\input{intro}\n\\include{chapters/two.tex}\n\\includegraphics{fig.png}\n\\end{document}\n";
+        let inc = parse_includes(src);
+        assert_eq!(inc, vec!["intro.tex".to_string(), "chapters/two.tex".to_string()]);
+    }
+
+    #[test]
+    fn scan_tex_includes_recurses() {
+        let dir = std::env::temp_dir().join(format!("eldrun-tex-scan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("chapters")).unwrap();
+        let root = dir.join("main.tex");
+        fs::write(&root, "\\input{chapters/one}\n").unwrap();
+        fs::write(dir.join("chapters/one.tex"), "\\input{../two}\n").unwrap();
+        fs::write(dir.join("two.tex"), "no includes\n").unwrap();
+
+        let found = scan_tex_includes(&root);
+        let names: std::collections::HashSet<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains("one.tex"), "got: {names:?}");
+        assert!(names.contains("two.tex"), "got: {names:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn magic_root_reads_tex_root_comment() {
+        let dir = std::env::temp_dir();
+        let root = magic_root("% !TEX root = ../main.tex\n\\section{x}\n", Path::new("/proj/chapters"));
+        assert!(root.is_some());
+        assert!(root.unwrap().to_string_lossy().ends_with("main.tex"));
+        // Case-insensitive and colon form.
+        assert!(magic_root("%!tex root: book.tex\n", &dir).is_some());
+        // No magic comment → None.
+        assert!(magic_root("\\documentclass{article}\n", &dir).is_none());
+    }
+
+    #[test]
+    fn resolve_tex_root_prefers_magic_comment() {
+        let dir = std::env::temp_dir().join(format!("eldrun-tex-root-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.tex");
+        fs::write(&main, "\\input{child}\n").unwrap();
+        let child = dir.join("child.tex");
+        let main_disp = fs::canonicalize(&main).unwrap();
+        fs::write(
+            &child,
+            format!("% !TEX root = {}\n\\section{{x}}\n", main_disp.display()),
+        )
+        .unwrap();
+
+        let resolved = resolve_tex_root(child.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(resolved, main_disp.to_string_lossy());
+
+        // A file that is its own root resolves to itself.
+        let solo = resolve_tex_root(main.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(solo, main_disp.to_string_lossy());
         let _ = fs::remove_dir_all(&dir);
     }
 }

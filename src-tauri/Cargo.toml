@@ -24,6 +24,7 @@ tokio = { version = "1.52.3", features = ["full"] }
 mime_guess = "2.0.5"
 infer = "0.19.0"
 opener = "0.8.4"
+notify = "8"
 
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]

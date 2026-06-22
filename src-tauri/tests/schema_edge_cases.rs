@@ -58,6 +58,33 @@ fn settings_empty_json_parses_to_defaults() {
 }
 
 #[test]
+fn settings_keyboard_shortcuts_absent_defaults_none() {
+    // Group L / #62: existing settings.json without the field must still load.
+    let s: Settings = parse(r#"{"color_scheme":"dark"}"#);
+    assert!(s.keyboard_shortcuts.is_none());
+}
+
+#[test]
+fn settings_keyboard_shortcuts_roundtrip() {
+    // A custom chord override survives parse → serialize → parse.
+    let s: Settings = parse(r#"{
+        "keyboard_shortcuts": {
+            "closeTab": { "key": "q", "ctrl": true },
+            "cycleTabs": { "key": "Tab", "shift": true }
+        }
+    }"#);
+    let map = s.keyboard_shortcuts.as_ref().expect("map present");
+    assert_eq!(map["closeTab"].key, "q");
+    assert!(map["closeTab"].ctrl);
+    assert!(!map["closeTab"].shift);
+    let back = roundtrip(&s);
+    let back_map = back.keyboard_shortcuts.expect("map present after roundtrip");
+    assert_eq!(back_map["cycleTabs"].key, "Tab");
+    assert!(back_map["cycleTabs"].shift);
+    assert!(!back_map["cycleTabs"].ctrl);
+}
+
+#[test]
 fn settings_unknown_fields_preserved_in_extra() {
     let s: Settings = parse(r#"{"color_scheme":"dark","future_field":42}"#);
     assert!(s.extra.contains_key("future_field"), "unknown field must be preserved");

@@ -13,7 +13,10 @@ import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
+import { listenDetachedHost } from "../../stores/detached";
+import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { useSettingsStore } from "../../stores/settings";
+import { useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
 import { useKeyboard } from "../../hooks/useKeyboard";
 
@@ -24,7 +27,12 @@ export function AppShell() {
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const loadProjects = useProjectsStore((s) => s.load);
   const projectsLoaded = useProjectsStore((s) => s.loaded);
+  const loadBoxes = useBoxesStore((s) => s.load);
   const activeId = useProjectsStore((s) => s.activeId);
+  const scope = useTabsStore((s) => s.scope);
+  // The right panel also opens for an active box scope (multi-root file view),
+  // even when no project is the current activeId.
+  const panelTarget = activeId !== null || scope.startsWith(BOX_SCOPE_PREFIX);
   const switchToast = useProjectsStore((s) => s.switchToast);
   const clearSwitchToast = useProjectsStore((s) => s.clearSwitchToast);
   const initTimer = useTimerStore((s) => s.init);
@@ -40,10 +48,37 @@ export function AppShell() {
     getCurrentWindow().setFullscreen(true).catch(() => {});
   }, [loadSettings, loadProjects]);
 
+  // WebKitGTK doesn't reliably fire DOM 'resize' / ResizeObserver for OS-level
+  // window size changes — notably the startup fullscreen transition, which on a
+  // larger screen jumps the window from its 1400x900 config size to the full
+  // monitor. Terminals (and other panes) refit off the DOM 'resize' event, so
+  // without this they open at the pre-fullscreen size and never refit. Bridge
+  // Tauri's reliable window onResized into a DOM resize event; rAF-coalesce so a
+  // manual drag-resize doesn't flood listeners.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let raf = 0;
+    const fire = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        window.dispatchEvent(new Event("resize"));
+      });
+    };
+    getCurrentWindow().onResized(fire).then((fn) => { unlisten = fn; }).catch(() => {});
+    return () => { if (raf) cancelAnimationFrame(raf); unlisten?.(); };
+  }, []);
+
   // Restore the pinned state once settings finish loading.
   useEffect(() => {
     if (settingsLoaded) setRightPinned(pinnedSetting);
   }, [settingsLoaded, pinnedSetting]);
+
+  // Load boxes once projects are in memory so deriving each project's box_id
+  // (from the authoritative member_ids) runs over the loaded project list.
+  useEffect(() => {
+    if (projectsLoaded) void loadBoxes();
+  }, [projectsLoaded, loadBoxes]);
 
   const togglePin = () => {
     setRightPinned((v) => {
@@ -61,6 +96,25 @@ export function AppShell() {
       .then((fn) => { unlisten = fn; })
       .catch(() => {});
     return () => { unlisten?.(); };
+  }, []);
+
+  // #42: register the MAIN window's host side of the detached-subwindow
+  // protocol exactly once. This responds to a popped-out window's seed request
+  // (shipping its group's tabs+subtree), applies edits streamed back, and docks
+  // a group back on request. The detached window renders `DetachedApp` (a
+  // different App branch) and never reaches AppShell, so this only ever runs on
+  // the main window. Without this wiring a detached window hangs on
+  // "Loading subwindow…" forever.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenDetachedHost()
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   useEffect(() => {
@@ -147,10 +201,10 @@ export function AppShell() {
 
   useKeyboard({ onTogglePanels: () => setPanelsHidden((v) => !v) });
 
-  const revealRight = activeId !== null && !panelsHidden && (rightOpen || rightPinned);
+  const revealRight = panelTarget && !panelsHidden && (rightOpen || rightPinned);
 
   const handleBodyMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (activeId === null || panelsHidden || rightOpen) return;
+    if (!panelTarget || panelsHidden || rightOpen) return;
     if (window.innerWidth - event.clientX <= 2) {
       reveal(rightCloseTimer, setRightOpen);
     }
@@ -167,7 +221,7 @@ export function AppShell() {
         onMouseMove={handleBodyMouseMove}
       >
         <CenterPanel />
-        {activeId !== null && !panelsHidden && (
+        {panelTarget && !panelsHidden && (
           <RightPanel
             open={revealRight}
             pinned={rightPinned}

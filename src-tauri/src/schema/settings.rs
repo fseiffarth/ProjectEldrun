@@ -48,8 +48,68 @@ pub struct Settings {
     pub run_scripts_in_background: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_apps: Option<HashMap<String, GlobalAppEntry>>,
+    /// Minimum subwindow (split pane) width in px a divider drag may shrink a
+    /// pane to. Unset falls back to the frontend's DEFAULT_MIN_SUBWINDOW_PX.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_subwindow_width: Option<u32>,
+    /// Minimum subwindow (split pane) height in px a divider drag may shrink a
+    /// pane to. Unset falls back to the frontend's DEFAULT_MIN_SUBWINDOW_PX.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_subwindow_height: Option<u32>,
+    /// When true, the in-app text/TeX/markdown viewers debounce-save edits to
+    /// disk automatically (#47). Defaults OFF; the #43 diff-aware reload is its
+    /// counterpart for external changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autosave: Option<bool>,
+    /// Per-file-type native-viewer preferences (#48), keyed by a type id derived
+    /// from `fileUtils` (e.g. "tex", "text", "markdown"). Holds the opt-in
+    /// autocomplete toggle (#45). Optional + flat so older settings files
+    /// round-trip cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewer_prefs: Option<HashMap<String, ViewerPref>>,
+    /// User overrides for the rebindable navigation chords (Group L / #62),
+    /// keyed by action id (e.g. "cycleTabs", "closeTab"). Optional + defaulted
+    /// so existing settings.json files without it still load; unset actions
+    /// fall back to the built-in defaults in the frontend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyboard_shortcuts: Option<HashMap<String, ChordDescriptor>>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// One entry in `settings["keyboard_shortcuts"]` (Group L / #62). A serializable
+/// key chord mirroring the frontend `ChordDescriptor`. The modifier flags default
+/// to false when absent so the JSON stays compact.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChordDescriptor {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ctrl: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shift: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub alt: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub meta: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// One per-type entry in `settings["viewer_prefs"]` (#48).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ViewerPref {
+    /// Whether Ctrl+Space local autocomplete is enabled for this type (#45).
+    /// Defaults OFF (privacy: no model call unless explicitly turned on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autocomplete: Option<bool>,
+    /// Editor font size in px for this type's in-app code editor. Adjusted from
+    /// the viewer's A−/A+ controls (or Ctrl +/−/0). Unset falls back to the
+    /// frontend default (12px).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f32>,
 }
 
 impl Settings {

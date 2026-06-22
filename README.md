@@ -200,7 +200,22 @@ configuration.
   another subwindow's left/right/top/bottom edge to split that direction into a
   new pane, or onto its center to move the tab in. Splits resize with draggable
   dividers, each subwindow keeps its own tab bar, and the whole tree is persisted
-  per project.
+  per project. A subwindow's tab bar also offers a **pop-out** button that
+  detaches that group into its own borderless OS window; the detached window is
+  tracked as a project-owned window and parks/restores with its project on switch.
+  Dock it back with the ⤓ button (re-docks into the main layout; session-only, so
+  it re-docks on restart too). Closing the popped-out window instead closes its
+  tabs for good — they are not docked back and do not restore on next launch.
+- **Project boxes (meta-project grouping)**: group related projects into a *box*
+  that appears as its own pill in the project switcher. Drop a project pill onto a
+  box to add it; click the box to open a box-scoped shell rooted in a per-box
+  folder under `~/.local/share/eldrun/boxes/<name>/`; hover to list members and
+  click one to jump to it. Opening a box writes/refreshes managed
+  `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks in the box folder pointing at
+  each member's root and matching agent doc (edits outside the managed markers are
+  preserved). Box membership lives in a sibling `boxes.json`, so `projects.json`
+  is untouched. Box scopes are session-only for now — a box's tabs are not
+  restored across project switch or restart.
 - **Root control terminal**: opens in `~/eldrun/root/` with workspace-level
   context files.
 - **Project terminals**: each active project gets a PTY tab scoped to its
@@ -216,6 +231,12 @@ configuration.
   with the remote's own login. VPN-gated hosts bring up an OpenVPN tunnel first.
   Auth uses your existing SSH setup (keys / agent / `~/.ssh/config`,
   `BatchMode`); requires `sshfs`/FUSE on the local machine.
+- **Publish to GitHub**: a local (or SSH-remote) git project can be published to
+  a new GitHub repository from the project pill menu. Choose public or private;
+  Eldrun runs `gh repo create … --source=. --push` via the system `gh` CLI (over
+  `ssh` on the host where the bytes live for remote projects), then records the
+  new push target (`git_type` becomes `remote-public`/`remote-private`). Requires
+  the GitHub CLI (`gh`) installed and authenticated.
 - **Project switcher**: search, switch, and close projects; a running-task
   indicator spins on pills with live terminal output (even backgrounded
   projects); hover over a pill to see the project path, status, today's active
@@ -228,10 +249,38 @@ configuration.
   messages, or checkout). The panel can be pinned open instead of hover-revealed.
   Additional views list tracked external windows.
 - **In-app file viewers**: drag a file from the tree onto a subwindow's tab bar
-  to open it in a tab. Markdown, images (zoom/pan), PDFs, and text/code (an
-  editable editor with line numbers and Ctrl+S save) render with built-in
-  viewers; other types open in their external default app. LaTeX sources gain a
-  compile action when a TeX engine is on `PATH`.
+  to open it in a tab. The built-in viewers, by type, are:
+  - **Text / code** (`.txt`, `.json`, `.py`, `.rs`, `.ts`, `.svg`, `.bib`, and
+    many more, plus well-known extensionless files like `Dockerfile`): an
+    editable code editor with a line-number gutter, syntax highlighting,
+    Tab/Shift+Tab indent, undo/redo (`Ctrl+Z` / `Ctrl+Shift+Z`), and a save
+    icon (`Ctrl+S`). It auto-reloads when the file changes on disk (showing a
+    non-destructive Reload / Keep-mine banner if you have unsaved edits), and
+    offers opt-in local autocomplete (see below).
+  - **Markdown** (`.md`, `.markdown`, `.mdx`): rendered preview with an
+    Edit/Preview toggle; links to local files read as clickable.
+  - **LaTeX** (`.tex`): the code editor plus, when a TeX engine is on `PATH`, a
+    compile action with compiler options (output folder, extra engine flags —
+    shell-escape is always stripped). A successful compile opens the PDF in its
+    own tab (reusing/refreshing it on recompile) rather than an inline preview
+    pane, and `Ctrl`/`Cmd`+Click follows `\input{…}` / `\includegraphics{…}`
+    references (shown with a dotted underline).
+  - **Images** (`.png`, `.jpg`, `.gif`, `.webp`, …): zoom (to the cursor) / pan
+    viewer; the image is also draggable out as an OS drop source.
+  - **PDF** (`.pdf`): rendered with a themed zoom toolbar.
+
+  Office / spreadsheet formats (`.odt`, `.xlsx`, `.docx`, …) and any other type
+  open in their external default app for now. Native-viewer behaviour is
+  configured per file type under **Settings → Native Viewers**: the per-type
+  autocomplete opt-in, plus a global autosave switch. The text/LaTeX/Markdown
+  editors also carry an `A−`/`A+` text-size control (or `Ctrl` +/−, `Ctrl`+0 to
+  reset) — in Markdown it scales the preview too; the chosen size persists per
+  file type.
+- **Local autocomplete (opt-in, private)**: in the editable text/LaTeX/markdown
+  viewers, `Ctrl+Space` requests a single completion from a **local Ollama**
+  model (`Tab` accepts, `Esc` dismisses). It is OFF by default and per file
+  type; nothing is sent anywhere unless you enable it, and if Ollama isn't
+  running it fails silently — no remote calls, ever.
 - **Global app toolbar**: cross-project roles (Browser, Mail, Calendar, File
   Manager, Password Manager, Notes, Screenshot, etc.) with launch-or-raise and
   icon resolution.
@@ -260,6 +309,8 @@ configuration.
 - Terminal/tab layout is persisted per project; shell, file-viewer, and
   resumable Claude/Codex agent tabs are restored on relaunch, but other agent
   tabs (Gemini, Vibe) and live PTY scrollback are not.
+- Detached (popped-out) subwindows and project-box scopes are session-only: the
+  former re-docks and the latter's tabs are dropped on project switch / restart.
 - Non-KDE Wayland compositors fall back to the null backend.
 
 ## Project Storage
@@ -274,6 +325,9 @@ Global Eldrun state lives in `~/.local/share/eldrun/`:
 - `settings.json`: default agent command, theme, workspace-management setting,
   global app registry, and other user preferences.
 - `default_apps.json`: global file-extension to application command map.
+- `boxes.json`: project-box definitions (id, name, ordered `member_ids`,
+  resolved `folder`, relations); kept separate so `projects.json` stays
+  byte-compatible.
 - `time_log.json` and `active_session.json`: session time tracking.
 - `vibe_local/<model-alias>/config.toml`: isolated Vibe configuration for
   each local Ollama model tab.

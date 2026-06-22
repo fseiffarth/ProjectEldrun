@@ -67,6 +67,24 @@ pub trait WorkspaceBackend: Send + Sync {
     fn make_sticky(&self, eldrun_pid: u32) -> Result<(), String>;
     /// Called when the app exits — restore original desktop configuration.
     fn cleanup(&self) -> Result<(), String>;
+
+    /// Mark an Eldrun-owned window id as PARKABLE (#42). Detached subwindows
+    /// share Eldrun's `eldrun` WM_CLASS, which is normally never parked so the
+    /// MAIN window is never hidden. A detached subwindow is a *different* window
+    /// that DOES want to follow the project-switch hide/show path, so it is
+    /// explicitly opted in by id here.
+    ///
+    /// STRUCTURAL SAFETY: implementations MUST refuse the main window id so the
+    /// "Eldrun's own window is never parked" invariant holds even if a caller is
+    /// buggy. The default no-op (null/Wayland/Windows) is safe — those backends
+    /// don't desktop-park at all.
+    fn set_parkable(&self, _window_id: u64) {}
+    /// Remove a window id from the parkable override (on dock-back / close).
+    fn unset_parkable(&self, _window_id: u64) {}
+    /// Record the MAIN Eldrun window's id so `set_parkable` can structurally
+    /// refuse to ever add it to the override. Called once at startup when the
+    /// main window's X11 id is resolved. Default no-op.
+    fn set_main_window_id(&self, _window_id: u64) {}
 }
 
 // ── Factory ────────────────────────────────────────────────────────────────

@@ -172,14 +172,31 @@ pub fn run() {
     let pty_registry: RegistryState = Arc::new(Mutex::new(PtyRegistry::default()));
     let win_registry: WindowRegistryState = Arc::new(Mutex::new(WindowRegistry::default()));
     let workspace: WorkspaceStateArc = Arc::new(Mutex::new(WorkspaceState::new()));
+    let fs_watch = commands::fs_watch::new_state();
 
     tauri::Builder::default()
         .manage(pty_registry)
         .manage(win_registry)
         .manage(workspace)
+        .manage(fs_watch)
         .setup(|_app| {
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
+            // Record the MAIN window's X11 id so the workspace backend can
+            // STRUCTURALLY refuse to ever park it (#42 detached-subwindow
+            // parkable override). Resolved off-thread so a slow compositor never
+            // blocks startup; the main window has a stable title from
+            // tauri.conf.json so `find_window_for_title` finds it.
+            #[cfg(target_os = "linux")]
+            {
+                use tauri::Manager;
+                let workspace = _app.state::<WorkspaceStateArc>().inner().clone();
+                std::thread::spawn(move || {
+                    if let Some(id) = platform::x11::find_window_for_title("Eldrun", 30) {
+                        workspace.lock().unwrap().backend.set_main_window_id(id);
+                    }
+                });
+            }
             // Install the global Claude SessionStart hook so Eldrun can follow a
             // tab's live session id across `/clear` (see services::agent_session).
             if let Err(e) = services::agent_session::install_session_start_hook() {
@@ -209,11 +226,22 @@ pub fn run() {
             commands::projects::preview_project_scaffold,
             commands::projects::import_project,
             commands::projects::get_time_today,
+            // Project boxes (meta-project grouping)
+            commands::boxes::get_boxes,
+            commands::boxes::save_boxes,
+            commands::boxes::create_box,
+            commands::boxes::rename_box,
+            commands::boxes::delete_box,
+            commands::boxes::set_box_members,
+            commands::boxes::ensure_box_folder,
+            commands::boxes::refresh_box_agent_docs,
+            commands::boxes::set_box_relations,
             // SSH / remote projects
             commands::ssh::ssh_connect,
             commands::ssh::ssh_default_dir,
             commands::ssh::ssh_list_dir,
             commands::ssh::ensure_project_mounted,
+            commands::ssh::ssh_tooling_status,
             // OpenVPN tunnels for VPN-gated remote projects
             commands::openvpn::openvpn_connect,
             commands::openvpn::openvpn_disconnect,
@@ -239,9 +267,15 @@ pub fn run() {
             commands::projects::read_file_text,
             commands::projects::write_file_text,
             commands::projects::read_file_bytes,
+            commands::projects::file_mtime,
+            commands::fs_watch::watch_dir,
+            commands::fs_watch::unwatch_dir,
             // LaTeX view / compile (gated on a TeX engine being on PATH)
             commands::tex::tex_capability,
             commands::tex::compile_tex,
+            commands::tex::synctex_edit,
+            commands::tex::synctex_view,
+            commands::tex::resolve_tex_root,
             // Terminal
             commands::terminal::pty_spawn,
             commands::terminal::pty_write,
@@ -258,6 +292,7 @@ pub fn run() {
             commands::apps::restore_open_apps,
             commands::apps::run_script_detached,
             commands::apps::embed_capability,
+            commands::apps::list_installed_apps,
             // Workspace / network
             commands::workspace::workspace_info,
             commands::workspace::workspace_switch,
@@ -265,6 +300,9 @@ pub fn run() {
             commands::workspace::hide_window,
             commands::workspace::get_opened_windows,
             commands::workspace::switch_project_windows, // deprecated; use switch_project_runtime
+            // Detached subwindows (#42)
+            commands::subwindow::detach_subwindow,
+            commands::subwindow::attach_subwindow,
             commands::workspace::workspace_name,
             commands::workspace::network_conn_type,
             // Project-runtime switching (replaces switch_project_windows)
@@ -287,6 +325,8 @@ pub fn run() {
             commands::git::git_reword_head,
             // Crash reporting
             commands::crash::report_frontend_error,
+            // Debug diagnostics
+            commands::debug::debug_app_resource_usage,
             // Downloads
             commands::downloads::configure_browser_downloads,
             // Ollama local models
@@ -301,6 +341,8 @@ pub fn run() {
             commands::ollama::pull_ollama_model,
             commands::ollama::delete_ollama_model,
             commands::ollama::list_installable_models,
+            // Local code/text autocomplete (opt-in, local-only)
+            commands::ollama::complete_text,
         ])
         .plugin(tauri_plugin_dialog::init())
         .build(tauri::generate_context!())

@@ -1,0 +1,599 @@
+% Eldrun — Detailed README (LaTeX edition)
+% Compile with: pdflatex README.tex  (run twice for the table of contents)
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{listings}
+\usepackage[hidelinks,colorlinks=true,linkcolor=eldrunblue,urlcolor=eldrunblue]{hyperref}
+
+% ---- Colours ---------------------------------------------------------------
+\definecolor{eldrunblue}{HTML}{2D6CDF}
+\definecolor{eldrungray}{HTML}{4A4A4A}
+\definecolor{codebg}{HTML}{F4F5F7}
+\definecolor{donegreen}{HTML}{1B7F3B}
+\definecolor{openorange}{HTML}{B5651D}
+
+% ---- Listings (code blocks) ------------------------------------------------
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  framesep=6pt,
+  rulecolor=\color{codebg},
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  xleftmargin=4pt,
+  xrightmargin=4pt,
+  aboveskip=8pt,
+  belowskip=8pt,
+}
+
+% ---- Headings --------------------------------------------------------------
+\titleformat{\section}{\Large\bfseries\color{eldrunblue}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries\color{eldrungray}}{\thesubsection}{0.6em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\small\color{eldrungray}Eldrun}
+\lhead{\small\color{eldrungray}Detailed README}
+\rfoot{\small\thepage}
+
+% ---- Helper macros ---------------------------------------------------------
+\newcommand{\done}{\textcolor{donegreen}{\textbf{Done}}}
+\newcommand{\open}{\textcolor{openorange}{\textbf{Open}}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\setlist{itemsep=2pt,topsep=3pt}
+
+\title{\vspace{-1.2cm}\textbf{\color{eldrunblue}Eldrun}\\[0.3em]
+\large A project-centric desktop workspace for AI-assisted development}
+\author{Detailed technical README}
+\date{Version 0.1.0 \quad\textbullet\quad Tauri~2 + React + TypeScript}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{fancy}
+
+\begin{abstract}
+\noindent
+\textbf{The problem:} when you develop several projects at once, every project's
+windows --- browsers, terminals, file managers, docs, agents --- pile up on one
+desktop. Switching from project~A to project~B means hunting through dozens of
+windows for the handful that belong to where you are going, and losing the rest
+in the noise.
+
+\smallskip
+\noindent
+\textbf{Eldrun's model:} you do not open applications, you open \emph{projects}.
+Selecting a project swaps the whole desktop to that project's context --- its
+windows come forward, the previous project's windows are parked out of the way,
+the downloads folder and default-app mappings re-route, and time tracking
+switches. One project visible at a time, everything else cleanly out of sight.
+\end{abstract}
+
+\tableofcontents
+\vspace{0.6cm}
+
+% ===========================================================================
+\section{Concept and Vision}
+% ===========================================================================
+
+Inside each project, Eldrun is an operational cockpit: a root control terminal
+for managing the workspace, one or more agent terminals scoped to the project
+(Claude, Codex, Gemini, or a local Ollama model), a persistent project bar, a
+hover-revealed file panel, and cross-project app controls that stay available as
+you move between projects.
+
+Eldrun is a \emph{project-centric desktop layer}, not just an app that launches
+or embeds other apps. The user-facing model is:
+
+\begin{quote}
+\itshape Select a project $\rightarrow$ Eldrun restores that project's working
+context.
+\end{quote}
+
+The core product is the window/workspace layer: projects own their windows and
+desktop context, and switching projects swaps that context as one unit. The
+agent terminals, file panel, and app launcher ride on top of that layer. That
+context should eventually include terminals, files, apps, windows, Git state,
+notes, AI/task metadata, layout, and workflow state.
+
+The current implementation targets Linux (X11 and KDE Wayland) because that
+provides the fastest path to reliable window control. The longer-term direction
+is a stable Eldrun core with desktop/compositor backends for Cinnamon~X11,
+KDE/KWin, Hyprland, GNOME Shell, i3, Sway, and other Wayland environments.
+
+\subsection{How Eldrun compares}
+
+\begin{description}[leftmargin=1.2em,style=nextline]
+  \item[Agent orchestrators] (Vibe Kanban, Conductor, Claude Squad, the Claude
+  Code desktop app) manage agent \emph{processes inside a repo} --- task
+  delegation, git worktrees, diff review, merge flow. They have no notion of
+  your desktop: they will not move your windows, re-route downloads, or switch
+  default apps when you change focus. Eldrun is \emph{complementary} --- you can
+  run one inside an Eldrun project terminal.
+  \item[Manual approaches] cover only one slice each: KDE Activities and one
+  virtual desktop per project handle windows but have no project model and no
+  restore; tmux and scripts like \code{workon} restore terminal layouts but
+  ignore everything outside the terminal.
+\end{description}
+
+Eldrun occupies the gap none of them fill: project ownership of \emph{windows
+and desktop context}, with agent terminals built in.
+
+\subsection{Layout sketch}
+
+\begin{lstlisting}
++------------------------------------------------------------------+
+| status/network    project switcher pills    app controls         |
++------------------------------------------------------------------+
+| global cross-project app toolbar (hover to reveal)               |
++------------------------------------------------------------------+
+|                                                                  |
+| tiling subwindows: each owns its own tab bar (terminal / agent / | right panel
+| file viewer), split L/R/T/B by dragging tabs onto pane edges     | (hover or
+|                                                                  |  pin open)
++------------------------------------------------------------------+
+\end{lstlisting}
+
+% ===========================================================================
+\section{Technology Stack}
+% ===========================================================================
+
+\begin{longtable}{@{}p{4.2cm}p{10.5cm}@{}}
+\toprule
+\textbf{Layer} & \textbf{Components} \\
+\midrule
+\endhead
+Frontend        & React~18, TypeScript, Vite, Tailwind CSS, Zustand \\
+Terminal UI     & xterm.js (\code{@xterm/xterm}, \code{@xterm/addon-fit}, \code{@xterm/addon-web-links}) \\
+Backend         & Rust, Tauri~v2 \\
+PTY             & \code{portable-pty} crate \\
+Workspace       & \code{zbus} (DBus) and \code{xcb} (X11) --- Linux only \\
+\bottomrule
+\end{longtable}
+
+\subsection{Requirements}
+
+\begin{itemize}
+  \item Linux desktop (X11 or KDE Wayland)
+  \item Rust toolchain (\code{rustup}) and Node 18+
+  \item \code{sshfs} + FUSE (optional, only for remote/SSH projects)
+\end{itemize}
+
+\begin{lstlisting}[language=bash]
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Tauri system dependencies (Debian / Ubuntu)
+sudo apt install libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+    libayatana-appindicator3-dev librsvg2-dev
+
+# Install JS deps
+npm install
+\end{lstlisting}
+
+\subsection{Run}
+
+\begin{lstlisting}[language=bash]
+./start-eldrun-tauri.sh          # packaged app
+npm run tauri dev                # dev build with hot-reload
+\end{lstlisting}
+
+The desktop launchers are \code{Eldrun.desktop} (packaged) and
+\code{EldrunHotReload.desktop} (hot reload). They already point at this
+checkout's scripts:
+
+\begin{lstlisting}[language=bash]
+cp Eldrun*.desktop ~/.local/share/applications/
+update-desktop-database ~/.local/share/applications/
+\end{lstlisting}
+
+% ===========================================================================
+\section{Main Features}
+% ===========================================================================
+
+\subsection{Project desktop (the differentiator)}
+
+\begin{description}[leftmargin=1.2em,style=nextline]
+  \item[Workspace management] X11 two-desktop parking model and KDE Wayland
+  per-project virtual desktop model; global app windows stay visible across all
+  project switches.
+  \item[External window tracking] file opens use \code{xdg-open}; launched
+  windows are tracked by PID and shown in the right panel instead of embedded in
+  the UI.
+  \item[Downloads routing] \code{\textasciitilde/eldrun/downloads} symlink always
+  points to the active project's \code{tmp/downloads/}; Firefox and Chromium
+  preferences are updated automatically.
+  \item[Default app mapping] file extensions use per-project overrides, global
+  defaults, system MIME defaults, or a manual ``Open With'' picker.
+  \item[Time tracking] Eldrun records active project sessions and shows today's
+  elapsed time on project pills.
+\end{description}
+
+\subsection{Project cockpit}
+
+\begin{description}[leftmargin=1.2em,style=nextline]
+  \item[Agent-terminal orchestration] create Claude, Codex, Gemini, or plain
+  shell tabs from the tab bar; create local Ollama-backed Vibe tabs from
+  installed models; rename, close, and reorder them by drag and drop. Tab layout
+  is persisted per project.
+  \item[Tiling subwindows] the center panel is a tiling layout --- drag a tab
+  onto another subwindow's left/right/top/bottom edge to split that direction
+  into a new pane, or onto its center to move the tab in. Splits resize with
+  draggable dividers, each subwindow keeps its own tab bar, and the whole tree
+  is persisted per project.
+  \item[Root control terminal] opens in \code{\textasciitilde/eldrun/root/} with
+  workspace-level context files.
+  \item[Project terminals] each active project gets a PTY tab scoped to its
+  directory, with best-effort project-local XDG sandbox paths.
+  \item[Project creation and import] the \code{+} button creates a new
+  git-backed project or imports an existing directory (keep in place, copy, or
+  move).
+  \item[Project switcher] search, switch, and close projects; a running-task
+  indicator spins on pills with live terminal output (even backgrounded
+  projects); hover over a pill to see the project path, status, today's active
+  time, and live CPU\%.
+  \item[Right file panel] browse, open, create, rename, delete, and reveal
+  project files, with a breadcrumb trail and per-file git status markers
+  (modified, untracked, staged, committed-but-unpushed, ignored). A ``Git'' view
+  shows the current branch, clickable branch pills for checkout, and a commit
+  list whose entries open an editable commit-message window (amend HEAD,
+  agent-generated messages, or checkout). The panel can be pinned open.
+  \item[Global app toolbar] cross-project roles (Browser, Mail, Calendar, File
+  Manager, Password Manager, Notes, Screenshot, \dots) with launch-or-raise and
+  icon resolution.
+  \item[Ollama model management] the Settings Ollama panel shows installed
+  models, running CPU/GPU state, parameter and quantization details, plus
+  catalog install, update, unload, and delete controls.
+  \item[Hover-revealed panels] the global app bar and right file panel appear on
+  pointer hover and disappear when the pointer leaves, keeping the center
+  terminal unobstructed; the right panel can also be pinned permanently open.
+\end{description}
+
+\subsection{Remote (SSH) projects}
+
+Optionally point a project at a remote host. Enter an SSH address
+(\code{user@host[:port]}), connect, and browse the remote filesystem in-app to
+pick the project root. Eldrun \code{sshfs}-mounts it locally so the file tree,
+terminal cwd, and git work unchanged. Terminal and agent tabs run \textbf{on the
+remote host} over \code{ssh -tt} (multiplexed over a ControlMaster socket), with
+the agent CLI auto-detected/bootstrapped on the remote and authenticated with
+the remote's own login. VPN-gated hosts bring up an OpenVPN tunnel first. Auth
+uses your existing SSH setup (keys / agent / \code{\textasciitilde/.ssh/config},
+\code{BatchMode}); requires \code{sshfs}/FUSE on the local machine.
+
+\subsection{In-app file viewers}
+
+Drag a file from the tree onto a subwindow's tab bar to open it in a tab. The
+built-in viewers, by type:
+
+\begin{longtable}{@{}p{2.8cm}p{11.6cm}@{}}
+\toprule
+\textbf{Type} & \textbf{Viewer} \\
+\midrule
+\endhead
+Text / code &
+  (\code{.txt}, \code{.json}, \code{.py}, \code{.rs}, \code{.ts}, \code{.svg},
+  \code{.bib}, many more, plus extensionless files like \code{Dockerfile}): an
+  editable code editor with a line-number gutter, syntax highlighting,
+  Tab/Shift+Tab indent, undo/redo (\code{Ctrl+Z} / \code{Ctrl+Shift+Z}), and a
+  save icon (\code{Ctrl+S}). Auto-reloads on disk change (non-destructive
+  Reload / Keep-mine banner if you have unsaved edits); offers opt-in local
+  autocomplete. \\
+\addlinespace
+Markdown &
+  (\code{.md}, \code{.markdown}, \code{.mdx}): rendered preview with an
+  Edit/Preview toggle; links to local files read as clickable. \\
+\addlinespace
+LaTeX &
+  (\code{.tex}): the code editor plus, when a TeX engine is on \code{PATH}, a
+  compile action with compiler options (output folder, extra engine flags ---
+  shell-escape is always stripped). A successful compile opens the PDF in its
+  own tab (reused/refreshed on recompile); \code{Ctrl}/\code{Cmd}+Click follows
+  \code{\textbackslash input\{\dots\}} /
+  \code{\textbackslash includegraphics\{\dots\}} references. \\
+\addlinespace
+Images &
+  (\code{.png}, \code{.jpg}, \code{.gif}, \code{.webp}, \dots): zoom (to the
+  cursor) / pan viewer; the image is also draggable out as an OS drop source. \\
+\addlinespace
+PDF &
+  (\code{.pdf}): rendered with a themed zoom toolbar. \\
+\bottomrule
+\end{longtable}
+
+Office / spreadsheet formats (\code{.odt}, \code{.xlsx}, \code{.docx}, \dots)
+and any other type open in their external default app. Native-viewer behaviour
+is configured per file type under \textbf{Settings $\rightarrow$ Native
+Viewers}. The text/LaTeX/Markdown editors carry an \code{A-}/\code{A+}
+text-size control (or \code{Ctrl} +/-, \code{Ctrl+0} to reset), persisted per
+file type.
+
+\subsection{Local autocomplete (opt-in, private)}
+
+In the editable text/LaTeX/markdown viewers, \code{Ctrl+Space} requests a single
+completion from a \textbf{local Ollama} model (\code{Tab} accepts, \code{Esc}
+dismisses). It is OFF by default and per file type; nothing is sent anywhere
+unless you enable it, and if Ollama is not running it fails silently --- no
+remote calls, ever.
+
+\subsection{Platform and packaging}
+
+\begin{description}[leftmargin=1.2em,style=nextline]
+  \item[Network indicator] probes connectivity and shows online/offline plus
+  wired or wireless state.
+  \item[Keyboard shortcuts] Eldrun opens fullscreen by default; \code{F11}
+  toggles fullscreen; \code{Super} toggles all panels.
+  \item[Crash logging] Rust panic hook appends to
+  \code{\textasciitilde/.local/share/eldrun/crash.log}.
+  \item[Packaging] Debian \code{.deb} and AppImage targets.
+\end{description}
+
+% ===========================================================================
+\section{Agent Support}
+% ===========================================================================
+
+Eldrun launches agents in xterm.js PTY tabs. The active agent command
+(\code{claude}, \code{codex}, \code{gemini}, or \code{vibe}) is set in Settings.
+If the configured command is not in \code{\$PATH}, Eldrun falls back to the
+system shell.
+
+\begin{longtable}{@{}p{4.6cm}p{1.6cm}p{1.4cm}p{6.2cm}@{}}
+\toprule
+\textbf{Agent} & \textbf{Integ.} & \textbf{Tested} & \textbf{Notes} \\
+\midrule
+\endhead
+Claude (\code{claude})       & Yes & Yes     & Default agent command. Full tab lifecycle, layout persistence, project-scoped sandbox env. \\
+Codex (\code{codex})         & Yes & Yes     & Selectable as default agent. Same tab lifecycle as Claude. \\
+Gemini (\code{gemini})       & Yes & Yes     & Selectable as default agent. Same lifecycle. \\
+Vibe (\code{vibe})           & Yes & No      & Selectable; same tab lifecycle. \\
+Ollama via Vibe              & Yes & Partial & Installed Ollama models appear under Local Agents; each local tab gets an isolated per-model \code{VIBE\_HOME}. \\
+Shell                        & Yes & Yes     & Plain interactive shell tab in the project directory. \\
+Mistral CLI                  & No  & No      & Not integrated; usable in a plain shell tab. \\
+Qwen CLI                     & No  & No      & Not integrated. \\
+Grok CLI                     & No  & No      & Not integrated. \\
+\bottomrule
+\end{longtable}
+
+Project-bound terminals receive a best-effort project sandbox: the child process
+runs in the project directory with project-local XDG config, cache, data, state,
+and temp locations under \code{<project>/.eldrun/sandbox/}. The root
+orchestration terminal keeps the normal workspace environment.
+
+\subsection{Session resume}
+
+Claude and Codex tabs that carry a session id are persisted across restarts and
+respawned with their prior conversation. Eldrun installs a \code{SessionStart}
+hook (into \code{\textasciitilde/.claude/settings.json} and
+\code{\textasciitilde/.codex/config.toml}) that records each tab's live session
+id keyed by an \code{ELDRUN\_TAB\_UID} env var, so resume follows the live
+session even across a \code{/clear}.
+
+\begin{itemize}
+  \item For Claude the key is its launch id (\code{--session-id}); the hook
+  records the live \code{session\_id} and \code{resolve\_claude\_session} emits
+  \code{claude --resume <live-id>}.
+  \item Codex mints its own id, so the key is a separate per-tab uuid and the
+  backend injects \code{codex resume <live-id>}.
+  \item Codex caveat: user-level Codex hooks need a one-time trust (\code{/hooks}
+  in Codex) before they fire.
+  \item Gemini and Vibe tabs are still dropped on restart.
+\end{itemize}
+
+% ===========================================================================
+\section{Platform Support}
+% ===========================================================================
+
+\begin{longtable}{@{}p{4.6cm}p{3.4cm}p{6.4cm}@{}}
+\toprule
+\textbf{Platform} & \textbf{Status} & \textbf{Notes} \\
+\midrule
+\endhead
+Linux --- X11          & Yes                 & Two-desktop workspace parking model (EWMH/xcb). Primary development target. \\
+Linux --- KDE Wayland  & Yes                 & Per-project virtual desktop via KWin DBus scripting. KDE~5 and KDE~6. \\
+Linux --- other Wayland& Partial             & Null backend (no workspace switching, no sticky windows). Terminal and file management work. \\
+Windows                & Experimental shell  & Null workspace backend. No native window/default-app/download integrations. \\
+macOS                  & Experimental shell  & Null workspace backend. No native window/default-app/download integrations. \\
+\bottomrule
+\end{longtable}
+
+% ===========================================================================
+\section{Project Storage}
+% ===========================================================================
+
+Managed projects live under
+\code{\textasciitilde/eldrun/projects/<sanitized-name>/}. Imported projects can
+also be registered in place. Remote (SSH) projects are sshfs-mounted under
+\code{\textasciitilde/.local/share/eldrun/mounts/<project-id>/}.
+
+\noindent Global Eldrun state lives in
+\code{\textasciitilde/.local/share/eldrun/}:
+
+\begin{longtable}{@{}p{4.8cm}p{9.8cm}@{}}
+\toprule
+\textbf{File} & \textbf{Contents} \\
+\midrule
+\endhead
+\code{projects.json}        & Lightweight index: project id, name, status, ordering, path to each project's local metadata. \\
+\code{settings.json}        & Default agent command, theme, workspace-management setting, global app registry, preferences. \\
+\code{default\_apps.json}   & Global file-extension to application command map. \\
+\code{time\_log.json}, \code{active\_session.json} & Session time tracking. \\
+\code{boxes.json}           & Project boxes / meta-project grouping (members, folder, relations). \\
+\code{vibe\_local/<alias>/config.toml} & Isolated Vibe configuration per local Ollama model tab. \\
+\bottomrule
+\end{longtable}
+
+Project-local state lives in each project's \code{project.json}, alongside
+scaffolded files such as \code{AGENTS.md}, \code{CLAUDE.md}, \code{GEMINI.md},
+\code{.claude/settings.json}, \code{.gitignore}, \code{TODO.md},
+\code{ROADMAP.md}, \code{STATUS.md}, and \code{README.md}. The per-project tab
+layout (\code{tab\_layout}/\code{tab\_groups}) is stored here: shell/files tabs
+always restore on relaunch; resumable Claude/Codex agent tabs (carrying a
+\code{sessionId}) are restored; other agent tabs are dropped.
+
+% ===========================================================================
+\section{Source Map}
+% ===========================================================================
+
+\subsection{Frontend (\code{src/})}
+
+\begin{longtable}{@{}p{6.2cm}p{8.4cm}@{}}
+\toprule
+\textbf{File} & \textbf{Purpose} \\
+\midrule
+\endhead
+\code{App.tsx}                       & Root component, theme injection, global key handlers. \\
+\code{main.tsx}                      & React entry point. \\
+\code{layout/AppShell.tsx}           & Top-level layout: header, center, bottom, right panel wiring. \\
+\code{layout/HeaderBar.tsx}          & Window drag handle, close/minimize/maximize buttons. \\
+\code{layout/GlobalAppBar.tsx}       & Global toolbar (app launcher, shortcuts). \\
+\code{layout/CenterPanel.tsx}        & Terminal stack and tab bar. \\
+\code{layout/ProjectSwitcher.tsx}    & Project pill switcher. \\
+\code{layout/RightPanel.tsx}         & File tree overlay panel. \\
+\code{projects/ProjectPill.tsx}      & Individual project tab pill. \\
+\code{terminal/TerminalView.tsx}     & xterm.js terminal wrapper. \\
+\code{stores/projects.ts}            & Zustand store: project list, active project, CRUD. \\
+\code{stores/tabs.ts}                & Zustand store for center-panel tabs. \\
+\code{stores/settings.ts}            & Zustand store for app settings. \\
+\code{stores/windows.ts}             & Zustand store for embedded app windows. \\
+\code{stores/boxes.ts}               & Zustand store for project boxes. \\
+\code{types/index.ts}                & Shared TypeScript types. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Backend (\code{src-tauri/src/})}
+
+\begin{longtable}{@{}p{6.2cm}p{8.4cm}@{}}
+\toprule
+\textbf{File} & \textbf{Purpose} \\
+\midrule
+\endhead
+\code{main.rs}                       & Tauri app entry point, plugin registration. \\
+\code{lib.rs}                        & Command registration, app setup. \\
+\code{storage.rs}                    & JSON persistence helpers. \\
+\code{schema/}                       & Serde structs mirroring JSON state files. \\
+\code{schema/boxes.rs}               & \code{ProjectBox}/\code{BoxRelation} model. \\
+\code{platform/x11.rs}               & X11 workspace / window management via xlib. \\
+\code{platform/wayland\_kde.rs}      & KDE Wayland backend via KWin scripting + DBus. \\
+\code{platform/null.rs}              & No-op platform fallback. \\
+\code{terminal/}                     & PTY management and terminal I/O commands. \\
+\code{commands/}                     & Tauri command handlers exposed to the frontend. \\
+\code{commands/ssh.rs}               & SSH commands for remote projects. \\
+\code{commands/boxes.rs}             & Box CRUD commands. \\
+\code{services/ssh\_mount.rs}        & sshfs mount lifecycle for remote projects. \\
+\code{services/ssh\_exec.rs}         & Spawn-rewrite to run tabs on the remote over \code{ssh -tt}. \\
+\code{services/openvpn.rs}           & OpenVPN tunnel lifecycle for VPN-gated hosts. \\
+\code{services/agent\_session.rs}    & SessionStart hook install + live-id store. \\
+\code{services/project\_runtime.rs}  & Project switching coordination. \\
+\bottomrule
+\end{longtable}
+
+% ===========================================================================
+\section{Development Workflow}
+% ===========================================================================
+
+\begin{enumerate}
+  \item Edit files under \code{src/} (frontend) or \code{src-tauri/src/}
+  (backend).
+  \item Type-check frontend: \code{npx tsc --noEmit}
+  \item Run Rust tests: \code{cargo test --manifest-path src-tauri/Cargo.toml}
+  \item Every push should produce a fresh packaged artifact from
+  \code{.github/workflows/ci-cd.yml}; use \code{npm run package} locally to
+  install the same release build. GitHub Releases are only published for
+  \code{v0.<minor>.0} tags.
+\end{enumerate}
+
+\noindent\textbf{Hot-reload note.} Frontend (\code{src/}) edits hot-reload in a
+running instance --- no restart needed. Only backend (\code{src-tauri/}) changes
+require a rebuild/restart. Do not open a second Eldrun instance: it can corrupt
+workspace state.
+
+% ===========================================================================
+\section{Roadmap and Open Work}
+% ===========================================================================
+
+Work items are tracked in \code{docs/open\_ideas.md} with globally stable
+numbers (1--65) collected into lettered groups. Status is tracked on three axes:
+\done{} (code-complete / compiles), \textbf{Automated} (a vitest or
+\code{cargo test} exercises it), and \textbf{Manual} (runtime QA in a live
+Eldrun). A feature is fully tested only when both test boxes are ticked ---
+currently no manual box is ticked yet.
+
+\begin{longtable}{@{}p{1.6cm}p{7.2cm}p{5.4cm}@{}}
+\toprule
+\textbf{Group} & \textbf{Theme} & \textbf{State} \\
+\midrule
+\endhead
+A  & Project boxes / meta-project grouping (\#13, \#41) & \done{} (Phase 1 + Phase 2 groundwork); merged multi-root tree \& relation surfacing deferred \\
+C  & Workspace switching / platform stability (\#15--\#19) & \open{} --- X11 parking races, z-order, KDE i3-mode, cross-platform QA \\
+E  & Git worktree support (\#23) & \open{} --- net-new \\
+F  & Session restore (\#24, \#39) & Claude \& Codex per-tab resume \done{}; Gemini/Vibe \open{} \\
+G  & Remote / SSH \& containerized projects (\#28, \#38) & SSH \done{} (runtime QA + 28c hardening pending); Docker \open{} \\
+H  & Cross-platform Windows \& macOS (\#30, \#31) & \open{} --- builds compile; runtime QA + native window tracking pending \\
+I  & Backend runtime follow-ups (\#32) & \open{} --- PTY resurrection, transcript storage, durable window metadata \\
+J  & Web \& mail surfaces (in-app mail/browser, routing) & \open{} \\
+\bottomrule
+\end{longtable}
+
+\subsection{Notable open items}
+
+\begin{description}[leftmargin=1.2em,style=nextline]
+  \item[Project box containers (\#41)] open a box as a single \emph{merged}
+  workspace spanning its member projects: a multi-root right-panel file tree, a
+  \code{\textasciitilde/eldrun/boxes/<name>/} box folder as the cwd for box
+  agents, agent tabs seeded with each member's \code{CLAUDE.md}/\code{AGENTS.md}
+  hints, and directed inter-project relation edges (``a change in A may
+  influence B'') tied into git-status markers. Schema groundwork is in place;
+  Phases 3--4 deferred.
+  \item[Docker/Podman projects (\#38)] run a project's terminal/agent tabs via
+  \code{docker exec} into a container with the project directory bind-mounted;
+  mirrors the SSH two-service split (\code{docker\_runtime.rs} +
+  \code{docker\_exec.rs}). Phase~1 local, Phase~2 remote-over-SSH.
+  \item[SSH hardening (\#28c)] outstanding correctness/security items: remote
+  command injection in the browse commands, remote-agent resume ordering bug,
+  serializing per-id mounts, env-key validation, VPN activation ordering,
+  password-auth half-state, and stale-handle recovery.
+  \item[X11 robustness (\#15--\#17)] reliably park opened windows on the hidden
+  desktop on switch, harden the two-desktop model against races, and preserve
+  per-window z-order across switches.
+\end{description}
+
+% ===========================================================================
+\section{Current Limits}
+% ===========================================================================
+
+\begin{itemize}
+  \item Live X11 window embedding (frameless reparenting of an external app into
+  a tab) is not yet implemented; files render in built-in viewers where
+  available, otherwise open via \code{xdg-open} and are tracked as external
+  windows.
+  \item KDE Wayland workspace management needs live-session QA.
+  \item Tab layout is persisted per project; shell, file-viewer, and resumable
+  Claude/Codex agent tabs are restored on relaunch, but other agent tabs
+  (Gemini, Vibe) and live PTY scrollback are not.
+  \item Non-KDE Wayland compositors fall back to the null backend.
+\end{itemize}
+
+\vfill
+\begin{center}
+\small\color{eldrungray}
+See \code{docs/VISION.md} for the full strategy and platform rationale, and
+\code{DOCUMENTATION.md} for detailed architecture, data schemas, and behavior
+notes.
+\end{center}
+
+\end{document}

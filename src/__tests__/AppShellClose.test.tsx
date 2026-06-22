@@ -22,6 +22,9 @@ vi.mock("@tauri-apps/api/window", () => ({
       shared.handler = h;
       return () => {};
     }),
+    // AppShell installs a WebKitGTK onResized→DOM-resize bridge; the mock must
+    // provide it (returns an unlisten) or the effect throws at mount.
+    onResized: vi.fn().mockResolvedValue(() => {}),
   }),
 }));
 
@@ -48,6 +51,14 @@ vi.mock("../stores/settings", () => ({
   useSettingsStore: vi.fn((sel: (s: object) => unknown) =>
     sel({ load: vi.fn() }),
   ),
+}));
+// AppShell loads boxes once projects are loaded; provide a no-op so the effect
+// doesn't reach into the (mocked) projects store's setState.
+vi.mock("../stores/boxes", () => ({
+  useBoxesStore: vi.fn((sel: (s: object) => unknown) =>
+    sel({ load: vi.fn().mockResolvedValue(undefined) }),
+  ),
+  BOX_SCOPE_PREFIX: "box:",
 }));
 vi.mock("../stores/timer", () => ({
   useTimerStore: vi.fn((sel: (s: object) => unknown) =>

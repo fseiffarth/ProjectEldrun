@@ -1,16 +1,74 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  allGroups,
+  findGroup,
+  neighborGroup,
+  useTabsStore,
+  type NavDirection,
+} from "../stores/tabs";
+import { useProjectsStore } from "../stores/projects";
+import { useSettingsStore } from "../stores/settings";
+import {
+  chordMatches,
+  resolveChord,
+  type ShortcutAction,
+  type ShortcutMap,
+} from "../lib/shortcuts";
 
 interface KeyboardOptions {
   onTogglePanels: () => void;
 }
 
+/** True when keystrokes belong to a text field (input/textarea/contenteditable)
+ *  — we must not steal those for navigation chords. */
+function isEditableTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  const tag = el.tagName;
+  return (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    el.isContentEditable === true
+  );
+}
+
+/** Focus actions → the direction they move the focused subwindow. */
+const FOCUS_DIR: Record<string, NavDirection> = {
+  focusLeft: "left",
+  focusRight: "right",
+  focusUp: "up",
+  focusDown: "down",
+};
+
+/**
+ * #62: fast keyboard navigation across projects / subwindows / tabs, plus an
+ * app-internal fullscreen toggle and keyboard close. Chords are deliberately
+ * unambiguous (Shift+Ctrl, Shift+Arrow) so terminal (xterm) input is never
+ * shadowed; we only `preventDefault` when we actually act, and never while a
+ * text field (e.g. an inline tab rename) is focused.
+ *
+ * The eight navigation chords are user-rebindable (see `src/lib/shortcuts.ts`
+ * and the "Keyboard Shortcuts" settings panel); the defaults below are applied
+ * when `settings.keyboard_shortcuts` has no override for an action. F11 (OS
+ * fullscreen), Super (panels) and Escape (exit fullscreen) are fixed.
+ *
+ * Default bindings:
+ *   - Ctrl+Enter           → toggle fullscreen for the focused subwindow
+ *   - Escape               → exit fullscreen (when active) [fixed]
+ *   - Shift+Ctrl+Tab       → cycle to the next active project
+ *   - Shift+Arrow{L/R/U/D} → focus the neighbouring subwindow in that direction
+ *   - Shift+Tab            → cycle tabs within the focused subwindow
+ *   - Shift+Ctrl+W         → close the focused subwindow
+ *   - Ctrl+W               → close the active tab
+ */
 export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
   useEffect(() => {
     const win = getCurrentWindow();
 
     async function onKeyDown(e: KeyboardEvent) {
-      // F11 — fullscreen toggle
+      // F11 — OS fullscreen toggle (unchanged).
       if (e.key === "F11") {
         e.preventDefault();
         const isFs = await win.isFullscreen();
@@ -18,17 +76,126 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Super key — toggle right panel (same as Python app's Super behavior)
+      // Super key — toggle right panel.
       if (e.key === "Meta" || e.key === "Super") {
         e.preventDefault();
         onTogglePanels();
         return;
       }
 
-      // Escape — close any open overlay (handled by child components via stopPropagation)
+      const tabs = useTabsStore.getState();
+
+      // Escape exits app-internal fullscreen (when active). Only act if we're
+      // fullscreen, otherwise let overlays / terminals see the Escape.
+      if (e.key === "Escape" && tabs.fullscreenGroupId) {
+        e.preventDefault();
+        tabs.toggleFullscreen(null);
+        return;
+      }
+
+      // Don't steal keys from a focused text field (e.g. inline tab rename).
+      if (isEditableTarget(e.target)) return;
+
+      // Resolve the configured chord for an action (user override or default).
+      const overrides = useSettingsStore.getState().settings
+        ?.keyboard_shortcuts as ShortcutMap | undefined;
+      const is = (action: ShortcutAction) =>
+        chordMatches(resolveChord(action, overrides), e);
+
+      // Toggle app-internal fullscreen of the focused subwindow.
+      if (is("toggleFullscreen")) {
+        const focused = tabs.focusedGroupId;
+        if (focused) {
+          e.preventDefault();
+          tabs.toggleFullscreen(focused);
+        }
+        return;
+      }
+
+      // Cycle to the next active project.
+      if (is("cycleProject")) {
+        e.preventDefault();
+        cycleProject();
+        return;
+      }
+
+      // Close the focused subwindow. Mirror the mouse close button, which only
+      // appears when groupCount > 1 (Subwindow.showClose): never close the last
+      // remaining subwindow from the keyboard either, so the scope can't be left
+      // empty by a stray chord.
+      if (is("closeSubwindow")) {
+        const focused = tabs.focusedGroupId;
+        if (focused && allGroups(tabs.layout).length > 1) {
+          e.preventDefault();
+          tabs.closeGroup(focused);
+        }
+        return;
+      }
+
+      // Close the active tab.
+      if (is("closeTab")) {
+        if (tabs.activeKey) {
+          e.preventDefault();
+          tabs.removeTab(tabs.activeKey);
+        }
+        return;
+      }
+
+      // Close every tab in the current project (scope). The active project's
+      // debounced saveLayout effect then persists the now-empty layout.
+      if (is("closeAllTabs")) {
+        if ((tabs.tabsByScope[tabs.scope] ?? []).length > 0) {
+          e.preventDefault();
+          tabs.closeAllTabs();
+        }
+        return;
+      }
+
+      // Focus the neighbouring subwindow in a direction.
+      for (const action of Object.keys(FOCUS_DIR) as ShortcutAction[]) {
+        if (is(action)) {
+          const focused = tabs.focusedGroupId;
+          if (focused) {
+            const next = neighborGroup(tabs.layout, focused, FOCUS_DIR[action]);
+            if (next) {
+              e.preventDefault();
+              tabs.focusGroup(next);
+            }
+          }
+          return;
+        }
+      }
+
+      // Cycle tabs within the focused subwindow.
+      if (is("cycleTabs")) {
+        const focused = tabs.focusedGroupId;
+        const group = focused ? findGroup(tabs.layout, focused) : null;
+        if (group && group.tabKeys.length > 1) {
+          e.preventDefault();
+          const cur = group.activeKey
+            ? group.tabKeys.indexOf(group.activeKey)
+            : 0;
+          const next = group.tabKeys[(cur + 1) % group.tabKeys.length];
+          tabs.setGroupActive(group.id, next);
+        }
+        return;
+      }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onTogglePanels]);
+}
+
+/** Cycle the active project to the next one (by display order). */
+function cycleProject() {
+  const ps = useProjectsStore.getState();
+  // Active = not inactive; ordered by `position` (the pill display order).
+  const active = ps.projects
+    .filter((p) => p.status !== "inactive")
+    .sort((a, b) => a.position - b.position);
+  if (active.length < 2) return;
+  const idx = active.findIndex((p) => p.id === ps.activeId);
+  const next = active[(idx + 1) % active.length];
+  if (next && next.id !== ps.activeId) void ps.setActive(next.id);
 }

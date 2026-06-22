@@ -4,7 +4,7 @@
  * Root cause 1: loadFromLayout() in projects.ts was called without targetScope.
  * When switch_project_runtime resolved after the user had already switched to a
  * different project, the returned tabs were written into whatever scope was
- * active at resolution time — so e.g. ExampleOne's scope could receive ExampleTwo's
+ * active at resolution time — so e.g. one project's scope could receive another's
  * layout (or vice versa), and the agent tab's cwd would be wrong.
  * Fix: always pass targetScope.
  *

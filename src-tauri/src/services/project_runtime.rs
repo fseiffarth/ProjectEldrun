@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::apps::WindowRegistryState;
 use crate::commands::workspace::WorkspaceStateArc;
@@ -133,6 +133,23 @@ pub fn switch(
         window_service::hide_windows(&*ws.backend, &prev_wids);
     }
 
+    // 5b. #42: Tauri-level hide of the previous project's DETACHED subwindows.
+    //     Backend-independent: on X11 it complements the desktop-park above; on
+    //     Wayland/KDE/null (where desktop-parking is a no-op) it is the ONLY
+    //     mechanism keeping an inactive project's detached window from floating
+    //     over every project. Re-shown in step 8b on switch-back.
+    {
+        let prev_labels = {
+            let wins = win_registry.lock().unwrap();
+            window_service::project_detached_labels(&wins.windows, previous_project_id)
+        };
+        for label in &prev_labels {
+            if let Some(win) = app.get_webview_window(label) {
+                let _ = win.hide();
+            }
+        }
+    }
+
     // 6. Save previous window session IDs to .eldrun/sessions/windows.json.
     if let Some(local_file) = previous_local_file {
         let prev_reg_ids = {
@@ -155,6 +172,23 @@ pub fn switch(
         };
         let ws = workspace.lock().unwrap();
         window_service::show_windows(&*ws.backend, &next_wids);
+    }
+
+    // 8b. #42: Tauri-level re-show of the next project's detached subwindows
+    //     (mirrors 5b). On Wayland/null this un-hides them; on X11 it pairs with
+    //     the desktop un-park in step 8. `unminimize()` first in case a backend
+    //     minimized rather than hid them.
+    {
+        let next_labels = {
+            let wins = win_registry.lock().unwrap();
+            window_service::project_detached_labels(&wins.windows, project_id)
+        };
+        for label in &next_labels {
+            if let Some(win) = app.get_webview_window(label) {
+                let _ = win.unminimize();
+                let _ = win.show();
+            }
+        }
     }
 
     // 9. Collect opened window IDs and return the completed payload.

@@ -3,10 +3,13 @@
 ## Context
 
 This is the single home for open implementation plans, organized into coherent
-groups with stable numbers. The raw idea dump lives in `open_ideas.md` (29 loose
+groups with stable numbers. The raw idea dump lives in `open_ideas.md` (51 loose
 ideas spanning the right file-tree panel, the bottom project switcher, X11/KDE
 workspace switching, project import/publishing, git tooling, drag-and-drop
-reordering, remote/SSH projects, branding, and session restore); cross-platform
+reordering, remote/SSH projects, branding, session restore, in-app file/text/tex
+viewers, tab renaming/mapping, per-project security & remote-control toggles, a
+native browser, keyboard-driven navigation, and right-panel polish);
+cross-platform
 Windows/macOS follow-ups (#30–#31), backend runtime follow-ups (#32), and the
 global-app URI-routing item (#33) were consolidated here from the former separate
 plan file and the old `TODO.md`. The goal of this plan is
@@ -17,7 +20,7 @@ well-scoped unit.
 Exploration confirmed several ideas are partially built already — those notes are
 called out per item so we don't rebuild existing infrastructure.
 
-Numbering is **global and stable** (1–35); new ideas are appended with new
+Numbering is **global and stable** (1–65); new ideas are appended with new
 numbers so existing references never shift. Open groups are lettered A, B, C…
 (roughly in suggested sequence); completed groups are renumbered D.1, D.2… and
 collected at the **end** of this file. You can pick any item in any order.
@@ -49,6 +52,103 @@ example test in words to guide both. A feature is fully **🧪 Tested** only whe
 
 ---
 
+## Evaluation — Idea & Current State vs. Competitors
+
+*Strategic assessment of Eldrun's concept and current feature set against the
+competitive landscape (as of 2026-06). Not a numbered work item — context for
+prioritization. Competitor specifics are current to ~early 2026; that field
+moves monthly.*
+
+### The core bet
+
+Eldrun's thesis: **"you don't open apps, you open projects"** — switching a
+project swaps the *entire desktop context* (windows, downloads folder,
+default-app mappings, time tracking) as one unit, with built-in agent terminals
+riding on top. The bet targets a real, under-served pain (window/context sprawl
+across many concurrent projects) and sits in a gap no single competitor fills.
+The README's positioning is honest and basically correct — but the bet has
+structural vulnerabilities that matter more than the feature checklist suggests.
+
+### Competitive map
+
+- **Agent orchestrators — the gold rush Eldrun opts out of.** Vibe Kanban,
+  Conductor, Claude Squad, Crystal, the Claude Code desktop/web app, Cursor
+  background agents, plus cloud players (Devin, OpenAI Codex cloud, Google
+  Jules, Sculptor). These parallelize agents across git worktrees with task
+  queues, diff review, and merge flow. Eldrun's "agent cockpit" is just
+  `claude`/`codex`/`gemini` in PTY tabs — i.e. *running the CLI*, nothing more.
+  This is where funding and momentum are, and Eldrun explicitly doesn't play.
+  **Verdict: complementary, not competitive — and the right call.** You can run
+  Vibe Kanban *inside* an Eldrun project terminal. Building a weak orchestrator
+  here would be a mistake.
+- **AI IDEs/editors — Cursor, Windsurf, Zed, VS Code+Copilot, JetBrains.** Where
+  developers actually live. Eldrun's center surface is a *terminal*, and it
+  pushes the editor out to an external `xdg-open`'d window. **Biggest conceptual
+  gap:** Eldrun is a shell *around* the dev experience, not the dev experience.
+- **Terminal/session restorers — tmux+tmuxinator/tmuxp, Zellij, Warp, WezTerm.**
+  tmux restores terminal layouts; Warp adds AI to the terminal. **Eldrun wins on
+  scope (whole desktop, not just the terminal), but these are far more mature
+  and cross-platform.**
+- **Desktop context tools — KDE Activities, GNOME workspaces, i3/sway
+  scratchpads, Arc Spaces, Workona.** Each solves one slice (Activities move
+  windows but have no project model/restore; Workona/Arc are browser-tabs only).
+  **Eldrun's "context as one unit" (windows + downloads + default apps + time)
+  is more complete than any of these** — the downloads-rerouting and per-project
+  default-app remapping are genuinely novel touches nobody bundles.
+- **Dev-env managers — devcontainers, Gitpod/Coder, DevPod, Nix/direnv, mise.**
+  Reproducible per-project *environments*, no desktop/window layer. Orthogonal
+  (and the #38 Docker work moves Eldrun partway into this space).
+
+### Honest strengths
+
+- The gap is real and defensible: (desktop context switching) × (built-in agent
+  terminals) on Linux is genuinely under-served.
+- Thoughtful, concrete differentiators: per-project downloads routing,
+  default-app remapping, time tracking, sticky cross-project app toolbar.
+- Local/privacy posture: Ollama-backed local tabs + sshfs remote projects +
+  all-local state, a real counter-position to the cloud-agent wave.
+- Strategic honesty: positioning as complementary to orchestrators avoids a
+  losing fight.
+
+### Honest weaknesses / risks
+
+- **Linux-X11/KDE-only is the dominant constraint.** The entire value prop hinges
+  on window management that works on only a couple of compositors; Windows/macOS
+  ship the differentiator missing. This caps the audience to roughly "the author
+  and people like him." Cross-compositor support (Hyprland, Sway, GNOME) is
+  make-or-break for adoption beyond personal use.
+- **The editor gap (above):** without a first-class editor story, Eldrun risks
+  being a layer people immediately tab away from.
+- **Maturity vs. a fast-moving field:** ~75h logged, v0.1.0, single developer,
+  and the entire "AI roadmap" (semantic search, startup suggestions, terminal
+  hints) is unbuilt while funded orchestrator teams ship weekly.
+- **Single-user, local-only** while the market trend is cloud/async/team agents.
+- **Existential risk:** if an orchestrator or IDE grows a "workspaces" feature
+  that manages windows/context (e.g. Cursor or the Claude Code desktop app adding
+  project-scoped desktop state), Eldrun's gap closes from above. Its moat is
+  desktop-integration depth — which is also its portability ceiling.
+
+### Strategic take
+
+Eldrun is best understood **not as an agent tool but as a project-context OS
+layer**, and should lean all the way into that: *Eldrun is the desktop shell;
+inside each project you run whatever the best orchestrator/IDE is.* That framing
+turns its biggest "weakness" (not being an orchestrator) into the product.
+
+Two priorities worth weighing **above** the AI-roadmap items:
+
+1. **Portability** — at least Hyprland/Sway/GNOME (ties into Group C #18/#19 and
+   Group H #30/#31). Without it the idea can't escape its author.
+2. **A real editor/IDE integration story** — even just first-class "this
+   project's editor window" treatment rather than embedding.
+
+The idea is good and the gap is real. The execution risk is that it's a deep,
+narrow, single-developer Linux tool competing for attention in a field racing
+toward broad, cloud, team-scale agent automation — and the defensibility
+(desktop depth) is in direct tension with the growth lever (portability).
+
+---
+
 ## Group A — Bottom Panel: Meta-Project Grouping (new feature)
 *Files: data model (`schema/project.rs`/`projects.rs`, `types/index.ts`), `ProjectSwitcher.tsx`, `ProjectPill.tsx`. No grouping concept exists today.*
 
@@ -57,6 +157,82 @@ example test in words to guide both. A feature is fully **🧪 Tested** only whe
     drag-and-drop of pills into boxes. Requires a new grouping field in the
     project/entry schema plus drag-drop UI and grouped rendering. Largest bottom-
     panel item.
+    > **Phase 1 (#13) DONE (🤖 covered).** Box model (`schema/boxes.rs`
+    > `ProjectBox`/`BoxRelation`, `boxes.json`) + box CRUD commands
+    > (`commands/boxes.rs`: get/save/create/rename/delete/set_box_members) +
+    > native-DnD pill-into-box + ungrouped-drop-zone + grouped pill rendering with
+    > a distinct `.project-box-chip` (badge + member count) +
+    > `stores/boxes.ts`/`BoxChip.tsx`. `box_id` rides in `ProjectEntry.extra`;
+    > member_ids authoritative, `box_id` derived in-memory on load (no write).
+
+41. **Project box containers (merge of two or more projects).** Building on #13,
+    let a box be opened as a single *merged* workspace that spans its member
+    projects rather than just a pill grouping. Specifics:
+    - **Merged file view in the right panel.** Extend the right-panel file tree
+      (`FileTree.tsx`/`RightPanel.tsx`) to render a box as a multi-root view —
+      each member project listed as a top-level node, populated from that
+      project's **stored state** (its `project.json` tree layout / file metadata)
+      rather than re-walking only one root. Reuse the existing per-project file
+      model so each member keeps its own git markers, hidden-file sections, etc.
+    - **A box folder in the eldrun root.** Create a `~/eldrun/boxes/<box-name>/`
+      (or similar under the eldrun root) directory per box to host box-scoped
+      state and serve as the cwd for the box's terminals/agents.
+    - **Agent tabs rooted in the box, hinted to each member.** Start the box's
+      agent tabs rooted in the box folder, seeding each agent with hints/pointers
+      to every member project's local agent files (`CLAUDE.md`/`AGENTS.md`/
+      `GEMINI.md` and paths) so the agent can work across all merged projects
+      from one place.
+    - **Boxes in the project search (merge is opt-in).** Surface boxes as results
+      in the "Search inactive…" box (`ProjectSwitcher.tsx`,
+      `activateSearchResult`/`results`) alongside individual projects; picking a
+      box result opens the merged box workspace. The merge is **opt-in** — a box's
+      member projects stay independently searchable and can each be loaded on
+      their own as a normal single project, without activating the box merge.
+    - **Visual distinction box vs. single project.** Give boxes a distinct look
+      from single projects everywhere they appear — in the search results
+      (`project-search-row`), the pills (`ProjectPill.tsx`/`project-switcher`),
+      and the right-panel multi-root header — e.g. a box icon/badge, member count,
+      and/or a grouped style, so a merged box is never mistaken for a plain
+      project. Add the corresponding styles in `themes.css`.
+    - **Inter-project relations within a box.** Let a box record directed
+      relations between its members — "a change in project A may influence
+      project B" — e.g. project B depends on a Python library developed in project
+      A, so editing A's library can break/affect B. Model as relation edges in the
+      box metadata (source → dependents, with an optional kind/label like
+      "python-lib" and an optional path/package hint). Surface them so the
+      dependency is visible and actionable: show related members in the box view,
+      flag dependents when a source changes (tie into the existing git-status
+      markers so a dirty source highlights its dependents), and seed the box's
+      agent hints with the relation graph so a cross-project agent knows which
+      members a change ripples into. Auto-detection of relations (e.g. scanning
+      `pyproject.toml`/`requirements.txt`/imports for local-path deps between
+      members) is a stretch goal; manual declaration is the baseline.
+    - Schema/model: extends the #13 grouping field with box-as-workspace metadata
+      (member list, box folder path, relation edges); touches
+      `schema/project.rs`/`projects.rs`, `types/index.ts`, `ProjectSwitcher.tsx`,
+      `RightPanel.tsx`/`FileTree.tsx`, and the runtime/spawn path that sets
+      agent-tab cwd + env. Scope to be refined when picked.
+    > **Phase 2 (#41 groundwork) DONE (🤖 covered):** full box schema stored
+    > (`folder`, `relations` via `set_box_relations`), lazy
+    > `~/eldrun/boxes/<name>/` creation (`ensure_box_folder`, idempotent +
+    > name-collision-safe against reserved `folder`s and on-disk dirs), boxes in
+    > the project search (`.project-search-row.is-box`, opt-in — members stay
+    > searchable), and opt-in box activation (`openBox` → `box:<id>` scope rooted
+    > in the box folder). **Box scopes are session-only this pass** —
+    > `switch_project_runtime` does not persist/restore them.
+    > **DEFERRED (explicit follow-on, NOT this pass):** Phase 3 merged multi-root
+    > file tree (`RightPanel.tsx`/`FileTree.tsx`); Phase 4 agent-hint seeding +
+    > relation-graph surfacing (dirty-source→dependent git markers,
+    > auto-detection). Schema groundwork for both is in place.
+    - [x] 🤖 Automated test — `commands/boxes.rs` cargo tests (reconcile drops
+      unknown member_ids / recomputes box_id inverse / drop-on-delete, gap-spaced
+      position, defaults round-trip, folder-collision suffixing); `paths.rs`
+      `boxes_root`; vitest `BoxAssignment` (assign/unassign/move/delete sweep,
+      create/rename, derive-on-load no-write), `BoxRendering` (grouped vs inline,
+      orphan box_id inline, chip drop ≠ reorder, ungrouped drop), `BoxSearch`
+      (is-box row → openBox, members independently searchable). Covers Phase 1 +
+      Phase 2 groundwork; Phase 3/4 deferred.
+    - [ ] 🖐️ Manual test
 
 ---
 
@@ -217,6 +393,94 @@ container) — as opposed to the git **push** axis (#21/#22).*
       mount is cleaned up on app exit.
     - [x] 🤖 Automated test — `services/ssh_mount.rs` unit tests (validate_arg, mountpoint_for, sshfs_args)
     - [ ] 🖐️ Manual test
+    - **Manual QA checklist (live, step-by-step).** Runtime test plan for
+      #28/#28b — agents can't launch Eldrun, so these are hand-checks. Each box is
+      one check; a phase is done when all its boxes are ticked.
+      - *Phase 0 — prerequisites / baseline.*
+        - [ ] Local tooling on `PATH`: `sshfs`, `fusermount` (or `umount`); for
+          password auth `sshpass`; for VPN-gated hosts `openvpn` + `pkexec`.
+        - [ ] A reachable host with working key/agent auth; ideally a second
+          host/account that requires a **password** (no key) to exercise `sshpass`.
+        - [ ] `cargo test --manifest-path src-tauri/Cargo.toml` green.
+        - [ ] `npx tsc --noEmit` green.
+      - *Phase 1 — connect (`ssh_connect`/`ssh_default_dir`).*
+        - [ ] Tick **Remote (SSH) project** → SSH address + password + Connect
+          section appears.
+        - [ ] `user@host` (key auth, blank password) → Connect succeeds.
+        - [ ] `user@host:port` with a non-default port → Connect succeeds.
+        - [ ] Bare `host` (no user, via `~/.ssh/config`) → Connect succeeds.
+        - [ ] Password-only host + correct password → Connect succeeds (`sshpass`).
+        - [ ] Wrong password → clear ssh-stderr error, no hang.
+        - [ ] Password auth with `sshpass` not installed → actionable error.
+        - [ ] Unreachable host/bad name → fails within ~10s (ConnectTimeout), UI
+          stays responsive.
+        - [ ] Editing the address/password after connect resets to disconnected.
+      - *Phase 2 — browse (`ssh_default_dir`/`ssh_list_dir`).*
+        - [ ] Browser opens at remote `$HOME`.
+        - [ ] Dirs-first, case-insensitive name sort; hidden entries shown;
+          `.`/`..` hidden.
+        - [ ] Click a dir descends; **Up** ascends; can't go above `/`.
+        - [ ] Dir names with spaces/unicode render correctly.
+        - [ ] No-permission directory → error surfaced, dialog stays usable.
+        - [ ] "Use this folder" commits the chosen remote path.
+      - *Phase 3 — create remote project.*
+        - [ ] Connect → browse → Use folder → Create → project created with a
+          generated id.
+        - [ ] Mounted under `~/.local/share/eldrun/mounts/<id>/`; `directory`
+          points at the mountpoint (check `/proc/mounts`).
+        - [ ] Scaffold files written **over the mount** only where missing.
+        - [ ] `project.json` carries `remote`; `projects.json` entry mirrors it
+          under `extra`.
+        - [ ] Create against a password-only host → confirm mount behavior /
+          error (mount path still `BatchMode=yes`; see 28c password half-state).
+      - *Phase 4 — import remote project.*
+        - [ ] Import an existing remote dir (keep-only) → mounts, persists
+          `remote`, does not relocate bytes.
+        - [ ] Scaffold-fill agent tabs are local-disk-only on remote import.
+      - *Phase 5 — mount lifecycle.*
+        - [ ] Switch away and back → mount persists / re-mount is a no-op.
+        - [ ] Restart with a remote project active → startup best-effort mount;
+          an offline host at boot does **not** block app start.
+        - [ ] Quit → `unmount_all` tears down every mount (`/proc/mounts` clean).
+        - [ ] Hard-kill leaving a stale mount → relaunch reuses it without error.
+        - [ ] Host offline mid-session → reconnect/keepalive recovers; no
+          permanent wedge.
+      - *Phase 6 — behaves like local (over the mount).*
+        - [ ] File tree lists remote files.
+        - [ ] Open/edit/save a file → change lands on the remote.
+        - [ ] Git status/history work against the mountpoint.
+        - [ ] Plain shell tab cwd/behavior as expected (see Phase 7).
+      - *Phase 7 — remote agent execution (`ssh_exec.rs`).*
+        - [ ] Claude agent tab runs **on the remote** via `ssh -tt` (verify
+          hostname/env inside the agent).
+        - [ ] Resize resizes the remote PTY; exit/kill ends the remote session.
+        - [ ] Second tab multiplexes over the ControlMaster socket; master
+          persists ~600s after the last session.
+        - [ ] Userspace CLI (`~/.local/bin`/nvm/pyenv) is found (login-shell PATH).
+        - [ ] Auto-bootstrap (probe → install → re-probe; `exit 127` + hint on
+          failure) runs live in the PTY on a remote missing the CLI.
+        - [ ] First-run `claude login` works inside the remote PTY.
+        - [ ] Local `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` is **stripped** from the
+          remote env (remote's own login used).
+        - [ ] `local_only` tabs (local Ollama) are **not** wrapped — run locally.
+        - [ ] Codex/Gemini/Vibe remote tabs — note current behavior (recipes may
+          not be generalized yet).
+      - *Phase 8 — OpenVPN-gated hosts.*
+        - [ ] Project with `remote.openvpn.config` → tunnel comes up first; VPN
+          password prompted and **never persisted**.
+        - [ ] `openvpn_status` detects an already-up tunnel (no double-connect).
+        - [ ] Missing `openvpn`/`pkexec` → actionable error.
+        - [ ] Quit → `disconnect_all` brings tunnels down.
+      - *Phase 9 — security / argument injection (spot-check; mostly auto).*
+        - [ ] UI can't send a host/user/path beginning with `-` to ssh.
+        - [ ] Control chars / newline / NUL in any field rejected.
+        - [ ] Empty host (or empty user when provided) rejected.
+        - [ ] During a password connect, the password is only in the `SSHPASS`
+          env, never in argv (inspect the process list).
+      - *Phase 10 — persistence & restart.*
+        - [ ] Resumable Claude/Codex tabs in a remote project restore and resume
+          on the remote on relaunch.
+        - [ ] `project.json`/`projects.json` round-trip `remote` across restart.
     - **28b — Remote agent execution (decided 2026-06-19: agents run ON the
       remote).** A remote project's bytes are sshfs-mounted **only** for
       Eldrun's own file tree / git / `list_dir`; terminal **and agent** tabs
@@ -270,6 +534,113 @@ container) — as opposed to the git **push** axis (#21/#22).*
       - [ ] 🖐️ Manual test — connect (VPN if needed) → open a remote agent tab →
         the CLI is detected/installed, logs in on first run, and runs a pipeline
         on the remote (remote GPU/env), with edits visible in Eldrun's file tree.
+    - **28c — Hardening & gaps (two-reviewer review, 2026-06-19).** A
+      code-correctness/security pass plus an architecture pass over #28/#28b.
+      Ordered by severity.
+      - [ ] **[Critical] Remote command injection in the browse commands.**
+        `ssh_list_dir`/`ssh_default_dir`/`ssh_connect` (`commands/ssh.rs`) hand
+        remote argv tokens to `ssh`, which space-joins them into one remote
+        `$SHELL -c` string; `validate_arg` only blocks a leading `-`/control
+        chars, so a `path` containing `;`/`$()`/backticks/spaces (e.g. a remote
+        dir name the user clicks while browsing) runs arbitrary remote code.
+        Route these through a shared `shell_quote` (lift from `ssh_exec`) and
+        send a single pre-quoted remote string; add injection tests (`;`, `$()`,
+        backtick, space, quote).
+      - [ ] **[Critical] Remote agent tabs never resume (ordering bug).**
+        `wrap_pty_options` rewrites `opts.cmd` `claude`/`codex`→`ssh`
+        (`commands/terminal.rs`) *before* `spawn_pty`'s `resolve_agent_session`
+        dispatches on `opts.cmd` (`terminal/mod.rs`), so `--resume`/`codex
+        resume` are never injected; the ELDRUN_TAB_UID + SessionStart mechanism
+        is also local-only (it reads the local `~/.claude`/live_sessions while a
+        remote agent logs on the remote). Resolve session args *before* the
+        ssh-exec rewrite and embed them in `remote_command`, and install the
+        SessionStart hook + live-id lookup on the remote — or document remote
+        agents as non-resumable for now.
+      - [ ] **[High] Serialize `mount()` per project id.** The
+        `is_mounted`→`sshfs` sequence in `ssh_mount::mount` is TOCTOU and
+        `ensure_project_mounted` runs from several call sites concurrently, so
+        two activations can stack FUSE mounts (the second shadows the first;
+        `unmount` removes only one → leak). Guard with a per-id global mutex and
+        re-verify `is_mounted` after `sshfs`.
+      - [ ] **[High] Validate exported env in `remote_command`.** Env keys are
+        interpolated raw into `export {k}=…` (`ssh_exec.rs`); a key containing
+        `=`/space/newline injects a second `&&` command. Require keys to match
+        `^[A-Za-z_][A-Za-z0-9_]*$` and reject NUL in any quoted value; test a
+        malicious key.
+      - [ ] **[High] Centralize VPN-gated activation ordering.** The backend
+        mount path (`project_runtime::ensure_remote_mounted`,
+        `ensure_project_mounted`) never calls `openvpn::connect` — only the
+        frontend does — so switching to a VPN-gated project from the backend
+        fails with an opaque ssh timeout. One entry point should do VPN-connect →
+        mount → exec and fail loudly ("VPN not connected — use Connect in the
+        dialog"), since the backend can't prompt for the password.
+      - [ ] **[High] Resolve the password-auth half-state.** `ssh_mount`/
+        `ssh_exec` hardcode `BatchMode=yes`, so a password-only host browses in
+        the dialog but then fails at mount/exec. Either thread the password via
+        `sshpass`/`SSHPASS` (as `commands/ssh.rs` already does for browse) or
+        gate remote create/import on key/agent auth and mark password hosts
+        browse-only — don't ship the silent half-state.
+      - [ ] **[High] Connection-loss / stale-handle recovery + UX.** sshfs
+        `reconnect` doesn't heal a stale FUSE handle (`is_mounted` still returns
+        true → `mount()` no-ops), and exec tabs die silently. Treat a statfs
+        failure on a mounted path as not-mounted so `mount()` remounts; add a
+        reconnect/remount action and a connection-state badge on remote project
+        pills.
+      - [ ] **[Medium] OpenVPN robustness.** (a) `wait_for_ready` only checks the
+        timeout when a new stdout line arrives, so a silent hang (stuck auth /
+        black-hole) blocks `connect` forever — read on a thread with
+        `recv_timeout`. (b) `is_connected` tracks only tunnels this process
+        started, so a tunnel surviving a crash isn't detected and `connect`
+        spawns a duplicate / `pkexec` re-prompts — reconcile via the pidfile/tun
+        device. (c) teardown via `pkexec kill` re-prompts polkit at exit, so the
+        root tunnel can survive app exit — launch once with a teardown trap or a
+        persistent privileged helper.
+      - [ ] **[Medium] Mount-detection edge cases.** Unescape `/proc/mounts`
+        octal sequences (`\040` etc.) and canonicalize before comparing in
+        `is_mounted` (refactor the field parsing into a pure, unit-tested fn) to
+        avoid stacking/leaks when the state-dir path contains spaces; treat
+        `Some(port) == 0` as "no port"; bound/short-hash the ControlPath so it
+        stays under the AF_UNIX 108-byte limit.
+      - [ ] **[Medium] Host-key (TOFU) trust UX.** Browse/mount use
+        `BatchMode=yes`, which *fails* on an unknown host key with no prompt,
+        while the exec path drops BatchMode to prompt in-terminal — but that's
+        only reached after a mount that already failed. Add an explicit
+        `ssh-keyscan`/known_hosts confirmation step in the connect flow.
+      - [ ] **[Medium] Project-delete teardown + startup GC.** When a delete
+        command lands, `unmount` + remove the mountpoint dir + `ssh -O exit` the
+        control master + `openvpn::disconnect` if unused; add startup GC of stale
+        mounts (ties into the stale-handle fix above).
+      - [ ] **[Medium] Generalization auth stories (extends the open item in
+        #28b).** Adding Codex/Gemini recipes is one `AgentRecipe` row each (npm:
+        `@openai/codex`, `@google/gemini-cli`); Vibe likely needs a
+        `manual_hint`-only entry. Each needs a documented remote-auth story, and
+        verify `local_only` is actually set end-to-end for Ollama-backed tabs.
+      - [ ] **[Low] Smaller items.** Replace `which`-based binary detection
+        (`sshfs`/`sshpass`/`openvpn`) with in-process PATH search; lazy-unmount
+        (`-z`) as a last resort at exit; feed the askpass passphrase to OpenVPN
+        via stdin/fd instead of a 0600 temp file (plaintext currently survives a
+        crash); document `parse_ls_output` symlink-vs-dir `-p` semantics.
+      - [ ] 🤖 **Test coverage to add** — injection-safety of the browse `path`;
+        malicious env keys in `remote_command`; a pure `/proc/mounts` field
+        parser (`\040`); `wait_for_ready` timeout with no output; mount
+        double-spawn; `shell_quote` round-trip incl. NUL/newline.
+      - **Refactor / future ideas.**
+        - [ ] **Factor a target-agnostic spawn-rewrite layer before Docker
+          (#38).** `ssh_exec::wrap_pty_options` hardcodes mount-path detection,
+          `AGENT_AUTH_ENV`, `shell_quote`, the `-lc` login wrap, and the
+          `remote_agents` bootstrap; #38 would duplicate all of it. Extract a
+          trait ("PtyOptions + target descriptor → rewritten argv") with SSH and
+          Docker impls so the resume fix, the recipes, and Phase-2 composition
+          (`ssh … docker exec …`) land once.
+        - [ ] **Document the split-model consistency tradeoffs.** git/`list_dir`/
+          file-tree run locally over sshfs while the agent edits on the remote:
+          slow git, weak sshfs inotify (stale tree), line-ending/identity
+          mismatches. Document the model; consider running `git` on the remote
+          via the exec wrapper; add a manual "refresh file tree" affordance.
+        - [ ] **SSH `LocalForward` per project** to reach remote dev-server ports
+          at `localhost:port`.
+        - [ ] **Remote-status panel** (mount state, control-master liveness, VPN
+          state, last error) for debuggability.
 
 38. **Run projects inside Docker containers.** Let a project be started in a
     Docker container instead of (or in addition to) directly on the host: the
@@ -284,59 +655,122 @@ container) — as opposed to the git **push** axis (#21/#22).*
     `docs/docker_projects_plan.md`. Requires Docker/Podman locally.
 
     **Data model (both phases).** New `DockerSpec` on the project schema +
-    `projects.json` `extra` (same as `RemoteSpec`): container source is exactly
-    one of `image` / `dockerfile` / `compose_file`+`service` / existing
-    `container`; plus `workdir` (default `/workspace`), `run_args`, `engine`
-    (docker|podman), and a Phase-2-only `remote: Option<RemoteSpec>`. A project is
-    containerized iff `docker` is present. `directory` stays the **host** path in
-    Phase 1 (no mountpoint indirection). Mirror in `types/index.ts`.
+    `projects.json` `extra` (same as `RemoteSpec`). The container source must be
+    **exactly one** of `image` / `dockerfile` / `compose_file`+`service` /
+    existing `container` — model it as a **tagged `ContainerSource` enum** (not
+    four parallel `Option`s) so illegal/empty states are unrepresentable, with a
+    `DockerSpec::source()` validator called in `up` and in create/import. Plus
+    `workdir` (default `/workspace`), `run_args`, `engine` (docker|podman), and a
+    Phase-2-only `remote: Option<RemoteSpec>`. A project is containerized iff
+    `docker` is present. `directory` stays the **host** path in Phase 1 (no
+    mountpoint indirection). Mirror in `types/index.ts`.
+
+    **Review notes (2026-06-19, two-reviewer reconciliation).** The two-service
+    split is sound and `ssh_exec.rs` exists as claimed, but three "cf. SSH"
+    shortcuts do **not** carry over and are folded into the bullets below:
+    project-from-cwd resolution (no local analogue — H below), `down_all`
+    enumeration (no on-disk artifact), and the Phase-2 double-quoting. Plus a
+    container-specific security surface SSH never had (`run_args` flags,
+    bind-mount, file ownership).
 
     - [ ] **38a — Phase 1: local Docker** (container on the same host;
       independently shippable).
+      - **Project resolution (do NOT mirror `project_id_from_cwd`).**
+        `ssh_exec::project_id_from_cwd` only works by stripping `mounts_root()`;
+        local docker keeps `directory` = host path with no embedded id, and
+        `ProjectEntry` has no `directory`. **Carry the project id (or the resolved
+        `DockerSpec`) on `PtyOptions` from the frontend at spawn time** (the tab
+        already knows its project) — avoids an O(projects) disk scan and nested-dir
+        ambiguity.
       - `services/docker_runtime.rs` (new) — lifecycle keyed by project id,
         `eldrun-<id>` container name convention. `engine_available`,
-        `is_running` (`docker ps` exact match), `up` (image→`docker run -d -v
-        <host_dir>:<workdir> -w <workdir> … sleep infinity`; dockerfile→`build`
-        then run; compose→`compose up -d`; existing `container`→verify only),
-        `down`, `down_all` (cf. `unmount_all`). Argv built as `Vec<String>` for
-        unit-testability; reuse the shared `validate_arg` (no leading-`-`/control
-        chars).
+        `is_running` (`docker ps` exact match), `up` as a **three-state machine**
+        (missing→`docker run -d -v <host_dir>:<workdir> -w <workdir> … sleep
+        infinity`; stopped→`docker start` (a bare `run` collides on the name);
+        running→no-op), reconciling a **stale config** via an
+        `eldrun.spec-hash=<hash>` label (recreate when the spec diverges);
+        dockerfile→`build` then run; compose→`compose up -d`; existing
+        `container`→verify only. `down`/`down_all` must **never** stop/remove the
+        pre-existing-`container` variant, and scope compose teardown to its file.
+        `down_all` **enumerates from the engine** (`docker ps -q --filter
+        name=^/eldrun-`), not from disk (no mountpoint artifact exists). Serialize
+        per-project `up` so rapid switches don't race two `--name eldrun-<id>`.
+        Argv built as `Vec<String>` for unit-testability.
+      - **Arg validation (stricter than SSH's `validate_arg`).** Keep strict
+        `validate_arg` (no leading-`-`/control chars) for `image`/`workdir`/
+        `container`/`service`; **`run_args` is a separate class** (it legitimately
+        holds flags) — denylist host-escape flags (`--privileged`,
+        `--network=host`, `--pid`/`--ipc=host`, `-v`/`--volume`, `--device`,
+        `--cap-add`, `--security-opt`, `--user`, `--entrypoint`) or gate behind an
+        explicit "advanced/unsafe" ack, and insert a `--` separator before the
+        image/command. Validate `workdir` is **absolute** and reject `/` and
+        system dirs; the bind source is the project `directory` by construction.
+      - **File ownership.** Rootful docker writes root-owned files that break the
+        host file tree/git (which run as the user) — the whole point of the
+        feature. Auto-inject `--user $(id -u):$(id -g)` for image/dockerfile on
+        rootful docker (NOT podman-rootless, whose mapping is inverse), don't
+        relegate it to a manual `run_args` escape hatch.
       - `services/docker_exec.rs` (new) — rewrite a containerized tab's
         `PtyOptions` to `docker exec -it -w <in_cwd> [-e K=V…] <name> <cmd…>` (or
         login shell when cmd empty; `compose exec <service>` for compose).
-        `container_workdir` translates host cwd → in-container path (cf.
-        `remote_subdir`). Honor the existing **`local_only`** flag verbatim.
+        `container_workdir` translates host cwd → in-container path (genuine
+        `remote_subdir` mirror). For the `-e` path, **re-implement** the auth-var
+        (`AGENT_AUTH_ENV`) / `TERM`/`COLORTERM` stripping `remote_command` does
+        (the SSH version exports in a shell string, not `-e` flags); decide
+        whether a local container is denied host API keys. Honor the existing
+        **`local_only`** flag verbatim and sit inside the same
+        `if !opts.local_only` guard at `commands/terminal.rs:30`, mutually
+        exclusive with ssh-wrap in Phase 1.
       - Wiring: `project_runtime::switch` best-effort `up` on switch to a docker
-        project; `CreateProjectRequest`/`ImportProjectRequest` gain optional
-        `docker`; `lib.rs` `RunEvent::Exit` calls `down_all()` alongside
-        `unmount_all()`; new `commands/docker.rs` (`docker_available`,
-        `docker_list_images`, `ensure_project_container`).
-      - Frontend: `ProjectSwitcher.tsx` "Run in container" dialog section (image /
-        Dockerfile / compose+service / existing container + workdir/run_args/
-        engine); `stores/projects.ts::load()` best-effort
-        `ensure_project_container` for the active docker project at startup.
+        project (precedent: `ensure_remote_mounted` at `project_runtime.rs:93`);
+        `CreateProjectRequest`/`ImportProjectRequest` gain optional `docker`;
+        `lib.rs` `RunEvent::Exit` calls `down_all()` alongside `unmount_all()`;
+        new `commands/docker.rs` (`docker_available`, `docker_list_images`,
+        `ensure_project_container`). Engine default: auto-detect docker→podman,
+        frozen per project at create time.
+      - Frontend: `ProjectSwitcher.tsx` "Run in container" dialog section as a
+        **radio** over the four sources (enforces exactly-one) + workdir/run_args/
+        engine; build a `dockerSpec` and add `docker: dockerSpec` to **both**
+        create/import `req` payloads; extend `canSubmit` (refactor the nested
+        ternary to a function) for docker validity; populate via `docker_available`
+        + `docker_list_images` with the existing `project-dialog-error` surfacing.
+        Startup `ensure_project_container` (in `stores/projects.ts::load()`,
+        fire-and-forget like the SSH path) must **only `start` an already-present
+        container — never implicitly pull/build** (minutes-long, no progress behind
+        a `void`); surface "image missing / build needed" as an actionable error
+        with an explicit Build/Pull action.
       - *Test (e.g.):* create an image-based project → opening a terminal runs
         inside `eldrun-<id>`, host edits show in the file tree, git works,
         container stops on app exit.
       - [ ] 🤖 Automated test — `docker_runtime`/`docker_exec` argv + workdir
-        translation + schema round-trip (no daemon needed)
+        translation + `run_args` denylist + exactly-one `ContainerSource` +
+        schema round-trip (no daemon needed)
       - [ ] 🖐️ Manual test
     - [ ] **38b — Phase 2: remote Docker** (container on an SSH host; composes
       #28 with 38a, activated when `DockerSpec.remote` is set).
       - Bytes: as #28 — sshfs-mount the remote dir locally (file tree/git
         unchanged). Bind-mount source is the **remote** `remote_path` (the remote
-        daemon mounts the remote bytes directly).
-      - Runtime: spawns run `ssh -tt <host> docker exec …` by **composing** the
-        two existing wrappers — `docker_exec` builds the `docker exec` argv,
-        `ssh_exec::remote_command`/`ssh_pty_args` wrap it over ssh. `docker_runtime`
-        engine calls gain an `ssh_base_args` prefix when `remote` is set;
-        `down_all` also tears down known remote-docker containers.
+        daemon mounts the remote bytes directly). The in-container workdir is then
+        a **triple** translation (host cwd → sshfs mountpoint → remote_path →
+        container path) — needs its own test, not just argv shape.
+      - Runtime: spawns run `ssh -tt <host> docker exec …`. **Composition caveat:**
+        `ssh_pty_args(remote, remote_command: &str)` takes a single **string**, so
+        the whole `docker exec …` argv must be collapsed and `shell_quote`d a
+        **second** time on top of `docker_exec`'s own pass — two stacked quoting
+        layers the current single-pass tests don't cover. Do NOT also wrap in
+        `remote_command`'s `-lc '<inner>'`; build `docker exec … <name> $SHELL -lc
+        '<inner>'` once, then quote for ssh. `docker_runtime` engine calls gain an
+        `ssh_base_args` prefix when `remote` is set; `down_all` tears down known
+        remote-docker containers by **iterating the project list** (no local
+        inventory of remote containers exists).
       - Frontend: "Run in container" becomes available after an SSH connection is
         established (remote-browse flow from #28).
       - *Test (e.g.):* remote host with docker → terminal execs into the remote
         container; host file tree (over sshfs) reflects in-container edits.
       - [ ] 🤖 Automated test — argv builders produce `ssh … docker …` /
-        `ssh -tt … exec docker exec …` when remote; `DockerSpec.remote` round-trip
+        `ssh -tt … exec docker exec …` when remote (assert the **double-quoting**
+        round-trips, incl. env values with `$`/quotes); triple workdir
+        translation; `DockerSpec.remote` round-trip
       - [ ] 🖐️ Manual test
 
 ---
@@ -407,11 +841,18 @@ but backend-owned.*
 
 ---
 
-## Group J — Global Apps: URI Scheme Routing (new feature)
-*Files: `src/components/layout/GlobalAppBar.tsx` (roles + launch-or-raise),
-`src-tauri/src/commands/apps.rs` (`launch_app`, `open_file`), terminal/file-tree
-link handling. The global-apps suite (role registry, launch-or-raise, settings
-UI) is already implemented — this is the one remaining global-apps item.*
+## Group J — Web & Mail Surfaces: Routing, In-App Mail & Browser
+*Three related surfaces for web/mail content sharing where-it-lives (right-panel
+view vs. center tab vs. global-app surface), security, and auth decisions. #33
+routes links **out** to the user's configured external apps; #65 and #61 are the
+**in-app** counterparts (read mail / browse the web without leaving the
+workspace). Files: `src/components/layout/GlobalAppBar.tsx` (roles +
+launch-or-raise), `src-tauri/src/commands/apps.rs` (`launch_app`, `open_file`),
+terminal/file-tree link handling (the global-apps suite is already implemented —
+#33 is its last remaining item); plus, for the in-app surfaces, a new
+`commands/mail.rs` + `schema/mail.rs` + `src/components/mail/` (mail) and a Tauri
+webview surface + `src/components/browser/` (browser), and `types/index.ts`. No
+mail or browser code exists today.*
 
 33. **URI scheme routing** (migrated from TODO `G6.7`). Intercept `http://`,
     `https://`, `mailto:`, and `webcal:` links opened from within terminals or
@@ -419,17 +860,7 @@ UI) is already implemented — this is the one remaining global-apps item.*
     (`launch_app`, keyed by the `browser` / `mail` / `calendar` roles) instead of
     a bare `xdg-open` call, so links open in the user's configured global app.
 
----
-
-## Group K — Built-in Mail Viewer (new feature)
-*No mail code exists today. Relates to Group J (#33 `mailto:` routing) but is the
-inverse: an **in-app** reader rather than handing off to an external mail app.
-Likely files: a new `commands/mail.rs` backend (IMAP/JMAP fetch, OAuth/app-
-password auth), `schema/mail.rs` (account + message structs), a new
-`src/components/mail/` panel (message list + reading pane), a right-panel or
-center-tab surface to host it, and `types/index.ts`.*
-
-40. **Include a mail viewer in Eldrun.** Add an in-app email reader so mail can be
+65. **Include a mail viewer in Eldrun.** Add an in-app email reader so mail can be
     read without leaving the workspace. Scope to be defined when picked; open
     questions to settle first: protocol (IMAP vs JMAP vs a provider API like
     Gmail), auth model (app password vs OAuth, mirroring the SSH "no in-app
@@ -439,17 +870,297 @@ center-tab surface to host it, and `types/index.ts`.*
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
+61. **Include a browser in Eldrun.** Add an in-app web browser so pages can be
+    viewed without leaving the workspace. Weigh the security implications
+    (sandboxing, per-project download routing per #60, credential isolation)
+    before building. Scope and surface (center tab vs. right-panel vs. global-app)
+    to be defined when picked. Pairs with #33 (link routing) and #53 (drag a tab
+    into a browser upload field).
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group L — Center Panel: Tabs, Subwindows & Navigation
+*Builds on Group D.11 (tiling split subwindows). All items share the center-panel
+files: `src/stores/tabs.ts` (per-scope layout tree `layoutByScope`,
+`focusedGroupByScope`, active tab), `src/components/layout/CenterPanel.tsx`,
+`src/components/tabs/Subwindow.tsx` / `src/components/tabs/TabBar.tsx`,
+`src/stores/projects.ts`. #42 additionally needs a Tauri multi-window surface
+(`src-tauri/src/lib.rs`, `tauri.conf.json`) + the platform show/hide path
+(`platform/x11.rs`, `platform/wayland_kde.rs`, `services/window_service.rs`,
+`services/project_runtime.rs`); #55–#57 touch `schema/project.rs`; #62 touches
+`src/App.tsx` (global key handlers). #55 (mapping bug) and #62 (keyboard nav) are
+correctness/UX work atop the same layout model #42 detaches.*
+
+42. **Drag a subwindow out of the Eldrun main window.** ✅ Implemented · 🧪 Awaiting
+    live multi-window QA. Let a tiling subwindow
+    (a tab group from Group D.11/#36) be dragged out of the main window and become
+    its own standalone OS window, while keeping it bound to its project. The
+    detached window must follow the **same hide/show logic as on project switch**:
+    when the user switches projects in the main window, a detached subwindow
+    belonging to the now-inactive project is parked/hidden on the hidden workspace
+    (and re-shown on switching back) exactly like other project-owned windows,
+    rather than floating free across all projects.
+    Settled decisions (v1): detach gesture = explicit **pop-out button** (drag-past-
+    edge deferred — WebKitGTK risk); detached window is a **second Tauri
+    `WebviewWindow`** loading the same bundle under `?detached=<scope>:<groupId>`
+    rendering one group (inert to project switches); the group leaves `layoutByScope`
+    and is tracked in `detachedGroupsByScope` while its tab payloads stay in the
+    shared store (PTYs never unmount); detached `TerminalView` is **attach-only**
+    (no `pty_spawn`/no kill-on-unmount — output is broadcast by id; blank until next
+    output, no scrollback restore); restart re-docks (session-only) but a detached
+    group's tabs stay in `project.json` mid-session; parking reuses the existing
+    `project_runtime::switch` path via an `ORIGIN_DETACHED_SUBWINDOW` tracked window
+    + a hardened X11 `set_parkable` override (main window structurally never
+    parkable) **and** a backend-independent Tauri `hide()/show()` fallback so
+    Wayland/KDE/null also hide an inactive project's detached window; re-attach via
+    dock-back button + dock-on-close (`onCloseRequested`) **and Ctrl+drag-to-dock**:
+    Ctrl+dragging the popout's tab bar streams the gesture (screen coords, via the
+    `DETACHED_DRAG_*` events) to the main window, which maps them to client space,
+    shows the normal drop preview, and docks the group on release over a subwindow
+    (`attachGroup` with the resolved edge/center target) — released outside the main
+    window or on Escape, the popout stays floating. A plain (non-Ctrl) tab-bar drag
+    still hands off to the WM for a native window move.
+    Plan/reviews: `docs/group_l_42_detach_plan.md`,
+    `docs/group_l_42_detach_plan_review.md`, `docs/group_l_42_detach_review_code.md`.
+    *Files: `src/stores/detached.ts`, `src/stores/tabs.ts`,
+    `src/components/layout/DetachedApp.tsx` / `DetachedCenterPanel.tsx` /
+    `AppShell.tsx`, `src/components/tabs/TabBar.tsx`,
+    `src/components/terminal/TerminalView.tsx`, `src/App.tsx`;
+    `src-tauri/src/commands/subwindow.rs`, `platform/x11.rs` / `platform/mod.rs`,
+    `services/window_service.rs` / `services/project_runtime.rs`, `lib.rs`,
+    `tauri.conf.json`, `capabilities/default.json`.*
+    - [x] 🤖 Automated test — `SubwindowDetach`, `DetachedSync`, `DetachedHost`,
+      `TerminalAttachOnly` (frontend) + `window_service` detached-labels selector
+      (backend). tsc clean; 30 #42 frontend tests pass; cargo 373 pass.
+    - [ ] 🖐️ Manual test — needs backend rebuild + live run (pop-out spawns &
+      seeds, PTY attaches without respawn, X11 park + Tauri hide on switch,
+      Wayland hide fallback, dock-back & dock-on-close, main window never parked).
+
+55. **[Bug] Fix tab→project mapping leak.** A tab can show up under the wrong
+    project — e.g. the ProjectEldrun main window showing a `TODO.md` tab that
+    belongs to a different project. This must never happen. Audit tab persistence
+    / restore and the per-scope layout keying (`layoutByScope`, `tab_layout`/
+    `tab_groups`, scope ids) so tabs are strictly bound to their owning project.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+56. **Right-click a tab → start renaming.** A right-click on a tab should
+    immediately enter inline rename mode (rather than going through a menu).
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+57. **Open `README.md` by default for a project with no tab.** When a project is
+    opened/activated and has no tabs to restore, show its `README.md` in an
+    in-app viewer tab by default (uses the Group D.14 viewer).
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+62. **Fast keyboard navigation across projects / subwindows / tabs.** Make the
+    whole app steerable from the keyboard with no mouse required. Needs design
+    choices, but the target set: a fast fullscreen mode for a tab/subwindow,
+    keyboard switching between projects, between subwindows (e.g. `Shift`+arrows
+    to focus subwindows), between tabs in a subwindow (e.g. `Shift`+`Tab`), and
+    between projects (e.g. `Shift`+`Ctrl`+`Tab`), plus closing tabs/subwindows —
+    all keyboard-driven.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group M — In-App Viewers: Text / TeX / Image Enhancements (Phase 2+)
+*Builds on Group D.14 (in-app file→tab viewers). Files: `src/components/embed/FileViewerPane.tsx`,
+`src/components/files/markdown.ts`/`tex.ts`/`highlight.ts`, `fileUtils.ts`
+(`internalViewerFor`), `src/stores/tabs.ts` (`"embed"` tab kind, `viewer`),
+`src/components/embed/EmbedPane.tsx`, backend `commands/tex.rs`
+(`tex_capability`/`compile_tex`), `commands/apps.rs` (`embed_capability`,
+default-app resolution), `src/types/index.ts`, `README.md`.*
+
+43. **Auto-reload the native text viewer from disk (diff-aware).** When a file
+    open in the in-app text viewer changes on disk, reload it with a diff check so
+    external edits (agents, git checkout, other tools) surface in the viewer.
+    Don't clobber unsaved in-tab edits — detect divergence and reconcile (reload
+    when clean; warn/merge-prompt when the buffer is dirty). Likely a file-watch
+    or poll on the open file's mtime/hash.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+44. **TeX viewer: preview off by default.** Default the TeX viewer to the source
+    editor rather than auto-rendering a preview; make preview an explicit toggle.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+45. **Auto-complete in native text viewers (pre-defined model).** Add code/text
+    auto-completion across all native text viewers, driven by a pre-defined
+    (ideally local) model. Settle the model source (local Ollama vs. configured
+    global), trigger/UX, and the privacy posture (no remote calls for local-only
+    projects) when picked.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+46. **Undo/redo in native text/TeX viewers.** Add an undo/redo history to the
+    in-app text and TeX editors (keyboard `Ctrl+Z`/`Ctrl+Shift+Z` plus buttons).
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+47. **Save icon instead of "save/saved" text (+ optional autosave).** Replace the
+    textual save/saved status in the text/TeX viewer with a save icon that
+    reflects dirty/clean state; consider periodic autosave (with the #43
+    diff-aware reload as the counterpart for external changes).
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+48. **Per-file-type native-viewer settings + document supported types.** A single
+    settings surface to configure native-viewer behavior keyed by file type, and
+    document the supported types (and the native text viewer) in `README.md`.
+    Ties into #44 (per-type preview defaults) and #45 (per-type completion).
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+49. **Make file links in text/TeX viewers visibly clickable.** Render links that
+    point at files with a clear affordance (underline / dotted underline) so they
+    read as clickable, in both the text and TeX viewers. (Companion to #50, which
+    governs *where* a clicked link opens.)
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+50. **Link-open routing: same subwindow, or drag-to-set-default.** When a file
+    link (#49) is clicked, open the target in the **same** subwindow by default;
+    if the user drags the link to another subwindow, make that the default target
+    **only for that file, from that linking file, for this session** — discard the
+    mapping when the linking file's tab is closed (and optionally close the
+    linked file(s) with it).
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+51. **Native `.odt` / `.xlsx` viewer.** Add an in-app viewer for OpenDocument /
+    spreadsheet files. First decide whether it's worth it / already feasible via
+    an existing Tauri-side renderer before building one.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+52. **Image viewer: zoom/scroll to the cursor.** Improve image-viewer scrolling so
+    zoom centers on the mouse cursor rather than the viewport origin.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+53. **Drag images (and their tabs) out as drop sources.** Make images in the image
+    viewer — and image tabs — draggable as drop sources, e.g. drag an image/text
+    tab and drop it into a browser file-upload field.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+54. **TeX compile output → PDF in a new tab + compiler options.** Open the
+    compiled PDF as its own tab (it is a real file), and add compiler options to
+    the TeX viewer (output folder, engine/flags, …). Extends the existing
+    `compile_tex` affordance from Group D.14.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+55. **Adjustable text size in the text/TeX/Markdown editors.** Add an `A−`/`A+`
+    control (and `Ctrl` +/−, `Ctrl`+0 to reset) that scales the editor font. In
+    the code editors (text/TeX) the gutter and syntax/link/ghost overlay layers
+    scale together via the `--code-font-size`/`--code-line-height` CSS variables;
+    in Markdown it sizes the source textarea and, once set, the rendered preview
+    base font. The size persists per file type in `viewer_prefs[type].font_size`
+    (alongside #45's autocomplete).
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+66. **SyncTeX PDF↔source navigation + subtex→main compile wiring.** Make the
+    compiled PDF and its `.tex` source navigable both ways, and let a child file
+    build its parent. Compiles now always emit `-synctex=1` (`commands/tex.rs`).
+    *Reverse search:* clicking a point in a PDF (`PdfCanvas`) runs `synctex_edit`
+    and jumps the source tab to that line (via the `editorJump` store +
+    `CodeEditor` `gotoLine`). *Forward search:* after a compile, `synctex_view`
+    maps the source caret to a PDF box that `PdfCanvas` scrolls to and flashes
+    (via the `pdfSync` store). *Subtex wiring:* a successful compile records each
+    `\input`/`\include` child→root in `~/.local/share/eldrun/tex_roots.json`, and
+    `resolve_tex_root` (magic `% !TEX root` comment → stored map → self) redirects
+    a child's Compile to its main document. Adds a compile run animation
+    (`.is-compiling` button sheen + header progress strip, reduced-motion aware).
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group O — Project Security & Permissions (new feature)
+*Files: `src-tauri/src/commands/projects.rs` (create/import), `schema/project.rs`
++ `schema/settings.rs` (new security/permission fields), `ProjectSwitcher.tsx`
+(import/add dialog) + a project-settings "Security" area, download-routing in
+`services/project_runtime.rs`/`commands/`. Distinct from the SSH "no in-app
+passwords" stance — this is per-project policy. Ties into Group G (remote/agent
+auth) and the local/remote git push axis (#21).*
+
+58. **Security stages for project import/add.** Offer graded security modes when
+    adding/importing a project, stored in project settings:
+    - **Highest** — only local models allowed; no git push (optionally no git,
+      no scaffolds).
+    - **Restricted** — a checkable allow-list of models; no git push (optionally
+      no git, no scaffolds).
+    - **Lowest** — everything allowed.
+    Surface as a "Security" area in project settings and enforce it where agents
+    are spawned and where pushes happen.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+59. **Per-project remote-control toggle (default off).** A per-project switch to
+    enable/disable agent remote control (Claude, …), defaulting to **off**.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+60. **Reset browser download path to `~/Downloads`.** Stop redirecting browser
+    downloads into the active project for now — keep the standard browser download
+    path at the user's `~/Downloads`. Routing a download into a project is a
+    security risk if the file is then pushed with the project's git.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+---
+
+## Group R — Right Panel: Polish & App-Window Tracking
+*Files: `src/components/layout/RightPanel.tsx`, `src/styles/themes.css`,
+`src/stores/windows.ts`, backend `commands/apps.rs` + window tracking in
+`services/window_service.rs`/`platform/x11.rs`. The pin toggle itself is done
+(Group D.13 / #37); these are follow-on polish + a tracking-display bug.*
+
+63. **Pin needle black in dark fancy mode.** The right-panel pin (📌) needle isn't
+    legible in the dark "fancy" theme — make it black (or otherwise contrast-fix)
+    in that mode.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+64. **[Bug] Right-panel Apps list must drop closed app windows.** A project-opened
+    external app appears in the right-panel "Apps" list but doesn't disappear when
+    the app/window is closed. Fix the add/remove lifecycle so the list reflects
+    live windows. Doubles as a window-tracking test surface: on hover, show the
+    entry's window id, monitor id, and z-order.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
 ---
 
 Sequencing is **group-wise** — tackle whole groups in this order, since items
 within a group share files and context:
 
-- **Quick wins next:** J (URI routing #33 — last remaining global-apps item).
+- **Quick wins next:** J (#33 URI routing — last remaining global-apps item; the
+  in-app mail #65 / browser #61 in the same group are the larger net-new
+  surfaces, weigh security first and pair with #60).
 - **Then correctness/stability:** C (X11/KDE workspace switching) — the
   highest-risk area; do #15/#16/#17 together.
 - **Then larger features:**
   A (project boxes, builds on the done drag-drop) → E (git worktree) →
   F (session restore) → G (remote/SSH projects, largest net-new backend).
+- **Center panel:** L (#42 detach, #55–#57 tab UX, #62 keyboard nav) — builds on
+  the done D.11 tiling work; start with the #55 mapping bug (correctness), pairs
+  with C since detached windows reuse the per-project parking path.
+- **In-app viewers (incremental):** M (#43–#54) — small, mostly-independent
+  enhancements on the done D.14 viewer; the link pair #49/#50 and the autosave
+  pair #43/#47 are best done together.
+- **Project policy:** O (#58–#60) — per-project security/permission model;
+  touches the create/import dialog and the agent-spawn + git-push paths.
+- **Right-panel polish:** R (#63 needle contrast, #64 app-window tracking bug).
 - **Cross-platform (parallel track):** H (Windows #30 / macOS #31 follow-ups) —
   validate builds & packaging per OS; can proceed alongside the above.
 - **Backend runtime (ongoing):** I (#32) — backend-owned runtime hardening
