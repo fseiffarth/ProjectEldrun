@@ -74,6 +74,31 @@ pub fn sum_jiffies(pids: &[u32]) -> u64 {
     pids.iter().filter_map(|&pid| read_proc_time(pid)).sum()
 }
 
+/// Sum resident memory across `pids`, in KiB. Dead pids are skipped.
+pub fn sum_rss_kib(pids: &[u32]) -> u64 {
+    pids.iter().filter_map(|&pid| read_rss_kib(pid)).sum()
+}
+
+/// Parent pid for a live process.
+pub fn ppid(pid: u32) -> Option<u32> {
+    read_ppid(pid)
+}
+
+/// Command line for a live process, with NUL separators normalized to spaces.
+pub fn cmdline(pid: u32) -> Option<String> {
+    let bytes = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let cmd = bytes
+        .split(|b| *b == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8_lossy(part))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cmd.is_empty() { None } else { Some(cmd) }
+}
+
 /// Parent pid from `/proc/<pid>/stat` (field 4, after the comm field).
 fn read_ppid(pid: u32) -> Option<u32> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -93,6 +118,18 @@ fn read_proc_time(pid: u32) -> Option<u64> {
     let utime: u64 = fields.get(11)?.parse().ok()?;
     let stime: u64 = fields.get(12)?.parse().ok()?;
     Some(utime + stime)
+}
+
+/// Resident set size from `/proc/<pid>/status`, in KiB.
+fn read_rss_kib(pid: u32) -> Option<u64> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in status.lines() {
+        let Some(rest) = line.strip_prefix("VmRSS:") else {
+            continue;
+        };
+        return rest.split_whitespace().next()?.parse().ok();
+    }
+    None
 }
 
 #[cfg(test)]
@@ -128,5 +165,12 @@ mod tests {
         assert!(sum_jiffies(&[me]) > 0, "the running test process should report jiffies");
         // A pid that cannot exist contributes nothing rather than panicking.
         assert_eq!(sum_jiffies(&[u32::MAX]), 0);
+    }
+
+    #[test]
+    fn sum_rss_counts_a_live_process_and_skips_dead_ones() {
+        let me = std::process::id();
+        assert!(sum_rss_kib(&[me]) > 0, "the running test process should report RSS");
+        assert_eq!(sum_rss_kib(&[u32::MAX]), 0);
     }
 }

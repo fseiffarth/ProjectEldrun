@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { FileTree } from "../files/FileTree";
@@ -6,8 +6,11 @@ import { GitHistory } from "../files/GitHistory";
 import { useProjectsStore } from "../../stores/projects";
 import { useWindowsStore } from "../../stores/windows";
 import { useSettingsStore } from "../../stores/settings";
+import { useTabsStore } from "../../stores/tabs";
+import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import { resolveProjectDirectory } from "../../types";
-import { type SortKey } from "../files/fileUtils";
+import { type SortKey, VIEWER_PREF_TYPES } from "../files/fileUtils";
+import type { ViewerPref } from "../../types";
 
 interface GitStatus {
   staged: number;
@@ -62,12 +65,75 @@ function mergeEndings(...groups: string[][]): string[] {
   return [...endings.values()].sort((a, b) => a.localeCompare(b));
 }
 
+/** One collapsible root inside the box multi-root file view. Reuses `FileTree`
+ *  as-is for a single directory; per-root navigation persists via the projects
+ *  store's `rightPanelFolderByProject` map keyed by the root's id. */
+function BoxRootSection({
+  rootId,
+  label,
+  icon,
+  dir,
+  localFile,
+  variant,
+  sortKey,
+  descending,
+}: {
+  rootId: string;
+  label: string;
+  icon: string;
+  dir: string;
+  localFile?: string;
+  variant: "box" | "member";
+  sortKey: SortKey;
+  descending: boolean;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const rel = useProjectsStore((s) => s.rightPanelFolderByProject[rootId] ?? "");
+  const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
+  return (
+    <div className={`file-root file-root--${variant}${collapsed ? " is-collapsed" : ""}`}>
+      <button
+        type="button"
+        className="file-root-header"
+        onClick={() => setCollapsed((c) => !c)}
+        title={dir}
+      >
+        <span className="file-root-caret" aria-hidden>
+          {collapsed ? "▸" : "▾"}
+        </span>
+        <span className="file-root-icon" aria-hidden>
+          {icon}
+        </span>
+        <span className="file-root-name">{label}</span>
+        <span className="file-root-kind">{variant === "box" ? "box" : "project"}</span>
+      </button>
+      {!collapsed && (
+        <div className="file-root-body">
+          <FileTree
+            projectDir={dir}
+            projectId={rootId}
+            localFile={localFile}
+            sortKey={sortKey}
+            descending={descending}
+            hiddenEndings={[]}
+            hiddenPaths={[]}
+            shownPaths={[]}
+            initialRelPath={rel}
+            onRelPathChange={(folder) => setRightPanelFolder(rootId, folder)}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLeave }: Props) {
   const { projects, activeId } = useProjectsStore();
   const rightPanelFolderByProject = useProjectsStore((s) => s.rightPanelFolderByProject);
   const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
   const { windows, refresh, untrack } = useWindowsStore();
   const settings = useSettingsStore((s) => s.settings);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [view, setView] = useState<View>("files");
   const [showSettings, setShowSettings] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("name");
@@ -113,6 +179,41 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
   const projectDir = resolveProjectDirectory(activeProject);
   const localFile = activeProject?.local_file;
   const rightPanelFolder = activeId ? rightPanelFolderByProject[activeId] ?? "" : "";
+
+  // When a box scope is open, the panel shows a multi-root file view: the box
+  // folder plus every member project's root. Detected from the current tab scope
+  // (disjoint `box:<id>` prefix) rather than the project store's activeId.
+  const scope = useTabsStore((s) => s.scope);
+  const boxes = useBoxesStore((s) => s.boxes);
+  const activeBox = useMemo(
+    () =>
+      scope.startsWith(BOX_SCOPE_PREFIX)
+        ? boxes.find((b) => boxScopeId(b.id) === scope) ?? null
+        : null,
+    [scope, boxes],
+  );
+  const boxRoots = useMemo(() => {
+    if (!activeBox) return [];
+    const roots: {
+      rootId: string;
+      label: string;
+      icon: string;
+      dir: string;
+      localFile?: string;
+      variant: "box" | "member";
+    }[] = [];
+    if (activeBox.folder) {
+      roots.push({ rootId: scope, label: activeBox.name, icon: "▣", dir: activeBox.folder, variant: "box" });
+    }
+    for (const id of activeBox.member_ids) {
+      const p = projects.find((m) => m.id === id);
+      if (!p) continue;
+      const dir = resolveProjectDirectory(p);
+      if (!dir) continue;
+      roots.push({ rootId: p.id, label: p.name, icon: "📁", dir, localFile: p.local_file, variant: "member" });
+    }
+    return roots;
+  }, [activeBox, projects, scope]);
 
   const openInOsBrowser = () => {
     if (!projectDir) return;
@@ -275,7 +376,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
           </button>
         )}
         <span style={{ flex: 1 }}>
-          {activeProject ? activeProject.name : "Files"}
+          {activeBox ? `▣ ${activeBox.name}` : activeProject ? activeProject.name : "Files"}
         </span>
         {(["files", "git", "windows"] as View[]).map((v) => (
           <button
@@ -310,7 +411,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
         )}
       </div>
 
-      {gitStatus?.is_repo && view === "files" && (
+      {!activeBox && gitStatus?.is_repo && view === "files" && (
         <>
           <div className="git-action-bar" style={{ position: "relative" }} onMouseLeave={() => setHoveredBtn(null)}>
             {commitMsg !== null ? (
@@ -434,20 +535,41 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
             ))}
           </div>
           <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
-            {open && (
-              <FileTree
-                projectDir={projectDir}
-                projectId={activeId}
-                sortKey={sortKey}
-                descending={descending}
-                hiddenEndings={hiddenEndings}
-                hiddenPaths={hiddenPaths}
-                shownPaths={shownPaths}
-                initialRelPath={rightPanelFolder}
-                onRelPathChange={(folder) => {
-                  if (activeId) setRightPanelFolder(activeId, folder);
-                }}
-              />
+            {open && activeBox ? (
+              boxRoots.length === 0 ? (
+                <div className="file-tree-empty">No member project folders</div>
+              ) : (
+                boxRoots.map((r) => (
+                  <BoxRootSection
+                    key={r.rootId}
+                    rootId={r.rootId}
+                    label={r.label}
+                    icon={r.icon}
+                    dir={r.dir}
+                    localFile={r.localFile}
+                    variant={r.variant}
+                    sortKey={sortKey}
+                    descending={descending}
+                  />
+                ))
+              )
+            ) : (
+              open && (
+                <FileTree
+                  projectDir={projectDir}
+                  projectId={activeId}
+                  localFile={localFile}
+                  sortKey={sortKey}
+                  descending={descending}
+                  hiddenEndings={hiddenEndings}
+                  hiddenPaths={hiddenPaths}
+                  shownPaths={shownPaths}
+                  initialRelPath={rightPanelFolder}
+                  onRelPathChange={(folder) => {
+                    if (activeId) setRightPanelFolder(activeId, folder);
+                  }}
+                />
+              )
             )}
           </div>
         </>
@@ -511,6 +633,51 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
               </div>
             )}
             {settingsError && <div className="settings-error">{settingsError}</div>}
+
+            {/* #48 per-file-type native-viewer settings (global, not per-project).
+                Toggles opt-in local autocomplete (#45) per type, plus the global
+                autosave (#47). */}
+            <div className="settings-section-title">Native Viewers</div>
+            <p className="settings-help">
+              Eldrun renders these file types in-app. Configure their behaviour
+              below. Autocomplete is local-only (Ollama) and opt-in.
+            </p>
+            <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
+              <input
+                type="checkbox"
+                checked={settings?.autosave === true}
+                onChange={(e) => void updateSettings({ autosave: e.target.checked })}
+              />
+              <span>Autosave edits</span>
+            </label>
+            <div className="viewer-prefs-list">
+              {VIEWER_PREF_TYPES.filter((t) => t.autocomplete).map((t) => {
+                const pref: ViewerPref = settings?.viewer_prefs?.[t.id] ?? {};
+                const patch = (next: ViewerPref) =>
+                  void updateSettings({
+                    viewer_prefs: {
+                      ...(settings?.viewer_prefs ?? {}),
+                      [t.id]: { ...pref, ...next },
+                    },
+                  });
+                return (
+                  <div className="viewer-pref-row" key={t.id}>
+                    <span className="viewer-pref-name">{t.label}</span>
+                    <span className="viewer-pref-exts">{t.extensions.join(" ")}</span>
+                    {t.autocomplete && (
+                      <label className="viewer-pref-toggle">
+                        <input
+                          type="checkbox"
+                          checked={pref.autocomplete === true}
+                          onChange={(e) => patch({ autocomplete: e.target.checked })}
+                        />
+                        <span>Autocomplete</span>
+                      </label>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
 
             {settings?.debug && (
               <>

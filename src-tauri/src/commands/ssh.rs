@@ -25,6 +25,30 @@ pub struct RemoteEntry {
     pub is_dir: bool,
 }
 
+/// Availability of the external binaries remote projects rely on, so the UI can
+/// warn the moment the "Remote (SSH) project" checkbox is enabled instead of
+/// only surfacing a failure after the user tries to connect/mount.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SshTooling {
+    /// `sshfs` — required to mount a remote project locally.
+    pub sshfs: bool,
+    /// `sshpass` — required only for password auth (key/agent auth needs none).
+    pub sshpass: bool,
+    /// `openvpn` + `pkexec` — required only for VPN-gated hosts.
+    pub openvpn: bool,
+}
+
+/// Report which remote-project tools are present on `PATH`. Called when the
+/// remote checkbox is toggled on so missing tools can be flagged up front.
+#[tauri::command]
+pub fn ssh_tooling_status() -> SshTooling {
+    SshTooling {
+        sshfs: ssh_mount::sshfs_available(),
+        sshpass: sshpass_available(),
+        openvpn: crate::services::openvpn::openvpn_available(),
+    }
+}
+
 /// Run a built command, returning stdout on success or the trimmed stderr (or a
 /// generic message) on failure. `what` names the binary for error messages.
 fn capture(mut cmd: Command, what: &str) -> Result<String, String> {

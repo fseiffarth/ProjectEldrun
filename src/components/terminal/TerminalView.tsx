@@ -5,6 +5,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, Event } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
+import { isDetachedPtyId } from "../../stores/tabs";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalOutput {
@@ -32,6 +33,13 @@ interface Props {
   visible: boolean;
   // Whether this pane holds keyboard focus / shows the active highlight.
   focused: boolean;
+  // #42: ATTACH-ONLY mode for the detached subwindow. The detached window opens
+  // a SECOND TerminalView for the SAME PTY id (output is broadcast via app.emit,
+  // so it just also receives the stream). It must NOT spawn the PTY (that would
+  // kill+respawn the live one, destroying scrollback) and must NOT kill it on
+  // unmount (the main window's still-mounted pane owns the PTY lifetime). Such a
+  // terminal opens blank and only shows output produced AFTER it attached.
+  attachOnly?: boolean;
 }
 
 function terminalTheme(scheme: string | undefined) {
@@ -88,7 +96,7 @@ function terminalTheme(scheme: string | undefined) {
 // scrollback on flush anyway.
 const PENDING_OUTPUT_CAP = 1_000_000;
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, visible, focused }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, visible, focused, attachOnly = false }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -174,6 +182,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
       invoke("pty_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
       if (focusedRef.current) term.focus();
+      // The pane may keep growing right after open — the startup fullscreen
+      // transition (especially on a larger screen) and late web-font load both
+      // change the final cell geometry after this first fit. Re-fit on the next
+      // frame, shortly after, and once fonts settle so cols/rows match the final
+      // pane size instead of the size at open time.
+      requestAnimationFrame(() => { if (!cancelled) doFitRef.current?.(); });
+      setTimeout(() => { if (!cancelled) doFitRef.current?.(); }, 300);
+      document.fonts?.ready?.then(() => { if (!cancelled) doFitRef.current?.(); }).catch(() => {});
     };
 
     // Wire keyboard input → PTY write.
@@ -254,6 +270,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       unlistenReady.current = readyListener;
       unlistenExit.current = exitListener;
 
+      // #42: an attach-only terminal (detached window) must NEVER spawn the PTY.
+      // The PTY already exists, spawned by the main window's pane; pty_spawn with
+      // a duplicate id would kill+respawn it, destroying scrollback / the agent
+      // session. We only subscribe to the broadcast output/input by id.
+      if (attachOnly) return;
+
       try {
         await invoke("pty_spawn", {
           opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly },
@@ -305,10 +327,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       unlistenOutput.current = null;
       unlistenReady.current = null;
       unlistenExit.current = null;
-      invoke("pty_kill", { id }).catch(() => {});
+      // #42: do NOT kill the PTY on unmount when (a) this is an attach-only
+      // viewer (the detached window — the main pane owns it), or (b) this pane is
+      // unmounting *because its tab was just detached* into a popped-out window
+      // (the detached attach-only viewer is now reading this PTY; killing it
+      // would leave that window a dead black pane). Only a real close tears it
+      // down.
+      if (!attachOnly && !isDetachedPtyId(id)) {
+        invoke("pty_kill", { id }).catch(() => {});
+      }
       term.dispose();
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, attachOnly]);
 
   useEffect(() => {
     if (termRef.current) {

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { DropEdge } from "./tabs";
+import type { InternalViewer } from "../components/files/fileUtils";
 
 /**
  * Result of the backend `embed_capability` check for a dragged file, prefetched
@@ -26,8 +27,8 @@ export interface EmbedCap {
  *             is resolved at release time (embed vs external), not a drop gate.
  */
 export interface TabDrag {
-  kind: "tab" | "file";
-  key: string; // the dragged tab's key (tab drags); "" for file drags
+  kind: "tab" | "file" | "link" | "detached";
+  key: string; // the dragged tab's key (tab drags); "" for file/link/detached drags
   fromGroup: string; // group the tab started in (tab drags); "" for file drags
   label: string; // shown in the floating ghost
   pointerX: number;
@@ -43,10 +44,25 @@ export interface TabDrag {
   fileName?: string; // basename, used to label the embed tab
   fileExec?: string; // explicit handler hint, if any
   // When set, drop opens the file in the named built-in viewer (pdf/image/
-  // markdown/text) rather than the external embed path. See commitFileDrop.
-  viewer?: "pdf" | "image" | "markdown" | "text";
+  // markdown/text/tex) rather than the external embed path. See commitFileDrop.
+  viewer?: InternalViewer;
   // Prefetched capability for this file (null while the query is in flight).
   embedCap?: EmbedCap | null;
+  // ── Link-drag payload (kind === "link") ───────────────────────────────────
+  // A file LINK dragged out of a viewer to set its session-only target
+  // subwindow (#50). Carries the linking tab's key and the target file path +
+  // viewer; on a subwindow drop CenterPanel records the route and opens it
+  // there. linkTargetPath doubles as `filePath` so the existing ghost label and
+  // open paths can reuse it.
+  linkingTabKey?: string;
+  linkTargetPath?: string;
+  // ── Detached-window drag payload (kind === "detached") ────────────────────
+  // #42: a whole popped-out subwindow being dragged back onto the main window.
+  // Driven by pointer coords streamed from the detached window (which has the
+  // pointer capture); on release over a group the main window docks the group via
+  // attachGroup. Identifies the detached group to dock.
+  detachedScope?: string;
+  detachedGroupId?: string;
 }
 
 interface DragStore {
@@ -59,7 +75,20 @@ interface DragStore {
       filePath: string;
       fileName: string;
       fileExec?: string;
-      viewer?: "pdf" | "image" | "markdown" | "text";
+      viewer?: InternalViewer;
+    },
+  ) => void;
+  startLinkDrag: (
+    d: Pick<TabDrag, "label" | "pointerX" | "pointerY"> & {
+      linkingTabKey: string;
+      linkTargetPath: string;
+      viewer: InternalViewer;
+    },
+  ) => void;
+  startDetachedDrag: (
+    d: Pick<TabDrag, "label" | "pointerX" | "pointerY"> & {
+      detachedScope: string;
+      detachedGroupId: string;
     },
   ) => void;
   setEmbedCap: (cap: EmbedCap | null) => void;
@@ -101,6 +130,42 @@ export const useDragStore = create<DragStore>((set) => ({
         fileExec: d.fileExec,
         viewer: d.viewer,
         embedCap: null,
+      },
+    }),
+  startLinkDrag: (d) =>
+    set({
+      drag: {
+        kind: "link",
+        key: "",
+        fromGroup: "",
+        label: d.label,
+        pointerX: d.pointerX,
+        pointerY: d.pointerY,
+        overGroup: null,
+        edge: null,
+        reorderGroup: null,
+        reorderIndex: null,
+        linkingTabKey: d.linkingTabKey,
+        linkTargetPath: d.linkTargetPath,
+        viewer: d.viewer,
+        embedCap: null,
+      },
+    }),
+  startDetachedDrag: (d) =>
+    set({
+      drag: {
+        kind: "detached",
+        key: "",
+        fromGroup: "",
+        label: d.label,
+        pointerX: d.pointerX,
+        pointerY: d.pointerY,
+        overGroup: null,
+        edge: null,
+        reorderGroup: null,
+        reorderIndex: null,
+        detachedScope: d.detachedScope,
+        detachedGroupId: d.detachedGroupId,
       },
     }),
   setEmbedCap: (cap) =>

@@ -44,6 +44,10 @@ pub const ORIGIN_MIDDLE_FILE_BROWSER: &str = "middle_file_browser";
 pub const ORIGIN_GLOBAL_APP: &str = "global_app";
 pub const ORIGIN_MANUAL_LAUNCH: &str = "manual_launch";
 pub const ORIGIN_RESTORED: &str = "restored";
+/// A tiling subwindow popped out into its own borderless Tauri WebviewWindow
+/// (#42). Project-owned: it follows the same project-switch hide/show parking
+/// path as the other project-owned window origins.
+pub const ORIGIN_DETACHED_SUBWINDOW: &str = "detached_subwindow";
 
 fn default_window_origin() -> String {
     ORIGIN_MANUAL_LAUNCH.to_string()
@@ -240,7 +244,30 @@ pub fn open_file(
 ) -> Result<TrackedWindow, String> {
     let origin = origin.unwrap_or_else(|| ORIGIN_MANUAL_LAUNCH.to_string());
     let before = list_window_ids();
-    if let Some(exec) = handler {
+    // Resolve the executable to launch: an explicit handler always wins;
+    // otherwise consult the project-then-global default-app map (keyed by
+    // extension). When neither has an entry we leave it to the OS default below,
+    // preserving the prior plain-open behaviour.
+    let effective = match handler {
+        Some(h) => Some(h),
+        None => {
+            let global_apps = crate::commands::default_apps::get_default_apps()
+                .map(|d| d.0)
+                .unwrap_or_default();
+            let project_apps = project_apps_for_id(project_id.as_deref());
+            Path::new(&path)
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
+                .and_then(|ext| {
+                    project_apps
+                        .get(&ext)
+                        .or_else(|| global_apps.get(&ext))
+                        .cloned()
+                })
+                .filter(|s| !s.trim().is_empty())
+        }
+    };
+    if let Some(exec) = effective {
         let launch_exec = resolve_launch_exec(&exec);
         let child = Command::new(&launch_exec)
             .arg(&path)
@@ -331,7 +358,7 @@ pub fn run_script_detached(
 /// single stable top-level under its own PID.
 pub const EMBEDDABLE_EXECS: &[&str] = &[
     "xterm", "xev", "mousepad", "okular", "evince", "eog", "feh", "mpv", "qpdfview", "gedit",
-    "code",
+    "code", "blender",
 ];
 
 /// Whether `exec` (a path or bare command) names an embeddable app, matched by
@@ -448,6 +475,7 @@ pub fn embed_capability(
     workspace: State<'_, crate::commands::workspace::WorkspaceStateArc>,
     path: String,
     handler: Option<String>,
+    project_id: Option<String>,
 ) -> EmbedCapability {
     let os_embeddable = {
         let ws = workspace.lock().unwrap();
@@ -457,9 +485,11 @@ pub fn embed_capability(
     let global_apps = crate::commands::default_apps::get_default_apps()
         .map(|d| d.0)
         .unwrap_or_default();
-    // Phase 1 takes no project_id, so only the passed handler / global / mime
-    // resolution apply (project default_apps fold in with Phase 2's wiring).
-    let resolved_exec = resolve_default_handler(&path, handler.as_deref(), None, &global_apps);
+    // Resolution precedence: explicit handler → project default_apps → global →
+    // system mime default. A project override therefore wins over the global map.
+    let project_apps = project_apps_for_id(project_id.as_deref());
+    let resolved_exec =
+        resolve_default_handler(&path, handler.as_deref(), Some(&project_apps), &global_apps);
     let app_embeddable = resolved_exec.as_deref().map_or(false, is_embeddable_exec);
 
     EmbedCapability {
@@ -467,6 +497,120 @@ pub fn embed_capability(
         app_embeddable,
         resolved_exec,
     }
+}
+
+/// Project-level default-app map for `project_id`, resolved via projects.json →
+/// the project's `local_file` → project.json `default_apps`. Returns an empty
+/// map when the id is absent or any read fails, so resolution then falls back to
+/// the global map / system default.
+fn project_apps_for_id(project_id: Option<&str>) -> HashMap<String, String> {
+    let Some(id) = project_id else {
+        return HashMap::new();
+    };
+    let list_path = crate::storage::state_dir().join("projects.json");
+    let list: Vec<crate::schema::ProjectEntry> =
+        crate::storage::read_json(&list_path).unwrap_or_default();
+    let Some(entry) = list.into_iter().find(|e| e.id == id) else {
+        return HashMap::new();
+    };
+    let project: crate::schema::Project =
+        match crate::storage::read_json(Path::new(&entry.local_file)) {
+            Ok(p) => p,
+            Err(_) => return HashMap::new(),
+        };
+    project.default_apps.unwrap_or_default()
+}
+
+/// One installed application, surfaced to the "set default app" picker.
+#[derive(Debug, Clone, Serialize)]
+pub struct InstalledApp {
+    /// Display name (`Name=` from the `.desktop` entry).
+    pub name: String,
+    /// Launch executable (first non-`%` token of `Exec=`).
+    pub exec: String,
+    /// Raw `Icon=` value (theme name or path); the frontend resolves it lazily.
+    pub icon: Option<String>,
+}
+
+/// List installed applications by scanning `.desktop` entries in the standard
+/// application directories. Powers the search box in the "set default app"
+/// dialog. Skips hidden entries (`NoDisplay=true`) and non-`Application` types,
+/// dedupes by executable basename (user dirs take precedence), sorted by name.
+#[tauri::command]
+pub fn list_installed_apps() -> Vec<InstalledApp> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut apps: Vec<InstalledApp> = Vec::new();
+    for dir in desktop_app_dirs() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                continue;
+            }
+            if let Some(app) = parse_installed_app(&path) {
+                let key = Path::new(&app.exec)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase())
+                    .unwrap_or_else(|| app.exec.to_lowercase());
+                if seen.insert(key) {
+                    apps.push(app);
+                }
+            }
+        }
+    }
+    apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    apps
+}
+
+/// Parse a single `.desktop` file into an `InstalledApp`, or `None` when it is
+/// hidden, not an application, or has no `Exec`. First value of each key wins so
+/// the unlocalized `Name=`/`Exec=` take precedence over later `[Action]` groups.
+fn parse_installed_app(path: &Path) -> Option<InstalledApp> {
+    let content = fs::read_to_string(path).ok()?;
+    let mut in_entry = false;
+    let mut name: Option<String> = None;
+    let mut exec: Option<String> = None;
+    let mut icon: Option<String> = None;
+    let mut no_display = false;
+    let mut is_app = true;
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry {
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("Name=") {
+            if name.is_none() {
+                name = Some(v.to_string());
+            }
+        } else if let Some(v) = line.strip_prefix("Exec=") {
+            if exec.is_none() {
+                exec = first_exec_token(v);
+            }
+        } else if let Some(v) = line.strip_prefix("Icon=") {
+            if icon.is_none() {
+                icon = Some(v.to_string());
+            }
+        } else if let Some(v) = line.strip_prefix("NoDisplay=") {
+            no_display = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("Type=") {
+            is_app = v == "Application";
+        }
+    }
+    if no_display || !is_app {
+        return None;
+    }
+    let exec = exec?;
+    Some(InstalledApp {
+        name: name.unwrap_or_else(|| exec.clone()),
+        exec,
+        icon,
+    })
 }
 
 struct DesktopEntry {
@@ -1311,6 +1455,61 @@ mod tests {
         // This documents the actual behavior.
         let result = first_exec_token("\"/usr/bin/myapp\"");
         assert_eq!(result, Some("/usr/bin/myapp".into()));
+    }
+
+    // ── installed-app parsing / embeddable allowlist ───────────────────────
+
+    fn write_desktop(body: &str) -> PathBuf {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "eldrun-test-{}-{}.desktop",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn parse_installed_app_extracts_name_exec_icon() {
+        let path = write_desktop(
+            "[Desktop Entry]\nType=Application\nName=Blender\nExec=/opt/blender/blender %f\nIcon=blender\n",
+        );
+        let app = parse_installed_app(&path).expect("should parse");
+        fs::remove_file(&path).ok();
+        assert_eq!(app.name, "Blender");
+        assert_eq!(app.exec, "/opt/blender/blender");
+        assert_eq!(app.icon.as_deref(), Some("blender"));
+    }
+
+    #[test]
+    fn parse_installed_app_skips_nodisplay_and_non_application() {
+        let hidden = write_desktop(
+            "[Desktop Entry]\nType=Application\nName=Hidden\nExec=foo\nNoDisplay=true\n",
+        );
+        let link =
+            write_desktop("[Desktop Entry]\nType=Link\nName=Bookmark\nExec=foo\nURL=http://x\n");
+        let no_exec = write_desktop("[Desktop Entry]\nType=Application\nName=NoExec\n");
+        assert!(parse_installed_app(&hidden).is_none());
+        assert!(parse_installed_app(&link).is_none());
+        assert!(parse_installed_app(&no_exec).is_none());
+        for p in [hidden, link, no_exec] {
+            fs::remove_file(&p).ok();
+        }
+    }
+
+    #[test]
+    fn blender_is_on_embeddable_allowlist() {
+        assert!(is_embeddable_exec("/opt/blender-5.1.2-linux-x64/blender"));
+        assert!(is_embeddable_exec("blender"));
+    }
+
+    #[test]
+    fn project_apps_for_id_empty_without_id() {
+        assert!(project_apps_for_id(None).is_empty());
     }
 
     // ── Windows Start Menu matching ────────────────────────────────────────

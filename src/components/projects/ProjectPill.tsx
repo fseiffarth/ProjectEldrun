@@ -15,9 +15,15 @@ interface Props {
   onClick: () => void;
   onClose: () => void;
   onReorder: (fromId: string, toId: string) => void;
+  /** Alt-drop one pill onto another: box the two projects together. */
+  onGroup?: (fromId: string, toId: string) => void;
+  /** Set when this pill is a member of a box (id of that box). */
+  boxId?: string;
+  /** Dragging the pill out of its box and releasing over empty space removes it. */
+  onLeaveBox?: (projectId: string) => void;
 }
 
-const PILL_DRAG_TYPE = "application/x-eldrun-project";
+export const PILL_DRAG_TYPE = "application/x-eldrun-project";
 
 function statusLabel(status: string): string {
   if (status === "current") return "Current";
@@ -221,7 +227,7 @@ function PublishWindow({
   );
 }
 
-export function ProjectPill({ project, active, onClick, onClose, onReorder }: Props) {
+export function ProjectPill({ project, active, onClick, onClose, onReorder, onGroup, boxId, onLeaveBox }: Props) {
   const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
   const [timeToday, setTimeToday] = useState<number | null>(null);
   const [cpu, setCpu] = useState<number | null>(null);
@@ -230,6 +236,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder }: Pr
   const [editDescription, setEditDescription] = useState(false);
   const [showPublish, setShowPublish] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  // True while an Alt-drag hovers this pill: the drop will box the two
+  // projects together rather than reorder. Drives the distinct hover affordance.
+  const [groupHint, setGroupHint] = useState(false);
   const [dragging, setDragging] = useState(false);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
@@ -362,6 +371,25 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder }: Pr
           >
             Publish to GitHub…
           </button>
+          <button
+            onClick={() => {
+              setContextMenu(null);
+              // Clear this project's tabs in memory. For the ACTIVE project the
+              // debounced saveLayout effect persists the empty layout; for a
+              // non-active project nothing else writes it, so persist explicitly.
+              useTabsStore.getState().closeAllTabs(project.id);
+              if (project.local_file) {
+                void invoke("save_tab_layout", {
+                  localFile: project.local_file,
+                  tabs: [],
+                  groups: null,
+                  sessions: [],
+                }).catch(() => {});
+              }
+            }}
+          >
+            Close all tabs
+          </button>
         </div>,
         document.body,
       )}
@@ -391,7 +419,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder }: Pr
 
       <div
         ref={pillRef}
-        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${dragOver ? " drag-over" : ""}${dragging ? " dragging" : ""}`}
+        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${dragOver ? " drag-over" : ""}${groupHint ? " drag-group" : ""}${dragging ? " dragging" : ""}`}
         draggable
         onMouseEnter={handleMouseEnter}
         onMouseLeave={() => { setPopupPos(null); setTimeToday(null); setCpu(null); }}
@@ -408,16 +436,39 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder }: Pr
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
           if (!dragOver) setDragOver(true);
+          // Alt toggles the gesture to "box these two together" (see onDrop).
+          const wantGroup = e.altKey && !!onGroup;
+          if (wantGroup !== groupHint) setGroupHint(wantGroup);
         }}
-        onDragLeave={() => setDragOver(false)}
+        onDragLeave={() => { setDragOver(false); setGroupHint(false); }}
         onDrop={(e) => {
           setDragOver(false);
+          setGroupHint(false);
           const fromId = e.dataTransfer.getData(PILL_DRAG_TYPE);
           if (!fromId || fromId === project.id) return;
           e.preventDefault();
-          onReorder(fromId, project.id);
+          // Consume the drop so it does NOT also bubble to an enclosing BoxChip
+          // (→ assign-to-box) or the ungrouped pills strip (→ assign-to-null).
+          e.stopPropagation();
+          // Alt-drop boxes the two projects together; a plain drop reorders.
+          if (e.altKey && onGroup) {
+            onGroup(fromId, project.id);
+          } else {
+            onReorder(fromId, project.id);
+          }
         }}
-        onDragEnd={() => { setDragOver(false); setDragging(false); }}
+        onDragEnd={(e) => {
+          setDragOver(false);
+          setGroupHint(false);
+          setDragging(false);
+          // Released over no drop target (dropEffect "none") while this pill is a
+          // box member → drag-out: remove it from the box. Drops that landed on a
+          // real target (strip, another box, a reorder) set "move" and are handled
+          // there, so they don't also trigger a leave here.
+          if (boxId && onLeaveBox && e.dataTransfer.dropEffect === "none") {
+            onLeaveBox(project.id);
+          }
+        }}
       >
         <button className="pill-main" onClick={onClick}>
           <span className="pill-folder-icon" aria-hidden>{timerPaused ? "⏸" : "📁"}</span>

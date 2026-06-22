@@ -33,10 +33,10 @@
     },
     {
         "id": "0ebbf666-3490-46f3-869f-ac90a889bdfd",
-        "name": "ExampleOne",
+        "name": "SampleProject",
         "status": "active",
         "position": 20,
-        "local_file": "/home/user/Documents/ExampleOne/project.json",
+        "local_file": "/home/user/Documents/SampleProject/project.json",
         "_unknown_test": "preserved"
     }
 ]

@@ -14,7 +14,40 @@ html, body, #root {
   width: 100%;
   overflow: hidden;
   user-select: none;
-  background: var(--bg-main);
+  background: var(--bg-main, #101624);
+}
+
+/* #42: detached-subwindow seed-wait state. Explicit colors (not theme vars) so
+   it stays visible even before the detached window has applied a theme class —
+   otherwise an unseeded window reads as a blank black pane. */
+.detached-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  width: 100%;
+  background: #101624;
+  color: #9fb0d0;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+/* #42: detached ("pop out") window root. It renders straight into #root, which
+   is not a flex container, so `.center-panel`'s `flex: 1` has nothing to grow
+   into and the panel collapses around its absolutely-positioned subwindow,
+   pinning the content to the top. Give it the full window height so the
+   subwindow fills the frame and is vertically centred. */
+.detached-center {
+  height: 100%;
+}
+
+/* #42: the detached window's tab bar doubles as a drag handle — its empty area
+   drags the whole popout back onto the main window (or repositions it). */
+.detached-drag-handle {
+  cursor: grab;
+}
+.detached-drag-handle:active {
+  cursor: grabbing;
 }
 
 /* ── Global scrollbar baseline ───────────────────────────────────────────
@@ -211,6 +244,39 @@ input {
   font: inherit;
 }
 
+/* ── Default dropdown style ──────────────────────────────────────────────
+   One consistent look for every <select> (custom caret, themed surface,
+   readable option popup). Component-specific rules below can still override
+   sizing, but they no longer need to restate the base appearance. */
+select {
+  appearance: none;
+  background-color: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 3px 28px 3px 8px;
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-primary) 50%),
+    linear-gradient(135deg, var(--text-primary) 50%, transparent 50%);
+  background-position:
+    calc(100% - 13px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+select:hover,
+select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+select option {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
 .app-body {
   flex: 1;
   display: flex;
@@ -320,6 +386,9 @@ input {
   width: 20px;
   object-fit: contain;
   flex-shrink: 0;
+  /* Ring/branch strokes use currentColor so the logo stays legible on every
+     theme (the dark-green original vanished on the dark background). */
+  color: var(--text-primary);
 }
 
 /* The logo doubles as the root-terminal switch button. */
@@ -379,6 +448,51 @@ input {
   color: var(--warning);
   letter-spacing: 0.4px;
   line-height: 1;
+}
+
+.app-resource-display {
+  height: 32px;
+  min-width: 82px;
+  padding: 0 6px;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.app-resource-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.app-resource-symbol {
+  min-width: 24px;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.app-resource-row.low {
+  color: var(--success);
+}
+
+.app-resource-row.medium {
+  color: var(--warning);
+}
+
+.app-resource-row.high {
+  color: var(--danger);
 }
 
 .conn-type-icon {
@@ -475,12 +589,8 @@ input {
   flex-shrink: 0;
 }
 
-.file-viewer-name {
+.file-viewer-header-spacer {
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
 }
 
 .file-viewer-open-external {
@@ -558,6 +668,21 @@ input {
   font-size: 12px;
   line-height: 1.5;
   tab-size: 2;
+  /* Disable ligatures/kerning: the highlight overlay below splits the text into
+     many <span> tokens, which breaks ligature shaping at span boundaries. If the
+     textarea (plain text) still formed ligatures, its glyph advances would
+     diverge from the overlay's, so the caret drifts further from the coloured
+     text toward the end of each line. A fixed per-glyph advance keeps them 1:1. */
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "clig" 0, "calt" 0;
+  font-kerning: none;
+  /* Force sub-pixel glyph advances. WebKitGTK otherwise rounds the textarea's
+     per-glyph advance to a whole pixel when placing the caret, while the <pre>
+     overlay lays glyphs out with sub-pixel precision. That fractional per-char
+     difference is invisible at a line's start but accumulates into a visible
+     caret/text drift toward the end of long lines. Pinning both layers to
+     geometricPrecision makes their advances identical so they stay aligned. */
+  text-rendering: geometricPrecision;
 }
 
 /* Zoom controls in the image viewer header. */
@@ -600,6 +725,19 @@ input {
   font-size: 10px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* Text-size control: the numeric level doubles as a "reset to default" button. */
+.file-viewer-fontsize-level {
+  min-width: 22px;
+  background: transparent;
+  border: 0;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.file-viewer-fontsize-level:hover {
+  color: var(--text-primary);
 }
 
 /* Image viewer: a clipped viewport over a checkerboard so transparency shows.
@@ -671,6 +809,11 @@ input {
   display: flex;
   height: 100%;
   min-height: 0;
+  /* Editor font metrics. Defaults match the shared 12px/18px layout; the text
+     size control overrides these inline so the gutter + overlay layers scale
+     together and stay aligned. */
+  --code-font-size: 12px;
+  --code-line-height: 18px;
 }
 
 .file-viewer-gutter {
@@ -679,8 +822,8 @@ input {
   padding: 10px 8px 10px 10px;
   text-align: right;
   font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--code-font-size, 12px);
+  line-height: var(--code-line-height, 18px);
   color: var(--text-muted);
   background: var(--bg-panel);
   border-right: 1px solid var(--border-color);
@@ -688,26 +831,555 @@ input {
   font-variant-numeric: tabular-nums;
 }
 
+/* The line numbers are translated as a block to follow the textarea's vertical
+   scroll (see syncScroll); the gutter itself stays put and clips them. */
+.file-viewer-gutter-inner {
+  will-change: transform;
+}
+
 .file-viewer-gutter-line {
-  height: 18px;
+  height: var(--code-line-height, 18px);
+}
+
+/* The editing area beside the gutter. It holds the highlight <pre> layer and the
+   <textarea> stacked on top of each other; the textarea owns the scroll and the
+   <pre> is scroll-synced from JS. Both share identical font metrics and padding
+   so the coloured text sits exactly under the editable text. */
+.file-viewer-code-area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-panel);
 }
 
 .file-viewer-code-editor {
-  flex: 1;
-  width: auto;
-  min-width: 0;
+  position: absolute;
+  inset: 0;
+  width: 100%;
   height: 100%;
-  line-height: 18px;
+  z-index: 1;
+  background: transparent;
+  font-size: var(--code-font-size, 12px);
+  line-height: var(--code-line-height, 18px);
   white-space: pre;
   overflow: auto;
   tab-size: 4;
 }
 
-.file-viewer-pdf {
+/* While a follow modifier (Ctrl/Cmd) is held AND the pointer is over a recognised
+   link in the LaTeX source editor, show a link cursor so Ctrl/Cmd+Click to open a
+   referenced file is discoverable. Gated on hover so only the link reads as
+   clickable, not the whole editor. */
+.file-viewer-code-area.link-hover .file-viewer-code-editor {
+  cursor: pointer;
+}
+
+/* With a highlight layer present, hide the textarea's own glyphs (keeping the
+   caret visible) so the coloured <pre> underneath shows through. The selection
+   highlight still paints over the transparent text. */
+.file-viewer-code-area.highlighted .file-viewer-code-editor {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--text-primary);
+}
+
+.file-viewer-highlight {
+  position: absolute;
+  /* Sized to its own content (not inset to the box) and translated to follow the
+     textarea's scroll; the parent (.file-viewer-code-area, overflow:hidden) clips
+     it. A transform isn't clamped to a scroll range, so it tracks the textarea
+     past where the overlay could scroll itself — see syncScroll. */
+  top: 0;
+  left: 0;
+  min-width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  will-change: transform;
+  pointer-events: none;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: var(--code-font-size, 12px);
+  line-height: var(--code-line-height, 18px);
+  white-space: pre;
+  tab-size: 4;
+  color: var(--text-primary);
+  /* Match the textarea's fixed glyph advance so the coloured text stays exactly
+     under the editable text and the caret never drifts (see .file-viewer-editor). */
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "clig" 0, "calt" 0;
+  font-kerning: none;
+  text-rendering: geometricPrecision;
+}
+
+/* Syntax token colours. These reference the existing per-theme semantic
+   variables, so highlighting adapts to every theme automatically with no
+   per-theme additions. */
+.tok-comment { color: var(--text-muted); font-style: italic; }
+.tok-string { color: var(--success); }
+.tok-keyword { color: var(--accent-secondary); }
+.tok-num { color: var(--warning); }
+.tok-type { color: var(--accent-hover); }
+.tok-func { color: var(--accent); }
+.tok-tag { color: var(--accent); }
+.tok-attr { color: var(--accent-secondary); }
+.tok-prop { color: var(--accent); }
+
+/* #49 link-decoration + #45 ghost overlays: transparent <pre> layers aligned to
+   the textarea exactly like .file-viewer-highlight, so only their styled spans
+   paint. They sit ABOVE the highlight layer but below the textarea caret. */
+.file-viewer-link-layer,
+.file-viewer-ghost {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  overflow: hidden;
+  pointer-events: none;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: var(--code-font-size, 12px);
+  line-height: var(--code-line-height, 18px);
+  white-space: pre;
+  tab-size: 4;
+  color: transparent;
+  /* Same fixed glyph advance as the textarea/highlight layer (see above). */
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "clig" 0, "calt" 0;
+  font-kerning: none;
+  text-rendering: geometricPrecision;
+}
+
+/* The link layer is scroll-synced with a transform like .file-viewer-highlight,
+   so it is sized to its own content and clipped by the parent (not inset to the
+   box). The ghost layer keeps the inset/overflow model above. */
+.file-viewer-link-layer {
+  inset: auto;
+  top: 0;
+  left: 0;
+  min-width: 100%;
+  overflow: visible;
+  will-change: transform;
+}
+
+/* #49: recognised file links read as clickable — a dotted underline in the link
+   accent colour. Applies in both the code editor overlay and rendered markdown. */
+.file-viewer-link-layer .file-link,
+.markdown-body a.file-link {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--accent, #4493f8);
+}
+.markdown-body a.file-link {
+  color: var(--accent, #4493f8);
+}
+
+/* #49: hover hint advertising the open shortcut (e.g. "Ctrl+Click to open") for a
+   recognised file link, in both the LaTeX source editor and the markdown preview.
+   Anchored (position:fixed) just above the link's top-left; never blocks a click. */
+.link-open-hint {
+  position: fixed;
+  z-index: 60;
+  transform: translateY(-100%);
+  margin-top: -6px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--bg-main, #1f2430);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+/* Soft-wrap mode (LaTeX viewer): wrap long lines to the editor width instead of
+   scrolling horizontally. The textarea (wrap="soft") and all overlay <pre> layers
+   must wrap identically — same width, same break rules — so the caret, coloured
+   glyphs and link spans stay aligned. overflow-wrap:anywhere breaks tokens with no
+   break point (long URLs/paths) at the edge rather than overflowing. With no
+   horizontal scroll, the editor's overflow-x is hidden. */
+.file-viewer-code-area.is-wrapped .file-viewer-code-editor,
+.file-viewer-code-area.is-wrapped .file-viewer-highlight,
+.file-viewer-code-area.is-wrapped .file-viewer-link-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-ghost {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.file-viewer-code-area.is-wrapped .file-viewer-code-editor {
+  overflow-x: hidden;
+}
+
+/* #45 ghost text: the accepted-on-Tab autocomplete suggestion, dimmed inline. */
+.file-viewer-ghost-hidden { color: transparent; }
+.file-viewer-ghost-text {
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
+/* #47 save-state icon button: square-ish, icon-only. */
+.file-viewer-save .file-viewer-save-icon.dirty { color: var(--warning, #d29922); }
+.file-viewer-save .file-viewer-save-icon.clean { color: var(--success, #3fb950); }
+.file-viewer-save-spinner,
+.file-viewer-tex-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--accent, #4493f8);
+  border-radius: 50%;
+  animation: file-viewer-spin 0.7s linear infinite;
+}
+@keyframes file-viewer-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* #46 undo/redo toolbar. */
+.file-viewer-history {
+  display: inline-flex;
+  gap: 2px;
+}
+.file-viewer-history-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.file-viewer-history-btn:disabled { opacity: 0.45; cursor: default; }
+.file-viewer-history-btn:not(:disabled):hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* #43 external-change reconcile banner (non-destructive). */
+.file-viewer-reload-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--warning, #d29922) 18%, var(--bg-panel));
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-color);
+}
+.file-viewer-reload-btn {
+  background: transparent;
+  color: var(--accent, #4493f8);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.file-viewer-reload-btn:hover { border-color: var(--accent, #4493f8); }
+
+/* #54 TeX compiler-options panel + actions. */
+.file-viewer-tex-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  font-size: 11px;
+}
+.file-viewer-tex-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+.file-viewer-tex-option input {
+  background: var(--bg-base, var(--bg-panel));
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 11px;
+  min-width: 160px;
+}
+.file-viewer-tex-options-note {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.file-viewer-tex-options-toggle,
+.file-viewer-tex-open-pdf {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 1px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.file-viewer-tex-options-toggle.active,
+.file-viewer-tex-options-toggle:hover,
+.file-viewer-tex-open-pdf:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* #48 per-type native-viewer settings section. */
+.viewer-prefs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.viewer-pref-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+}
+.viewer-pref-name { min-width: 96px; color: var(--text-primary); }
+.viewer-pref-exts { color: var(--text-muted); font-size: 10px; flex: 1; }
+.viewer-pref-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+}
+
+/* pdf.js viewer: a zoom toolbar above a scrolling stack of page canvases. The
+   host and scroll surround use theme variables, so the viewer is dark in dark
+   themes; the page canvases stay white sheets (rendered as authored). The scroll
+   area's scrollbar is themed by the global *::-webkit-scrollbar rules. */
+.file-viewer-pdf-host {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
-  border: 0;
+  min-height: 0;
+}
+
+.file-viewer-pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+
+/* Push the optional "Open externally" button to the toolbar's trailing edge. */
+.file-viewer-pdf-external {
+  margin-left: auto;
+}
+
+.file-viewer-pdf-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  background: var(--bg-main);
+}
+
+/* The page stack lives in an inner wrapper so a Ctrl+wheel zoom can grow it past
+   the viewport and scroll horizontally. min-width:min-content lets the wrapper
+   expand to the widest page (enabling horizontal scroll when zoomed in) while
+   align-items:center keeps narrower pages centred. */
+.file-viewer-pdf-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  min-width: min-content;
+}
+
+.file-viewer-pdf-page {
+  display: block;
+  max-width: 100%;
   background: #fff;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* LaTeX viewer: a compile toolbar above a source-editor | PDF-preview split.
+   With no TeX engine on PATH the viewer renders just the plain code editor (the
+   compile controls/split below are never mounted), so it degrades to the text
+   viewer. The compile controls live in the shared header row (ViewerHeader),
+   not on a separate toolbar line. */
+.file-viewer-tex-compile {
+  background: var(--accent, #4493f8);
+  color: #fff;
+  border: 0;
+  border-radius: 3px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.file-viewer-tex-compile:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Inherits the shared Dropdown look; only the toolbar's compact sizing differs. */
+.file-viewer-tex-engine .dropdown-trigger {
+  min-height: 0;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+.file-viewer-tex-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--accent, #4493f8);
+  border-radius: 50%;
+  animation: file-viewer-tex-spin 0.7s linear infinite;
+}
+
+@keyframes file-viewer-tex-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Compile run animation: while a build is in flight the button shows an
+   indeterminate sliding sheen and a thin progress strip animates under the
+   header, so a multi-second parent build reads as live. Both derive purely from
+   the `compiling` flag (the `.is-compiling` class / mounted strip). */
+.file-viewer-tex-compile.is-compiling {
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.35) 50%,
+    transparent 80%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: file-viewer-tex-sheen 1.1s linear infinite;
+}
+
+@keyframes file-viewer-tex-sheen {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+.file-viewer-tex-progress {
+  flex-shrink: 0;
+  height: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--accent, #4493f8) 22%, transparent);
+}
+
+.file-viewer-tex-progress-bar {
+  height: 100%;
+  width: 40%;
+  background: var(--accent, #4493f8);
+  animation: file-viewer-tex-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes file-viewer-tex-progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(350%); }
+}
+
+/* SyncTeX (#56): each PDF page sits in a positioned wrapper so a forward-search
+   highlight box can overlay it; a syncable page shows a crosshair to hint that a
+   click jumps to the source. */
+.file-viewer-pdf-page-wrap {
+  position: relative;
+  line-height: 0;
+  max-width: 100%;
+}
+
+.file-viewer-pdf-page.is-syncable {
+  cursor: crosshair;
+}
+
+.file-viewer-pdf-sync-highlight {
+  position: absolute;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent, #4493f8) 38%, transparent);
+  border: 1px solid var(--accent, #4493f8);
+  border-radius: 2px;
+  animation: file-viewer-pdf-sync-fade 1.6s ease-out forwards;
+}
+
+@keyframes file-viewer-pdf-sync-fade {
+  0% { opacity: 0; }
+  15% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .file-viewer-tex-compile.is-compiling {
+    animation: none;
+    background-image: none;
+  }
+  .file-viewer-tex-progress-bar {
+    width: 100%;
+    animation: none;
+    opacity: 0.7;
+  }
+  /* Hold a static highlight briefly rather than animating its opacity. */
+  .file-viewer-pdf-sync-highlight {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* Shell-escape warning banner: shown when a compile ran with \write18 active
+   despite our args never enabling it. Amber, distinct from the red error rows. */
+.file-viewer-tex-shell-warning {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--warning, #d29922);
+  background: color-mix(in srgb, var(--warning, #d29922) 12%, transparent);
+  border-bottom: 1px solid var(--warning, #d29922);
+}
+
+.file-viewer-tex-shell-warning code {
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 11px;
+}
+
+/* Build-log error area: a terse last line, plus an expandable full log. */
+.file-viewer-tex-log-error {
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow: auto;
+}
+
+.file-viewer-tex-log-line {
+  font-weight: 600;
+}
+
+.file-viewer-tex-log-toggle {
+  margin-top: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.file-viewer-tex-log {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: var(--bg-input, var(--bg-panel));
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* Rendered markdown. */
@@ -957,6 +1629,99 @@ input {
 .settings-dialog {
   scrollbar-color: var(--border-color) var(--bg-panel);
   scrollbar-width: thin;
+}
+
+/* "Set default app" dialog (right-panel file context menu) */
+.set-default-app-dialog {
+  width: 460px;
+  max-width: 90vw;
+}
+.set-default-app-scope {
+  display: flex;
+  gap: 16px;
+  margin: 6px 0;
+  font-size: 12px;
+}
+.set-default-app-scope label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.set-default-app-scope label.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.set-default-app-search,
+.set-default-app-manual input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 4px 6px;
+}
+.set-default-app-list {
+  margin: 6px 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+}
+.set-default-app-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.set-default-app-row:hover {
+  background: var(--bg-panel);
+}
+.set-default-app-row.selected {
+  background: var(--accent);
+  color: #fff;
+}
+.set-default-app-row.selected .set-default-app-exec {
+  color: rgba(255, 255, 255, 0.8);
+}
+.set-default-app-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.set-default-app-exec {
+  color: var(--text-muted);
+  font-size: 11px;
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.set-default-app-manual {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.set-default-app-manual button {
+  flex-shrink: 0;
+}
+.set-default-app-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .right-panel-scroll::-webkit-scrollbar,
@@ -1429,6 +2194,48 @@ input {
   animation: drag-insert-pulse 0.85s ease-in-out infinite;
 }
 
+/* The reorder insertion bar's pulse: the glow breathes and the bar grows a
+   touch so the drop point reads as live during a pill drag. */
+@keyframes drag-insert-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+    box-shadow: 0 0 4px var(--accent);
+    transform: scaleY(0.85);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 10px var(--accent);
+    transform: scaleY(1);
+  }
+}
+
+/* Alt-drag over a pill: the drop will box the two together (not reorder).
+   Suppress the reorder insertion bar and show a breathing "absorb" pulse that
+   reads as the target swelling to pull the dragged pill into a new box. */
+.project-pill.drag-group {
+  margin-left: 0;
+  border-color: var(--accent);
+  transform-origin: center;
+  animation: drag-group-absorb 0.7s ease-in-out infinite;
+}
+
+.project-pill.drag-group::before {
+  content: none;
+}
+
+@keyframes drag-group-absorb {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px var(--accent), 0 0 5px var(--accent);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--accent), 0 0 18px var(--accent);
+    transform: scale(1.07);
+  }
+}
+
 .project-pill.active {
   background-color: var(--pill-active-bg);
   border-color: var(--pill-active-border);
@@ -1477,6 +2284,284 @@ input {
 .pill-close-btn:hover {
   background-color: var(--control-hover-bg);
   color: var(--text-primary);
+}
+
+/* ── Project box chip ───────────────────────────────────────────────── */
+/* A box groups member pills behind a labelled chip, visually distinct from a
+   plain project pill (accent-tinted frame + ▣ badge + member count). */
+.project-box-chip {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 0 4px;
+  height: 32px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
+}
+
+.project-box-chip.drag-over {
+  border-color: var(--warning);
+  box-shadow: inset 0 0 0 1px var(--warning);
+}
+
+.project-box-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding-left: 4px;
+  white-space: nowrap;
+}
+
+.project-box-badge {
+  font-size: 12px;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.project-box-name {
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.project-box-name:hover {
+  color: var(--accent);
+}
+
+.project-box-rename-input {
+  width: 90px;
+  font: inherit;
+  font-size: 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  padding: 1px 4px;
+}
+
+.project-box-member-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 8px;
+}
+
+.project-box-caret {
+  font-size: 9px;
+  color: var(--accent);
+  margin-right: 1px;
+  line-height: 1;
+}
+
+/* Expanded member list: a downward dropdown portaled to the body so it escapes
+   the horizontally-scrolling pills row's vertical clipping. Members stack as a
+   vertical list, each pill spanning the dropdown width. */
+.project-box-dropdown {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.36);
+}
+
+.project-box-dropdown .project-pill {
+  width: 100%;
+}
+
+.project-box-dropdown-hint {
+  padding: 3px 4px 1px;
+  font-size: 9px;
+  color: var(--text-secondary);
+  text-align: center;
+  opacity: 0.7;
+}
+
+/* Drop the reorder margin shift inside the vertical list (it would nudge pills
+   sideways); the insertion bar still marks the drop point. */
+.project-box-dropdown .project-pill.drag-over {
+  margin-left: 0;
+}
+
+/* Subtle cue that an expanded box's chip is the open dropdown's anchor. */
+.project-box-chip.expanded {
+  background-color: color-mix(in srgb, var(--accent) 20%, var(--control-bg));
+}
+
+/* A box rendered as a project-style pill: same base as .project-pill, with an
+   accent-tinted box icon and member-count badge. */
+.project-pill.is-box .pill-folder-icon {
+  color: var(--accent);
+}
+
+.project-pill.is-box .project-box-member-count {
+  margin-left: 4px;
+}
+
+/* Member rows inside the box pill's hover dropdown: click to switch, × to
+   remove from the box. */
+.project-box-member-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.project-box-member-open {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.project-box-member-open:hover {
+  background: var(--control-hover-bg);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.project-box-member-remove {
+  flex-shrink: 0;
+  width: 20px;
+  height: 26px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--control-border);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.project-box-member-remove:hover {
+  color: var(--danger, #f85149);
+  border-color: var(--danger, #f85149);
+}
+
+/* Multi-root file view (box scope): one collapsible section per root, each set
+   off from the next with a header band, a left accent rail, and an indented
+   body so the boundaries between project roots read clearly. */
+.file-root {
+  --file-root-accent: var(--text-secondary);
+  margin-bottom: 8px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--file-root-accent);
+  background: var(--bg-panel);
+}
+
+.file-root:last-child {
+  margin-bottom: 0;
+}
+
+/* The box's own folder leads the list and is accent-tinted; member project
+   roots use a calmer neutral rail. */
+.file-root--box {
+  --file-root-accent: var(--accent);
+}
+
+.file-root-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 7px;
+  background: color-mix(in srgb, var(--file-root-accent) 10%, var(--bg-panel));
+  color: var(--text-primary);
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  white-space: nowrap;
+}
+
+.file-root.is-collapsed .file-root-header {
+  border-bottom: none;
+}
+
+.file-root-header:hover {
+  background: color-mix(in srgb, var(--file-root-accent) 18%, var(--bg-panel));
+}
+
+.file-root-caret {
+  font-size: 9px;
+  color: var(--file-root-accent);
+  width: 9px;
+  flex-shrink: 0;
+}
+
+.file-root-icon {
+  flex-shrink: 0;
+}
+
+.file-root--box .file-root-icon {
+  color: var(--accent);
+}
+
+.file-root-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Small role tag (box / project) on the right of each header. */
+.file-root-kind {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--file-root-accent);
+  opacity: 0.8;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--file-root-accent) 40%, transparent);
+  border-radius: 8px;
+}
+
+/* Indent the file list under its header so nested entries don't line up with
+   the section rails. */
+.file-root-body {
+  padding-left: 4px;
+}
+
+/* Box rows in the search popover: distinct from project rows. */
+.project-search-row.is-box {
+  border-left: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--control-bg));
+}
+
+.project-search-row.is-box .project-box-badge {
+  margin-right: 2px;
 }
 
 /* ── Project pill popup ─────────────────────────────────────────────── */
@@ -1618,7 +2703,14 @@ input {
      bottom border + the active tab's `--bg-main` blend keep the divide crisp. */
   background-color: var(--bg-panel);
   border-bottom: 1px solid var(--border-color);
+  /* #42: the empty bar area is a drag handle — grab it to pop the subwindow out
+     into its own OS window. Tabs/buttons reset the cursor to their own. */
+  cursor: grab;
 }
+.tab-bar:active { cursor: grabbing; }
+.tab-bar .tab,
+.tab-bar button,
+.tab-bar .tab-new-wrap { cursor: default; }
 
 .tab-bar::-webkit-scrollbar { height: 0; }
 
@@ -1669,6 +2761,21 @@ input {
 }
 
 .tab-label { flex: 1; min-width: 0; }
+
+/* #56: inline tab rename. The label is swapped for a borderless input that
+   inherits the tab's typography so the tab width doesn't jump while editing. */
+.tab-label-edit {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  background: var(--bg-main, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--accent, #4aa3df);
+  border-radius: 3px;
+  padding: 0 2px;
+  margin: 0;
+  outline: none;
+}
 
 /* ── Working tab indicator ───────────────────────────────────────────────
    Shown while a tab's PTY is actively streaming output (busy agent/terminal).
@@ -1746,6 +2853,41 @@ input {
 .subwindow-close:hover {
   background: var(--pill-hover-bg);
   color: var(--danger);
+}
+
+/* #42: detached ("pop out") window title-bar controls — dock-back (⤓) + the
+   native min/max/close cluster. Pinned to the right of the tab bar (sticky) so
+   they never scroll out when tabs overflow; the panel-colored backing keeps
+   overflowing tabs from showing through. */
+.detached-titlebar-controls {
+  margin-left: auto;
+  align-self: center;
+  position: sticky;
+  right: 0;
+  z-index: 12;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+  background: var(--bg-panel);
+}
+.subwindow-dock {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+}
+.subwindow-dock:hover {
+  background: var(--pill-hover-bg);
+  color: var(--text-primary);
 }
 
 /* The dragged tab collapses out of the row so its old slot closes and the only
@@ -1908,49 +3050,71 @@ input {
   background: var(--border-subtle);
 }
 
-/* ── File browser sort dropdown (custom; native <select> popups can't be
-   themed on WebKitGTK) ─────────────────────────────────────────────────── */
-.file-browser-sort {
+/* ── Dropdown (the one custom themed dropdown; native <select> popups can't
+   be themed on WebKitGTK so we render trigger + menu ourselves) ─────────── */
+.dropdown {
   position: relative;
   display: inline-flex;
 }
 
-.file-browser-sort-trigger {
+.dropdown-trigger {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
 }
 
-.file-browser-sort-caret {
+.dropdown-trigger:hover:not(:disabled),
+.dropdown-trigger:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.dropdown-trigger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.dropdown-caret {
   font-size: 9px;
   color: var(--text-muted);
 }
 
-.file-browser-sort-menu {
+.dropdown-menu {
   position: absolute;
   top: calc(100% + 2px);
   left: 0;
   min-width: 120px;
 }
 
-.file-browser-actions .file-browser-sort-menu button {
+/* Two-class specificity so per-toolbar `… button` rules (e.g. the file browser
+   actions row this menu lives inside) don't override the menu item look. */
+.dropdown .dropdown-menu button {
   display: block;
   width: 100%;
   min-height: 28px;
   padding: 5px 9px;
   text-align: left;
   border: 1px solid transparent;
+  border-radius: 0;
   background: var(--control-bg);
   color: var(--text-primary);
   font-size: 12px;
 }
 
-.file-browser-actions .file-browser-sort-menu button:hover {
+.dropdown .dropdown-menu button:hover {
   background: var(--control-hover-bg);
   border-color: var(--accent);
 }
 
-.file-browser-actions .file-browser-sort-menu button.selected {
+.dropdown .dropdown-menu button.selected {
   color: var(--accent);
   border-color: var(--accent);
 }
@@ -2748,35 +3912,11 @@ input {
   overflow-x: auto;
   overflow-y: hidden;
   height: 40px;
-  /* Edge fades hint that more pills are scrollable off-screen. The fade is only
-     applied on the side that actually has hidden pills (toggled from JS via the
-     data-overflow-* attributes) so a flush, non-overflowing row stays crisp. A
-     vertical mouse wheel scrolls this horizontally in the webview, so no
-     visible scrollbar is needed. */
-  --pills-fade-left: 0px;
-  --pills-fade-right: 0px;
-  -webkit-mask-image: linear-gradient(
-    to right,
-    transparent 0,
-    #000 var(--pills-fade-left),
-    #000 calc(100% - var(--pills-fade-right)),
-    transparent 100%
-  );
-  mask-image: linear-gradient(
-    to right,
-    transparent 0,
-    #000 var(--pills-fade-left),
-    #000 calc(100% - var(--pills-fade-right)),
-    transparent 100%
-  );
-}
-
-.project-pills-region.overflow-left .project-pills-scroll {
-  --pills-fade-left: 28px;
-}
-
-.project-pills-region.overflow-right .project-pills-scroll {
-  --pills-fade-right: 28px;
+  /* Overflow is conveyed solely by the left/right chevron buttons (toggled from
+     JS via the overflow-* classes); a vertical mouse wheel also scrolls this
+     horizontally in the webview, so no edge fade or visible scrollbar is used. */
+  scrollbar-width: none; /* Firefox/standard — hide the bar */
+  -ms-overflow-style: none;
 }
 
 /* Relative track holding the scrollable pill row plus the edge chevrons. */
@@ -2795,7 +3935,7 @@ input {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 22px;
+  width: 34px;
   display: none;
   align-items: center;
   justify-content: center;
@@ -2803,7 +3943,7 @@ input {
   border: none;
   cursor: pointer;
   z-index: 2;
-  font-size: 16px;
+  font-size: 26px;
   line-height: 1;
   color: var(--text-primary);
   background: var(--bg-header);
@@ -3088,6 +4228,32 @@ input {
   padding: 0 9px;
 }
 
+/* Group L / #62 — keyboard-shortcut rebinding rows. */
+.shortcut-row .settings-role-label {
+  flex: 1;
+  color: var(--text-primary);
+}
+
+.shortcut-capture-btn {
+  min-width: 150px;
+  height: 30px;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  cursor: pointer;
+}
+
+.shortcut-capture-btn.capturing {
+  border-color: var(--accent, #4f8cff);
+  color: var(--accent, #4f8cff);
+}
+
+.shortcut-row .settings-back-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .settings-row select,
 .project-dialog select {
   min-width: 160px;
@@ -3320,6 +4486,19 @@ input {
 .project-dialog h2 {
   font-size: 16px;
   font-weight: 650;
+}
+
+[data-theme="fancy_dark"] .project-dialog h2 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-color);
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-secondary) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
 }
 
 .project-dialog label {
@@ -3606,6 +4785,19 @@ input {
   padding: 10px;
   background: var(--bg-main);
   border: 1px solid var(--border-subtle);
+}
+
+.ssh-tooling-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+  word-break: break-word;
 }
 
 .ssh-address-input,

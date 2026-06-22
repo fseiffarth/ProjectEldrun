@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useWindowsStore } from "../../stores/windows";
 import { useTabsStore } from "../../stores/tabs";
 import { useDragStore, type EmbedCap } from "../../stores/drag";
@@ -8,6 +9,13 @@ import { commitFileDrop } from "../tabs/commitFileDrop";
 import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, STANDARD_PROJECT_FILES } from "./fileUtils";
+import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "./tex";
+import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
+
+// Persist whether the collapsed "hidden" files section is expanded, so the
+// choice survives right-panel hide/show and remounts (FileTree remounts each
+// time the panel reopens). Mirrors GitHistory's localStorage view pref.
+const HIDDEN_EXPANDED_KEY = "eldrun.fileTree.hiddenExpanded";
 
 function sizeCategory(bytes: number): string {
   if (bytes < 10 * 1024) return "size-small";
@@ -19,6 +27,8 @@ function sizeCategory(bytes: number): string {
 interface Props {
   projectDir: string;
   projectId: string | null;
+  /** Path to the project's project.json; enables the project-scoped default app. */
+  localFile?: string | null;
   showHidden?: boolean;
   sortKey?: SortKey;
   descending?: boolean;
@@ -32,39 +42,6 @@ interface Props {
 type GitStatusMap = Record<string, string>;
 type EntryContextMenu = { x: number; y: number; entry: FileEntry | null } | null;
 type DeleteConfirm = { entry: FileEntry; relPath: string } | null;
-
-/** Which TeX tools are on PATH; mirrors the backend `TexCapability`. */
-type TexCapability = {
-  available: boolean;
-  engines: string[];
-  bibtex: boolean;
-  latexmk: boolean;
-};
-
-type TexCompileResult = {
-  success: boolean;
-  pdf_path: string | null;
-  engine: string;
-  log: string;
-};
-
-// TeX tooling is PATH-global, so probe the backend once per app run and share
-// the result across every FileTree instance.
-let texCapPromise: Promise<TexCapability> | null = null;
-function getTexCapability(): Promise<TexCapability> {
-  if (!texCapPromise) {
-    texCapPromise = invoke<TexCapability>("tex_capability").catch(
-      () => ({ available: false, engines: [], bibtex: false, latexmk: false }),
-    );
-  }
-  return texCapPromise;
-}
-
-/** Last meaningful line of a build log, for a terse error message. */
-function lastLogLine(log: string): string {
-  const lines = log.split("\n").map((l) => l.trim()).filter(Boolean);
-  return lines[lines.length - 1] ?? "";
-}
 
 export const STATUS_COLOR: Record<string, string> = {
   modified:  "#f85149", // red – tracked, unstaged working-tree change
@@ -122,6 +99,7 @@ function shellQuote(value: string): string {
 export function FileTree({
   projectDir,
   projectId,
+  localFile = null,
   showHidden = false,
   sortKey = "name",
   descending = false,
@@ -143,10 +121,18 @@ export function FileTree({
   const [gitStatuses, setGitStatuses] = useState<GitStatusMap>({});
   const [isDragOver, setIsDragOver] = useState(false);
   const [separateScaffold, setSeparateScaffold] = useState(true);
-  const [hiddenExpanded, setHiddenExpanded] = useState(false);
+  const [hiddenExpanded, setHiddenExpanded] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(HIDDEN_EXPANDED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [scaffoldExpanded, setScaffoldExpanded] = useState(false);
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
+  const [defaultAppFor, setDefaultAppFor] = useState<FileEntry | null>(null);
   // TeX toolchain presence (null until probed); absolute paths of .tex files
   // currently compiling, for the inline build spinner.
   const [texCap, setTexCap] = useState<TexCapability | null>(null);
@@ -202,7 +188,7 @@ export function FileTree({
       const updates: Record<string, boolean> = {};
       for (const [ext, path] of unknown) {
         try {
-          const cap = await invoke<EmbedCap>("embed_capability", { path, handler: null });
+          const cap = await invoke<EmbedCap>("embed_capability", { path, handler: null, projectId });
           updates[ext] = cap.os_embeddable && cap.app_embeddable;
         } catch {
           updates[ext] = false;
@@ -239,6 +225,36 @@ export function FileTree({
     load(initialRelPath ?? "");
   }, [projectDir]);
 
+  // Live updates: watch the currently-displayed directory on the backend and
+  // re-fetch when it changes, so files created/removed by terminals, agents, or
+  // other processes appear without manual navigation. Re-points to the new
+  // directory whenever relPath changes; tears down on unmount/panel close.
+  useEffect(() => {
+    if (!projectDir) return;
+    const absDir = relPath ? `${projectDir}/${relPath}` : projectDir;
+    let unlisten: (() => void) | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
+    invoke("watch_dir", { path: absDir }).catch(() => {});
+    listen("fs-change", () => {
+      // Coalesce the burst of events a single write emits into one reload.
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => refresh(relPath), 250);
+    }).then((un) => {
+      if (cancelled) un();
+      else unlisten = un;
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      if (unlisten) unlisten();
+      invoke("unwatch_dir").catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectDir, relPath]);
+
   async function load(rel: string) {
     setLoading(true);
     setError(null);
@@ -260,6 +276,29 @@ export function FileTree({
     } finally {
       setLoading(false);
     }
+  }
+
+  // Quiet reload for the fs watcher: re-fetch the current directory without the
+  // loading flash, and only swap state in when the result actually changed.
+  // Replacing rawEntries/gitStatuses on every event (a single write emits a
+  // burst) is what caused the tree to flicker, so we diff before committing.
+  async function refresh(rel: string) {
+    let result: FileEntry[];
+    try {
+      result = await invoke<FileEntry[]>("list_dir", { projectDir, relPath: rel });
+    } catch {
+      return; // transient (e.g. dir mid-rename) — keep the last good listing
+    }
+    setRawEntries((prev) =>
+      JSON.stringify(prev) === JSON.stringify(result) ? prev : result,
+    );
+    const statuses = await invoke<GitStatusMap>("git_file_statuses", {
+      projectDir,
+      relPath: rel,
+    }).catch(() => ({}));
+    setGitStatuses((prev) =>
+      JSON.stringify(prev) === JSON.stringify(statuses) ? prev : statuses,
+    );
   }
 
   function handleClick(entry: FileEntry) {
@@ -338,7 +377,7 @@ export function FileTree({
         // the embed-capability probe for them. For other embeddable files,
         // prefetch the capability so the drop can resolve embed-vs-external.
         if (!viewer) {
-          invoke<EmbedCap>("embed_capability", { path: entry.path, handler: null })
+          invoke<EmbedCap>("embed_capability", { path: entry.path, handler: null, projectId })
             .then((cap) => useDragStore.getState().setEmbedCap(cap))
             .catch(() => useDragStore.getState().setEmbedCap(null));
         }
@@ -699,8 +738,17 @@ export function FileTree({
             {regular.map((e) => renderEntry(e, false))}
             {standard.length > 0 && (
               <>
-                <div className="file-tree-section-divider">scaffold</div>
-                {standard.map((e) => renderEntry(e, true))}
+                <button
+                  type="button"
+                  className="file-tree-section-divider file-tree-hidden-toggle"
+                  aria-expanded={scaffoldExpanded}
+                  onClick={() => setScaffoldExpanded((v) => !v)}
+                  title={scaffoldExpanded ? "Collapse scaffold files" : "Expand scaffold files"}
+                >
+                  <span className="file-tree-hidden-caret">{scaffoldExpanded ? "▾" : "▸"}</span>
+                  scaffold ({standard.length})
+                </button>
+                {scaffoldExpanded && standard.map((e) => renderEntry(e, true))}
               </>
             )}
             {hidden.length > 0 && (
@@ -709,7 +757,11 @@ export function FileTree({
                   type="button"
                   className="file-tree-section-divider file-tree-hidden-toggle"
                   aria-expanded={hiddenExpanded}
-                  onClick={() => setHiddenExpanded((v) => !v)}
+                  onClick={() => setHiddenExpanded((v) => {
+                    const next = !v;
+                    try { localStorage.setItem(HIDDEN_EXPANDED_KEY, next ? "1" : "0"); } catch { /* ignore storage failures */ }
+                    return next;
+                  })}
                   title={hiddenExpanded ? "Collapse hidden files" : "Expand hidden files"}
                 >
                   <span className="file-tree-hidden-caret">{hiddenExpanded ? "▾" : "▸"}</span>
@@ -727,19 +779,22 @@ export function FileTree({
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <button onClick={() => createEntry("file")}>
-            New File
-          </button>
-          <button onClick={() => createEntry("dir")}>
-            New Folder
-          </button>
+          {!contextMenu.entry && (
+            <>
+              <button onClick={() => createEntry("file")}>
+                New File
+              </button>
+              <button onClick={() => createEntry("dir")}>
+                New Folder
+              </button>
+            </>
+          )}
           {contextMenu.entry && (() => {
             const entry = contextMenu.entry;
             const status = gitStatuses[entry.name];
             const isTex = !entry.is_dir && entry.extension === ".tex";
             return (
               <>
-                <hr />
                 {isTex && texCap?.available && (
                   <>
                     <button
@@ -768,6 +823,14 @@ export function FileTree({
                 <button onClick={() => updateGitignore(entry, "unignore")}>
                   Show from .gitignore
                 </button>
+                {!entry.is_dir && entry.extension && (
+                  <>
+                    <hr />
+                    <button onClick={() => { setContextMenu(null); setDefaultAppFor(entry); }}>
+                      Set default app…
+                    </button>
+                  </>
+                )}
                 <hr />
                 <button onClick={() => renameEntry(entry)}>
                   Rename
@@ -797,6 +860,14 @@ export function FileTree({
           </div>
         </div>,
         document.body,
+      )}
+      {defaultAppFor && defaultAppFor.extension && (
+        <SetDefaultAppDialog
+          ext={defaultAppFor.extension}
+          fileName={defaultAppFor.name}
+          localFile={localFile}
+          onClose={() => setDefaultAppFor(null)}
+        />
       )}
       {tooltip && createPortal(
         <div

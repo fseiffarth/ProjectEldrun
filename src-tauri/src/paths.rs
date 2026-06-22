@@ -62,6 +62,10 @@ pub fn root_work_dir() -> PathBuf {
     home_dir().join("eldrun").join("root")
 }
 
+pub fn boxes_root() -> PathBuf {
+    home_dir().join("eldrun").join("boxes")
+}
+
 fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.is_empty())
 }
@@ -114,5 +118,18 @@ mod tests {
     fn unix_home_falls_back_to_root() {
         let home = home_dir_for(OsKind::Unix, env(&[]));
         assert_eq!(home, PathBuf::from("/root"));
+    }
+
+    #[test]
+    fn boxes_root_ends_with_boxes_under_eldrun() {
+        let dir = boxes_root();
+        let last = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        assert_eq!(last, "boxes", "boxes_root must end in 'boxes': {dir:?}");
+        let parent = dir
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        assert_eq!(parent, "eldrun", "boxes_root parent must be 'eldrun'");
     }
 }

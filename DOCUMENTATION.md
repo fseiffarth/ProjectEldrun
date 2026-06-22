@@ -169,6 +169,23 @@ Toolbar behavior:
 - `TabBar.tsx` renders tabs with close, rename (double-click), drag-to-reorder,
   and a `+` menu for adding Claude/Codex/Gemini/Vibe/Shell/Files tabs plus
   locally installed Ollama models.
+- The center panel is a tiling layout: dragging a tab onto another subwindow's
+  left/right/top/bottom edge splits that direction into a new pane (center drops
+  move the tab in), splits resize with draggable dividers, and the whole tree is
+  saved in `project.json` (`tab_layout`/`tab_groups`).
+- **Detaching subwindows.** A subwindow tab bar exposes a pop-out button
+  (`detachGroup`) that calls `detach_subwindow` (`commands/subwindow.rs`). The
+  backend opens a borderless Tauri `WebviewWindow` rendering the same bundle under
+  `?detached=<scope>:<group>` (`DetachedApp.tsx` → `DetachedCenterPanel.tsx`),
+  registers it as a project-owned `TrackedWindow` (origin `detached_subwindow`),
+  and opts its X11 id into the workspace backend's parkable override so the normal
+  `project_runtime::switch` hide/show path parks and restores it with its project.
+  The ⤓ dock button (and the cross-window drag-to-dock) re-docks the group via
+  `attach_subwindow`, which closes the window. **Closing** the popped-out window
+  (WM/title-bar close) instead emits `detached-close`: the main window kills its
+  tabs' PTYs, drops their payloads, and persists, so those tabs do NOT dock back
+  and do NOT restore on next launch. Dock-back is session-only — a re-docked group
+  restores as docked on restart; only the main window persists `project.json`.
 - Each tab with kind `"agent"` or `"shell"` renders a `TerminalView` backed by
   a PTY. Tabs with kind `"local_agent"` also render a PTY, using `vibe` with a
   per-model local Ollama configuration. Tabs with kind `"files"` render a
@@ -216,10 +233,27 @@ Contents:
 - **Project pills** — one per active/current project, drag-to-reorder via
   `@dnd-kit/sortable`. Hovering a pill shows a tooltip with the project path,
   status, and today's active time (from `get_time_today`). Clicking switches to
-  the project; the × button closes it.
+  the project; the × button closes it. The pill's menu also exposes **Publish to
+  GitHub** (see below).
+- **Box pills** — `BoxPill.tsx` renders a project box as a single project-style
+  pill (`.project-pill.is-box`) with a member-count badge. Dropping a project
+  pill onto a box (same `PILL_DRAG_TYPE` as pill reorder) assigns it to the box;
+  hovering opens a dropdown listing member projects (click one to switch to it);
+  clicking the pill opens the box scope; right-click exposes Open / Rename /
+  Delete. See **Project Boxes** under Project Lifecycle.
 - **Settings gear** — opens the settings dialog.
 - **+ button** — opens an add-project menu with "New project" and "Import
   project" sub-options.
+
+**Publish to GitHub.** `publishProject` (`stores/projects.ts`) invokes
+`github_publish` (`commands/github.rs`), which runs `gh repo create <name>
+--<visibility> --source=. --remote=origin --push` via the system `gh` CLI. For a
+work-remote (SSH) project the `gh` call runs over `ssh` on the host where the
+repo lives (`BatchMode`, validated argv, single-quoted remote path). On success
+it records the new push target — `git_type` becomes `remote-public` or
+`remote-private` in both `projects.json` and the project's `project.json` — and
+returns `gh`'s stdout (the repo URL). Requires `gh` installed and authenticated
+(locally, or on the remote host for remote projects).
 
 Settings dialog covers: default agent command, theme (Dark/Bright/Fancy
 Dark/Fancy Bright), workspace management toggle, global app role visibility and
@@ -327,6 +361,38 @@ New and imported projects receive these files when missing:
 The root terminal also gets context files in `~/eldrun/root/`:
 `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`.
 
+### Project Boxes (meta-project grouping)
+
+A *box* groups related projects and appears as its own pill in the switcher
+(`BoxPill.tsx`, `stores/boxes.ts`, `commands/boxes.rs`). Backend commands:
+`get_boxes`, `save_boxes`, `create_box`, `rename_box`, `delete_box`,
+`set_box_members`, `ensure_box_folder`, `refresh_box_agent_docs`,
+`set_box_relations`.
+
+- **Data model.** Boxes live in their own `~/.local/share/eldrun/boxes.json`
+  (`Vec<ProjectBox>` = `{id, name, member_ids, position, folder?, relations}`)
+  so `projects.json` stays byte-compatible. The box's ordered `member_ids` is
+  authoritative; a per-project `box_id` back-reference is a denormalized inverse
+  the frontend derives from `member_ids` on load (in memory only — never written
+  back on load). `get_boxes` reconciles away member ids that no longer reference
+  a known project.
+- **Membership.** Dropping a project pill on a box calls `assignToBox`, which
+  rewrites the affected boxes' `member_ids` and persists both files. A box left
+  with a single member dissolves (its lone member is ungrouped), so dragging a
+  project out of a two-member box tears the box down.
+- **Box folder + agent docs.** Opening a box (`openBox` → `ensure_box_folder`)
+  lazily creates a folder under `~/.local/share/eldrun/boxes/<name>/` (unique
+  name resolved against other boxes and existing dirs) and writes/refreshes
+  managed `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks pointing at each
+  member's root and same-named agent doc. Only the text between the
+  `<!-- eldrun:box-links:start -->` / `…:end -->` markers is regenerated, so
+  user edits outside the block survive. `refresh_box_agent_docs` re-runs this for
+  an already-opened box after membership changes.
+- **Box scope (session-only).** Opening a box activates a `box:<id>` tab scope
+  rooted in the box folder (disjoint from project ids and `"root"`) and opens a
+  shell tab. Box scopes are **not** persisted or restored — they are dropped on
+  project switch / restart (full box activation is a follow-on).
+
 ## Architecture
 
 ```text
@@ -398,6 +464,7 @@ All global data is under `~/.local/share/eldrun/`.
 | File | Purpose |
 |------|---------|
 | `projects.json` | Lightweight index of known projects. |
+| `boxes.json` | Project-box definitions (id, name, ordered `member_ids`, `folder?`, relations). |
 | `settings.json` | User settings: agent command, theme, workspace management, global apps, etc. |
 | `default_apps.json` | Global file-extension → app command map. |
 | `time_log.json` | Append-only session records. |
@@ -668,6 +735,12 @@ test skips itself when no local Ollama server or model is available.
   sticky windows).
 - Tab layout is persisted but PTYs do not survive app restarts; tabs respawn
   their processes on next activation.
+- Detached (popped-out) subwindows are session-only: they re-dock into the main
+  layout on restart rather than respawning as separate OS windows.
+- Project-box scopes are session-only: a box's tabs are dropped on project switch
+  / restart. Renaming a box does not move its already-created folder.
+- `github_publish` requires the `gh` CLI installed and authenticated (on the
+  remote host for work-remote projects); it does not manage GitHub auth itself.
 - Ollama model installation and update depend on network access to the Ollama
   registry and may take minutes for large models.
 - `ensure_ollama_running` can start a system service only when the current user

@@ -470,6 +470,71 @@ pub async fn list_ollama_models() -> Result<Vec<String>, String> {
         .collect())
 }
 
+// ── Local code/text autocomplete (TODO Group M #45) ──────────────────────────
+//
+// DECISION A: completion is LOCAL OLLAMA ONLY and OPT-IN. We reuse `ollama_http`
+// against the same `/api/generate` endpoint as the rest of this module — no
+// remote endpoint is ever contacted. The frontend gates the call behind a
+// per-type `autocomplete` setting (default OFF) and an explicit Ctrl+Space, and
+// only fires after `ensure_ollama_running` succeeds; if Ollama isn't reachable
+// this returns the standard `not_running` error so the UI can fail silently.
+
+/// Build the fill-in-the-middle prompt sent to the model: the text before the
+/// caret (`prefix`) and after it (`suffix`), with a short instruction so a
+/// general instruct model returns only the continuation. Pure + tested.
+fn completion_prompt(prefix: &str, suffix: &str, language: &str) -> String {
+    let lang = if language.is_empty() { "text" } else { language };
+    format!(
+        "You are an autocomplete engine for a code/text editor. Continue the {lang} \
+document at the cursor. Reply with ONLY the text that should be inserted at the \
+cursor — no explanation, no code fences, no repetition of the surrounding text.\n\n\
+<before>\n{prefix}\n</before>\n<after>\n{suffix}\n</after>\n\nInsertion:"
+    )
+}
+
+/// Strip wrapping artefacts a chat model sometimes adds around a raw completion
+/// (leading/trailing code fences). Pure + tested.
+fn clean_completion(raw: &str) -> String {
+    let mut s = raw.trim_end_matches('\n').to_string();
+    // Drop a leading ```lang fence and a trailing ``` if the model wrapped it.
+    if s.starts_with("```") {
+        if let Some(nl) = s.find('\n') {
+            s = s[nl + 1..].to_string();
+        }
+        if let Some(idx) = s.rfind("```") {
+            s = s[..idx].to_string();
+        }
+    }
+    s
+}
+
+/// Single-shot local completion: given the text around the caret, ask the local
+/// Ollama `model` for the insertion. Local-only (`ollama_http` talks to
+/// 127.0.0.1:11434); returns `not_running` when Ollama isn't reachable.
+#[tauri::command]
+pub async fn complete_text(
+    prefix: String,
+    suffix: String,
+    model: String,
+    language: String,
+) -> Result<String, String> {
+    let prompt = completion_prompt(&prefix, &suffix, &language);
+    // `stream: false` returns one JSON object with the full `response`. Cap the
+    // output and use a low temperature so completions are short and deterministic.
+    let body = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "stream": false,
+        "options": { "temperature": 0.1, "num_predict": 128 }
+    })
+    .to_string();
+    let response = ollama_http("POST", "/api/generate", Some(&body))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&response).map_err(|e| format!("ollama json: {e}"))?;
+    let text = v["response"].as_str().unwrap_or("");
+    Ok(clean_completion(text))
+}
+
 /// Result of preparing a local Ollama agent for vibe.
 #[derive(serde::Serialize)]
 pub struct LocalAgentPrep {
@@ -656,6 +721,32 @@ mod tests {
             cfg.contains(&format!("alias = \"{alias}\"")),
             "model alias must appear"
         );
+    }
+
+    // ── completion prompt construction (#45) ──────────────────────────────────
+
+    #[test]
+    fn completion_prompt_includes_prefix_suffix_and_language() {
+        let p = completion_prompt("let x =", " + 1;", "rust");
+        assert!(p.contains("let x ="), "prefix must be embedded");
+        assert!(p.contains(" + 1;"), "suffix must be embedded");
+        assert!(p.contains("rust"), "language must be named");
+        // Prefix appears before suffix so the model fills in the middle.
+        assert!(p.find("let x =").unwrap() < p.find(" + 1;").unwrap());
+    }
+
+    #[test]
+    fn completion_prompt_defaults_empty_language_to_text() {
+        let p = completion_prompt("a", "b", "");
+        assert!(p.contains("text document") || p.contains("the text document"));
+    }
+
+    #[test]
+    fn clean_completion_strips_code_fences() {
+        assert_eq!(clean_completion("foo()\n"), "foo()");
+        assert_eq!(clean_completion("```rust\nfoo()\n```"), "foo()\n");
+        // No fence → unchanged (bar a trailing newline trim).
+        assert_eq!(clean_completion("plain"), "plain");
     }
 
     // ── sanitize_alias turns ':' into '-' ─────────────────────────────────────

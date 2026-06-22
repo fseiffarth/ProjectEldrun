@@ -509,6 +509,25 @@ pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
     fs::read(&p).map_err(|e| e.to_string())
 }
 
+/// Return a file's last-modified time as whole seconds since the Unix epoch.
+///
+/// Used by the in-app text/markdown/TeX viewer to poll for external changes
+/// (#43 diff-aware auto-reload) without pulling in the `notify` crate — the
+/// frontend polls this cheaply and compares against the value it last read.
+/// Mirrors the `FileEntry.modified_secs` machinery in `list_dir`.
+#[tauri::command]
+pub fn file_mtime(path: String) -> Result<u64, String> {
+    let p = PathBuf::from(&path);
+    let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
+    let secs = meta
+        .modified()
+        .map_err(|e| e.to_string())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(secs)
+}
+
 // ── Scaffold new project ───────────────────────────────────────────────────
 
 const SCAFFOLD_FILES: &[(&str, &str)] = &[
@@ -1063,7 +1082,11 @@ pub(crate) fn enforce_confinement(root: &Path, target: &Path) -> Result<(), Stri
     Ok(())
 }
 
-fn uuid_v4() -> String {
+/// Mint a pseudo-UUID without an external dep. Time-based (nanos), so callers
+/// that mint several ids back-to-back (e.g. box creation in a loop) must guard
+/// against collisions — see `commands::boxes::create_box`, which re-mints if the
+/// generated id already exists in the list.
+pub(crate) fn uuid_v4() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     // Simple UUID v4 without external deps for now.
     let ts = SystemTime::now()

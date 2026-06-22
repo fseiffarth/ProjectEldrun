@@ -33,7 +33,7 @@ export type SortKey = "name" | "type" | "size" | "created" | "modified";
 
 /** Which built-in Eldrun viewer can render a file in-tab (drag from the right
  *  panel onto a tab bar). Independent of any external default app. */
-export type InternalViewer = "pdf" | "image" | "markdown" | "text";
+export type InternalViewer = "pdf" | "image" | "markdown" | "text" | "tex";
 
 const MARKDOWN_EXTS = new Set([".md", ".markdown", ".mdown", ".mkd", ".mdx"]);
 
@@ -81,10 +81,80 @@ export function internalViewerFor(entry: FileEntry): InternalViewer | null {
   if (ext === ".pdf") return "pdf";
   if (IMAGE_EXTS.has(ext)) return "image";
   if (MARKDOWN_EXTS.has(ext)) return "markdown";
+  // .tex gets the dedicated LaTeX viewer (compile to a PDF tab when a TeX engine
+  // is installed; otherwise it degrades to the plain code editor). .bib stays
+  // plain text via the generic TEXT_EXTS check below. This early return must win
+  // even though .tex is also in TEXT_EXTS.
+  if (ext === ".tex") return "tex";
   if (ext && TEXT_EXTS.has(ext)) return "text";
   if (!ext && TEXT_FILENAMES.has(entry.name.toLowerCase())) return "text";
+  // DEFERRED (#51, DECISION B): OpenDocument / spreadsheet formats (.odt/.xlsx,
+  // and the sibling office formats) do NOT get a native in-app renderer for now.
+  // Rendering them faithfully needs a heavy dependency (e.g. calamine + a table
+  // renderer) that isn't worth it yet, so we return null here and let them fall
+  // through to the existing external-app path (the "Open externally" affordance).
+  // Revisit if/when a lightweight Tauri-side renderer becomes available.
   return null;
 }
+
+/**
+ * Office/spreadsheet formats whose in-app rendering is deferred (#51): they have
+ * no native viewer and open in the external app. Exported so the file tree / drop
+ * code can recognise them explicitly rather than treating them as generic "no
+ * viewer" binaries.
+ */
+export const DEFERRED_OFFICE_EXTS = new Set([
+  ".odt", ".ods", ".odp", ".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt",
+]);
+
+/** True when a file is a deferred office/spreadsheet type (#51). */
+export function isDeferredOfficeFile(entry: FileEntry): boolean {
+  return DEFERRED_OFFICE_EXTS.has((entry.extension ?? "").toLowerCase());
+}
+
+/**
+ * Native-viewer types surfaced in the per-type settings UI (#48), keyed by the
+ * `InternalViewer` id. `autocomplete` marks editable types that support the
+ * opt-in local completion (#45). Documented in README under "Native viewers".
+ */
+export interface ViewerTypeMeta {
+  /** Stable key used in `settings.viewer_prefs` and as the React key. */
+  id: InternalViewer;
+  /** Human label for the settings UI. */
+  label: string;
+  /** Representative extensions, for the settings UI description. */
+  extensions: string[];
+  /** Whether opt-in local autocomplete applies (#45 — editable text types). */
+  autocomplete: boolean;
+}
+
+export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
+  {
+    id: "text",
+    label: "Text / code",
+    extensions: [".txt", ".json", ".py", ".rs", ".ts", ".svg", ".bib", "…"],
+    autocomplete: true,
+  },
+  {
+    id: "tex",
+    label: "LaTeX",
+    extensions: [".tex"],
+    autocomplete: true,
+  },
+  {
+    id: "markdown",
+    label: "Markdown",
+    extensions: [".md", ".markdown", ".mdx"],
+    autocomplete: true,
+  },
+  {
+    id: "image",
+    label: "Images",
+    extensions: [".png", ".jpg", ".gif", ".webp", "…"],
+    autocomplete: false,
+  },
+  { id: "pdf", label: "PDF", extensions: [".pdf"], autocomplete: false },
+];
 
 export function joinRel(base: string, name: string): string {
   return base ? `${base}/${name}` : name;

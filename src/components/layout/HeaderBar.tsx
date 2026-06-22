@@ -3,14 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AppTimerDisplay } from "../header/AppTimerDisplay";
+import { AppResourceDisplay } from "../header/AppResourceDisplay";
 import { Clock } from "../header/Clock";
 import { ConnTypeIcon } from "../header/ConnTypeIcon";
 import { StatusLamp } from "../header/StatusLamp";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
+import { LogoIcon } from "./LogoIcon";
 import { useProjectsStore } from "../../stores/projects";
-import logo from "../../assets/logo.svg";
 
 interface WorkspaceInfo {
   label: string;
@@ -86,7 +87,7 @@ export function HeaderBar() {
           aria-label="Root terminal"
           onClick={() => void setActive(null)}
         >
-          <img src={logo} alt="Eldrun" className="app-logo" />
+          <LogoIcon className="app-logo" />
         </button>
         <StatusLamp online={online} />
         <div className="app-version-stack">
@@ -101,6 +102,7 @@ export function HeaderBar() {
         <ProjectSwitcher open />
       </div>
       <div className="header-right no-drag">
+        <AppResourceDisplay />
         <AppTimerDisplay />
         <Clock />
         <WindowControls />

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { internalViewerFor, type FileEntry } from "../components/files/fileUtils";
+import {
+  internalViewerFor,
+  isDeferredOfficeFile,
+  type FileEntry,
+} from "../components/files/fileUtils";
 
 function file(name: string, extension: string | null): FileEntry {
   return { name, path: `/p/${name}`, is_dir: false, size: 1, extension, mime: null };
@@ -37,9 +41,26 @@ describe("internalViewerFor", () => {
     expect(internalViewerFor(file("icon.svg", ".svg"))).toBe("text");
   });
 
+  it("maps .tex to the dedicated LaTeX viewer, but .bib stays text", () => {
+    expect(internalViewerFor(file("paper.tex", ".tex"))).toBe("tex");
+    expect(internalViewerFor(file("refs.bib", ".bib"))).toBe("text");
+  });
+
   it("returns null for non-viewable binaries and directories", () => {
     expect(internalViewerFor(file("app.bin", ".bin"))).toBeNull();
     expect(internalViewerFor(file("lib.so", ".so"))).toBeNull();
     expect(internalViewerFor({ ...file("src", null), is_dir: true })).toBeNull();
+  });
+
+  it("DEFERRED (#51): .odt/.xlsx have no native viewer (open externally)", () => {
+    // DECISION B: office/spreadsheet rendering is deferred; these resolve to null
+    // so they fall through to the external-app path.
+    expect(internalViewerFor(file("report.odt", ".odt"))).toBeNull();
+    expect(internalViewerFor(file("data.xlsx", ".xlsx"))).toBeNull();
+    expect(internalViewerFor(file("slides.pptx", ".pptx"))).toBeNull();
+    // …and they are recognised as deferred office files, not generic binaries.
+    expect(isDeferredOfficeFile(file("report.odt", ".odt"))).toBe(true);
+    expect(isDeferredOfficeFile(file("data.xlsx", ".xlsx"))).toBe(true);
+    expect(isDeferredOfficeFile(file("main.rs", ".rs"))).toBe(false);
   });
 });
