@@ -8,6 +8,12 @@ import { useSettingsStore } from "../../stores/settings";
 import { isDetachedPtyId } from "../../stores/tabs";
 import "@xterm/xterm/css/xterm.css";
 
+// Hoisted to module scope: keystroke input fires this on every key, so we reuse
+// one encoder rather than allocating a `new TextEncoder()` per keystroke. The
+// resulting `Uint8Array` is passed straight to `pty_write` (Tauri v2 ships typed
+// arrays to a `Vec<u8>` command directly), avoiding the per-key `Array.from`.
+const PTY_ENCODER = new TextEncoder();
+
 interface TerminalOutput {
   id: string;
   data: string;
@@ -194,8 +200,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
 
     // Wire keyboard input → PTY write.
     term.onData((data) => {
-      const bytes = Array.from(new TextEncoder().encode(data));
-      invoke("pty_write", { id, data: bytes }).catch(console.error);
+      invoke("pty_write", { id, data: PTY_ENCODER.encode(data) }).catch(console.error);
     });
 
     const setupAndSpawn = async () => {
@@ -239,10 +244,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
                 initialEnterTimer.current = setTimeout(typeWhenReady, 100);
                 return;
               }
-              const text = Array.from(new TextEncoder().encode(initialInput));
-              invoke("pty_write", { id, data: text }).catch(console.error);
+              invoke("pty_write", { id, data: PTY_ENCODER.encode(initialInput) }).catch(console.error);
               initialEnterTimer.current = setTimeout(() => {
-                invoke("pty_write", { id, data: [0x0d] }).catch(console.error);
+                invoke("pty_write", { id, data: new Uint8Array([0x0d]) }).catch(console.error);
               }, 200);
             };
             typeWhenReady();

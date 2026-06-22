@@ -17,7 +17,7 @@ import {
   resolveTexRef,
   resolveTexRefAsync,
   texRefRanges,
-} from "../components/files/tex";
+} from "../lib/viewers/tex";
 
 const MAIN = "/home/u/proj/paper.tex";
 

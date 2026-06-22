@@ -1,3 +1,8 @@
+// TODO #24 (Group F): not yet wired up. This schema models
+// `active_session.json`, but nothing in the backend currently writes or reads
+// it — full session restore on startup is still open. Keep this comment until
+// the read/write path lands so the schema reads honestly.
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};

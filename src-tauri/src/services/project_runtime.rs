@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -7,7 +6,6 @@ use crate::commands::apps::WindowRegistryState;
 use crate::commands::workspace::WorkspaceStateArc;
 use crate::schema::project::TabEntry;
 use crate::schema::session::{FileTabSession, LayoutSession, ProjectState};
-use crate::schema::time_log::TimeLogEntry;
 use crate::services::{restore_service, terminal_service, window_service};
 use crate::services::terminal_service::eldrun_sessions_dir;
 use crate::storage;
@@ -304,18 +302,8 @@ fn load_file_tab_session(local_file: &str) -> (Vec<serde_json::Value>, Option<St
 }
 
 fn flush_project_secs(project_id: &str, secs: f64) {
-    let path = storage::state_dir().join("time_log.json");
-    let mut log: crate::schema::time_log::TimeLog = if path.exists() {
-        storage::read_json(&path).unwrap_or_default()
-    } else {
-        vec![]
-    };
-    log.push(TimeLogEntry {
-        project_id: project_id.to_string(),
-        date: storage::today_utc(),
-        start_iso: storage::iso_now(),
-        duration_s: secs,
-        extra: HashMap::new(),
-    });
-    let _ = storage::write_json(&path, &log);
+    // Efficiency #12: record into the rolling daily-summary file (a small,
+    // bounded map) instead of appending to the unbounded `time_log.json` and
+    // rewriting the whole growing file on every switch / 60s tick.
+    crate::schema::time_log::record_secs(project_id, secs);
 }

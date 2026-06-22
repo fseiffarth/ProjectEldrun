@@ -5,7 +5,7 @@
  * - the two functions never overlap, so an entry shows in exactly one place
  */
 import { describe, it, expect } from "vitest";
-import { visibleEntries, hiddenEntries, type FileEntry } from "../components/files/fileUtils";
+import { visibleEntries, hiddenEntries, type FileEntry } from "../lib/viewers/fileUtils";
 
 function entry(name: string, over: Partial<FileEntry> = {}): FileEntry {
   return {

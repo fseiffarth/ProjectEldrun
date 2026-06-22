@@ -363,6 +363,263 @@ export async function resolveTexRefAsync(
   return { path: best.entry.path, viewer, label: best.entry.name };
 }
 
+// --- \ref / \cite key autocomplete (#cite-ref-complete) ---------------------
+//
+// As the user types inside a reference-family command (`\ref{`, `\cref{`,
+// `\autoref{`, `\eqref{`, …) or a cite-family command (`\cite{`, `\citep{`,
+// `\parencite{`, …) the viewer offers a dropdown of candidate keys: `\label{…}`
+// keys gathered from the document for refs, and entry keys from the connected
+// `.bib` file(s) for cites. These helpers are pure (or invoke-only) so they can
+// be unit-tested independently of the React editor.
+
+/** Which kind of key a completion context expects. */
+export type TexComplKind = "ref" | "cite";
+
+/** A reference/cite command's open brace under the caret, plus the partial key
+ *  token being typed (`query`) and the `[start, end)` source range to replace on
+ *  accept. */
+export interface TexComplContext {
+  kind: TexComplKind;
+  start: number;
+  end: number;
+  query: string;
+}
+
+/** Reference-family commands (cleveref/varioref/hyperref/base) that take a
+ *  `\label` key as their brace argument. Matched case-insensitively, so `\Cref`
+ *  and `\cref` both land here. */
+const REF_COMPL_CMDS = new Set([
+  "ref", "cref", "autoref", "eqref", "pageref", "vref", "vpageref", "nameref",
+  "labelcref", "crefrange", "cpageref", "cpagerefrange", "fref", "fullref",
+  "thref", "namecref", "nameCref",
+]);
+
+/** Classify the command preceding a brace: any command containing "cite" is a
+ *  citation (covers natbib/biblatex variants — citep/citet/parencite/…), the
+ *  fixed `REF_COMPL_CMDS` set is a reference. Returns null otherwise. */
+function classifyComplCmd(cmd: string): TexComplKind | null {
+  const lower = cmd.toLowerCase();
+  if (lower.includes("cite")) return "cite";
+  if (REF_COMPL_CMDS.has(lower)) return "ref";
+  return null;
+}
+
+/**
+ * Detect whether `caret` sits inside the (possibly still-unclosed) brace
+ * argument of a reference- or cite-family command, for live autocomplete. Scans
+ * a short window back from the caret for the enclosing `{` — bailing on a `}` or
+ * a blank line first — then checks the text just before it for `\cmd` (allowing
+ * a `*` and any number of `[optional]` groups, e.g. `\citep[see][p.5]{`). The
+ * `query` is the comma-separated token under the caret, trimmed; `start`/`end`
+ * cover that token so accepting replaces just it (keeping earlier keys in a
+ * multi-key `\cite{a,b}`). Returns null when not in such a context.
+ */
+export function findTexComplAt(source: string, caret: number): TexComplContext | null {
+  if (caret < 0 || caret > source.length) return null;
+  let braceStart = -1;
+  const limit = Math.max(0, caret - 600);
+  for (let i = caret - 1; i >= limit; i--) {
+    const c = source[i];
+    if (c === "}") return null;
+    if (c === "{") { braceStart = i; break; }
+    if (c === "\n" && source[i - 1] === "\n") return null;
+  }
+  if (braceStart < 0) return null;
+  const tail = source.slice(Math.max(0, braceStart - 80), braceStart);
+  const m = /\\([a-zA-Z]+)\*?\s*(?:\[[^\]]*\]\s*)*$/.exec(tail);
+  if (!m) return null;
+  const kind = classifyComplCmd(m[1]);
+  if (!kind) return null;
+  const bodyStart = braceStart + 1;
+  const segment = source.slice(bodyStart, caret);
+  if (/[{}]/.test(segment)) return null; // brace appeared since the open → not in the arg
+  const comma = segment.lastIndexOf(",");
+  const rawStart = comma >= 0 ? comma + 1 : 0;
+  const raw = segment.slice(rawStart);
+  const lead = raw.length - raw.trimStart().length;
+  return {
+    kind,
+    start: bodyStart + rawStart + lead,
+    end: caret,
+    query: raw.trim(),
+  };
+}
+
+/** Every `\label{…}` key in a TeX source, in document order (duplicates kept;
+ *  the caller dedupes when merging across files). */
+export function parseTexLabels(source: string): string[] {
+  const out: string[] = [];
+  const re = /\\label\s*\{([^{}]+)\}/g;
+  for (let m = re.exec(source); m; m = re.exec(source)) {
+    const k = m[1].trim();
+    if (k) out.push(k);
+  }
+  return out;
+}
+
+/** A parsed `.bib` entry: the citation key plus a few display fields. */
+export interface BibEntry {
+  key: string;
+  type: string;
+  title?: string;
+  author?: string;
+  year?: string;
+}
+
+/** Pull a single field value out of a bib entry body, handling `{…}` (brace-
+ *  balanced), `"…"`, and bare/number values. Strips braces and collapses
+ *  whitespace for display. */
+function bibField(body: string, name: string): string | undefined {
+  const m = new RegExp(`\\b${name}\\s*=\\s*`, "i").exec(body);
+  if (!m) return undefined;
+  let i = m.index + m[0].length;
+  const open = body[i];
+  let val = "";
+  if (open === "{") {
+    let depth = 0;
+    for (; i < body.length; i++) {
+      const ch = body[i];
+      if (ch === "{") { depth++; if (depth === 1) continue; }
+      else if (ch === "}") { depth--; if (depth === 0) break; }
+      val += ch;
+    }
+  } else if (open === '"') {
+    for (i++; i < body.length && body[i] !== '"'; i++) val += body[i];
+  } else {
+    for (; i < body.length; i++) {
+      const ch = body[i];
+      if (ch === "," || ch === "\n") break;
+      val += ch;
+    }
+  }
+  const cleaned = val.replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
+  return cleaned || undefined;
+}
+
+/**
+ * Parse a `.bib` file into its entries. Tolerant rather than strict: it finds
+ * each `@type{key,` header, skips `@comment/@preamble/@string`, brace-matches to
+ * the entry's end, and extracts title/author/year for the dropdown's display.
+ * Not a full BibTeX parser — good enough to list keys and a label.
+ */
+export function parseBibEntries(bib: string): BibEntry[] {
+  const out: BibEntry[] = [];
+  const re = /@(\w+)\s*\{\s*([^,\s}]+)\s*,/g;
+  for (let m = re.exec(bib); m; m = re.exec(bib)) {
+    const type = m[1].toLowerCase();
+    if (type === "comment" || type === "preamble" || type === "string") continue;
+    const key = m[2].trim();
+    if (!key) continue;
+    const braceOpen = bib.indexOf("{", m.index);
+    let depth = 0;
+    let end = bib.length;
+    for (let i = braceOpen; i < bib.length; i++) {
+      const c = bib[i];
+      if (c === "{") depth++;
+      else if (c === "}") { depth--; if (depth === 0) { end = i; break; } }
+    }
+    const body = bib.slice(braceOpen + 1, end);
+    out.push({
+      key, type,
+      title: bibField(body, "title"),
+      author: bibField(body, "author"),
+      year: bibField(body, "year"),
+    });
+    re.lastIndex = end; // resume past this entry so nested @ in a field is ignored
+  }
+  return out;
+}
+
+/** Brace tokens (comma-split, trimmed) of the given commands in `source`. Used
+ *  to follow `\input`/`\include` and locate `\bibliography`/`\addbibresource`. */
+function texCommandTokens(source: string, commands: string[]): string[] {
+  const re = new RegExp(
+    `\\\\(?:${commands.join("|")})\\b\\s*(?:\\[[^\\]]*\\])?\\s*\\{([^{}]*)\\}`,
+    "g",
+  );
+  const out: string[] = [];
+  for (let m = re.exec(source); m; m = re.exec(source)) {
+    for (const part of m[1].split(",")) {
+      const t = part.trim();
+      if (t) out.push(t);
+    }
+  }
+  return out;
+}
+
+/** Resolve a `\input`/`\bibliography` token to an absolute path against the
+ *  referencing file's dir, appending `defExt` when it has none. */
+function resolveSibling(fromFile: string, token: string, defExt: string): string {
+  const base = token.slice(token.lastIndexOf("/") + 1);
+  const hasExt = base.includes(".");
+  const rel = hasExt ? token : token + defExt;
+  const dir = fromFile.slice(0, fromFile.lastIndexOf("/")) || "/";
+  return rel.startsWith("/") ? normalizePath(rel) : normalizePath(`${dir}/${rel}`);
+}
+
+const TEX_INPUT_CMDS = ["input", "include", "subfile", "subfileinclude"];
+const TEX_BIB_CMDS = ["bibliography", "addbibresource"];
+
+/** Candidate keys for the ref/cite dropdown: `\label` keys across the document
+ *  and bib entries from the connected `.bib` file(s). */
+export interface TexCompletions {
+  labels: string[];
+  cites: BibEntry[];
+}
+
+/**
+ * Gather completion candidates for `currentPath`'s document. Resolves the build
+ * root, walks `\input`/`\include` to collect every reachable `.tex` file
+ * (bounded), unions their `\label` keys, and reads every `.bib` referenced via
+ * `\bibliography`/`\addbibresource` for its entry keys. All file reads are
+ * best-effort: a missing/unreadable file is skipped. Pure parsing is delegated
+ * to the tested helpers above.
+ */
+export async function gatherTexCompletions(currentPath: string): Promise<TexCompletions> {
+  const root = await resolveTexRoot(currentPath);
+  const seenTex = new Set<string>();
+  const queue = [root, currentPath];
+  const labels: string[] = [];
+  const bibPaths = new Set<string>();
+
+  while (queue.length && seenTex.size < 60) {
+    const file = queue.shift()!;
+    if (seenTex.has(file)) continue;
+    seenTex.add(file);
+    let text: string;
+    try {
+      text = await invoke<string>("read_file_text", { path: file });
+    } catch {
+      continue;
+    }
+    for (const l of parseTexLabels(text)) labels.push(l);
+    for (const t of texCommandTokens(text, TEX_INPUT_CMDS)) {
+      queue.push(resolveSibling(file, t, ".tex"));
+    }
+    for (const t of texCommandTokens(text, TEX_BIB_CMDS)) {
+      bibPaths.add(resolveSibling(file, t, ".bib"));
+    }
+  }
+
+  const cites: BibEntry[] = [];
+  const seenKey = new Set<string>();
+  for (const bib of bibPaths) {
+    let text: string;
+    try {
+      text = await invoke<string>("read_file_text", { path: bib });
+    } catch {
+      continue;
+    }
+    for (const e of parseBibEntries(text)) {
+      if (seenKey.has(e.key)) continue;
+      seenKey.add(e.key);
+      cites.push(e);
+    }
+  }
+
+  return { labels: Array.from(new Set(labels)), cites };
+}
+
 /** Collapse `.`/`..` segments in a `/`-separated path, preserving a leading `/`. */
 function normalizePath(p: string): string {
   const isAbs = p.startsWith("/");

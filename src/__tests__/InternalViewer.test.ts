@@ -3,7 +3,7 @@ import {
   internalViewerFor,
   isDeferredOfficeFile,
   type FileEntry,
-} from "../components/files/fileUtils";
+} from "../lib/viewers/fileUtils";
 
 function file(name: string, extension: string | null): FileEntry {
   return { name, path: `/p/${name}`, is_dir: false, size: 1, extension, mime: null };

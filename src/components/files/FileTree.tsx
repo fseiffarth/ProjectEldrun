@@ -8,8 +8,8 @@ import { useDragStore, type EmbedCap } from "../../stores/drag";
 import { commitFileDrop } from "../tabs/commitFileDrop";
 import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
-import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, STANDARD_PROJECT_FILES } from "./fileUtils";
-import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "./tex";
+import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
+import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 
 // Persist whether the collapsed "hidden" files section is expanded, so the
@@ -129,6 +129,14 @@ export function FileTree({
     }
   });
   const [scaffoldExpanded, setScaffoldExpanded] = useState(false);
+  // Whether the Alt key is currently held. While held, file rows arm NATIVE
+  // HTML5 drag-and-drop (export the file to an embedded browser / external
+  // target) instead of the pointer-based drag-to-tab. The two can't both be
+  // armed on the same drag (native DnD fires pointercancel on WebKitGTK and
+  // breaks the pointer drag — see onEntryPointerDown's R6 note), so Alt is the
+  // explicit switch. Tracked as state so `draggable` re-evaluates per row when
+  // Alt is pressed/released.
+  const [altHeld, setAltHeld] = useState(false);
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
@@ -185,16 +193,20 @@ export function FileTree({
     if (unknown.size === 0) return;
     let cancelled = false;
     (async () => {
-      const updates: Record<string, boolean> = {};
-      for (const [ext, path] of unknown) {
-        try {
-          const cap = await invoke<EmbedCap>("embed_capability", { path, handler: null, projectId });
-          updates[ext] = cap.os_embeddable && cap.app_embeddable;
-        } catch {
-          updates[ext] = false;
-        }
-      }
-      if (!cancelled) setEmbedByExt((m) => ({ ...m, ...updates }));
+      // Fire every distinct-extension capability probe concurrently rather than
+      // awaiting each in series (Eff #8): the checks are independent, so the
+      // batch finishes in roughly one round-trip instead of N.
+      const results = await Promise.all(
+        [...unknown].map(async ([ext, path]) => {
+          try {
+            const cap = await invoke<EmbedCap>("embed_capability", { path, handler: null, projectId });
+            return [ext, cap.os_embeddable && cap.app_embeddable] as const;
+          } catch {
+            return [ext, false] as const;
+          }
+        }),
+      );
+      if (!cancelled) setEmbedByExt((m) => ({ ...m, ...Object.fromEntries(results) }));
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -218,6 +230,22 @@ export function FileTree({
     let cancelled = false;
     getTexCapability().then((cap) => { if (!cancelled) setTexCap(cap); });
     return () => { cancelled = true; };
+  }, []);
+
+  // Track Alt so file rows can switch to native DnD (export to browser) while
+  // it's held. Also clear on blur/visibility loss so a release that happens
+  // while another window has focus doesn't leave rows stuck in native-drag mode.
+  useEffect(() => {
+    const sync = (e: KeyboardEvent) => setAltHeld(e.altKey);
+    const clear = () => setAltHeld(false);
+    window.addEventListener("keydown", sync);
+    window.addEventListener("keyup", sync);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("keydown", sync);
+      window.removeEventListener("keyup", sync);
+      window.removeEventListener("blur", clear);
+    };
   }, []);
 
   useEffect(() => {
@@ -289,16 +317,12 @@ export function FileTree({
     } catch {
       return; // transient (e.g. dir mid-rename) — keep the last good listing
     }
-    setRawEntries((prev) =>
-      JSON.stringify(prev) === JSON.stringify(result) ? prev : result,
-    );
+    setRawEntries((prev) => (fileEntriesEqual(prev, result) ? prev : result));
     const statuses = await invoke<GitStatusMap>("git_file_statuses", {
       projectDir,
       relPath: rel,
     }).catch(() => ({}));
-    setGitStatuses((prev) =>
-      JSON.stringify(prev) === JSON.stringify(statuses) ? prev : statuses,
-    );
+    setGitStatuses((prev) => (stringMapsEqual(prev, statuses) ? prev : statuses));
   }
 
   function handleClick(entry: FileEntry) {
@@ -353,6 +377,11 @@ export function FileTree({
     viewer: InternalViewer | null,
   ) {
     if (e.button !== 0 || entry.is_dir) return;
+    // Alt held → the user wants to EXPORT this file (drag it into an embedded
+    // browser / external target) via native HTML5 DnD, which the row arms while
+    // `altHeld` (see renderEntry's `draggable`/`onDragStart`). Bail out without
+    // preventDefault so native DnD takes over instead of the pointer drag-to-tab.
+    if (e.altKey) return;
     // Let the inline run (▶) button own its own clicks — don't seed a drag or
     // swallow the click when the press lands on it.
     if ((e.target as HTMLElement).closest(".file-run-btn")) return;
@@ -685,18 +714,21 @@ export function FileTree({
               key={e.path}
               className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold ? " scaffold" : ""}`}
               // Dirs: single-click navigates + native DnD (file export).
-              // Drag-to-tab files (built-in viewer OR embeddable handler):
-              // pointer-based drag onto a tab bar (R6 — native DnD disabled so it
-              // can't hijack the pointer / open a browser drag), opened by
-              // double-click.
-              // Other files: not draggable at all (no pointer drag, no native
-              // drag), opened by double-click.
+              // Files, plain drag: pointer-based drag onto a tab bar for
+              // drag-to-tab files (built-in viewer OR embeddable handler); R6 —
+              // native DnD disabled then so it can't hijack the pointer. Opened
+              // by double-click.
+              // Files, ALT held: arm native HTML5 DnD so any file can be dragged
+              // out into an embedded browser / external target (the pointer
+              // drag-to-tab bails on Alt, see onEntryPointerDown).
               onClick={e.is_dir ? () => handleClick(e) : undefined}
               onDoubleClick={e.is_dir ? undefined : () => handleClick(e)}
               onContextMenu={(ev) => showEntryContextMenu(ev, e)}
-              draggable={e.is_dir}
+              draggable={e.is_dir || altHeld}
               onDragStart={
-                e.is_dir ? (ev) => handleEntryDragStart(ev, e) : (ev) => ev.preventDefault()
+                e.is_dir || altHeld
+                  ? (ev) => handleEntryDragStart(ev, e)
+                  : (ev) => ev.preventDefault()
               }
               onPointerDown={dragTarget ? (ev) => onEntryPointerDown(ev, e, viewer) : undefined}
               onMouseEnter={(ev) => handleEntryMouseEnter(ev, e)}

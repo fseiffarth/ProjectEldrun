@@ -5,7 +5,6 @@ import { useSettingsStore } from "../../stores/settings";
 import {
   DETACHED_BOUNDS,
   DETACHED_CLOSE,
-  DETACHED_DOCK,
   DETACHED_EDIT,
   DETACHED_REQUEST_SEED,
   applyEditToSubtree,
@@ -165,13 +164,10 @@ export function DetachedApp({ param }: Props) {
     void emit(DETACHED_EDIT, { scope: param.scope, groupId: param.groupId, edit });
   };
 
-  const onDockBack = () => {
-    void emit(DETACHED_DOCK, { scope: param.scope, groupId: param.groupId });
-  };
-
   // Close-on-close: closing this OS window via the WM/title-bar CLOSES the
   // group's tabs for good — they are not docked back and do not restore on next
-  // launch (dock-back stays on the ⤓ button). Prevent the default close and emit
+  // launch (dock-back is done by Ctrl+dragging the tab bar onto the main window,
+  // #42). Prevent the default close and emit
   // DETACHED_CLOSE; the MAIN window owns the teardown (kills the PTYs, drops the
   // tabs, persists) and closes this window via `attach_subwindow`. As a safety
   // net (e.g. the main window is gone and never closes us), force-destroy after a
@@ -210,7 +206,6 @@ export function DetachedApp({ param }: Props) {
       tabs={tabs}
       onActivate={(key) => pushEdit({ kind: "activate", key })}
       onClose={(key) => pushEdit({ kind: "close", key })}
-      onDockBack={onDockBack}
     />
   );
 }

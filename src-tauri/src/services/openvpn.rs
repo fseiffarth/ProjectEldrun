@@ -135,7 +135,16 @@ fn safe_stem(config: &str) -> String {
         h ^= b as u64;
         h = h.wrapping_mul(1099511628211);
     }
-    format!("{}_{h:016x}", &stem[stem.len().saturating_sub(40)..])
+    // Keep the last 40 chars. Slice on a char boundary, not a byte offset: a
+    // byte-index slice (`&stem[stem.len()-40..]`) would panic if it landed in the
+    // middle of a multibyte char. `stem` is ASCII today (every non-ascii-alnum
+    // char is mapped to `_`), but iterating chars is panic-proof regardless.
+    let tail: String = {
+        let chars: Vec<char> = stem.chars().collect();
+        let start = chars.len().saturating_sub(40);
+        chars[start..].iter().collect()
+    };
+    format!("{tail}_{h:016x}")
 }
 
 /// Write `password` to an owner-only (0600) askpass file and return its path.
@@ -354,6 +363,18 @@ mod tests {
         let b = safe_stem("/home/u/b.ovpn");
         assert_ne!(a, b);
         assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+    }
+
+    #[test]
+    fn safe_stem_handles_multibyte_paths_without_panicking() {
+        // A long path of multibyte chars must not panic on the length-bounding
+        // slice (the bug was byte-index slicing into the middle of a char).
+        let path = format!("/home/{}/файл-конфигурации-очень-длинное-имя.ovpn", "ü".repeat(60));
+        let stem = safe_stem(&path);
+        // Still filesystem-safe (non-ascii-alnum collapses to '_') and bounded.
+        assert!(stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        // 40-char tail + '_' + 16 hex digits.
+        assert!(stem.len() <= 40 + 1 + 16);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -93,6 +93,11 @@ export function CenterPanel() {
   const loadFromLayout = useTabsStore((s) => s.loadFromLayout);
   const resizeSplit = useTabsStore((s) => s.resizeSplit);
   const tabs = useTabsStore((s) => s.tabs);
+  // #42: the current scope's detached popouts. Subscribed here so the debounced
+  // save below re-fires when a popout is moved/resized (setDetachedBounds swaps
+  // this array's identity) — otherwise bounds drags wouldn't reach project.json
+  // until the next tab/layout change or app quit.
+  const detachedGroups = useTabsStore((s) => s.detachedGroupsByScope[s.scope]);
   const saveLayout = useTabsStore((s) => s.saveLayout);
   const updateTabEnv = useTabsStore((s) => s.updateTabEnv);
   // #42: popouts to re-open for the current scope (restored docked, then detached).
@@ -197,7 +202,7 @@ export function CenterPanel() {
       saveLayout(localFile).catch(() => {});
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [activeId, localFile, tabs, layout, saveLayout]);
+  }, [activeId, localFile, tabs, layout, detachedGroups, saveLayout]);
 
   // #42: re-open popouts that were detached when this scope was last saved. The
   // groups were restored DOCKED (above) so their panes mount and spawn their
@@ -208,7 +213,10 @@ export function CenterPanel() {
     if (!pendingRespawn || pendingRespawn.length === 0) return;
     const targets = consumePendingRespawn(scope);
     for (const t of targets) {
-      detachGroup(t.id, { bounds: t.bounds });
+      // allowLastGroup: a restored popout may be the scope's only group (its
+      // in-window siblings held only non-restorable tabs and were dropped); it
+      // must still re-detach into its own window rather than stay docked.
+      detachGroup(t.id, { bounds: t.bounds, allowLastGroup: true });
     }
   }, [scope, pendingRespawn, consumePendingRespawn, detachGroup]);
 
@@ -442,18 +450,27 @@ export function CenterPanel() {
         .catch(() => {});
 
     reg(
-      listen<DetachedDragStart>(DETACHED_DRAG_START, async (ev) => {
+      listen<DetachedDragStart>(DETACHED_DRAG_START, (ev) => {
         const { scope: dScope, groupId, label, screenX, screenY } = ev.payload;
-        await refreshOrigin();
-        const { x, y } = toClient(screenX, screenY);
+        // Start the drag synchronously so the high-frequency MOVE poll that
+        // follows isn't dropped by its `kind !== "detached"` guard while we await
+        // the origin. Seed with the current (stale) origin; refreshOrigin() then
+        // corrects it and we re-resolve. The main window doesn't move mid-gesture.
+        const seed = toClient(screenX, screenY);
         useDragStore.getState().startDetachedDrag({
           label,
-          pointerX: x,
-          pointerY: y,
+          pointerX: seed.x,
+          pointerY: seed.y,
           detachedScope: dScope,
           detachedGroupId: groupId,
         });
-        resolveTargetRef.current(x, y);
+        resolveTargetRef.current(seed.x, seed.y);
+        void refreshOrigin().then(() => {
+          if (useDragStore.getState().drag?.kind !== "detached") return;
+          const { x, y } = toClient(screenX, screenY);
+          useDragStore.getState().move(x, y);
+          resolveTargetRef.current(x, y);
+        });
       }),
     );
 
@@ -470,29 +487,57 @@ export function CenterPanel() {
       listen<DetachedDragEnd>(DETACHED_DRAG_END, (ev) => {
         const d = useDragStore.getState().drag;
         if (d?.kind !== "detached") return;
+        // END carries the LAST OS-cursor position (the DOM release event fires
+        // inside the popout on WebKitGTK, so we cannot trust `d.pointerX/Y` here).
+        // Re-map it to client coords and re-resolve the drop target so `inMain`
+        // and the target reflect where the cursor actually is on release.
+        let px = d.pointerX;
+        let py = d.pointerY;
+        if (ev.payload.screenX != null && ev.payload.screenY != null) {
+          const c = toClient(ev.payload.screenX, ev.payload.screenY);
+          px = c.x;
+          py = c.y;
+          useDragStore.getState().move(px, py);
+          resolveTargetRef.current(px, py);
+        }
+        // Re-read the drag after the final resolve so over/reorder targets are
+        // the ones the cursor ended over.
+        const f = useDragStore.getState().drag;
         // Dock only when released over THIS window's content and not cancelled;
         // dropping outside the main window (or Escape) leaves the popout floating.
         const inMain =
-          d.pointerX >= 0 &&
-          d.pointerY >= 0 &&
-          d.pointerX <= window.innerWidth &&
-          d.pointerY <= window.innerHeight;
-        if (!ev.payload.cancelled && inMain && d.detachedGroupId) {
+          px >= 0 &&
+          py >= 0 &&
+          px <= window.innerWidth &&
+          py <= window.innerHeight;
+        if (!ev.payload.cancelled && inMain && f?.kind === "detached" && f.detachedGroupId) {
           const store = useTabsStore.getState();
-          if (d.reorderGroup) {
-            // Released over a tab bar → merge into that group.
-            store.attachGroup(d.detachedGroupId, {
-              targetGroupId: d.reorderGroup,
-              edge: "center",
-            });
-          } else if (d.overGroup && d.edge) {
-            store.attachGroup(d.detachedGroupId, {
-              targetGroupId: d.overGroup,
-              edge: d.edge,
-            });
-          } else {
-            // Over the panel but no resolved target → default placement.
-            store.attachGroup(d.detachedGroupId);
+          // Mirror the button-path branch in `listenDetachedHost` (detached.ts):
+          // `attachGroup` re-injects only into the ACTIVE scope's live layout, so
+          // it can only dock a group whose scope is currently active. When the
+          // popout's scope is NOT the active one, re-inject into that scope's
+          // STORED layout via `dropDetachedGroup` instead — otherwise attachGroup
+          // silently no-ops and the drop is swallowed.
+          if (f.detachedScope && store.scope === f.detachedScope) {
+            if (f.reorderGroup) {
+              // Released over a tab bar → merge into that group.
+              store.attachGroup(f.detachedGroupId, {
+                targetGroupId: f.reorderGroup,
+                edge: "center",
+              });
+            } else if (f.overGroup && f.edge) {
+              store.attachGroup(f.detachedGroupId, {
+                targetGroupId: f.overGroup,
+                edge: f.edge,
+              });
+            } else {
+              // Over the panel but no resolved target → default placement.
+              store.attachGroup(f.detachedGroupId);
+            }
+          } else if (f.detachedScope) {
+            // Cross-scope drop: re-inject into the popout's stored layout (target
+            // edges don't apply to a layout that isn't currently rendered).
+            store.dropDetachedGroup(f.detachedScope, f.detachedGroupId);
           }
         }
         useDragStore.getState().end();
@@ -506,17 +551,29 @@ export function CenterPanel() {
   }, []);
 
   // ── Render the flat pane layer (all tabs, all scopes; never unmounted) ─────
-  const allTabs = Object.entries(tabsByScope).flatMap(([s, scopeTabs]) =>
-    scopeTabs.map((tab) => ({ tab, scopeKey: s })),
+  // Memoized so unrelated re-renders (drag flags, group-rect churn) don't rebuild
+  // these whole-store maps every frame (Eff #7). The pane layer genuinely needs
+  // EVERY scope's tabs (panes stay mounted across switches), so the subscription
+  // stays broad — but the rebuild is now keyed to the inputs that change it.
+  const allTabs = useMemo(
+    () =>
+      Object.entries(tabsByScope).flatMap(([s, scopeTabs]) =>
+        scopeTabs.map((tab) => ({ tab, scopeKey: s })),
+      ),
+    [tabsByScope],
   );
-  // For each current-scope group, which tab key is its active (visible) one.
-  const activeKeyOfGroup = new Map<string, string>();
-  // Group id holding each visible tab key (current scope only).
-  const groupOfKey = new Map<string, string>();
-  for (const g of allGroups(layoutByScope[scope] ?? null)) {
-    if (g.activeKey) activeKeyOfGroup.set(g.id, g.activeKey);
-    for (const k of g.tabKeys) groupOfKey.set(k, g.id);
-  }
+  // For each current-scope group: its active (visible) tab key, and the group id
+  // holding each visible tab key. Rebuilt only when the current scope's layout
+  // tree changes — not on every render.
+  const { activeKeyOfGroup, groupOfKey } = useMemo(() => {
+    const activeKeyOfGroup = new Map<string, string>();
+    const groupOfKey = new Map<string, string>();
+    for (const g of allGroups(layoutByScope[scope] ?? null)) {
+      if (g.activeKey) activeKeyOfGroup.set(g.id, g.activeKey);
+      for (const k of g.tabKeys) groupOfKey.set(k, g.id);
+    }
+    return { activeKeyOfGroup, groupOfKey };
+  }, [layoutByScope, scope]);
   // #62: fullscreen is active only when the stored group actually exists in the
   // current scope (a stale id from another scope is ignored). When active, the
   // fullscreened group's pane is sized to the whole panel and all others hidden.
@@ -595,7 +652,15 @@ export function CenterPanel() {
               }
             : { display: "none" };
           return (
-            <div key={`${scopeKey}/${tab.key}`} className="center-pane" style={style}>
+            <div
+              key={`${scopeKey}/${tab.key}`}
+              className="center-pane"
+              // Lets a tab drag locate this pane's live DOM to clone a content
+              // thumbnail into the drag ghost (see DragGhost / startTabDrag).
+              data-scope-key={scopeKey}
+              data-tab-key={tab.key}
+              style={style}
+            >
               {tab.kind === "files" ? (
                 <FileBrowser
                   projectDir={tab.cwd}
@@ -675,16 +740,63 @@ export function SplitPreviewOverlay({ groupRects }: { groupRects: Record<string,
 }
 
 /**
- * The dragged tab's label, floating at the pointer. Subscribes to the drag store
- * itself (rather than via CenterPanel props) so the panel doesn't re-render on
- * every pointermove. Rendered into document.body so it isn't clipped.
+ * The dragged tab floating at the pointer: its label plus, for tab drags, a
+ * scaled thumbnail of the tab's live CONTENT (a clone captured at drag start)
+ * so it's clear WHAT is moving, not just where it lands. Subscribes to the drag
+ * store itself (rather than via CenterPanel props) so the panel doesn't re-render
+ * on every pointermove. Rendered into document.body so it isn't clipped.
  */
+const GHOST_THUMB_W = 280; // px; the thumbnail's on-screen width.
+
 function DragGhost() {
-  const drag = useDragStore((s) => s.drag);
-  if (!drag) return null;
+  // Eff #14: subscribe to COARSE PRIMITIVE selectors (mirroring
+  // SplitPreviewOverlay / stores/drag.ts), not the whole `drag` object. The
+  // ghost still re-renders each frame to follow the pointer (pointerX/Y change),
+  // but the heavy `previewNode` / its dimensions are read as stable primitives,
+  // so the clone-mount effect's deps don't churn and React diffs only the moved
+  // position. `active` gates the whole render off when no drag is in flight.
+  const active = useDragStore((s) => s.drag != null);
+  const pointerX = useDragStore((s) => s.drag?.pointerX ?? 0);
+  const pointerY = useDragStore((s) => s.drag?.pointerY ?? 0);
+  const label = useDragStore((s) => s.drag?.label ?? "");
+  // During a file drag (pointer-based drag-to-tab), remind the user that holding
+  // Alt switches to a native drag that can be dropped into an embedded browser.
+  const isFileDrag = useDragStore((s) => s.drag?.kind === "file");
+  const node = useDragStore((s) => s.drag?.previewNode ?? null);
+  const srcW = useDragStore((s) => s.drag?.previewW ?? 0);
+  const srcH = useDragStore((s) => s.drag?.previewH ?? 0);
+  const thumbRef = useRef<HTMLDivElement>(null);
+
+  // Mount the cloned pane once per drag and scale it to fit GHOST_THUMB_W. Done
+  // in an effect (not inline) so the heavy clone isn't re-appended on every
+  // pointermove re-render — only the ghost's left/top change then.
+  useEffect(() => {
+    const holder = thumbRef.current;
+    if (!holder || !node || srcW <= 0) return;
+    const scale = GHOST_THUMB_W / srcW;
+    node.style.transformOrigin = "top left";
+    node.style.transform = `scale(${scale})`;
+    holder.appendChild(node);
+    return () => {
+      if (node.parentNode === holder) holder.removeChild(node);
+    };
+  }, [node, srcW]);
+
+  if (!active) return null;
+  const thumbH = node && srcW > 0 ? (srcH * GHOST_THUMB_W) / srcW : 0;
   return createPortal(
-    <div className="tab-drag-ghost" style={{ left: drag.pointerX, top: drag.pointerY }}>
-      {drag.label}
+    <div className="tab-drag-ghost" style={{ left: pointerX, top: pointerY }}>
+      <div className="tab-drag-ghost-label">{label}</div>
+      {isFileDrag ? (
+        <div className="tab-drag-ghost-hint">Hold ⌥ Alt to drop into browser</div>
+      ) : null}
+      {node ? (
+        <div
+          className="tab-drag-ghost-thumb"
+          ref={thumbRef}
+          style={{ width: GHOST_THUMB_W, height: thumbH }}
+        />
+      ) : null}
     </div>,
     document.body,
   );

@@ -38,10 +38,25 @@ const { handlers, emitted, emit, listen } = vi.hoisted(() => {
 });
 vi.mock("@tauri-apps/api/event", () => ({ emit, listen }));
 
+// Track the per-label popout windows `shutdownDetachedWindows` destroys.
+const { destroyed, getByLabel } = vi.hoisted(() => {
+  const destroyed: string[] = [];
+  return {
+    destroyed,
+    getByLabel: vi.fn((label: string) =>
+      Promise.resolve({ destroy: () => { destroyed.push(label); return Promise.resolve(); } }),
+    ),
+  };
+});
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  WebviewWindow: { getByLabel: (l: string) => getByLabel(l) },
+}));
+
 import { useTabsStore, type GroupNode } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import {
   listenDetachedHost,
+  shutdownDetachedWindows,
   DETACHED_REQUEST_SEED,
   DETACHED_EDIT,
   DETACHED_DOCK,
@@ -53,6 +68,8 @@ import {
 function reset() {
   handlers.clear();
   emitted.length = 0;
+  destroyed.length = 0;
+  getByLabel.mockClear();
   invokeMock.mockClear();
   emit.mockClear();
   listen.mockClear();
@@ -178,6 +195,49 @@ describe("detached host (#42)", () => {
       "save_tab_layout",
       expect.objectContaining({ localFile: "/p/project.json" }),
     );
+  });
+
+  it("app-quit teardown persists each detached scope and destroys its popout (no discard)", async () => {
+    const { label, bKey } = detachSecond();
+    useProjectsStore.setState({
+      projects: [{ id: "p", name: "p", local_file: "/p/project.json" } as never],
+    });
+    invokeMock.mockClear();
+
+    await shutdownDetachedWindows();
+
+    // The scope is persisted (so detached:true + bounds reach disk for restore).
+    expect(invokeMock).toHaveBeenCalledWith(
+      "save_tab_layout",
+      expect.objectContaining({ localFile: "/p/project.json" }),
+    );
+    // The popout's OS window is destroyed (closed, not stranded on screen).
+    expect(destroyed).toContain(label);
+    // Crucially, the group is NOT discarded — it survives so it can re-open at
+    // its saved bounds next launch (unlike an explicit per-popout WM close).
+    expect(useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(1);
+    expect(useTabsStore.getState().tabsByScope["p"]?.some((t) => t.key === bKey)).toBe(true);
+    // It does NOT call attach_subwindow (that path also drops the registry entry).
+    expect(invokeMock).not.toHaveBeenCalledWith("attach_subwindow", expect.anything());
+  });
+
+  it("app-quit teardown closes a popout whose scope has no project.json (can't persist)", async () => {
+    // No matching project → no local_file, so nothing is persisted, but the OS
+    // window must still be destroyed rather than left stranded on screen.
+    const { label } = detachSecond();
+    useProjectsStore.setState({ projects: [] });
+    invokeMock.mockClear();
+
+    await shutdownDetachedWindows();
+
+    expect(invokeMock).not.toHaveBeenCalledWith("save_tab_layout", expect.anything());
+    expect(destroyed).toContain(label);
+  });
+
+  it("AppShell tears down popouts on close before destroying the main window", () => {
+    const src = appShellSource as string;
+    expect(src).toMatch(/import\s*\{[^}]*shutdownDetachedWindows[^}]*\}\s*from\s*["'][^"']*detached["']/);
+    expect(src).toMatch(/shutdownDetachedWindows\s*\(/);
   });
 
   it("the combined unlisten removes every channel", async () => {

@@ -203,6 +203,21 @@ describe("tabs store — detach / attach subwindow (#42)", () => {
     expect(collectSavedKeys(pruned).sort()).toEqual([a.key, b.key].sort());
   });
 
+  it("save-side pruning preserves the detached tag + bounds (restores as a popout)", () => {
+    const { a, b, right } = twoGroups();
+    useTabsStore.getState().detachGroup(right.id, { skipBackend: true });
+    useTabsStore.getState().setDetachedBounds("p", right.id, { x: 10, y: 20, w: 800, h: 600 });
+    const layout = useTabsStore.getState().layout;
+    const detached = useTabsStore.getState().detachedGroupsByScope["p"];
+    const merged = withDetachedDocked(serializeTree(layout), detached);
+    // Pruning must NOT strip the detached tag/bounds, or restore would dock the
+    // popout inside the main panel instead of re-opening it as a floating window.
+    const pruned = pruneSavedTree(merged, new Set([a.key, b.key]));
+    const tagged = findDetachedGroup(pruned);
+    expect(tagged).not.toBeNull();
+    expect(tagged?.bounds).toEqual({ x: 10, y: 20, w: 800, h: 600 });
+  });
+
   it("withDetachedDocked tags the detached group with its bounds for respawn", () => {
     const { right } = twoGroups();
     useTabsStore.getState().detachGroup(right.id, { skipBackend: true });
@@ -247,6 +262,68 @@ describe("tabs store — detach / attach subwindow (#42)", () => {
     expect(restored.some((g) => g.id === pending[0].id)).toBe(true);
     // Draining is idempotent.
     expect(useTabsStore.getState().consumePendingRespawn("p2")).toEqual([]);
+  });
+
+  it("allowLastGroup lets the respawn path detach the lone group (empties the layout)", () => {
+    const a = useTabsStore.getState().addTab(tab("a"));
+    const gid = (useTabsStore.getState().layout as GroupNode).id;
+
+    // Without the flag the lone group can't detach (guarded above); WITH it the
+    // restart respawn path detaches it, leaving the in-window layout empty.
+    const label = useTabsStore.getState().detachGroup(gid, { allowLastGroup: true });
+    expect(label).toBe(`detached-p-${gid}`);
+    expect(useTabsStore.getState().layout).toBeNull();
+    const detached = useTabsStore.getState().detachedGroupsByScope["p"];
+    expect(detached).toHaveLength(1);
+    expect(detached[0].subtree.tabKeys).toEqual([a.key]);
+    expect(invokeMock).toHaveBeenCalledWith(
+      "detach_subwindow",
+      expect.objectContaining({ projectId: "p", groupId: gid }),
+    );
+  });
+
+  it("restore re-detaches a popout that became the scope's only group", () => {
+    // Saved tree: an in-window group holding a NON-restorable tab (dropped on
+    // restore) plus the detached group holding a restorable tab. After the drop
+    // the detached group is the lone surviving group — it must still respawn.
+    const groups = {
+      type: "split" as const,
+      dir: "row" as const,
+      sizes: [0.5, 0.5],
+      children: [
+        { type: "group" as const, tabKeys: ["k-dropped"], activeKey: "k-dropped" },
+        {
+          type: "group" as const,
+          tabKeys: ["k-keep"],
+          activeKey: "k-keep",
+          detached: true,
+          bounds: { x: 1, y: 2, w: 640, h: 480 },
+        },
+      ],
+    };
+    // Only the restorable tab is passed (the dropped tab is absent from keyMap).
+    const savedTabs = [
+      { key: "k-keep", label: "keep", cmd: "bash", cwd: "/p", kind: "shell" as const },
+    ];
+
+    reset();
+    useTabsStore.getState().loadFromLayout(savedTabs, "/p", "p", groups);
+
+    // The in-window group was dropped → the restored layout is the lone (docked)
+    // detached group, still queued for respawn.
+    const restored = allGroups(useTabsStore.getState().layoutByScope["p"]);
+    expect(restored.length).toBe(1);
+    const pending = useTabsStore.getState().consumePendingRespawn("p");
+    expect(pending.length).toBe(1);
+
+    // Respawn it exactly as CenterPanel does — the lone group must detach, not
+    // stay docked (the regression: it used to be refused and remain in-window).
+    const label = useTabsStore
+      .getState()
+      .detachGroup(pending[0].id, { bounds: pending[0].bounds, allowLastGroup: true });
+    expect(label).not.toBeNull();
+    expect(useTabsStore.getState().layout).toBeNull();
+    expect(useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(1);
   });
 
   it("withDetachedDocked returns the in-window tree unchanged with no detached groups", () => {

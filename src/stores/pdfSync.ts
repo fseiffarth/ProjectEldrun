@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { SyncRect } from "../components/files/tex";
+import type { SyncRect } from "../lib/viewers/tex";
 
 /**
  * Cross-tab "reveal + highlight this PDF box" channel for SyncTeX forward

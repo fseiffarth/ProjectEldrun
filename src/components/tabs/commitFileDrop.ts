@@ -1,6 +1,5 @@
 import { type TabDrag } from "../../stores/drag";
 import { EMPTY_GROUP_ID, findGroup, useTabsStore, type DropEdge } from "../../stores/tabs";
-import { useWindowsStore } from "../../stores/windows";
 
 /**
  * Commit a finished FILE drag (a file row dragged from the FileTree onto a tab
@@ -17,8 +16,9 @@ import { useWindowsStore } from "../../stores/windows";
  *  - Dropped on a subwindow body edge → carve out a NEW subwindow at that edge
  *    holding the same embed tab (splitWithNewTab); a center drop adds it into
  *    that group instead.
- *  - Dropped anywhere else → fall back to opening the file externally (windows
- *    store openFile), matching the existing FileTree click behaviour.
+ *  - Dropped anywhere else (right panel, empty space, no resolved target) → do
+ *    nothing. A drag is purely a drag-to-tab gesture; opening a file is reserved
+ *    for double-click in the FileTree, so a stray drop must never open it.
  *
  * R1 (addTab bug): addTab always APPENDS to the FOCUSED group and ignores any
  * index. So to land the tab at the drop slot we focus the target group, addTab,
@@ -26,7 +26,9 @@ import { useWindowsStore } from "../../stores/windows";
  */
 export function commitFileDrop(
   d: TabDrag | null,
-  projectId: string | null,
+  // Kept for call-site/signature stability; opening on a stray drop was removed
+  // (that path used projectId), so it's no longer read here.
+  _projectId: string | null,
   projectCwd: string,
 ) {
   if (!d || d.kind !== "file" || !d.filePath || !d.fileName) return;
@@ -81,9 +83,7 @@ export function commitFileDrop(
     return;
   }
 
-  // Fallback: open externally, exactly as a click in the FileTree would.
-  useWindowsStore
-    .getState()
-    .openFile(d.filePath, d.fileExec, projectId, "right_file_tree")
-    .catch((e) => console.error(e));
+  // No valid drop target (released over the right panel, an empty area, etc.):
+  // do nothing. A drag is only ever a drag-to-tab gesture; opening a file is
+  // reserved for double-click in the FileTree, so a stray drop must NOT open it.
 }

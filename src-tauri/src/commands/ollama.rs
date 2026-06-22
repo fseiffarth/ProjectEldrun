@@ -556,6 +556,7 @@ pub struct LocalAgentPrep {
 /// mutable config state and `active_model` is always unambiguous.
 #[tauri::command]
 pub async fn prepare_local_agent(model: String) -> Result<LocalAgentPrep, String> {
+    validate_model_name(&model)?;
     let alias = sanitize_alias(&model);
     let vibe_home = eldrun_vibe_local_dir_for(&alias)?;
     std::fs::create_dir_all(&vibe_home).map_err(|e| format!("create vibe_local dir: {e}"))?;
@@ -579,6 +580,7 @@ pub async fn prepare_local_agent(model: String) -> Result<LocalAgentPrep, String
 /// Returns the alias string to pass as `VIBE_ACTIVE_MODEL`.
 #[tauri::command]
 pub async fn ensure_vibe_ollama_model(model: String) -> Result<String, String> {
+    validate_model_name(&model)?;
     let alias = sanitize_alias(&model);
 
     let config_path = dirs_vibe_config()?;
@@ -611,6 +613,29 @@ pub async fn ensure_vibe_ollama_model(model: String) -> Result<String, String> {
 
 fn sanitize_alias(model: &str) -> String {
     model.replace(':', "-")
+}
+
+/// Reject model names that could break out of — or inject keys into — the TOML we
+/// write into vibe's `config.toml`. `model` is interpolated raw inside a basic
+/// TOML string (`name = "{model}"`); a `"` would close that string and a newline
+/// would let an attacker append arbitrary TOML keys/tables. Control chars are
+/// also illegal in TOML basic strings. We allow only the characters that appear
+/// in real Ollama model refs (`<namespace>/<name>:<tag>`): ASCII alphanumerics
+/// and `. _ - : /` plus `@` (digest refs). Empty names are rejected too.
+fn validate_model_name(model: &str) -> Result<(), String> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err("model name must not be empty".to_string());
+    }
+    if let Some(bad) = model
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@')))
+    {
+        return Err(format!(
+            "invalid character {bad:?} in model name '{model}'"
+        ));
+    }
+    Ok(())
 }
 
 /// Return the per-model VIBE_HOME path: `~/.local/share/eldrun/vibe_local/{alias}/`.
@@ -659,6 +684,58 @@ mod tests {
         cfg.push_str(&ollama_model_block(model, &alias));
         std::fs::write(&config_path, &cfg).unwrap();
         (vibe_home, alias)
+    }
+
+    // ── model-name validation (TOML injection defense) ───────────────────────
+
+    #[test]
+    fn validate_model_name_accepts_real_refs() {
+        for ok in [
+            "llama3.2:1b",
+            "qwen2.5-coder:7b",
+            "library/llama3:latest",
+            "registry.example.com/ns/model:tag",
+            "model@sha256",
+            "phi-4",
+        ] {
+            assert!(validate_model_name(ok).is_ok(), "{ok} should be accepted");
+        }
+    }
+
+    #[test]
+    fn validate_model_name_rejects_toml_injection() {
+        // A `"` closes the TOML basic string; a newline lets the attacker append
+        // arbitrary keys/tables. Both — and other shell/TOML metacharacters and
+        // control chars — must be rejected.
+        for bad in [
+            "model\"\nmalicious_key = \"x",
+            "model\nenabled_tools = []",
+            "a\"b",
+            "back`tick",
+            "with space",
+            "tab\tinside",
+            "",
+            "   ",
+        ] {
+            assert!(
+                validate_model_name(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn model_block_with_validated_name_has_no_stray_quotes_or_newlines_in_value() {
+        // Defense in depth: once validated, the interpolated name can never break
+        // out of its `name = "<...>"` TOML string.
+        let model = "qwen2.5-coder:7b";
+        assert!(validate_model_name(model).is_ok());
+        let block = ollama_model_block(model, &sanitize_alias(model));
+        let name_line = block
+            .lines()
+            .find(|l| l.starts_with("name = "))
+            .expect("name line");
+        assert_eq!(name_line, "name = \"qwen2.5-coder:7b\"");
     }
 
     // ── active_model is always the first line of the per-model config ─────────

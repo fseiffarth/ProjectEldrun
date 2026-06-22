@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { DropEdge } from "./tabs";
-import type { InternalViewer } from "../components/files/fileUtils";
+import type { InternalViewer } from "../lib/viewers/fileUtils";
 
 /**
  * Result of the backend `embed_capability` check for a dragged file, prefetched
@@ -63,12 +63,30 @@ export interface TabDrag {
   // attachGroup. Identifies the detached group to dock.
   detachedScope?: string;
   detachedGroupId?: string;
+  // ── Content thumbnail (tab drags) ─────────────────────────────────────────
+  // A clone of the dragged tab's live pane DOM, captured once at drag start, so
+  // the floating ghost can preview the tab's CONTENT (not just its label). The
+  // ghost mounts this node and scales it to `previewW`×`previewH` (the source
+  // pane's measured size). Absent for file/link/detached drags.
+  previewNode?: HTMLElement | null;
+  previewW?: number;
+  previewH?: number;
 }
 
 interface DragStore {
   drag: TabDrag | null;
   start: (
-    d: Pick<TabDrag, "key" | "fromGroup" | "label" | "pointerX" | "pointerY">,
+    d: Pick<
+      TabDrag,
+      | "key"
+      | "fromGroup"
+      | "label"
+      | "pointerX"
+      | "pointerY"
+      | "previewNode"
+      | "previewW"
+      | "previewH"
+    >,
   ) => void;
   startFileDrag: (
     d: Pick<TabDrag, "label" | "pointerX" | "pointerY"> & {

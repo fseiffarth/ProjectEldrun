@@ -5,8 +5,9 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   FILES_TAB_CMD,
   useTabsStore,
+  useGroup,
+  useGroupTabs,
   TabKind,
-  findGroup,
   RESUMABLE_AGENTS,
 } from "../../stores/tabs";
 import { useDragStore } from "../../stores/drag";
@@ -67,11 +68,16 @@ interface Props {
 const REORDER_GAP = 80;
 
 export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
-  // Subscribe to the layout + tab payloads so this group's bar re-renders on
-  // any structural change. The flat `tabs` array is the source of payloads;
-  // the group node owns tab order + the active key.
-  const layout = useTabsStore((s) => s.layout);
-  const allTabs = useTabsStore((s) => s.tabs);
+  // Fine-grained subscriptions (Eff #3/#4): this bar tracks ONLY its own group
+  // node + that group's resolved tab payloads, so a tab change in another
+  // subwindow no longer re-renders every bar, and the per-render Map-of-all-tabs
+  // rebuild is gone (useGroupTabs does it once, behind a shallow guard).
+  const group = useGroup(groupId);
+  const tabs = useGroupTabs(groupId);
+  // `Close all tabs` is only disabled when the WHOLE scope is empty; subscribe to
+  // a single boolean rather than the full tab array so it doesn't widen the bar's
+  // subscription back out to every tab.
+  const hasAnyTabs = useTabsStore((s) => s.tabs.length > 0);
   const focusGroup = useTabsStore((s) => s.focusGroup);
   const setGroupActive = useTabsStore((s) => s.setGroupActive);
   const renameTab = useTabsStore((s) => s.renameTab);
@@ -109,12 +115,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const addBtnRef = useRef<HTMLButtonElement>(null);
   const menuOpen = menuPos !== null;
 
-  const group = findGroup(layout, groupId);
-  // Resolve this group's tab keys to full payloads, preserving group order.
-  const byKey = new Map(allTabs.map((t) => [t.key, t] as const));
-  const tabs = (group?.tabKeys ?? [])
-    .map((k) => byKey.get(k))
-    .filter((t): t is NonNullable<typeof t> => t != null);
   const activeKey = group?.activeKey ?? null;
 
   useEffect(() => {
@@ -259,12 +259,42 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       if (!dragging) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
         dragging = true;
+        // Clone the dragged tab's live pane so the ghost can preview its CONTENT.
+        // The pane is rendered in CenterPanel's flat pane-layer, tagged with its
+        // tab key; clone it once (cheap) and ship the node + measured size. Tab
+        // keys can collide across scopes, so pick the VISIBLE pane (the hidden
+        // duplicates have a zero-size rect) rather than the first match.
+        const pane =
+          Array.from(
+            document.querySelectorAll<HTMLElement>(
+              `.center-pane[data-tab-key="${CSS.escape(tab.key)}"]`,
+            ),
+          ).find((el) => el.getBoundingClientRect().width > 0) ?? null;
+        let previewNode: HTMLElement | null = null;
+        let previewW = 0;
+        let previewH = 0;
+        if (pane) {
+          const r = pane.getBoundingClientRect();
+          previewW = r.width;
+          previewH = r.height;
+          previewNode = pane.cloneNode(true) as HTMLElement;
+          // Strip positioning/visibility so the clone lays out inside the ghost.
+          previewNode.style.position = "static";
+          previewNode.style.left = "";
+          previewNode.style.top = "";
+          previewNode.style.display = "flex";
+          previewNode.style.width = `${previewW}px`;
+          previewNode.style.height = `${previewH}px`;
+        }
         useDragStore.getState().start({
           key: tab.key,
           fromGroup: groupId,
           label: tab.label,
           pointerX: ev.clientX,
           pointerY: ev.clientY,
+          previewNode,
+          previewW,
+          previewH,
         });
       }
       useDragStore.getState().move(ev.clientX, ev.clientY);
@@ -514,7 +544,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           <div className="tab-new-menu-group-label">Project</div>
           <button
             className="tab-new-menu-item"
-            disabled={allTabs.length === 0}
+            disabled={!hasAnyTabs}
             onClick={() => {
               closeAllTabs();
               setMenuPos(null);

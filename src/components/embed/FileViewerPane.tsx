@@ -1,25 +1,30 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useWindowsStore } from "../../stores/windows";
-import { findGroupOfTab, useTabsStore } from "../../stores/tabs";
+import { findGroupOfTab, useTabsStore, type ViewerState } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
 import { useEditorJumpStore } from "../../stores/editorJump";
 import { usePdfSyncStore } from "../../stores/pdfSync";
 import { Dropdown } from "../common/Dropdown";
-import { renderMarkdown } from "../files/markdown";
-import { highlight, languageForPath } from "../files/highlight";
-import { internalViewerFor, type InternalViewer, type FileEntry } from "../files/fileUtils";
+import { renderMarkdown } from "../../lib/viewers/markdown";
+import { highlight, languageForPath } from "../../lib/viewers/highlight";
+import { internalViewerFor, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
 import {
   type TexCapability,
   type TexCompileResult,
   type SyncRect,
+  type TexCompletions,
+  type TexComplContext,
   getTexCapability,
   lastLogLine,
   findTexRefAt,
+  findTexComplAt,
+  parseTexLabels,
+  gatherTexCompletions,
   resolveTexRefAsync,
   texRefRanges,
   synctexEdit,
@@ -29,7 +34,32 @@ import {
   bigPointsToCssRect,
   lineStartOffset,
   offsetToLineCol,
-} from "../files/tex";
+} from "../../lib/viewers/tex";
+
+/**
+ * Persisted reader-position plumbing for an in-app viewer. Snapshots the tab's
+ * saved `ViewerState` once (so the viewer restores scroll/zoom/pan from where the
+ * reader left it on mount, rather than reacting to its own later writes) and
+ * returns a stable `persist` that merges a patch back into the tab — flushed to
+ * project.json by CenterPanel's debounced saveLayout, so the position survives an
+ * Eldrun restart. A no-op when `tabKey` is absent (e.g. tests).
+ */
+function useViewerState(tabKey: string | undefined) {
+  const [initial] = useState<ViewerState | undefined>(() =>
+    tabKey
+      ? useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState
+      : undefined,
+  );
+  const persist = useCallback(
+    (patch: ViewerState) => {
+      if (tabKey) useTabsStore.getState().setViewerState(tabKey, patch);
+    },
+    [tabKey],
+  );
+  // Stable object so consumers can list `viewPos` in effect/callback deps without
+  // re-running every render (`initial` and `persist` are both stable).
+  return useMemo(() => ({ initial, persist }), [initial, persist]);
+}
 
 // The modifier that opens a recognised file link (Ctrl/Cmd+Click). Shown verbatim
 // in the hover hint, so it must read as the key the user actually presses.
@@ -150,10 +180,10 @@ export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
   };
 
   if (viewer === "image") {
-    return <ImageView path={path} fileName={fileName} onOpenExternally={openExternally} />;
+    return <ImageView path={path} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
   }
   if (viewer === "pdf") {
-    return <PdfView path={path} onOpenExternally={openExternally} />;
+    return <PdfView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
   }
   if (viewer === "markdown") {
     return <MarkdownView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
@@ -161,7 +191,7 @@ export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
   if (viewer === "tex") {
     return <TexView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
   }
-  return <TextView path={path} onOpenExternally={openExternally} />;
+  return <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
 }
 
 /**
@@ -256,15 +286,15 @@ function viewerForPath(path: string): InternalViewer {
 
 /**
  * SyncTeX reverse search lands here: open (or re-activate) the source file's
- * editor tab and ask it to scroll to `line`. The editor (`TexView`/`TextView`)
- * for that path consumes the request via the editorJump store, since the tab may
- * already be open and won't remount.
+ * editor tab and ask it to scroll to `line`/`column`. The editor
+ * (`TexView`/`TextView`) for that path consumes the request via the editorJump
+ * store, since the tab may already be open and won't remount.
  */
-export function jumpToSource(input: string, line: number) {
+export function jumpToSource(input: string, line: number, column = 0) {
   const dir = input.slice(0, input.lastIndexOf("/")) || "/";
   const label = input.slice(input.lastIndexOf("/") + 1);
   openLinkedFile(undefined, dir, { path: input, viewer: viewerForPath(input), label });
-  useEditorJumpStore.getState().requestJump(input, line);
+  useEditorJumpStore.getState().requestJump(input, line, column);
 }
 
 function ViewerHeader({
@@ -275,13 +305,18 @@ function ViewerHeader({
   children?: React.ReactNode;
 }) {
   // No filename label: the tab already shows it. The spacer keeps the controls
-  // and "Open externally" pushed to the trailing edge as before.
+  // and the open-externally icon pushed to the trailing edge as before.
   return (
     <div className="file-viewer-header">
       <div className="file-viewer-header-spacer" aria-hidden="true" />
       {children}
-      <button className="file-viewer-open-external" onClick={onOpenExternally} title="Open in external app">
-        Open externally ↗
+      <button
+        className="file-viewer-open-external"
+        onClick={onOpenExternally}
+        title="Open in external app"
+        aria-label="Open in external app"
+      >
+        ↗
       </button>
     </div>
   );
@@ -426,7 +461,8 @@ function useEditableFile(path: string) {
   const baselineRef = useRef<string | null>(baseline);
   baselineRef.current = baseline;
 
-  const autosave = useSettingsStore((s) => s.settings?.autosave ?? false);
+  // Autosave is ON by default; only an explicit `autosave: false` disables it.
+  const autosave = useSettingsStore((s) => s.settings?.autosave !== false);
 
   // setDraft seeds history when typing; reset is used for (re)loads from disk.
   const setDraft = setDraftValue;
@@ -644,6 +680,81 @@ export function decorateLinkRanges(source: string, ranges: { start: number; end:
   return out;
 }
 
+/**
+ * Find every (non-overlapping) occurrence of `query` in `text` as a
+ * `{start, end}` offset range (#67 editor search). A plain substring search;
+ * `caseSensitive` toggles a case-fold. An empty query yields no matches.
+ * Exported for unit testing.
+ */
+export function findMatches(
+  text: string,
+  query: string,
+  caseSensitive: boolean,
+): { start: number; end: number }[] {
+  if (!query) return [];
+  const hay = caseSensitive ? text : text.toLowerCase();
+  const needle = caseSensitive ? query : query.toLowerCase();
+  const out: { start: number; end: number }[] = [];
+  let from = 0;
+  for (;;) {
+    const idx = hay.indexOf(needle, from);
+    if (idx < 0) break;
+    out.push({ start: idx, end: idx + needle.length });
+    from = idx + needle.length; // non-overlapping
+  }
+  return out;
+}
+
+/**
+ * Build the transparent search-highlight overlay (#67): the `matches` ranges are
+ * wrapped in `<span class="file-viewer-search-match">` (the `current` one also
+ * carries `current`), the rest emitted plain so only the match spans paint a
+ * background. SECURITY: every run of source text is HTML-escaped before output —
+ * mirrors `decorateLinkRanges`.
+ */
+export function decorateSearchRanges(
+  source: string,
+  matches: { start: number; end: number }[],
+  current: number,
+): string {
+  if (matches.length === 0) return escapeHtmlText(source);
+  let out = "";
+  let pos = 0;
+  matches.forEach((r, i) => {
+    if (r.start < pos || r.start >= r.end) return; // skip overlaps / empties
+    out += escapeHtmlText(source.slice(pos, r.start));
+    const cls = i === current ? "file-viewer-search-match current" : "file-viewer-search-match";
+    out += `<span class="${cls}">${escapeHtmlText(source.slice(r.start, r.end))}</span>`;
+    pos = r.end;
+  });
+  out += escapeHtmlText(source.slice(pos));
+  return out;
+}
+
+/**
+ * Replace each `{start, end}` range in `text` with `replacement`, returning the
+ * new string (#67 find-and-replace). Ranges are applied left-to-right; any that
+ * overlap an already-consumed range (or are empty) are skipped, mirroring the
+ * non-overlapping match set `findMatches` produces. Pure — exported for testing.
+ */
+export function applyReplacements(
+  text: string,
+  ranges: { start: number; end: number }[],
+  replacement: string,
+): string {
+  if (ranges.length === 0) return text;
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  let out = "";
+  let pos = 0;
+  for (const r of sorted) {
+    if (r.start < pos || r.start >= r.end) continue;
+    out += text.slice(pos, r.start) + replacement;
+    pos = r.end;
+  }
+  out += text.slice(pos);
+  return out;
+}
+
 /** Live device-pixel ratio, updated when it changes (window moved between
  *  monitors, display scale changed, browser zoom). Used to snap the editor's
  *  line-height to whole device pixels — see `snapToDevicePx`. */
@@ -679,6 +790,76 @@ function snapToDevicePx(cssPx: number, dpr: number): number {
   return Math.round(cssPx * dpr) / dpr;
 }
 
+/**
+ * Viewport coordinates of the caret at character `pos` in a textarea, used to
+ * anchor the `\ref`/`\cite` completion dropdown right under the typed key. Uses
+ * the standard hidden-mirror technique: a div copies the textarea's box/text
+ * metrics, holds the text up to `pos`, and a trailing marker span's offset gives
+ * the caret position; the textarea's own scroll and screen rect map it to the
+ * viewport. Returns the line height too so the caller can drop below the line.
+ */
+function textareaCaretViewportRect(
+  ta: HTMLTextAreaElement,
+  pos: number,
+): { left: number; top: number; height: number } {
+  const rect = ta.getBoundingClientRect();
+  const style = getComputedStyle(ta);
+  const lh = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2 || 16;
+  const div = document.createElement("div");
+  const copy = [
+    "boxSizing", "width", "paddingTop", "paddingRight", "paddingBottom",
+    "paddingLeft", "borderTopWidth", "borderRightWidth", "borderBottomWidth",
+    "borderLeftWidth", "fontFamily", "fontSize", "fontWeight", "fontStyle",
+    "fontVariant", "letterSpacing", "wordSpacing", "lineHeight", "tabSize",
+    "textIndent", "textTransform",
+  ] as const;
+  for (const p of copy) div.style[p as never] = style[p as never];
+  div.style.position = "absolute";
+  div.style.visibility = "hidden";
+  div.style.whiteSpace = ta.wrap === "off" ? "pre" : "pre-wrap";
+  div.style.overflowWrap = "anywhere";
+  div.style.overflow = "hidden";
+  div.style.height = "auto";
+  div.textContent = ta.value.slice(0, pos);
+  const marker = document.createElement("span");
+  marker.textContent = ta.value.slice(pos) || ".";
+  div.appendChild(marker);
+  document.body.appendChild(div);
+  const top = rect.top + marker.offsetTop - ta.scrollTop;
+  const left = rect.left + marker.offsetLeft - ta.scrollLeft;
+  document.body.removeChild(div);
+  return { left, top, height: lh };
+}
+
+/** Keys that, typed immediately after an accepted completion, replace the
+ *  auto-inserted trailing space (closing punctuation reads better tight). */
+const NO_SPACE_BEFORE = new Set([".", ",", ";", ":", "!", "?", ")", "]", "}"]);
+
+/** Bare modifier presses, ignored by the smart-space handler so that e.g. the
+ *  Shift held to type `?` doesn't prematurely commit the space. */
+const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock"]);
+
+/** One row of the `\ref`/`\cite` completion dropdown. */
+interface TexComplItem {
+  value: string;
+  detail?: string;
+}
+
+/** Compact one-line description of a bib entry for the dropdown's second column:
+ *  author (first surname et al.) and year, falling back to the title. */
+function citeDetail(e: { title?: string; author?: string; year?: string }): string | undefined {
+  const bits: string[] = [];
+  if (e.author) {
+    const first = e.author.split(/\s+and\s+/i)[0].trim();
+    const surname = first.includes(",") ? first.split(",")[0] : first.split(/\s+/).pop() || first;
+    bits.push(e.author.includes(" and ") ? `${surname} et al.` : surname);
+  }
+  if (e.year) bits.push(e.year);
+  const head = bits.join(" ");
+  if (head && e.title) return `${head} — ${e.title}`;
+  return head || e.title;
+}
+
 function CodeEditor({
   error,
   draft,
@@ -691,6 +872,7 @@ function CodeEditor({
   undo,
   redo,
   autocomplete,
+  texCompletions,
   fontSize,
   lineHeight,
   incFont,
@@ -700,6 +882,8 @@ function CodeEditor({
   gotoLine,
   onGotoApplied,
   onCaretChange,
+  initialScrollTop,
+  onScrollPersist,
 }: {
   error: string | null;
   draft: string;
@@ -711,9 +895,9 @@ function CodeEditor({
   /** When set, Ctrl/Cmd+Click resolves the reference at the clicked caret index
    *  and opens it (the LaTeX viewer wires this to `\input{…}` follow). */
   onFollowLink?: (caret: number) => void;
-  /** SyncTeX reverse-search target: move the caret to (1-based) `line` and
-   *  scroll it into view whenever `nonce` changes. */
-  gotoLine?: { line: number; nonce: number };
+  /** SyncTeX reverse-search target: move the caret to (1-based) `line`/`column`
+   *  (`column` 0 = line start) and scroll it into view whenever `nonce` changes. */
+  gotoLine?: { line: number; column?: number; nonce: number };
   /** Called once a `gotoLine` request has been applied, so the caller can clear
    *  it (consume the editorJump request). */
   onGotoApplied?: () => void;
@@ -728,6 +912,10 @@ function CodeEditor({
   redo?: () => void;
   /** Opt-in local autocomplete config (#45). Disabled when undefined/off. */
   autocomplete?: { enabled: boolean; model: string };
+  /** Opt-in `\ref`/`\cite` key completion (LaTeX viewer only). When supplied, a
+   *  dropdown of `\label` keys (refs) or `.bib` entry keys (cites) appears while
+   *  typing inside a recognised command's braces; Enter/Tab accepts. */
+  texCompletions?: TexCompletions;
   /** Editor font metrics (text-size control). Default 12px / 18px when unset. */
   fontSize?: number;
   lineHeight?: number;
@@ -739,11 +927,22 @@ function CodeEditor({
    *  (used by the LaTeX viewer, whose prose lines run wide). The highlight/link/
    *  ghost overlays wrap in lockstep via the `is-wrapped` class. */
   wrap?: boolean;
+  /** Persisted vertical scroll (px) to restore once the file loads, so reopening
+   *  it (or an Eldrun restart) lands the reader where they left off (#viewerpos).
+   *  Applied once on first load; user scrolling thereafter reports via
+   *  `onScrollPersist`. */
+  initialScrollTop?: number;
+  /** Called (throttled) with the textarea's `scrollTop` as the reader scrolls, so
+   *  the position can be persisted. */
+  onScrollPersist?: (scrollTop: number) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterInnerRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HTMLPreElement>(null);
   const linkLayerRef = useRef<HTMLPreElement>(null);
+  const searchLayerRef = useRef<HTMLPreElement>(null);
+  const measureRef = useRef<HTMLPreElement>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
   // Link affordances over a recognised link (#49), only when `onFollowLink` is
   // wired (the LaTeX source editor):
   //  - `linkHover` shows the pointer cursor, but ONLY while the follow modifier is
@@ -785,15 +984,52 @@ function CodeEditor({
   const [suggestion, setSuggestion] = useState<{ text: string; at: number } | null>(null);
   const acAbort = useRef<AbortController | null>(null);
 
+  // \ref/\cite key completion (LaTeX viewer): the open dropdown's context, the
+  // filtered items, the highlighted index, and the screen anchor. A caret tick
+  // re-runs the detector when the caret moves without the text changing (arrow
+  // keys / clicks). `complClosedAt` suppresses immediately reopening at the exact
+  // caret we dismissed at (e.g. right after accepting a key).
+  const [compl, setCompl] = useState<{
+    ctx: TexComplContext;
+    items: TexComplItem[];
+    index: number;
+    pos: { left: number; top: number; height: number };
+  } | null>(null);
+  const [caretTick, setCaretTick] = useState(0);
+  const complClosedAt = useRef(-1);
+  // Source index of a space auto-inserted after `}` when a completion was
+  // accepted (else null). If the very next keystroke is closing punctuation, the
+  // space is removed so it reads "\cite{x}." rather than "\cite{x} .".
+  const autoSpace = useRef<number | null>(null);
+  const bumpCaret = useCallback(() => setCaretTick((t) => t + 1), []);
+
   // Snap the line-height to whole device pixels so the textarea caret and the
   // highlight <pre> share a vertical grid and don't drift apart over a long file
   // under fractional display scaling (see snapToDevicePx).
   const dpr = useDevicePixelRatio();
 
-  const lineCount = useMemo(
-    () => (loaded ? Math.max(1, draft.split("\n").length) : 1),
+  const draftLines = useMemo(
+    () => (loaded ? draft.split("\n") : [""]),
     [loaded, draft],
   );
+  const lineCount = Math.max(1, draftLines.length);
+
+  // In soft-wrap mode (the LaTeX viewer) a logical line can span several visual
+  // rows, so the gutter can't use fixed-height rows. We measure each logical
+  // line's wrapped height from a hidden, full-width mirror (`measureRef`) and
+  // size the gutter cells to match, keeping the numbers aligned. `lineHeights`
+  // stays empty in non-wrap mode (where fixed rows are used) and until the first
+  // measure; `measureNonce` re-triggers measurement on editor resize.
+  const [lineHeights, setLineHeights] = useState<number[]>([]);
+  const [measureNonce, bumpMeasure] = useReducer((n: number) => n + 1, 0);
+
+  // Soft-wrap content width (wrap mode only): the textarea's clientWidth, which
+  // excludes its vertical scrollbar. The overlay <pre> layers live in a
+  // scrollbar-free, overflow:hidden parent, so left at min-width:100% they wrap
+  // at the full box width — wider than the textarea once a vertical scrollbar
+  // appears — and the caret drifts from the coloured glyphs over wrapped lines.
+  // Constraining the overlays to this width makes every layer wrap identically.
+  const [wrapWidth, setWrapWidth] = useState<number | null>(null);
 
   // Syntax-highlighted HTML rendered in a <pre> layer behind a transparent
   // textarea, so the file colours by type while staying fully editable. `null`
@@ -832,11 +1068,208 @@ function CodeEditor({
       gutterInnerRef.current.style.transform = `translateY(${-scrollTop}px)`;
     }
     const transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
-    for (const ref of [highlightRef, linkLayerRef]) {
+    for (const ref of [highlightRef, linkLayerRef, searchLayerRef]) {
       if (ref.current) ref.current.style.transform = transform;
     }
   }, []);
-  const onScroll = () => syncScroll();
+
+  // #viewerpos: restore the saved scroll once the file has loaded (and the
+  // textarea can actually reach it), then persist subsequent scrolling. The
+  // restore is one-shot so it never fights the reader after the first apply.
+  const restoredScroll = useRef(false);
+  useEffect(() => {
+    if (restoredScroll.current || !loaded) return;
+    const ta = textareaRef.current;
+    if (!ta) return;
+    restoredScroll.current = true;
+    if (initialScrollTop && initialScrollTop > 0) {
+      ta.scrollTop = initialScrollTop;
+      syncScroll();
+    }
+  }, [loaded, initialScrollTop, syncScroll]);
+
+  // Throttle scroll persistence so a flick of the wheel doesn't churn the store
+  // (and its debounced disk save) every frame; the trailing edge captures the
+  // final resting position.
+  const persistTimer = useRef<number | null>(null);
+  const onScroll = () => {
+    syncScroll();
+    if (!onScrollPersist || !restoredScroll.current) return;
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const top = ta.scrollTop;
+    if (persistTimer.current != null) window.clearTimeout(persistTimer.current);
+    persistTimer.current = window.setTimeout(() => onScrollPersist(top), 200);
+  };
+  useEffect(
+    () => () => {
+      if (persistTimer.current != null) window.clearTimeout(persistTimer.current);
+    },
+    [],
+  );
+
+  // #67 in-editor search (Ctrl/Cmd+F) and find-and-replace (Ctrl/Cmd+R). A
+  // floating bar over the editor with next/previous navigation, a live match
+  // count, and a case toggle; matches are painted by a transparent overlay layer
+  // (`decorateSearchRanges`) aligned to the textarea exactly like the highlight/
+  // link layers. Ctrl/Cmd+R opens the same bar with the replace row revealed.
+  const [findOpen, setFindOpen] = useState(false);
+  const [replaceOpen, setReplaceOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [replaceWith, setReplaceWith] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const replaceInputRef = useRef<HTMLInputElement>(null);
+
+  const matches = useMemo(
+    () => (loaded && findOpen && query ? findMatches(draft, query, caseSensitive) : []),
+    [loaded, findOpen, draft, query, caseSensitive],
+  );
+  const searchHtml = useMemo(
+    () => (matches.length > 0 ? decorateSearchRanges(draft, matches, current) : null),
+    [draft, matches, current],
+  );
+
+  // 1-based line numbers that hold a match (and the current match's line), so the
+  // gutter can mark where the hits are (#67). A line number is 1 + the count of
+  // newlines before the match's start offset.
+  const matchLineSet = useMemo(() => {
+    const set = new Set<number>();
+    for (const m of matches) set.add(offsetToLineCol(draft, m.start).line);
+    return set;
+  }, [matches, draft]);
+  const currentMatchLine = useMemo(() => {
+    const m = matches[current];
+    return m ? offsetToLineCol(draft, m.start).line : 0;
+  }, [matches, current, draft]);
+
+  // Keep the current index in range as the draft (and so the match set) changes.
+  useEffect(() => {
+    if (current > 0 && current >= matches.length) {
+      setCurrent(matches.length > 0 ? matches.length - 1 : 0);
+    }
+  }, [matches.length, current]);
+
+  // Place the textarea selection on match `index` and scroll its line to roughly
+  // the middle of the view. Focus stays in the find input so Enter keeps cycling;
+  // the overlay's `current` highlight shows where we are. The line-based scroll
+  // mirrors the SyncTeX `gotoLine` math (approximate under soft-wrap, exact else).
+  const revealMatch = useCallback(
+    (index: number) => {
+      const el = textareaRef.current;
+      const m = matches[index];
+      if (!el || !m) return;
+      el.selectionStart = m.start;
+      el.selectionEnd = m.end;
+      const line = draft.slice(0, m.start).split("\n").length; // 1-based
+      const lh = parseFloat(getComputedStyle(el).lineHeight) || 18;
+      el.scrollTop = Math.max(0, (line - 1) * lh - el.clientHeight / 2 + lh);
+      syncScroll();
+    },
+    [matches, draft, syncScroll],
+  );
+
+  const goToMatch = useCallback(
+    (dir: 1 | -1) => {
+      if (matches.length === 0) return;
+      const next = (current + dir + matches.length) % matches.length;
+      setCurrent(next);
+      revealMatch(next);
+    },
+    [matches.length, current, revealMatch],
+  );
+
+  const openFind = useCallback((replace = false) => {
+    const el = textareaRef.current;
+    const sel =
+      el && el.selectionStart !== el.selectionEnd
+        ? el.value.slice(el.selectionStart, el.selectionEnd)
+        : "";
+    if (sel && !sel.includes("\n")) setQuery(sel);
+    setFindOpen(true);
+    if (replace) setReplaceOpen(true);
+    requestAnimationFrame(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    });
+  }, []);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setReplaceOpen(false);
+    textareaRef.current?.focus();
+  }, []);
+
+  // Replace the current match (#67). We re-place the textarea selection on the
+  // match first so the change history records a single, intelligible edit, then
+  // splice `replaceWith` in via setDraft. The match set recomputes on the new
+  // draft; the live `current` clamp keeps the index in range, leaving the next
+  // occurrence selected so repeated Replace walks through them.
+  const replaceCurrent = useCallback(() => {
+    const m = matches[current];
+    if (!m) return;
+    setDraft(applyReplacements(draft, [m], replaceWith));
+    // Put the caret just after the inserted text so a follow-up reveal lands here.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) el.selectionStart = el.selectionEnd = m.start + replaceWith.length;
+    });
+  }, [matches, current, draft, replaceWith, setDraft]);
+
+  const replaceAll = useCallback(() => {
+    if (matches.length === 0) return;
+    setDraft(applyReplacements(draft, matches, replaceWith));
+  }, [matches, draft, replaceWith, setDraft]);
+
+  // Reset to the first match whenever the query/case changes or the bar opens, so
+  // typing jumps to the first hit. Reveal is deferred a frame so the recomputed
+  // `matches` and the just-mounted overlay are in place.
+  useEffect(() => {
+    if (!findOpen) return;
+    setCurrent(0);
+    const id = requestAnimationFrame(() => revealMatch(0));
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, caseSensitive, findOpen]);
+
+  const onFindKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      goToMatch(e.shiftKey ? -1 : 1);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeFind();
+    }
+  };
+
+  // In the replace field, Enter replaces the current match (Ctrl/Cmd+Enter does
+  // Replace All), and Escape closes the bar.
+  const onReplaceKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) replaceAll();
+      else replaceCurrent();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeFind();
+    }
+  };
+
+  // Ctrl/Cmd+F opens the find bar; Ctrl/Cmd+R opens it with the replace row. Bound
+  // on the container so it fires whenever focus is anywhere in the editor pane
+  // (the cursor is in the tab), not only when the textarea holds focus — it
+  // catches the key as it bubbles up. Ctrl/Cmd+R is also always intercepted so it
+  // never falls through to the webview's page reload, which would tear down the app.
+  const onContainerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      openFind();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r") {
+      e.preventDefault();
+      if (replaceOpen) replaceInputRef.current?.focus();
+      else openFind(true);
+    }
+  };
 
   // Re-sync the overlay layers whenever the editor is resized (window resize,
   // pane/divider drag, panel toggle). A resize can clamp the textarea's
@@ -847,27 +1280,65 @@ function CodeEditor({
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => syncScroll());
+    const ro = new ResizeObserver(() => {
+      syncScroll();
+      bumpMeasure();
+    });
     ro.observe(ta);
     return () => ro.disconnect();
   }, [syncScroll, loaded]);
+
+  // Measure each logical line's wrapped height (wrap mode only) so the gutter
+  // cells line up with the editor. Runs before paint to avoid a flash of
+  // misaligned numbers. The mirror is sized to the textarea's content width
+  // (clientWidth excludes the vertical scrollbar) so it wraps line-for-line.
+  useLayoutEffect(() => {
+    if (!wrap || !loaded) {
+      setWrapWidth(null);
+      return;
+    }
+    const measure = measureRef.current;
+    const ta = textareaRef.current;
+    if (!measure || !ta) return;
+    setWrapWidth(ta.clientWidth);
+    measure.style.width = `${ta.clientWidth}px`;
+    const next = Array.from(
+      measure.children,
+      (c) => (c as HTMLElement).offsetHeight,
+    );
+    setLineHeights((prev) =>
+      prev.length === next.length && prev.every((h, i) => h === next[i])
+        ? prev
+        : next,
+    );
+  }, [wrap, loaded, draftLines, fontSize, lineHeight, measureNonce]);
 
   // Report the caret position so the LaTeX viewer can run SyncTeX forward search
   // from it. Cheap; only wired when `onCaretChange` is supplied.
   const emitCaret = useCallback(() => {
     const el = textareaRef.current;
     if (el && onCaretChange) onCaretChange(el.selectionStart);
-  }, [onCaretChange]);
+    bumpCaret();
+  }, [onCaretChange, bumpCaret]);
 
   // SyncTeX reverse search: on a new `gotoLine` nonce, place the caret at the
-  // start of the target line and scroll it to roughly the middle of the view.
+  // target line/column and scroll it to roughly the middle of the view. SyncTeX
+  // reports a column (0 when it has none); we offset into the line by it, clamped
+  // to the line's end so a stale column can't spill onto the next line.
   const draftRef = useRef(draft);
   draftRef.current = draft;
   useEffect(() => {
     if (!gotoLine || !loaded) return;
     const el = textareaRef.current;
     if (!el) return;
-    const offset = lineStartOffset(draftRef.current, gotoLine.line);
+    const text = draftRef.current;
+    const lineStart = lineStartOffset(text, gotoLine.line);
+    let offset = lineStart;
+    if (gotoLine.column && gotoLine.column > 1) {
+      const nl = text.indexOf("\n", lineStart);
+      const lineEnd = nl === -1 ? text.length : nl;
+      offset = Math.min(lineStart + (gotoLine.column - 1), lineEnd);
+    }
     el.focus();
     el.selectionStart = el.selectionEnd = offset;
     const lh = parseFloat(getComputedStyle(el).lineHeight) || 18;
@@ -925,9 +1396,168 @@ function CodeEditor({
     });
   }, [suggestion, draft, setDraft]);
 
+  // \ref/\cite completion: cap the dropdown so a huge .bib can't render
+  // thousands of rows; the prefix filter usually narrows it well below this.
+  const COMPL_LIMIT = 80;
+
+  // Recompute the completion dropdown for the current caret. No-ops (closes the
+  // dropdown) unless `texCompletions` is wired and the collapsed caret sits in a
+  // recognised \ref/\cite argument. Items are prefix-then-substring ranked; the
+  // highlighted index is preserved while the same token is being extended.
+  const refreshCompl = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el || !texCompletions) { setCompl(null); return; }
+    const caret = el.selectionStart;
+    if (caret !== el.selectionEnd) { setCompl(null); return; }
+    if (caret === complClosedAt.current) return; // suppressed at this exact caret
+    complClosedAt.current = -1;
+    const ctx = findTexComplAt(draft, caret);
+    if (!ctx) { setCompl(null); return; }
+    const q = ctx.query.toLowerCase();
+    let items: TexComplItem[];
+    if (ctx.kind === "cite") {
+      items = texCompletions.cites
+        .filter(
+          (e) =>
+            !q ||
+            e.key.toLowerCase().includes(q) ||
+            e.title?.toLowerCase().includes(q) ||
+            e.author?.toLowerCase().includes(q),
+        )
+        .map((e) => ({ value: e.key, detail: citeDetail(e) }));
+    } else {
+      items = texCompletions.labels
+        .filter((l) => !q || l.toLowerCase().includes(q))
+        .map((l) => ({ value: l }));
+    }
+    if (q) {
+      items.sort(
+        (a, b) =>
+          (a.value.toLowerCase().startsWith(q) ? 0 : 1) -
+          (b.value.toLowerCase().startsWith(q) ? 0 : 1),
+      );
+    }
+    items = items.slice(0, COMPL_LIMIT);
+    if (items.length === 0) { setCompl(null); return; }
+    const pos = textareaCaretViewportRect(el, ctx.start);
+    setCompl((prev) => {
+      const same =
+        prev != null &&
+        prev.ctx.kind === ctx.kind &&
+        prev.ctx.start === ctx.start &&
+        prev.ctx.query === ctx.query;
+      return { ctx, items, index: same ? Math.min(prev!.index, items.length - 1) : 0, pos };
+    });
+  }, [draft, texCompletions]);
+
+  // Accept a completion (Tab): replace the token with the key. When it's the
+  // last/only key in the braces, close them if needed, jump the caret OUT past
+  // `}`, and add a trailing space (tracked in `autoSpace` for smart removal). For
+  // a multi-key list (\cite{a,b}) it stays just after the inserted key instead.
+  // `complClosedAt` keeps the dropdown from instantly reopening on that caret.
+  const acceptCompl = useCallback(
+    (value: string) => {
+      const el = textareaRef.current;
+      if (!el || !compl) return;
+      const { start, end } = compl.ctx;
+      const head = draft.slice(0, start) + value;
+      const rest = draft.slice(end);
+      const closeRel = rest.indexOf("}");
+      const beforeClose = closeRel >= 0 ? rest.slice(0, closeRel) : rest;
+      let next: string;
+      let caret: number;
+      if (/\S/.test(beforeClose)) {
+        // More keys remain inside the braces → keep the caret after this key.
+        next = head + rest;
+        caret = head.length;
+        autoSpace.current = null;
+      } else {
+        // Last/only key: drop any spaces up to the brace, ensure a closing `}`,
+        // then a single space, reusing one already after `}` if present.
+        const afterBrace = closeRel >= 0 ? rest.slice(closeRel + 1) : rest;
+        const sep = /^\s/.test(afterBrace) ? "}" : "} ";
+        next = head + sep + afterBrace;
+        autoSpace.current = head.length + 1; // index of the space right after `}`
+        caret = head.length + 2; // past `}` and the space
+      }
+      complClosedAt.current = caret;
+      setCompl(null);
+      setDraft(next);
+      requestAnimationFrame(() => {
+        el.focus();
+        el.selectionStart = el.selectionEnd = caret;
+      });
+    },
+    [compl, draft, setDraft],
+  );
+
+  const closeCompl = useCallback(() => {
+    const el = textareaRef.current;
+    complClosedAt.current = el ? el.selectionStart : -1;
+    setCompl(null);
+  }, []);
+
+  // Re-detect the completion context on every text change and caret move.
+  useEffect(() => {
+    refreshCompl();
+  }, [draft, caretTick, refreshCompl]);
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (onFollowLink && (e.ctrlKey || e.metaKey) && lastMouse.current) {
       updateLinkHover(lastMouse.current.x, lastMouse.current.y, true);
+    }
+
+    // Smart space after accepting a \ref/\cite: the first real keystroke decides
+    // the auto space's fate. Closing punctuation right after it replaces it
+    // (\cite{x}. not \cite{x} .); any other character commits it. Bare modifier
+    // presses (e.g. Shift for `?`) are ignored so they don't drop the space.
+    if (autoSpace.current != null && !MODIFIER_KEYS.has(e.key)) {
+      const el = textareaRef.current;
+      const at = autoSpace.current;
+      if (
+        e.key.length === 1 &&
+        NO_SPACE_BEFORE.has(e.key) &&
+        el &&
+        el.selectionStart === el.selectionEnd &&
+        el.selectionStart === at + 1
+      ) {
+        e.preventDefault();
+        autoSpace.current = null;
+        const next = draft.slice(0, at) + e.key + draft.slice(at + 1);
+        setDraft(next);
+        requestAnimationFrame(() => {
+          el.selectionStart = el.selectionEnd = at + 1;
+        });
+        return;
+      }
+      autoSpace.current = null; // any other real key commits the space
+    }
+
+    // \ref/\cite dropdown: arrows move the highlight, Tab accepts (Enter is left
+    // to insert a newline), Esc closes. Handled first so it captures Tab.
+    if (compl && compl.items.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setCompl((c) => (c ? { ...c, index: (c.index + 1) % c.items.length } : c));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setCompl((c) =>
+          c ? { ...c, index: (c.index - 1 + c.items.length) % c.items.length } : c,
+        );
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        acceptCompl(compl.items[compl.index].value);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeCompl();
+        return;
+      }
     }
 
     // #45: Ctrl+Space requests a suggestion; Tab accepts; Esc dismisses.
@@ -1025,10 +1655,16 @@ function CodeEditor({
       ? draft.slice(0, suggestion.at) + suggestion.text
       : null;
 
+  // In wrap mode, pin every overlay <pre> to the textarea's content width so
+  // they wrap line-for-line with it (see wrapWidth). A no-op otherwise.
+  const overlayWidthStyle =
+    wrap && wrapWidth != null ? { width: wrapWidth } : undefined;
+
   return (
     <div
       className="file-viewer-code"
       onWheel={(e) => onCtrlWheelFont(e, incFont, decFont)}
+      onKeyDown={onContainerKeyDown}
       style={
         fontSize
           ? ({
@@ -1041,29 +1677,60 @@ function CodeEditor({
           : undefined
       }
     >
-      {/* The gutter renders one fixed-height row per logical line; that can only
-          stay aligned when lines don't wrap, so it's omitted in wrap mode (the
-          LaTeX viewer), where a wrapped line spans several visual rows. */}
-      {!wrap && (
-        <div className="file-viewer-gutter" aria-hidden="true">
-          <div className="file-viewer-gutter-inner" ref={gutterInnerRef}>
-            {Array.from({ length: lineCount }, (_, i) => (
-              <div key={i} className="file-viewer-gutter-line">{i + 1}</div>
-            ))}
-          </div>
+      {/* Line-number gutter. Fixed-height rows normally; in wrap mode (the LaTeX
+          viewer) a logical line can span several visual rows, so each cell is
+          sized to its measured wrapped height (`lineHeights`). Lines holding a
+          search match are marked, the current match brightest (#67). */}
+      <div className="file-viewer-gutter" aria-hidden="true">
+        <div className="file-viewer-gutter-inner" ref={gutterInnerRef}>
+          {Array.from({ length: lineCount }, (_, i) => {
+            const n = i + 1;
+            const h = wrap ? lineHeights[i] : undefined;
+            const cls =
+              n === currentMatchLine
+                ? "file-viewer-gutter-line current-match"
+                : matchLineSet.has(n)
+                  ? "file-viewer-gutter-line has-match"
+                  : "file-viewer-gutter-line";
+            return (
+              <div key={i} className={cls} style={h != null ? { height: h } : undefined}>
+                {n}
+              </div>
+            );
+          })}
         </div>
-      )}
+      </div>
       <div
         className={`file-viewer-code-area${highlighted != null ? " highlighted" : ""}${
           linkHover ? " link-hover" : ""
         }${wrap ? " is-wrapped" : ""}`}
       >
+        {/* Hidden full-width mirror used only to measure each logical line's
+            wrapped height for the gutter (wrap mode). Sized to the textarea's
+            content width in the layout effect; never painted. */}
+        {wrap && (
+          <pre className="file-viewer-gutter-measure" ref={measureRef} aria-hidden="true">
+            {draftLines.map((ln, i) => (
+              <div key={i} className="fv-measure-line">{ln === "" ? "\u200B" : ln}</div>
+            ))}
+          </pre>
+        )}
         {highlighted != null && (
           <pre
             ref={highlightRef}
             className="file-viewer-highlight"
             aria-hidden="true"
+            style={overlayWidthStyle}
             dangerouslySetInnerHTML={{ __html: highlighted + "\n" }}
+          />
+        )}
+        {searchHtml != null && (
+          <pre
+            ref={searchLayerRef}
+            className="file-viewer-search-layer"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+            dangerouslySetInnerHTML={{ __html: searchHtml + "\n" }}
           />
         )}
         {linkHtml != null && (
@@ -1071,11 +1738,12 @@ function CodeEditor({
             ref={linkLayerRef}
             className="file-viewer-link-layer"
             aria-hidden="true"
+            style={overlayWidthStyle}
             dangerouslySetInnerHTML={{ __html: linkHtml + "\n" }}
           />
         )}
         {ghost != null && (
-          <pre className="file-viewer-ghost" aria-hidden="true">
+          <pre className="file-viewer-ghost" aria-hidden="true" style={overlayWidthStyle}>
             <span className="file-viewer-ghost-hidden">{draft.slice(0, suggestion!.at)}</span>
             <span className="file-viewer-ghost-text">{suggestion!.text}</span>
           </pre>
@@ -1089,7 +1757,7 @@ function CodeEditor({
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
           onKeyUp={(e) => { if (!(e.ctrlKey || e.metaKey)) setLinkHover(false); emitCaret(); }}
-          onBlur={() => { setLinkHover(false); setLinkTip(null); dismissSuggestion(); }}
+          onBlur={() => { setLinkHover(false); setLinkTip(null); dismissSuggestion(); setCompl(null); }}
           onMouseMove={onMouseMove}
           onMouseLeave={() => { setLinkHover(false); setLinkTip(null); }}
           onClick={onClick}
@@ -1098,6 +1766,128 @@ function CodeEditor({
         />
       </div>
       {onFollowLink && <LinkOpenHint at={linkTip} />}
+      {compl && (
+        <ul
+          className={`file-viewer-tex-compl${compl.ctx.kind === "cite" ? " is-cite" : ""}`}
+          role="listbox"
+          style={{ left: compl.pos.left, top: compl.pos.top + compl.pos.height }}
+        >
+          {compl.items.map((it, i) => (
+            <li
+              key={it.value + i}
+              role="option"
+              aria-selected={i === compl.index}
+              ref={i === compl.index ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
+              className={`file-viewer-tex-compl-item${i === compl.index ? " active" : ""}`}
+              // mousedown (not click) + preventDefault so the textarea keeps focus
+              // — otherwise the blur handler would close the dropdown first.
+              onMouseDown={(e) => { e.preventDefault(); acceptCompl(it.value); }}
+              onMouseEnter={() => setCompl((c) => (c ? { ...c, index: i } : c))}
+            >
+              <span className="file-viewer-tex-compl-key">{it.value}</span>
+              {it.detail && <span className="file-viewer-tex-compl-detail">{it.detail}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {findOpen && (
+        <div className="file-viewer-find" role="search">
+          <div className="file-viewer-find-row">
+            {/* Chevron expands/collapses the replace row from a find-only bar. */}
+            <button
+              className={`file-viewer-find-toggle${replaceOpen ? " active" : ""}`}
+              onClick={() => setReplaceOpen((v) => !v)}
+              aria-pressed={replaceOpen}
+              aria-label={replaceOpen ? "Hide replace" : "Show replace"}
+              title={replaceOpen ? "Hide replace" : "Show replace (Ctrl+R)"}
+            >
+              {replaceOpen ? "▾" : "▸"}
+            </button>
+            <input
+              ref={findInputRef}
+              className="file-viewer-find-input"
+              type="text"
+              value={query}
+              placeholder="Find"
+              aria-label="Find"
+              spellCheck={false}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={onFindKeyDown}
+            />
+            <span className="file-viewer-find-count" aria-live="polite">
+              {matches.length > 0 ? `${current + 1}/${matches.length}` : query ? "0/0" : ""}
+            </span>
+            <button
+              className={`file-viewer-find-btn${caseSensitive ? " active" : ""}`}
+              onClick={() => setCaseSensitive((v) => !v)}
+              aria-pressed={caseSensitive}
+              title="Match case"
+              aria-label="Match case"
+            >
+              Aa
+            </button>
+            <button
+              className="file-viewer-find-btn"
+              onClick={() => goToMatch(-1)}
+              disabled={matches.length === 0}
+              title="Previous match (Shift+Enter)"
+              aria-label="Previous match"
+            >
+              ↑
+            </button>
+            <button
+              className="file-viewer-find-btn"
+              onClick={() => goToMatch(1)}
+              disabled={matches.length === 0}
+              title="Next match (Enter)"
+              aria-label="Next match"
+            >
+              ↓
+            </button>
+            <button
+              className="file-viewer-find-btn"
+              onClick={closeFind}
+              title="Close (Esc)"
+              aria-label="Close find"
+            >
+              ✕
+            </button>
+          </div>
+          {replaceOpen && (
+            <div className="file-viewer-find-row file-viewer-replace-row">
+              <input
+                ref={replaceInputRef}
+                className="file-viewer-find-input"
+                type="text"
+                value={replaceWith}
+                placeholder="Replace"
+                aria-label="Replace with"
+                spellCheck={false}
+                onChange={(e) => setReplaceWith(e.target.value)}
+                onKeyDown={onReplaceKeyDown}
+              />
+              <button
+                className="file-viewer-find-btn file-viewer-replace-btn"
+                onClick={replaceCurrent}
+                disabled={matches.length === 0}
+                title="Replace current match (Enter)"
+                aria-label="Replace"
+              >
+                Replace
+              </button>
+              <button
+                className="file-viewer-find-btn file-viewer-replace-btn"
+                onClick={replaceAll}
+                disabled={matches.length === 0}
+                title="Replace all matches (Ctrl+Enter)"
+                aria-label="Replace all"
+              >
+                All
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1305,7 +2095,7 @@ function useEditorJump(path: string) {
   const consume = useEditorJumpStore((s) => s.consume);
   const onGotoApplied = useCallback(() => consume(path), [consume, path]);
   return {
-    gotoLine: req ? { line: req.line, nonce: req.nonce } : undefined,
+    gotoLine: req ? { line: req.line, column: req.column, nonce: req.nonce } : undefined,
     onGotoApplied,
   };
 }
@@ -1313,9 +2103,11 @@ function useEditorJump(path: string) {
 function TextView({
   path,
   onOpenExternally,
+  tabKey,
 }: {
   path: string;
   onOpenExternally: () => void;
+  tabKey?: string;
 }) {
   const {
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
@@ -1324,6 +2116,11 @@ function TextView({
   const ac = useAutocompleteConfig("text");
   const font = useEditorFontSize("text");
   const jump = useEditorJump(path);
+  const viewPos = useViewerState(tabKey);
+  const persistScroll = useCallback(
+    (scrollTop: number) => viewPos.persist({ scrollTop }),
+    [viewPos],
+  );
 
   return (
     <div className="file-viewer">
@@ -1352,6 +2149,8 @@ function TextView({
           resetFont={font.reset}
           gotoLine={jump.gotoLine}
           onGotoApplied={jump.onGotoApplied}
+          initialScrollTop={viewPos.initial?.scrollTop}
+          onScrollPersist={persistScroll}
         />
       </div>
     </div>
@@ -1505,34 +2304,75 @@ function MarkdownView({
   );
 }
 
-/** Load a file's bytes once and expose them as a Blob object URL (revoked on
- *  unmount / path change), used by the image viewer (<img> sniffs the type). */
+/** Load a file's bytes and expose them as a Blob object URL, used by the image
+ *  viewer (<img> sniffs the type). Like the editors/PDF (#43), it polls
+ *  `file_mtime` and re-reads the bytes when the file changes on disk, so an image
+ *  regenerated by an external tool updates in place. A same-path reload swaps the
+ *  URL only once the new bytes are ready (no flash to a loading state); the old
+ *  URL is revoked then, and the last URL is revoked on unmount. */
 function useBlobUrl(path: string, type: string) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const urlRef = useRef<string | null>(null);
+  const lastMtime = useRef<number | null>(null);
+  // Bumped whenever the file's mtime advances on disk, forcing a byte reload.
+  const [diskVersion, setDiskVersion] = useState(0);
 
+  // Reset to the loading state when the path itself changes (a genuine file
+  // switch). A same-path reload (a diskVersion bump) keeps the current image up
+  // until the fresh bytes arrive, so the view doesn't flash.
+  useEffect(() => {
+    setUrl(null);
+    setError(null);
+    lastMtime.current = null;
+  }, [path]);
+
+  // Load on mount, path switch, or on-disk change; revoke the previous URL only
+  // once its replacement is ready.
   useEffect(() => {
     let cancelled = false;
-    setError(null);
-    setUrl(null);
     invoke<number[]>("read_file_bytes", { path })
       .then((bytes) => {
         if (cancelled) return;
         const blob = new Blob([new Uint8Array(bytes)], type ? { type } : undefined);
         const objectUrl = URL.createObjectURL(blob);
+        const prev = urlRef.current;
         urlRef.current = objectUrl;
         setUrl(objectUrl);
+        if (prev) URL.revokeObjectURL(prev);
       })
       .catch((e) => { if (!cancelled) setError(String(e)); });
-    return () => {
-      cancelled = true;
+    return () => { cancelled = true; };
+  }, [path, type, diskVersion]);
+
+  // Revoke the last live URL on unmount.
+  useEffect(
+    () => () => {
       if (urlRef.current) {
         URL.revokeObjectURL(urlRef.current);
         urlRef.current = null;
       }
-    };
-  }, [path, type]);
+    },
+    [],
+  );
+
+  // Poll mtime; on an external advance, bump diskVersion to re-read fresh bytes.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<number>("file_mtime", { path })
+      .then((m) => { if (!cancelled) lastMtime.current = m; })
+      .catch(() => {});
+    const id = setInterval(() => {
+      invoke<number>("file_mtime", { path })
+        .then((m) => {
+          if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
+          lastMtime.current = m;
+          setDiskVersion((v) => v + 1);
+        })
+        .catch(() => {});
+    }, RELOAD_POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [path]);
 
   return { url, error };
 }
@@ -1550,6 +2390,7 @@ function PdfPageCanvas({
   pageNumber,
   scale,
   onSyncClick,
+  syncArmed,
   highlight,
 }: {
   doc: PDFDocumentProxy;
@@ -1557,12 +2398,15 @@ function PdfPageCanvas({
   scale: number;
   /** SyncTeX reverse search: a click maps to big points on this page. */
   onSyncClick?: (page: number, xBp: number, yBp: number) => void;
+  /** True while Ctrl/⌘ is held, so the page shows the reverse-search cursor. */
+  syncArmed?: boolean;
   /** SyncTeX forward search: when this page is the target, the box (big points)
    *  to scroll into view and flash. `nonce` re-triggers a repeat reveal. */
   highlight?: { rect: SyncRect; nonce: number } | null;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1592,14 +2436,19 @@ function PdfPageCanvas({
     };
   }, [doc, pageNumber, scale]);
 
-  // Scroll a forward-search target page into view on a new nonce.
+  // Scroll a forward-search target into view on a new nonce. Center the
+  // highlight *box*, not the whole page — on a tall page the target line can sit
+  // far from page-center, which is what made the jump feel imprecise.
   useEffect(() => {
-    if (highlight) wrapRef.current?.scrollIntoView({ block: "center" });
+    if (!highlight) return;
+    (boxRef.current ?? wrapRef.current)?.scrollIntoView({ block: "center", inline: "nearest" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlight?.nonce]);
 
   const onClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!onSyncClick) return;
+    // Reverse search is a Ctrl/⌘-click affordance; plain clicks stay free for
+    // text selection in the PDF.
+    if (!onSyncClick || !(e.ctrlKey || e.metaKey)) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const { x, y } = pdfPointToBigPoints(rect, e.clientX, e.clientY, scale);
     onSyncClick(pageNumber, x, y);
@@ -1611,12 +2460,13 @@ function PdfPageCanvas({
     <div className="file-viewer-pdf-page-wrap" ref={wrapRef}>
       <canvas
         ref={canvasRef}
-        className={`file-viewer-pdf-page${onSyncClick ? " is-syncable" : ""}`}
+        className={`file-viewer-pdf-page${onSyncClick && syncArmed ? " is-syncable" : ""}`}
         onClick={onClick}
       />
       {box && (
         <div
           key={highlight!.nonce}
+          ref={boxRef}
           className="file-viewer-pdf-sync-highlight"
           style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
         />
@@ -1638,17 +2488,26 @@ function PdfPageCanvas({
 function PdfCanvas({
   path,
   onOpenExternally,
+  tabKey,
 }: {
   path: string;
   /** When set, an "Open externally" button is shown at the end of the toolbar.
    *  Used by the standalone PDF tab, which has no separate header row. */
   onOpenExternally?: () => void;
+  /** This viewer tab's key, for #viewerpos scroll/zoom persistence. */
+  tabKey?: string;
 }) {
+  const viewPos = useViewerState(tabKey);
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [scale, setScale] = useState(1.2);
+  // Restore the saved zoom if there is one; otherwise the load effect fits the
+  // page width. `1.2` is only the pre-load placeholder.
+  const [scale, setScale] = useState(viewPos.initial?.scale ?? 1.2);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  // True once the first document load has run, so only that load restores the
+  // session-persisted scroll/zoom (#viewerpos); later reloads behave as before.
+  const didInitialLoad = useRef(false);
   // After a Ctrl+wheel zoom changes `scale`, the page canvases re-render to the
   // new size asynchronously. We stash the scroll target that keeps the cursor's
   // document point fixed and apply it once the content has actually resized.
@@ -1656,8 +2515,35 @@ function PdfCanvas({
   // Bumped whenever the file's mtime advances on disk, forcing a byte reload.
   const [diskVersion, setDiskVersion] = useState(0);
   const lastMtime = useRef<number | null>(null);
+  // The path the currently-loaded document came from. A reload that keeps the
+  // same path (a recompile bumped `diskVersion`) should preserve the reader's
+  // scroll position; switching to a different file should not.
+  const loadedPath = useRef<string | null>(null);
+  // Scroll target to restore after a same-path reload (a recompile). The page
+  // canvases re-render asynchronously, so the content grows over several frames;
+  // the ResizeObserver below re-applies this until the position is reachable.
+  const restoreScroll = useRef<{ top: number; left: number } | null>(null);
   // True when a `.synctex(.gz)` sits beside the PDF, enabling reverse search.
   const [syncable, setSyncable] = useState(false);
+  // True while Ctrl/⌘ is held: reverse-search clicks fire and pages show the
+  // crosshair cursor only then, leaving plain clicks free for text selection.
+  const [syncArmed, setSyncArmed] = useState(false);
+  useEffect(() => {
+    if (!syncable) return;
+    const sync = (e: KeyboardEvent | MouseEvent) =>
+      setSyncArmed(e.ctrlKey || e.metaKey);
+    const clear = () => setSyncArmed(false);
+    window.addEventListener("keydown", sync);
+    window.addEventListener("keyup", sync);
+    window.addEventListener("mousemove", sync);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("keydown", sync);
+      window.removeEventListener("keyup", sync);
+      window.removeEventListener("mousemove", sync);
+      window.removeEventListener("blur", clear);
+    };
+  }, [syncable]);
 
   // SyncTeX forward search: a pending reveal/highlight request for this PDF.
   // Copied into local state so we can consume the store request immediately
@@ -1689,7 +2575,7 @@ function PdfCanvas({
   const onSyncClick = useCallback(
     async (page: number, x: number, y: number) => {
       const src = await synctexEdit(path, page, x, y);
-      if (src) jumpToSource(src.input, src.line);
+      if (src) jumpToSource(src.input, src.line, src.column);
     },
     [path],
   );
@@ -1720,6 +2606,26 @@ function PdfCanvas({
   useEffect(() => {
     let cancelled = false;
     let loaded: PDFDocumentProxy | null = null;
+    // Same-path reload (a recompile): remember where the reader was so we can
+    // restore it once the fresh pages have laid out, instead of jumping to the
+    // top. A genuine file switch starts fresh. On the FIRST load, instead restore
+    // the position persisted from a prior session (#viewerpos) so an Eldrun
+    // restart reopens the PDF where the reader left it.
+    const el = scrollRef.current;
+    let firstRestore: { top: number; left: number } | null = null;
+    if (!didInitialLoad.current) {
+      didInitialLoad.current = true;
+      const init = viewPos.initial;
+      if (init && ((init.scrollTop ?? 0) > 0 || (init.scrollLeft ?? 0) > 0)) {
+        firstRestore = { top: init.scrollTop ?? 0, left: init.scrollLeft ?? 0 };
+      }
+    }
+    restoreScroll.current =
+      firstRestore ??
+      (loadedPath.current === path && el
+        ? { top: el.scrollTop, left: el.scrollLeft }
+        : null);
+    loadedPath.current = path;
     setDoc(null);
     setError(null);
     (async () => {
@@ -1737,9 +2643,16 @@ function PdfCanvas({
         if (!cancelled) setError(String(e));
       }
     })();
+    // Safety net: stop trying to restore after the pages have had time to lay
+    // out, so a target the reloaded PDF can't reach never re-applies later
+    // (e.g. fighting a subsequent zoom).
+    const restoreDeadline = restoreScroll.current
+      ? setTimeout(() => { restoreScroll.current = null; }, 2000)
+      : null;
     return () => {
       cancelled = true;
       loaded?.destroy();
+      if (restoreDeadline) clearTimeout(restoreDeadline);
     };
   }, [path, diskVersion]);
 
@@ -1753,9 +2666,49 @@ function PdfCanvas({
     if (avail > 0 && vp.width > 0) setScale(clampPdfScale(avail / vp.width));
   }, []);
 
+  // Fit to width when a document loads — UNLESS this is the first load and a zoom
+  // was persisted from a prior session, in which case honour the saved scale
+  // (already seeded into `scale`). Subsequent reloads still refit.
+  const didInitialFit = useRef(false);
   useEffect(() => {
-    if (doc) void fitWidth(doc);
+    if (!doc) return;
+    if (!didInitialFit.current) {
+      didInitialFit.current = true;
+      if (viewPos.initial?.scale != null) return;
+    }
+    void fitWidth(doc);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, fitWidth]);
+
+  // #viewerpos: persist the zoom whenever it changes (only once a document is up,
+  // so the pre-load placeholder scale is never written). setViewerState dedups,
+  // so re-persisting an unchanged scale is a no-op.
+  useEffect(() => {
+    if (doc) viewPos.persist({ scale });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scale, doc]);
+
+  // #viewerpos: persist the scroll position as the reader scrolls (throttled,
+  // trailing-edge). Ignored while a programmatic restore is still settling so we
+  // don't overwrite the saved target with an intermediate frame.
+  const scrollPersistTimer = useRef<number | null>(null);
+  const onScrollPersist = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || restoreScroll.current) return;
+    const top = el.scrollTop;
+    const left = el.scrollLeft;
+    if (scrollPersistTimer.current != null) window.clearTimeout(scrollPersistTimer.current);
+    scrollPersistTimer.current = window.setTimeout(
+      () => viewPos.persist({ scrollTop: top, scrollLeft: left }),
+      200,
+    );
+  }, [viewPos]);
+  useEffect(
+    () => () => {
+      if (scrollPersistTimer.current != null) window.clearTimeout(scrollPersistTimer.current);
+    },
+    [],
+  );
 
   // Ctrl/Cmd+wheel zooms the page stack toward the cursor (a plain wheel keeps
   // native scrolling). Because the canvases resize asynchronously, we only
@@ -1766,6 +2719,8 @@ function PdfCanvas({
     e.preventDefault();
     const el = scrollRef.current;
     if (!el) return;
+    // A user zoom takes over; abandon any in-flight recompile scroll restore.
+    restoreScroll.current = null;
     const rect = el.getBoundingClientRect();
     const cursorX = e.clientX - rect.left;
     const cursorY = e.clientY - rect.top;
@@ -1789,11 +2744,23 @@ function PdfCanvas({
     const el = scrollRef.current;
     if (!content || !el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
+      // Cursor-anchored zoom target: apply once, the moment the canvases resize.
       const target = pendingScroll.current;
-      if (!target) return;
-      pendingScroll.current = null;
-      el.scrollTop = target.top;
-      el.scrollLeft = target.left;
+      if (target) {
+        pendingScroll.current = null;
+        el.scrollTop = target.top;
+        el.scrollLeft = target.left;
+      }
+      // Recompile reload: the page stack grows over several frames as canvases
+      // render, so keep re-applying the saved position until it's reached, then
+      // stop. A target the new (shorter) document can't hold is dropped by the
+      // bounded fallback timer in the load effect.
+      const restore = restoreScroll.current;
+      if (restore) {
+        el.scrollTop = restore.top;
+        el.scrollLeft = restore.left;
+        if (el.scrollTop >= restore.top - 1) restoreScroll.current = null;
+      }
     });
     ro.observe(content);
     return () => ro.disconnect();
@@ -1834,12 +2801,18 @@ function PdfCanvas({
             className="file-viewer-open-external file-viewer-pdf-external"
             onClick={onOpenExternally}
             title="Open in external app"
+            aria-label="Open in external app"
           >
-            Open externally ↗
+            ↗
           </button>
         )}
       </div>
-      <div className="file-viewer-pdf-scroll" ref={scrollRef} onWheel={onWheel}>
+      <div
+        className="file-viewer-pdf-scroll"
+        ref={scrollRef}
+        onWheel={onWheel}
+        onScroll={onScrollPersist}
+      >
         {error != null ? (
           <div className="file-viewer-error">{error}</div>
         ) : !doc ? (
@@ -1853,6 +2826,7 @@ function PdfCanvas({
                 pageNumber={i + 1}
                 scale={scale}
                 onSyncClick={syncable ? onSyncClick : undefined}
+                syncArmed={syncArmed}
                 highlight={highlight && highlight.rect.page === i + 1 ? highlight : null}
               />
             ))}
@@ -1866,16 +2840,18 @@ function PdfCanvas({
 function PdfView({
   path,
   onOpenExternally,
+  tabKey,
 }: {
   path: string;
   onOpenExternally: () => void;
+  tabKey?: string;
 }) {
   // No ViewerHeader: the tab already shows the file name, so a filename row would
   // be redundant. The "Open externally" action lives in the PdfCanvas toolbar.
   return (
     <div className="file-viewer">
       <div className="file-viewer-body">
-        <PdfCanvas path={path} onOpenExternally={onOpenExternally} />
+        <PdfCanvas path={path} onOpenExternally={onOpenExternally} tabKey={tabKey} />
       </div>
     </div>
   );
@@ -1914,6 +2890,11 @@ function TexView({
   } = useEditableFile(path);
   const ac = useAutocompleteConfig("tex");
   const font = useEditorFontSize("tex");
+  const viewPos = useViewerState(tabKey);
+  const persistScroll = useCallback(
+    (scrollTop: number) => viewPos.persist({ scrollTop }),
+    [viewPos],
+  );
 
   // null while still probing; the editor renders regardless so there is no flash.
   const [cap, setCap] = useState<TexCapability | null>(null);
@@ -1928,13 +2909,14 @@ function TexView({
   // relative to this file. By default it opens in the SAME subwindow as this tab
   // (#50). A bare \includegraphics is resolved by probing the directory.
   const followLink = useCallback(
-    async (caret: number) => {
+    async (caret: number): Promise<boolean> => {
       const target = findTexRefAt(draft, caret);
-      if (!target) return;
+      if (!target) return false;
       const resolved = await resolveTexRefAsync(path, target);
-      if (!resolved) return;
+      if (!resolved) return false;
       const dir = path.slice(0, path.lastIndexOf("/")) || "/";
       openLinkedFile(tabKey, dir, resolved);
+      return true;
     },
     [draft, path, tabKey],
   );
@@ -1956,6 +2938,32 @@ function TexView({
   // 0 = never compiled (preview shows a placeholder); each successful compile
   // bumps this to force the PDF blob to refetch the freshly written bytes.
   const [pdfVersion, setPdfVersion] = useState(0);
+  // True when the last successful compile's forward-search (caret → PDF) found
+  // no location, so the PDF kept its previous position instead of jumping to the
+  // cursor. Shown as a transient notice so a SyncTeX miss reads differently from
+  // a bug; auto-cleared by the effect below.
+  const [syncMiss, setSyncMiss] = useState(false);
+
+  // \ref/\cite key completion: `\label` keys across the document and entry keys
+  // from the connected `.bib` file(s), gathered from disk on load. Re-gathered
+  // after each compile (a build may add labels / change bib resources). The
+  // current file's labels are merged live from the editor draft below so a label
+  // just typed is offered without waiting for a re-gather.
+  const [gathered, setGathered] = useState<TexCompletions>({ labels: [], cites: [] });
+  useEffect(() => {
+    let cancelled = false;
+    gatherTexCompletions(path)
+      .then((c) => { if (!cancelled) setGathered(c); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [path, pdfVersion]);
+  const completions = useMemo<TexCompletions>(
+    () => ({
+      labels: Array.from(new Set([...parseTexLabels(draft), ...gathered.labels])),
+      cites: gathered.cites,
+    }),
+    [draft, gathered],
+  );
 
   // #54 compiler options: an optional output folder (relative to the source or
   // absolute) and extra engine flags (space-separated). The backend filters the
@@ -1997,10 +3005,48 @@ function TexView({
     [path, tabKey],
   );
 
+  // The PDF this source builds to: the last compile's actual output when known
+  // (it honours the #54 out-dir), else the conventional sibling of the built
+  // root. Used by on-demand forward search without recompiling.
+  const targetPdf = useCallback(
+    () => pdfPath ?? root.replace(/\.tex$/i, ".pdf"),
+    [pdfPath, root],
+  );
+
+  // SyncTeX forward search on demand: map a caret offset in this source to its
+  // box in the PDF and reveal/flash it there — without recompiling. Opens (or
+  // refocuses) the PDF tab only on a hit, so a miss never spawns a broken tab.
+  const forwardSync = useCallback(
+    async (caret: number) => {
+      const pdf = targetPdf();
+      setSyncMiss(false);
+      const { line, column } = offsetToLineCol(draftRef.current, caret);
+      const rect = await synctexView(pdf, path, line, column);
+      if (rect) {
+        openPdf(pdf);
+        usePdfSyncStore.getState().requestReveal(pdf, rect);
+      } else {
+        setSyncMiss(true);
+      }
+    },
+    [targetPdf, path, openPdf],
+  );
+
+  // Ctrl/⌘+click in the editor: follow a `\input{…}`-style reference when the
+  // caret sits on one, otherwise forward-sync that caret position into the PDF.
+  const onEditorFollow = useCallback(
+    async (caret: number) => {
+      if (await followLink(caret)) return;
+      await forwardSync(caret);
+    },
+    [followLink, forwardSync],
+  );
+
   const compile = useCallback(async () => {
     if (compiling) return;
     setCompiling(true);
     setCompileError(null);
+    setSyncMiss(false);
     try {
       // The source is editable, so persist any pending edits before building.
       await save();
@@ -2036,6 +3082,9 @@ function TexView({
         const { line, column } = offsetToLineCol(draftRef.current, caretRef.current);
         const rect = await synctexView(res.pdf_path, path, line, column);
         if (rect) usePdfSyncStore.getState().requestReveal(res.pdf_path, rect);
+        // No SyncTeX answer for the caret → the PDF stays where it was. Flag it so
+        // the user knows the jump-to-cursor was skipped (a miss, not a failure).
+        else setSyncMiss(true);
       }
     } catch (e) {
       setCompileError(String(e));
@@ -2043,6 +3092,13 @@ function TexView({
       setCompiling(false);
     }
   }, [compiling, save, path, engine, outDir, extraFlags, openPdf]);
+
+  // Auto-dismiss the forward-search miss notice a few seconds after it appears.
+  useEffect(() => {
+    if (!syncMiss) return;
+    const id = setTimeout(() => setSyncMiss(false), 4000);
+    return () => clearTimeout(id);
+  }, [syncMiss]);
 
   // No engine (or still probing): degrade to exactly the plain-text editor.
   if (!cap || !cap.available) {
@@ -2063,11 +3119,12 @@ function TexView({
             setDraft={setDraft}
             loaded={loaded}
             save={() => void save()}
-            onFollowLink={followLink}
+            onFollowLink={onEditorFollow}
             linkRanges={linkRanges}
             undo={undo}
             redo={redo}
             autocomplete={ac}
+            texCompletions={completions}
             fontSize={font.fontSize}
             lineHeight={font.lineHeight}
             incFont={font.inc}
@@ -2076,6 +3133,8 @@ function TexView({
             gotoLine={jump.gotoLine}
             onGotoApplied={jump.onGotoApplied}
             onCaretChange={onCaret}
+            initialScrollTop={viewPos.initial?.scrollTop}
+            onScrollPersist={persistScroll}
             wrap
           />
         </div>
@@ -2169,6 +3228,12 @@ function TexView({
         </div>
       )}
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
+      {syncMiss && (
+        <div className="file-viewer-tex-sync-miss" role="status">
+          Compiled — couldn't locate the cursor in the PDF (no SyncTeX match), so
+          its position was kept. Put the caret in body text and recompile to jump.
+        </div>
+      )}
       {shellEscape && (
         <div className="file-viewer-tex-shell-warning" role="alert">
           ⚠ This compile ran with LaTeX shell-escape (<code>\write18</code>) active —
@@ -2199,12 +3264,15 @@ function TexView({
           draft={draft}
           setDraft={setDraft}
           loaded={loaded}
-          save={() => void save()}
-          onFollowLink={followLink}
+          // Ctrl+S in the LaTeX viewer saves and recompiles (compile() persists
+          // pending edits first), so the PDF preview tracks the source.
+          save={() => void compile()}
+          onFollowLink={onEditorFollow}
           linkRanges={linkRanges}
           undo={undo}
           redo={redo}
           autocomplete={ac}
+          texCompletions={completions}
           fontSize={font.fontSize}
           lineHeight={font.lineHeight}
           incFont={font.inc}
@@ -2213,6 +3281,8 @@ function TexView({
           gotoLine={jump.gotoLine}
           onGotoApplied={jump.onGotoApplied}
           onCaretChange={onCaret}
+          initialScrollTop={viewPos.initial?.scrollTop}
+          onScrollPersist={persistScroll}
           wrap
         />
       </div>
@@ -2243,15 +3313,21 @@ function ImageView({
   path,
   fileName,
   onOpenExternally,
+  tabKey,
 }: {
   path: string;
   fileName: string;
   onOpenExternally: () => void;
+  tabKey?: string;
 }) {
+  const viewPos = useViewerState(tabKey);
   const { url, error } = useBlobUrl(path, "");
   const viewportRef = useRef<HTMLDivElement | null>(null);
-  // Natural (intrinsic) image size in pixels, set on load.
+  // Natural (intrinsic) image size in pixels, set on load. The ref mirrors it so
+  // an on-disk reload (#68) can tell a same-size content update from a new image.
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  const naturalRef = useRef<{ w: number; h: number } | null>(null);
+  naturalRef.current = natural;
   // View transform: image-pixel scale and top-left offset within the viewport.
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -2303,9 +3379,43 @@ function ImageView({
   const onImgLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;
     const nat = { w: img.naturalWidth, h: img.naturalHeight };
+    const prev = naturalRef.current;
     setNatural(nat);
-    fit(nat);
+    if (!prev) {
+      // First load: restore the session-persisted zoom/pan (#viewerpos) so an
+      // Eldrun restart reopens the image where the reader left it; otherwise fit.
+      const init = viewPos.initial;
+      if (init?.scale != null) {
+        setScale(init.scale);
+        setOffset({ x: init.offsetX ?? 0, y: init.offsetY ?? 0 });
+        fittedRef.current = false;
+        return;
+      }
+      fit(nat);
+      return;
+    }
+    // Re-fit when the image's dimensions change; on a same-size content update
+    // from disk (#68) keep the user's current zoom/pan.
+    if (prev.w !== nat.w || prev.h !== nat.h) fit(nat);
   };
+
+  // #viewerpos: persist zoom + pan (throttled, trailing-edge) once an image is
+  // up, so reopening it or restarting Eldrun restores this exact view.
+  const persistTimer = useRef<number | null>(null);
+  useEffect(() => {
+    if (!natural) return;
+    const s = scale;
+    const ox = offset.x;
+    const oy = offset.y;
+    if (persistTimer.current != null) window.clearTimeout(persistTimer.current);
+    persistTimer.current = window.setTimeout(
+      () => viewPos.persist({ scale: s, offsetX: ox, offsetY: oy }),
+      200,
+    );
+    return () => {
+      if (persistTimer.current != null) window.clearTimeout(persistTimer.current);
+    };
+  }, [scale, offset, natural, viewPos]);
 
   // Re-fit on viewport resize while still in the fitted baseline state.
   useEffect(() => {

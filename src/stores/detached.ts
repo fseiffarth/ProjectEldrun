@@ -12,6 +12,7 @@
  * `DetachedApp` / the main shell.
  */
 import { emit, listen } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   useTabsStore,
   type GroupNode,
@@ -61,17 +62,23 @@ export const DETACHED_DOCK = "detached-dock";
 /**
  * Detached → main: the popout's OS window was closed (WM/title-bar close). Unlike
  * DETACHED_DOCK, this CLOSES the group's tabs for good — they are not docked back
- * and do not restore on next launch. The ⤓ dock button still uses DETACHED_DOCK.
+ * and do not restore on next launch.
  */
 export const DETACHED_CLOSE = "detached-close";
 /** Detached → main: the popout's OS geometry changed (persisted for respawn). */
 export const DETACHED_BOUNDS = "detached-bounds";
 /**
- * #42: cross-window drag-to-dock. The detached window owns the pointer capture,
- * so it streams the gesture to the main window, which renders the dock preview
- * and docks the group on release. START opens the preview, MOVE updates it (with
- * the pointer's SCREEN coords, mapped to the main window's client space), and END
- * commits (or cancels). One popout drags at a time, so MOVE/END carry no id.
+ * #42: cross-window drag-to-dock. The detached window streams the gesture to the
+ * main window, which renders the dock preview and docks the group on release.
+ * START opens the preview, MOVE updates it, and END commits (or cancels). One
+ * popout drags at a time, so MOVE/END carry no id.
+ *
+ * The streamed coords are OS-level desktop CURSOR coords (logical/CSS px),
+ * polled from `cursorPosition()` — NOT DOM pointer-event coords. On WebKitGTK
+ * (esp. Wayland) DOM pointermove/up do not cross the OS window boundary, so once
+ * the cursor leaves the popout the DOM stream dies at the popout's edge. Polling
+ * the OS cursor keeps MOVE flowing over the main window, and END carries the last
+ * polled cursor position so the drop resolves where the cursor really is.
  */
 export const DETACHED_DRAG_START = "detached-drag-start";
 export const DETACHED_DRAG_MOVE = "detached-drag-move";
@@ -85,14 +92,22 @@ export interface DetachedDragStart {
   screenX: number;
   screenY: number;
 }
-/** Detached → main: the dragged pointer moved (screen CSS px). */
+/** Detached → main: the OS cursor moved (desktop logical/CSS px). */
 export interface DetachedDragMove {
   screenX: number;
   screenY: number;
 }
-/** Detached → main: the drag ended; `cancelled` skips docking. */
+/**
+ * Detached → main: the drag ended; `cancelled` skips docking. `screenX/Y` carry
+ * the LAST OS-level cursor position (logical/CSS px), so the main window resolves
+ * the drop against where the cursor actually is — not the stale DOM coordinates of
+ * the release event, which on WebKitGTK fire inside the popout even when the
+ * cursor is released over the main window. Absent only on a cancel.
+ */
 export interface DetachedDragEnd {
   cancelled: boolean;
+  screenX?: number;
+  screenY?: number;
 }
 
 /** The seed the main window ships to a freshly-opened detached window. */
@@ -272,4 +287,41 @@ export async function listenDetachedHost(): Promise<() => void> {
     unDock();
     unClose();
   };
+}
+
+/**
+ * App-quit teardown for every open popout. Called from the MAIN window's
+ * `onCloseRequested` before it destroys itself: a detached `WebviewWindow` lives
+ * in the same process but is NOT a child of the main window, so closing the main
+ * window alone strands the popouts on screen. For each scope that has detached
+ * groups we (1) persist that scope so its `detached: true` flag + latest streamed
+ * bounds reach project.json, then (2) `destroy()` each popout's OS window.
+ *
+ * We use `destroy()`, not `close()`, precisely to BYPASS the popout's own
+ * `onCloseRequested` (which emits DETACHED_CLOSE → drops the group's tabs for
+ * good). On a full-app quit the popouts must SURVIVE and re-open at their saved
+ * bounds on next launch (via the docked→re-detach respawn path), exactly like the
+ * main window's docked tabs — only an explicit per-popout WM close discards them.
+ * Best-effort throughout: a failure here must never block the app from quitting.
+ */
+export async function shutdownDetachedWindows(): Promise<void> {
+  const store = useTabsStore.getState();
+  const projects = useProjectsStore.getState().projects;
+  for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
+    if (!entries || entries.length === 0) continue;
+    // Persist the detached set + bounds durably. Root has no project.json, so its
+    // popouts can't be restored — they just close.
+    const localFile = projects.find((p) => p.id === scope)?.local_file;
+    if (localFile) {
+      await store.persistScope(scope, localFile).catch(() => {});
+    }
+    for (const entry of entries) {
+      try {
+        const win = await WebviewWindow.getByLabel(entry.label);
+        await win?.destroy();
+      } catch {
+        /* best-effort: keep tearing down the rest */
+      }
+    }
+  }
 }

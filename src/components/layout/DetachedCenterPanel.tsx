@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
+import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import {
   DETACHED_DRAG_END,
   DETACHED_DRAG_MOVE,
@@ -24,7 +25,6 @@ interface Props {
   tabs: TabEntry[];
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
-  onDockBack: () => void;
 }
 
 /**
@@ -41,7 +41,6 @@ export function DetachedCenterPanel({
   tabs,
   onActivate,
   onClose,
-  onDockBack,
 }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [rect, setRect] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -61,57 +60,112 @@ export function DetachedCenterPanel({
     return () => ro.disconnect();
   }, []);
 
-  // #42: grab the popout's top frame (the empty tab-bar area) to move the window.
-  // A PLAIN drag hands off to the window manager via `startDragging` so KWin's
-  // native behaviour — edge-snap, maximize, and cross-monitor moves — all work.
-  // A CTRL+drag instead streams a cross-window drag-to-dock to the main window
-  // (`startDockDrag`): release over a main-window subwindow to dock this popout
-  // back in. We pick the mode at pointerdown because once `startDragging` hands
-  // the pointer to the WM we get no further DOM events to detect "Ctrl at drop".
+  // #42: grab the popout's top frame (the empty tab-bar area) to move/dock it.
+  // A PLAIN drag behaves like dragging a tab: the popout follows the cursor and,
+  // while the cursor is over the main window, the main window shows the same
+  // split/merge drop preview as an in-window tab drag and docks the group on
+  // release (`startDockDrag`). Released anywhere else, the popout simply stays
+  // where it was dragged. We drive the move ourselves (no `startDragging`), so we
+  // trade away KWin's native edge-snap/maximize-on-drag for cross-window docking.
   const onTabBarPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     // Only the empty bar area is a drag handle — not the tabs or the controls.
     if (target.closest(".tab, .detached-titlebar-controls, button")) return;
     e.preventDefault();
-    if (e.ctrlKey) {
-      startDockDrag(e);
-    } else {
-      void getCurrentWindow().startDragging();
-    }
+    startDockDrag(e);
   };
 
-  // #42: Ctrl+drag-to-dock. The left button stays down, so X11's implicit
-  // pointer grab keeps delivering pointermove to THIS webview even while the
-  // cursor is over the main window — letting us stream the gesture's SCREEN
-  // coords to the main window, which maps them into its client space, renders
-  // the dock preview, and docks the group on release. We never move our own OS
-  // window during this gesture (no `startDragging`). Pointer events are captured
-  // to the handle and mirrored on `window`; pointercancel commits (WebKitGTK
-  // fires it in place of pointerup mid-gesture), only Escape cancels.
+  // #42: drag-to-dock. We stream the gesture's OS-LEVEL CURSOR position to the
+  // main window, which maps it into its client space, renders the dock preview,
+  // and docks the group on release. We do NOT rely on DOM pointer events crossing
+  // into the main window: on WebKitGTK (especially Wayland) DOM pointermove/up do
+  // not cross the OS window boundary, so the stream would die at the popout's edge
+  // and the drop would commit at stale in-popout coords (never docking). Instead
+  // we POLL `cursorPosition()` on a timer; that is a desktop-global PHYSICAL
+  // position, so we (a) divide by our scale factor to emit logical/CSS px for the
+  // main window (which subtracts its logical origin in the same unit) and (b) use
+  // the raw physical position to move our OWN window so it follows the cursor like
+  // a dragged tab. Release is detected via DOM pointerup/pointercancel (which fire
+  // in the popout when released over it; an X11 implicit grab also delivers them
+  // when released over the main window). END carries the LAST polled cursor
+  // position so the drop resolves where the cursor truly is. Only Escape cancels;
+  // pointercancel commits (WebKitGTK fires it in place of pointerup).
   const startDockDrag = (e: React.PointerEvent) => {
     const handle = e.currentTarget as HTMLElement;
     const pointerId = e.pointerId;
     try {
       handle.setPointerCapture(pointerId);
     } catch {
-      /* capture is best-effort; the implicit grab still routes events */
+      /* capture is best-effort; the OS-cursor poll does not depend on it */
     }
     const activeLabel =
       orderedTabs.find((t) => t.key === group.activeKey)?.label ?? "Subwindow";
+
+    const win = getCurrentWindow();
+    // Latest OS cursor position in logical/CSS px (updated by the poll). Seeded
+    // from the pointerdown's screen coords (WebKitGTK reports these in CSS px).
+    let last = { x: e.screenX, y: e.screenY };
+    let scale = 1;
+    let done = false;
+    // Physical offset from the window's top-left to the cursor at grab time, so
+    // the window can follow the cursor without jumping. Resolved async; until
+    // then the window simply doesn't move yet.
+    let grab: { x: number; y: number } | null = null;
+    let moving = false; // in-flight guard so 60 Hz polls don't queue setPosition.
+
+    void win.scaleFactor().then((s) => {
+      scale = s || 1;
+    }).catch(() => {});
+    void Promise.all([win.outerPosition(), cursorPosition()])
+      .then(([pos, cur]) => {
+        grab = { x: cur.x - pos.x, y: cur.y - pos.y };
+      })
+      .catch(() => {});
+
     void emit(DETACHED_DRAG_START, {
       scope,
       groupId: group.id,
       label: activeLabel,
-      screenX: e.screenX,
-      screenY: e.screenY,
+      screenX: last.x,
+      screenY: last.y,
     } satisfies DetachedDragStart);
 
-    let done = false;
+    // Poll the OS cursor (~60 Hz). This is what survives the cursor leaving the
+    // popout window — DOM pointermove does not on WebKitGTK.
+    const poll = window.setInterval(() => {
+      void cursorPosition()
+        .then((p) => {
+          if (done) return;
+          last = { x: p.x / scale, y: p.y / scale };
+          void emit(DETACHED_DRAG_MOVE, {
+            screenX: last.x,
+            screenY: last.y,
+          } satisfies DetachedDragMove);
+          // Move our own window to follow the cursor (physical px). Skip while a
+          // previous move is still in flight to avoid an IPC backlog.
+          if (grab && !moving) {
+            moving = true;
+            void win
+              .setPosition(
+                new PhysicalPosition(
+                  Math.round(p.x - grab.x),
+                  Math.round(p.y - grab.y),
+                ),
+              )
+              .catch(() => {})
+              .finally(() => {
+                moving = false;
+              });
+          }
+        })
+        .catch(() => {});
+    }, 16);
+
     const finish = (cancelled: boolean) => {
       if (done) return;
       done = true;
-      window.removeEventListener("pointermove", onMove);
+      window.clearInterval(poll);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
       window.removeEventListener("keydown", onKey);
@@ -120,20 +174,17 @@ export function DetachedCenterPanel({
       } catch {
         /* ignore */
       }
-      void emit(DETACHED_DRAG_END, { cancelled } satisfies DetachedDragEnd);
-    };
-    const onMove = (ev: PointerEvent) => {
-      void emit(DETACHED_DRAG_MOVE, {
-        screenX: ev.screenX,
-        screenY: ev.screenY,
-      } satisfies DetachedDragMove);
+      void emit(DETACHED_DRAG_END, {
+        cancelled,
+        screenX: last.x,
+        screenY: last.y,
+      } satisfies DetachedDragEnd);
     };
     const onUp = () => finish(false);
     const onCancel = () => finish(false);
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") finish(true);
     };
-    window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
     window.addEventListener("keydown", onKey);
@@ -172,19 +223,10 @@ export function DetachedCenterPanel({
               </div>
             );
           })}
-          {/* Right-aligned title-bar cluster: dock-back + native window
-              controls. `no-drag` so clicks here never start a window drag. */}
+          {/* Right-aligned title-bar cluster: native window controls. `no-drag`
+              so clicks here never start a window drag. Dock-back is done by
+              Ctrl+dragging the tab bar onto the main window (#42). */}
           <div className="detached-titlebar-controls no-drag">
-            <button
-              className="subwindow-dock"
-              title="Dock back into main window"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDockBack();
-              }}
-            >
-              ⤓
-            </button>
             <WindowControls />
           </div>
         </div>

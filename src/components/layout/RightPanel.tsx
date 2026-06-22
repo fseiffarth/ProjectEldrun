@@ -9,7 +9,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore } from "../../stores/tabs";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import { resolveProjectDirectory } from "../../types";
-import { type SortKey, VIEWER_PREF_TYPES } from "../files/fileUtils";
+import { type SortKey, VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
 import type { ViewerPref } from "../../types";
 
 interface GitStatus {
@@ -153,18 +153,41 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
   const [gitBusy, setGitBusy] = useState(false);
   const [gitError, setGitError] = useState<string | null>(null);
   const commitRef = useRef<HTMLTextAreaElement>(null);
+  const refreshGitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const refreshGit = (dir: string) => {
-    invoke<GitStatus>("git_status", { projectDir: dir })
-      .then(setGitStatus)
-      .catch(() => setGitStatus(null));
-    invoke<Record<string, string>>("git_file_statuses", { projectDir: dir, relPath: "" })
-      .then(setGitFileList)
-      .catch(() => setGitFileList({}));
-    invoke<string[]>("git_unpushed_commits", { projectDir: dir })
-      .then(setUnpushedCommits)
-      .catch(() => setUnpushedCommits([]));
+  // Run all three git probes concurrently (Eff #9): they hit independent
+  // subprocesses, so `Promise.all` collapses three serially-awaited chains into
+  // one round of parallel work. Each result still applies independently.
+  const runRefreshGit = (dir: string) => {
+    void Promise.all([
+      invoke<GitStatus>("git_status", { projectDir: dir })
+        .then(setGitStatus)
+        .catch(() => setGitStatus(null)),
+      invoke<Record<string, string>>("git_file_statuses", { projectDir: dir, relPath: "" })
+        .then(setGitFileList)
+        .catch(() => setGitFileList({})),
+      invoke<string[]>("git_unpushed_commits", { projectDir: dir })
+        .then(setUnpushedCommits)
+        .catch(() => setUnpushedCommits([])),
+    ]);
   };
+
+  // Debounced entry point (Eff #9): bursts of git-affecting actions (add →
+  // commit → push, or rapid fs changes) coalesce into a single refresh instead
+  // of spawning a fresh trio of subprocesses per call.
+  const refreshGit = (dir: string) => {
+    if (refreshGitTimer.current) clearTimeout(refreshGitTimer.current);
+    refreshGitTimer.current = setTimeout(() => {
+      refreshGitTimer.current = null;
+      runRefreshGit(dir);
+    }, 120);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (refreshGitTimer.current) clearTimeout(refreshGitTimer.current);
+    };
+  }, []);
 
   const hoverItems: string[] =
     hoveredBtn === "add"
@@ -645,7 +668,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
             <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
               <input
                 type="checkbox"
-                checked={settings?.autosave === true}
+                checked={settings?.autosave !== false}
                 onChange={(e) => void updateSettings({ autosave: e.target.checked })}
               />
               <span>Autosave edits</span>

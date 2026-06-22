@@ -452,8 +452,10 @@ pub fn synctex_edit(pdf: String, page: u32, x: f64, y: f64) -> Result<Option<Syn
 /// …
 /// SyncTeX result end
 /// ```
-/// We use `h`/`v` (box origin) for position and `W`/`H` for size; all in big
-/// points from the page top-left.
+/// We use `h` for the left edge and `W`/`H` for size; all in big points from the
+/// page top-left. SyncTeX's `v` is the box *bottom* (baseline+depth), not its
+/// top — verified empirically against `synctex edit` — so the rect's top edge is
+/// `v - H`. Using `v` directly placed the highlight about one line too low.
 fn parse_synctex_view(out: &str) -> Option<SyncRect> {
     let mut page: Option<u32> = None;
     let mut h: Option<f64> = None;
@@ -483,12 +485,14 @@ fn parse_synctex_view(out: &str) -> Option<SyncRect> {
             set(&mut ht, s);
         }
     }
+    let height = ht.unwrap_or(0.0).abs();
     Some(SyncRect {
         page: page?,
         x: h?,
-        y: v?,
+        // `v` is the box bottom; the rect's top is one box-height above it.
+        y: v? - height,
         w: w.unwrap_or(0.0).abs(),
-        h: ht.unwrap_or(0.0).abs(),
+        h: height,
     })
 }
 
@@ -862,7 +866,8 @@ mod tests {
         let r = parse_synctex_view(out).expect("a rect");
         assert_eq!(r.page, 3);
         assert_eq!(r.x, 121.5);
-        assert_eq!(r.y, 559.0);
+        // `v` (559.0) is the box bottom; the top edge is one box-height (H) above.
+        assert_eq!(r.y, 559.0 - 12.0);
         assert_eq!(r.w, 380.25);
         assert_eq!(r.h, 12.0);
     }

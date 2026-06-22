@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
-// Spy on the windows store's openFile (the external-launch fallback).
+// Spy on the windows store's openFile to assert a stray drop never opens.
 const openFileMock = vi.fn(() => Promise.resolve({} as never));
 vi.mock("../stores/windows", () => ({
   useWindowsStore: { getState: () => ({ openFile: openFileMock }) },
@@ -104,13 +104,13 @@ describe("commitFileDrop — tab-bar drop", () => {
     expect(openFileMock).not.toHaveBeenCalled();
   });
 
-  it("falls back to external open when there is no tab-bar target", () => {
+  it("does nothing when there is no drop target (stray drop must not open the file)", () => {
     const g = seedGroup();
     const drag = fileDrag(PASS, g);
     drag.reorderGroup = null;
     drag.reorderIndex = null;
     commitFileDrop(drag, "p", "/p");
     expect(useTabsStore.getState().tabs.some((t) => t.kind === "embed")).toBe(false);
-    expect(openFileMock).toHaveBeenCalledWith("/p/notes.md", undefined, "p", "right_file_tree");
+    expect(openFileMock).not.toHaveBeenCalled();
   });
 });

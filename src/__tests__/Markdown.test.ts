@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderMarkdown } from "../components/files/markdown";
+import { renderMarkdown } from "../lib/viewers/markdown";
 
 describe("renderMarkdown", () => {
   it("renders ATX headings", () => {

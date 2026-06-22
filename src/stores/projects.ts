@@ -3,14 +3,9 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { resolveProjectDirectory, type ProjectEntry } from "../types";
 import {
-  allGroups,
   cmdToKind,
-  findGroup,
   isRestorableTab,
-  pruneSavedTree,
-  serializeTree,
   useTabsStore,
-  withDetachedDocked,
   type SavedLayoutTree,
   type TabKind,
 } from "./tabs";
@@ -148,37 +143,14 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // PREVIOUS scope (authoritative; never the drift-prone flat mirror) and drop
     // any tab not owned by that scope, so a foreign tab can NEVER be written
     // into the wrong file (#55 save-side enforcement; mirrors writeScope).
-    const tabsStore = useTabsStore.getState();
+    // Ask the tabs store for the persist-ready snapshot of the OUTGOING scope.
+    // This keeps the tab-tree walking + #55 ownership filter + restorable filter
+    // + detached re-dock + prune behind a single tabs-store method, so this store
+    // no longer reaches into the tabs store's internal maps / tree helpers
+    // (Struct #3 decoupling; the walk also collapses per Eff #13).
     const prevScopeKey = previousId ?? "root";
-    const prevLayout = tabsStore.layoutByScope[prevScopeKey] ?? null;
-    const prevFocus = tabsStore.focusedGroupByScope[prevScopeKey] ?? null;
-    const prevActiveKey =
-      (prevFocus ? findGroup(prevLayout, prevFocus)?.activeKey : null) ??
-      allGroups(prevLayout)[0]?.activeKey ??
-      null;
-    // Persist restorable tabs across a switch: shell/files, resumable agent
-    // tabs (Claude with a sessionId), and in-app file-viewer embeds. Other agent
-    // tabs (and external-app embeds) are dropped from the snapshot and the tree
-    // is pruned to match (mirrors saveLayout). See isRestorableTab.
-    const tabs = (tabsStore.tabsByScope[prevScopeKey] ?? []).filter(
-      (t) => (t.scope == null || t.scope === prevScopeKey) && isRestorableTab(t),
-    );
-    const keepKeys = new Set(tabs.map((t) => t.key));
-    const activeTabIndex = Math.max(
-      0,
-      tabs.findIndex((t) => t.key === prevActiveKey),
-    );
-    // Serialize the outgoing split/group tree so a switch round-trips the layout.
-    // Without this the backend persists `tab_groups: None`, flattening the tiling.
-    // Uses the store's canonical serializer (shared with saveLayout) so the
-    // switch snapshot and the on-disk `tab_groups` always agree.
-    // #42: re-dock any detached groups into the persisted tree (detach is
-    // session-only; on restart a detached group restores as docked — reviewer
-    // Finding 5). Their tab payloads stay in `tabsByScope`, so they're already in
-    // the `tabs` snapshot above. Merge BEFORE pruning so dropped tabs prune out.
-    const prevDetached = tabsStore.detachedGroupsByScope[prevScopeKey];
-    const prevTree = withDetachedDocked(serializeTree(prevLayout), prevDetached);
-    const tabGroups = pruneSavedTree(prevTree, keepKeys);
+    const { tabs, tabGroups, activeTabIndex } =
+      useTabsStore.getState().snapshotScopeForSwitch(prevScopeKey);
 
     let nextProjects: ProjectEntry[] = [];
     set((state) => {

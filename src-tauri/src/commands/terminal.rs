@@ -25,6 +25,17 @@ pub async fn pty_spawn(
         opts.cwd = root_dir.to_string_lossy().into_owned();
     }
 
+    // Resolve agent-session resume args (Claude `--resume`, Codex `resume …`)
+    // BEFORE any ssh wrapping. `wrap_pty_options` rewrites `opts.cmd` to "ssh",
+    // after which the resolver (which dispatches on `cmd == "claude"|"codex"`)
+    // would no longer recognise the tab — so a remote agent tab would never get
+    // its resume args. Resolving here keeps remote Claude/Codex tabs resumable;
+    // the resolved `--resume`/`resume` args ride along into the remote command
+    // string built by `wrap_pty_options`. (For local tabs this is the same
+    // resolution `spawn_pty` used to do; it no longer does, to avoid resolving
+    // twice.)
+    opts = crate::services::agent_session::resolve_agent_session(opts);
+
     // For remote (SSH) projects, rewrite the spawn to run on the remote host
     // via `ssh -tt`. No-op for local projects or `local_only` tabs.
     if !opts.local_only {

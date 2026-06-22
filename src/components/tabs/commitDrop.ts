@@ -45,6 +45,10 @@ export function commitDrop(d: TabDrag | null) {
   }
   if (d.overGroup && d.edge) {
     if (d.edge === "center") {
+      // Dropping onto the body of the SAME subwindow it came from is a no-op:
+      // keep the tab where it is rather than moving it to the end of its own
+      // group. (A non-center edge is a real split-off intent, so it's allowed.)
+      if (d.overGroup === d.fromGroup) return;
       store.moveTab(d.key, d.overGroup);
     } else {
       store.splitWithTab(d.key, d.overGroup, d.edge);

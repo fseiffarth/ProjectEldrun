@@ -13,7 +13,7 @@ import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
-import { listenDetachedHost } from "../../stores/detached";
+import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore } from "../../stores/tabs";
@@ -123,6 +123,9 @@ export function AppShell() {
     win.onCloseRequested(async (event) => {
       event.preventDefault();
       await flushTimer().catch(() => {});
+      // Close any popped-out subwindows so they don't strand on screen; they
+      // persist + re-open at their saved bounds next launch (see the helper).
+      await shutdownDetachedWindows().catch(() => {});
       await win.destroy();
     }).then((fn) => { unlisten = fn; }).catch(() => {});
     return () => { unlisten?.(); };

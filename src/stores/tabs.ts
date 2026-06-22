@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import type { InternalViewer } from "../components/files/fileUtils";
+import { useShallow } from "zustand/react/shallow";
+import type { InternalViewer } from "../lib/viewers/fileUtils";
 import { useLinkRoutingStore } from "./linkRouting";
 
 export type TabKind = "agent" | "local_agent" | "shell" | "files" | "embed";
@@ -13,6 +14,21 @@ export const FILES_TAB_CMD = "__eldrun_files__";
  * store — a drop onto it creates the first tab (addTab builds the root group).
  */
 export const EMPTY_GROUP_ID = "__empty__";
+
+/**
+ * Persisted per-tab view state for the in-app file viewers, so reopening a file —
+ * or restarting Eldrun — restores the reader where they left it instead of
+ * jumping back to the top/default zoom. All fields optional; each viewer fills
+ * the ones it has: scroll offset (text + PDF), zoom `scale` (PDF + image), and
+ * pan `offsetX/offsetY` (image). Travels with the embed tab in project.json.
+ */
+export interface ViewerState {
+  scrollTop?: number;
+  scrollLeft?: number;
+  scale?: number;
+  offsetX?: number;
+  offsetY?: number;
+}
 
 /**
  * Fallback minimum subwindow (split pane) size in px a divider drag may shrink a
@@ -52,6 +68,10 @@ export interface TabEntry {
   // of any external default app. These embeds re-render from `embedPath` on
   // relaunch (see isRestorableEmbedTab). See FileViewerPane.
   viewer?: InternalViewer;
+  // For in-app `viewer` embeds: the reader's last scroll/zoom/pan, so reopening
+  // the file (or restarting) restores the position instead of jumping to the top
+  // (see ViewerState). Written by the viewer panes, persisted in project.json.
+  viewerState?: ViewerState;
 }
 
 export type SplitDir = "row" | "column";
@@ -135,6 +155,8 @@ export interface SavedTabEntry {
   embedPath?: string;
   embedExec?: string;
   viewer?: InternalViewer;
+  // Persisted reader position (scroll/zoom/pan) for in-app viewer embeds.
+  viewerState?: ViewerState;
 }
 
 /** Serialized layout tree as persisted in project.json's `tab_groups`. */
@@ -151,6 +173,18 @@ export type SavedLayoutTree =
       detached?: boolean;
       bounds?: WindowBounds;
     };
+
+/**
+ * Persist-ready snapshot of a scope's tabs + layout for a project switch,
+ * produced by `snapshotScopeForSwitch`. `tabs` are the scope-owned, restorable
+ * tab payloads (in tree order); `tabGroups` is the pruned, detached-docked
+ * serialized layout tree; `activeTabIndex` indexes the active tab within `tabs`.
+ */
+export interface ScopeSwitchSnapshot {
+  tabs: TabEntry[];
+  tabGroups: SavedLayoutTree | null;
+  activeTabIndex: number;
+}
 
 interface TabsStore {
   scope: string;
@@ -205,6 +239,10 @@ interface TabsStore {
   // explicitly at the call site if the scope isn't the active project.
   closeAllTabs: (scope?: string) => void;
   updateTabEnv: (key: string, env: Record<string, string>) => void;
+  // Merge a patch into an embed tab's persisted viewer position (scroll/zoom/
+  // pan). The viewer panes call this as the reader scrolls/zooms; the debounced
+  // saveLayout effect then flushes it to project.json (see ViewerState).
+  setViewerState: (key: string, patch: ViewerState) => void;
 
   // arrangement
   reorderInGroup: (groupId: string, from: number, to: number) => void;
@@ -225,11 +263,14 @@ interface TabsStore {
   // `detachGroup` removes the group from the in-window tree, records it in
   // `detachedGroupsByScope`, and (unless `skipBackend`) spawns the detached
   // OS window via the `detach_subwindow` command. Refuses to detach the lone
-  // group (can't empty the in-window layout). Returns the detached group's
-  // label, or null if refused / not found.
+  // group (can't empty the in-window layout) UNLESS `allowLastGroup` is set —
+  // used by the restart respawn path, where a popout may be the only group left
+  // (its in-window siblings held only non-restorable tabs) yet must still re-open
+  // as its own window, leaving the main center empty. Returns the detached
+  // group's label, or null if refused / not found.
   detachGroup: (
     groupId: string,
-    opts?: { skipBackend?: boolean; bounds?: WindowBounds },
+    opts?: { skipBackend?: boolean; bounds?: WindowBounds; allowLastGroup?: boolean },
   ) => string | null;
   // `attachGroup` pops the detached entry, regenerates its ids, re-injects it
   // (adjacent to `targetGroupId`/`edge`, or as root if the tree is empty), and
@@ -268,6 +309,16 @@ interface TabsStore {
   // detached at save time). Caller re-opens each via detachGroup once its pane
   // has mounted. Returns [] when there is nothing to respawn.
   consumePendingRespawn: (scope: string) => RespawnTarget[];
+
+  // Struct #3 / Eff #13: produce the persist-ready snapshot of a scope's tabs +
+  // layout for a project switch, WITHOUT the caller reaching into the store's
+  // internal maps + tree helpers. Encapsulates the #55 ownership filter, the
+  // restorable filter, the detached-group re-dock, and the prune-to-kept-keys —
+  // the logic projects.ts used to inline by importing serializeTree /
+  // pruneSavedTree / withDetachedDocked / allGroups / findGroup and grabbing
+  // `getState()` directly. Pure read (no mutation); single tree walk for the
+  // active-key resolution.
+  snapshotScopeForSwitch: (scope: string) => ScopeSwitchSnapshot;
 
   // persistence
   loadFromLayout: (
@@ -431,14 +482,22 @@ function collapse(node: LayoutNode | null): LayoutNode | null {
 }
 
 /**
- * Drop every tab key from the live layout tree that isn't in `keep`, then
- * collapse emptied groups/splits. Mirrors `pruneSavedTree` but for the in-memory
- * `LayoutNode` tree. Used by `writeScope` to keep a scope's layout tree from
- * ever referencing a tab key whose payload isn't owned by that scope (#55).
+ * Eff #5: prune-to-keys + collapse in a SINGLE bottom-up pass, also collecting
+ * every surviving group into `groupsOut` (in document order) so `writeScope`
+ * doesn't re-walk the tree to refind its focus / active / fullscreen groups.
+ * Replaces the former `pruneLayoutToKeys` → `collapse` → repeated
+ * `findGroup`/`allGroups` walks (4–5 traversals per mutation, one pass now).
+ *
+ * Behaviour matches running prune-to-keys then collapse: a group keeps only keys
+ * in `keep` (its active repicked to the first survivor if it was dropped), empty
+ * groups are dropped inside splits, single-child splits unwrap to their child,
+ * and sibling sizes renormalize. `groupsOut` only ever receives groups that
+ * survive into the returned tree.
  */
-function pruneLayoutToKeys(
+function pruneCollapseCollect(
   node: LayoutNode | null,
   keep: Set<string>,
+  groupsOut: GroupNode[],
 ): LayoutNode | null {
   if (!node) return null;
   if (node.type === "group") {
@@ -447,10 +506,28 @@ function pruneLayoutToKeys(
       node.activeKey && tabKeys.includes(node.activeKey)
         ? node.activeKey
         : (tabKeys[0] ?? null);
-    return { ...node, tabKeys, activeKey };
+    const next: GroupNode = { ...node, tabKeys, activeKey };
+    groupsOut.push(next);
+    return next;
   }
-  const children = node.children.map((c) => pruneLayoutToKeys(c, keep));
-  return { ...node, children: children.filter((c): c is LayoutNode => c != null) };
+  const children: LayoutNode[] = [];
+  const sizes: number[] = [];
+  node.children.forEach((child, i) => {
+    // Collect each child's descendants into a scratch list first; only merge it
+    // into groupsOut once we know the child survives (isn't an emptied group or
+    // a fully-collapsed split) so groupsOut never lists a dropped group.
+    const scratch: GroupNode[] = [];
+    const c = pruneCollapseCollect(child, keep, scratch);
+    if (!c) return;
+    if (c.type === "group" && c.tabKeys.length === 0) return; // drop empty group
+    children.push(c);
+    sizes.push(node.sizes[i] ?? 1);
+    for (const g of scratch) groupsOut.push(g);
+  });
+  if (children.length === 0) return null;
+  if (children.length === 1) return children[0];
+  const total = sizes.reduce((a, b) => a + b, 0) || 1;
+  return { ...node, children, sizes: sizes.map((s) => s / total) };
 }
 
 /**
@@ -578,30 +655,32 @@ function writeScope(
     .filter((t) => t.scope == null || t.scope === scope)
     .map((t) => (t.scope === scope ? t : { ...t, scope }));
   const ownedKeys = new Set(ownedTabs.map((t) => t.key));
-  // 2. Drop any layout tab key that has no surviving tab payload in this scope
-  //    (orphan key), so the tree never references a tab that isn't ours.
-  let scoped = pruneLayoutToKeys(layout, ownedKeys);
   tabs = ownedTabs;
 
-  let collapsed = collapse(scoped);
+  // 2. Prune orphan layout keys AND collapse emptied groups/splits in one pass,
+  //    collecting the surviving groups so the focus/active/fullscreen resolution
+  //    below is index lookups against that list rather than fresh tree walks
+  //    (Eff #5). `groups` is in document order, matching `allGroups`.
+  const groups: GroupNode[] = [];
+  let collapsed = pruneCollapseCollect(layout, ownedKeys, groups);
   // A lone empty root group means the scope has no tabs → drop to null so an
   // emptied scope has no layout (matches an uninitialized scope).
   if (collapsed && collapsed.type === "group" && collapsed.tabKeys.length === 0) {
     collapsed = null;
+    groups.length = 0;
   }
+  const byId = new Map(groups.map((g) => [g.id, g] as const));
   // If the focused group vanished (collapsed away), refocus the first group.
   let focus = focusedGroupId;
-  if (!focus || !findGroup(collapsed, focus)) {
-    focus = allGroups(collapsed)[0]?.id ?? null;
+  if (!focus || !byId.has(focus)) {
+    focus = groups[0]?.id ?? null;
   }
-  const activeKey = focus
-    ? (findGroup(collapsed, focus)?.activeKey ?? null)
-    : null;
+  const activeKey = focus ? (byId.get(focus)?.activeKey ?? null) : null;
   const isCurrent = s.scope === scope;
   // If the fullscreened group collapsed away (e.g. its subwindow was closed),
   // exit fullscreen so CenterPanel doesn't try to render a vanished group.
   const fullscreenGroupId =
-    isCurrent && s.fullscreenGroupId && !findGroup(collapsed, s.fullscreenGroupId)
+    isCurrent && s.fullscreenGroupId && !byId.has(s.fullscreenGroupId)
       ? null
       : s.fullscreenGroupId;
   return {
@@ -892,6 +971,31 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  setViewerState: (key, patch) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const tab = tabs.find((t) => t.key === key);
+      if (!tab) return {};
+      const merged = { ...tab.viewerState, ...patch };
+      // No-op if nothing actually changed, so a redundant write doesn't churn
+      // the tabs array (which would re-fire the saveLayout debounce for nothing).
+      const cur = tab.viewerState ?? {};
+      if (
+        cur.scrollTop === merged.scrollTop &&
+        cur.scrollLeft === merged.scrollLeft &&
+        cur.scale === merged.scale &&
+        cur.offsetX === merged.offsetX &&
+        cur.offsetY === merged.offsetY
+      ) {
+        return {};
+      }
+      const nextTabs = tabs.map((t) =>
+        t.key === key ? { ...t, viewerState: merged } : t,
+      );
+      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
   reorderInGroup: (groupId, from, to) => {
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
@@ -1059,8 +1163,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const layout = get().layoutByScope[scope] ?? null;
     const group = findGroup(layout, groupId);
     if (!group) return null;
-    // Refuse to detach the only group: the in-window layout must keep a body.
-    if (allGroups(layout).length <= 1) return null;
+    // Refuse to detach the only group: the in-window layout must keep a body —
+    // except on restart respawn (`allowLastGroup`), where the popout legitimately
+    // becomes the scope's only window and the main center is left empty.
+    if (!opts?.allowLastGroup && allGroups(layout).length <= 1) return null;
 
     const label = `detached-${scope}-${groupId}`;
     // Snapshot the group's subtree (it is a single GroupNode in v1).
@@ -1334,6 +1440,34 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     return pending;
   },
 
+  snapshotScopeForSwitch: (scope) => {
+    const s = get();
+    const layout = s.layoutByScope[scope] ?? null;
+    // Resolve the active tab key in one walk: prefer the focused group's active
+    // key, falling back to the first group's (Eff #13 — projects.ts previously
+    // ran findGroup + allGroups separately for this).
+    const focus = s.focusedGroupByScope[scope] ?? null;
+    const groups = allGroups(layout);
+    const focusedGroup = focus ? groups.find((g) => g.id === focus) : undefined;
+    const activeKey = focusedGroup?.activeKey ?? groups[0]?.activeKey ?? null;
+    // #55 + restorable filter: keep only scope-owned, restorable tabs.
+    const tabs = (s.tabsByScope[scope] ?? []).filter(
+      (t) => (t.scope == null || t.scope === scope) && isRestorableTab(t),
+    );
+    const keepKeys = new Set(tabs.map((t) => t.key));
+    const activeTabIndex = Math.max(
+      0,
+      tabs.findIndex((t) => t.key === activeKey),
+    );
+    // #42: re-dock detached groups into the persisted tree (detach is
+    // session-only; a restart restores them docked), merge BEFORE pruning so
+    // dropped tabs prune out consistently.
+    const detached = s.detachedGroupsByScope[scope];
+    const merged = withDetachedDocked(serializeTree(layout), detached);
+    const tabGroups = pruneSavedTree(merged, keepKeys);
+    return { tabs, tabGroups, activeTabIndex };
+  },
+
   loadFromLayout: (layout, defaultCwd, targetScope, groups) => {
     // Map saved keys → fresh keys. Saved keys are only unique within the
     // session that wrote them — two projects can persist the same key. Keys
@@ -1370,6 +1504,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         embedPath: t.embedPath,
         embedExec: t.embedExec,
         viewer: t.viewer,
+        viewerState: t.viewerState,
       };
     });
 
@@ -1472,6 +1607,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         embedPath: t.embedPath,
         embedExec: t.embedExec,
         viewer: t.viewer,
+        viewerState: t.viewerState,
       }));
       // #42: re-dock detached groups into the persisted tree so disk reflects a
       // restart-as-docked layout (their tabs are already in the flat list above
@@ -1618,7 +1754,16 @@ export function pruneSavedTree(
       tree.activeKey && tabKeys.includes(tree.activeKey)
         ? tree.activeKey
         : tabKeys[0];
-    return { type: "group", tabKeys, activeKey };
+    // #42: carry the detached tag + bounds through pruning. withDetachedDocked
+    // sets these so restore re-opens the group as a floating popout; dropping
+    // them here would persist the group as a plain docked node and the popout
+    // would restore inside the main panel instead.
+    return {
+      type: "group",
+      tabKeys,
+      activeKey,
+      ...(tree.detached ? { detached: true, bounds: tree.bounds } : {}),
+    };
   }
   const kept = tree.children
     .map((c, i) => ({ child: pruneSavedTree(c, keep), size: tree.sizes[i] ?? 1 }))
@@ -1701,3 +1846,44 @@ export function isDetachedPtyId(id: string): boolean {
   const groups = useTabsStore.getState().detachedGroupsByScope[scope] ?? [];
   return groups.some((g) => g.subtree.tabKeys.includes(tabKey));
 }
+
+// ── Fine-grained per-group selectors (Eff #3/#4/#7 + Struct #3) ───────────────
+// These let a TabBar / pane subscribe to JUST its own group instead of the whole
+// `layout` + `tabs` slices, which forced a re-render on any tab change anywhere
+// and rebuilt a Map of every tab per render. writeScope rebuilds the layout
+// immutably along the changed path only (mapGroup), so an unchanged group node
+// keeps its reference identity — meaning these selectors return the SAME value
+// across an unrelated group's mutation and React bails out of the re-render.
+// Modelled on stores/drag.ts's coarse-selector discipline.
+
+/**
+ * The current scope's `GroupNode` for `groupId`, or null if it isn't in the live
+ * layout. Reference-stable while this group is unchanged, so a subscriber only
+ * re-renders when THIS group's node (its tabKeys / activeKey) actually changes.
+ */
+export function useGroup(groupId: string): GroupNode | null {
+  return useTabsStore((s) => findGroup(s.layout, groupId));
+}
+
+/**
+ * The full tab payloads held by `groupId`, in group order. Subscribes with a
+ * shallow array comparison so the bar re-renders only when this group's resolved
+ * payloads change — not when another group's tabs (or the `tabsByScope` array
+ * identity) churn. Returns [] when the group is absent.
+ */
+export function useGroupTabs(groupId: string): TabEntry[] {
+  return useTabsStore(
+    useShallow((s) => {
+      const group = findGroup(s.layout, groupId);
+      if (!group) return EMPTY_TABS;
+      const byKey = new Map(s.tabs.map((t) => [t.key, t] as const));
+      return group.tabKeys
+        .map((k) => byKey.get(k))
+        .filter((t): t is TabEntry => t != null);
+    }),
+  );
+}
+
+// Shared empty sentinel so the no-group path returns a stable reference (an
+// inline `[]` would be a fresh array each call and defeat the shallow bail-out).
+const EMPTY_TABS: TabEntry[] = [];

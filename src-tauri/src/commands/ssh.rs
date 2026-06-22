@@ -135,6 +135,30 @@ fn run_ssh_auth(
     }
 }
 
+/// Single-quote `s` for a POSIX shell, escaping embedded single quotes as
+/// `'\''`. The result parses back to exactly `s` regardless of spaces, `;`,
+/// `$()`, quotes, or other metacharacters.
+///
+/// This is required because `ssh` concatenates its trailing argv with spaces and
+/// hands the result to the *remote* `$SHELL -c`. Passing the path after `--`
+/// only stops `ls`'s own option parsing; it does **not** stop the remote shell
+/// from interpreting metacharacters. So each remote path argument must be quoted
+/// before it reaches ssh, or a directory named e.g. `foo; rm -rf ~` would run as
+/// a command on the remote host.
+fn shell_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
 /// Parse `ls -1Ap` output into entries. A trailing `/` marks a directory; we
 /// strip it and set `is_dir`. `.`/`..` are filtered out, blank lines skipped.
 /// Result is sorted dirs-first, then case-insensitively by name.
@@ -210,7 +234,12 @@ pub fn ssh_list_dir(
         run_ssh_auth(&user, &host, port, pw, &["ls", "-1Ap", "--"])?
     } else {
         validate_arg("path", path)?;
-        run_ssh_auth(&user, &host, port, pw, &["ls", "-1Ap", "--", path])?
+        // `ssh` joins its trailing argv with spaces and feeds it to the remote
+        // `$SHELL -c`, so the path must be single-quoted for that shell (the
+        // `--` only stops `ls`'s own flag parsing). Without this a directory name
+        // containing `;`/`$()`/spaces would be re-interpreted on the remote host.
+        let quoted = shell_quote(path);
+        run_ssh_auth(&user, &host, port, pw, &["ls", "-1Ap", "--", quoted.as_str()])?
     };
 
     Ok(parse_ls_output(&stdout))
@@ -317,6 +346,33 @@ mod tests {
     fn parse_ls_empty_output_yields_no_entries() {
         assert!(parse_ls_output("").is_empty());
         assert!(parse_ls_output("\n\n").is_empty());
+    }
+
+    // ── shell_quote (remote path injection defense) ────────────────────────
+
+    #[test]
+    fn shell_quote_wraps_plain_and_metachars() {
+        assert_eq!(shell_quote("projects"), "'projects'");
+        assert_eq!(shell_quote("a b"), "'a b'");
+        assert_eq!(shell_quote("$HOME"), "'$HOME'");
+    }
+
+    #[test]
+    fn shell_quote_neutralizes_command_injection() {
+        // A directory named so as to inject a command must come back fully
+        // single-quoted, so the remote shell treats it as one literal argument.
+        let evil = "foo; rm -rf ~";
+        assert_eq!(shell_quote(evil), "'foo; rm -rf ~'");
+        let subst = "$(touch /tmp/pwned)";
+        assert_eq!(shell_quote(subst), "'$(touch /tmp/pwned)'");
+    }
+
+    #[test]
+    fn shell_quote_escapes_embedded_single_quotes() {
+        // The classic break-out attempt: close the quote, inject, reopen.
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+        // A name trying to escape its own quoting stays inert.
+        assert_eq!(shell_quote("'; rm -rf ~ #"), "''\\''; rm -rf ~ #'");
     }
 
     // ── ssh_base_args / validation ─────────────────────────────────────────

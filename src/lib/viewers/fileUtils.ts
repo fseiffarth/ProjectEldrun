@@ -316,6 +316,52 @@ export function folderIcon(): string {
   return "📁";
 }
 
+/**
+ * Structural equality for two directory listings, field-by-field. Used by the
+ * FileTree fs-watch refresh to decide whether a re-fetch actually changed the
+ * listing before swapping React state (Eff #1) — replacing a double
+ * `JSON.stringify` of the full arrays on every fs-change tick, which is O(n) in
+ * both serialization and allocation under an actively-writing agent.
+ */
+export function fileEntriesEqual(a: FileEntry[], b: FileEntry[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.name !== y.name ||
+      x.path !== y.path ||
+      x.is_dir !== y.is_dir ||
+      x.size !== y.size ||
+      x.modified_secs !== y.modified_secs ||
+      x.created_secs !== y.created_secs ||
+      x.extension !== y.extension ||
+      x.mime !== y.mime
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Structural equality for two `string → string` maps (e.g. git status maps),
+ * avoiding a `JSON.stringify` round-trip on every fs-change tick (Eff #1).
+ */
+export function stringMapsEqual(
+  a: Record<string, string>,
+  b: Record<string, string>,
+): boolean {
+  if (a === b) return true;
+  const ak = Object.keys(a);
+  if (ak.length !== Object.keys(b).length) return false;
+  for (const k of ak) {
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+
 export function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;

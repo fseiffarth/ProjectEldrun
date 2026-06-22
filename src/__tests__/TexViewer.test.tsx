@@ -156,6 +156,23 @@ describe("TexView", () => {
     await screen.findByRole("button", { name: /open pdf/i });
   });
 
+  it("shows a forward-search miss notice when SyncTeX can't locate the cursor", async () => {
+    // setupInvoke's synctex_view resolves null → forward search finds no spot.
+    setupInvoke(true, ["pdflatex"]);
+    await renderTexView();
+
+    const compileBtn = await screen.findByRole("button", { name: /compile/i });
+    // No notice before compiling.
+    expect(screen.queryByText(/couldn't locate the cursor/i)).toBeNull();
+
+    await act(async () => {
+      await userEvent.click(compileBtn);
+    });
+
+    // A successful compile whose forward search returns null surfaces the notice.
+    await screen.findByText(/couldn't locate the cursor/i);
+  });
+
   it("#56: a child file compiles its resolved parent and labels the button", async () => {
     // resolve_tex_root redirects the child to its main document.
     setupInvoke(true, ["pdflatex"], () => "/p/main.tex");

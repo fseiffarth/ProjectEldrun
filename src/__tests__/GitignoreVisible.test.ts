@@ -5,7 +5,7 @@
  * hiddenPaths / hiddenEndings filters still apply to it.
  */
 import { describe, it, expect } from "vitest";
-import { visibleEntries, type FileEntry } from "../components/files/fileUtils";
+import { visibleEntries, type FileEntry } from "../lib/viewers/fileUtils";
 
 function entry(name: string, over: Partial<FileEntry> = {}): FileEntry {
   return {

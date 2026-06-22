@@ -12,26 +12,29 @@ import { create } from "zustand";
  */
 export interface JumpRequest {
   line: number;
+  /** 1-based source column from SyncTeX (0 when none was reported). */
+  column: number;
   nonce: number;
 }
 
 interface EditorJumpStore {
   requestsByPath: Record<string, JumpRequest>;
-  /** Ask the editor showing `path` to move the caret to (1-based) `line`. */
-  requestJump: (path: string, line: number) => void;
+  /** Ask the editor showing `path` to move the caret to (1-based) `line`/
+   *  `column`. `column` 0 means "line start" (SyncTeX reported no column). */
+  requestJump: (path: string, line: number, column?: number) => void;
   /** Clear the pending request for `path` once the editor has applied it. */
   consume: (path: string) => void;
 }
 
 export const useEditorJumpStore = create<EditorJumpStore>((set) => ({
   requestsByPath: {},
-  requestJump: (path, line) =>
+  requestJump: (path, line, column = 0) =>
     set((s) => {
       const prev = s.requestsByPath[path];
       return {
         requestsByPath: {
           ...s.requestsByPath,
-          [path]: { line, nonce: (prev?.nonce ?? 0) + 1 },
+          [path]: { line, column, nonce: (prev?.nonce ?? 0) + 1 },
         },
       };
     }),

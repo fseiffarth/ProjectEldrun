@@ -15,7 +15,7 @@ import {
   parentRel,
   relFromAbs,
   visibleEntries,
-} from "./fileUtils";
+} from "../../lib/viewers/fileUtils";
 
 type ProjectJson = Record<string, unknown>;
 

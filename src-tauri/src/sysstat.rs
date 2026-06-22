@@ -11,6 +11,38 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// Generation counter bumped whenever a PTY is spawned or dies (see
+/// [`invalidate_descendant_cache`]). A change forces [`descendant_pids`] to
+/// rebuild its cached process tree instead of reusing the previous walk.
+static PROC_TREE_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// Cache for [`descendant_pids`], keyed by the (sorted) root pid set. Holds the
+/// generation it was built at and a freshness deadline; reused only while both
+/// the generation is unchanged *and* the entry is younger than [`CACHE_TTL`].
+struct DescendantCache {
+    roots: Vec<u32>,
+    pids: Vec<u32>,
+    generation: u64,
+    computed_at: Instant,
+}
+
+static DESCENDANT_CACHE: Mutex<Option<DescendantCache>> = Mutex::new(None);
+
+/// Upper bound on cache reuse even if no spawn/death bumped the generation: a
+/// process tree can grow/shrink without Eldrun spawning the PTY directly (an
+/// agent forking children), so a short TTL keeps the readout from going stale.
+const CACHE_TTL: Duration = Duration::from_millis(1500);
+
+/// Invalidate the cached descendant-pid set. Called by the PTY layer on every
+/// spawn and death so the next CPU sample reflects the new process tree without
+/// waiting for the TTL. Cheap: a single atomic increment.
+pub fn invalidate_descendant_cache() {
+    PROC_TREE_GEN.fetch_add(1, Ordering::Relaxed);
+}
 
 /// Kernel clock ticks per second (USER_HZ). Used to convert jiffies → seconds.
 pub fn clk_tck() -> u64 {
@@ -25,9 +57,50 @@ pub fn clk_tck() -> u64 {
 
 /// All pids that are `roots` or descendants of a root, deduplicated.
 ///
-/// Walks `/proc` once to build a pid → ppid map, then collects every pid whose
-/// ancestor chain reaches one of the roots.
+/// Resolving the tree means walking all of `/proc`, which is the per-sample hot
+/// path. To avoid repeating that walk on every CPU sample (e.g. each pill hover),
+/// the result is cached keyed by the (sorted) root set. The cache is reused while
+/// (a) the spawn/death generation counter is unchanged — the PTY layer calls
+/// [`invalidate_descendant_cache`] on every spawn/death — and (b) the entry is
+/// younger than [`CACHE_TTL`], a backstop for tree changes Eldrun didn't trigger
+/// directly (an agent forking its own children).
 pub fn descendant_pids(roots: &[u32]) -> Vec<u32> {
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    let mut key = roots.to_vec();
+    key.sort_unstable();
+    key.dedup();
+
+    let generation = PROC_TREE_GEN.load(Ordering::Relaxed);
+    {
+        let cache = DESCENDANT_CACHE.lock().unwrap();
+        if let Some(entry) = cache.as_ref() {
+            if entry.generation == generation
+                && entry.roots == key
+                && entry.computed_at.elapsed() < CACHE_TTL
+            {
+                return entry.pids.clone();
+            }
+        }
+    }
+
+    let pids = compute_descendant_pids(&key);
+
+    let mut cache = DESCENDANT_CACHE.lock().unwrap();
+    *cache = Some(DescendantCache {
+        roots: key,
+        pids: pids.clone(),
+        generation,
+        computed_at: Instant::now(),
+    });
+    pids
+}
+
+/// Walk `/proc` once to build a pid → ppid map, then collect every pid whose
+/// ancestor chain reaches one of the roots. The uncached core of
+/// [`descendant_pids`].
+fn compute_descendant_pids(roots: &[u32]) -> Vec<u32> {
     use std::collections::{HashSet, VecDeque};
 
     // pid → ppid for every live process.
@@ -136,6 +209,11 @@ fn read_rss_kib(pid: u32) -> Option<u64> {
 mod tests {
     use super::*;
 
+    /// Serializes the cache-mechanics tests: they all mutate the process-global
+    /// `DESCENDANT_CACHE`, so running them concurrently (or alongside other tests
+    /// that call `descendant_pids`) would race on that shared entry.
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn clk_tck_is_positive() {
         assert!(clk_tck() > 0, "USER_HZ must be positive");
@@ -143,6 +221,7 @@ mod tests {
 
     #[test]
     fn descendant_pids_includes_its_own_root() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap();
         let me = std::process::id();
         let pids = descendant_pids(&[me]);
         assert!(pids.contains(&me), "descendant set must contain the root pid itself");
@@ -151,6 +230,55 @@ mod tests {
     #[test]
     fn descendant_pids_empty_for_no_roots() {
         assert!(descendant_pids(&[]).is_empty());
+    }
+
+    #[test]
+    fn descendant_pids_serves_cache_hit_for_unchanged_generation() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap();
+        // Directly exercise the cache mechanics independent of the live process
+        // tree (other parallel tests fork children, so the *real* tree is not a
+        // stable fixture). Seed the cache with a synthetic entry, then confirm a
+        // matching query returns it verbatim, and that bumping the generation or
+        // changing the root set forces a real recompute.
+        let fake_roots = vec![424242u32];
+        let fake_pids = vec![424242u32, 999999u32];
+        let gen = PROC_TREE_GEN.load(Ordering::Relaxed);
+        {
+            let mut cache = DESCENDANT_CACHE.lock().unwrap();
+            *cache = Some(DescendantCache {
+                roots: fake_roots.clone(),
+                pids: fake_pids.clone(),
+                generation: gen,
+                computed_at: Instant::now(),
+            });
+        }
+        // Same roots + same generation + fresh → cache hit returns the seeded set
+        // (which could never come from a real /proc walk for pid 424242).
+        assert_eq!(descendant_pids(&[424242]), fake_pids);
+
+        // Invalidation bumps the generation, so the stale synthetic entry is no
+        // longer reused — the rebuild walks /proc and 999999 is gone.
+        invalidate_descendant_cache();
+        assert_ne!(descendant_pids(&[424242]), fake_pids);
+    }
+
+    #[test]
+    fn descendant_pids_cache_keys_on_root_set() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap();
+        // A seeded entry for one root set must not satisfy a query for another.
+        let gen = PROC_TREE_GEN.load(Ordering::Relaxed);
+        {
+            let mut cache = DESCENDANT_CACHE.lock().unwrap();
+            *cache = Some(DescendantCache {
+                roots: vec![111111u32],
+                pids: vec![111111u32, 222222u32],
+                generation: gen,
+                computed_at: Instant::now(),
+            });
+        }
+        // Different roots → cache miss → recompute (no 222222 from a real walk).
+        let other = descendant_pids(&[333333]);
+        assert!(!other.contains(&222222));
     }
 
     #[test]

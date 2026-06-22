@@ -9,7 +9,7 @@ import {
   bigPointsToCssRect,
   lineStartOffset,
   offsetToLineCol,
-} from "../components/files/tex";
+} from "../lib/viewers/tex";
 import { useEditorJumpStore } from "../stores/editorJump";
 import { usePdfSyncStore } from "../stores/pdfSync";
 
@@ -56,6 +56,7 @@ describe("editorJump store", () => {
     requestJump("/p/a.tex", 12);
     expect(useEditorJumpStore.getState().requestsByPath["/p/a.tex"]).toEqual({
       line: 12,
+      column: 0,
       nonce: 1,
     });
     // A repeat jump to the same file bumps the nonce so it re-fires.

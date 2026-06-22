@@ -4,7 +4,7 @@
  *    support opt-in local autocomplete (#45).
  */
 import { describe, it, expect } from "vitest";
-import { VIEWER_PREF_TYPES } from "../components/files/fileUtils";
+import { VIEWER_PREF_TYPES } from "../lib/viewers/fileUtils";
 
 describe("VIEWER_PREF_TYPES metadata (#48)", () => {
   it("lists the native viewer types with the right capability flags", () => {

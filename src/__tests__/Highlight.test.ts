@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HIGHLIGHT_MAX_CHARS, highlight, languageForPath } from "../components/files/highlight";
+import { HIGHLIGHT_MAX_CHARS, highlight, languageForPath } from "../lib/viewers/highlight";
 
 describe("languageForPath", () => {
   it("maps extensions to languages", () => {

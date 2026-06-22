@@ -61,19 +61,6 @@ desktop between projects.
 
 ![Current Eldrun screen](screenshots/eldrun-current.png)
 
-```text
-+------------------------------------------------------------------+
-| status/network    project switcher pills    app controls         |
-+------------------------------------------------------------------+
-| global cross-project app toolbar (hover to reveal)               |
-+------------------------------------------------------------------+
-|                                                                  |
-| tiling subwindows: each owns its own tab bar (terminal / agent / | right panel
-| file viewer), split L/R/T/B by dragging tabs onto pane edges     | (hover or
-|                                                                  |  pin open)
-+------------------------------------------------------------------+
-```
-
 ## Stack
 
 - **Frontend:** React 18, TypeScript, Vite, Tailwind CSS, Zustand
@@ -253,10 +240,11 @@ configuration.
   - **Text / code** (`.txt`, `.json`, `.py`, `.rs`, `.ts`, `.svg`, `.bib`, and
     many more, plus well-known extensionless files like `Dockerfile`): an
     editable code editor with a line-number gutter, syntax highlighting,
-    Tab/Shift+Tab indent, undo/redo (`Ctrl+Z` / `Ctrl+Shift+Z`), and a save
-    icon (`Ctrl+S`). It auto-reloads when the file changes on disk (showing a
-    non-destructive Reload / Keep-mine banner if you have unsaved edits), and
-    offers opt-in local autocomplete (see below).
+    Tab/Shift+Tab indent, undo/redo (`Ctrl+Z` / `Ctrl+Shift+Z`), in-editor
+    find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match navigation and a
+    case toggle, and a save icon (`Ctrl+S`). It auto-reloads when the file
+    changes on disk (showing a non-destructive Reload / Keep-mine banner if you
+    have unsaved edits), and offers opt-in local autocomplete (see below).
   - **Markdown** (`.md`, `.markdown`, `.mdx`): rendered preview with an
     Edit/Preview toggle; links to local files read as clickable.
   - **LaTeX** (`.tex`): the code editor plus, when a TeX engine is on `PATH`, a
@@ -264,7 +252,9 @@ configuration.
     shell-escape is always stripped). A successful compile opens the PDF in its
     own tab (reusing/refreshing it on recompile) rather than an inline preview
     pane, and `Ctrl`/`Cmd`+Click follows `\input{…}` / `\includegraphics{…}`
-    references (shown with a dotted underline).
+    references (shown with a dotted underline). Typing inside `\ref{…}` /
+    `\cite{…}` pops a completion list of the document's `\label` keys and `.bib`
+    entries.
   - **Images** (`.png`, `.jpg`, `.gif`, `.webp`, …): zoom (to the cursor) / pan
     viewer; the image is also draggable out as an OS drop source.
   - **PDF** (`.pdf`): rendered with a themed zoom toolbar.
@@ -275,7 +265,10 @@ configuration.
   autocomplete opt-in, plus a global autosave switch. The text/LaTeX/Markdown
   editors also carry an `A−`/`A+` text-size control (or `Ctrl` +/−, `Ctrl`+0 to
   reset) — in Markdown it scales the preview too; the chosen size persists per
-  file type.
+  file type. Each viewer also remembers where you left off: the editor/PDF
+  scroll position, PDF/image zoom, and image pan are persisted per tab, so
+  reopening a file — or restarting Eldrun — restores the reader's position
+  instead of jumping back to the top.
 - **Local autocomplete (opt-in, private)**: in the editable text/LaTeX/markdown
   viewers, `Ctrl+Space` requests a single completion from a **local Ollama**
   model (`Tab` accepts, `Esc` dismisses). It is OFF by default and per file
