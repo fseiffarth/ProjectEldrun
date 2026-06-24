@@ -8,7 +8,11 @@
 # self-match. Run with changes staged: `git add -A && scripts/privacy-check.sh`.
 set -uo pipefail
 
-hits=$(git diff --cached -- . ':!scripts/privacy-check.sh' | grep -nEi \
+# Only inspect ADDED lines (+), not removed ones — deleting sensitive data must
+# not trip the check. Strip the `+++` file-header lines before matching.
+hits=$(git diff --cached -- . ':!scripts/privacy-check.sh' \
+  | grep -E '^\+' | grep -v '^\+\+\+' \
+  | grep -nEi \
   -e "$USER" -e "$HOME" \
   -e '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' \
   -e 'password[[:space:]]*[:=]' -e 'secret[[:space:]]*[:=]' \
