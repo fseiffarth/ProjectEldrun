@@ -63,6 +63,10 @@ export interface TabDrag {
   // attachGroup. Identifies the detached group to dock.
   detachedScope?: string;
   detachedGroupId?: string;
+  // #42: set when a SINGLE tab (not the whole group) is being dragged out of a
+  // popout. The host then docks just this tab into the main layout via
+  // attachDetachedTab instead of re-attaching the whole group.
+  detachedTabKey?: string;
   // ── Content thumbnail (tab drags) ─────────────────────────────────────────
   // A clone of the dragged tab's live pane DOM, captured once at drag start, so
   // the floating ghost can preview the tab's CONTENT (not just its label). The
@@ -107,6 +111,7 @@ interface DragStore {
     d: Pick<TabDrag, "label" | "pointerX" | "pointerY"> & {
       detachedScope: string;
       detachedGroupId: string;
+      detachedTabKey?: string;
     },
   ) => void;
   setEmbedCap: (cap: EmbedCap | null) => void;
@@ -184,6 +189,7 @@ export const useDragStore = create<DragStore>((set) => ({
         reorderIndex: null,
         detachedScope: d.detachedScope,
         detachedGroupId: d.detachedGroupId,
+        detachedTabKey: d.detachedTabKey,
       },
     }),
   setEmbedCap: (cap) =>

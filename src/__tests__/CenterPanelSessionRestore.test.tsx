@@ -56,14 +56,14 @@ describe("loadFromLayout — scope isolation", () => {
 
   it("agent tab cwd is always replaced by defaultCwd, never the saved cwd", () => {
     const layout = [
-      { key: "agent-2", label: "claude", cmd: "claude", cwd: "/example-one", kind: "agent" as const },
+      { key: "agent-2", label: "claude", cmd: "claude", cwd: "/saved-cwd", kind: "agent" as const },
     ];
 
-    useTabsStore.getState().loadFromLayout(layout, "/example-two", "project-example");
+    useTabsStore.getState().loadFromLayout(layout, "/default-cwd", "project-c");
 
-    const tab = useTabsStore.getState().tabsByScope["project-example"]?.[0];
-    expect(tab?.cwd).toBe("/example-two");
-    expect(tab?.cwd).not.toContain("example-one");
+    const tab = useTabsStore.getState().tabsByScope["project-c"]?.[0];
+    expect(tab?.cwd).toBe("/default-cwd");
+    expect(tab?.cwd).not.toContain("saved-cwd");
   });
 
   it("shell tab cwd is kept from layout (only agents are overridden)", () => {

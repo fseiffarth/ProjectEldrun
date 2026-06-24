@@ -14,6 +14,9 @@ import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
 import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
+import { listenPdfReveal } from "../../stores/pdfSync";
+import { listenEditorJump } from "../../stores/editorJump";
+import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore } from "../../stores/tabs";
@@ -113,6 +116,42 @@ export function AppShell() {
         if (cancelled) fn();
         else unlisten = fn;
       })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // #42: SyncTeX forward search may reveal a PDF that's popped out into a detached
+  // window (a separate webview/store). Listen for cross-window reveal broadcasts
+  // so this window's PdfCanvas reveals the box even when the TeX editor that asked
+  // lives in another window. (The detached window registers its own listener.)
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenPdfReveal()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // #42: the mirror image — SyncTeX reverse search (Ctrl+click in a popped-out
+  // PDF) lands the source-line jump here, the window that owns the editor layout.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenSourceJump()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // #42: a reverse-search jump applied in another window (e.g. a detached PDF
+  // that owns its source editor) broadcasts here so an editor for that path in
+  // THIS window scrolls too. Mirror image of the detached window's listener.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenEditorJump()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
       .catch(() => {});
     return () => { cancelled = true; unlisten?.(); };
   }, []);

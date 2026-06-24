@@ -343,3 +343,195 @@ function collectSavedKeys(
   if (tree.type === "group") return [...tree.tabKeys];
   return tree.children.flatMap(collectSavedKeys);
 }
+
+describe("tabs store — drag a tab/file to another monitor → standalone window", () => {
+  beforeEach(reset);
+
+  const bounds = { x: 1920, y: 40, w: 900, h: 640 };
+
+  it("detachTab pops one tab out of its group into its own detached window", () => {
+    // One group holding [a, b]; pop `b` out to a new monitor.
+    const a = useTabsStore.getState().addTab(tab("a"));
+    const b = useTabsStore.getState().addTab(tab("b"));
+    const gid = (useTabsStore.getState().layout as GroupNode).id;
+
+    const label = useTabsStore.getState().detachTab(b.key, bounds);
+
+    // Source group keeps `a`; `b` is gone from the in-window layout.
+    const layout = useTabsStore.getState().layout as GroupNode;
+    expect(layout.type).toBe("group");
+    expect(layout.tabKeys).toEqual([a.key]);
+    expect(layout.activeKey).toBe(a.key);
+
+    // A fresh single-tab detached group references `b`; its payload survives.
+    const detached = useTabsStore.getState().detachedGroupsByScope["p"];
+    expect(detached).toHaveLength(1);
+    expect(detached[0].subtree.tabKeys).toEqual([b.key]);
+    expect(detached[0].bounds).toEqual(bounds);
+    expect(label).toBe(`detached-p-${detached[0].id}`);
+    // The new group id is distinct from the source group it left.
+    expect(detached[0].id).not.toBe(gid);
+    expect(useTabsStore.getState().tabs.map((t) => t.key).sort()).toEqual(
+      [a.key, b.key].sort(),
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith("detach_subwindow", {
+      projectId: "p",
+      groupId: detached[0].id,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.w,
+      height: bounds.h,
+    });
+  });
+
+  it("detachTab may empty the main center (lone tab is allowed to leave)", () => {
+    const a = useTabsStore.getState().addTab(tab("a"));
+    const label = useTabsStore.getState().detachTab(a.key, bounds);
+
+    // Unlike detachGroup, the per-tab path never refuses: layout drops to null.
+    expect(label).not.toBeNull();
+    expect(useTabsStore.getState().layout).toBeNull();
+    const detached = useTabsStore.getState().detachedGroupsByScope["p"];
+    expect(detached).toHaveLength(1);
+    expect(detached[0].subtree.tabKeys).toEqual([a.key]);
+    // Payload still present so the detached window can render it.
+    expect(useTabsStore.getState().tabs.map((t) => t.key)).toEqual([a.key]);
+  });
+
+  it("detachTab returns null and no-ops for an unknown tab key", () => {
+    useTabsStore.getState().addTab(tab("a"));
+    const before = useTabsStore.getState().layout;
+    const label = useTabsStore.getState().detachTab("missing", bounds);
+    expect(label).toBeNull();
+    expect(useTabsStore.getState().layout).toBe(before);
+    expect(useTabsStore.getState().detachedGroupsByScope["p"] ?? []).toHaveLength(0);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("detachNewTab mints a tab straight into a standalone window, layout untouched", () => {
+    const a = useTabsStore.getState().addTab(tab("a"));
+    const beforeLayout = useTabsStore.getState().layout;
+
+    const label = useTabsStore.getState().detachNewTab(
+      { label: "doc.pdf", cmd: "", cwd: "/p", kind: "embed", embedPath: "/p/doc.pdf" },
+      bounds,
+    );
+
+    // The in-window layout is completely unaffected.
+    expect(useTabsStore.getState().layout).toBe(beforeLayout);
+
+    const detached = useTabsStore.getState().detachedGroupsByScope["p"];
+    expect(detached).toHaveLength(1);
+    expect(label).toBe(`detached-p-${detached[0].id}`);
+    const newKey = detached[0].subtree.tabKeys[0];
+    expect(newKey).not.toBe(a.key);
+
+    // The fresh tab payload is in tabsByScope, scope-stamped, embed kind.
+    const newTab = useTabsStore.getState().tabs.find((t) => t.key === newKey);
+    expect(newTab).toMatchObject({ label: "doc.pdf", kind: "embed", scope: "p" });
+
+    expect(invokeMock).toHaveBeenCalledWith("detach_subwindow", {
+      projectId: "p",
+      groupId: detached[0].id,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.w,
+      height: bounds.h,
+    });
+  });
+});
+
+describe("tabs store — dock a single popout tab back (#42 attachDetachedTab)", () => {
+  beforeEach(reset);
+
+  // Build [G1=[b,c] (detached), G2=[a] (live)] and return ids + keys.
+  function setup() {
+    const a = useTabsStore.getState().addTab(tab("a"));
+    const b = useTabsStore.getState().addTab(tab("b"));
+    const c = useTabsStore.getState().addTab(tab("c")); // G1=[a,b,c]
+    const rootGid = (useTabsStore.getState().layout as GroupNode).id;
+    useTabsStore.getState().splitWithTab(a.key, rootGid, "right"); // G1=[b,c], new=[a]
+    const root = useTabsStore.getState().layout as SplitNode;
+    const left = root.children[0] as GroupNode; // [b,c]
+    const right = root.children[1] as GroupNode; // [a]
+    useTabsStore.getState().detachGroup(left.id); // detach [b,c]
+    invokeMock.mockClear();
+    return { a, b, c, g1: left.id, g2: right.id };
+  }
+
+  it("center-merges a popout tab into a live group and drops it from the subtree", () => {
+    const { a, b, c, g1, g2 } = setup();
+    useTabsStore.getState().attachDetachedTab("p", g1, b.key, {
+      targetGroupId: g2,
+      edge: "center",
+    });
+
+    // b joined G2 (now the lone surviving in-window group) and is active.
+    const layout = useTabsStore.getState().layout as GroupNode;
+    expect(layout.type).toBe("group");
+    expect(layout.tabKeys).toEqual([a.key, b.key]);
+    expect(layout.activeKey).toBe(b.key);
+
+    // The popout keeps c; every payload survives. Window stays open.
+    const det = useTabsStore.getState().detachedGroupsByScope["p"];
+    expect(det).toHaveLength(1);
+    expect(det[0].subtree.tabKeys).toEqual([c.key]);
+    expect(useTabsStore.getState().tabs.map((t) => t.key).sort()).toEqual(
+      [a.key, b.key, c.key].sort(),
+    );
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("edge-splits a popout tab off into a new in-window group", () => {
+    const { b, g1, g2 } = setup();
+    useTabsStore.getState().attachDetachedTab("p", g1, b.key, {
+      targetGroupId: g2,
+      edge: "right",
+    });
+    const root = useTabsStore.getState().layout as SplitNode;
+    expect(root.type).toBe("split");
+    expect(root.dir).toBe("row");
+    // b lives in its own fresh group beside G2.
+    const groups = allGroups(root);
+    expect(groups.some((g) => g.tabKeys.includes(b.key))).toBe(true);
+  });
+
+  it("default placement (no target) merges into the first group", () => {
+    const { a, b, g1 } = setup();
+    useTabsStore.getState().attachDetachedTab("p", g1, b.key);
+    const layout = useTabsStore.getState().layout as GroupNode;
+    expect(layout.tabKeys).toEqual([a.key, b.key]);
+  });
+
+  it("closes the popout once its last tab is docked away", () => {
+    const { b, c, g1, g2 } = setup();
+    useTabsStore.getState().attachDetachedTab("p", g1, b.key, {
+      targetGroupId: g2,
+      edge: "center",
+    });
+    invokeMock.mockClear();
+    // Docking the last remaining tab empties + closes the popout.
+    useTabsStore.getState().attachDetachedTab("p", g1, c.key, {
+      targetGroupId: g2,
+      edge: "center",
+    });
+    expect(useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(0);
+    expect(invokeMock).toHaveBeenCalledWith("attach_subwindow", {
+      registryId: `detached-p-${g1}`,
+    });
+  });
+
+  it("no-ops for an unknown group or a tab not in the popout", () => {
+    const { b, g1, g2 } = setup();
+    const before = useTabsStore.getState().layout;
+    useTabsStore.getState().attachDetachedTab("p", "missing", b.key);
+    useTabsStore.getState().attachDetachedTab("p", g1, "missing", {
+      targetGroupId: g2,
+    });
+    expect(useTabsStore.getState().layout).toBe(before);
+    expect(useTabsStore.getState().detachedGroupsByScope["p"][0].subtree.tabKeys)
+      .toEqual([b.key, useTabsStore.getState().tabs.find((t) => t.label === "c")!.key]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+});

@@ -272,11 +272,38 @@ interface TabsStore {
     groupId: string,
     opts?: { skipBackend?: boolean; bounds?: WindowBounds; allowLastGroup?: boolean },
   ) => string | null;
+  // Drag-a-tab-to-another-monitor: pop a SINGLE existing tab out of the in-window
+  // layout into its own fresh detached OS window at `bounds` (screen px). Unlike
+  // detachGroup (which moves a whole subwindow and refuses the lone group), this
+  // is per-tab and never refuses: the tab is removed from its current group and
+  // seeded into a brand-new single-tab detached group, even if that empties the
+  // main center (which then shows the placeholder). Returns the window label, or
+  // null if the tab/scope can't be resolved.
+  detachTab: (key: string, bounds: WindowBounds) => string | null;
+  // Drag-a-file-to-another-monitor: mint a brand-new tab (e.g. an embed/viewer
+  // tab for a file dropped outside the window) straight into its own fresh
+  // detached OS window at `bounds`, without ever touching the in-window layout.
+  // Returns the window label.
+  detachNewTab: (tab: Omit<TabEntry, "key">, bounds: WindowBounds) => string;
   // `attachGroup` pops the detached entry, regenerates its ids, re-injects it
   // (adjacent to `targetGroupId`/`edge`, or as root if the tree is empty), and
   // (unless `skipBackend`) closes the detached OS window via `attach_subwindow`.
   attachGroup: (
     detachedId: string,
+    opts?: { targetGroupId?: string; edge?: DropEdge; skipBackend?: boolean },
+  ) => void;
+  // #42: dock a SINGLE tab out of a popout back into a scope's layout (the
+  // per-tab analog of attachGroup, used when one tab — not the whole group — is
+  // dragged onto the main window). Inserts the tab at `targetGroupId`/`edge`
+  // (center merges, an edge splits) or as a default placement, removes it from
+  // the detached group's subtree, and — if that empties the popout — drops the
+  // detached record and closes its OS window. The tab payload already lives in
+  // `tabsByScope`, so it survives the move. Works for the active scope (live
+  // layout) and an inactive one (stored layout). No-op if the tab/group is gone.
+  attachDetachedTab: (
+    scope: string,
+    detachedGroupId: string,
+    tabKey: string,
     opts?: { targetGroupId?: string; edge?: DropEdge; skipBackend?: boolean },
   ) => void;
   // #42: apply an edit streamed back from a detached window to the main store's
@@ -1218,6 +1245,103 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     return label;
   },
 
+  detachTab: (key, bounds) => {
+    const scope = get().scope;
+    const layout = get().layoutByScope[scope] ?? null;
+    const found = findGroupOfTab(layout, key);
+    if (!found) return null;
+
+    const groupId = nextGroupId();
+    const label = `detached-${scope}-${groupId}`;
+    // The popped tab becomes the sole member of a fresh single-tab group; its
+    // payload stays in tabsByScope (the detached subtree now references it).
+    const subtree: GroupNode = {
+      type: "group",
+      id: groupId,
+      tabKeys: [key],
+      activeKey: key,
+    };
+
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      const focus = s.focusedGroupByScope[scope] ?? null;
+      // Drop the key from its source group, then collapse via writeScope (which
+      // keeps the payload in `tabs`). An emptied source group/layout is allowed —
+      // the main center falls back to the placeholder subwindow.
+      const stripped = layout
+        ? mapGroup(layout, found.group.id, (g) => {
+            const tabKeys = g.tabKeys.filter((k) => k !== key);
+            const activeKey =
+              g.activeKey === key
+                ? (tabKeys[Math.min(found.index, tabKeys.length - 1)] ?? null)
+                : g.activeKey;
+            return { ...g, tabKeys, activeKey };
+          })
+        : null;
+      const base = writeScope(s, scope, tabs, stripped, focus);
+      const existing = s.detachedGroupsByScope[scope] ?? [];
+      return {
+        ...base,
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: [...existing, { id: groupId, subtree, label, bounds }],
+        },
+      };
+    });
+
+    invoke("detach_subwindow", {
+      projectId: scope,
+      groupId,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.w,
+      height: bounds.h,
+    }).catch(() => {});
+    return label;
+  },
+
+  detachNewTab: (tab, bounds) => {
+    const scope = get().scope;
+    const key = nextKey(tab.kind);
+    const groupId = nextGroupId();
+    const label = `detached-${scope}-${groupId}`;
+    // Spread first so a stray `key` on the payload can't shadow the minted one;
+    // stamp the owning scope (writeScope isn't on this path since the layout is
+    // untouched, so do its scope-stamp here).
+    const entry: TabEntry = { ...tab, key, scope };
+    const subtree: GroupNode = {
+      type: "group",
+      id: groupId,
+      tabKeys: [key],
+      activeKey: key,
+    };
+
+    set((s) => {
+      const nextTabs = [...(s.tabsByScope[scope] ?? []), entry];
+      const existing = s.detachedGroupsByScope[scope] ?? [];
+      return {
+        tabsByScope: { ...s.tabsByScope, [scope]: nextTabs },
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: [...existing, { id: groupId, subtree, label, bounds }],
+        },
+        // Mirror the current-scope convenience copy (writeScope normally does
+        // this, but this path leaves the layout untouched and skips it).
+        ...(s.scope === scope ? { tabs: nextTabs } : {}),
+      };
+    });
+
+    invoke("detach_subwindow", {
+      projectId: scope,
+      groupId,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.w,
+      height: bounds.h,
+    }).catch(() => {});
+    return label;
+  },
+
   attachGroup: (detachedId, opts) => {
     const scope = get().scope;
     const entries = get().detachedGroupsByScope[scope] ?? [];
@@ -1268,6 +1392,94 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
 
     if (!opts?.skipBackend) {
+      invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
+    }
+  },
+
+  attachDetachedTab: (scope, detachedGroupId, tabKey, opts) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const entry = entries.find((d) => d.id === detachedGroupId);
+    if (!entry || !entry.subtree.tabKeys.includes(tabKey)) return;
+
+    // The detached group is emptied by this tab leaving → close the popout.
+    const remainingKeys = entry.subtree.tabKeys.filter((k) => k !== tabKey);
+    const willEmpty = remainingKeys.length === 0;
+
+    set((s) => {
+      // 1. Insert the tab into the destination layout (the docked-into scope's,
+      //    which is `scope` whether active or stored). The tab payload already
+      //    lives in tabsByScope[scope], so we only place its key.
+      let layout = s.layoutByScope[scope] ?? null;
+      let destId: string;
+      const fresh: GroupNode = {
+        type: "group",
+        id: nextGroupId(),
+        tabKeys: [tabKey],
+        activeKey: tabKey,
+      };
+      if (!layout) {
+        layout = fresh; // empty scope → the tab becomes the root group.
+        destId = fresh.id;
+      } else {
+        const target =
+          (opts?.targetGroupId && findGroup(layout, opts.targetGroupId)) ||
+          allGroups(layout)[0];
+        if (!target) {
+          layout = fresh;
+          destId = fresh.id;
+        } else if ((opts?.edge ?? "center") === "center") {
+          // Merge into the target group (append + activate).
+          layout = mapGroup(layout, target.id, (g) => ({
+            ...g,
+            tabKeys: [...g.tabKeys, tabKey],
+            activeKey: tabKey,
+          }));
+          destId = target.id;
+        } else {
+          const edge = opts!.edge as DropEdge;
+          const dir: SplitDir =
+            edge === "left" || edge === "right" ? "row" : "column";
+          const before = edge === "left" || edge === "top";
+          layout = insertAdjacent(layout, target.id, fresh, dir, before);
+          destId = fresh.id;
+        }
+      }
+
+      // 2. Drop the tab from the detached subtree, or drop the whole record when
+      //    it leaves the popout empty.
+      const nextEntries = willEmpty
+        ? entries.filter((d) => d.id !== detachedGroupId)
+        : entries.map((d) =>
+            d.id === detachedGroupId
+              ? {
+                  ...d,
+                  subtree: {
+                    ...d.subtree,
+                    tabKeys: remainingKeys,
+                    activeKey:
+                      d.subtree.activeKey === tabKey
+                        ? (remainingKeys[0] ?? null)
+                        : d.subtree.activeKey,
+                  },
+                }
+              : d,
+          );
+
+      // 3. Commit the layout (writeScope keeps the payload + updates the live
+      //    mirrors for the active scope; it's a no-op on the mirrors otherwise),
+      //    focusing the destination group so the docked tab shows.
+      const tabs = s.tabsByScope[scope] ?? [];
+      const base = writeScope(s, scope, tabs, layout, destId);
+      return {
+        ...base,
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: nextEntries,
+        },
+      };
+    });
+
+    if (willEmpty && !opts?.skipBackend) {
       invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
     }
   },
