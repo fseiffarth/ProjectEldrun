@@ -231,13 +231,26 @@ npx tsc --noEmit
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-4. Every push to GitHub should produce a fresh packaged artifact from the
+4. **Privacy check before every push.** This repo is intended to go public, so
+   before pushing run the privacy/secret scan on the staged changes and stop if
+   it reports anything real:
+
+   ```bash
+   git add -A && scripts/privacy-check.sh
+   ```
+
+   The patterns and the blocker-vs-expected guidance live in the script itself
+   (it derives private values at runtime and excludes its own file, so neither
+   this doc nor the script hardcodes or self-matches the literals it catches).
+   Commits must use the GitHub `noreply` author email, never the real address.
+
+5. Every push to GitHub should produce a fresh packaged artifact from the
    workflow in `.github/workflows/ci-cd.yml`; use `npm run package` locally if
    you need to install the same release build under `~/.local/share/eldrun/`.
    GitHub Releases are only published for `v0.<minor>.0` tags, so patch-only
    bumps like `0.1.1 -> 0.1.2` do not create a release.
 
-5. Do not start Eldrun from Claude. Frontend (`src/`) edits hot-reload in the
+6. Do not start Eldrun from Claude. Frontend (`src/`) edits hot-reload in the
    running instance — no restart needed. Only ask the user to rebuild/restart
    for backend (`src-tauri/`) changes.
 
