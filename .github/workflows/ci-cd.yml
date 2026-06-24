@@ -141,13 +141,21 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: eldrun-${{ github.sha }}-appimage
-          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          # Project-root target/ is a fallback for when CARGO_TARGET_DIR is
+          # overridden by swatinem/rust-cache.
+          path: |
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage
 
       - name: Upload DEB
         uses: actions/upload-artifact@v4
         with:
           name: eldrun-${{ github.sha }}-deb
-          path: src-tauri/target/release/bundle/deb/*.deb
+          # Project-root target/ is a fallback for when CARGO_TARGET_DIR is
+          # overridden by swatinem/rust-cache.
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            target/release/bundle/deb/*.deb
 
   release:
     name: release
@@ -181,10 +189,18 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
+          # Pre-1.0 tags are alpha/preview builds; mark them so on GitHub.
+          prerelease: true
           body: |
-            Eldrun release ${{ github.ref_name }}.
+            Eldrun ${{ github.ref_name }} — alpha / preview build.
 
             Built from commit ${{ github.sha }}.
+
+            Artifacts:
+            - Linux: `.AppImage` (portable) and `.deb`
+            - Windows: NSIS `.exe` installer
+
+            This is an early alpha; expect rough edges.
           files: |
             release-assets/*.AppImage
             release-assets/*.deb

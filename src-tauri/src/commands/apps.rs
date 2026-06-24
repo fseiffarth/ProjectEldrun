@@ -782,10 +782,10 @@ fn collect_windows_shortcuts(dir: &Path, depth: usize, out: &mut Vec<ShortcutEnt
 
 #[cfg(target_os = "windows")]
 fn resolve_windows_shortcut(path: &Path) -> Option<ShortcutEntry> {
-    use windows::core::{Interface, PCWSTR, PWSTR};
+    use windows::core::{Interface, PCWSTR};
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
-        COINIT_APARTMENTTHREADED,
+        COINIT_APARTMENTTHREADED, STGM_READ,
     };
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 
@@ -794,26 +794,16 @@ fn resolve_windows_shortcut(path: &Path) -> Option<ShortcutEntry> {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
         let persist: IPersistFile = link.cast().ok()?;
         let wide = wide_null(path.as_os_str());
-        persist.Load(PCWSTR(wide.as_ptr()), 0).ok()?;
+        persist.Load(PCWSTR(wide.as_ptr()), STGM_READ).ok()?;
 
         let mut target_buf = [0u16; 32768];
-        link.GetPath(
-            PWSTR(target_buf.as_mut_ptr()),
-            target_buf.len() as i32,
-            None,
-            0,
-        )
-        .ok()?;
+        link.GetPath(&mut target_buf, std::ptr::null_mut(), 0).ok()?;
         let target = utf16_buf_to_path(&target_buf)?;
 
         let mut icon_buf = [0u16; 32768];
         let mut icon_index = 0i32;
         let icon_path = link
-            .GetIconLocation(
-                PWSTR(icon_buf.as_mut_ptr()),
-                icon_buf.len() as i32,
-                &mut icon_index,
-            )
+            .GetIconLocation(&mut icon_buf, &mut icon_index)
             .ok()
             .and_then(|_| utf16_buf_to_path(&icon_buf));
 
