@@ -1,5 +1,6 @@
 pub mod apps;
 pub mod boxes;
+pub mod clipboard;
 pub mod crash;
 pub mod debug;
 pub mod default_apps;
@@ -12,6 +13,7 @@ pub mod ollama;
 pub mod openvpn;
 pub mod project_runtime;
 pub mod projects;
+pub mod screenshot;
 pub mod settings;
 pub mod ssh;
 pub mod subwindow;

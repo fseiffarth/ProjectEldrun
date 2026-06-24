@@ -54,22 +54,42 @@ export function AppShell() {
   // WebKitGTK doesn't reliably fire DOM 'resize' / ResizeObserver for OS-level
   // window size changes — notably the startup fullscreen transition, which on a
   // larger screen jumps the window from its 1400x900 config size to the full
-  // monitor. Terminals (and other panes) refit off the DOM 'resize' event, so
-  // without this they open at the pre-fullscreen size and never refit. Bridge
-  // Tauri's reliable window onResized into a DOM resize event; rAF-coalesce so a
-  // manual drag-resize doesn't flood listeners.
+  // monitor, and switching the window to a differently-sized monitor. Terminals
+  // (and other panes) refit off the DOM 'resize' event, so without this they
+  // open at the pre-fullscreen size and never refit. Bridge Tauri's reliable
+  // window events into a DOM resize event:
+  //  - onResized: monitor-size switches while fullscreen, manual drag-resize.
+  //  - onScaleChanged: moving to a monitor with a different DPI — the logical
+  //    (CSS px) viewport changes but WebKitGTK stays silent.
+  // rAF-coalesce the live stream so a manual drag-resize doesn't flood
+  // listeners, and add a trailing re-fire: a monitor switch settles the final
+  // window geometry a few frames after the event, so a single immediate fire can
+  // measure mid-transition.
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    const unlisteners: Array<() => void> = [];
     let raf = 0;
+    let trailing: ReturnType<typeof setTimeout> | undefined;
     const fire = () => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
+      if (!raf) {
+        raf = requestAnimationFrame(() => {
+          raf = 0;
+          window.dispatchEvent(new Event("resize"));
+        });
+      }
+      if (trailing) clearTimeout(trailing);
+      trailing = setTimeout(() => {
+        trailing = undefined;
         window.dispatchEvent(new Event("resize"));
-      });
+      }, 250);
     };
-    getCurrentWindow().onResized(fire).then((fn) => { unlisten = fn; }).catch(() => {});
-    return () => { if (raf) cancelAnimationFrame(raf); unlisten?.(); };
+    const win = getCurrentWindow();
+    win.onResized(fire).then((fn) => unlisteners.push(fn)).catch(() => {});
+    win.onScaleChanged(fire).then((fn) => unlisteners.push(fn)).catch(() => {});
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      if (trailing) clearTimeout(trailing);
+      unlisteners.forEach((fn) => fn());
+    };
   }, []);
 
   // Restore the pinned state once settings finish loading.

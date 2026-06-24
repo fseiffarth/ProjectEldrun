@@ -94,8 +94,28 @@ export function GlobalAppBar() {
       );
       return;
     }
+    if (role === "screenshot") {
+      // Capture a region into the active project's screenshots/ folder, driving
+      // the configured tool's output path (or a native fallback) there. Without
+      // an active project there's nowhere to file the shot, so fall back to
+      // plainly launching the configured tool.
+      if (activeDir) {
+        invoke("capture_project_screenshot", { projectDir: activeDir, exec: exec || null }).catch(
+          () => {},
+        );
+      } else if (exec) {
+        invoke("launch_app", {
+          exec,
+          args: screenshotRegionArgs(exec),
+          file: null,
+          projectId: null,
+          role,
+        }).catch(() => {});
+      }
+      return;
+    }
     if (!exec) return;
-    invoke("launch_app", { exec, file: null, projectId: null, role }).catch(() => {});
+    invoke("launch_app", { exec, args: [], file: null, projectId: null, role }).catch(() => {});
   };
 
   const updateGlobalApp = async (role: string, patch: Partial<GlobalAppEntry>) => {
@@ -130,7 +150,7 @@ export function GlobalAppBar() {
             key={role}
             className="global-app-btn"
             title={`${meta.label}${app.exec ? `: ${app.exec}` : ""} · Right-click to configure`}
-            aria-disabled={role !== "file_manager" && !app.exec}
+            aria-disabled={role !== "file_manager" && role !== "screenshot" && !app.exec}
             onClick={() => launch(role, app.exec)}
             onContextMenu={(event) => {
               event.preventDefault();
@@ -192,4 +212,22 @@ function orderedGlobalApps(apps: Record<string, GlobalAppEntry>): Array<[string,
 
 function basename(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? "";
+}
+
+// Flags that make a screenshot tool begin interactive rectangular-region
+// selection immediately on launch, keyed by the executable's basename. Tools we
+// don't recognize fall through to launching with no extra arguments.
+const SCREENSHOT_REGION_ARGS: Record<string, string[]> = {
+  spectacle: ["--region"],
+  flameshot: ["gui"],
+  "gnome-screenshot": ["--area"],
+  scrot: ["--select"],
+  maim: ["--select"],
+  "xfce4-screenshooter": ["--region"],
+  ksnip: ["--rectarea"],
+  shutter: ["--select"],
+};
+
+function screenshotRegionArgs(exec: string): string[] {
+  return SCREENSHOT_REGION_ARGS[basename(exec).toLowerCase()] ?? [];
 }
