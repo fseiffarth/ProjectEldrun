@@ -1,12 +1,14 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   DETACHED_DRAG_END,
   DETACHED_DRAG_MOVE,
   DETACHED_DRAG_START,
+  buildSeed,
+  detachedSeedEvent,
   type DetachedDragEnd,
   type DetachedDragMove,
   type DetachedDragStart,
@@ -31,6 +33,7 @@ import {
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useDragStore } from "../../stores/drag";
+import { useDetachAnimStore } from "../../stores/detachAnim";
 import { commitDrop } from "../tabs/commitDrop";
 import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory } from "../../types";
@@ -451,7 +454,7 @@ export function CenterPanel() {
 
     reg(
       listen<DetachedDragStart>(DETACHED_DRAG_START, (ev) => {
-        const { scope: dScope, groupId, label, screenX, screenY } = ev.payload;
+        const { scope: dScope, groupId, label, screenX, screenY, tabKey } = ev.payload;
         // Start the drag synchronously so the high-frequency MOVE poll that
         // follows isn't dropped by its `kind !== "detached"` guard while we await
         // the origin. Seed with the current (stale) origin; refreshOrigin() then
@@ -463,6 +466,7 @@ export function CenterPanel() {
           pointerY: seed.y,
           detachedScope: dScope,
           detachedGroupId: groupId,
+          detachedTabKey: tabKey,
         });
         resolveTargetRef.current(seed.x, seed.y);
         void refreshOrigin().then(() => {
@@ -510,6 +514,52 @@ export function CenterPanel() {
           py >= 0 &&
           px <= window.innerWidth &&
           py <= window.innerHeight;
+        if (
+          !ev.payload.cancelled &&
+          inMain &&
+          f?.kind === "detached" &&
+          f.detachedGroupId &&
+          f.detachedScope &&
+          f.detachedTabKey
+        ) {
+          // Single-tab dock-back: dock just the dragged tab into its OWN scope's
+          // layout at the resolved target (a tab bar → merge; a body edge →
+          // split; otherwise default placement), then re-seed the popout so it
+          // drops the docked tab (or, if that emptied it, the popout has already
+          // closed). The resolved targets are the active scope's groups, so they
+          // only apply when the popout's scope IS the active one; cross-scope
+          // falls through to default placement inside its stored layout.
+          const store = useTabsStore.getState();
+          const sameScope = store.scope === f.detachedScope;
+          const target =
+            sameScope && f.reorderGroup
+              ? { targetGroupId: f.reorderGroup, edge: "center" as const }
+              : sameScope && f.overGroup && f.edge
+                ? { targetGroupId: f.overGroup, edge: f.edge }
+                : undefined;
+          store.attachDetachedTab(
+            f.detachedScope,
+            f.detachedGroupId,
+            f.detachedTabKey,
+            target,
+          );
+          const entry = useTabsStore
+            .getState()
+            .detachedGroupsByScope[f.detachedScope]?.find(
+              (d) => d.id === f.detachedGroupId,
+            );
+          if (entry) {
+            const seed = buildSeed(
+              f.detachedScope,
+              f.detachedGroupId,
+              useTabsStore.getState().tabsByScope[f.detachedScope] ?? [],
+              entry.subtree,
+            );
+            void emit(detachedSeedEvent(entry.label), seed);
+          }
+          useDragStore.getState().end();
+          return;
+        }
         if (!ev.payload.cancelled && inMain && f?.kind === "detached" && f.detachedGroupId) {
           const store = useTabsStore.getState();
           // Mirror the button-path branch in `listenDetachedHost` (detached.ts):
@@ -713,7 +763,47 @@ export function CenterPanel() {
 
       {/* Floating ghost following the pointer during a drag. */}
       <DragGhost />
+
+      {/* One-shot send-off when a tab/subwindow is dropped out to its own window. */}
+      <DetachFlourish />
     </div>
+  );
+}
+
+/**
+ * The one-shot "fly-out" played when a tab or subwindow is dropped OUT of the
+ * main window into its own OS window (see stores/detachAnim). A card appears at
+ * the gesture's last in-window position and — via a CSS animation — lifts,
+ * scales, and fades while sliding toward the edge the content exited through, so
+ * the detach reads as the content being ejected into its own window. Clears
+ * itself on `animationend` (matched by nonce, so a fresh fly-out isn't cut off).
+ * Portalled to document.body so it isn't clipped by the panel. Honors
+ * prefers-reduced-motion via the CSS (the animation collapses to a quick fade).
+ */
+export function DetachFlourish() {
+  const flourish = useDetachAnimStore((s) => s.flourish);
+  const clear = useDetachAnimStore((s) => s.clear);
+  if (!flourish) return null;
+  const { x, y, w, h, label, dx, dy, nonce } = flourish;
+  return createPortal(
+    <div
+      key={nonce}
+      className="tab-detach-flourish"
+      style={
+        {
+          left: x,
+          top: y,
+          width: w,
+          height: h,
+          "--fly-dx": `${dx}px`,
+          "--fly-dy": `${dy}px`,
+        } as React.CSSProperties
+      }
+      onAnimationEnd={() => clear(nonce)}
+    >
+      <div className="tab-detach-flourish-label">{label}</div>
+    </div>,
+    document.body,
   );
 }
 
@@ -748,7 +838,7 @@ export function SplitPreviewOverlay({ groupRects }: { groupRects: Record<string,
  */
 const GHOST_THUMB_W = 280; // px; the thumbnail's on-screen width.
 
-function DragGhost() {
+export function DragGhost() {
   // Eff #14: subscribe to COARSE PRIMITIVE selectors (mirroring
   // SplitPreviewOverlay / stores/drag.ts), not the whole `drag` object. The
   // ghost still re-renders each frame to follow the pointer (pointerX/Y change),

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -11,10 +11,39 @@ import {
   RESUMABLE_AGENTS,
 } from "../../stores/tabs";
 import { useDragStore } from "../../stores/drag";
+import { useDetachAnimStore, flyVector } from "../../stores/detachAnim";
 import { commitDrop } from "./commitDrop";
 import { useProjectsStore } from "../../stores/projects";
 import { useActivityStore } from "../../stores/activity";
 import { OrbitSpinner } from "../common/OrbitSpinner";
+
+/** Default fly-out card size when no live pane thumbnail is available (group
+ *  detach via the bar drag carries no preview). */
+const DETACH_CARD_W = 240;
+const DETACH_CARD_H = 150;
+
+/** Fire the one-shot detach send-off: a card at the exit point that lifts and
+ *  fades toward the edge the content left through. Used by both detach paths. */
+function playDetachFlyOut(
+  clientX: number,
+  clientY: number,
+  label: string,
+  previewW?: number,
+  previewH?: number,
+) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const { dx, dy } = flyVector(clientX, clientY, vw, vh);
+  useDetachAnimStore.getState().flyOut({
+    x: clientX,
+    y: clientY,
+    w: previewW && previewW > 0 ? Math.min(previewW, DETACH_CARD_W) : DETACH_CARD_W,
+    h: previewH && previewH > 0 ? Math.min(previewH, DETACH_CARD_H) : DETACH_CARD_H,
+    label,
+    dx,
+    dy,
+  });
+}
 
 const TAB_ACCENT: Record<TabKind, string> = {
   agent: "var(--accent)",
@@ -87,6 +116,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const closeGroup = useTabsStore((s) => s.closeGroup);
   const closeAllTabs = useTabsStore((s) => s.closeAllTabs);
   const detachGroup = useTabsStore((s) => s.detachGroup);
+  const detachTab = useTabsStore((s) => s.detachTab);
   // Within-bar reorder visuals are driven by the pointer-drag store so the gap
   // tracks the live drop slot CenterPanel resolves; the dragged tab collapses.
   const dragKey = useDragStore((s) => (s.drag ? s.drag.key : null));
@@ -113,7 +143,58 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
+  // The tabs live in their own horizontally-scrolling strip; chevrons flank it
+  // and appear only when the strip overflows in that direction (the native
+  // scrollbar is hidden — see `.tab-strip` in themes.css).
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
   const menuOpen = menuPos !== null;
+
+  const updateScrollState = useCallback(() => {
+    const el = stripRef.current;
+    if (!el) {
+      setCanScrollLeft(false);
+      setCanScrollRight(false);
+      return;
+    }
+    setCanScrollLeft(el.scrollLeft > 1);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
+
+  // Track overflow so the chevrons toggle with the strip's size/content. Resize
+  // catches the strip shrinking; the tabs-length effect below catches scrollWidth
+  // changes from adding/removing tabs (which don't alter the strip's own box).
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    updateScrollState();
+    const onScroll = () => updateScrollState();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const ro = new ResizeObserver(() => updateScrollState());
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+    };
+  }, [updateScrollState]);
+
+  // Scroll one chevron-press worth (most of the visible width) toward `dir`.
+  const scrollStrip = useCallback((dir: number) => {
+    const el = stripRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: "smooth" });
+  }, []);
+
+  // Translate a vertical wheel into horizontal strip scrolling so the tabs can be
+  // panned while hovering anywhere over them, not just via the (hidden) scrollbar.
+  const onStripWheel = useCallback((e: React.WheelEvent) => {
+    const el = stripRef.current;
+    if (!el || el.scrollWidth <= el.clientWidth) return;
+    const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX;
+    if (delta === 0) return;
+    el.scrollLeft += delta;
+  }, []);
 
   const activeKey = group?.activeKey ?? null;
 
@@ -142,6 +223,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       setEditingKey(null);
     }
   }, [editingKey, tabs]);
+
+  // Adding/removing tabs changes the strip's scrollWidth without resizing its box,
+  // so refresh chevron visibility whenever the tab set changes.
+  useEffect(() => {
+    updateScrollState();
+  }, [tabs, updateScrollState]);
 
   function openAddMenu() {
     if (menuPos) { setMenuPos(null); return; }
@@ -299,12 +386,38 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       }
       useDragStore.getState().move(ev.clientX, ev.clientY);
     };
-    const onUp = () => {
+    const onUp = (ev: PointerEvent) => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       if (!dragging) {
         // Never dragged → this was a click: activate the tab.
         setGroupActive(groupId, tab.key);
+        return;
+      }
+      // Released OUTSIDE the main window (e.g. dragged onto another monitor): pop
+      // this single tab into its own standalone OS window at the cursor, mirroring
+      // the bar-drag detach (onBarPointerDown). The pointer's implicit capture
+      // keeps delivering coords beyond the viewport, so client coords falling
+      // outside [0,inner) is the outside-the-window signal. screenX/Y place the
+      // new window under the cursor (offset so the grab point lands on its frame).
+      const outside =
+        ev.clientX < 0 ||
+        ev.clientY < 0 ||
+        ev.clientX >= window.innerWidth ||
+        ev.clientY >= window.innerHeight;
+      if (outside) {
+        const bounds = {
+          x: Math.round(ev.screenX - 80),
+          y: Math.round(ev.screenY - 8),
+          w: 900,
+          h: 640,
+        };
+        // Send-off animation: play a fly-out toward the edge the tab exited
+        // through before the drag state (and its ghost) tears down.
+        const d = useDragStore.getState().drag;
+        playDetachFlyOut(ev.clientX, ev.clientY, tab.label, d?.previewW, d?.previewH);
+        detachTab(tab.key, bounds);
+        useDragStore.getState().end();
         return;
       }
       // A drag did start: commit the drop HERE. This handler is bound inside the
@@ -364,6 +477,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       };
       const label = detachGroup(groupId, { bounds });
       if (!label) return; // lone group can't detach — abort quietly.
+      // Send-off animation at the grab point, flying toward the exit edge.
+      const activeLabel = tabs.find((t) => t.key === activeKey)?.label;
+      playDetachFlyOut(ev.clientX, ev.clientY, activeLabel ?? "Subwindow");
       WebviewWindow.getByLabel(label)
         .then((w) => w?.startDragging())
         .catch(() => {});
@@ -375,6 +491,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
 
   return (
     <div className="tab-bar" data-group-id={groupId} onPointerDown={onBarPointerDown}>
+      {canScrollLeft && (
+        <button
+          className="tab-scroll-btn left"
+          title="Scroll tabs left"
+          // Keep the chevron out of the bar's detach-drag and tab pointer flow.
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => scrollStrip(-1)}
+        >
+          ‹
+        </button>
+      )}
+      <div className="tab-strip" ref={stripRef} onWheel={onStripWheel}>
       {tabs.map((tab, index) => {
         const isActive = tab.key === activeKey;
         const isDragging = dragKey === tab.key;
@@ -453,6 +581,17 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           </div>
         );
       })}
+      </div>
+      {canScrollRight && (
+        <button
+          className="tab-scroll-btn right"
+          title="Scroll tabs right"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => scrollStrip(1)}
+        >
+          ›
+        </button>
+      )}
       <div className="tab-new-wrap">
         <button
           ref={addBtnRef}

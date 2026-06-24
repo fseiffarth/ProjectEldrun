@@ -15,11 +15,24 @@ import {
   type DetachedSeed,
 } from "../../stores/detached";
 import type { GroupNode, TabEntry } from "../../stores/tabs";
+import { listenPdfReveal } from "../../stores/pdfSync";
+import { listenEditorJump } from "../../stores/editorJump";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
 
 interface Props {
   param: DetachedParam;
 }
+
+/**
+ * How long the detached window keeps asking the main window for its seed before
+ * giving up and closing itself. The host populates `detachedGroupsByScope` and
+ * answers seed requests essentially instantly (the store entry is written before
+ * the OS window is even spawned), so any window that hasn't seeded within this
+ * window has nothing to render — its group was closed/docked while the OS window
+ * lingered, or the host is gone. Rather than strand it on "Loading subwindow…"
+ * forever, auto-close it. Generous enough to outlast a slow main-window startup.
+ */
+const SEED_TIMEOUT_MS = 8000;
 
 /**
  * #42: the detached window's React root. INERT to project switches by design —
@@ -40,6 +53,32 @@ export function DetachedApp({ param }: Props) {
   useEffect(() => {
     void loadSettings();
   }, [loadSettings]);
+
+  // #42: when a PDF tab is popped out into THIS window, a SyncTeX forward search
+  // from a TeX editor in the main (or another) window reaches us only over a
+  // cross-window broadcast. Register the listener so the PDF here reveals/flashes
+  // the target box. (The main shell registers the mirror image.)
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenPdfReveal()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // #42: SyncTeX reverse search may resolve to a source editor hosted in THIS
+  // detached window while the PDF the user clicked lives elsewhere (or the jump
+  // is applied in the main window). Register the cross-window jump listener so
+  // our editor scrolls. (The main shell registers the mirror image.)
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenEditorJump()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   // WebKitGTK doesn't reliably fire DOM 'resize' / ResizeObserver for OS-level
   // window size changes. Panes (terminals especially) refit off the DOM 'resize'
@@ -133,9 +172,16 @@ export function DetachedApp({ param }: Props) {
         }
         unlistenSeed = fn;
         // Listener is live — now it's safe to ask, and to keep asking until the
-        // first seed lands.
+        // first seed lands. If none ever does (the host has no record of this
+        // group), nothing can render here, so close the window after a grace
+        // period instead of stranding it on "Loading subwindow…" forever.
+        const deadline = Date.now() + SEED_TIMEOUT_MS;
         const request = () => {
           if (cancelled || seeded) return;
+          if (Date.now() >= deadline) {
+            void getCurrentWindow().destroy();
+            return;
+          }
           void emit(DETACHED_REQUEST_SEED, {
             label,
             scope: param.scope,
@@ -206,6 +252,7 @@ export function DetachedApp({ param }: Props) {
       tabs={tabs}
       onActivate={(key) => pushEdit({ kind: "activate", key })}
       onClose={(key) => pushEdit({ kind: "close", key })}
+      onReorder={(tabKeys) => pushEdit({ kind: "reorder", tabKeys })}
     />
   );
 }

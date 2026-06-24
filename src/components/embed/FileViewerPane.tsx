@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -7,8 +8,14 @@ import { useWindowsStore } from "../../stores/windows";
 import { findGroupOfTab, useTabsStore, type ViewerState } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
-import { useEditorJumpStore } from "../../stores/editorJump";
+import {
+  useEditorJumpStore,
+  hasMountedEditor,
+  registerEditor,
+  unregisterEditor,
+} from "../../stores/editorJump";
 import { usePdfSyncStore } from "../../stores/pdfSync";
+import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
 import { renderMarkdown } from "../../lib/viewers/markdown";
 import { highlight, languageForPath } from "../../lib/viewers/highlight";
@@ -21,6 +28,9 @@ import {
   type TexComplContext,
   getTexCapability,
   lastLogLine,
+  type TexError,
+  parseTexErrors,
+  resolveTexErrorPath,
   findTexRefAt,
   findTexComplAt,
   parseTexLabels,
@@ -28,12 +38,18 @@ import {
   resolveTexRefAsync,
   texRefRanges,
   synctexEdit,
-  synctexView,
+  synctexViewBest,
+  pickSyncRect,
+  sourceColumnFraction,
   resolveTexRoot,
   pdfPointToBigPoints,
   bigPointsToCssRect,
   lineStartOffset,
   offsetToLineCol,
+  phraseAt,
+  refineToWord,
+  type TextItemBox,
+  type CaretPhrase,
 } from "../../lib/viewers/tex";
 
 /**
@@ -284,17 +300,93 @@ function viewerForPath(path: string): InternalViewer {
   return internalViewerFor(entry) ?? "text";
 }
 
+/** Tauri event carrying a reverse-search jump across the main/detached window
+ *  boundary (#42). Only the main window listens; see {@link jumpToSource}. */
+const SOURCE_JUMP_EVENT = "editor-source-jump";
+interface SourceJumpEnvelope {
+  input: string;
+  line: number;
+  column: number;
+}
+
+/** True when this webview is the MAIN window (no `?detached=` param) — the one
+ *  that owns the full tab layout and is the canonical place to open source files
+ *  for reverse search. */
+function isMainWindow(): boolean {
+  try {
+    return parseDetachedParam(window.location.search) === null;
+  } catch {
+    return true;
+  }
+}
+
+/** Open/re-activate the source tab in THIS window and post the editor jump to its
+ *  local editorJump store. The local half of {@link jumpToSource}. */
+function applySourceJump(input: string, line: number, column: number) {
+  const dir = input.slice(0, input.lastIndexOf("/")) || "/";
+  const label = input.slice(input.lastIndexOf("/") + 1);
+  openLinkedFile(undefined, dir, { path: input, viewer: viewerForPath(input), label });
+  useEditorJumpStore.getState().requestJump(input, line, column);
+}
+
 /**
  * SyncTeX reverse search lands here: open (or re-activate) the source file's
  * editor tab and ask it to scroll to `line`/`column`. The editor
  * (`TexView`/`TextView`) for that path consumes the request via the editorJump
  * store, since the tab may already be open and won't remount.
+ *
+ * #42 cross-window: the PDF may be popped out into a detached window, either on
+ * its own (source editor docked in the main window) or alongside the source in a
+ * split view. Decide where to run the jump:
+ *  - The source editor is already mounted in THIS window (e.g. a split PDF|TeX,
+ *    possibly popped out) → just scroll it. This is the path a detached window
+ *    must take, because its React-rendered tabs never populate `useTabsStore`,
+ *    so a tab-store probe alone would wrongly report "not open" and delegate to
+ *    the main window, where the editor isn't.
+ *  - This window already has the source as a (possibly background) tab, or this
+ *    IS the main window → open/focus it here.
+ *  - Otherwise (detached window without the source) → broadcast to the main
+ *    window, which owns the editor layout (it registers {@link listenSourceJump}).
+ * `requestJump` itself broadcasts cross-window, so the scroll reaches the editor
+ * wherever it is mounted regardless of which branch opens/focuses the tab.
  */
 export function jumpToSource(input: string, line: number, column = 0) {
-  const dir = input.slice(0, input.lastIndexOf("/")) || "/";
-  const label = input.slice(input.lastIndexOf("/") + 1);
-  openLinkedFile(undefined, dir, { path: input, viewer: viewerForPath(input), label });
-  useEditorJumpStore.getState().requestJump(input, line, column);
+  if (hasMountedEditor(input)) {
+    useEditorJumpStore.getState().requestJump(input, line, column);
+    return;
+  }
+  const viewer = viewerForPath(input);
+  const hasTab = useTabsStore
+    .getState()
+    .tabs.some((t) => t.kind === "embed" && t.viewer === viewer && t.embedPath === input);
+  if (hasTab || isMainWindow()) {
+    applySourceJump(input, line, column);
+    return;
+  }
+  // Detached window without the source tab: ask the main window to handle it.
+  try {
+    emit(SOURCE_JUMP_EVENT, { input, line, column } satisfies SourceJumpEnvelope).catch(() => {});
+  } catch {
+    /* no Tauri event bus available */
+  }
+}
+
+/**
+ * MAIN window: listen for reverse-search jumps broadcast from a detached PDF
+ * window and run them here (open/focus the source tab + scroll the caret).
+ * Register once at startup; returns an unlisten. No-op outside Tauri. Detached
+ * windows never register this — they either handle a jump locally (they own the
+ * source tab) or delegate to the main window via {@link jumpToSource}.
+ */
+export async function listenSourceJump(): Promise<() => void> {
+  try {
+    return await listen<SourceJumpEnvelope>(SOURCE_JUMP_EVENT, (ev) => {
+      const { input, line, column } = ev.payload;
+      applySourceJump(input, line, column);
+    });
+  } catch {
+    return () => {};
+  }
 }
 
 function ViewerHeader({
@@ -732,6 +824,47 @@ export function decorateSearchRanges(
 }
 
 /**
+ * The `{start, end}` (in `next` coordinates) of the run of text that differs
+ * between `prev` and `next`, found by trimming the common prefix and suffix.
+ * Used to tint the most-recent edit. Returns `null` when nothing was inserted
+ * or replaced — i.e. equal strings, or a pure deletion (whose changed range is
+ * zero-width in `next`, so there is nothing to paint).
+ */
+export function diffRange(prev: string, next: string): { start: number; end: number } | null {
+  if (prev === next) return null;
+  const max = Math.min(prev.length, next.length);
+  let start = 0;
+  while (start < max && prev[start] === next[start]) start++;
+  let endPrev = prev.length;
+  let endNext = next.length;
+  while (endPrev > start && endNext > start && prev[endPrev - 1] === next[endNext - 1]) {
+    endPrev--;
+    endNext--;
+  }
+  return endNext > start ? { start, end: endNext } : null;
+}
+
+/**
+ * Build the transparent last-change overlay: the single `{start, end}` range is
+ * wrapped in `<span class="file-viewer-change-mark">` so only it paints a tint,
+ * the rest emitted plain. SECURITY: every run is HTML-escaped — mirrors
+ * `decorateSearchRanges`.
+ */
+export function decorateChangeRange(
+  source: string,
+  range: { start: number; end: number },
+): string {
+  const start = Math.max(0, Math.min(range.start, source.length));
+  const end = Math.max(start, Math.min(range.end, source.length));
+  if (end <= start) return escapeHtmlText(source);
+  return (
+    escapeHtmlText(source.slice(0, start)) +
+    `<span class="file-viewer-change-mark">${escapeHtmlText(source.slice(start, end))}</span>` +
+    escapeHtmlText(source.slice(end))
+  );
+}
+
+/**
  * Replace each `{start, end}` range in `text` with `replacement`, returning the
  * new string (#67 find-and-replace). Ranges are applied left-to-right; any that
  * overlap an already-consumed range (or are empty) are skipped, mirroring the
@@ -882,6 +1015,7 @@ function CodeEditor({
   gotoLine,
   onGotoApplied,
   onCaretChange,
+  caretApiRef,
   initialScrollTop,
   onScrollPersist,
 }: {
@@ -904,6 +1038,12 @@ function CodeEditor({
   /** Reports the current caret offset (after clicks / key navigation), so the
    *  LaTeX viewer can run SyncTeX forward search from it on compile. */
   onCaretChange?: (offset: number) => void;
+  /** When set, receives a getter for the textarea's *live* caret offset (or
+   *  `null` if the editor isn't mounted/available). The LaTeX viewer reads this
+   *  synchronously at compile time so forward search uses the real cursor even if
+   *  no caret event fired this session — `onCaretChange`/its snapshot can be a
+   *  stale 0 (e.g. the editor was never focused, or a WebKitGTK blur reset it). */
+  caretApiRef?: React.MutableRefObject<(() => number | null) | null>;
   /** When set, returns the source ranges to decorate as clickable file links
    *  (#49). Currently the LaTeX viewer's `\input{…}`/`\includegraphics{…}` args. */
   linkRanges?: (source: string) => { start: number; end: number }[];
@@ -941,6 +1081,7 @@ function CodeEditor({
   const highlightRef = useRef<HTMLPreElement>(null);
   const linkLayerRef = useRef<HTMLPreElement>(null);
   const searchLayerRef = useRef<HTMLPreElement>(null);
+  const changeLayerRef = useRef<HTMLPreElement>(null);
   const measureRef = useRef<HTMLPreElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   // Link affordances over a recognised link (#49), only when `onFollowLink` is
@@ -1068,7 +1209,7 @@ function CodeEditor({
       gutterInnerRef.current.style.transform = `translateY(${-scrollTop}px)`;
     }
     const transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
-    for (const ref of [highlightRef, linkLayerRef, searchLayerRef]) {
+    for (const ref of [highlightRef, linkLayerRef, searchLayerRef, changeLayerRef]) {
       if (ref.current) ref.current.style.transform = transform;
     }
   }, []);
@@ -1200,6 +1341,40 @@ function CodeEditor({
     textareaRef.current?.focus();
   }, []);
 
+  // Latest draft, read by closures (compile/forward-search/diff) that must see the
+  // current text without re-subscribing.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  // Last-change marker: tint the run of text most recently inserted/edited. Every
+  // edit flows through `edit`, which diffs old→new and records the range;
+  // `lastEditRef` holds the value we set so the effect can tell our own edits from
+  // a draft change by another path (disk reload, undo/redo) and drop a now-stale
+  // range. Reloads go through the parent's `reset`, never `edit`, so they never
+  // light the marker.
+  const [lastChange, setLastChange] = useState<{ start: number; end: number } | null>(null);
+  const lastEditRef = useRef<string | null>(null);
+  const edit = useCallback(
+    (next: string) => {
+      if (next !== draftRef.current) {
+        setLastChange(diffRange(draftRef.current, next));
+        lastEditRef.current = next;
+      }
+      setDraft(next);
+    },
+    [setDraft],
+  );
+  useEffect(() => {
+    if (lastEditRef.current !== null && draft !== lastEditRef.current) {
+      setLastChange(null);
+      lastEditRef.current = null;
+    }
+  }, [draft]);
+  const changeHtml = useMemo(
+    () => (loaded && lastChange ? decorateChangeRange(draft, lastChange) : null),
+    [loaded, draft, lastChange],
+  );
+
   // Replace the current match (#67). We re-place the textarea selection on the
   // match first so the change history records a single, intelligible edit, then
   // splice `replaceWith` in via setDraft. The match set recomputes on the new
@@ -1208,18 +1383,18 @@ function CodeEditor({
   const replaceCurrent = useCallback(() => {
     const m = matches[current];
     if (!m) return;
-    setDraft(applyReplacements(draft, [m], replaceWith));
+    edit(applyReplacements(draft, [m], replaceWith));
     // Put the caret just after the inserted text so a follow-up reveal lands here.
     requestAnimationFrame(() => {
       const el = textareaRef.current;
       if (el) el.selectionStart = el.selectionEnd = m.start + replaceWith.length;
     });
-  }, [matches, current, draft, replaceWith, setDraft]);
+  }, [matches, current, draft, replaceWith, edit]);
 
   const replaceAll = useCallback(() => {
     if (matches.length === 0) return;
-    setDraft(applyReplacements(draft, matches, replaceWith));
-  }, [matches, draft, replaceWith, setDraft]);
+    edit(applyReplacements(draft, matches, replaceWith));
+  }, [matches, draft, replaceWith, edit]);
 
   // Reset to the first match whenever the query/case changes or the bar opens, so
   // typing jumps to the first hit. Reveal is deferred a frame so the recomputed
@@ -1315,18 +1490,40 @@ function CodeEditor({
 
   // Report the caret position so the LaTeX viewer can run SyncTeX forward search
   // from it. Cheap; only wired when `onCaretChange` is supplied.
+  //
+  // Guard on focus: WebKitGTK collapses a textarea's selection to offset 0 as it
+  // loses focus and fires a spurious `select` event for that reset. Clicking the
+  // Compile button blurs the editor, so without this guard that 0 would clobber
+  // the caret the viewer uses for forward search — the cursor would appear to
+  // jump to the top of the file and SyncTeX would look up line 1 (the preamble,
+  // which has no output mapping) instead of the real caret. Only report while
+  // the textarea is actually focused so a blur-time reset is ignored.
   const emitCaret = useCallback(() => {
     const el = textareaRef.current;
-    if (el && onCaretChange) onCaretChange(el.selectionStart);
+    if (el && document.activeElement === el && onCaretChange) {
+      onCaretChange(el.selectionStart);
+    }
     bumpCaret();
   }, [onCaretChange, bumpCaret]);
+
+  // Publish a live caret getter so the viewer can read the *current* cursor at
+  // compile time rather than relying on the last-reported snapshot. The Compile
+  // button keeps focus (its onMouseDown preventDefault), so at the moment compile
+  // runs `selectionStart` is the real cursor — robust even when no caret event
+  // ever fired (the snapshot would still be its initial 0). Cleared on unmount so
+  // a stale closure can't outlive the editor.
+  useEffect(() => {
+    if (!caretApiRef) return;
+    caretApiRef.current = () => textareaRef.current?.selectionStart ?? null;
+    return () => {
+      caretApiRef.current = null;
+    };
+  }, [caretApiRef]);
 
   // SyncTeX reverse search: on a new `gotoLine` nonce, place the caret at the
   // target line/column and scroll it to roughly the middle of the view. SyncTeX
   // reports a column (0 when it has none); we offset into the line by it, clamped
   // to the line's end so a stale column can't spill onto the next line.
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
   useEffect(() => {
     if (!gotoLine || !loaded) return;
     const el = textareaRef.current;
@@ -1388,13 +1585,13 @@ function CodeEditor({
     if (!el || !suggestion) return;
     const at = suggestion.at;
     const next = draft.slice(0, at) + suggestion.text + draft.slice(at);
-    setDraft(next);
+    edit(next);
     const caret = at + suggestion.text.length;
     setSuggestion(null);
     requestAnimationFrame(() => {
       el.selectionStart = el.selectionEnd = caret;
     });
-  }, [suggestion, draft, setDraft]);
+  }, [suggestion, draft, edit]);
 
   // \ref/\cite completion: cap the dropdown so a huge .bib can't render
   // thousands of rows; the prefix filter usually narrows it well below this.
@@ -1482,13 +1679,13 @@ function CodeEditor({
       }
       complClosedAt.current = caret;
       setCompl(null);
-      setDraft(next);
+      edit(next);
       requestAnimationFrame(() => {
         el.focus();
         el.selectionStart = el.selectionEnd = caret;
       });
     },
-    [compl, draft, setDraft],
+    [compl, draft, edit],
   );
 
   const closeCompl = useCallback(() => {
@@ -1524,7 +1721,7 @@ function CodeEditor({
         e.preventDefault();
         autoSpace.current = null;
         const next = draft.slice(0, at) + e.key + draft.slice(at + 1);
-        setDraft(next);
+        edit(next);
         requestAnimationFrame(() => {
           el.selectionStart = el.selectionEnd = at + 1;
         });
@@ -1621,7 +1818,7 @@ function CodeEditor({
       const next = applyIndent(e.currentTarget, e.shiftKey);
       if (!next) return;
       e.preventDefault();
-      setDraft(next.value);
+      edit(next.value);
       const el = e.currentTarget;
       requestAnimationFrame(() => {
         el.selectionStart = next.selStart;
@@ -1724,6 +1921,15 @@ function CodeEditor({
             dangerouslySetInnerHTML={{ __html: highlighted + "\n" }}
           />
         )}
+        {changeHtml != null && (
+          <pre
+            ref={changeLayerRef}
+            className="file-viewer-change-layer"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+            dangerouslySetInnerHTML={{ __html: changeHtml + "\n" }}
+          />
+        )}
         {searchHtml != null && (
           <pre
             ref={searchLayerRef}
@@ -1754,7 +1960,7 @@ function CodeEditor({
           value={draft}
           spellCheck={false}
           wrap={wrap ? "soft" : "off"}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => edit(e.target.value)}
           onKeyDown={onKeyDown}
           onKeyUp={(e) => { if (!(e.ctrlKey || e.metaKey)) setLinkHover(false); emitCaret(); }}
           onBlur={() => { setLinkHover(false); setLinkTip(null); dismissSuggestion(); setCompl(null); }}
@@ -2094,6 +2300,13 @@ function useEditorJump(path: string) {
   const req = useEditorJumpStore((s) => s.requestsByPath[path] ?? null);
   const consume = useEditorJumpStore((s) => s.consume);
   const onGotoApplied = useCallback(() => consume(path), [consume, path]);
+  // Advertise this editor to reverse search so a Ctrl+click in the PDF — even in
+  // a detached window whose tabs never reach `useTabsStore` — scrolls it here
+  // instead of being delegated to the main window (#42).
+  useEffect(() => {
+    registerEditor(path);
+    return () => unregisterEditor(path);
+  }, [path]);
   return {
     gotoLine: req ? { line: req.line, column: req.column, nonce: req.nonce } : undefined,
     onGotoApplied,
@@ -2389,6 +2602,7 @@ function PdfPageCanvas({
   doc,
   pageNumber,
   scale,
+  cssSize,
   onSyncClick,
   syncArmed,
   highlight,
@@ -2396,17 +2610,36 @@ function PdfPageCanvas({
   doc: PDFDocumentProxy;
   pageNumber: number;
   scale: number;
+  /** This page's intrinsic (scale-1) CSS dimensions, if known. Used to RESERVE
+   *  the canvas's on-screen size immediately — before its async render fills
+   *  pixels — so the page stack reaches its true scroll height right away. Without
+   *  this the canvas defaults to ~150px until rendered, so the container height
+   *  grows page-by-page and a deep restored scroll position is unreachable until
+   *  every page above it has rendered (#viewerpos PDF restore). */
+  cssSize?: { w: number; h: number };
   /** SyncTeX reverse search: a click maps to big points on this page. */
   onSyncClick?: (page: number, xBp: number, yBp: number) => void;
   /** True while Ctrl/⌘ is held, so the page shows the reverse-search cursor. */
   syncArmed?: boolean;
   /** SyncTeX forward search: when this page is the target, the box (big points)
-   *  to scroll into view and flash. `nonce` re-triggers a repeat reveal. */
-  highlight?: { rect: SyncRect; nonce: number } | null;
+   *  to scroll into view and flash. `nonce` re-triggers a repeat reveal.
+   *  `phrase`, when set, narrows the box to the clicked word via the page's text
+   *  content (using the surrounding words to disambiguate). */
+  highlight?: { rect: SyncRect; nonce: number; phrase?: CaretPhrase } | null;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
+  // A SyncTeX box narrowed to the clicked word (when `highlight.phrase` is set and
+  // found in this page's text), else null → the original line box is used.
+  const [refined, setRefined] = useState<SyncRect | null>(null);
+  // A transient marker at the point the user reverse-search-clicked (CSS px within
+  // the page wrapper), giving the jump visible feedback on the PDF side; it
+  // auto-clears after ~2s. `nonce` re-triggers the fade for a repeat click on the
+  // same spot. See `onClick`.
+  const [clickMark, setClickMark] = useState<{ left: number; top: number; nonce: number } | null>(null);
+  const clickTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (clickTimer.current != null) window.clearTimeout(clickTimer.current); }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -2436,6 +2669,43 @@ function PdfPageCanvas({
     };
   }, [doc, pageNumber, scale]);
 
+  // Narrow the SyncTeX line box to the clicked word: pull this page's text runs
+  // (big points, top-left origin, at viewport scale 1) and find the word nearest
+  // the line box. Best-effort — on no match (or no word) the original box stands.
+  useEffect(() => {
+    setRefined(null);
+    const phrase = highlight?.phrase;
+    if (!highlight || !phrase) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const page = await doc.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 1 });
+        const content = await page.getTextContent();
+        if (cancelled) return;
+        const items: TextItemBox[] = [];
+        for (const it of content.items) {
+          // Skip marked-content markers (no `str`/`transform`).
+          if (!("str" in it) || typeof it.str !== "string" || !it.str) continue;
+          const tx = pdfjs.Util.transform(viewport.transform, it.transform);
+          const em = Math.hypot(tx[2], tx[3]); // scaled font size (em) in big points
+          // `tx[5]` is the text baseline. A full-em box above it rides high over
+          // the glyphs and clips descenders; box the ascender→descender band
+          // instead (≈0.8 em up, ≈0.2 em down) so the marker hugs the word.
+          const ascent = em * 0.8;
+          const descent = em * 0.2;
+          items.push({ str: it.str, x: tx[4], y: tx[5] - ascent, w: it.width, h: ascent + descent });
+        }
+        const r = refineToWord(highlight.rect, phrase, items);
+        if (!cancelled && r) setRefined(r);
+      } catch {
+        /* fall back to the synctex box */
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlight?.nonce]);
+
   // Scroll a forward-search target into view on a new nonce. Center the
   // highlight *box*, not the whole page — on a tall page the target line can sit
   // far from page-center, which is what made the jump feel imprecise.
@@ -2451,16 +2721,31 @@ function PdfPageCanvas({
     if (!onSyncClick || !(e.ctrlKey || e.metaKey)) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const { x, y } = pdfPointToBigPoints(rect, e.clientX, e.clientY, scale);
+    // Mark the clicked point so the source-jump has feedback on the PDF side; the
+    // canvas sits flush at the wrapper's top-left, so canvas-local offsets are
+    // wrapper-local. Clear any prior marker's timer and fade out after ~2s.
+    setClickMark((m) => ({
+      left: e.clientX - rect.left,
+      top: e.clientY - rect.top,
+      nonce: (m?.nonce ?? 0) + 1,
+    }));
+    if (clickTimer.current != null) window.clearTimeout(clickTimer.current);
+    clickTimer.current = window.setTimeout(() => setClickMark(null), 2000);
     onSyncClick(pageNumber, x, y);
   };
 
-  const box = highlight ? bigPointsToCssRect(highlight.rect, scale) : null;
+  const box = highlight ? bigPointsToCssRect(refined ?? highlight.rect, scale) : null;
 
   return (
     <div className="file-viewer-pdf-page-wrap" ref={wrapRef}>
       <canvas
         ref={canvasRef}
         className={`file-viewer-pdf-page${onSyncClick && syncArmed ? " is-syncable" : ""}`}
+        // Reserve the page's true size up-front (the async render sets the same
+        // values once pixels are ready), so the stack's scroll height is correct
+        // immediately and a restored scroll position is reachable on the first
+        // ResizeObserver tick rather than only after every page has rendered.
+        style={cssSize ? { width: cssSize.w * scale, height: cssSize.h * scale } : undefined}
         onClick={onClick}
       />
       {box && (
@@ -2469,6 +2754,13 @@ function PdfPageCanvas({
           ref={boxRef}
           className="file-viewer-pdf-sync-highlight"
           style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
+        />
+      )}
+      {clickMark && (
+        <div
+          key={`click-${clickMark.nonce}`}
+          className="file-viewer-pdf-click-mark"
+          style={{ left: clickMark.left, top: clickMark.top }}
         />
       )}
     </div>
@@ -2523,6 +2815,11 @@ function PdfCanvas({
   // canvases re-render asynchronously, so the content grows over several frames;
   // the ResizeObserver below re-applies this until the position is reachable.
   const restoreScroll = useRef<{ top: number; left: number } | null>(null);
+  // True when the document about to load is a same-path reload (a recompile
+  // rewrote this PDF). The fit effect reads it to keep the reader's current zoom
+  // instead of snapping back to fit-width. Set at load-start so it reflects the
+  // load that produced the current `doc`, regardless of effect timing.
+  const reloadKeepZoom = useRef(false);
   // True when a `.synctex(.gz)` sits beside the PDF, enabling reverse search.
   const [syncable, setSyncable] = useState(false);
   // True while Ctrl/⌘ is held: reverse-search clicks fire and pages show the
@@ -2550,10 +2847,10 @@ function PdfCanvas({
   // (avoiding a re-fire) while keeping the highlight mounted to animate.
   const reveal = usePdfSyncStore((s) => s.byPath[path] ?? null);
   const consumeReveal = usePdfSyncStore((s) => s.consume);
-  const [highlight, setHighlight] = useState<{ rect: SyncRect; nonce: number } | null>(null);
+  const [highlight, setHighlight] = useState<{ rect: SyncRect; nonce: number; phrase?: CaretPhrase } | null>(null);
   useEffect(() => {
     if (!reveal) return;
-    setHighlight({ rect: reveal.rect, nonce: reveal.nonce });
+    setHighlight({ rect: reveal.rect, nonce: reveal.nonce, phrase: reveal.phrase });
     consumeReveal(path);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal?.nonce]);
@@ -2620,11 +2917,13 @@ function PdfCanvas({
         firstRestore = { top: init.scrollTop ?? 0, left: init.scrollLeft ?? 0 };
       }
     }
+    const samePathReload = loadedPath.current === path;
     restoreScroll.current =
       firstRestore ??
-      (loadedPath.current === path && el
+      (samePathReload && el
         ? { top: el.scrollTop, left: el.scrollLeft }
         : null);
+    reloadKeepZoom.current = samePathReload;
     loadedPath.current = path;
     setDoc(null);
     setError(null);
@@ -2656,6 +2955,37 @@ function PdfCanvas({
     };
   }, [path, diskVersion]);
 
+  // Intrinsic (scale-1) CSS dimensions of every page, computed once per document
+  // load. Lets each PdfPageCanvas reserve its true size before rendering so the
+  // page stack reaches its full scroll height immediately — without it the
+  // restored scroll position (#viewerpos) is unreachable until every page above
+  // it has finished rendering, which on a slow startup loses the position to the
+  // restore deadline. getPage()/getViewport() read only page metadata (no
+  // rasterisation), so this is cheap relative to actually rendering the pages.
+  const [pageSizes, setPageSizes] = useState<{ w: number; h: number }[] | null>(null);
+  useEffect(() => {
+    if (!doc) {
+      setPageSizes(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const sizes = await Promise.all(
+          Array.from({ length: doc.numPages }, async (_, i) => {
+            const page = await doc.getPage(i + 1);
+            const vp = page.getViewport({ scale: 1 });
+            return { w: vp.width, h: vp.height };
+          }),
+        );
+        if (!cancelled) setPageSizes(sizes);
+      } catch {
+        /* leave heights unreserved — restore falls back to the old behaviour */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [doc]);
+
   // Fit the first page to the viewport width when a document loads.
   const fitWidth = useCallback(async (d: PDFDocumentProxy) => {
     const el = scrollRef.current;
@@ -2668,13 +2998,17 @@ function PdfCanvas({
 
   // Fit to width when a document loads — UNLESS this is the first load and a zoom
   // was persisted from a prior session, in which case honour the saved scale
-  // (already seeded into `scale`). Subsequent reloads still refit.
+  // (already seeded into `scale`). A same-path reload (a recompile rewrote this
+  // PDF) keeps the reader's current zoom rather than snapping back to fit-width;
+  // only a genuine switch to a different file refits.
   const didInitialFit = useRef(false);
   useEffect(() => {
     if (!doc) return;
     if (!didInitialFit.current) {
       didInitialFit.current = true;
       if (viewPos.initial?.scale != null) return;
+    } else if (reloadKeepZoom.current) {
+      return;
     }
     void fitWidth(doc);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2825,6 +3159,7 @@ function PdfCanvas({
                 doc={doc}
                 pageNumber={i + 1}
                 scale={scale}
+                cssSize={pageSizes?.[i]}
                 onSyncClick={syncable ? onSyncClick : undefined}
                 syncArmed={syncArmed}
                 highlight={highlight && highlight.rect.page === i + 1 ? highlight : null}
@@ -2934,6 +3269,9 @@ function TexView({
   const [shellEscape, setShellEscape] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [log, setLog] = useState("");
+  // Source locations parsed out of the last failed build's log (TeX runs with
+  // `-file-line-error`), backing the jump-to-error buttons below.
+  const [errors, setErrors] = useState<TexError[]>([]);
   const [pdfPath, setPdfPath] = useState<string | null>(null);
   // 0 = never compiled (preview shows a placeholder); each successful compile
   // bumps this to force the PDF blob to refetch the freshly written bytes.
@@ -2977,6 +3315,10 @@ function TexView({
   const jump = useEditorJump(path);
   const caretRef = useRef(0);
   const onCaret = useCallback((offset: number) => { caretRef.current = offset; }, []);
+  // Live caret getter published by the mounted CodeEditor (see `caretApiRef`).
+  // Preferred over `caretRef` at compile time because it reads the real cursor,
+  // not a snapshot that can be a stale 0 when the editor was never focused.
+  const caretApiRef = useRef<(() => number | null) | null>(null);
   const draftRef = useRef(draft);
   draftRef.current = draft;
 
@@ -2991,6 +3333,8 @@ function TexView({
   }, [path]);
   const isChild = root !== path;
   const rootName = root.slice(root.lastIndexOf("/") + 1);
+  // Directory the build runs in — error paths in the log are relative to it.
+  const rootDir = root.slice(0, root.lastIndexOf("/")) || "/";
 
   // Open the compiled PDF as its own tab (it is a real file), reusing the embed
   // viewer. openLinkedFile dedupes against an already-open PDF tab for the same
@@ -3021,15 +3365,21 @@ function TexView({
       const pdf = targetPdf();
       setSyncMiss(false);
       const { line, column } = offsetToLineCol(draftRef.current, caret);
-      const rect = await synctexView(pdf, path, line, column);
+      const phrase = phraseAt(draftRef.current, caret) ?? undefined;
+      // Try every spelling SyncTeX might have stored the source under.
+      const recs = await synctexViewBest(pdf, path, rootDir, line, column);
+      // Pick the record (box / wrapped row) the clicked column lands in.
+      const rect = pickSyncRect(recs, sourceColumnFraction(draftRef.current, line, column));
       if (rect) {
         openPdf(pdf);
-        usePdfSyncStore.getState().requestReveal(pdf, rect);
+        // Pass the clicked word + neighbours so the PDF narrows the line box to
+        // that exact word, using the phrase to pick the right occurrence.
+        usePdfSyncStore.getState().requestReveal(pdf, rect, phrase);
       } else {
         setSyncMiss(true);
       }
     },
-    [targetPdf, path, openPdf],
+    [targetPdf, path, openPdf, rootDir],
   );
 
   // Ctrl/⌘+click in the editor: follow a `\input{…}`-style reference when the
@@ -3046,7 +3396,12 @@ function TexView({
     if (compiling) return;
     setCompiling(true);
     setCompileError(null);
+    setErrors([]);
     setSyncMiss(false);
+    // Snapshot the caret synchronously, before any await can let focus change or
+    // a blur reset it: prefer the editor's live cursor, falling back to the last
+    // reported offset. This is the position forward search reveals in the PDF.
+    const caretAtCompile = caretApiRef.current?.() ?? caretRef.current;
     try {
       // The source is editable, so persist any pending edits before building.
       await save();
@@ -3067,7 +3422,9 @@ function TexView({
       // command may have run even if the document then failed to compile.
       setShellEscape(res.shell_escape);
       if (!res.success) {
-        const detail = lastLogLine(res.log);
+        const parsed = parseTexErrors(res.log);
+        setErrors(parsed);
+        const detail = parsed[0]?.message || lastLogLine(res.log);
         setCompileError(detail || "Compilation failed.");
         return;
       }
@@ -3079,9 +3436,13 @@ function TexView({
         // Forward search: reveal & highlight the caret's output position in the
         // PDF. `input` is this edited file even when a parent was built, since
         // the caret lives here. Best-effort — no-op when SyncTeX has no answer.
-        const { line, column } = offsetToLineCol(draftRef.current, caretRef.current);
-        const rect = await synctexView(res.pdf_path, path, line, column);
-        if (rect) usePdfSyncStore.getState().requestReveal(res.pdf_path, rect);
+        const { line, column } = offsetToLineCol(draftRef.current, caretAtCompile);
+        const recs = await synctexViewBest(res.pdf_path, path, rootDir, line, column);
+        const rect = pickSyncRect(recs, sourceColumnFraction(draftRef.current, line, column));
+        if (rect)
+          usePdfSyncStore
+            .getState()
+            .requestReveal(res.pdf_path, rect, phraseAt(draftRef.current, caretAtCompile) ?? undefined);
         // No SyncTeX answer for the caret → the PDF stays where it was. Flag it so
         // the user knows the jump-to-cursor was skipped (a miss, not a failure).
         else setSyncMiss(true);
@@ -3133,6 +3494,7 @@ function TexView({
             gotoLine={jump.gotoLine}
             onGotoApplied={jump.onGotoApplied}
             onCaretChange={onCaret}
+            caretApiRef={caretApiRef}
             initialScrollTop={viewPos.initial?.scrollTop}
             onScrollPersist={persistScroll}
             wrap
@@ -3149,6 +3511,10 @@ function TexView({
       <ViewerHeader onOpenExternally={onOpenExternally}>
         <button
           className={`file-viewer-tex-compile${compiling ? " is-compiling" : ""}`}
+          // mousedown + preventDefault so clicking Compile doesn't blur the
+          // editor textarea — the body caret stays put (and visible in a split)
+          // instead of vanishing, and forward search still runs from it.
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => void compile()}
           disabled={compiling}
           title={
@@ -3246,6 +3612,30 @@ function TexView({
       {compileError && (
         <div className="file-viewer-error file-viewer-tex-log-error">
           <div className="file-viewer-tex-log-line">{compileError}</div>
+          {errors.length > 0 && (
+            <ul className="file-viewer-tex-errors">
+              {errors.map((err, i) => (
+                <li key={`${err.file}:${err.line}:${i}`}>
+                  <button
+                    className="file-viewer-tex-error-jump"
+                    title={`Jump to ${err.file}:${err.line}`}
+                    onClick={() =>
+                      jumpToSource(
+                        resolveTexErrorPath(rootDir, err.file),
+                        err.line,
+                        1,
+                      )
+                    }
+                  >
+                    <span className="file-viewer-tex-error-loc">
+                      {err.file.split("/").pop()}:{err.line}
+                    </span>
+                    <span className="file-viewer-tex-error-msg">{err.message}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           {log && (
             <button
               className="file-viewer-tex-log-toggle"
@@ -3281,6 +3671,7 @@ function TexView({
           gotoLine={jump.gotoLine}
           onGotoApplied={jump.onGotoApplied}
           onCaretChange={onCaret}
+          caretApiRef={caretApiRef}
           initialScrollTop={viewPos.initial?.scrollTop}
           onScrollPersist={persistScroll}
           wrap
