@@ -25,6 +25,10 @@ mime_guess = "2.0.5"
 infer = "0.19.0"
 opener = "0.8.4"
 notify = "8"
+# Read images (e.g. screenshots) off the system clipboard for paste-into-tree.
+arboard = "3"
+# Encode the clipboard's raw RGBA image as PNG before writing it to disk.
+png = "0.17"
 
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]

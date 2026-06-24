@@ -114,3 +114,37 @@ describe("commitFileDrop — tab-bar drop", () => {
     expect(openFileMock).not.toHaveBeenCalled();
   });
 });
+
+describe("commitFileDrop — dragged out of the window (detachBounds)", () => {
+  const bounds = { x: 100, y: 100, w: 900, h: 640 };
+
+  beforeEach(() => {
+    openFileMock.mockClear();
+  });
+
+  it("opens an external-app file directly, without a detached Eldrun subwindow", () => {
+    const g = seedGroup();
+    // No built-in viewer → the file opens in its external app.
+    commitFileDrop(fileDrag(PASS, g), "p", "/p", bounds);
+    expect(openFileMock).toHaveBeenCalledWith(
+      "/p/notes.md",
+      "mousepad",
+      "p",
+      "file_drag_out",
+    );
+    // No standalone Eldrun window was spawned for it.
+    expect(useTabsStore.getState().detachedGroupsByScope["p"] ?? []).toHaveLength(0);
+  });
+
+  it("detaches a built-in-viewer file into its own standalone Eldrun window", () => {
+    const g = seedGroup();
+    const drag = fileDrag(null, g);
+    drag.viewer = "pdf";
+    drag.filePath = "/p/doc.pdf";
+    drag.fileName = "doc.pdf";
+    commitFileDrop(drag, "p", "/p", bounds);
+    // A detached window was created; the external opener was NOT used.
+    expect(openFileMock).not.toHaveBeenCalled();
+    expect(useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(1);
+  });
+});

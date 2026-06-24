@@ -8,6 +8,7 @@ import { useDragStore, type EmbedCap } from "../../stores/drag";
 import { commitFileDrop } from "../tabs/commitFileDrop";
 import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
+import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
@@ -42,6 +43,10 @@ interface Props {
 type GitStatusMap = Record<string, string>;
 type EntryContextMenu = { x: number; y: number; entry: FileEntry | null } | null;
 type DeleteConfirm = { entry: FileEntry; relPath: string } | null;
+/** Open paste-rename window: `kind` is whether the source is the in-app file
+ *  clipboard or a system-clipboard image (screenshot); `name` is the name being
+ *  chosen for the pasted result in the current folder. */
+type PastePrompt = { kind: "file" | "image"; name: string; error: string | null };
 
 export const STATUS_COLOR: Record<string, string> = {
   modified:  "#f85149", // red – tracked, unstaged working-tree change
@@ -141,6 +146,14 @@ export function FileTree({
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
   const [defaultAppFor, setDefaultAppFor] = useState<FileEntry | null>(null);
+  const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
+  const [pasteBusy, setPasteBusy] = useState(false);
+  // Whether the system clipboard holds an image when the context menu opened
+  // (probed async on right-click), gating the "Paste screenshot" option.
+  const [clipboardImage, setClipboardImage] = useState(false);
+  const clipboard = useFileClipboardStore((s) => s.entry);
+  const setClipboard = useFileClipboardStore((s) => s.setEntry);
+  const clearClipboard = useFileClipboardStore((s) => s.clear);
   // TeX toolchain presence (null until probed); absolute paths of .tex files
   // currently compiling, for the inline build spinner.
   const [texCap, setTexCap] = useState<TexCapability | null>(null);
@@ -458,6 +471,7 @@ export function FileTree({
     e.stopPropagation();
     setTooltip(null);
     setContextMenu({ x: e.clientX, y: e.clientY, entry });
+    probeClipboardImage();
   }
 
   async function stageEntry(entry: FileEntry) {
@@ -536,10 +550,87 @@ export function FileTree({
     }
   }
 
+  function copyEntry(entry: FileEntry, op: "copy" | "cut") {
+    setContextMenu(null);
+    setClipboard({
+      projectDir,
+      relPath: relForEntry(entry),
+      name: entry.name,
+      isDir: entry.is_dir,
+      op,
+    });
+  }
+
+  /** Suggest a name not already present in the current folder, appending
+   *  " copy"/" copy N" (before the extension) until it is free. */
+  function suggestPasteName(name: string): string {
+    const taken = new Set(rawEntries.map((e) => e.name));
+    if (!taken.has(name)) return name;
+    const dot = name.lastIndexOf(".");
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : "";
+    for (let i = 1; ; i++) {
+      const candidate = `${stem} copy${i > 1 ? ` ${i}` : ""}${ext}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+  }
+
+  function openPastePrompt() {
+    setContextMenu(null);
+    if (!clipboard) return;
+    setPastePrompt({ kind: "file", name: suggestPasteName(clipboard.name), error: null });
+  }
+
+  function openScreenshotPrompt() {
+    setContextMenu(null);
+    setPastePrompt({ kind: "image", name: suggestPasteName("screenshot.png"), error: null });
+  }
+
+  async function confirmPaste() {
+    if (!pastePrompt) return;
+    const newName = pastePrompt.name.trim();
+    if (!newName || newName.includes("/") || newName.includes("\\") || newName === "." || newName === "..") {
+      setPastePrompt({ ...pastePrompt, error: "Invalid file name" });
+      return;
+    }
+    const destRel = relPath ? `${relPath}/${newName}` : newName;
+    setPasteBusy(true);
+    try {
+      if (pastePrompt.kind === "image") {
+        await invoke("save_clipboard_image", { projectDir, relPath: destRel });
+      } else {
+        if (!clipboard) return;
+        await invoke(clipboard.op === "cut" ? "move_path" : "copy_path", {
+          srcProjectDir: clipboard.projectDir,
+          srcRel: clipboard.relPath,
+          destProjectDir: projectDir,
+          destRel,
+        });
+        if (clipboard.op === "cut") clearClipboard();
+      }
+      setPastePrompt(null);
+      await load(relPath);
+    } catch (err) {
+      setPastePrompt({ ...pastePrompt, error: String(err) });
+    } finally {
+      setPasteBusy(false);
+    }
+  }
+
   function showRootContextMenu(e: React.MouseEvent<HTMLDivElement>) {
     e.preventDefault();
     setTooltip(null);
     setContextMenu({ x: e.clientX, y: e.clientY, entry: null });
+    probeClipboardImage();
+  }
+
+  // Ask the backend whether a screenshot/image is on the system clipboard so the
+  // open context menu can reveal "Paste screenshot". Async, so the menu shows
+  // immediately and the option appears once the probe resolves.
+  function probeClipboardImage() {
+    invoke<boolean>("clipboard_has_image")
+      .then(setClipboardImage)
+      .catch(() => setClipboardImage(false));
   }
 
   async function confirmDelete() {
@@ -836,6 +927,17 @@ export function FileTree({
               <button onClick={() => createEntry("dir")}>
                 New Folder
               </button>
+              {(clipboard || clipboardImage) && <hr />}
+              {clipboard && (
+                <button onClick={openPastePrompt}>
+                  Paste{clipboard.op === "cut" ? " (move)" : ""} “{clipboard.name}”
+                </button>
+              )}
+              {clipboardImage && (
+                <button onClick={openScreenshotPrompt}>
+                  Paste screenshot
+                </button>
+              )}
             </>
           )}
           {contextMenu.entry && (() => {
@@ -881,6 +983,23 @@ export function FileTree({
                   </>
                 )}
                 <hr />
+                <button onClick={() => copyEntry(entry, "copy")}>
+                  Copy
+                </button>
+                <button onClick={() => copyEntry(entry, "cut")}>
+                  Cut
+                </button>
+                {clipboard && (
+                  <button onClick={openPastePrompt}>
+                    Paste{clipboard.op === "cut" ? " (move)" : ""} “{clipboard.name}”
+                  </button>
+                )}
+                {clipboardImage && (
+                  <button onClick={openScreenshotPrompt}>
+                    Paste screenshot
+                  </button>
+                )}
+                <hr />
                 <button onClick={() => renameEntry(entry)}>
                   Rename
                 </button>
@@ -905,6 +1024,62 @@ export function FileTree({
             <div className="file-delete-actions">
               <button type="button" onClick={() => setDeleteConfirm(null)}>Cancel</button>
               <button type="button" className="danger" onClick={confirmDelete}>Delete</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+      {pastePrompt && createPortal(
+        <div className="modal-backdrop" onMouseDown={() => !pasteBusy && setPastePrompt(null)}>
+          <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
+            <h2>
+              {pastePrompt.kind === "image"
+                ? "Paste Screenshot"
+                : `Paste ${clipboard?.isDir ? "Folder" : "File"}`}
+            </h2>
+            <p>
+              {pastePrompt.kind === "image" ? (
+                <>Save clipboard image</>
+              ) : (
+                <>
+                  {clipboard?.op === "cut" ? "Move" : "Copy"} <strong>{clipboard?.name}</strong>
+                </>
+              )}{" "}
+              into <strong>{relPath || projectDir.split("/").pop() || "project root"}</strong> as:
+            </p>
+            <input
+              className="file-paste-name"
+              autoFocus
+              value={pastePrompt.name}
+              disabled={pasteBusy}
+              onChange={(e) => setPastePrompt({ ...pastePrompt, name: e.target.value, error: null })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void confirmPaste();
+                if (e.key === "Escape") setPastePrompt(null);
+              }}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                marginTop: 6,
+                fontSize: 12,
+                background: "var(--bg-panel)",
+                color: "var(--text-primary)",
+                border: "1px solid var(--border-color)",
+                borderRadius: 3,
+                padding: "4px 6px",
+                fontFamily: "inherit",
+              }}
+            />
+            {pastePrompt.error && (
+              <div className="file-delete-path" style={{ color: "var(--danger, #f85149)" }}>
+                {pastePrompt.error}
+              </div>
+            )}
+            <div className="file-delete-actions">
+              <button type="button" onClick={() => setPastePrompt(null)} disabled={pasteBusy}>Cancel</button>
+              <button type="button" onClick={confirmPaste} disabled={pasteBusy || !pastePrompt.name.trim()}>
+                {pastePrompt.kind === "file" && clipboard?.op === "cut" ? "Move" : "Paste"}
+              </button>
             </div>
           </div>
         </div>,

@@ -76,6 +76,7 @@ pub fn opened_windows_for_project<'a>(
 pub fn do_launch(
     registry: &WindowRegistryState,
     exec: &str,
+    args: &[String],
     file: Option<&str>,
     project_id: Option<&str>,
     role: Option<&str>,
@@ -83,6 +84,7 @@ pub fn do_launch(
 ) -> Result<TrackedWindow, String> {
     let launch_exec = resolve_launch_exec(exec);
     let mut cmd = Command::new(&launch_exec);
+    cmd.args(args);
     if let Some(f) = file {
         cmd.arg(f);
     }
@@ -124,6 +126,7 @@ pub fn do_launch(
 pub fn launch_app(
     registry: State<'_, WindowRegistryState>,
     exec: String,
+    args: Option<Vec<String>>,
     file: Option<String>,
     project_id: Option<String>,
     role: Option<String>,
@@ -139,6 +142,7 @@ pub fn launch_app(
     do_launch(
         registry.inner(),
         &exec,
+        &args.unwrap_or_default(),
         file.as_deref(),
         project_id.as_deref(),
         role.as_deref(),
@@ -1051,6 +1055,7 @@ pub fn restore_open_apps(
         if let Ok(win) = do_launch(
             registry.inner(),
             &app.exec,
+            &[],
             app.file.as_deref(),
             Some(&project_id),
             None,

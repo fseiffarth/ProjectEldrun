@@ -278,6 +278,100 @@ pub fn create_dir(project_dir: String, rel_path: String) -> Result<(), String> {
     fs::create_dir_all(&target).map_err(|e| e.to_string())
 }
 
+/// Copy a file or directory tree into another location. Both ends are confined
+/// to their respective project roots (which may be the same project, enabling an
+/// in-project copy/paste, or two box-co-accessible projects). The destination
+/// must not already exist, and a directory may not be copied into itself.
+#[tauri::command]
+pub fn copy_path(
+    src_project_dir: String,
+    src_rel: String,
+    dest_project_dir: String,
+    dest_rel: String,
+) -> Result<(), String> {
+    let (src, dest) = resolve_transfer(&src_project_dir, &src_rel, &dest_project_dir, &dest_rel)?;
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    copy_recursive(&src, &dest).map_err(|e| e.to_string())
+}
+
+/// Move (cut/paste) a file or directory tree into another location. Same
+/// confinement and pre-conditions as [`copy_path`]. Falls back to copy+remove
+/// when a plain rename is not possible (e.g. across filesystems/mountpoints).
+#[tauri::command]
+pub fn move_path(
+    src_project_dir: String,
+    src_rel: String,
+    dest_project_dir: String,
+    dest_rel: String,
+) -> Result<(), String> {
+    let (src, dest) = resolve_transfer(&src_project_dir, &src_rel, &dest_project_dir, &dest_rel)?;
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if fs::rename(&src, &dest).is_ok() {
+        return Ok(());
+    }
+    // Cross-device rename fails with EXDEV — copy then delete the original.
+    copy_recursive(&src, &dest).map_err(|e| e.to_string())?;
+    let remove = if src.is_dir() {
+        fs::remove_dir_all(&src)
+    } else {
+        fs::remove_file(&src)
+    };
+    remove.map_err(|e| e.to_string())
+}
+
+/// Validate and resolve a copy/move: confine both ends, refuse an existing
+/// destination, a no-op, and copying a directory into its own subtree.
+fn resolve_transfer(
+    src_project_dir: &str,
+    src_rel: &str,
+    dest_project_dir: &str,
+    dest_rel: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let src_root = canonical(src_project_dir)?;
+    let src = canonical(&src_root.join(src_rel).to_string_lossy().to_string())?;
+    enforce_confinement(&src_root, &src)?;
+    if src == src_root {
+        return Err("refusing to copy the project root".to_string());
+    }
+
+    let dest_root = canonical(dest_project_dir)?;
+    let dest = dest_root.join(dest_rel);
+    let dest_c = canonical_or_new(&dest);
+    enforce_confinement(&dest_root, &dest_c)?;
+
+    if dest_c.exists() {
+        return Err(format!("'{}' already exists", dest.display()));
+    }
+    if dest_c == src {
+        return Err("source and destination are the same".to_string());
+    }
+    // Block copying a directory into its own subtree (would recurse forever).
+    if dest_c.starts_with(&src) {
+        return Err("cannot copy a folder into itself".to_string());
+    }
+    Ok((src, dest))
+}
+
+/// Recursively copy `src` to `dest`. Directories are recreated and their
+/// contents copied entry by entry; symlinks are not followed (copied as their
+/// target's contents via the recursive descent on the resolved metadata).
+fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        fs::create_dir_all(dest)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            copy_recursive(&entry.path(), &dest.join(entry.file_name()))?;
+        }
+    } else {
+        fs::copy(src, dest)?;
+    }
+    Ok(())
+}
+
 // ── MIME detection (magic bytes) ──────────────────────────────────────────
 
 #[tauri::command]
@@ -722,6 +816,71 @@ mod tests {
             err.contains("/tmp/project"),
             "error must mention root: {err}"
         );
+    }
+
+    // ── copy_path / move_path ──────────────────────────────────────────────
+
+    #[test]
+    fn copy_path_duplicates_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
+        std::fs::write(tmp.path().join("a.txt"), "hello").unwrap();
+
+        copy_path(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap();
+
+        assert_eq!(std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(), "hello");
+        assert_eq!(std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(), "hello");
+    }
+
+    #[test]
+    fn copy_path_recurses_into_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        copy_path(dir.clone(), "src".into(), dir.clone(), "src2".into()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("src2/main.rs")).unwrap(),
+            "fn main() {}"
+        );
+        assert!(tmp.path().join("src/main.rs").exists());
+    }
+
+    #[test]
+    fn copy_path_refuses_existing_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
+        std::fs::write(tmp.path().join("a.txt"), "1").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "2").unwrap();
+
+        let err = copy_path(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+        // The pre-existing destination is untouched.
+        assert_eq!(std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(), "2");
+    }
+
+    #[test]
+    fn copy_path_refuses_directory_into_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+
+        let err = copy_path(dir.clone(), "src".into(), dir.clone(), "src/inner".into()).unwrap_err();
+        assert!(err.contains("into itself"), "{err}");
+    }
+
+    #[test]
+    fn move_path_relocates_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
+        std::fs::write(tmp.path().join("a.txt"), "hello").unwrap();
+
+        move_path(dir.clone(), "a.txt".into(), dir.clone(), "sub/b.txt".into()).unwrap();
+
+        assert!(!tmp.path().join("a.txt").exists());
+        assert_eq!(std::fs::read_to_string(tmp.path().join("sub/b.txt")).unwrap(), "hello");
     }
 
     // ── list_project_endings ───────────────────────────────────────────────
