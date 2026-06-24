@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -79,6 +80,7 @@ pub fn store_config(src: &str) -> Result<String, String> {
         .unwrap_or("config.ovpn");
     let dest = dir.join(format!("{}__{file_name}", safe_stem(src)));
     std::fs::copy(src_path, &dest).map_err(|e| format!("copy config: {e}"))?;
+    #[cfg(unix)]
     let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600));
     Ok(dest.to_string_lossy().into_owned())
 }
@@ -152,11 +154,11 @@ fn write_askpass(stem: &str, password: &str) -> Result<PathBuf, String> {
     let dir = runtime_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create openvpn dir: {e}"))?;
     let path = dir.join(format!("{stem}.pass"));
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    let mut f = opts
         .open(&path)
         .map_err(|e| format!("create askpass file: {e}"))?;
     writeln!(f, "{password}").map_err(|e| format!("write askpass file: {e}"))?;

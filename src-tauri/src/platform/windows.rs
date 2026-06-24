@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use super::{WorkspaceBackend, WorkspaceInfo};
 
+use windows::core::BOOL;
 use windows::core::GUID;
-use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
@@ -107,15 +108,14 @@ pub fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
 fn current_desktop_id() -> Result<GUID, String> {
     let manager = virtual_desktop_manager()?;
     let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.0 == 0 {
+    if hwnd.0.is_null() {
         return Err("no foreground window for virtual desktop detection".to_string());
     }
-    let mut desktop = GUID::zeroed();
-    unsafe {
+    let desktop = unsafe {
         manager
-            .GetWindowDesktopId(hwnd, &mut desktop)
-            .map_err(|e| format!("GetWindowDesktopId: {e}"))?;
-    }
+            .GetWindowDesktopId(hwnd)
+            .map_err(|e| format!("GetWindowDesktopId: {e}"))?
+    };
     Ok(desktop)
 }
 
@@ -160,10 +160,10 @@ unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
 
 fn is_candidate_window(hwnd: HWND) -> bool {
     unsafe {
-        IsWindow(hwnd).as_bool()
+        IsWindow(Some(hwnd)).as_bool()
             && IsWindowVisible(hwnd).as_bool()
-            && GetParent(hwnd).0 == 0
-            && GetWindow(hwnd, GW_OWNER).0 == 0
+            && GetParent(hwnd).map_or(true, |h| h.0.is_null())
+            && GetWindow(hwnd, GW_OWNER).map_or(true, |h| h.0.is_null())
     }
 }
 
@@ -179,7 +179,7 @@ fn restore_and_raise(hwnd: HWND) {
 }
 
 fn is_window(hwnd: HWND) -> bool {
-    unsafe { IsWindow(hwnd).as_bool() }
+    unsafe { IsWindow(Some(hwnd)).as_bool() }
 }
 
 fn window_pid(hwnd: HWND) -> Option<u32> {
@@ -196,6 +196,6 @@ fn hwnd_to_u64(hwnd: HWND) -> u64 {
 
 fn hwnd_from_u64(window_id: u64) -> Result<HWND, String> {
     isize::try_from(window_id)
-        .map(HWND)
+        .map(|v| HWND(v as *mut core::ffi::c_void))
         .map_err(|_| format!("invalid windows window id {window_id}"))
 }
