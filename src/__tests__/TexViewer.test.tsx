@@ -54,7 +54,7 @@ function setupInvoke(
         shell_escape: false,
       });
     }
-    if (cmd === "synctex_view") return Promise.resolve(null);
+    if (cmd === "synctex_view") return Promise.resolve([]); // no records → forward-search miss
     if (cmd === "synctex_edit") return Promise.resolve(null);
     if (cmd === "file_mtime") return Promise.reject(new Error("no synctex"));
     if (cmd === "read_file_bytes") return Promise.resolve([37, 80, 68, 70]); // %PDF
@@ -157,7 +157,7 @@ describe("TexView", () => {
   });
 
   it("shows a forward-search miss notice when SyncTeX can't locate the cursor", async () => {
-    // setupInvoke's synctex_view resolves null → forward search finds no spot.
+    // setupInvoke's synctex_view resolves [] → forward search finds no spot.
     setupInvoke(true, ["pdflatex"]);
     await renderTexView();
 

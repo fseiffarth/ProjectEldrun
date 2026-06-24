@@ -1,5 +1,11 @@
 import { type TabDrag } from "../../stores/drag";
-import { EMPTY_GROUP_ID, findGroup, useTabsStore, type DropEdge } from "../../stores/tabs";
+import {
+  EMPTY_GROUP_ID,
+  findGroup,
+  useTabsStore,
+  type DropEdge,
+  type WindowBounds,
+} from "../../stores/tabs";
 
 /**
  * Commit a finished FILE drag (a file row dragged from the FileTree onto a tab
@@ -16,6 +22,9 @@ import { EMPTY_GROUP_ID, findGroup, useTabsStore, type DropEdge } from "../../st
  *  - Dropped on a subwindow body edge → carve out a NEW subwindow at that edge
  *    holding the same embed tab (splitWithNewTab); a center drop adds it into
  *    that group instead.
+ *  - Released OUTSIDE the main window (`detachBounds` set, e.g. dragged onto
+ *    another monitor) → open the file in its OWN standalone detached OS window
+ *    at those bounds (detachNewTab), instead of any in-window target.
  *  - Dropped anywhere else (right panel, empty space, no resolved target) → do
  *    nothing. A drag is purely a drag-to-tab gesture; opening a file is reserved
  *    for double-click in the FileTree, so a stray drop must never open it.
@@ -30,6 +39,9 @@ export function commitFileDrop(
   // (that path used projectId), so it's no longer read here.
   _projectId: string | null,
   projectCwd: string,
+  // Set when the file was released outside the main window: spawn a standalone
+  // detached window at these screen-px bounds rather than docking into a tab.
+  detachBounds?: WindowBounds | null,
 ) {
   if (!d || d.kind !== "file" || !d.filePath || !d.fileName) return;
 
@@ -49,6 +61,13 @@ export function commitFileDrop(
     embedExec: d.viewer ? undefined : (cap?.resolved_exec ?? d.fileExec),
     viewer: d.viewer,
   };
+
+  // Released outside the main window → standalone window, regardless of layout
+  // state. Takes precedence over every in-window target below.
+  if (detachBounds) {
+    useTabsStore.getState().detachNewTab(tabPayload, detachBounds);
+    return;
+  }
 
   // Empty state: the scope has no layout yet, so the only drop target is the
   // full-panel placeholder subwindow (its tab bar resolves to EMPTY_GROUP_ID as

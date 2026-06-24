@@ -413,7 +413,7 @@ export function FileTree({
       }
       useDragStore.getState().move(ev.clientX, ev.clientY);
     };
-    const onUp = () => {
+    const onUp = (ev: PointerEvent) => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       if (!dragging) {
@@ -424,7 +424,24 @@ export function FileTree({
       }
       const d = useDragStore.getState().drag;
       if (d != null) {
-        commitFileDrop(d, projectId, projectDir);
+        // Released OUTSIDE the main window (e.g. dragged onto another monitor):
+        // open the file in its own standalone detached window at the cursor. The
+        // pointer's implicit capture keeps delivering coords past the viewport,
+        // so client coords outside [0,inner) is the outside-the-window signal.
+        const outside =
+          ev.clientX < 0 ||
+          ev.clientY < 0 ||
+          ev.clientX >= window.innerWidth ||
+          ev.clientY >= window.innerHeight;
+        const detachBounds = outside
+          ? {
+              x: Math.round(ev.screenX - 80),
+              y: Math.round(ev.screenY - 8),
+              w: 900,
+              h: 640,
+            }
+          : null;
+        commitFileDrop(d, projectId, projectDir, detachBounds);
         useDragStore.getState().end();
       }
     };

@@ -981,6 +981,7 @@ select option {
    paint. They sit ABOVE the highlight layer but below the textarea caret. */
 .file-viewer-link-layer,
 .file-viewer-search-layer,
+.file-viewer-change-layer,
 .file-viewer-ghost {
   position: absolute;
   inset: 0;
@@ -1006,7 +1007,8 @@ select option {
    so it is sized to its own content and clipped by the parent (not inset to the
    box). The ghost layer keeps the inset/overflow model above. */
 .file-viewer-link-layer,
-.file-viewer-search-layer {
+.file-viewer-search-layer,
+.file-viewer-change-layer {
   inset: auto;
   top: 0;
   left: 0;
@@ -1024,6 +1026,16 @@ select option {
 }
 .file-viewer-search-layer .file-viewer-search-match.current {
   background: rgba(255, 145, 0, 0.6);
+}
+
+/* Last-change marker: tint the most recently inserted/edited run so the latest
+   edit stands out. Sits below the textarea like the other overlays, so the tint
+   paints behind the editable glyphs. A green "changed" tint, distinct from the
+   yellow/orange search highlight; fixed rgba so it reads on both light and dark
+   themes (color-mix/theme vars are unreliable on WebKitGTK here). */
+.file-viewer-change-layer .file-viewer-change-mark {
+  border-radius: 2px;
+  background: rgba(63, 185, 80, 0.28);
 }
 
 /* #49: recognised file links read as clickable — a dotted underline in the link
@@ -1190,6 +1202,7 @@ select option {
 .file-viewer-code-area.is-wrapped .file-viewer-highlight,
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-change-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1202,6 +1215,7 @@ select option {
 .file-viewer-code-area.is-wrapped .file-viewer-highlight,
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-change-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   min-width: 0;
   right: auto;
@@ -1509,6 +1523,28 @@ select option {
   100% { opacity: 0; }
 }
 
+/* Reverse-search click feedback (#56): a small ring centred on the point the
+   reader Ctrl/⌘-clicked in the PDF, pulsing then fading over ~2s, so the
+   source-jump is visibly anchored on the PDF side too. Margin centres the 16px
+   marker on its (left,top) click coordinate. */
+.file-viewer-pdf-click-mark {
+  position: absolute;
+  pointer-events: none;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent, #4493f8) 40%, transparent);
+  border: 1.5px solid var(--accent, #4493f8);
+  animation: file-viewer-pdf-click-fade 2s ease-out forwards;
+}
+
+@keyframes file-viewer-pdf-click-fade {
+  0% { opacity: 0; transform: scale(0.4); }
+  12% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.7); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .file-viewer-tex-compile.is-compiling {
     animation: none;
@@ -1521,6 +1557,10 @@ select option {
   }
   /* Hold a static highlight briefly rather than animating its opacity. */
   .file-viewer-pdf-sync-highlight {
+    animation: none;
+    opacity: 1;
+  }
+  .file-viewer-pdf-click-mark {
     animation: none;
     opacity: 1;
   }
@@ -1578,6 +1618,51 @@ select option {
   cursor: pointer;
 }
 
+/* Jump-to-error list under a failed compile. Each row is a button: a
+   monospace `file:line` chip plus the TeX message. */
+.file-viewer-tex-errors {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.file-viewer-tex-error-jump {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 2px 6px;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.file-viewer-tex-error-jump:hover {
+  background: var(--bg-input, var(--bg-panel));
+  border-color: var(--border-color);
+}
+
+.file-viewer-tex-error-loc {
+  flex-shrink: 0;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-weight: 600;
+  color: var(--accent, var(--text-primary));
+}
+
+.file-viewer-tex-error-msg {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .file-viewer-tex-log {
   margin: 6px 0 0;
   padding: 8px;
@@ -1594,29 +1679,40 @@ select option {
 
 /* Rendered markdown. */
 .markdown-body {
-  padding: 14px 18px;
+  padding: 16px 22px;
   font-size: 13px;
-  line-height: 1.6;
-  max-width: 860px;
+  line-height: 1.65;
+  max-width: 880px;
 }
+
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
 
 .markdown-body h1,
 .markdown-body h2,
 .markdown-body h3,
-.markdown-body h4 {
-  margin: 1.2em 0 0.5em;
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 1.4em 0 0.55em;
   line-height: 1.25;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
-.markdown-body h1 { font-size: 1.7em; border-bottom: 1px solid var(--border-color); padding-bottom: 0.3em; }
-.markdown-body h2 { font-size: 1.4em; border-bottom: 1px solid var(--border-color); padding-bottom: 0.25em; }
+.markdown-body h1 { font-size: 1.8em; border-bottom: 1px solid var(--border-color); padding-bottom: 0.3em; }
+.markdown-body h2 { font-size: 1.45em; border-bottom: 1px solid var(--border-color); padding-bottom: 0.25em; }
 .markdown-body h3 { font-size: 1.2em; }
 .markdown-body h4 { font-size: 1.05em; }
+.markdown-body h5 { font-size: 0.95em; }
+.markdown-body h6 { font-size: 0.9em; color: var(--text-muted); }
 
-.markdown-body p { margin: 0.6em 0; }
+.markdown-body p { margin: 0.65em 0; }
 
 .markdown-body a { color: var(--accent, #4493f8); text-decoration: none; }
 .markdown-body a:hover { text-decoration: underline; }
+
+.markdown-body strong { font-weight: 650; }
 
 .markdown-body code {
   font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
@@ -1627,49 +1723,139 @@ select option {
 }
 
 .markdown-body pre {
+  position: relative;
   background: var(--bg-input, rgba(127, 127, 127, 0.12));
   border: 1px solid var(--border-color);
-  border-radius: 5px;
-  padding: 10px 12px;
+  border-radius: 6px;
+  padding: 11px 13px;
   overflow-x: auto;
-  margin: 0.7em 0;
+  margin: 0.8em 0;
+}
+
+/* Language label on fenced code blocks (set from the info string). */
+.markdown-body pre.md-code[data-lang]::before {
+  content: attr(data-lang);
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 1px 7px;
+  font-size: 0.68em;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg-secondary, rgba(127, 127, 127, 0.18));
+  border-left: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  border-bottom-left-radius: 5px;
+  border-top-right-radius: 5px;
+  pointer-events: none;
 }
 
 .markdown-body pre code {
   background: none;
   padding: 0;
   font-size: 0.85em;
+  line-height: 1.5;
 }
 
 .markdown-body blockquote {
-  margin: 0.7em 0;
-  padding: 0.1em 0.9em;
-  border-left: 3px solid var(--border-color);
+  margin: 0.8em 0;
+  padding: 0.1em 0.95em;
+  border-left: 3px solid var(--accent, var(--border-color));
   color: var(--text-muted);
 }
 
+.markdown-body blockquote > :first-child { margin-top: 0; }
+.markdown-body blockquote > :last-child { margin-bottom: 0; }
+
 .markdown-body ul,
-.markdown-body ol { margin: 0.5em 0; padding-left: 1.6em; }
-.markdown-body li { margin: 0.2em 0; }
+.markdown-body ol { margin: 0.55em 0; padding-left: 1.6em; }
+.markdown-body li { margin: 0.22em 0; }
+.markdown-body li > ul,
+.markdown-body li > ol { margin: 0.22em 0; }
+
+/* GitHub-style task list items. */
+.markdown-body li.task-item {
+  list-style: none;
+  margin-left: -1.35em;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
+}
+.markdown-body li.task-item > input[type="checkbox"] {
+  margin: 0.32em 0 0;
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+}
 
 .markdown-body hr {
   border: 0;
   border-top: 1px solid var(--border-color);
-  margin: 1.2em 0;
+  margin: 1.4em 0;
 }
 
-.markdown-body img { max-width: 100%; }
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 4px;
+}
 
-.markdown-body table {
+/* Tables: rounded frame, header tint, zebra striping. */
+.markdown-body table,
+.markdown-body table.md-table {
   border-collapse: collapse;
-  margin: 0.7em 0;
+  margin: 0.9em 0;
+  width: auto;
+  max-width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  overflow: hidden;
 }
 
 .markdown-body th,
 .markdown-body td {
   border: 1px solid var(--border-color);
-  padding: 4px 8px;
+  padding: 5px 11px;
 }
+
+.markdown-body thead th {
+  background: var(--bg-secondary, rgba(127, 127, 127, 0.16));
+  font-weight: 650;
+  text-align: left;
+}
+
+.markdown-body tbody tr:nth-child(even) {
+  background: var(--bg-input, rgba(127, 127, 127, 0.07));
+}
+
+/* GitHub alert callouts (> [!NOTE] / [!TIP] / [!IMPORTANT] / [!WARNING] / [!CAUTION]).
+   Theme-safe: a coloured left rail + tinted title, neutral background, so no
+   color-mix is needed (avoids the WebKitGTK color-mix caveat). */
+.markdown-body .md-alert {
+  margin: 0.9em 0;
+  padding: 0.5em 0.95em;
+  border-left: 4px solid var(--border-color);
+  border-radius: 0 5px 5px 0;
+  background: var(--bg-input, rgba(127, 127, 127, 0.08));
+}
+.markdown-body .md-alert > :first-child { margin-top: 0; }
+.markdown-body .md-alert > :last-child { margin-bottom: 0; }
+.markdown-body .md-alert-title {
+  font-weight: 650;
+  margin: 0 0 0.25em;
+  font-size: 0.92em;
+}
+
+.markdown-body .md-alert-note     { border-left-color: var(--accent); }
+.markdown-body .md-alert-note .md-alert-title { color: var(--accent); }
+.markdown-body .md-alert-tip      { border-left-color: var(--success); }
+.markdown-body .md-alert-tip .md-alert-title { color: var(--success); }
+.markdown-body .md-alert-important { border-left-color: var(--accent-secondary); }
+.markdown-body .md-alert-important .md-alert-title { color: var(--accent-secondary); }
+.markdown-body .md-alert-warning  { border-left-color: var(--warning); }
+.markdown-body .md-alert-warning .md-alert-title { color: var(--warning); }
+.markdown-body .md-alert-caution  { border-left-color: var(--danger); }
+.markdown-body .md-alert-caution .md-alert-title { color: var(--danger); }
 
 /* ── Tiling subwindows ───────────────────────────────────────────────────── */
 
@@ -1835,6 +2021,96 @@ select option {
   border: 1px solid var(--accent);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
   opacity: 0.9;
+}
+
+/* One-shot send-off when a tab/subwindow is dropped OUT to its own OS window
+   (see DetachFlourish / stores/detachAnim). A card at the exit point lifts,
+   scales, and slides toward the edge the content left through, then fades —
+   reading as the content being ejected into its own window. The fly direction
+   comes from CSS custom props set per play (--fly-dx / --fly-dy). */
+.tab-detach-flourish {
+  position: fixed;
+  z-index: 9998; /* just under the live drag ghost (.tab-drag-ghost: 9999) */
+  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--accent) inset;
+  overflow: hidden;
+  transform-origin: center center;
+  will-change: transform, opacity;
+  animation: tab-detach-fly 0.42s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+
+.tab-detach-flourish-label {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--control-hover-bg);
+  border-bottom: 1px solid var(--accent);
+  color: var(--text-primary);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A pulse ring that expands out of the card to punctuate the launch. */
+.tab-detach-flourish::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--accent);
+  opacity: 0.6;
+  animation: tab-detach-ring 0.42s ease-out forwards;
+}
+
+@keyframes tab-detach-fly {
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0.96;
+  }
+  32% {
+    transform: translate(-50%, -50%) scale(1.06);
+    opacity: 0.92;
+  }
+  100% {
+    transform: translate(calc(-50% + var(--fly-dx, 0px)), calc(-50% + var(--fly-dy, -64px)))
+      scale(0.42);
+    opacity: 0;
+  }
+}
+
+@keyframes tab-detach-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+/* Respect reduced-motion: collapse the launch to a simple fade, no slide/zoom. */
+@media (prefers-reduced-motion: reduce) {
+  .tab-detach-flourish {
+    animation: tab-detach-fade 0.25s ease-out forwards;
+  }
+  .tab-detach-flourish::after {
+    animation: none;
+    opacity: 0;
+  }
+  @keyframes tab-detach-fade {
+    0% {
+      transform: translate(-50%, -50%);
+      opacity: 0.9;
+    }
+    100% {
+      transform: translate(-50%, -50%);
+      opacity: 0;
+    }
+  }
 }
 
 /* ── Right panel overlay ──────────────────────────────────────────────── */
@@ -2932,7 +3208,10 @@ select option {
   align-items: flex-end;
   padding: 0 4px;
   gap: 2px;
-  overflow-x: auto;
+  /* The bar itself no longer scrolls; only the inner `.tab-strip` does. The bar
+     stays a fixed row holding the scroll chevrons, the strip, the + button and
+     the close/detach controls. */
+  overflow: hidden;
   /* A fixed-height strip at the top of its subwindow. NOT flex:1 — the tab bar
      lives inside the column-flex `.subwindow`, so growing would let it eat the
      pane's vertical space and float the tabs to mid-window. */
@@ -2952,7 +3231,43 @@ select option {
 .tab-bar button,
 .tab-bar .tab-new-wrap { cursor: default; }
 
-.tab-bar::-webkit-scrollbar { height: 0; }
+/* The horizontally-scrolling tab container. Grows to fill the bar between the
+   chevrons and the +/close controls; its scrollbar is hidden (chevrons + wheel
+   drive the scroll instead). */
+.tab-strip {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab-strip::-webkit-scrollbar { height: 0; }
+
+/* Chevron buttons that flank the strip when it overflows. */
+.tab-scroll-btn {
+  flex-shrink: 0;
+  align-self: center;
+  width: 20px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  z-index: 12;
+  transition: background-color 0.1s, color 0.1s;
+}
+.tab-scroll-btn:hover {
+  background: var(--pill-hover-bg);
+  color: var(--text-primary);
+}
 
 .tab {
   display: flex;

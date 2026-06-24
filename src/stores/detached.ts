@@ -84,13 +84,18 @@ export const DETACHED_DRAG_START = "detached-drag-start";
 export const DETACHED_DRAG_MOVE = "detached-drag-move";
 export const DETACHED_DRAG_END = "detached-drag-end";
 
-/** Detached → main: begin a drag-to-dock of this whole popout. */
+/**
+ * Detached → main: begin a drag-to-dock. Without `tabKey` it drags the WHOLE
+ * popout (the tab-bar handle); with `tabKey` it drags that single tab, which the
+ * host docks on its own via `attachDetachedTab`.
+ */
 export interface DetachedDragStart {
   scope: string;
   groupId: string;
   label: string;
   screenX: number;
   screenY: number;
+  tabKey?: string;
 }
 /** Detached → main: the OS cursor moved (desktop logical/CSS px). */
 export interface DetachedDragMove {

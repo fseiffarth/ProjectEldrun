@@ -199,6 +199,11 @@ fn latexmk_args(engine: Option<&str>, file_name: &str, out_dir: Option<&str>, ex
         // Always emit SyncTeX data so the viewer can map between PDF positions
         // and source lines (forward/reverse search). Harmless when unused.
         "-synctex=1".to_string(),
+        // Print errors as `file:line: message` so the viewer can parse error
+        // locations and offer jump-to-error (vs. the default `l.NNN` form whose
+        // file has to be inferred from log parenthesis nesting). latexmk passes
+        // this through to the engine.
+        "-file-line-error".to_string(),
     ];
     if let Some(dir) = out_dir {
         args.push(format!("-outdir={dir}"));
@@ -219,6 +224,8 @@ fn engine_args(file_name: &str, out_dir: Option<&str>, extra: &[String]) -> Vec<
         "-halt-on-error".to_string(),
         // Emit SyncTeX data for forward/reverse search (see latexmk_args).
         "-synctex=1".to_string(),
+        // `file:line: message` error format for jump-to-error (see latexmk_args).
+        "-file-line-error".to_string(),
     ];
     if let Some(dir) = out_dir {
         args.push(format!("-output-directory={dir}"));
@@ -386,20 +393,23 @@ pub fn compile_tex(
 /// like:
 /// ```text
 /// SyncTeX result begin
-/// Output:/abs/path/chapter.tex
+/// Output:doc.pdf
+/// Input:/abs/path/chapter.tex
 /// Line:42
 /// Column:-1
 /// …
 /// SyncTeX result end
 /// ```
-/// `base` is the PDF's directory, used to absolutise a relative `Output:` path.
+/// The source file is on the `Input:` line; `Output:` names the PDF and is
+/// ignored. `base` is the PDF's directory, used to absolutise a relative
+/// `Input:` path.
 fn parse_synctex_edit(out: &str, base: &Path) -> Option<SyncSource> {
     let mut input: Option<String> = None;
     let mut line: u32 = 0;
     let mut column: u32 = 0;
     for raw in out.lines() {
         let l = raw.trim();
-        if let Some(v) = l.strip_prefix("Output:") {
+        if let Some(v) = l.strip_prefix("Input:") {
             if input.is_none() {
                 let p = Path::new(v.trim());
                 let abs = if p.is_absolute() { p.to_path_buf() } else { base.join(p) };
@@ -439,7 +449,11 @@ pub fn synctex_edit(pdf: String, page: u32, x: f64, y: f64) -> Result<Option<Syn
     Ok(parse_synctex_edit(&out.text, dir))
 }
 
-/// Parse the `synctex view` stdout into a `SyncRect`. The first record block:
+/// Parse the `synctex view` stdout into every record block it emitted, in order.
+/// A forward query returns ONE block per node the source position maps to — one
+/// per horizontal box on the line, and one per visual line when a source line
+/// wraps — so the caller can pick the box matching the clicked column / row
+/// rather than guessing from a single line box. Each block looks like:
 /// ```text
 /// SyncTeX result begin
 /// Page:3
@@ -449,66 +463,96 @@ pub fn synctex_edit(pdf: String, page: u32, x: f64, y: f64) -> Result<Option<Syn
 /// v:560.0
 /// W:380.0
 /// H:12.0
+/// Page:3
 /// …
 /// SyncTeX result end
 /// ```
 /// We use `h` for the left edge and `W`/`H` for size; all in big points from the
 /// page top-left. SyncTeX's `v` is the box *bottom* (baseline+depth), not its
 /// top — verified empirically against `synctex edit` — so the rect's top edge is
-/// `v - H`. Using `v` directly placed the highlight about one line too low.
-fn parse_synctex_view(out: &str) -> Option<SyncRect> {
-    let mut page: Option<u32> = None;
-    let mut h: Option<f64> = None;
-    let mut v: Option<f64> = None;
-    let mut w: Option<f64> = None;
-    let mut ht: Option<f64> = None;
+/// `v - H`. Using `v` directly placed the highlight about one line too low. A new
+/// `Page:` line starts a new record; an incomplete trailing block is dropped.
+fn parse_synctex_view(out: &str) -> Vec<SyncRect> {
+    /// Fields accumulated for the record currently being read.
+    struct Partial {
+        page: u32,
+        h: Option<f64>,
+        v: Option<f64>,
+        w: Option<f64>,
+        ht: Option<f64>,
+    }
+
+    let mut recs: Vec<SyncRect> = Vec::new();
+    let mut cur: Option<Partial> = None;
+
+    // Emit the accumulated record if it has the two fields a box needs (left edge
+    // `h` and bottom `v`); width/height default to 0 when SyncTeX omitted them.
+    let flush = |cur: &mut Option<Partial>, recs: &mut Vec<SyncRect>| {
+        if let Some(p) = cur.take() {
+            if let (Some(x), Some(v)) = (p.h, p.v) {
+                let height = p.ht.unwrap_or(0.0).abs();
+                recs.push(SyncRect {
+                    page: p.page,
+                    x,
+                    // `v` is the box bottom; the rect's top is one box-height above.
+                    y: v - height,
+                    w: p.w.unwrap_or(0.0).abs(),
+                    h: height,
+                });
+            }
+        }
+    };
+
     for raw in out.lines() {
         let l = raw.trim();
-        let set = |slot: &mut Option<f64>, v: &str| {
-            if slot.is_none() {
-                if let Ok(n) = v.trim().parse() {
-                    *slot = Some(n);
-                }
-            }
-        };
         if let Some(s) = l.strip_prefix("Page:") {
-            if page.is_none() {
-                page = s.trim().parse().ok();
+            // A new node begins; bank the previous one first.
+            flush(&mut cur, &mut recs);
+            cur = Some(Partial {
+                page: s.trim().parse().unwrap_or(0),
+                h: None,
+                v: None,
+                w: None,
+                ht: None,
+            });
+        } else if let Some(p) = cur.as_mut() {
+            let set = |slot: &mut Option<f64>, v: &str| {
+                if slot.is_none() {
+                    if let Ok(n) = v.trim().parse() {
+                        *slot = Some(n);
+                    }
+                }
+            };
+            if let Some(s) = l.strip_prefix("h:") {
+                set(&mut p.h, s);
+            } else if let Some(s) = l.strip_prefix("v:") {
+                set(&mut p.v, s);
+            } else if let Some(s) = l.strip_prefix("W:") {
+                set(&mut p.w, s);
+            } else if let Some(s) = l.strip_prefix("H:") {
+                set(&mut p.ht, s);
             }
-        } else if let Some(s) = l.strip_prefix("h:") {
-            set(&mut h, s);
-        } else if let Some(s) = l.strip_prefix("v:") {
-            set(&mut v, s);
-        } else if let Some(s) = l.strip_prefix("W:") {
-            set(&mut w, s);
-        } else if let Some(s) = l.strip_prefix("H:") {
-            set(&mut ht, s);
         }
     }
-    let height = ht.unwrap_or(0.0).abs();
-    Some(SyncRect {
-        page: page?,
-        x: h?,
-        // `v` is the box bottom; the rect's top is one box-height above it.
-        y: v? - height,
-        w: w.unwrap_or(0.0).abs(),
-        h: height,
-    })
+    flush(&mut cur, &mut recs);
+    recs
 }
 
-/// Forward search: where in `pdf` does `input:line:column` land. Returns
-/// `Ok(None)` when SyncTeX is unavailable or has no answer.
+/// Forward search: where in `pdf` does `input:line:column` land. Returns every
+/// SyncTeX record block (the line's constituent boxes / wrapped rows), in order;
+/// the frontend picks the one matching the clicked column. Empty when SyncTeX is
+/// unavailable or has no answer.
 #[tauri::command]
 pub fn synctex_view(
     pdf: String,
     input: String,
     line: u32,
     column: u32,
-) -> Result<Option<SyncRect>, String> {
+) -> Result<Vec<SyncRect>, String> {
     let pdf_path = Path::new(&pdf);
     let dir = pdf_path.parent().unwrap_or_else(|| Path::new("."));
     if !on_path("synctex") {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let spec = format!("{line}:{column}:{input}");
     let out = run_in(dir, "synctex", &["view", "-i", &spec, "-o", &pdf])?;
@@ -844,8 +888,20 @@ mod tests {
     }
 
     #[test]
+    fn arg_builders_always_emit_file_line_error() {
+        // `-file-line-error` makes the engine print `file:line: message`, which the
+        // viewer parses for jump-to-error. Both build paths must request it.
+        let no_extra: Vec<String> = vec![];
+        let mk = latexmk_args(None, "doc.tex", None, &no_extra);
+        assert!(mk.iter().any(|a| a == "-file-line-error"), "latexmk: {mk:?}");
+        let eng = engine_args("doc.tex", None, &no_extra);
+        assert!(eng.iter().any(|a| a == "-file-line-error"), "engine: {eng:?}");
+    }
+
+    #[test]
     fn parse_synctex_edit_extracts_source() {
-        let out = "SyncTeX result begin\nOutput:chapter.tex\nLine:42\nColumn:-1\nSyncTeX result end\n";
+        // Real `synctex edit` output: `Output:` is the PDF, `Input:` is the source.
+        let out = "SyncTeX result begin\nOutput:doc.pdf\nInput:chapter.tex\nLine:42\nColumn:-1\nSyncTeX result end\n";
         let base = std::env::temp_dir();
         let s = parse_synctex_edit(out, &base).expect("a source");
         assert!(s.input.ends_with("chapter.tex"), "input: {}", s.input);
@@ -855,21 +911,53 @@ mod tests {
     }
 
     #[test]
-    fn parse_synctex_edit_none_without_output() {
-        // No Output:/Line: block → no answer.
+    fn parse_synctex_edit_none_without_input() {
+        // No Input:/Line: block → no answer. An Output:-only block (just the PDF
+        // name, no source) must not be mistaken for a source location.
         assert!(parse_synctex_edit("SyncTeX result begin\nSyncTeX result end\n", Path::new("/")).is_none());
+        assert!(parse_synctex_edit("SyncTeX result begin\nOutput:doc.pdf\nSyncTeX result end\n", Path::new("/")).is_none());
     }
 
     #[test]
     fn parse_synctex_view_extracts_rect() {
         let out = "SyncTeX result begin\nPage:3\nx:120.0\ny:560.0\nh:121.5\nv:559.0\nW:380.25\nH:12.0\nSyncTeX result end\n";
-        let r = parse_synctex_view(out).expect("a rect");
+        let recs = parse_synctex_view(out);
+        assert_eq!(recs.len(), 1);
+        let r = &recs[0];
         assert_eq!(r.page, 3);
         assert_eq!(r.x, 121.5);
         // `v` (559.0) is the box bottom; the top edge is one box-height (H) above.
         assert_eq!(r.y, 559.0 - 12.0);
         assert_eq!(r.w, 380.25);
         assert_eq!(r.h, 12.0);
+    }
+
+    #[test]
+    fn parse_synctex_view_extracts_all_records() {
+        // A wrapped source line emits one record per visual row; every `Page:`
+        // starts a new block. The frontend picks the row matching the column.
+        let out = "SyncTeX result begin\n\
+                   Page:1\nx:100.0\ny:200.0\nh:100.0\nv:200.0\nW:300.0\nH:12.0\n\
+                   Page:1\nx:72.0\ny:214.0\nh:72.0\nv:214.0\nW:150.0\nH:12.0\n\
+                   SyncTeX result end\n";
+        let recs = parse_synctex_view(out);
+        assert_eq!(recs.len(), 2);
+        // First row.
+        assert_eq!(recs[0].x, 100.0);
+        assert_eq!(recs[0].y, 200.0 - 12.0);
+        assert_eq!(recs[0].w, 300.0);
+        // Second (wrapped) row, lower on the page.
+        assert_eq!(recs[1].x, 72.0);
+        assert_eq!(recs[1].y, 214.0 - 12.0);
+        assert_eq!(recs[1].w, 150.0);
+    }
+
+    #[test]
+    fn parse_synctex_view_empty_without_records() {
+        // No node blocks → no rects (so the command yields an empty list).
+        assert!(parse_synctex_view("SyncTeX result begin\nSyncTeX result end\n").is_empty());
+        // An incomplete trailing block (no `v`) is dropped, not half-emitted.
+        assert!(parse_synctex_view("Page:1\nx:1.0\nh:1.0\n").is_empty());
     }
 
     #[test]

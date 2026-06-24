@@ -242,9 +242,11 @@ configuration.
     editable code editor with a line-number gutter, syntax highlighting,
     Tab/Shift+Tab indent, undo/redo (`Ctrl+Z` / `Ctrl+Shift+Z`), in-editor
     find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match navigation and a
-    case toggle, and a save icon (`Ctrl+S`). It auto-reloads when the file
-    changes on disk (showing a non-destructive Reload / Keep-mine banner if you
-    have unsaved edits), and offers opt-in local autocomplete (see below).
+    case toggle, and a save icon (`Ctrl+S`). Unsaved edits are marked in the
+    gutter so you can see at a glance which lines changed since the last save.
+    It auto-reloads when the file changes on disk (showing a non-destructive
+    Reload / Keep-mine banner if you have unsaved edits), and offers opt-in
+    local autocomplete (see below).
   - **Markdown** (`.md`, `.markdown`, `.mdx`): rendered preview with an
     Edit/Preview toggle; links to local files read as clickable.
   - **LaTeX** (`.tex`): the code editor plus, when a TeX engine is on `PATH`, a
@@ -254,7 +256,13 @@ configuration.
     pane, and `Ctrl`/`Cmd`+Click follows `\input{…}` / `\includegraphics{…}`
     references (shown with a dotted underline). Typing inside `\ref{…}` /
     `\cite{…}` pops a completion list of the document's `\label` keys and `.bib`
-    entries.
+    entries. A failed compile lists the parsed errors (file, line, message,
+    including errors in `\input`-ed child files) and clicking one jumps the
+    editor to that line. When the engine emits a SyncTeX file, the viewer offers
+    **bidirectional SyncTeX sync**: `Ctrl`/`Cmd`+Click (or a sync action) in the
+    editor highlights the matching box in the PDF tab, and clicking in the PDF
+    jumps the editor back to the source line and word — working even when the
+    editor and PDF live in separate tiled panes or detached OS windows.
   - **Images** (`.png`, `.jpg`, `.gif`, `.webp`, …): zoom (to the cursor) / pan
     viewer; the image is also draggable out as an OS drop source.
   - **PDF** (`.pdf`): rendered with a themed zoom toolbar.
