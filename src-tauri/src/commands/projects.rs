@@ -377,7 +377,13 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
                 copy_dir_all(&source, &dest)?;
             } else {
                 fs::create_dir_all(projects_root()).map_err(|e| e.to_string())?;
-                fs::rename(&source, &dest).map_err(|e| e.to_string())?;
+                // A plain rename fails across drives/filesystems (EXDEV on Unix,
+                // ERROR_NOT_SAME_DEVICE / os error 17 on Windows). Fall back to
+                // copy-then-remove so a cross-volume import still moves.
+                if fs::rename(&source, &dest).is_err() {
+                    copy_dir_all(&source, &dest)?;
+                    fs::remove_dir_all(&source).map_err(|e| e.to_string())?;
+                }
             }
             dest
         }
