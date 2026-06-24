@@ -82,21 +82,38 @@ export function DetachedApp({ param }: Props) {
 
   // WebKitGTK doesn't reliably fire DOM 'resize' / ResizeObserver for OS-level
   // window size changes. Panes (terminals especially) refit off the DOM 'resize'
-  // event, so bridge Tauri's reliable window onResized into a DOM resize here —
-  // the same bridge the main shell installs (AppShell). rAF-coalesce so a manual
-  // drag-resize doesn't flood listeners.
+  // event, so bridge Tauri's reliable window events into a DOM resize here — the
+  // same bridge the main shell installs (AppShell): onResized covers monitor-size
+  // switches and drag-resize, onScaleChanged covers moving to a different-DPI
+  // monitor (logical viewport changes while WebKitGTK stays silent). rAF-coalesce
+  // the live stream so a manual drag-resize doesn't flood listeners, plus a
+  // trailing re-fire so a monitor switch measures the settled geometry rather
+  // than mid-transition.
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    const unlisteners: Array<() => void> = [];
     let raf = 0;
+    let trailing: ReturnType<typeof setTimeout> | undefined;
     const fire = () => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
+      if (!raf) {
+        raf = requestAnimationFrame(() => {
+          raf = 0;
+          window.dispatchEvent(new Event("resize"));
+        });
+      }
+      if (trailing) clearTimeout(trailing);
+      trailing = setTimeout(() => {
+        trailing = undefined;
         window.dispatchEvent(new Event("resize"));
-      });
+      }, 250);
     };
-    getCurrentWindow().onResized(fire).then((fn) => { unlisten = fn; }).catch(() => {});
-    return () => { if (raf) cancelAnimationFrame(raf); unlisten?.(); };
+    const win = getCurrentWindow();
+    win.onResized(fire).then((fn) => unlisteners.push(fn)).catch(() => {});
+    win.onScaleChanged(fire).then((fn) => unlisteners.push(fn)).catch(() => {});
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      if (trailing) clearTimeout(trailing);
+      unlisteners.forEach((fn) => fn());
+    };
   }, []);
 
   // #42: stream this popout's OS geometry back to the main window (the single

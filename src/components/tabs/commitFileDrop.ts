@@ -6,6 +6,7 @@ import {
   type DropEdge,
   type WindowBounds,
 } from "../../stores/tabs";
+import { useWindowsStore } from "../../stores/windows";
 
 /**
  * Commit a finished FILE drag (a file row dragged from the FileTree onto a tab
@@ -23,8 +24,10 @@ import {
  *    holding the same embed tab (splitWithNewTab); a center drop adds it into
  *    that group instead.
  *  - Released OUTSIDE the main window (`detachBounds` set, e.g. dragged onto
- *    another monitor) → open the file in its OWN standalone detached OS window
- *    at those bounds (detachNewTab), instead of any in-window target.
+ *    another monitor) → if the file has a built-in viewer (pdf/markdown/text/
+ *    image), open it in its OWN standalone detached Eldrun window at those bounds
+ *    (detachNewTab). If instead it opens in an EXTERNAL app, just launch that app
+ *    directly — don't wrap an external-app file in a detached Eldrun subwindow.
  *  - Dropped anywhere else (right panel, empty space, no resolved target) → do
  *    nothing. A drag is purely a drag-to-tab gesture; opening a file is reserved
  *    for double-click in the FileTree, so a stray drop must never open it.
@@ -35,9 +38,9 @@ import {
  */
 export function commitFileDrop(
   d: TabDrag | null,
-  // Kept for call-site/signature stability; opening on a stray drop was removed
-  // (that path used projectId), so it's no longer read here.
-  _projectId: string | null,
+  // Owning project for an external-app launch when a non-viewer file is dragged
+  // out of the window (the detach branch below opens it externally).
+  projectId: string | null,
   projectCwd: string,
   // Set when the file was released outside the main window: spawn a standalone
   // detached window at these screen-px bounds rather than docking into a tab.
@@ -63,9 +66,18 @@ export function commitFileDrop(
   };
 
   // Released outside the main window → standalone window, regardless of layout
-  // state. Takes precedence over every in-window target below.
+  // state. Takes precedence over every in-window target below. An external-app
+  // file (no built-in viewer) opens directly in that app — don't wrap it in a
+  // detached Eldrun subwindow; only built-in viewers get their own window.
   if (detachBounds) {
-    useTabsStore.getState().detachNewTab(tabPayload, detachBounds);
+    if (d.viewer) {
+      useTabsStore.getState().detachNewTab(tabPayload, detachBounds);
+    } else {
+      useWindowsStore
+        .getState()
+        .openFile(d.filePath, cap?.resolved_exec ?? d.fileExec, projectId, "file_drag_out")
+        .catch((e) => console.error(e));
+    }
     return;
   }
 

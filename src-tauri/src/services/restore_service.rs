@@ -26,6 +26,7 @@ pub fn restore_project_apps(
         if let Ok(win) = do_launch(
             registry,
             &app.exec,
+            &[],
             app.file.as_deref(),
             Some(project_id),
             None,
