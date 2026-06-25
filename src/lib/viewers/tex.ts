@@ -702,7 +702,11 @@ export interface ResolvedTexRef {
  * null when no extension can be assumed (a bare `\includegraphics`) or no viewer
  * handles the file type.
  */
-export function resolveTexRef(currentPath: string, target: TexRefTarget): ResolvedTexRef | null {
+export function resolveTexRef(
+  currentPath: string,
+  target: TexRefTarget,
+  disabled?: ReadonlySet<InternalViewer>,
+): ResolvedTexRef | null {
   const def = TEX_REF_COMMANDS[target.command] ?? null;
   const token = target.token.trim();
   if (!token) return null;
@@ -726,7 +730,7 @@ export function resolveTexRef(currentPath: string, target: TexRefTarget): Resolv
     extension,
     mime: null,
   };
-  const viewer = internalViewerFor(entry);
+  const viewer = internalViewerFor(entry, disabled);
   if (!viewer) return null;
   return { path: abs, viewer, label: name };
 }
@@ -750,8 +754,9 @@ const GRAPHICS_EXTS = [
 export async function resolveTexRefAsync(
   currentPath: string,
   target: TexRefTarget,
+  disabled?: ReadonlySet<InternalViewer>,
 ): Promise<ResolvedTexRef | null> {
-  const direct = resolveTexRef(currentPath, target);
+  const direct = resolveTexRef(currentPath, target, disabled);
   if (direct) return direct;
   if (target.command !== "includegraphics") return null;
 
@@ -786,7 +791,7 @@ export async function resolveTexRefAsync(
     if (!best || rank < best.rank) best = { entry: e, rank };
   }
   if (!best) return null;
-  const viewer = internalViewerFor(best.entry);
+  const viewer = internalViewerFor(best.entry, disabled);
   if (!viewer) return null;
   return { path: best.entry.path, viewer, label: best.entry.name };
 }

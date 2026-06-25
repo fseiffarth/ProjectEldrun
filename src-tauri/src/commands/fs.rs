@@ -455,6 +455,24 @@ pub fn write_file_text(path: String, content: String) -> Result<(), String> {
     fs::write(&p, content).map_err(|e| e.to_string())
 }
 
+/// Write raw bytes to an absolute path, confined to Eldrun's known roots
+/// (Security #1). Unlike `write_file_text` this may create a new file (so the
+/// image annotator can "Save as…" a sibling PNG), but still refuses paths
+/// outside the allowed roots and oversized payloads.
+#[tauri::command]
+pub fn write_file_bytes(path: String, content: Vec<u8>) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    confine_abs_write(&p)?;
+    if content.len() as u64 > MAX_BINARY_VIEW_BYTES {
+        return Err(format!(
+            "content too large to save ({} bytes; limit {})",
+            content.len(),
+            MAX_BINARY_VIEW_BYTES
+        ));
+    }
+    fs::write(&p, content).map_err(|e| e.to_string())
+}
+
 /// Read an absolute file path as raw bytes for the in-app PDF viewer.
 ///
 /// Confined to Eldrun's known roots (Security #1). Refuses files over

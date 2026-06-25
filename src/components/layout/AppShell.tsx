@@ -12,6 +12,7 @@ import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
+import { QuickOpen } from "../files/QuickOpen";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
 import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
 import { listenPdfReveal } from "../../stores/pdfSync";
@@ -294,6 +295,7 @@ export function AppShell() {
         )}
       </div>
       <VpnPasswordPrompt />
+      <QuickOpen />
     </div>
   );
 }

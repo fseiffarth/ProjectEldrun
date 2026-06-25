@@ -803,6 +803,69 @@ select option {
   word-break: break-word;
 }
 
+/* OpenDocument Text viewer (#51): a scrolling, theme-coloured reading surface for
+   the HTML subset rendered from content.xml. A centred max-width column keeps
+   prose readable; tables and images stay within it. */
+.odt-viewer-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+.odt-document {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 28px 32px 56px;
+  line-height: 1.6;
+  font-size: 14px;
+}
+
+.odt-document h1,
+.odt-document h2,
+.odt-document h3,
+.odt-document h4,
+.odt-document h5,
+.odt-document h6 {
+  line-height: 1.25;
+  margin: 1.4em 0 0.5em;
+  font-weight: 600;
+}
+
+.odt-document p {
+  margin: 0 0 0.8em;
+  white-space: pre-wrap;
+}
+
+.odt-document a {
+  color: var(--accent, #3b82f6);
+  text-decoration: underline;
+}
+
+.odt-document ul,
+.odt-document ol {
+  margin: 0 0 0.8em 1.5em;
+  padding: 0;
+}
+
+.odt-image {
+  max-width: 100%;
+  height: auto;
+}
+
+.odt-table {
+  border-collapse: collapse;
+  margin: 0 0 1em;
+  font-size: 13px;
+}
+
+.odt-table td {
+  border: 1px solid var(--border-color);
+  padding: 4px 8px;
+  vertical-align: top;
+}
+
 /* Code editor: a line-number gutter beside a scrolling monospace textarea. The
    gutter is scroll-synced from JS (file-viewer-gutter has no scrollbar), so the
    body must not scroll — the textarea owns the scroll. Font metrics (size 12px,

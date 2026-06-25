@@ -1,0 +1,185 @@
+/* Image annotation overlay (Dev F). Self-contained; no global selectors. */
+
+.image-annotator {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel, #1c1c1e);
+  color: var(--text-primary, #f2f2f7);
+}
+
+.image-annotator__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-panel, #1c1c1e);
+  border-bottom: 1px solid var(--border-color, #3a3a3c);
+}
+
+.image-annotator__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #a8a8ad);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-annotator__group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border-color, #3a3a3c);
+}
+
+.image-annotator__group:first-of-type {
+  border-left: none;
+  padding-left: 0;
+}
+
+.image-annotator__group--right {
+  margin-left: auto;
+  border-left: none;
+}
+
+.image-annotator__btn {
+  appearance: none;
+  border: 1px solid var(--border-color, #3a3a3c);
+  background: transparent;
+  color: var(--text-primary, #f2f2f7);
+  border-radius: 6px;
+  padding: 4px 8px;
+  min-width: 28px;
+  height: 28px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.image-annotator__btn:hover:not(:disabled) {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+}
+
+.image-annotator__btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.image-annotator__btn.is-active {
+  background: var(--accent, #0a84ff);
+  border-color: var(--accent, #0a84ff);
+  color: #fff;
+}
+
+.image-annotator__btn--primary {
+  background: var(--accent, #0a84ff);
+  border-color: var(--accent, #0a84ff);
+  color: #fff;
+  font-weight: 600;
+}
+
+.image-annotator__btn--primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.image-annotator__swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border-color, #3a3a3c);
+  padding: 0;
+  cursor: pointer;
+}
+
+.image-annotator__swatch.is-active {
+  border-color: var(--text-primary, #f2f2f7);
+  box-shadow: 0 0 0 1px var(--bg-panel, #1c1c1e);
+}
+
+.image-annotator__color-input {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border-color, #3a3a3c);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.image-annotator__width-dot {
+  display: inline-block;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.image-annotator__error {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #fff;
+  background: var(--danger, #ff453a);
+}
+
+.image-annotator__stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background:
+    repeating-conic-gradient(
+      rgba(255, 255, 255, 0.04) 0% 25%,
+      transparent 0% 50%
+    )
+    50% / 24px 24px;
+}
+
+.image-annotator__canvas-wrap {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  line-height: 0;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
+
+.image-annotator__canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+}
+
+.image-annotator__canvas--base {
+  position: relative;
+}
+
+.image-annotator__canvas--overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.image-annotator__loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--text-secondary, #a8a8ad);
+  line-height: normal;
+}

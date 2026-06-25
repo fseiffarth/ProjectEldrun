@@ -1,44 +1,65 @@
 # Eldrun
 
-**The problem:** when you develop several projects at once, every project's
-windows — browsers, terminals, file managers, docs, agents — pile up on one
-desktop. Switching from project A to project B means hunting through dozens of
-windows for the handful that belong to where you're going, and losing the rest
-in the noise.
+> **You don't open applications — you open projects.**
+> Eldrun is a project-centric desktop layer that swaps your whole working
+> context as one unit, with AI agent terminals and in-app file viewers built in.
 
-**Eldrun's model:** you don't open applications, you open projects. Selecting a
-project swaps the whole desktop to that project's context — its windows come
-forward, the previous project's windows are parked out of the way, the
-downloads folder and default-app mappings re-route, and time tracking switches.
-One project visible at a time, everything else cleanly out of sight.
+Built with **Tauri 2 + React + TypeScript**, with optional KDE/X11 workspace
+integration. Linux-first.
 
-Inside each project, Eldrun is an operational cockpit: a root control terminal
-for managing the workspace, one or more agent terminals scoped to the project
-(Claude, Codex, Gemini, or a local Ollama model), a persistent project bar, a
-hover-revealed file panel, and cross-project app controls that stay available as
-you move between projects. It is built with Tauri 2 + React + TypeScript, with
-optional KDE/X11 workspace integration.
+---
+
+## Why Eldrun
+
+When you juggle several projects at once, every project's windows — browsers,
+terminals, file managers, docs, agents — pile onto one desktop. Switching from
+project A to project B means digging through dozens of windows for the handful
+that belong where you're going, and losing the rest in the noise.
+
+Eldrun flips the model. **Select a project, and the desktop becomes that
+project:** its windows come forward, the previous project's windows park out of
+the way, the downloads folder and default-app mappings re-route, and time
+tracking switches. One project visible at a time, everything else cleanly out of
+sight.
+
+Inside a project, Eldrun is an operational cockpit — a root control terminal for
+the workspace, agent terminals scoped to the project (Claude, Codex, Gemini, or
+a local Ollama model), a tiling tab layout, a hover-revealed file panel with
+built-in viewers, and cross-project app controls that follow you between
+projects.
 
 ## Vision
 
-Eldrun is a project-centric desktop layer, not just an app that launches or
-embeds other apps. The user-facing model is:
+> Select a project → Eldrun restores its complete working context.
 
-> Select a project → Eldrun restores that project's working context.
+Eldrun is a **project-centric desktop layer**, not just an app that launches or
+embeds other apps. The core product is the window/workspace layer: projects own
+their windows and desktop context, and switching projects swaps that context as
+a single unit. The agent terminals, file viewers, and app launcher ride on top —
+they're what lives *inside* a project once its desktop is restored.
 
-The core product is the window/workspace layer: projects own their windows and
-desktop context, and switching projects swaps that context as one unit. The
-agent terminals, file panel, and app launcher ride on top of that layer — they
-are what lives inside a project once its desktop is restored. That context
-should eventually include terminals, files, apps, windows, Git state, notes,
-AI/task metadata, layout, and workflow state.
+A project's context already spans terminals, files, apps, windows, Git state,
+and layout; the direction of travel adds notes, AI/task metadata, and workflow
+state, so a project carries everything it needs to be resumed exactly where you
+left it.
 
-The current implementation is focused on Linux (X11 and KDE Wayland) because
-that provides the fastest path to reliable window control. The longer-term
-direction is a stable Eldrun core with desktop/compositor backends for Cinnamon
-X11, KDE/KWin, Hyprland, GNOME Shell, i3, Sway, and other Wayland environments.
+Today the implementation targets **Linux (X11 and KDE Wayland)** — the fastest
+path to reliable window control. The long-term shape is a stable Eldrun core
+behind pluggable compositor backends (X11, KDE/KWin, Hyprland, GNOME Shell, i3,
+Sway, and other Wayland environments), and eventually an Eldrun-native
+compositor for full control of projects, windows, and layout.
 
 See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
+
+## At a glance
+
+![Eldrun functionality map](screenshots/eldrun-functionality.svg)
+
+**①** pick a project and the desktop swaps to it. **②** inside, a tiling tab
+layout hosts agent terminals, shells, and native file viewers. **③** the
+project-desktop layer (window parking, downloads, default apps, time tracking)
+follows the active project automatically, with the right panel (Files · Git ·
+Search) and the global app toolbar alongside.
 
 ## How Eldrun compares
 
@@ -228,55 +249,43 @@ configuration.
   indicator spins on pills with live terminal output (even backgrounded
   projects); hover over a pill to see the project path, status, today's active
   time, and live CPU%.
-- **Right file panel**: browse, open, create, rename, delete, and reveal project
-  files, with a breadcrumb trail and per-file git status markers (modified,
-  untracked, staged, committed-but-unpushed, ignored). A "Git" view shows the
-  current branch, clickable branch pills for checkout, and a commit list whose
-  entries open an editable commit-message window (amend HEAD, agent-generated
-  messages, or checkout). The panel can be pinned open instead of hover-revealed.
-  Additional views list tracked external windows.
+- **Right file panel**: browse, open, create, rename, delete, copy/cut/paste,
+  and reveal project files, with a breadcrumb trail and per-file git status
+  markers (modified, untracked, staged, committed-but-unpushed, ignored). A
+  **Git** view shows the current branch, clickable branch pills for checkout,
+  and a commit list whose entries open an editable commit-message window (amend
+  HEAD, agent-generated messages, or checkout). A **Search** view runs a
+  project-wide literal content search and lists matching lines that jump straight
+  into the in-app viewer. The panel can be pinned open instead of hover-revealed;
+  additional views list tracked external windows.
 - **In-app file viewers**: drag a file from the tree onto a subwindow's tab bar
-  to open it in a tab. The built-in viewers, by type, are:
-  - **Text / code** (`.txt`, `.json`, `.py`, `.rs`, `.ts`, `.svg`, `.bib`, and
-    many more, plus well-known extensionless files like `Dockerfile`): an
-    editable code editor with a line-number gutter, syntax highlighting,
-    Tab/Shift+Tab indent, undo/redo (`Ctrl+Z` / `Ctrl+Shift+Z`), in-editor
-    find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match navigation and a
-    case toggle, and a save icon (`Ctrl+S`). Unsaved edits are marked in the
-    gutter so you can see at a glance which lines changed since the last save.
-    It auto-reloads when the file changes on disk (showing a non-destructive
-    Reload / Keep-mine banner if you have unsaved edits), and offers opt-in
-    local autocomplete (see below).
-  - **Markdown** (`.md`, `.markdown`, `.mdx`): rendered preview with an
-    Edit/Preview toggle; links to local files read as clickable.
-  - **LaTeX** (`.tex`): the code editor plus, when a TeX engine is on `PATH`, a
-    compile action with compiler options (output folder, extra engine flags —
-    shell-escape is always stripped). A successful compile opens the PDF in its
-    own tab (reusing/refreshing it on recompile) rather than an inline preview
-    pane, and `Ctrl`/`Cmd`+Click follows `\input{…}` / `\includegraphics{…}`
-    references (shown with a dotted underline). Typing inside `\ref{…}` /
-    `\cite{…}` pops a completion list of the document's `\label` keys and `.bib`
-    entries. A failed compile lists the parsed errors (file, line, message,
-    including errors in `\input`-ed child files) and clicking one jumps the
-    editor to that line. When the engine emits a SyncTeX file, the viewer offers
-    **bidirectional SyncTeX sync**: `Ctrl`/`Cmd`+Click (or a sync action) in the
-    editor highlights the matching box in the PDF tab, and clicking in the PDF
-    jumps the editor back to the source line and word — working even when the
-    editor and PDF live in separate tiled panes or detached OS windows.
-  - **Images** (`.png`, `.jpg`, `.gif`, `.webp`, …): zoom (to the cursor) / pan
-    viewer; the image is also draggable out as an OS drop source.
-  - **PDF** (`.pdf`): rendered with a themed zoom toolbar.
+  to open it in a tab. The viewer is chosen by extension. **Status legend:**
+  ✅ shipping · 🚧 in progress (opens in the external default app until landed).
 
-  Office / spreadsheet formats (`.odt`, `.xlsx`, `.docx`, …) and any other type
-  open in their external default app for now. Native-viewer behaviour is
-  configured per file type under **Settings → Native Viewers**: the per-type
-  autocomplete opt-in, plus a global autosave switch. The text/LaTeX/Markdown
-  editors also carry an `A−`/`A+` text-size control (or `Ctrl` +/−, `Ctrl`+0 to
-  reset) — in Markdown it scales the preview too; the chosen size persists per
-  file type. Each viewer also remembers where you left off: the editor/PDF
-  scroll position, PDF/image zoom, and image pan are persisted per tab, so
-  reopening a file — or restarting Eldrun — restores the reader's position
-  instead of jumping back to the top.
+  | Viewer | File types | Status | What it does |
+  | ------ | ---------- | :----: | ------------ |
+  | **Text / code** | `.txt` `.json` `.py` `.rs` `.ts` `.bib` + many more, and extensionless files like `Dockerfile` | ✅ | Editable editor: line-number gutter, syntax highlighting, Tab/Shift+Tab indent, undo/redo (`Ctrl+Z`/`Ctrl+Shift+Z`), find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match nav + case toggle, save (`Ctrl+S`). Unsaved lines marked in the gutter; auto-reloads on disk change with a non-destructive Reload / Keep-mine banner. Opt-in local autocomplete. |
+  | **Markdown** | `.md` `.markdown` `.mdx` | ✅ | Rendered preview with an Edit/Preview toggle; links to local files are clickable. |
+  | **LaTeX** | `.tex` | ✅ | Code editor + compile (when a TeX engine is on `PATH`) with output-folder and engine-flag options (shell-escape always stripped). Compile opens the PDF in its own tab; `Ctrl`/`Cmd`+Click follows `\input{…}`/`\includegraphics{…}`; `\ref{…}`/`\cite{…}` completion from `\label` keys and `.bib` entries; failed compiles list parsed errors (incl. `\input`-ed children) that jump to the line; **bidirectional SyncTeX sync** between editor and PDF, across tiled panes or detached windows. |
+  | **PDF** | `.pdf` | ✅ | Rendered with a themed zoom toolbar. |
+  | **Images** | `.png` `.jpg` `.gif` `.webp` … | ✅ | Zoom-to-cursor / pan; draggable out as an OS drop source. |
+  | **Table / CSV** | `.csv` `.tsv` | ✅ | Read-only grid (RFC 4180-style parse); large files are windowed to keep the webview responsive. |
+  | **Jupyter notebook** | `.ipynb` | ✅ | Read-only render of cells top-to-bottom — markdown cells, Python-highlighted code cells, and their classified outputs. |
+  | **Diff / patch** | `.diff` `.patch` | ✅ | Color-coded add/del rendering that reads in light and dark themes. |
+  | **OpenDocument Text** | `.odt` | ✅ | Read-only: unzips the archive and renders `content.xml` to a safe HTML subset (headings, lists, tables, images). |
+  | **Spreadsheet** | `.xlsx` `.xls` `.xlsm` | 🚧 | Backend reader (calamine) into the table grid, with a sheet picker. |
+  | **SQLite** | `.db` `.sqlite` `.sqlite3` | 🚧 | Read-only table browser: table list + paged row grid. |
+  | **HTML / SVG** | `.html` `.htm` `.svg` | 🚧 | Sandboxed preview (no scripts) with a Preview ⇄ Source toggle. |
+  | **Audio / video** | `.mp3` `.mp4` `.webm` `.wav` … | 🚧 | Native in-tab `<audio>`/`<video>` player. |
+
+  Other office formats (`.docx`, `.pptx`, `.ods`, …) open in their external
+  default app. Viewer behaviour is configured per file type under **Settings →
+  Native Viewers**: the per-type autocomplete opt-in plus a global autosave
+  switch. The text/LaTeX/Markdown editors carry an `A−`/`A+` text-size control
+  (`Ctrl` +/−, `Ctrl`+0 to reset; scales the Markdown preview too), persisted
+  per file type. Every viewer remembers where you left off — editor/PDF scroll
+  position, PDF/image zoom, and image pan persist per tab, so reopening a file
+  (or restarting Eldrun) restores your position instead of jumping to the top.
 - **Local autocomplete (opt-in, private)**: in the editable text/LaTeX/markdown
   viewers, `Ctrl+Space` requests a single completion from a **local Ollama**
   model (`Tab` accepts, `Esc` dismisses). It is OFF by default and per file
@@ -284,7 +293,8 @@ configuration.
   running it fails silently — no remote calls, ever.
 - **Global app toolbar**: cross-project roles (Browser, Mail, Calendar, File
   Manager, Password Manager, Notes, Screenshot, etc.) with launch-or-raise and
-  icon resolution.
+  icon resolution. The Screenshot role launches straight into interactive
+  region selection when the configured tool supports it.
 - **Ollama model management**: the Settings Ollama panel shows installed
   models, running CPU/GPU state, parameter and quantization details, plus
   catalog install, update, unload, and delete controls.
@@ -313,6 +323,9 @@ configuration.
 - Detached (popped-out) subwindows and project-box scopes are session-only: the
   former re-docks and the latter's tabs are dropped on project switch / restart.
 - Non-KDE Wayland compositors fall back to the null backend.
+- Some native viewers are still landing (spreadsheets, SQLite, HTML/SVG,
+  audio/video — marked 🚧 above); until each lands, those types open in the
+  external default app.
 
 ## Project Storage
 

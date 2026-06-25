@@ -101,6 +101,10 @@ fn is_false(b: &bool) -> bool {
 /// One per-type entry in `settings["viewer_prefs"]` (#48).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ViewerPref {
+    /// Whether this native viewer is used at all. Absent/true renders the type
+    /// in-app; false opts it out so its files open in the external default app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// Whether Ctrl+Space local autocomplete is enabled for this type (#45).
     /// Defaults OFF (privacy: no model call unless explicitly turned on).
     #[serde(default, skip_serializing_if = "Option::is_none")]

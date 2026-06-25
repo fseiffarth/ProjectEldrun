@@ -18,8 +18,17 @@ import { usePdfSyncStore } from "../../stores/pdfSync";
 import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
 import { renderMarkdown } from "../../lib/viewers/markdown";
+import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
 import { highlight, languageForPath } from "../../lib/viewers/highlight";
-import { internalViewerFor, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
+import { internalViewerFor, disabledViewers, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
+import { TableView } from "./TableView";
+import { NotebookView } from "./NotebookView";
+import { DiffView } from "./DiffView";
+import { OdtView } from "./OdtView";
+import { MediaView } from "./MediaView";
+import { HtmlView } from "./HtmlView";
+import { SqliteView } from "./SqliteView";
+import { ImageAnnotator } from "./ImageAnnotator";
 import {
   type TexCapability,
   type TexCompileResult,
@@ -60,7 +69,7 @@ import {
  * project.json by CenterPanel's debounced saveLayout, so the position survives an
  * Eldrun restart. A no-op when `tabKey` is absent (e.g. tests).
  */
-function useViewerState(tabKey: string | undefined) {
+export function useViewerState(tabKey: string | undefined) {
   const [initial] = useState<ViewerState | undefined>(() =>
     tabKey
       ? useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState
@@ -207,6 +216,27 @@ export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
   if (viewer === "tex") {
     return <TexView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
   }
+  if (viewer === "table") {
+    return <TableView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  }
+  if (viewer === "notebook") {
+    return <NotebookView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  }
+  if (viewer === "diff") {
+    return <DiffView path={path} projectId={projectId} onOpenExternally={openExternally} tabKey={tabKey} />;
+  }
+  if (viewer === "odt") {
+    return <OdtView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  }
+  if (viewer === "media") {
+    return <MediaView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  }
+  if (viewer === "html") {
+    return <HtmlView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  }
+  if (viewer === "sqlite") {
+    return <SqliteView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  }
   return <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
 }
 
@@ -285,7 +315,7 @@ function resolveLocalHref(mdPath: string, href: string): string | null {
 
 /** The built-in viewer for a bare path (no FileEntry handy), used to route a
  *  SyncTeX source target. Defaults to the plain text editor (e.g. `.sty`). */
-function viewerForPath(path: string): InternalViewer {
+export function viewerForPath(path: string): InternalViewer {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const dot = name.lastIndexOf(".");
   const ext = dot >= 0 ? name.slice(dot).toLowerCase() : null;
@@ -389,7 +419,7 @@ export async function listenSourceJump(): Promise<() => void> {
   }
 }
 
-function ViewerHeader({
+export function ViewerHeader({
   onOpenExternally,
   children,
 }: {
@@ -744,11 +774,58 @@ function applyIndent(
  * so the indent/scroll/save behaviour stays identical between them. Renders the
  * load/error states itself; the caller wires it to a `useEditableFile` instance.
  */
-function escapeHtmlText(s: string): string {
+export function escapeHtmlText(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+/**
+ * Read-only sibling of `useEditableFile` for the table/notebook/diff viewers
+ * (none of which edit on disk). Loads the file once via `read_file_text` and
+ * polls `file_mtime`, silently re-reading when the file changes underneath — the
+ * same load/refresh path `useEditableFile` uses, minus all the draft/undo/save
+ * machinery. Returns the raw text (or null while loading) and an error string.
+ */
+export function useReadonlyFile(path: string) {
+  const [content, setContent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const lastMtime = useRef<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setContent(null);
+    setError(null);
+    lastMtime.current = null;
+    invoke<string>("read_file_text", { path })
+      .then((text) => { if (!cancelled) setContent(text); })
+      .catch((e) => { if (!cancelled) setError(String(e)); });
+    invoke<number>("file_mtime", { path })
+      .then((m) => { if (!cancelled) lastMtime.current = m; })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [path]);
+
+  // Diff-aware reload: poll mtime and silently re-read on an external advance.
+  useEffect(() => {
+    if (content == null) return;
+    let cancelled = false;
+    const id = setInterval(() => {
+      invoke<number>("file_mtime", { path })
+        .then((m) => {
+          if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
+          lastMtime.current = m;
+          invoke<string>("read_file_text", { path })
+            .then((text) => { if (!cancelled) setContent(text); })
+            .catch(() => {});
+        })
+        .catch(() => {});
+    }, RELOAD_POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [path, content]);
+
+  return { content, error, loaded: content != null };
 }
 
 /**
@@ -2388,6 +2465,18 @@ function MarkdownView({
   // Preview always reflects the live draft, so toggling shows unsaved edits.
   const html = useMemo(() => (loaded ? renderMarkdown(draft) : ""), [loaded, draft]);
 
+  // After the preview HTML is committed to the DOM, run the mermaid/KaTeX
+  // enrichment pass (Dev A): it finds the mermaid code blocks and math
+  // placeholders renderMarkdown emitted and renders them in place. Re-runs
+  // whenever the rendered HTML changes or we switch back to preview mode.
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (mode !== "preview") return;
+    const el = previewRef.current;
+    if (!el) return;
+    void enrichMarkdownDom(el);
+  }, [html, mode]);
+
   // #49/#50: local-file links in the rendered preview open in-app on
   // Ctrl/Cmd+Click (matching the LaTeX editor). A hover hint advertises the
   // shortcut. `linkTip` anchors that hint above the hovered link.
@@ -2501,6 +2590,7 @@ function MarkdownView({
           />
         ) : (
           <div
+            ref={previewRef}
             className="markdown-body"
             // Leave the preview at its CSS default until the user sets a size,
             // then drive the base font-size so headings (em-based) scale with it.
@@ -3247,7 +3337,10 @@ function TexView({
     async (caret: number): Promise<boolean> => {
       const target = findTexRefAt(draft, caret);
       if (!target) return false;
-      const resolved = await resolveTexRefAsync(path, target);
+      const disabled = disabledViewers(
+        useSettingsStore.getState().settings?.viewer_prefs,
+      );
+      const resolved = await resolveTexRefAsync(path, target, disabled);
       if (!resolved) return false;
       const dir = path.slice(0, path.lastIndexOf("/")) || "/";
       openLinkedFile(tabKey, dir, resolved);
@@ -3713,6 +3806,10 @@ function ImageView({
 }) {
   const viewPos = useViewerState(tabKey);
   const { url, error } = useBlobUrl(path, "");
+  // #annotate (Dev F): when true, an editing overlay covers the viewer letting the
+  // user draw on the image and save the result. Gated to raster images we can
+  // re-encode to PNG.
+  const [annotating, setAnnotating] = useState(false);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   // Natural (intrinsic) image size in pixels, set on load. The ref mirrors it so
   // an on-disk reload (#68) can tell a same-size content update from a new image.
@@ -3904,9 +4001,25 @@ function ImageView({
           >
             1:1
           </button>
+          <button
+            className="file-viewer-zoom-btn file-viewer-zoom-text"
+            onClick={() => setAnnotating(true)}
+            disabled={!url}
+            title="Annotate / mark up this image"
+          >
+            ✎ Annotate
+          </button>
         </div>
       </ViewerHeader>
       <div className="file-viewer-body file-viewer-image-body">
+        {annotating && url != null && (
+          <ImageAnnotator
+            src={url}
+            path={path}
+            fileName={fileName}
+            onClose={() => setAnnotating(false)}
+          />
+        )}
         {error != null ? (
           <div className="file-viewer-error">{error}</div>
         ) : url == null ? (

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { FileTree } from "../files/FileTree";
 import { GitHistory } from "../files/GitHistory";
+import { SearchPanel } from "../files/SearchPanel";
 import { useProjectsStore } from "../../stores/projects";
 import { useWindowsStore } from "../../stores/windows";
 import { useSettingsStore } from "../../stores/settings";
@@ -28,7 +29,7 @@ interface Props {
   onMouseLeave?: () => void;
 }
 
-type View = "files" | "windows" | "git";
+type View = "files" | "windows" | "git" | "search";
 type ProjectJson = Record<string, unknown>;
 
 const PANEL_HIDDEN_ENDINGS_KEY = "panel_hidden_endings";
@@ -401,7 +402,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
         <span style={{ flex: 1 }}>
           {activeBox ? `▣ ${activeBox.name}` : activeProject ? activeProject.name : "Files"}
         </span>
-        {(["files", "git", "windows"] as View[]).map((v) => (
+        {(["files", "git", "search", "windows"] as View[]).map((v) => (
           <button
             key={v}
             className={`tab-add-btn${view === v ? " active" : ""}`}
@@ -409,7 +410,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
             aria-pressed={view === v}
             onClick={() => setView(v)}
           >
-            {v === "files" ? "Files" : v === "git" ? "Git" : "Apps"}
+            {v === "files" ? "Files" : v === "git" ? "Git" : v === "search" ? "Search" : "Apps"}
           </button>
         ))}
         {projectDir && (
@@ -543,6 +544,10 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
         </div>
       )}
 
+      {view === "search" && (
+        <SearchPanel projectDir={projectDir} linkingTabKey={undefined} />
+      )}
+
       {view === "files" && (
         <>
           <div className="right-panel-sort">
@@ -662,8 +667,9 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
                 autosave (#47). */}
             <div className="settings-section-title">Native Viewers</div>
             <p className="settings-help">
-              Eldrun renders these file types in-app. Configure their behaviour
-              below. Autocomplete is local-only (Ollama) and opt-in.
+              Eldrun renders these file types in-app. Disable a type to open its
+              files in your external default app instead. Autocomplete is
+              local-only (Ollama) and opt-in.
             </p>
             <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
               <input
@@ -674,8 +680,9 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
               <span>Autosave edits</span>
             </label>
             <div className="viewer-prefs-list">
-              {VIEWER_PREF_TYPES.filter((t) => t.autocomplete).map((t) => {
+              {VIEWER_PREF_TYPES.map((t) => {
                 const pref: ViewerPref = settings?.viewer_prefs?.[t.id] ?? {};
+                const enabled = pref.enabled !== false;
                 const patch = (next: ViewerPref) =>
                   void updateSettings({
                     viewer_prefs: {
@@ -687,11 +694,20 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
                   <div className="viewer-pref-row" key={t.id}>
                     <span className="viewer-pref-name">{t.label}</span>
                     <span className="viewer-pref-exts">{t.extensions.join(" ")}</span>
+                    <label className="viewer-pref-toggle">
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        onChange={(e) => patch({ enabled: e.target.checked })}
+                      />
+                      <span>Enabled</span>
+                    </label>
                     {t.autocomplete && (
                       <label className="viewer-pref-toggle">
                         <input
                           type="checkbox"
                           checked={pref.autocomplete === true}
+                          disabled={!enabled}
                           onChange={(e) => patch({ autocomplete: e.target.checked })}
                         />
                         <span>Autocomplete</span>

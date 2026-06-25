@@ -461,3 +461,145 @@ pub fn git_reword_head(project_dir: String, message: String) -> Result<(), Strin
     }
     Ok(())
 }
+
+/// Returns the unified diff for a single file relative to `project_dir`.
+///
+/// Runs `git diff -- <rel_path>` (working-tree changes against the index/HEAD).
+/// When that yields no output — typically because the file is untracked, so it
+/// has no tracked diff — it falls back to `git diff --no-index -- /dev/null
+/// <rel_path>`, which renders the whole file as added. `--no-index` exits
+/// non-zero whenever there are differences, so for the fallback we treat any
+/// non-empty stdout as success regardless of exit status.
+#[tauri::command]
+pub fn git_diff_file(project_dir: String, rel_path: String) -> Result<String, String> {
+    let out = Command::new("git")
+        .args(["diff", "--", &rel_path])
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if !stdout.is_empty() {
+        return Ok(stdout);
+    }
+
+    // Tracked diff is empty (e.g. untracked file). Show the whole file as added.
+    // `--no-index` exits non-zero when differences exist, which is the normal
+    // case here, so treat any non-empty stdout as success.
+    let fallback = Command::new("git")
+        .args(["diff", "--no-index", "--", "/dev/null", &rel_path])
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let fb_stdout = String::from_utf8_lossy(&fallback.stdout).to_string();
+    if !fb_stdout.is_empty() {
+        return Ok(fb_stdout);
+    }
+    if !fallback.status.success() {
+        return Err(String::from_utf8_lossy(&fallback.stderr).to_string());
+    }
+    // No tracked changes and the fallback produced nothing — return empty diff.
+    Ok(stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::process::Command;
+
+    /// Returns true when `git` is on PATH; tests skip gracefully otherwise.
+    fn git_available() -> bool {
+        Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn init_repo(dir: &std::path::Path) {
+        let run = |args: &[&str]| {
+            let ok = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git command should run")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(&["init"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test User"]);
+    }
+
+    #[test]
+    fn git_diff_file_shows_modified_hunk() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping git_diff_file_shows_modified_hunk");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+
+        let file = dir.join("note.txt");
+        fs::write(&file, "first line\nsecond line\n").expect("write");
+        let add_ok = Command::new("git")
+            .args(["add", "note.txt"])
+            .current_dir(dir)
+            .output()
+            .expect("add runs")
+            .status
+            .success();
+        assert!(add_ok, "git add failed");
+        let real_commit = Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .expect("commit runs")
+            .status
+            .success();
+        assert!(real_commit, "git commit failed");
+
+        // Modify the file so a tracked diff exists.
+        fs::write(&file, "first line\nCHANGED line\n").expect("rewrite");
+
+        let diff = git_diff_file(
+            dir.to_string_lossy().to_string(),
+            "note.txt".to_string(),
+        )
+        .expect("git_diff_file should succeed");
+        assert!(diff.contains("@@"), "expected a hunk marker, got: {diff}");
+        assert!(diff.contains("CHANGED line"), "expected changed line, got: {diff}");
+    }
+
+    #[test]
+    fn git_diff_file_untracked_uses_no_index_fallback() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping git_diff_file_untracked_uses_no_index_fallback");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+
+        // Brand-new untracked file: the tracked `git diff` is empty, so the
+        // command must fall back to `--no-index` and show it as added.
+        let file = dir.join("fresh.txt");
+        fs::write(&file, "brand new content\nanother line\n").expect("write");
+
+        let diff = git_diff_file(
+            dir.to_string_lossy().to_string(),
+            "fresh.txt".to_string(),
+        )
+        .expect("git_diff_file should succeed via fallback");
+        assert!(!diff.is_empty(), "fallback diff should be non-empty");
+        assert!(
+            diff.contains("brand new content"),
+            "expected file content in fallback diff, got: {diff}"
+        );
+    }
+}

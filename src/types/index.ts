@@ -10,6 +10,9 @@ export interface GlobalAppEntry {
  * by a viewer-type id (see VIEWER_PREF_TYPES in fileUtils).
  */
 export interface ViewerPref {
+  /** Whether this native viewer is used at all. Absent/true → render in-app;
+   *  false → the type opts out and its files open in the external default app. */
+  enabled?: boolean;
   /** Whether Ctrl+Space local autocomplete is enabled for this type (#45). */
   autocomplete?: boolean;
   /** Editor font size in px for this type's in-app code editor. Adjusted from

@@ -272,6 +272,7 @@ pub fn run() {
             commands::fs::read_file_text,
             commands::fs::write_file_text,
             commands::fs::read_file_bytes,
+            commands::fs::write_file_bytes,
             commands::fs::file_mtime,
             commands::fs_watch::watch_dir,
             commands::fs_watch::unwatch_dir,
@@ -328,6 +329,14 @@ pub fn run() {
             commands::git::git_checkout,
             commands::git::git_commit_message,
             commands::git::git_reword_head,
+            commands::git::git_diff_file,
+            // Project-wide content search
+            commands::search::project_search,
+            // SQLite database browser (Dev C)
+            commands::sqlite::sqlite_tables,
+            commands::sqlite::sqlite_page,
+            // Spreadsheet (.xlsx/.xls) reader (Dev G)
+            commands::sheets::read_spreadsheet,
             // Crash reporting
             commands::crash::report_frontend_error,
             // Debug diagnostics

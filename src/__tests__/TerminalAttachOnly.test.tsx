@@ -38,6 +38,8 @@ vi.mock("@xterm/xterm", () => ({
     write() {}
     onData() {}
     onResize() {}
+    attachCustomKeyEventHandler() {}
+    getSelection() { return ""; }
     focus() {}
     dispose() {}
     options = {};

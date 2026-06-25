@@ -9,7 +9,7 @@ import { commitFileDrop } from "../tabs/commitFileDrop";
 import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
-import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
+import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 
@@ -161,6 +161,8 @@ export function FileTree({
   const { openFile } = useWindowsStore();
   const addTab = useTabsStore((s) => s.addTab);
   const runInBackground = useSettingsStore((s) => s.settings?.run_scripts_in_background ?? true);
+  const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
+  const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
   const runningScripts = useActivityStore((s) => s.runningScripts);
   const runScript = useActivityStore((s) => s.runScript);
 
@@ -234,7 +236,7 @@ export function FileTree({
   // apply, so PDFs/text/markdown never depend on the configured external app.
   const draggableToTab = (e: FileEntry): InternalViewer | "embed" | null => {
     if (e.is_dir) return null;
-    const viewer = internalViewerFor(e);
+    const viewer = internalViewerFor(e, disabledViewerSet);
     if (viewer) return viewer;
     return isEmbeddable(e) ? "embed" : null;
   };
@@ -485,6 +487,27 @@ export function FileTree({
       setError(String(err));
       setLoading(false);
     }
+  }
+
+  /** Open the in-app diff viewer for a file. The DiffView viewer resolves the
+   *  absolute source path and asks the backend (`git_diff_file`) for the diff,
+   *  so we just hand it the path. Re-opening drops any prior diff tab for the
+   *  same path (mirrors openPdfTab) so the diff refreshes. */
+  function showDiff(entry: FileEntry) {
+    setContextMenu(null);
+    const store = useTabsStore.getState();
+    const prior = store.tabs.find(
+      (t) => t.kind === "embed" && t.viewer === "diff" && t.embedPath === entry.path,
+    );
+    if (prior) store.removeTab(prior.key);
+    store.addTab({
+      label: entry.name,
+      cmd: "",
+      cwd: projectDir,
+      kind: "embed",
+      embedPath: entry.path,
+      viewer: "diff",
+    });
   }
 
   async function updateGitignore(entry: FileEntry, action: "ignore" | "unignore") {
@@ -966,6 +989,11 @@ export function FileTree({
                 {(status === "modified" || status === "untracked") && (
                   <button onClick={() => stageEntry(entry)}>
                     Stage (git add)
+                  </button>
+                )}
+                {status && !entry.is_dir && (
+                  <button onClick={() => showDiff(entry)}>
+                    Show diff
                   </button>
                 )}
                 <button onClick={() => updateGitignore(entry, "ignore")}>

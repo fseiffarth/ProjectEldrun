@@ -203,6 +203,32 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       invoke("pty_write", { id, data: PTY_ENCODER.encode(data) }).catch(console.error);
     });
 
+    // Copy/paste: xterm binds neither itself, so without this the terminal has no
+    // way to copy a selection (the agent-terminal "can't copy" report). Use the
+    // standard terminal chords — Ctrl+Shift+C copies the current selection, Ctrl+
+    // Shift+V pastes clipboard text into the PTY — and deliberately leave plain
+    // Ctrl+C alone so it still sends SIGINT to the running program (interrupting
+    // an agent). Returning false swallows the chord so xterm doesn't also forward
+    // it to the PTY as a control sequence.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown" || !e.ctrlKey || !e.shiftKey) return true;
+      if (e.code === "KeyC") {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
+        return false;
+      }
+      if (e.code === "KeyV") {
+        navigator.clipboard
+          ?.readText()
+          .then((text) => {
+            if (text) invoke("pty_write", { id, data: PTY_ENCODER.encode(text) }).catch(console.error);
+          })
+          .catch(() => {});
+        return false;
+      }
+      return true;
+    });
+
     const setupAndSpawn = async () => {
       const outputListener = await listen<TerminalOutput>(
         "terminal-output",

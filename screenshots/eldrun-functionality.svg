@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <!-- card -->
+  <rect x="8" y="8" width="944" height="604" rx="18" fill="#0f1420" stroke="#2f3a4d" stroke-width="1.5"/>
+
+  <!-- header -->
+  <text x="32" y="42" font-size="19" font-weight="700" letter-spacing="2" fill="#e6edf3">ELDRUN</text>
+  <text x="118" y="42" font-size="12.5" fill="#7c8cff">·  you don't open applications, you open projects</text>
+
+  <!-- ===================== Band 1: projects ===================== -->
+  <rect x="32" y="64" width="896" height="74" rx="12" fill="#151b27" stroke="#2c3647"/>
+  <text x="48" y="88" font-size="12" font-weight="700" letter-spacing="0.6" fill="#7c8cff">① PROJECTS · PROJECT SWITCHING</text>
+  <!-- active pill -->
+  <rect x="48" y="100" width="128" height="28" rx="9" fill="#1f6f63" stroke="#36c5b0"/>
+  <text x="62" y="119" font-size="12" font-weight="600" fill="#d7fff6">● Project A</text>
+  <rect x="188" y="100" width="104" height="28" rx="9" fill="#20283a" stroke="#313d52"/>
+  <text x="202" y="119" font-size="12" fill="#c7d2e6">Project B</text>
+  <rect x="304" y="100" width="104" height="28" rx="9" fill="#20283a" stroke="#313d52"/>
+  <text x="318" y="119" font-size="12" fill="#c7d2e6">Project C</text>
+  <rect x="420" y="100" width="86" height="28" rx="9" fill="#2a2438" stroke="#5a4b86"/>
+  <text x="434" y="119" font-size="12" fill="#cbbdf0">▦ Box</text>
+  <rect x="518" y="100" width="34" height="28" rx="9" fill="#20283a" stroke="#313d52"/>
+  <text x="531" y="119" font-size="14" fill="#8aa0c0">+</text>
+  <text x="912" y="92" text-anchor="end" font-size="12" fill="#9aa7bd">14:32</text>
+  <text x="912" y="120" text-anchor="end" font-size="11" fill="#7c8898">today · 2h 14m</text>
+
+  <!-- arrow -->
+  <line x1="480" y1="138" x2="480" y2="168" stroke="#41506b" stroke-width="2"/>
+  <path d="M480 174 l-6 -9 h12 z" fill="#41506b"/>
+  <text x="494" y="160" font-size="11" fill="#7c8898">open a project → swap the whole desktop</text>
+
+  <!-- ===================== Band 2: tabs ===================== -->
+  <rect x="32" y="180" width="612" height="262" rx="12" fill="#131a26" stroke="#2c3647"/>
+  <text x="48" y="204" font-size="12" font-weight="700" letter-spacing="0.6" fill="#36c5b0">② TAB MANAGEMENT · TILING SUBWINDOWS</text>
+
+  <!-- tab strip -->
+  <rect x="48" y="214" width="108" height="26" rx="8" fill="#2c2f56" stroke="#7c8cff"/>
+  <text x="62" y="231" font-size="11.5" font-weight="600" fill="#cfd6ff">▤ Claude</text>
+  <rect x="162" y="214" width="78" height="26" rx="8" fill="#1b2233" stroke="#313d52"/>
+  <text x="176" y="231" font-size="11.5" fill="#aab6cc">Codex</text>
+  <rect x="246" y="214" width="78" height="26" rx="8" fill="#1b2233" stroke="#313d52"/>
+  <text x="260" y="231" font-size="11.5" fill="#aab6cc">$ shell</text>
+  <rect x="330" y="214" width="104" height="26" rx="8" fill="#1b2233" stroke="#313d52"/>
+  <text x="344" y="231" font-size="11.5" fill="#aab6cc">◧ notes.md</text>
+  <text x="556" y="231" font-size="11" fill="#5f6f88">⤢ pop-out</text>
+
+  <!-- three cards -->
+  <!-- card A: agent tabs -->
+  <rect x="48" y="252" width="188" height="178" rx="10" fill="#0f1622" stroke="#283246"/>
+  <text x="64" y="276" font-size="12" font-weight="700" fill="#7c8cff">Agent tabs</text>
+  <text x="64" y="300" font-size="11" fill="#aab6cc">• Claude</text>
+  <text x="64" y="320" font-size="11" fill="#aab6cc">• Codex</text>
+  <text x="64" y="340" font-size="11" fill="#aab6cc">• Gemini</text>
+  <text x="64" y="360" font-size="11" fill="#aab6cc">• Ollama (local model)</text>
+  <text x="64" y="392" font-size="10.5" fill="#5f6f88">resumable sessions,</text>
+  <text x="64" y="408" font-size="10.5" fill="#5f6f88">project sandbox env</text>
+
+  <!-- card B: shell tabs -->
+  <rect x="244" y="252" width="188" height="178" rx="10" fill="#0f1622" stroke="#283246"/>
+  <text x="260" y="276" font-size="12" font-weight="700" fill="#57c38a">Shell tabs</text>
+  <text x="260" y="300" font-size="11" fill="#aab6cc">• Root control terminal</text>
+  <text x="260" y="320" font-size="11" fill="#aab6cc">• Per-project shells</text>
+  <text x="260" y="340" font-size="11" fill="#aab6cc">• Remote (SSH) shells</text>
+  <text x="260" y="392" font-size="10.5" fill="#5f6f88">drag-to-tile: split a</text>
+  <text x="260" y="408" font-size="10.5" fill="#5f6f88">pane any direction</text>
+
+  <!-- card C: native viewers -->
+  <rect x="440" y="252" width="188" height="178" rx="10" fill="#0f1622" stroke="#283246"/>
+  <text x="456" y="276" font-size="12" font-weight="700" fill="#e3b341">Native viewers</text>
+  <text x="456" y="300" font-size="11" fill="#aab6cc">• text · markdown · LaTeX</text>
+  <text x="456" y="320" font-size="11" fill="#aab6cc">• PDF · images</text>
+  <text x="456" y="340" font-size="11" fill="#aab6cc">• CSV · notebook · diff</text>
+  <text x="456" y="360" font-size="11" fill="#aab6cc">• ODT</text>
+  <text x="456" y="392" font-size="10.5" fill="#5f6f88">SQLite · HTML · A/V</text>
+  <text x="456" y="408" font-size="10.5" fill="#5f6f88">in progress</text>
+
+  <!-- ===================== Right panel ===================== -->
+  <rect x="656" y="180" width="272" height="262" rx="12" fill="#131a26" stroke="#2c3647"/>
+  <text x="672" y="204" font-size="12" font-weight="700" letter-spacing="0.6" fill="#f0789f">RIGHT PANEL</text>
+  <rect x="672" y="214" width="62" height="26" rx="8" fill="#3a2230" stroke="#f0789f"/>
+  <text x="686" y="231" font-size="11.5" font-weight="600" fill="#ffd0e0">Files</text>
+  <rect x="742" y="214" width="56" height="26" rx="8" fill="#1b2233" stroke="#313d52"/>
+  <text x="756" y="231" font-size="11.5" fill="#aab6cc">Git</text>
+  <rect x="806" y="214" width="78" height="26" rx="8" fill="#1b2233" stroke="#313d52"/>
+  <text x="820" y="231" font-size="11.5" fill="#aab6cc">Search</text>
+  <text x="672" y="266" font-size="11" fill="#aab6cc">• git status markers</text>
+  <text x="672" y="286" font-size="11" fill="#aab6cc">• branch checkout · commit</text>
+  <text x="672" y="306" font-size="11" fill="#aab6cc">• project-wide content search</text>
+  <text x="672" y="326" font-size="11" fill="#aab6cc">• copy / cut / paste files</text>
+
+  <line x1="672" y1="346" x2="912" y2="346" stroke="#283246"/>
+  <text x="672" y="370" font-size="11.5" font-weight="700" letter-spacing="0.4" fill="#f0789f">GLOBAL APP TOOLBAR</text>
+  <text x="672" y="394" font-size="11" fill="#aab6cc">• Browser · Mail · Calendar</text>
+  <text x="672" y="414" font-size="11" fill="#aab6cc">• Screenshot ▸ region · Notes …</text>
+
+  <!-- ===================== Band 3: desktop layer ===================== -->
+  <rect x="32" y="456" width="896" height="104" rx="12" fill="#151b27" stroke="#2c3647"/>
+  <text x="48" y="480" font-size="12" font-weight="700" letter-spacing="0.6" fill="#36c5b0">③ PROJECT DESKTOP LAYER — switches as one unit</text>
+
+  <g font-size="11" fill="#c7d2e6">
+    <rect x="48"  y="490" width="200" height="26" rx="8" fill="#1b2233" stroke="#313d52"/><text x="62"  y="507">Window parking</text>
+    <rect x="264" y="490" width="200" height="26" rx="8" fill="#1b2233" stroke="#313d52"/><text x="278" y="507">Downloads routing</text>
+    <rect x="480" y="490" width="200" height="26" rx="8" fill="#1b2233" stroke="#313d52"/><text x="494" y="507">Default-app mapping</text>
+    <rect x="696" y="490" width="200" height="26" rx="8" fill="#1b2233" stroke="#313d52"/><text x="710" y="507">Time tracking</text>
+    <rect x="48"  y="524" width="200" height="26" rx="8" fill="#1b2233" stroke="#313d52"/><text x="62"  y="541">Project boxes</text>
+    <rect x="264" y="524" width="200" height="26" rx="8" fill="#1b2233" stroke="#313d52"/><text x="278" y="541">Remote (SSH) projects</text>
+    <rect x="480" y="524" width="200" height="26" rx="8" fill="#1b2233" stroke="#313d52"/><text x="494" y="541">Publish to GitHub</text>
+    <rect x="696" y="524" width="200" height="26" rx="8" fill="#1b2233" stroke="#313d52"/><text x="710" y="541">Pop-out windows</text>
+  </g>
+
+  <!-- footer -->
+  <text x="480" y="590" text-anchor="middle" font-size="11" fill="#5f6f88">Linux-first · X11 + KDE Wayland · Tauri 2 + React + TypeScript · xterm.js · Zustand</text>
+</svg>

@@ -86,6 +86,31 @@ function renderInline(raw: string): string {
     return ` C${idx} `;
   });
 
+  // Pull math out next so emphasis/escape never touches the TeX. We emit a
+  // placeholder span that the post-render `enrichMarkdownDom` pass replaces with
+  // KaTeX. The TeX is HTML-escaped here (escape-first invariant); KaTeX consumes
+  // the de-escaped textContent, which is safe with trust:false.
+  //
+  // Heuristic to avoid treating prose dollar amounts ("It cost $5 today") as
+  // math: a `$` only opens/closes math when it sits directly against a non-space
+  // char on the inside, and no newline appears between the delimiters. Block math
+  // (`$$…$$`) is pulled before inline (`$…$`) so the longer delimiter wins; the
+  // single-line `$$x$$` form is handled here, which covers our docs in v1.
+  const mathSpans: string[] = [];
+  const pushMath = (tex: string, display: boolean): string => {
+    const idx =
+      mathSpans.push(
+        `<span class="md-math" data-display="${display}">${escapeHtml(tex)}</span>`,
+      ) - 1;
+    return ` M${idx} `;
+  };
+  text = text.replace(/\$\$(?!\s)([^\n]+?)(?<!\s)\$\$/g, (_m, tex: string) =>
+    pushMath(tex, true),
+  );
+  text = text.replace(/\$(?!\s)([^$\n]+?)(?<!\s)\$/g, (_m, tex: string) =>
+    pushMath(tex, false),
+  );
+
   // Pull links/images out next so their text/url are not mangled by emphasis.
   const links: string[] = [];
   text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_m, alt: string, url: string) => {
@@ -137,7 +162,8 @@ function renderInline(raw: string): string {
   text = text.replace(/(^|[^_])_([^_\s][^_]*?)_/g, "$1<em>$2</em>");
   text = text.replace(/~~([^~]+)~~/g, "<del>$1</del>");
 
-  // Restore links then code spans.
+  // Restore math, then links, then code spans.
+  text = text.replace(/ M(\d+) /g, (_m, i: string) => mathSpans[Number(i)]);
   text = text.replace(/ L(\d+) /g, (_m, i: string) => links[Number(i)]);
   text = text.replace(/ C(\d+) /g, (_m, i: string) => codeSpans[Number(i)]);
   return text;
