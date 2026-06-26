@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
@@ -17,10 +17,28 @@ import { FileBrowser } from "../files/FileBrowser";
 import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
 import { WindowControls } from "../header/WindowControls";
-import { DragGhost } from "./CenterPanel";
+import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
 import { pickEdge } from "../tabs/dragGeometry";
 import { useDragStore } from "../../stores/drag";
-import { findGroup, type DropEdge, type GroupNode, type LayoutNode, type TabEntry } from "../../stores/tabs";
+import { useSettingsStore } from "../../stores/settings";
+import {
+  DEFAULT_MIN_SUBWINDOW_PX,
+  allGroups,
+  findGroup,
+  type DropEdge,
+  type GroupNode,
+  type LayoutNode,
+  type SplitNode,
+  type TabEntry,
+} from "../../stores/tabs";
+
+/** Pixel coordinates of a group body, relative to the detached center panel. */
+interface Rect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
 
 // Fixed width of the gap that opens within the bar to receive a reordered tab.
 // Mirrors TabBar's constant so the popout's within-bar reorder looks identical.
@@ -44,6 +62,12 @@ interface Props {
   /** Split `key` into a new pane at `edge` of `targetGroupId`, inside the popout
    *  (a tab dragged onto a group BODY's edge). */
   onSplit: (key: string, targetGroupId: string, edge: DropEdge) => void;
+  /** Resize the divider between children `dividerIndex`/`dividerIndex+1` of
+   *  `splitId` inside the popout (a split divider drag). */
+  onResize: (splitId: string, dividerIndex: number, fraction: number) => void;
+  /** Merge `key` into `targetGroupId` (at `index`, else append) — a tab dragged
+   *  onto ANOTHER group's bar (or body center) inside a split popout. */
+  onMove: (key: string, targetGroupId: string, index?: number) => void;
 }
 
 /**
@@ -63,11 +87,22 @@ export function DetachedCenterPanel({
   onClose,
   onReorder,
   onSplit,
+  onResize,
+  onMove,
 }: Props) {
   // One bar element per group, so a per-tab drag can hit-test the bar it's over.
   const barRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   // One body element per group, for resolving an edge-split drop target.
   const bodyRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  // The panel element, the coordinate origin for the split-preview overlay.
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Measured group-body rects (panel-relative px) feeding the split-preview
+  // overlay, which must paint ABOVE the per-group panes (opaque terminals) — so,
+  // like the main window, it lives at the panel level rather than in a body.
+  const [groupRects, setGroupRects] = useState<Record<string, Rect>>({});
+  // Minimum subwindow size (px) a divider drag may shrink a pane to, per axis.
+  const minWidth = useSettingsStore((s) => s.settings?.min_subwindow_width) ?? DEFAULT_MIN_SUBWINDOW_PX;
+  const minHeight = useSettingsStore((s) => s.settings?.min_subwindow_height) ?? DEFAULT_MIN_SUBWINDOW_PX;
   // #42 (main → detached): true while a tab dragged out of the MAIN window hovers
   // over THIS popout, so we paint a drop-target highlight. The main window streams
   // the toggle on our label-namespaced channel and commits the dock itself (it
@@ -80,6 +115,97 @@ export function DetachedCenterPanel({
   const reorderGroupId = useDragStore((s) => (s.drag ? s.drag.reorderGroup : null));
   const reorderIndex = useDragStore((s) => (s.drag ? s.drag.reorderIndex : null));
   const byKey = new Map(tabs.map((t) => [t.key, t] as const));
+
+  // ── Pane-region measurement (for the split-preview overlay) ───────────────
+  // Recompute every group body's rect (relative to the panel) so the overlay can
+  // paint the half/whole a split drop would carve out. Mirrors CenterPanel.measure.
+  const measure = useCallback(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const base = panel.getBoundingClientRect();
+    const next: Record<string, Rect> = {};
+    for (const [id, el] of bodyRefs.current) {
+      if (!el.isConnected) continue;
+      const r = el.getBoundingClientRect();
+      next[id] = { left: r.left - base.left, top: r.top - base.top, width: r.width, height: r.height };
+    }
+    setGroupRects((prev) => {
+      const keys = Object.keys(next);
+      if (keys.length === Object.keys(prev).length) {
+        let same = true;
+        for (const k of keys) {
+          const a = next[k];
+          const b = prev[k];
+          if (!b || a.left !== b.left || a.top !== b.top || a.width !== b.width || a.height !== b.height) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return prev;
+      }
+      return next;
+    });
+  }, []);
+
+  // Re-measure when the popout's tree changes (split added/removed/resized).
+  useLayoutEffect(() => {
+    measure();
+  }, [measure, tree]);
+
+  // Re-measure on panel/body resize and OS-window resize (WebKitGTK sometimes
+  // misses the latter via ResizeObserver — DetachedApp bridges it to 'resize').
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(panel);
+    for (const el of bodyRefs.current.values()) ro.observe(el);
+    return () => ro.disconnect();
+  }, [measure, tree]);
+  useEffect(() => {
+    const onResize = () => measure();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [measure]);
+
+  // A split divider drag inside the popout. Mirrors CenterPanel's SplitView: the
+  // new fraction is the pointer position within the split container, clamped so
+  // neither side of the dragged pair shrinks below the min subwindow size. The
+  // resize streams back to the main window via `onResize` (a "resize" edit), so
+  // the host's `detachedGroupsByScope` record stays the source of truth.
+  const onDividerPointerDown =
+    (node: SplitNode, dividerIndex: number) => (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const container = (e.currentTarget as HTMLElement).parentElement;
+      if (!container) return;
+      const captureEl = e.target as HTMLElement;
+      captureEl.setPointerCapture?.(e.pointerId);
+      const onMove = (ev: PointerEvent) => {
+        const rect = container.getBoundingClientRect();
+        const isRow = node.dir === "row";
+        const total = isRow ? rect.width : rect.height;
+        if (total <= 0) return;
+        const pos = isRow ? ev.clientX - rect.left : ev.clientY - rect.top;
+        const wholeFraction = Math.min(Math.max(pos / total, 0), 1);
+        let before = 0;
+        for (let i = 0; i < dividerIndex; i++) before += node.sizes[i];
+        const pair = node.sizes[dividerIndex] + node.sizes[dividerIndex + 1];
+        const leftSize = wholeFraction - before;
+        const minPx = isRow ? minWidth : minHeight;
+        const minFrac = Math.min(minPx / total, pair / 2);
+        const clamped = Math.min(Math.max(leftSize, minFrac), pair - minFrac);
+        onResize(node.id, dividerIndex, clamped);
+      };
+      const onUp = (ev: PointerEvent) => {
+        captureEl.releasePointerCapture?.(ev.pointerId);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    };
 
   // #42: listen for the main window's drop-target highlight toggle (a tab being
   // dragged out of the main window over this popout). Keyed by THIS window's
@@ -159,27 +285,40 @@ export function DetachedCenterPanel({
     if (!overPopout) return false;
     const drag = useDragStore.getState().drag;
     if (!drag) return true;
-    // Body edge → split this group inside the popout (non-center only).
-    if (drag.overGroup && drag.edge && drag.edge !== "center") {
-      onSplit(tabKey, drag.overGroup, drag.edge);
+    // Body edge → split this group inside the popout. A non-center edge splits
+    // off a new pane; "center" over a DIFFERENT group merges into it (over the
+    // source group it's a no-op, matching the main window's commitDrop).
+    if (drag.overGroup && drag.edge) {
+      if (drag.edge !== "center") {
+        onSplit(tabKey, drag.overGroup, drag.edge);
+      } else if (drag.overGroup !== drag.fromGroup) {
+        onMove(tabKey, drag.overGroup);
+      }
       return true;
     }
-    // Bar slot → reorder the target group's tabs.
+    // Bar slot → reorder within the same group, or merge into another group's bar.
     if (drag.reorderGroup && drag.reorderIndex != null) {
-      const group = findGroup(tree, drag.reorderGroup);
-      if (group) {
-        const cur = group.tabKeys;
-        const from = cur.indexOf(tabKey);
-        if (from >= 0) {
-          let to = drag.reorderIndex;
-          if (from < to) to -= 1; // account for the source's own removal.
-          if (to !== from) {
-            const next = [...cur];
-            next.splice(from, 1);
-            next.splice(to, 0, tabKey);
-            onReorder(next);
+      if (drag.reorderGroup === drag.fromGroup) {
+        const group = findGroup(tree, drag.reorderGroup);
+        if (group) {
+          const cur = group.tabKeys;
+          const from = cur.indexOf(tabKey);
+          if (from >= 0) {
+            let to = drag.reorderIndex;
+            if (from < to) to -= 1; // account for the source's own removal.
+            if (to !== from) {
+              const next = [...cur];
+              next.splice(from, 1);
+              next.splice(to, 0, tabKey);
+              onReorder(next);
+            }
           }
         }
+      } else {
+        // Dropped onto another group's bar → move the tab there at the slot.
+        // The slot indexes the target's tabs (which don't contain the key), so
+        // it needs no source-removal adjustment.
+        onMove(tabKey, drag.reorderGroup, drag.reorderIndex);
       }
     }
     return true;
@@ -396,6 +535,28 @@ export function DetachedCenterPanel({
     });
   };
 
+  // #42: grab the popout's outer title bar to move/dock the WHOLE window. Mirrors
+  // the group-bar handle, but anchored to the always-full-width title strip so it
+  // works the same whether or not the content is split. The window controls carry
+  // `no-drag`, so a click on min/max/close never starts a drag.
+  const onTitlebarPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest(".detached-titlebar-controls, button, .no-drag")) return;
+    e.preventDefault();
+    const first = allGroups(tree)[0];
+    const activeLabel =
+      (first ? tabs.find((t) => t.key === first.activeKey)?.label : undefined) ?? "Subwindow";
+    beginDockDrag({
+      pointerId: e.pointerId,
+      screenX: e.screenX,
+      screenY: e.screenY,
+      captureEl: e.currentTarget as HTMLElement,
+      label: activeLabel,
+      moveWindow: true,
+    });
+  };
+
   // #42: dragging a SINGLE tab out of `group`. Activate on press, then once the
   // pointer crosses a threshold start a per-tab dock drag.
   const onTabPointerDown = (e: React.PointerEvent, group: GroupNode, tab: TabEntry) => {
@@ -434,8 +595,10 @@ export function DetachedCenterPanel({
 
   // Render one group: its tab bar + a pane layer holding every tab (active shown).
   // For a single-group popout this is the whole content; inside a split each group
-  // renders into its flex cell. `isRoot` puts the window controls on the first bar.
-  const renderGroup = (group: GroupNode, isRoot: boolean) => {
+  // renders into its flex cell. The min/max/close window controls live in the
+  // popout's dedicated outer title bar (not here), so they stay pinned top-right
+  // regardless of how the content is split.
+  const renderGroup = (group: GroupNode) => {
     const orderedTabs = group.tabKeys
       .map((k) => byKey.get(k))
       .filter((t): t is TabEntry => t != null);
@@ -481,11 +644,6 @@ export function DetachedCenterPanel({
               </div>
             );
           })}
-          {isRoot && (
-            <div className="detached-titlebar-controls no-drag">
-              <WindowControls />
-            </div>
-          )}
         </div>
         <div
           className="subwindow-body"
@@ -548,14 +706,10 @@ export function DetachedCenterPanel({
   };
 
   // Recursively render the popout's layout tree. Splits become flex rows/columns
-  // sized by their fractions; groups render their bar + panes. `isRoot` flags the
-  // first group reached so only it hosts the window controls.
-  let rootClaimed = false;
+  // sized by their fractions; groups render their bar + panes.
   const renderNode = (node: LayoutNode): React.ReactNode => {
     if (node.type === "group") {
-      const isRoot = !rootClaimed;
-      rootClaimed = true;
-      return renderGroup(node, isRoot);
+      return renderGroup(node);
     }
     return (
       <div
@@ -569,18 +723,25 @@ export function DetachedCenterPanel({
         }}
       >
         {node.children.map((child, i) => (
-          <div
-            key={child.id}
-            className="split-child"
-            style={{
-              flex: `${node.sizes[i] ?? 1 / node.children.length} 1 0`,
-              display: "flex",
-              minWidth: 0,
-              minHeight: 0,
-            }}
-          >
-            {renderNode(child)}
-          </div>
+          <Fragment key={child.id}>
+            <div
+              className="split-child"
+              style={{
+                flex: `${node.sizes[i] ?? 1 / node.children.length} 1 0`,
+                display: "flex",
+                minWidth: 0,
+                minHeight: 0,
+              }}
+            >
+              {renderNode(child)}
+            </div>
+            {i < node.children.length - 1 && (
+              <div
+                className={`split-divider split-divider-${node.dir}`}
+                onPointerDown={onDividerPointerDown(node, i)}
+              />
+            )}
+          </Fragment>
         ))}
       </div>
     );
@@ -588,7 +749,24 @@ export function DetachedCenterPanel({
 
   return (
     <div className="detached-center center-panel">
-      {renderNode(tree)}
+      {/* #42: the popout's own title bar — a full-width strip ABOVE the tab layout
+          that always hosts the min/max/close controls top-right. They used to live
+          in the root group's tab bar, which slid left (with the root group) once
+          the popout was split; an outer frame keeps them pinned. The empty strip
+          is a drag handle for moving / docking the whole window. */}
+      <div className="detached-titlebar detached-drag-handle" onPointerDown={onTitlebarPointerDown}>
+        <div className="detached-titlebar-controls no-drag">
+          <WindowControls />
+        </div>
+      </div>
+      {/* The layout tree (below the title bar) is the positioning context for the
+          absolutely-inset split/subwindow nodes and the split-preview overlay. */}
+      <div ref={panelRef} className="detached-body">
+        {renderNode(tree)}
+        {/* Split preview: the translucent half/whole a split drop would carve out,
+            drawn above the per-group panes (mirrors the main window). */}
+        <SplitPreviewOverlay groupRects={groupRects} />
+      </div>
       {dropActive && <div className="detached-drop-target" />}
       <DragGhost />
     </div>

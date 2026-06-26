@@ -41,6 +41,39 @@ html, body, #root {
   height: 100%;
 }
 
+/* #42: the popout's own title bar — a full-width strip above the tab layout that
+   always hosts the min/max/close controls in the top-right corner. Before, the
+   controls lived in the root group's tab bar; once the popout was split the root
+   group became a narrow split child and the controls slid left with it. A
+   dedicated outer frame keeps them pinned regardless of splits. */
+.detached-titlebar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 30px;
+  padding: 0 4px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* The layout tree lives below the title bar and is the positioning context for
+   the absolutely-inset split/subwindow nodes + the split-preview overlay. (In the
+   main window the panel itself plays this role; here the title bar sits above, so
+   the tree is wrapped one level deeper — these rules mirror the `.center-panel >`
+   ones for that wrapper.) */
+.detached-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.detached-body > .split,
+.detached-body > .subwindow {
+  position: absolute;
+  inset: 0;
+}
+
 /* #42: the detached window's tab bar doubles as a drag handle — its empty area
    drags the whole popout back onto the main window (or repositions it). */
 .detached-drag-handle {

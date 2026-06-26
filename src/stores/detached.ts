@@ -20,6 +20,8 @@ import {
   mapGroup,
   removeKeyFromTree,
   splitSubtree,
+  applyResize,
+  moveKeyInTree,
   allGroups,
   type DropEdge,
   type LayoutNode,
@@ -178,7 +180,11 @@ export type DetachedEdit =
   | { kind: "close"; key: string }
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-pane popouts: split `key` into a new pane at `edge` of `targetGroupId`.
-  | { kind: "split"; key: string; targetGroupId: string; edge: DropEdge };
+  | { kind: "split"; key: string; targetGroupId: string; edge: DropEdge }
+  // Multi-pane popouts: resize the divider between children i and i+1 of a split.
+  | { kind: "resize"; splitId: string; dividerIndex: number; fraction: number }
+  // Multi-pane popouts: merge `key` into `targetGroupId` (at `index`, else append).
+  | { kind: "move"; key: string; targetGroupId: string; index?: number };
 
 /** Envelope for a detached→main edit (identity + the edit itself). */
 export interface DetachedEditEnvelope {
@@ -249,6 +255,12 @@ export function applyEditToSubtree(
       // Optimistic local split; null (invalid) leaves the popout unchanged.
       return splitSubtree(subtree, edit.key, edit.targetGroupId, edit.edge) ?? subtree;
     }
+    case "resize":
+      // Optimistic local divider resize (mirrors the main window's resizeSplit).
+      return applyResize(subtree, edit.splitId, edit.dividerIndex, edit.fraction);
+    case "move":
+      // Optimistic local cross-group merge; null (invalid) leaves it unchanged.
+      return moveKeyInTree(subtree, edit.key, edit.targetGroupId, edit.index) ?? subtree;
     case "rename":
       // Label lives on the tab payload, not the group node — no node change.
       return subtree;

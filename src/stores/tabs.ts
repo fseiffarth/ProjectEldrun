@@ -143,7 +143,13 @@ export type DetachedEditPayload =
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-pane popouts: split `key` out into a new pane at `edge` of
   // `targetGroupId` (a group within the popout's subtree).
-  | { kind: "split"; key: string; targetGroupId: string; edge: DropEdge };
+  | { kind: "split"; key: string; targetGroupId: string; edge: DropEdge }
+  // Multi-pane popouts: resize the divider between children `dividerIndex`/
+  // `dividerIndex+1` of the split `splitId` within the popout's subtree.
+  | { kind: "resize"; splitId: string; dividerIndex: number; fraction: number }
+  // Multi-pane popouts: move `key` into `targetGroupId` (at `index`, else append),
+  // merging it across the popout's groups (collapses an emptied source pane).
+  | { kind: "move"; key: string; targetGroupId: string; index?: number };
 
 /** Flat tab shape as persisted in project.json's `tab_layout`. */
 export interface SavedTabEntry {
@@ -480,6 +486,36 @@ function appendKeyToTree(node: LayoutNode, key: string): LayoutNode {
   }));
 }
 
+/** Move `key` out of its current group into `targetGroupId` at `index` (append
+ *  when `index` is undefined), activating it there. Collapses the source group /
+ *  lone-child split if the move empties it — so dragging a split pane's only tab
+ *  onto the other pane's bar merges the two panes back into one. Pure; used by a
+ *  detached popout to merge a tab across its own groups. Returns the input
+ *  unchanged when the key isn't present, or null if removal empties the tree
+ *  (can't happen for a cross-group move, which always leaves the target).
+ *  No-ops (returns the input) when the target is the key's own group — that case
+ *  is a within-group reorder, handled elsewhere. */
+export function moveKeyInTree(
+  node: LayoutNode,
+  key: string,
+  targetGroupId: string,
+  index?: number,
+): LayoutNode | null {
+  const source = findGroupOfTab(node, key);
+  if (!source) return node;
+  if (source.group.id === targetGroupId) return node;
+  const cleaned = removeKeyFromTree(node, key);
+  if (!cleaned) return null;
+  // The target survives the removal (it's non-empty); bail if it somehow doesn't.
+  if (!findGroup(cleaned, targetGroupId)) return node;
+  return mapGroup(cleaned, targetGroupId, (g) => {
+    const tabKeys = [...g.tabKeys];
+    const at = index == null ? tabKeys.length : Math.min(Math.max(index, 0), tabKeys.length);
+    tabKeys.splice(at, 0, key);
+    return { ...g, tabKeys, activeKey: key };
+  });
+}
+
 /** Split `key` out of its group into a new pane at `edge` of `targetGroupId`,
  *  within `node`. Pure; mirrors `splitWithTab`'s algorithm but on an arbitrary
  *  subtree so the in-window layout AND a detached popout's subtree share it.
@@ -723,8 +759,9 @@ function makeSplit(dir: SplitDir, children: LayoutNode[]): SplitNode {
   };
 }
 
-/** Apply a resize to the divider between child i and i+1 of `splitId`. */
-function applyResize(
+/** Apply a resize to the divider between child i and i+1 of `splitId`. Exported
+ *  so a detached popout's subtree can be resized through the same pure path. */
+export function applyResize(
   node: LayoutNode,
   splitId: string,
   dividerIndex: number,
@@ -1671,6 +1708,16 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           // A pane split inside the popout: split the subtree, or no-op if the
           // split is invalid (keeps the popout unchanged).
           nextSub = splitSubtree(sub, edit.key, edit.targetGroupId, edit.edge) ?? sub;
+          break;
+        case "resize":
+          // A divider drag inside a multi-pane popout: adjust the targeted
+          // split's child fractions.
+          nextSub = applyResize(sub, edit.splitId, edit.dividerIndex, edit.fraction);
+          break;
+        case "move":
+          // Merge a tab across the popout's groups: null (removal emptied the
+          // tree — impossible for a cross-group move) leaves the popout unchanged.
+          nextSub = moveKeyInTree(sub, edit.key, edit.targetGroupId, edit.index) ?? sub;
           break;
       }
       const nextEntries = [...entries];

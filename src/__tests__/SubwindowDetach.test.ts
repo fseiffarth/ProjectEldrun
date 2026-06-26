@@ -90,7 +90,7 @@ describe("tabs store — detach / attach subwindow (#42)", () => {
     const detached = useTabsStore.getState().detachedGroupsByScope["p"];
     expect(detached).toHaveLength(1);
     expect(detached[0].id).toBe(right.id);
-    expect(detached[0].subtree.tabKeys).toEqual([b.key]);
+    expect((detached[0].subtree as GroupNode).tabKeys).toEqual([b.key]);
     expect(useTabsStore.getState().tabs.map((t) => t.key).sort()).toEqual(
       [a.key, b.key].sort(),
     );
@@ -275,7 +275,7 @@ describe("tabs store — detach / attach subwindow (#42)", () => {
     expect(useTabsStore.getState().layout).toBeNull();
     const detached = useTabsStore.getState().detachedGroupsByScope["p"];
     expect(detached).toHaveLength(1);
-    expect(detached[0].subtree.tabKeys).toEqual([a.key]);
+    expect((detached[0].subtree as GroupNode).tabKeys).toEqual([a.key]);
     expect(invokeMock).toHaveBeenCalledWith(
       "detach_subwindow",
       expect.objectContaining({ projectId: "p", groupId: gid }),
@@ -366,7 +366,7 @@ describe("tabs store — drag a tab/file to another monitor → standalone windo
     // A fresh single-tab detached group references `b`; its payload survives.
     const detached = useTabsStore.getState().detachedGroupsByScope["p"];
     expect(detached).toHaveLength(1);
-    expect(detached[0].subtree.tabKeys).toEqual([b.key]);
+    expect((detached[0].subtree as GroupNode).tabKeys).toEqual([b.key]);
     expect(detached[0].bounds).toEqual(bounds);
     expect(label).toBe(`detached-p-${detached[0].id}`);
     // The new group id is distinct from the source group it left.
@@ -394,7 +394,7 @@ describe("tabs store — drag a tab/file to another monitor → standalone windo
     expect(useTabsStore.getState().layout).toBeNull();
     const detached = useTabsStore.getState().detachedGroupsByScope["p"];
     expect(detached).toHaveLength(1);
-    expect(detached[0].subtree.tabKeys).toEqual([a.key]);
+    expect((detached[0].subtree as GroupNode).tabKeys).toEqual([a.key]);
     // Payload still present so the detached window can render it.
     expect(useTabsStore.getState().tabs.map((t) => t.key)).toEqual([a.key]);
   });
@@ -424,7 +424,7 @@ describe("tabs store — drag a tab/file to another monitor → standalone windo
     const detached = useTabsStore.getState().detachedGroupsByScope["p"];
     expect(detached).toHaveLength(1);
     expect(label).toBe(`detached-p-${detached[0].id}`);
-    const newKey = detached[0].subtree.tabKeys[0];
+    const newKey = (detached[0].subtree as GroupNode).tabKeys[0];
     expect(newKey).not.toBe(a.key);
 
     // The fresh tab payload is in tabsByScope, scope-stamped, embed kind.
@@ -476,7 +476,7 @@ describe("tabs store — dock a single popout tab back (#42 attachDetachedTab)",
     // The popout keeps c; every payload survives. Window stays open.
     const det = useTabsStore.getState().detachedGroupsByScope["p"];
     expect(det).toHaveLength(1);
-    expect(det[0].subtree.tabKeys).toEqual([c.key]);
+    expect((det[0].subtree as GroupNode).tabKeys).toEqual([c.key]);
     expect(useTabsStore.getState().tabs.map((t) => t.key).sort()).toEqual(
       [a.key, b.key, c.key].sort(),
     );
@@ -530,7 +530,7 @@ describe("tabs store — dock a single popout tab back (#42 attachDetachedTab)",
       targetGroupId: g2,
     });
     expect(useTabsStore.getState().layout).toBe(before);
-    expect(useTabsStore.getState().detachedGroupsByScope["p"][0].subtree.tabKeys)
+    expect((useTabsStore.getState().detachedGroupsByScope["p"][0].subtree as GroupNode).tabKeys)
       .toEqual([b.key, useTabsStore.getState().tabs.find((t) => t.label === "c")!.key]);
     expect(invokeMock).not.toHaveBeenCalled();
   });
@@ -562,8 +562,8 @@ describe("tabs store — dock a main-window tab INTO a popout (#42 dockTabIntoDe
     // a is appended to the popout's subtree and is the popout's active tab.
     const det = useTabsStore.getState().detachedGroupsByScope["p"];
     expect(det).toHaveLength(1);
-    expect(det[0].subtree.tabKeys).toEqual([b.key, c.key, a.key]);
-    expect(det[0].subtree.activeKey).toBe(a.key);
+    expect((det[0].subtree as GroupNode).tabKeys).toEqual([b.key, c.key, a.key]);
+    expect((det[0].subtree as GroupNode).activeKey).toBe(a.key);
 
     // G2 emptied → the main center has no layout, but every payload survives so
     // the popout (and the main's hidden-but-mounted pane) keep the PTY alive.
@@ -584,22 +584,22 @@ describe("tabs store — dock a main-window tab INTO a popout (#42 dockTabIntoDe
     const layout = useTabsStore.getState().layout as GroupNode;
     expect(layout.type).toBe("group");
     expect(layout.tabKeys).toEqual([d.key]);
-    expect(
-      useTabsStore.getState().detachedGroupsByScope["p"][0].subtree.tabKeys.at(-1),
-    ).toBe(a.key);
+    const popoutKeys = (useTabsStore.getState().detachedGroupsByScope["p"][0]
+      .subtree as GroupNode).tabKeys;
+    expect(popoutKeys[popoutKeys.length - 1]).toBe(a.key);
   });
 
   it("no-ops for an unknown popout, a foreign tab, or a tab already in the popout", () => {
     const { a, b, g1 } = setup();
     const before = useTabsStore.getState().layout;
     const subBefore =
-      useTabsStore.getState().detachedGroupsByScope["p"][0].subtree.tabKeys;
+      (useTabsStore.getState().detachedGroupsByScope["p"][0].subtree as GroupNode).tabKeys;
     useTabsStore.getState().dockTabIntoDetached("p", "missing", a.key);
     useTabsStore.getState().dockTabIntoDetached("p", g1, "nope");
     useTabsStore.getState().dockTabIntoDetached("p", g1, b.key); // already in popout
     expect(useTabsStore.getState().layout).toBe(before);
     expect(
-      useTabsStore.getState().detachedGroupsByScope["p"][0].subtree.tabKeys,
+      (useTabsStore.getState().detachedGroupsByScope["p"][0].subtree as GroupNode).tabKeys,
     ).toBe(subBefore);
     expect(invokeMock).not.toHaveBeenCalled();
   });

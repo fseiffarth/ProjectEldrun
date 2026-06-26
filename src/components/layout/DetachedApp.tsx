@@ -292,6 +292,12 @@ export function DetachedApp({ param }: Props) {
       onSplit={(key, targetGroupId, edge) =>
         pushEdit({ kind: "split", key, targetGroupId, edge })
       }
+      onResize={(splitId, dividerIndex, fraction) =>
+        pushEdit({ kind: "resize", splitId, dividerIndex, fraction })
+      }
+      onMove={(key, targetGroupId, index) =>
+        pushEdit({ kind: "move", key, targetGroupId, index })
+      }
     />
   );
 }

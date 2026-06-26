@@ -12,7 +12,7 @@ import {
   applyRenameToTabs,
   detachedSeedEvent,
 } from "../stores/detached";
-import type { GroupNode, TabEntry } from "../stores/tabs";
+import type { GroupNode, LayoutNode, SplitNode, TabEntry } from "../stores/tabs";
 
 function tab(key: string, label = key): TabEntry {
   return { key, scope: "p", label, cmd: "bash", cwd: "/p", kind: "shell" };
@@ -92,6 +92,103 @@ describe("detached — applyEditToSubtree", () => {
   it("rename does not touch the group node (label lives on the tab payload)", () => {
     const sub = group(["a", "b"], "a");
     expect(applyEditToSubtree(sub, { kind: "rename", key: "a", label: "x" })).toBe(sub);
+  });
+
+  it("split carves a tab out into a new pane beside its group", () => {
+    const sub = group(["a", "b"], "a");
+    const next = applyEditToSubtree(sub, {
+      kind: "split",
+      key: "b",
+      targetGroupId: "g-1",
+      edge: "right",
+    }) as SplitNode;
+    expect(next.type).toBe("split");
+    expect(next.dir).toBe("row");
+    const [left, right] = next.children as GroupNode[];
+    expect(left.tabKeys).toEqual(["a"]);
+    expect(right.tabKeys).toEqual(["b"]);
+  });
+
+  it("split of a group's only tab is a no-op (keeps the subtree)", () => {
+    const sub = group(["a"], "a");
+    expect(
+      applyEditToSubtree(sub, { kind: "split", key: "a", targetGroupId: "g-1", edge: "right" }),
+    ).toBe(sub);
+  });
+
+  it("move merges a tab into another group's bar at the slot", () => {
+    // Split b out of [a, b] → row[ group[a], group[b] ], then split c... build a
+    // two-group popout with [a, b] | [c] and merge a into the [c] group at slot 0.
+    const split = applyEditToSubtree(group(["a", "b", "c"], "a"), {
+      kind: "split",
+      key: "c",
+      targetGroupId: "g-1",
+      edge: "right",
+    }) as SplitNode;
+    const [leftG, rightG] = split.children as GroupNode[];
+    expect(leftG.tabKeys).toEqual(["a", "b"]);
+    expect(rightG.tabKeys).toEqual(["c"]);
+    const merged = applyEditToSubtree(split, {
+      kind: "move",
+      key: "a",
+      targetGroupId: rightG.id,
+      index: 0,
+    }) as SplitNode;
+    const [l, r] = merged.children as GroupNode[];
+    expect(l.tabKeys).toEqual(["b"]);
+    expect(r.tabKeys).toEqual(["a", "c"]);
+    expect(r.activeKey).toBe("a");
+  });
+
+  it("move of a pane's only tab collapses the split back to one group", () => {
+    const split = applyEditToSubtree(group(["a", "b"], "a"), {
+      kind: "split",
+      key: "b",
+      targetGroupId: "g-1",
+      edge: "right",
+    }) as SplitNode;
+    const [leftG, rightG] = split.children as GroupNode[];
+    // Move b (the only tab of the right pane) onto the left group → un-split.
+    const merged = applyEditToSubtree(split, {
+      kind: "move",
+      key: "b",
+      targetGroupId: leftG.id,
+    });
+    expect((merged as GroupNode).type).toBe("group");
+    expect((merged as GroupNode).tabKeys).toEqual(["a", "b"]);
+    void rightG;
+  });
+
+  it("move into the tab's own group is a no-op (within-group reorder is separate)", () => {
+    const sub = group(["a", "b"], "a");
+    expect(applyEditToSubtree(sub, { kind: "move", key: "a", targetGroupId: "g-1" })).toBe(sub);
+  });
+
+  it("resize adjusts a split's divider fractions, clamped, leaving the pair sum", () => {
+    const sub: LayoutNode = applyEditToSubtree(group(["a", "b"], "a"), {
+      kind: "split",
+      key: "b",
+      targetGroupId: "g-1",
+      edge: "right",
+    })!;
+    const split = sub as SplitNode;
+    const next = applyEditToSubtree(split, {
+      kind: "resize",
+      splitId: split.id,
+      dividerIndex: 0,
+      fraction: 0.7,
+    }) as SplitNode;
+    expect(next.sizes[0]).toBeCloseTo(0.7);
+    expect(next.sizes[0] + next.sizes[1]).toBeCloseTo(1);
+    // Out-of-range fraction is clamped to the [min, pair-min] window.
+    const clampedHigh = applyEditToSubtree(split, {
+      kind: "resize",
+      splitId: split.id,
+      dividerIndex: 0,
+      fraction: 5,
+    }) as SplitNode;
+    expect(clampedHigh.sizes[0]).toBeLessThan(1);
+    expect(clampedHigh.sizes[0]).toBeGreaterThan(0.9);
   });
 });
 
