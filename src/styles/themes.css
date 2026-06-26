@@ -83,18 +83,18 @@ html, body, #root {
   cursor: grabbing;
 }
 
-/* #42: full-window drop-target highlight painted while a tab dragged out of the
-   main window hovers over this popout (releasing there docks it in). Covers the
-   whole frame — a detached window renders exactly one group, so the only drop
-   target is "into this popout". A plain rgba fill (not color-mix, unreliable on
-   this WebKitGTK build) keeps it visible; pointer-events:none so it never eats
-   the gesture. z-index sits above the pane layer (z-index:2). */
+/* #42: drop-target frame painted while a tab/file dragged out of the main window
+   hovers over this popout. Just a thin accent OUTLINE around the whole window so
+   it's clear which popout will receive the drop when several are open — the
+   per-pane split/merge preview (`.split-preview`, driven by the popout's own
+   resolveLocalTarget) shows WHERE inside it the drop lands, so no full-window dark
+   fill (which would muddy that preview and read as "drops anywhere"). z-index sits
+   below the preview (5) so the preview paints on top; pointer-events:none. */
 .detached-drop-target {
   position: fixed;
   inset: 0;
-  z-index: 6;
+  z-index: 4;
   pointer-events: none;
-  background: rgba(0, 0, 0, 0.22);
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }

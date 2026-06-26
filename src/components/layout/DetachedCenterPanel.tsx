@@ -6,11 +6,16 @@ import {
   DETACHED_DRAG_END,
   DETACHED_DRAG_MOVE,
   DETACHED_DRAG_START,
+  DETACHED_PANES,
+  DETACHED_PANES_REQUEST,
   detachedDropPreviewEvent,
   type DetachedDragEnd,
   type DetachedDragMove,
   type DetachedDragStart,
   type DetachedDropPreview,
+  type DetachedPanes,
+  type DetachedPanesRequest,
+  type PaneRect,
 } from "../../stores/detached";
 import { TerminalView } from "../terminal/TerminalView";
 import { FileBrowser } from "../files/FileBrowser";
@@ -216,25 +221,105 @@ export function DetachedCenterPanel({
       window.addEventListener("pointerup", onUp);
     };
 
-  // #42: listen for the main window's drop-target highlight toggle (a tab being
-  // dragged out of the main window over this popout). Keyed by THIS window's
-  // label so only the popout under the cursor lights up.
+  // #42: a tab/file dragged out of the MAIN window over this popout. We (1) answer
+  // the host's panes request with our per-pane client geometry, so the host
+  // hit-tests the cursor SYNCHRONOUSLY (no release race), and (2) render the
+  // per-pane split/merge preview for the target the host streams back — via a
+  // synthetic local drag so the SAME SplitPreviewOverlay + ghost light up as an
+  // in-popout drag. The dock itself is the host's store mutation + re-seed.
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    const unlisteners: Array<() => void> = [];
     let cancelled = false;
-    const label = getCurrentWindow().label;
-    listen<DetachedDropPreview>(detachedDropPreviewEvent(label), (ev) => {
-      setDropActive(ev.payload.active);
-    })
-      .then((fn) => {
-        if (cancelled) fn();
-        else unlisten = fn;
-      })
-      .catch(() => {});
+    const win = getCurrentWindow();
+    const label = win.label;
+    let active = false;
+    // `origin` maps the streamed OS cursor (logical px) into our client space for
+    // the ghost position; resolved lazily on the first hover (window doesn't move).
+    let origin = { x: 0, y: 0 };
+    const refreshOrigin = async () => {
+      try {
+        const scale = (await win.scaleFactor()) || 1;
+        const lg = (await win.innerPosition()).toLogical(scale);
+        origin = { x: lg.x, y: lg.y };
+      } catch {
+        origin = { x: 0, y: 0 };
+      }
+    };
+    const reg = (p: Promise<() => void>) =>
+      p.then((fn) => (cancelled ? fn() : unlisteners.push(fn))).catch(() => {});
+
+    // Render the host-resolved target as our split-preview, and follow the ghost.
+    const apply = (p: DetachedDropPreview) => {
+      if (p.screenX != null && p.screenY != null) {
+        useDragStore.getState().move(p.screenX - origin.x, p.screenY - origin.y);
+      }
+      const t = p.target;
+      useDragStore.getState().setTarget(
+        t
+          ? { overGroup: t.groupId, edge: t.edge, reorderGroup: null, reorderIndex: null }
+          : { overGroup: null, edge: null, reorderGroup: null, reorderIndex: null },
+      );
+    };
+
+    // (1) Report our pane geometry (client px) when the host asks at drag start.
+    reg(
+      listen<DetachedPanesRequest>(DETACHED_PANES_REQUEST, (ev) => {
+        if (ev.payload.label !== label) return;
+        const panes: PaneRect[] = [];
+        for (const [gid, bar] of barRefs.current) {
+          const body = bodyRefs.current.get(gid);
+          if (!body) continue;
+          const br = bar.getBoundingClientRect();
+          const bo = body.getBoundingClientRect();
+          panes.push({
+            groupId: gid,
+            bar: { left: br.left, top: br.top, right: br.right, bottom: br.bottom },
+            body: { left: bo.left, top: bo.top, right: bo.right, bottom: bo.bottom },
+          });
+        }
+        void emit(DETACHED_PANES, { label, panes } satisfies DetachedPanes);
+      }),
+    );
+
+    // (2) Render the preview for the streamed target.
+    reg(
+      listen<DetachedDropPreview>(detachedDropPreviewEvent(label), (ev) => {
+        const p = ev.payload;
+        if (!p.active) {
+          if (active) {
+            active = false;
+            useDragStore.getState().end();
+          }
+          setDropActive(false);
+          return;
+        }
+        setDropActive(true);
+        if (!active) {
+          active = true;
+          useDragStore.getState().start({
+            key: "",
+            fromGroup: "",
+            label: p.label ?? "",
+            pointerX: 0,
+            pointerY: 0,
+            previewNode: null,
+            previewW: 0,
+            previewH: 0,
+          });
+          void refreshOrigin().then(() => apply(p));
+          return;
+        }
+        apply(p);
+      }),
+    );
+
     return () => {
       cancelled = true;
-      unlisten?.();
+      for (const fn of unlisteners) fn();
+      if (active) useDragStore.getState().end();
     };
+    // Mount once: the listeners key off our (stable) window label.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Resolve the within-popout drop target under a popout-client point and write

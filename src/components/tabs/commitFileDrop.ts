@@ -3,10 +3,12 @@ import {
   EMPTY_GROUP_ID,
   findGroup,
   useTabsStore,
+  type DetachedDockTarget,
   type DropEdge,
   type WindowBounds,
 } from "../../stores/tabs";
 import { useWindowsStore } from "../../stores/windows";
+import { reseedDetached } from "./detachedDropTargets";
 
 /**
  * Commit a finished FILE drag (a file row dragged from the FileTree onto a tab
@@ -45,6 +47,13 @@ export function commitFileDrop(
   // Set when the file was released outside the main window: spawn a standalone
   // detached window at these screen-px bounds rather than docking into a tab.
   detachBounds?: WindowBounds | null,
+  // Set when the file was released over an open popout: dock it as an embed tab
+  // INTO that popout instead of spawning a new window (mirrors a tab dragged onto
+  // a popout). `target` is the specific pane the popout resolved under the cursor
+  // (a body edge splits, center/a slot merges; omitted → its first pane). Takes
+  // precedence over `detachBounds` (the cursor is over the popout and therefore
+  // also outside the main window).
+  detachedTarget?: { scope: string; groupId: string; target?: DetachedDockTarget } | null,
 ) {
   if (!d || d.kind !== "file" || !d.filePath || !d.fileName) return;
 
@@ -64,6 +73,25 @@ export function commitFileDrop(
     embedExec: d.viewer ? undefined : (cap?.resolved_exec ?? d.fileExec),
     viewer: d.viewer,
   };
+
+  // Released over an open popout → dock the file as a new embed tab INTO it. We
+  // create the tab in this scope, then move it into the popout's subtree (the
+  // same addTab + dockTabIntoDetached path the tab drag uses); the intermediate
+  // in-window tab never renders because both store writes batch in this handler
+  // tick. Re-seed (with the new key as landedKey) so the popout renders the tab
+  // and plays the drop-in landing. Takes precedence over the new-window branch.
+  if (detachedTarget) {
+    const store = useTabsStore.getState();
+    const entry = store.addTab(tabPayload);
+    store.dockTabIntoDetached(
+      detachedTarget.scope,
+      detachedTarget.groupId,
+      entry.key,
+      detachedTarget.target,
+    );
+    reseedDetached(detachedTarget.scope, detachedTarget.groupId, entry.key);
+    return;
+  }
 
   // Released outside the main window → standalone window, regardless of layout
   // state. Takes precedence over every in-window target below. An external-app

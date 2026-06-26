@@ -603,4 +603,59 @@ describe("tabs store — dock a main-window tab INTO a popout (#42 dockTabIntoDe
     ).toBe(subBefore);
     expect(invokeMock).not.toHaveBeenCalled();
   });
+
+  // #42: docking into a SPLIT (multi-pane) popout targets the resolved pane, not
+  // always the first one. Turn the popout [b,c] into a 2-pane split [b] | [c].
+  function splitSetup() {
+    const ids = setup(); // popout g1=[b,c]
+    useTabsStore.getState().splitDetachedGroup("p", ids.g1, ids.c.key, ids.g1, "right");
+    const sub = useTabsStore.getState().detachedGroupsByScope["p"][0].subtree as SplitNode;
+    const paneB = sub.children[0] as GroupNode; // [b] (keeps g1)
+    const paneC = sub.children[1] as GroupNode; // [c] (fresh id)
+    invokeMock.mockClear();
+    return { ...ids, paneB: paneB.id, paneC: paneC.id };
+  }
+
+  it("docks into the SPECIFIC pane (center merge), not the first one", () => {
+    const { a, c, paneC } = splitSetup();
+    const popoutId = useTabsStore.getState().detachedGroupsByScope["p"][0].id;
+    useTabsStore.getState().dockTabIntoDetached("p", popoutId, a.key, {
+      groupId: paneC,
+      edge: "center",
+    });
+    const sub = useTabsStore.getState().detachedGroupsByScope["p"][0].subtree as SplitNode;
+    const cPane = sub.children.find((g) => (g as GroupNode).id === paneC) as GroupNode;
+    expect(cPane.tabKeys).toEqual([c.key, a.key]); // merged into the c-pane, active
+    expect(cPane.activeKey).toBe(a.key);
+  });
+
+  it("docks at a body EDGE → carves a new pane in the popout", () => {
+    const { a, paneB } = splitSetup();
+    const popoutId = useTabsStore.getState().detachedGroupsByScope["p"][0].id;
+    useTabsStore.getState().dockTabIntoDetached("p", popoutId, a.key, {
+      groupId: paneB,
+      edge: "bottom",
+    });
+    // The popout now has 3 panes (b | c, with b split into b/a vertically); a sits
+    // alone in its own fresh group and is active there.
+    const sub = useTabsStore.getState().detachedGroupsByScope["p"][0].subtree as SplitNode;
+    const aGroup = allGroupsOf(sub).find((g) => g.tabKeys.includes(a.key))!;
+    expect(aGroup.tabKeys).toEqual([a.key]);
+    expect(aGroup.activeKey).toBe(a.key);
+  });
+
+  it("docks at a bar SLOT (index) → inserts into that pane at the slot", () => {
+    const { a, c, paneC } = splitSetup();
+    const popoutId = useTabsStore.getState().detachedGroupsByScope["p"][0].id;
+    useTabsStore.getState().dockTabIntoDetached("p", popoutId, a.key, { groupId: paneC, index: 0 });
+    const sub = useTabsStore.getState().detachedGroupsByScope["p"][0].subtree as SplitNode;
+    const cPane = sub.children.find((g) => (g as GroupNode).id === paneC) as GroupNode;
+    expect(cPane.tabKeys).toEqual([a.key, c.key]); // inserted before c
+  });
 });
+
+/** Flatten every group in a subtree (test-local; mirrors allGroups). */
+function allGroupsOf(node: SplitNode | GroupNode): GroupNode[] {
+  if (node.type === "group") return [node];
+  return node.children.flatMap((c) => allGroupsOf(c as SplitNode | GroupNode));
+}

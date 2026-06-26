@@ -105,9 +105,51 @@ export const DETACHED_DRAG_END = "detached-drag-end";
  */
 export const detachedDropPreviewEvent = (label: string) =>
   `detached-drop-preview-${label}`;
-/** Main → detached: toggle THIS popout's drop-target highlight. */
+/**
+ * Main → detached: drive THIS popout's drop preview while a tab/file dragged out
+ * of the main window hovers it. The host resolves WHICH pane the cursor is over
+ * (synchronously, from the popout's reported geometry — see DETACHED_PANES) and
+ * streams the resolved `target` here; the popout renders the per-pane split/merge
+ * preview for it (no release race — the host already holds the target on release).
+ * `active:false` clears the preview. `label` is the dragged item's name (ghost).
+ */
 export interface DetachedDropPreview {
   active: boolean;
+  target?: { groupId: string; edge: DropEdge } | null;
+  // OS cursor (logical/CSS px) so the popout can position its own drag ghost while
+  // the main-window item hovers (the main's ghost lives in the main window and
+  // isn't visible over the popout). Cosmetic — the target drives the drop.
+  screenX?: number;
+  screenY?: number;
+  label?: string;
+}
+
+/**
+ * Host → detached: ask a popout to report its per-pane geometry so the host can
+ * hit-test the cursor against it. Sent once when a drag starts (the popout's tree
+ * is fixed until the drop). Namespaced by label so only the addressed popout
+ * replies. The popout answers on DETACHED_PANES.
+ */
+export const DETACHED_PANES_REQUEST = "detached-panes-request";
+export interface DetachedPanesRequest {
+  label: string;
+}
+/**
+ * Detached → host: this popout's panes in CLIENT px (its own getBoundingClientRect
+ * space, which equals `cursor − outerPosition` for a decorationless window). The
+ * host hit-tests the cursor against these: over a bar → merge into that group;
+ * over a body → edge-split (pickEdge). One channel carrying the label, so the host
+ * needs a single listener.
+ */
+export const DETACHED_PANES = "detached-panes";
+export interface PaneRect {
+  groupId: string;
+  bar: { left: number; top: number; right: number; bottom: number };
+  body: { left: number; top: number; right: number; bottom: number };
+}
+export interface DetachedPanes {
+  label: string;
+  panes: PaneRect[];
 }
 
 /**

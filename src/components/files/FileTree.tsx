@@ -6,6 +6,7 @@ import { useWindowsStore } from "../../stores/windows";
 import { useTabsStore } from "../../stores/tabs";
 import { useDragStore, type EmbedCap } from "../../stores/drag";
 import { commitFileDrop } from "../tabs/commitFileDrop";
+import { startDetachedDropSession } from "../tabs/detachedDropTargets";
 import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
@@ -425,6 +426,11 @@ export function FileTree({
     const startX = e.clientX;
     const startY = e.clientY;
     let dragging = false;
+    // #42: an open popout of the current scope is a valid drop target — releasing
+    // the file over one docks it there as an embed tab instead of spawning a new
+    // window. SAME shared session the tab drag (TabBar) uses, so a file dragged
+    // over a popout behaves exactly like one dragged over the main window.
+    const detached = startDetachedDropSession();
 
     const onMove = (ev: PointerEvent) => {
       if (!dragging) {
@@ -446,12 +452,21 @@ export function FileTree({
             .then((cap) => useDragStore.getState().setEmbedCap(cap))
             .catch(() => useDragStore.getState().setEmbedCap(null));
         }
+        // Begin resolving popout drop targets now that a real drag is underway.
+        void detached.resolve();
       }
       useDragStore.getState().move(ev.clientX, ev.clientY);
+      // Drive the drop preview in the popout under the cursor (if any) — it
+      // resolves the pane and renders the per-pane preview. screenX/Y stay valid
+      // past the main viewport thanks to the pointer's implicit grab.
+      detached.hover(detached.at(ev.screenX, ev.screenY), ev.screenX, ev.screenY, entry.name);
     };
     const onUp = (ev: PointerEvent) => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      // Clear the popout highlight + tear down the panes listener, however this
+      // release resolves. `targetAt` still hit-tests the cached pane geometry.
+      detached.dispose();
       if (!dragging) {
         // Never moved → a plain click does NOT open. Opening a file is a
         // double-click (onDoubleClick → handleClick); dragging it onto a tab bar
@@ -459,27 +474,39 @@ export function FileTree({
         return;
       }
       const d = useDragStore.getState().drag;
-      if (d != null) {
-        // Released OUTSIDE the main window (e.g. dragged onto another monitor):
-        // open the file in its own standalone detached window at the cursor. The
-        // pointer's implicit capture keeps delivering coords past the viewport,
-        // so client coords outside [0,inner) is the outside-the-window signal.
-        const outside =
-          ev.clientX < 0 ||
-          ev.clientY < 0 ||
-          ev.clientX >= window.innerWidth ||
-          ev.clientY >= window.innerHeight;
-        const detachBounds = outside
-          ? {
-              x: Math.round(ev.screenX - 80),
-              y: Math.round(ev.screenY - 8),
-              w: 900,
-              h: 640,
-            }
-          : null;
-        commitFileDrop(d, projectId, projectDir, detachBounds);
+      if (d == null) return;
+      // Released over an open popout → dock the file into it as an embed tab,
+      // landing in the SPECIFIC pane the popout resolved under the cursor (mirrors
+      // a tab dragged onto a popout). Re-hit-test at the release coords.
+      const overDetached = detached.at(ev.screenX, ev.screenY);
+      if (overDetached) {
+        commitFileDrop(d, projectId, projectDir, null, {
+          scope: overDetached.scope,
+          groupId: overDetached.groupId,
+          target: detached.targetAt(overDetached, ev.screenX, ev.screenY),
+        });
         useDragStore.getState().end();
+        return;
       }
+      // Released OUTSIDE the main window (e.g. dragged onto another monitor):
+      // open the file in its own standalone detached window at the cursor. The
+      // pointer's implicit capture keeps delivering coords past the viewport,
+      // so client coords outside [0,inner) is the outside-the-window signal.
+      const outside =
+        ev.clientX < 0 ||
+        ev.clientY < 0 ||
+        ev.clientX >= window.innerWidth ||
+        ev.clientY >= window.innerHeight;
+      const detachBounds = outside
+        ? {
+            x: Math.round(ev.screenX - 80),
+            y: Math.round(ev.screenY - 8),
+            w: 900,
+            h: 640,
+          }
+        : null;
+      commitFileDrop(d, projectId, projectDir, detachBounds);
+      useDragStore.getState().end();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);

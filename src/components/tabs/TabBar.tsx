@@ -1,7 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   FILES_TAB_CMD,
@@ -11,16 +10,12 @@ import {
   TabKind,
   RESUMABLE_AGENTS,
 } from "../../stores/tabs";
-import {
-  buildSeed,
-  detachedDropPreviewEvent,
-  detachedSeedEvent,
-} from "../../stores/detached";
 import { useDragStore } from "../../stores/drag";
 import { useTabLandStore } from "../../stores/tabLand";
 import { useDetachAnimStore, flyVector } from "../../stores/detachAnim";
 import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
+import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { useProjectsStore } from "../../stores/projects";
 import { useActivityStore } from "../../stores/activity";
 import { OrbitSpinner } from "../common/OrbitSpinner";
@@ -360,67 +355,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
 
     // #42 (main → detached): an open popout of the current scope is a valid drop
     // target — releasing the dragged tab over one docks it there instead of
-    // spawning a new window. Resolve each popout's on-screen bounds in
-    // logical/CSS px (matching ev.screenX/Y, which WebKitGTK reports in CSS px) so
-    // a synchronous hit-test on every move/release can tell whether the cursor —
-    // which leaves the main viewport while over a popout — is over one. The lookup
-    // is async (per-window IPC), so we kick it off when the drag starts and
-    // hit-test against whatever has resolved; an unfinished resolve simply means
-    // no popout target yet (falls back to the new-window detach).
-    let detachedTargets: {
-      label: string;
-      groupId: string;
-      scope: string;
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-    }[] = [];
-    let hoveredLabel: string | null = null;
-    const resolveDetachedTargets = async () => {
-      const st = useTabsStore.getState();
-      const dScope = st.scope;
-      const entries = st.detachedGroupsByScope[dScope] ?? [];
-      const out: typeof detachedTargets = [];
-      for (const entry of entries) {
-        try {
-          const w = await WebviewWindow.getByLabel(entry.label);
-          if (!w) continue;
-          const [pos, size, scale] = await Promise.all([
-            w.outerPosition(),
-            w.outerSize(),
-            w.scaleFactor(),
-          ]);
-          const sc = scale || 1;
-          out.push({
-            label: entry.label,
-            groupId: entry.id,
-            scope: dScope,
-            x: pos.x / sc,
-            y: pos.y / sc,
-            w: size.width / sc,
-            h: size.height / sc,
-          });
-        } catch {
-          /* window gone / not yet resolvable — skip it as a target */
-        }
-      }
-      detachedTargets = out;
-    };
-    const detachedAt = (sx: number, sy: number) =>
-      detachedTargets.find(
-        (t) => sx >= t.x && sx <= t.x + t.w && sy >= t.y && sy <= t.y + t.h,
-      ) ?? null;
-    // Toggle the drop-target highlight in whichever popout the cursor is over,
-    // clearing the previous one when it changes (or on release/abort).
-    const setHovered = (label: string | null) => {
-      if (label === hoveredLabel) return;
-      if (hoveredLabel)
-        void emit(detachedDropPreviewEvent(hoveredLabel), { active: false });
-      hoveredLabel = label;
-      if (hoveredLabel)
-        void emit(detachedDropPreviewEvent(hoveredLabel), { active: true });
-    };
+    // spawning a new window. The shared session resolves each popout's on-screen
+    // bounds (async), hit-tests the cursor against them, and toggles the popout's
+    // drop-target highlight — the SAME logic the file drag uses (FileTree).
+    const detached = startDetachedDropSession();
 
     const onMove = (ev: PointerEvent) => {
       if (!dragging) {
@@ -464,18 +402,20 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           previewH,
         });
         // Begin resolving popout drop targets now that a real drag is underway.
-        void resolveDetachedTargets();
+        void detached.resolve();
       }
       useDragStore.getState().move(ev.clientX, ev.clientY);
-      // Highlight the popout under the cursor (if any). screenX/Y stay valid past
-      // the main viewport thanks to the pointer's implicit grab.
-      setHovered(detachedAt(ev.screenX, ev.screenY)?.label ?? null);
+      // Drive the drop preview in the popout under the cursor (if any) — it
+      // resolves the pane and renders the per-pane preview. screenX/Y stay valid
+      // past the main viewport thanks to the pointer's implicit grab.
+      detached.hover(detached.at(ev.screenX, ev.screenY), ev.screenX, ev.screenY, tab.label);
     };
     const onUp = (ev: PointerEvent) => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      // Clear any popout's drop-target highlight, however this release resolves.
-      setHovered(null);
+      // Clear the popout highlight + tear down the panes listener, however this
+      // release resolves. `targetAt` still hit-tests the cached pane geometry.
+      detached.dispose();
       if (!dragging) {
         // Never dragged → this was a click: activate the tab.
         setGroupActive(groupId, tab.key);
@@ -514,28 +454,23 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       // new window). Re-hit-test at the release coords so it reflects exactly
       // where the cursor ended. The popout's panes attach-only to PTYs the main
       // keeps mounted, so the tab's terminal survives the move.
-      const overDetached = detachedAt(ev.screenX, ev.screenY);
+      const overDetached = detached.at(ev.screenX, ev.screenY);
       if (overDetached) {
-        const store = useTabsStore.getState();
-        store.dockTabIntoDetached(overDetached.scope, overDetached.groupId, tab.key);
-        // Re-seed the popout so it renders the newly-docked tab (mirrors the
-        // dock-BACK re-seed in CenterPanel's DETACHED_DRAG_END handler).
-        const entry = useTabsStore
+        // Dock into the SPECIFIC pane under the cursor (a body edge splits, a bar
+        // merges) — resolved synchronously at the release coords, so no stale
+        // cross-window cache and never always-the-first-pane.
+        useTabsStore
           .getState()
-          .detachedGroupsByScope[overDetached.scope]?.find(
-            (d) => d.id === overDetached.groupId,
-          );
-        if (entry) {
-          const seed = buildSeed(
+          .dockTabIntoDetached(
             overDetached.scope,
             overDetached.groupId,
-            useTabsStore.getState().tabsByScope[overDetached.scope] ?? [],
-            entry.subtree,
+            tab.key,
+            detached.targetAt(overDetached, ev.screenX, ev.screenY),
           );
-          // Carry the docked tab's key so the popout plays the same drop-in
-          // landing for this cross-window merge as it does for an in-popout one.
-          void emit(detachedSeedEvent(entry.label), { ...seed, landedKey: tab.key });
-        }
+        // Re-seed the popout so it renders the newly-docked tab, tagged so it
+        // plays the drop-in landing for this cross-window merge (mirrors the
+        // dock-BACK re-seed in CenterPanel's DETACHED_DRAG_END handler).
+        reseedDetached(overDetached.scope, overDetached.groupId, tab.key);
         // Send-off animation toward the edge the tab exited through.
         playDetachFlyOut(ev.clientX, ev.clientY, tab.label, d.previewW, d.previewH);
         useDragStore.getState().end();

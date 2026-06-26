@@ -145,10 +145,10 @@ describe("detached — split via applyEditToSubtree (popout-local, pure)", () =>
   });
 });
 
-describe("detached — split popout persistence (Phase 4 graceful degradation)", () => {
+describe("detached — split popout persistence (respawns detached on restart)", () => {
   beforeEach(reset);
 
-  it("a split popout's tabs + split survive serialization (restore docked)", () => {
+  it("tags the split popout detached so restore re-opens it as a floating window", () => {
     const { a, b, det } = popoutWithTwoTabs();
     s().splitDetachedGroup("p", det.id, b.key, det.subtree.id, "right");
     const split = s().detachedGroupsByScope["p"][0];
@@ -156,7 +156,9 @@ describe("detached — split popout persistence (Phase 4 graceful degradation)",
     const saved = withDetachedDocked(null, [split]);
     // Both tabs are referenced by the saved tree → they persist across a restart.
     expect(savedKeys(saved).sort()).toEqual([a.key, b.key].sort());
-    // And the split structure is preserved (restores as docked panes).
+    // The split structure is preserved AND tagged detached (with its bounds) so
+    // the respawn path re-detaches the whole subtree rather than docking it.
     expect(saved?.type).toBe("split");
+    expect(saved?.type === "split" ? saved.detached : undefined).toBe(true);
   });
 });
