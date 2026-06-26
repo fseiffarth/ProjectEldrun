@@ -104,8 +104,8 @@ describe("git action button bars", () => {
     expect(bar.style.background).toBe("rgb(227, 179, 65)");
   });
 
-  it("Push button has green status bar when remote present", async () => {
-    setupInvoke({ has_remote: true });
+  it("Push button has green status bar when remote present and commits ahead", async () => {
+    setupInvoke({ has_remote: true, unpushedCommits: ["abc123"] });
     await renderOpenPanel();
     const bar = await screen.findByTestId("push-bar");
     expect(bar.style.background).toBe("rgb(63, 185, 80)");
@@ -113,6 +113,24 @@ describe("git action button bars", () => {
 
   it("Push button is absent when no remote", async () => {
     setupInvoke({ has_remote: false });
+    await renderOpenPanel();
+    expect(screen.queryByTestId("push-bar")).toBeNull();
+  });
+
+  it("Add button is hidden when nothing to stage", async () => {
+    setupInvoke({ unstaged: 0, untracked: 0 });
+    await renderOpenPanel();
+    expect(screen.queryByTestId("add-bar")).toBeNull();
+  });
+
+  it("Commit button is hidden when nothing staged", async () => {
+    setupInvoke({ staged: 0 });
+    await renderOpenPanel();
+    expect(screen.queryByTestId("commit-bar")).toBeNull();
+  });
+
+  it("Push button is hidden when remote present but no commits ahead", async () => {
+    setupInvoke({ has_remote: true, unpushedCommits: [] });
     await renderOpenPanel();
     expect(screen.queryByTestId("push-bar")).toBeNull();
   });
@@ -170,7 +188,7 @@ describe("git button hover lists", () => {
       unpushedCommits: ["abc1234 feat: add widget", "def5678 fix: correct typo"],
     });
     await renderOpenPanel();
-    const pushBtn = await screen.findByTitle("Push to remote");
+    const pushBtn = await screen.findByTitle(/Push 2 commits to remote/);
     await user.hover(pushBtn);
     const list = await screen.findByTestId("git-hover-list");
     expect(list.textContent).toContain("feat: add widget");

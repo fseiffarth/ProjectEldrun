@@ -654,6 +654,12 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
 
       {!activeBox && gitStatus?.is_repo && view === "files" && (
         <>
+          {/* Only render the action bar when there's something to do (or we're
+              mid-commit) — an empty strip with no actions just wastes space. */}
+          {(commitMsg !== null ||
+            gitStatus.unstaged + gitStatus.untracked > 0 ||
+            gitStatus.staged > 0 ||
+            (gitStatus.has_remote && unpushedCommits.length > 0)) && (
           <div className="git-action-bar" style={{ position: "relative" }} onMouseLeave={() => setHoveredBtn(null)}>
             {commitMsg !== null ? (
               <>
@@ -680,39 +686,47 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
               </>
             ) : (
               <>
-                <button
-                  className="git-action-btn"
-                  disabled={gitBusy}
-                  onClick={handleAdd}
-                  title={`Stage all changes (${gitStatus.unstaged + gitStatus.untracked} unstaged)`}
-                  onMouseEnter={() => setHoveredBtn("add")}
-                >
-                  <span data-testid="add-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#f85149" }} />
-                  <span>⊕</span>
-                  <span className="git-btn-label">Add{gitStatus.unstaged + gitStatus.untracked > 0 ? ` (${gitStatus.unstaged + gitStatus.untracked})` : ""}</span>
-                </button>
-                <button
-                  className="git-action-btn"
-                  disabled={gitBusy || gitStatus.staged === 0}
-                  onClick={handleCommitOpen}
-                  title={gitStatus.staged === 0 ? "No staged changes" : `Commit ${gitStatus.staged} staged`}
-                  onMouseEnter={() => setHoveredBtn("commit")}
-                >
-                  <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
-                  <span>✔</span>
-                  <span className="git-btn-label">Commit{gitStatus.staged > 0 ? ` (${gitStatus.staged})` : ""}</span>
-                </button>
-                {gitStatus.has_remote && (
+                {/* Each action only appears when it has work to do: Add when there
+                    are unstaged/untracked changes, Commit when something is staged,
+                    Push when commits are ahead of the remote. A clean, pushed repo
+                    shows no buttons. */}
+                {gitStatus.unstaged + gitStatus.untracked > 0 && (
+                  <button
+                    className="git-action-btn"
+                    disabled={gitBusy}
+                    onClick={handleAdd}
+                    title={`Stage all changes (${gitStatus.unstaged + gitStatus.untracked} unstaged)`}
+                    onMouseEnter={() => setHoveredBtn("add")}
+                  >
+                    <span data-testid="add-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#f85149" }} />
+                    <span>⊕</span>
+                    <span className="git-btn-label">Add ({gitStatus.unstaged + gitStatus.untracked})</span>
+                  </button>
+                )}
+                {gitStatus.staged > 0 && (
+                  <button
+                    className="git-action-btn"
+                    disabled={gitBusy}
+                    onClick={handleCommitOpen}
+                    title={`Commit ${gitStatus.staged} staged`}
+                    onMouseEnter={() => setHoveredBtn("commit")}
+                  >
+                    <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
+                    <span>✔</span>
+                    <span className="git-btn-label">Commit ({gitStatus.staged})</span>
+                  </button>
+                )}
+                {gitStatus.has_remote && unpushedCommits.length > 0 && (
                   <button
                     className="git-action-btn"
                     disabled={gitBusy}
                     onClick={handlePush}
-                    title="Push to remote"
+                    title={`Push ${unpushedCommits.length} commit${unpushedCommits.length === 1 ? "" : "s"} to remote`}
                     onMouseEnter={() => setHoveredBtn("push")}
                   >
                     <span data-testid="push-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#3fb950" }} />
                     <span>⬆</span>
-                    <span className="git-btn-label">Push</span>
+                    <span className="git-btn-label">Push ({unpushedCommits.length})</span>
                   </button>
                 )}
                 {hoveredBtn && hoverItems.length > 0 && (
@@ -725,6 +739,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
               </>
             )}
           </div>
+          )}
           {commitMsg !== null && (
             <div style={{ padding: "4px 6px", borderBottom: "1px solid var(--border-color)" }}>
               <textarea
