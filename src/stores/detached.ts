@@ -154,6 +154,13 @@ export interface DetachedSeed {
   groupId: string;
   tabs: TabEntry[];
   subtree: LayoutNode;
+  /**
+   * Set only when this seed is the result of a tab being docked INTO the popout
+   * from another window (a cross-window merge): the docked tab's key, so the
+   * popout plays the same drop-in landing flourish it would for an in-popout
+   * merge. Absent on a plain (re)seed, so a refresh never re-animates.
+   */
+  landedKey?: string;
 }
 
 /** Build a seed payload from a detached popout's tabs + subtree. Pure. The

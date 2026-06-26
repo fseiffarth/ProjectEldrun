@@ -18,8 +18,10 @@ import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
+import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { pickEdge } from "../tabs/dragGeometry";
 import { useDragStore } from "../../stores/drag";
+import { useTabLandStore } from "../../stores/tabLand";
 import { useSettingsStore } from "../../stores/settings";
 import {
   DEFAULT_MIN_SUBWINDOW_PX,
@@ -39,10 +41,6 @@ interface Rect {
   width: number;
   height: number;
 }
-
-// Fixed width of the gap that opens within the bar to receive a reordered tab.
-// Mirrors TabBar's constant so the popout's within-bar reorder looks identical.
-const REORDER_GAP = 80;
 
 interface Props {
   scope: string;
@@ -114,6 +112,17 @@ export function DetachedCenterPanel({
   const dragKey = useDragStore((s) => (s.drag ? s.drag.key : null));
   const reorderGroupId = useDragStore((s) => (s.drag ? s.drag.reorderGroup : null));
   const reorderIndex = useDragStore((s) => (s.drag ? s.drag.reorderIndex : null));
+  // Label of the dragged tab, shown in the drop placeholder so the target bar
+  // previews WHICH tab will land there — mirrors the main-window `TabBar`.
+  const dragLabel = useDragStore((s) => (s.drag ? s.drag.label : ""));
+  // One-shot "landing" flourish, driven by THIS popout's own tabLand store (a
+  // separate JS heap from the main window). A tab merged/split/moved into a bar
+  // inside the popout plays the same drop-in as the main window. `markLanded` is
+  // fired from `handleLocalTabRelease` on the same cross-group rules `commitDrop`
+  // uses (never on a same-group reorder).
+  const landedKey = useTabLandStore((s) => s.landed?.key ?? null);
+  const landedNonce = useTabLandStore((s) => s.landed?.nonce ?? 0);
+  const clearLanded = useTabLandStore((s) => s.clear);
   const byKey = new Map(tabs.map((t) => [t.key, t] as const));
 
   // ── Pane-region measurement (for the split-preview overlay) ───────────────
@@ -287,12 +296,15 @@ export function DetachedCenterPanel({
     if (!drag) return true;
     // Body edge → split this group inside the popout. A non-center edge splits
     // off a new pane; "center" over a DIFFERENT group merges into it (over the
-    // source group it's a no-op, matching the main window's commitDrop).
+    // source group it's a no-op, matching the main window's commitDrop). Both
+    // land the tab in a new bar, so play the drop-in landing (as commitDrop does).
     if (drag.overGroup && drag.edge) {
       if (drag.edge !== "center") {
         onSplit(tabKey, drag.overGroup, drag.edge);
+        useTabLandStore.getState().markLanded(tabKey);
       } else if (drag.overGroup !== drag.fromGroup) {
         onMove(tabKey, drag.overGroup);
+        useTabLandStore.getState().markLanded(tabKey);
       }
       return true;
     }
@@ -317,8 +329,10 @@ export function DetachedCenterPanel({
       } else {
         // Dropped onto another group's bar → move the tab there at the slot.
         // The slot indexes the target's tabs (which don't contain the key), so
-        // it needs no source-removal adjustment.
+        // it needs no source-removal adjustment. A cross-group move lands the
+        // tab in a new bar → play the drop-in landing (as commitDrop does).
         onMove(tabKey, drag.reorderGroup, drag.reorderIndex);
+        useTabLandStore.getState().markLanded(tabKey);
       }
     }
     return true;
@@ -602,7 +616,13 @@ export function DetachedCenterPanel({
     const orderedTabs = group.tabKeys
       .map((k) => byKey.get(k))
       .filter((t): t is TabEntry => t != null);
+    // This bar is the live drop target of an in-flight drag: light up the whole
+    // bar and render a placeholder slot at the insertion point — identical to the
+    // main-window `TabBar` (shared `.drop-target` wash + `TabDropPlaceholder`),
+    // replacing the old fixed-margin gap so the merge/reorder preview matches.
     const localReorder = reorderGroupId === group.id ? reorderIndex : null;
+    const isDropTarget = localReorder != null;
+    const dropPlaceholder = <TabDropPlaceholder label={dragLabel} />;
     return (
       <div className="subwindow focused">
         <div
@@ -610,40 +630,58 @@ export function DetachedCenterPanel({
             if (el) barRefs.current.set(group.id, el);
             else barRefs.current.delete(group.id);
           }}
-          className="tab-bar detached-drag-handle"
+          className={`tab-bar detached-drag-handle${isDropTarget ? " drop-target" : ""}`}
           data-group-id={group.id}
           onPointerDown={(e) => onGroupBarPointerDown(e, group)}
         >
+          {/* Empty bar that's a drop target: the placeholder is the only slot. */}
+          {isDropTarget && orderedTabs.length === 0 && (
+            <Fragment key="drop-marker">{dropPlaceholder}</Fragment>
+          )}
           {orderedTabs.map((tab, index) => {
             const isActive = tab.key === group.activeKey;
             const isDragging = dragKey === tab.key;
-            const isLast = index === orderedTabs.length - 1;
-            const style: React.CSSProperties = {};
-            if (!isDragging && localReorder != null) {
-              if (localReorder === index) style.marginLeft = REORDER_GAP;
-              if (isLast && localReorder === orderedTabs.length) style.marginRight = REORDER_GAP;
-            }
+            // The placeholder slot previewing where the dragged tab will land —
+            // shown immediately before the tab at the resolved insertion index.
+            const showMarkerBefore = isDropTarget && localReorder === index;
+            // A tab freshly dropped into this bar plays the drop-in landing once.
+            const landing = !isDragging && landedKey === tab.key;
             return (
-              <div
-                key={tab.key}
-                className={`tab ${isActive ? "active" : ""}${isDragging ? " dragging" : ""}`}
-                style={style}
-                onPointerDown={(e) => onTabPointerDown(e, group, tab)}
-              >
-                <span className="tab-label">{tab.label}</span>
-                <button
-                  className="tab-close"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onClose(tab.key);
-                  }}
-                  title="Close tab"
+              <Fragment key={tab.key}>
+                {showMarkerBefore && dropPlaceholder}
+                <div
+                  className={`tab ${isActive ? "active" : ""}${isDragging ? " dragging" : ""}${landing ? " landing" : ""}`}
+                  onPointerDown={(e) => onTabPointerDown(e, group, tab)}
+                  // Clear the landing once it finishes so the class doesn't linger
+                  // (guard on currentTarget so a child's animationend never clears
+                  // it early). Mirrors the main-window `TabBar`.
+                  onAnimationEnd={
+                    landing
+                      ? (e) => {
+                          if (e.target === e.currentTarget) clearLanded(landedNonce);
+                        }
+                      : undefined
+                  }
                 >
-                  ×
-                </button>
-              </div>
+                  <span className="tab-label">{tab.label}</span>
+                  <button
+                    className="tab-close"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onClose(tab.key);
+                    }}
+                    title="Close tab"
+                  >
+                    ×
+                  </button>
+                </div>
+              </Fragment>
             );
           })}
+          {/* Insertion at the end of the bar (slot === tab count). */}
+          {isDropTarget && localReorder === orderedTabs.length && orderedTabs.length > 0 && (
+            <Fragment key="drop-marker-end">{dropPlaceholder}</Fragment>
+          )}
         </div>
         <div
           className="subwindow-body"
@@ -691,6 +729,7 @@ export function DetachedCenterPanel({
                       env={tab.env ?? {}}
                       cwd={tab.cwd}
                       localOnly={tab.kind === "local_agent"}
+                      zoomable={tab.kind === "agent" || tab.kind === "local_agent"}
                       visible={visible}
                       focused={visible}
                       attachOnly

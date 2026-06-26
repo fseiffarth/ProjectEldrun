@@ -15,6 +15,7 @@ import {
   type DetachedSeed,
 } from "../../stores/detached";
 import { allGroups, orderedTabKeys, type LayoutNode, type TabEntry } from "../../stores/tabs";
+import { useTabLandStore } from "../../stores/tabLand";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
@@ -183,6 +184,13 @@ export function DetachedApp({ param }: Props) {
       if (timer) clearTimeout(timer);
       setGroup(ev.payload.subtree);
       setTabs(ev.payload.tabs);
+      // A tab docked INTO this popout from another window arrives on a seed
+      // tagged with its key — play the same drop-in landing as an in-popout
+      // merge as it mounts in its destination bar (batched with the state sets
+      // above, so the freshly-mounted tab renders with the landing class).
+      if (ev.payload.landedKey) {
+        useTabLandStore.getState().markLanded(ev.payload.landedKey);
+      }
     })
       .then((fn) => {
         if (cancelled) {

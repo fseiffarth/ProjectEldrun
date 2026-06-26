@@ -20,6 +20,7 @@ import { useDragStore } from "../../stores/drag";
 import { useTabLandStore } from "../../stores/tabLand";
 import { useDetachAnimStore, flyVector } from "../../stores/detachAnim";
 import { commitDrop } from "./commitDrop";
+import { TabDropPlaceholder } from "./TabDropPlaceholder";
 import { useProjectsStore } from "../../stores/projects";
 import { useActivityStore } from "../../stores/activity";
 import { OrbitSpinner } from "../common/OrbitSpinner";
@@ -531,7 +532,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             useTabsStore.getState().tabsByScope[overDetached.scope] ?? [],
             entry.subtree,
           );
-          void emit(detachedSeedEvent(entry.label), seed);
+          // Carry the docked tab's key so the popout plays the same drop-in
+          // landing for this cross-window merge as it does for an in-popout one.
+          void emit(detachedSeedEvent(entry.label), { ...seed, landedKey: tab.key });
         }
         // Send-off animation toward the edge the tab exited through.
         playDetachFlyOut(ev.clientX, ev.clientY, tab.label, d.previewW, d.previewH);
@@ -623,11 +626,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // This bar is the live drop target of an in-flight drag: light up the whole
   // bar and render a placeholder slot at the insertion point.
   const isDropTarget = reorderGroup === groupId && reorderIndex != null;
-  const dropPlaceholder = (
-    <div className="tab tab-drop-placeholder" aria-hidden="true">
-      <span className="tab-drop-placeholder-label">{dragLabel || "New tab"}</span>
-    </div>
-  );
+  const dropPlaceholder = <TabDropPlaceholder label={dragLabel} />;
 
   return (
     <div
