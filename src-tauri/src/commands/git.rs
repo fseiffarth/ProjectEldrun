@@ -461,3 +461,284 @@ pub fn git_reword_head(project_dir: String, message: String) -> Result<(), Strin
     }
     Ok(())
 }
+
+// ── Git worktrees (#23) ──────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct Worktree {
+    pub path: String,
+    /// Short branch name, or "" when detached/bare.
+    pub branch: String,
+    /// Full HEAD sha, or "" for a bare worktree.
+    pub head: String,
+    pub is_main: bool,
+    pub is_locked: bool,
+    pub is_bare: bool,
+}
+
+/// Parses `git worktree list --porcelain` output. Records are blank-line
+/// separated; each starts with `worktree <abs-path>` followed by optional
+/// attribute lines (`HEAD <sha>`, `branch refs/heads/<name>`, `bare`,
+/// `detached`, `locked [<reason>]`, `prunable [<reason>]`). git always lists
+/// the main worktree first, so the first record is flagged `is_main`.
+fn parse_worktree_porcelain(text: &str) -> Vec<Worktree> {
+    let mut out: Vec<Worktree> = Vec::new();
+    let mut cur: Option<Worktree> = None;
+    let mut first = true;
+
+    fn flush(cur: &mut Option<Worktree>, out: &mut Vec<Worktree>) {
+        if let Some(wt) = cur.take() {
+            if !wt.path.is_empty() {
+                out.push(wt);
+            }
+        }
+    }
+
+    for line in text.lines() {
+        if line.is_empty() {
+            flush(&mut cur, &mut out);
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("worktree ") {
+            // Starting a new record; close any in progress.
+            flush(&mut cur, &mut out);
+            cur = Some(Worktree {
+                path: path.to_string(),
+                branch: String::new(),
+                head: String::new(),
+                is_main: first,
+                is_locked: false,
+                is_bare: false,
+            });
+            first = false;
+        } else if let Some(wt) = cur.as_mut() {
+            if let Some(sha) = line.strip_prefix("HEAD ") {
+                wt.head = sha.to_string();
+            } else if let Some(refname) = line.strip_prefix("branch ") {
+                wt.branch = refname
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(refname)
+                    .to_string();
+            } else if line == "bare" {
+                wt.is_bare = true;
+            } else if line == "detached" {
+                // branch stays empty
+            } else if line == "locked" || line.starts_with("locked ") {
+                wt.is_locked = true;
+            }
+            // ignore prunable / unknown lines
+        }
+    }
+    flush(&mut cur, &mut out);
+    out
+}
+
+/// Lists worktrees attached to the repository at `project_dir`.
+#[tauri::command]
+pub fn git_worktree_list(project_dir: String) -> Result<Vec<Worktree>, String> {
+    // `.git` exists as a dir for the main repo and as a file in linked worktrees.
+    if !Path::new(&project_dir).join(".git").exists() {
+        return Ok(vec![]);
+    }
+    let out = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        // Lenient, like git_log (e.g. empty repo).
+        return Ok(vec![]);
+    }
+    Ok(parse_worktree_porcelain(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Adds a worktree at `path`. When `new_branch` is true, creates a new branch
+/// `branch` at `path` (`git worktree add -b <branch> <path>`); otherwise checks
+/// out the existing `branch` (`git worktree add <path> <branch>`).
+#[tauri::command]
+pub fn git_worktree_add(
+    project_dir: String,
+    path: String,
+    branch: String,
+    new_branch: bool,
+) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("Worktree path cannot be empty".to_string());
+    }
+    if branch.trim().is_empty() {
+        return Err("Branch cannot be empty".to_string());
+    }
+    let mut args: Vec<&str> = vec!["worktree", "add"];
+    if new_branch {
+        args.push("-b");
+        args.push(&branch);
+        args.push(&path);
+    } else {
+        args.push(&path);
+        args.push(&branch);
+    }
+    let out = Command::new("git")
+        .args(&args)
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        return Err(if stderr.is_empty() { stdout } else { stderr });
+    }
+    Ok(())
+}
+
+/// Removes the worktree at `path`. Pass `force` to remove a dirty worktree;
+/// git refuses to remove the main worktree or a dirty one without it, and that
+/// error is surfaced to the caller as-is.
+#[tauri::command]
+pub fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Result<(), String> {
+    let mut args: Vec<&str> = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(&path);
+    let out = Command::new("git")
+        .args(&args)
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        return Err(if stderr.is_empty() { stdout } else { stderr });
+    }
+    Ok(())
+}
+
+/// Prunes administrative entries for worktrees whose directories were removed
+/// out-of-band (`git worktree prune`).
+#[tauri::command]
+pub fn git_worktree_prune(project_dir: String) -> Result<(), String> {
+    let out = Command::new("git")
+        .args(["worktree", "prune"])
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        return Err(if stderr.is_empty() { stdout } else { stderr });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_main_and_linked_with_branches() {
+        let text = "worktree /home/u/proj\nHEAD abc123def456\nbranch refs/heads/main\n\nworktree /home/u/proj-feature\nHEAD 999888777666\nbranch refs/heads/feature\n";
+        let wts = parse_worktree_porcelain(text);
+        assert_eq!(wts.len(), 2);
+        assert_eq!(wts[0].path, "/home/u/proj");
+        assert_eq!(wts[0].branch, "main");
+        assert_eq!(wts[0].head, "abc123def456");
+        assert!(wts[0].is_main);
+        assert!(!wts[0].is_bare);
+        assert!(!wts[0].is_locked);
+        assert_eq!(wts[1].path, "/home/u/proj-feature");
+        assert_eq!(wts[1].branch, "feature");
+        assert!(!wts[1].is_main);
+    }
+
+    #[test]
+    fn parses_detached_head() {
+        let text = "worktree /home/u/proj\nHEAD abc123\nbranch refs/heads/main\n\nworktree /home/u/detached\nHEAD deadbeef\ndetached\n";
+        let wts = parse_worktree_porcelain(text);
+        assert_eq!(wts.len(), 2);
+        assert_eq!(wts[1].branch, "");
+        assert_eq!(wts[1].head, "deadbeef");
+        assert!(!wts[1].is_main);
+    }
+
+    #[test]
+    fn parses_bare_main() {
+        let text = "worktree /home/u/bare.git\nbare\n\nworktree /home/u/linked\nHEAD abc123\nbranch refs/heads/work\n";
+        let wts = parse_worktree_porcelain(text);
+        assert_eq!(wts.len(), 2);
+        assert!(wts[0].is_bare);
+        assert!(wts[0].is_main);
+        assert_eq!(wts[0].branch, "");
+        assert_eq!(wts[0].head, "");
+        assert_eq!(wts[1].branch, "work");
+    }
+
+    #[test]
+    fn parses_locked_with_reason() {
+        let text = "worktree /home/u/proj\nHEAD abc\nbranch refs/heads/main\n\nworktree /home/u/locked\nHEAD def\nbranch refs/heads/wip\nlocked on a removable drive\n";
+        let wts = parse_worktree_porcelain(text);
+        assert_eq!(wts.len(), 2);
+        assert!(wts[1].is_locked);
+        assert_eq!(wts[1].branch, "wip");
+    }
+
+    #[test]
+    fn skips_empty_path_records() {
+        // Leading/trailing blank lines must not produce phantom worktrees.
+        let text = "\n\nworktree /home/u/proj\nHEAD abc\nbranch refs/heads/main\n\n\n";
+        let wts = parse_worktree_porcelain(text);
+        assert_eq!(wts.len(), 1);
+        assert_eq!(wts[0].path, "/home/u/proj");
+        assert!(wts[0].is_main);
+    }
+
+    fn git_available() -> bool {
+        Command::new("git").arg("--version").output().is_ok()
+    }
+
+    #[test]
+    fn add_list_remove_roundtrip() {
+        if !git_available() {
+            eprintln!("skipping: git binary not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let root_str = root.to_string_lossy().to_string();
+
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git run")
+        };
+        assert!(run(&["init"]).status.success());
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        // Ensure a known starting branch name regardless of git defaults.
+        run(&["checkout", "-b", "main"]);
+        std::fs::write(root.join("file.txt"), "hello").unwrap();
+        run(&["add", "-A"]);
+        assert!(run(&["commit", "-m", "init"]).status.success());
+
+        // Initially a single (main) worktree.
+        let listed = git_worktree_list(root_str.clone()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].is_main);
+
+        // Add a new worktree on a new branch.
+        let wt_path = tmp.path().join("wt-feature").to_string_lossy().to_string();
+        git_worktree_add(root_str.clone(), wt_path.clone(), "feature".to_string(), true).unwrap();
+
+        let listed = git_worktree_list(root_str.clone()).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed.iter().filter(|w| w.is_main).count(), 1);
+        assert!(listed.iter().any(|w| w.branch == "feature"));
+
+        // Remove it and confirm we are back to one.
+        git_worktree_remove(root_str.clone(), wt_path, true).unwrap();
+        let listed = git_worktree_list(root_str).unwrap();
+        assert_eq!(listed.len(), 1);
+    }
+}

@@ -157,6 +157,62 @@ fn install_webview_crash_reporter(app: &tauri::App) {
     }
 }
 
+/// WebKitGTK draws the scrollbars INSIDE the web content with the native GTK
+/// theme, not the page's CSS — the standard `scrollbar-color` property is ignored
+/// on this WebKitGTK build (confirmed on 2.50.x). On a light GTK system theme
+/// that leaves a white trough + grey slider regardless of Eldrun's in-app theme.
+///
+/// WebKit's scrollbar renderer queries the default screen's GTK style providers,
+/// so an APPLICATION-priority `GtkCssProvider` that recolors the `scrollbar`
+/// nodes is picked up for the in-content bars. We apply a theme-agnostic look —
+/// a translucent-grey trough (subtle on both light and dark surfaces) with a
+/// solid accent-blue slider — so it reads as "Eldrun blue" without having to
+/// follow the live in-app theme. Best-effort and behind an env opt-out: any
+/// failure simply leaves the native scrollbar untouched.
+#[cfg(target_os = "linux")]
+fn install_scrollbar_theme() {
+    use gtk::prelude::*;
+
+    if std::env::var_os("ELDRUN_NO_SCROLLBAR_THEME").is_some() {
+        return;
+    }
+
+    // GTK3 scrollbar node structure: `scrollbar > contents > trough > slider`.
+    // Recolor the trough + slider; `min-width/height` keep the thin overlay bar
+    // wide enough to see. Colors mirror the frontend's fancy_dark accent so the
+    // native bar matches the webview's themed bars on every surface.
+    const CSS: &str = "
+        scrollbar trough {
+            background-color: rgba(127, 127, 127, 0.14);
+            border-radius: 8px;
+            border: none;
+        }
+        scrollbar slider {
+            background-color: #36c5f0;
+            border: 2px solid transparent;
+            border-radius: 8px;
+            min-width: 8px;
+            min-height: 8px;
+        }
+        scrollbar slider:hover { background-color: #5edcff; }
+        scrollbar slider:active { background-color: #1ca7d8; }
+    ";
+
+    let provider = gtk::CssProvider::new();
+    if let Err(e) = provider.load_from_data(CSS.as_bytes()) {
+        eprintln!("scrollbar theme: load css: {e}");
+        return;
+    }
+    match gtk::gdk::Screen::default() {
+        Some(screen) => gtk::StyleContext::add_provider_for_screen(
+            &screen,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        ),
+        None => eprintln!("scrollbar theme: no default GDK screen"),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKit's DMA-BUF renderer SIGBUSes inside Mesa on some driver stacks
@@ -182,6 +238,11 @@ pub fn run() {
         .setup(|_app| {
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
+            // Recolor WebKitGTK's native in-content scrollbars (page CSS can't —
+            // `scrollbar-color` is ignored on this build). Runs on the GTK main
+            // thread, which `setup` is, after GTK is initialized.
+            #[cfg(target_os = "linux")]
+            install_scrollbar_theme();
             // Record the MAIN window's X11 id so the workspace backend can
             // STRUCTURALLY refuse to ever park it (#42 detached-subwindow
             // parkable override). Resolved off-thread so a slow compositor never
@@ -328,6 +389,10 @@ pub fn run() {
             commands::git::git_checkout,
             commands::git::git_commit_message,
             commands::git::git_reword_head,
+            commands::git::git_worktree_list,
+            commands::git::git_worktree_add,
+            commands::git::git_worktree_remove,
+            commands::git::git_worktree_prune,
             // Crash reporting
             commands::crash::report_frontend_error,
             // Debug diagnostics

@@ -265,11 +265,13 @@ toward broad, cloud, team-scale agent automation — and the defensibility
 ---
 
 ## Group E — Git Worktree (new feature)
-*No worktree code exists anywhere today.*
+*Implemented in `src-tauri/src/commands/git.rs` + `src/components/files/GitHistory.tsx`.*
 
-23. **Git worktree support.** Add backend commands to create/list/remove git
-    worktrees and surface them in the UI (likely tied to Group D.3 history view
-    and/or project switching). Net-new feature; scope to be defined when picked.
+23. **Git worktree support.** [DONE] Backend commands
+    `git_worktree_list`/`git_worktree_add`/`git_worktree_remove`/`git_worktree_prune`
+    (porcelain parser, registered in `lib.rs`) plus a "Worktrees" section in the
+    history view (list, create-from-branch, remove). STRETCH "open worktree as
+    project" intentionally deferred.
 
 ---
 
