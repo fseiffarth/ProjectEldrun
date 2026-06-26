@@ -17,6 +17,7 @@ import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
 import { OrbitSpinner } from "../common/OrbitSpinner";
 
@@ -149,9 +150,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // #56: a right-click on a tab enters inline rename mode for that key (no menu,
   // no prompt dialog). The label becomes a focused, text-selected <input>.
   const [editingKey, setEditingKey] = useState<string | null>(null);
-  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
-  const [ollamaLoading, setOllamaLoading] = useState(false);
-  const [ollamaError, setOllamaError] = useState<string | null>(null);
+  // The single active local (Ollama) model, set in the global app bar's Local
+  // Model picker. The add menu offers ONE "Local Model" entry that launches it,
+  // rather than listing every installed model.
+  const localModel = useSettingsStore((s) => s.settings?.ollama_model);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
   // The tabs live in their own horizontally-scrolling strip; chevrons flank it
@@ -248,16 +250,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     // Adding always targets THIS group, so focus it first.
     focusGroup(groupId);
     setMenuPos({ x: r.left, y: r.bottom + 4 });
-
-    setOllamaLoading(true);
-    setOllamaError(null);
-    invoke<string[]>("list_ollama_models")
-      .then((models) => setOllamaModels(models))
-      .catch((e: string) => {
-        setOllamaModels([]);
-        setOllamaError(e === "not_running" ? "Ollama not running" : "Failed to load models");
-      })
-      .finally(() => setOllamaLoading(false));
   }
 
   function handleAdd(item: StaticMenuItem) {
@@ -730,26 +722,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             </button>
           ))}
 
-          <div className="tab-new-menu-group-label">Local Agents</div>
-          {ollamaLoading && (
-            <div className="tab-new-menu-hint">Loading…</div>
-          )}
-          {!ollamaLoading && ollamaError && (
-            <div className="tab-new-menu-hint">{ollamaError}</div>
-          )}
-          {!ollamaLoading && !ollamaError && ollamaModels.length === 0 && (
-            <div className="tab-new-menu-hint">No Ollama models found</div>
-          )}
-          {!ollamaLoading && ollamaModels.map((model) => (
+          <div className="tab-new-menu-group-label">Local Model</div>
+          {localModel ? (
             <button
-              key={model}
               className="tab-new-menu-item"
-              onClick={() => handleOllamaModel(model)}
+              onClick={() => handleOllamaModel(localModel)}
             >
               <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
-              {model}
+              {localModel}
             </button>
-          ))}
+          ) : (
+            <div className="tab-new-menu-hint">No local model set — pick one in the app bar</div>
+          )}
 
           <div className="tab-new-menu-group-label">Shell</div>
           {SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => (

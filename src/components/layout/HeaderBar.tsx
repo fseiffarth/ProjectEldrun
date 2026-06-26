@@ -10,6 +10,7 @@ import { StatusLamp } from "../header/StatusLamp";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
+import { LocalModelMenu } from "./LocalModelMenu";
 import { LogoIcon } from "./LogoIcon";
 import { useProjectsStore } from "../../stores/projects";
 
@@ -98,6 +99,7 @@ export function HeaderBar() {
       </div>
 
       <div className="header-center no-drag">
+        <LocalModelMenu />
         <GlobalAppMenu />
         <ProjectSwitcher open />
       </div>

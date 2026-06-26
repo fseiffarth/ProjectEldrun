@@ -41,6 +41,9 @@ export interface Settings {
   git_token?: string;
   color_scheme?: string;
   default_agent_cmd?: string;
+  /** The single active local (Ollama) model. A "Local Model" tab launches this
+   *  one; chosen in Settings → Ollama. Unset = no local model selected. */
+  ollama_model?: string;
   run_scripts_in_background?: boolean;
   /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
   right_panel_pinned?: boolean;
