@@ -29,6 +29,9 @@ notify = "8"
 arboard = "3"
 # Encode the clipboard's raw RGBA image as PNG before writing it to disk.
 png = "0.17"
+# Extract dropped/double-clicked .zip archives in place (deflate covers the vast
+# majority of real-world zips; "stored" entries need no feature).
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -37,6 +40,11 @@ xcb = { version = "1", features = ["randr"] }
 # Same crate/version wry uses; needed to hook web-process-terminated on the
 # raw WebKitWebView for the webview crash reporter.
 webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
+# GTK3 (the toolkit WebKitGTK 4.1 renders with). Used to inject an app-level CSS
+# provider that recolors the native scrollbars WebKit draws inside the web
+# content — the page's `scrollbar-color` is ignored on this WebKitGTK build.
+# Same major version wry/webkit2gtk already pull in, so it adds nothing new.
+gtk = "0.18"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [

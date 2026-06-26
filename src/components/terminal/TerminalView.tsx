@@ -34,6 +34,9 @@ interface Props {
   // When true, never run this tab over ssh even for remote projects (e.g.
   // locally-bound Ollama agents). Forwarded to the backend spawn.
   localOnly?: boolean;
+  // When true, run this (agent) tab inside a Docker sandbox that mounts only the
+  // project dir. Set only for agent tabs of a sandbox-enabled local project.
+  sandbox?: boolean;
   // Whether this pane is laid out on screen (single-mode active tab, or any
   // pane in grid mode). Drives display + xterm fit.
   visible: boolean;
@@ -102,7 +105,7 @@ function terminalTheme(scheme: string | undefined) {
 // scrollback on flush anyway.
 const PENDING_OUTPUT_CAP = 1_000_000;
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, visible, focused, attachOnly = false }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, visible, focused, attachOnly = false }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -282,7 +285,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
 
       try {
         await invoke("pty_spawn", {
-          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly },
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox },
         });
       } catch (e) {
         if (!cancelled) {
@@ -342,7 +345,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
       term.dispose();
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, attachOnly]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, attachOnly]);
 
   useEffect(() => {
     if (termRef.current) {

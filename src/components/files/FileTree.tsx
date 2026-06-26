@@ -65,8 +65,8 @@ const STATUS_TITLE: Record<string, string> = {
 };
 
 /** Marker shown to the left of a tree entry for its git status.
- *  Ignored → gray ✕ glyph; unpushed → green ↑ glyph; everything else → a
- *  colored dot (red unstaged/untracked, orange staged); clean → empty slot. */
+ *  Ignored → gray ✕ glyph; everything else → a colored dot (red unstaged/
+ *  untracked, orange staged, green committed-not-pushed); clean → empty slot. */
 function GitMarker({ status }: { status: string | undefined }) {
   const slot: React.CSSProperties = {
     width: 11,
@@ -78,10 +78,10 @@ function GitMarker({ status }: { status: string | undefined }) {
     fontSize: 11,
     lineHeight: 1,
   };
-  if (status === "ignored" || status === "unpushed") {
+  if (status === "ignored") {
     return (
       <span style={{ ...slot, color: STATUS_COLOR[status] }} title={STATUS_TITLE[status]}>
-        {status === "ignored" ? "✕" : "↑"}
+        ✕
       </span>
     );
   }
@@ -342,8 +342,29 @@ export function FileTree({
     if (entry.is_dir) {
       const rel = relPath ? `${relPath}/${entry.name}` : entry.name;
       load(rel);
+    } else if (entry.extension === ".zip") {
+      // A zip "opens" by extracting in place into a sibling folder, then
+      // navigating into it — rather than handing the archive to an external app.
+      void extractArchive(entry);
     } else {
       openFile(entry.path, undefined, projectId, "right_file_tree").catch(console.error);
+    }
+  }
+
+  /** Extract a .zip into a new sibling folder and navigate into it. */
+  async function extractArchive(entry: FileEntry) {
+    setContextMenu(null);
+    setLoading(true);
+    setError(null);
+    try {
+      const folderRel = await invoke<string>("extract_archive", {
+        projectDir,
+        relPath: relForEntry(entry),
+      });
+      await load(folderRel);
+    } catch (err) {
+      setError(String(err));
+      setLoading(false);
     }
   }
 
@@ -944,8 +965,17 @@ export function FileTree({
             const entry = contextMenu.entry;
             const status = gitStatuses[entry.name];
             const isTex = !entry.is_dir && entry.extension === ".tex";
+            const isZip = !entry.is_dir && entry.extension === ".zip";
             return (
               <>
+                {isZip && (
+                  <>
+                    <button onClick={() => extractArchive(entry)}>
+                      Extract here
+                    </button>
+                    <hr />
+                  </>
+                )}
                 {isTex && texCap?.available && (
                   <>
                     <button

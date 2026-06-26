@@ -535,3 +535,72 @@ describe("tabs store — dock a single popout tab back (#42 attachDetachedTab)",
     expect(invokeMock).not.toHaveBeenCalled();
   });
 });
+
+describe("tabs store — dock a main-window tab INTO a popout (#42 dockTabIntoDetached)", () => {
+  beforeEach(reset);
+
+  // Build [G1=[b,c] (detached), G2=[a] (live)] and return ids + keys. Mirrors the
+  // attachDetachedTab setup; here a live tab is dragged INTO the popout instead.
+  function setup() {
+    const a = useTabsStore.getState().addTab(tab("a"));
+    const b = useTabsStore.getState().addTab(tab("b"));
+    const c = useTabsStore.getState().addTab(tab("c")); // G1=[a,b,c]
+    const rootGid = (useTabsStore.getState().layout as GroupNode).id;
+    useTabsStore.getState().splitWithTab(a.key, rootGid, "right"); // G1=[b,c], new=[a]
+    const root = useTabsStore.getState().layout as SplitNode;
+    const left = root.children[0] as GroupNode; // [b,c]
+    const right = root.children[1] as GroupNode; // [a]
+    useTabsStore.getState().detachGroup(left.id); // detach [b,c]
+    invokeMock.mockClear();
+    return { a, b, c, g1: left.id, g2: right.id };
+  }
+
+  it("moves a live tab into the popout's group, activates it, and keeps payloads", () => {
+    const { a, b, c, g1 } = setup();
+    useTabsStore.getState().dockTabIntoDetached("p", g1, a.key);
+
+    // a is appended to the popout's subtree and is the popout's active tab.
+    const det = useTabsStore.getState().detachedGroupsByScope["p"];
+    expect(det).toHaveLength(1);
+    expect(det[0].subtree.tabKeys).toEqual([b.key, c.key, a.key]);
+    expect(det[0].subtree.activeKey).toBe(a.key);
+
+    // G2 emptied → the main center has no layout, but every payload survives so
+    // the popout (and the main's hidden-but-mounted pane) keep the PTY alive.
+    expect(useTabsStore.getState().layout).toBeNull();
+    expect(useTabsStore.getState().tabs.map((t) => t.key).sort()).toEqual(
+      [a.key, b.key, c.key].sort(),
+    );
+    // No backend call — docking into an existing popout opens no window.
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves the source group intact when other tabs remain in it", () => {
+    const { a, g1 } = setup();
+    const d = useTabsStore.getState().addTab(tab("d")); // joins the focused G2 → [a,d]
+    useTabsStore.getState().dockTabIntoDetached("p", g1, a.key);
+
+    // Source group keeps d; the popout gained a.
+    const layout = useTabsStore.getState().layout as GroupNode;
+    expect(layout.type).toBe("group");
+    expect(layout.tabKeys).toEqual([d.key]);
+    expect(
+      useTabsStore.getState().detachedGroupsByScope["p"][0].subtree.tabKeys.at(-1),
+    ).toBe(a.key);
+  });
+
+  it("no-ops for an unknown popout, a foreign tab, or a tab already in the popout", () => {
+    const { a, b, g1 } = setup();
+    const before = useTabsStore.getState().layout;
+    const subBefore =
+      useTabsStore.getState().detachedGroupsByScope["p"][0].subtree.tabKeys;
+    useTabsStore.getState().dockTabIntoDetached("p", "missing", a.key);
+    useTabsStore.getState().dockTabIntoDetached("p", g1, "nope");
+    useTabsStore.getState().dockTabIntoDetached("p", g1, b.key); // already in popout
+    expect(useTabsStore.getState().layout).toBe(before);
+    expect(
+      useTabsStore.getState().detachedGroupsByScope["p"][0].subtree.tabKeys,
+    ).toBe(subBefore);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+});

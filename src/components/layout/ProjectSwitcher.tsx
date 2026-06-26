@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ProjectPill, PILL_DRAG_TYPE } from "../projects/ProjectPill";
 import { BoxPill } from "../projects/BoxPill";
 import { ProjectSearch } from "../projects/ProjectSearch";
@@ -9,7 +10,8 @@ import { SettingsDialog, type SettingsPanelKind } from "./SettingsPanel";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
 import { useTabsStore } from "../../stores/tabs";
-import type { ProjectBox, ProjectEntry } from "../../types";
+import { useGitDirtyStore } from "../../stores/gitDirty";
+import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../../types";
 
 // Re-exported for tests and any external callers that imported these scaffold
 // helpers from ProjectSwitcher before the dialog was extracted (the public
@@ -77,6 +79,33 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
       .sort((a, b) => a.position - b.position);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProjectsSignature]);
+
+  // Per-pill git "dirty" dots: poll every active local project's git state on a
+  // shared interval (one loop for all pills, deduped by project id) and store
+  // the result in the gitDirty store, where each ProjectPill subscribes to its
+  // own entry. Remote (sshfs) projects are skipped — running git over the mount
+  // is slow. RightPanel also live-updates the active project's dot on edits.
+  const gitDotTargets = useMemo(
+    () =>
+      activeProjects
+        .filter((p) => !p.remote)
+        .map((p) => ({ id: p.id, dir: resolveProjectDirectory(p) }))
+        .filter((t) => !!t.dir),
+    [activeProjects],
+  );
+  const gitDotSignature = useMemo(
+    () => gitDotTargets.map((t) => `${t.id}:${t.dir}`).join("|"),
+    [gitDotTargets],
+  );
+  useEffect(() => {
+    if (gitDotTargets.length === 0) return;
+    const refresh = useGitDirtyStore.getState().refresh;
+    const run = () => gitDotTargets.forEach((t) => void refresh(t.id, t.dir));
+    run();
+    const id = window.setInterval(run, 12000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gitDotSignature]);
 
   // Bucket the active pills into boxes (by `box_id`) + an ungrouped remainder,
   // interleaved by switcher position. A pill whose `box_id` points at a missing
@@ -182,6 +211,17 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     await assignToBox(fromId, box.id);
   };
 
+  // Empty pill-strip space doubles as a window-drag handle: pressing the bare
+  // strip (where no project pills are) starts a native window move, so the
+  // project bar behaves like titlebar dead-space. Pills/boxes are nested
+  // children, so a press on one lands on it (target !== currentTarget) and is
+  // left alone. Bypasses the header's `.no-drag` by dragging directly. (#dnd)
+  const startWindowDrag = (e: React.MouseEvent) => {
+    if (e.buttons !== 1) return;
+    if (e.target !== e.currentTarget) return;
+    getCurrentWindow().startDragging().catch(() => {});
+  };
+
   const scrollPills = (dir: -1 | 1) => {
     const el = pillsScrollRef.current;
     if (!el) return;
@@ -274,6 +314,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           <div
             className="project-pills-scroll"
             ref={pillsScrollRef}
+            // Pressing the bare strip (no pill under the cursor) drags the
+            // window; pills/boxes are nested so their press is left untouched.
+            onMouseDown={startWindowDrag}
             // Ungrouped drop zone (S4): dropping a pill on the bare strip (not on
             // a pill or a BoxPill, both of which stopPropagation) ungroups it.
             onDragOver={(e) => {

@@ -40,6 +40,7 @@ import {
   synctexEdit,
   synctexViewBest,
   pickSyncRect,
+  pdfPageMatches,
   sourceColumnFraction,
   resolveTexRoot,
   pdfPointToBigPoints,
@@ -2360,6 +2361,7 @@ function TextView({
           incFont={font.inc}
           decFont={font.dec}
           resetFont={font.reset}
+          wrap
           gotoLine={jump.gotoLine}
           onGotoApplied={jump.onGotoApplied}
           initialScrollTop={viewPos.initial?.scrollTop}
@@ -2392,6 +2394,40 @@ function MarkdownView({
   // Ctrl/Cmd+Click (matching the LaTeX editor). A hover hint advertises the
   // shortcut. `linkTip` anchors that hint above the hovered link.
   const [linkTip, setLinkTip] = useState<{ left: number; top: number } | null>(null);
+
+  // #50: inline local images in the preview. The renderer tags relative/absolute
+  // image paths as <img.md-img-local data-md-src="…"> (no `src`, since the webview
+  // can't load them from the app origin); resolve each against the markdown file's
+  // directory, read the bytes, and swap in a Blob URL. URLs are revoked when the
+  // rendered html changes or on unmount.
+  const previewRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (mode !== "preview") return;
+    const root = previewRef.current;
+    if (!root) return;
+    const imgs = Array.from(
+      root.querySelectorAll<HTMLImageElement>("img.md-img-local[data-md-src]"),
+    );
+    if (!imgs.length) return;
+    let cancelled = false;
+    const urls: string[] = [];
+    for (const img of imgs) {
+      const target = resolveLocalHref(path, img.getAttribute("data-md-src") ?? "");
+      if (!target) continue;
+      invoke<number[]>("read_file_bytes", { path: target })
+        .then((bytes) => {
+          if (cancelled) return;
+          const objectUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes)]));
+          urls.push(objectUrl);
+          img.src = objectUrl;
+        })
+        .catch(() => { /* missing/unreadable file: leave the alt text showing */ });
+    }
+    return () => {
+      cancelled = true;
+      for (const u of urls) URL.revokeObjectURL(u);
+    };
+  }, [html, mode, path]);
 
   const onPreviewMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const a = (e.target as HTMLElement).closest?.("a.file-link") as HTMLElement | null;
@@ -2501,6 +2537,7 @@ function MarkdownView({
           />
         ) : (
           <div
+            ref={previewRef}
             className="markdown-body"
             // Leave the preview at its CSS default until the user sets a size,
             // then drive the base font-size so headings (em-based) scale with it.
@@ -2595,6 +2632,33 @@ const PDF_MAX_SCALE = 8;
 const PDF_ZOOM_STEP = 1.2;
 const clampPdfScale = (s: number) => Math.min(PDF_MAX_SCALE, Math.max(PDF_MIN_SCALE, s));
 
+/**
+ * Extract a PDF page's positioned text runs as {@link TextItemBox}es in big
+ * points (scale-1 viewport, top-left origin). Each box hugs the glyph band
+ * (ascender→descender, ≈0.8 em up / 0.2 em down of the baseline) so an overlay
+ * sits on the text rather than riding high over it. Shared by SyncTeX word
+ * refinement and Ctrl+F search so both box the text identically.
+ */
+async function pageTextItemBoxes(
+  doc: PDFDocumentProxy,
+  pageNumber: number,
+): Promise<TextItemBox[]> {
+  const page = await doc.getPage(pageNumber);
+  const viewport = page.getViewport({ scale: 1 });
+  const content = await page.getTextContent();
+  const items: TextItemBox[] = [];
+  for (const it of content.items) {
+    // Skip marked-content markers (no `str`/`transform`).
+    if (!("str" in it) || typeof it.str !== "string" || !it.str) continue;
+    const tx = pdfjs.Util.transform(viewport.transform, it.transform);
+    const em = Math.hypot(tx[2], tx[3]); // scaled font size (em) in big points
+    const ascent = em * 0.8;
+    const descent = em * 0.2;
+    items.push({ str: it.str, x: tx[4], y: tx[5] - ascent, w: it.width, h: ascent + descent });
+  }
+  return items;
+}
+
 /** One PDF page rendered to a canvas at `scale` (× devicePixelRatio for
  *  crispness). Re-renders when the page or scale changes; cancels an in-flight
  *  render on cleanup so rapid zooming doesn't paint stale frames. */
@@ -2606,6 +2670,8 @@ function PdfPageCanvas({
   onSyncClick,
   syncArmed,
   highlight,
+  searchMatches,
+  searchScrollNonce,
 }: {
   doc: PDFDocumentProxy;
   pageNumber: number;
@@ -2626,10 +2692,18 @@ function PdfPageCanvas({
    *  `phrase`, when set, narrows the box to the clicked word via the page's text
    *  content (using the surrounding words to disambiguate). */
   highlight?: { rect: SyncRect; nonce: number; phrase?: CaretPhrase } | null;
+  /** Ctrl+F search hits on THIS page: each match is its constituent boxes (big
+   *  points), and `current` marks the one the find bar is parked on (#71).
+   *  Painted as translucent overlays over the canvas. */
+  searchMatches?: { rects: SyncRect[]; current: boolean }[];
+  /** Bumped when the current search match lands on this page, so the current
+   *  match's box scrolls into view (mirrors the SyncTeX reveal). */
+  searchScrollNonce?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
+  const searchCurrentRef = useRef<HTMLDivElement>(null);
   // A SyncTeX box narrowed to the clicked word (when `highlight.phrase` is set and
   // found in this page's text), else null → the original line box is used.
   const [refined, setRefined] = useState<SyncRect | null>(null);
@@ -2679,23 +2753,8 @@ function PdfPageCanvas({
     let cancelled = false;
     (async () => {
       try {
-        const page = await doc.getPage(pageNumber);
-        const viewport = page.getViewport({ scale: 1 });
-        const content = await page.getTextContent();
+        const items = await pageTextItemBoxes(doc, pageNumber);
         if (cancelled) return;
-        const items: TextItemBox[] = [];
-        for (const it of content.items) {
-          // Skip marked-content markers (no `str`/`transform`).
-          if (!("str" in it) || typeof it.str !== "string" || !it.str) continue;
-          const tx = pdfjs.Util.transform(viewport.transform, it.transform);
-          const em = Math.hypot(tx[2], tx[3]); // scaled font size (em) in big points
-          // `tx[5]` is the text baseline. A full-em box above it rides high over
-          // the glyphs and clips descenders; box the ascender→descender band
-          // instead (≈0.8 em up, ≈0.2 em down) so the marker hugs the word.
-          const ascent = em * 0.8;
-          const descent = em * 0.2;
-          items.push({ str: it.str, x: tx[4], y: tx[5] - ascent, w: it.width, h: ascent + descent });
-        }
         const r = refineToWord(highlight.rect, phrase, items);
         if (!cancelled && r) setRefined(r);
       } catch {
@@ -2714,6 +2773,15 @@ function PdfPageCanvas({
     (boxRef.current ?? wrapRef.current)?.scrollIntoView({ block: "center", inline: "nearest" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlight?.nonce]);
+
+  // Ctrl+F: scroll the current match into view when the find bar parks it on this
+  // page (`searchScrollNonce` bumps). All pages are mounted, so the target page's
+  // box is always present to scroll to.
+  useEffect(() => {
+    if (!searchScrollNonce) return;
+    searchCurrentRef.current?.scrollIntoView({ block: "center", inline: "nearest" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchScrollNonce]);
 
   const onClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     // Reverse search is a Ctrl/⌘-click affordance; plain clicks stay free for
@@ -2748,6 +2816,21 @@ function PdfPageCanvas({
         style={cssSize ? { width: cssSize.w * scale, height: cssSize.h * scale } : undefined}
         onClick={onClick}
       />
+      {searchMatches?.map((m, mi) =>
+        m.rects.map((r, ri) => {
+          const css = bigPointsToCssRect(r, scale);
+          // Anchor the scroll ref on the first box of the current match.
+          const ref = m.current && ri === 0 ? searchCurrentRef : undefined;
+          return (
+            <div
+              key={`s-${mi}-${ri}`}
+              ref={ref}
+              className={`file-viewer-pdf-search-hit${m.current ? " current" : ""}`}
+              style={{ left: css.left, top: css.top, width: css.width, height: css.height }}
+            />
+          );
+        }),
+      )}
       {box && (
         <div
           key={highlight!.nonce}
@@ -2854,6 +2937,177 @@ function PdfCanvas({
     consumeReveal(path);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal?.nonce]);
+
+  // ── Ctrl+F text search (#71) ───────────────────────────────────────
+  // A floating find bar over the page stack with next/previous navigation, a
+  // live match count, and a case toggle. Matches are found in each page's
+  // extracted text (`getTextContent`) and painted as translucent boxes over the
+  // canvases (`pdfPageMatches` → per-page rects), the current one brighter and
+  // scrolled into view — the PDF counterpart to the editors' in-text search.
+  const [findOpen, setFindOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const findInputRef = useRef<HTMLInputElement>(null);
+  // The current document's per-page text runs, extracted lazily the first time
+  // the find bar is used and cached for the life of the document. `null` until
+  // extracted; reset to null whenever the document changes.
+  const [pageText, setPageText] = useState<TextItemBox[][] | null>(null);
+  useEffect(() => { setPageText(null); }, [doc]);
+  useEffect(() => {
+    if (!doc || !findOpen || pageText) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pages = await Promise.all(
+          Array.from({ length: doc.numPages }, (_, i) => pageTextItemBoxes(doc, i + 1)),
+        );
+        if (!cancelled) setPageText(pages);
+      } catch {
+        if (!cancelled) setPageText([]); // give up gracefully — search finds nothing
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [doc, findOpen, pageText]);
+
+  // Flat list of matches across all pages, in document order; each carries its
+  // 1-based page and the big-point boxes covering it.
+  const matches = useMemo(() => {
+    if (!findOpen || !query || !pageText) return [];
+    const out: { page: number; rects: SyncRect[] }[] = [];
+    pageText.forEach((items, i) => {
+      for (const rects of pdfPageMatches(items, i + 1, query, caseSensitive)) {
+        out.push({ page: i + 1, rects });
+      }
+    });
+    return out;
+  }, [findOpen, query, caseSensitive, pageText]);
+
+  // Bumped to ask the page holding the current match to scroll it into view.
+  const [searchScrollNonce, setSearchScrollNonce] = useState(0);
+
+  // Per-page search overlays passed to each PdfPageCanvas: its matches (with the
+  // current one flagged) plus a scroll nonce that only advances for the page the
+  // current match sits on.
+  const searchByPage = useMemo(() => {
+    const map = new Map<number, { rects: SyncRect[]; current: boolean }[]>();
+    matches.forEach((m, i) => {
+      const list = map.get(m.page) ?? [];
+      list.push({ rects: m.rects, current: i === current });
+      map.set(m.page, list);
+    });
+    return map;
+  }, [matches, current]);
+  const currentPage = matches[current]?.page ?? 0;
+
+  // #71 scrollbar markers: one tick per match positioned over the native
+  // scrollbar track at the match's fractional position through the document, so
+  // hits scrolled off-screen are still locatable at a glance. Each tick's `top`
+  // is px within the track (= the scroll area's visible height); the current
+  // match's tick is flagged. Derived from live geometry — the page wraps'
+  // on-screen rects plus the match box's y within its page — so it stays correct
+  // across zoom and resize (recomputed by the effect below).
+  const [markerTops, setMarkerTops] = useState<{ top: number; current: boolean }[]>([]);
+  const recomputeMarkers = useCallback(() => {
+    const scroll = scrollRef.current;
+    const content = contentRef.current;
+    if (!findOpen || !scroll || !content || matches.length === 0) {
+      setMarkerTops((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+    const wraps = content.children; // page wraps, in page order
+    const scrollTop0 = scroll.getBoundingClientRect().top;
+    const track = scroll.clientHeight; // scrollbar track height = visible height
+    const total = scroll.scrollHeight;
+    if (total <= 0) return;
+    const tops: { top: number; current: boolean }[] = [];
+    matches.forEach((m, i) => {
+      const wrap = wraps[m.page - 1] as HTMLElement | undefined;
+      if (!wrap) return;
+      // The page's top in scroll-content coordinates (independent of the current
+      // scroll offset), plus the match box's y within the page.
+      const pageTop = wrap.getBoundingClientRect().top - scrollTop0 + scroll.scrollTop;
+      const matchTop = pageTop + (m.rects[0]?.y ?? 0) * scale;
+      tops.push({ top: (matchTop / total) * track, current: i === current });
+    });
+    setMarkerTops(tops);
+  }, [findOpen, matches, current, scale]);
+
+  // Recompute markers when the match set / zoom / find-bar visibility changes,
+  // and whenever the scroll area or page stack resizes (canvases render lazily,
+  // growing the stack over several frames; a window/pane resize changes the
+  // track height).
+  useEffect(() => {
+    recomputeMarkers();
+    const scroll = scrollRef.current;
+    const content = contentRef.current;
+    if (!scroll || !content || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => recomputeMarkers());
+    ro.observe(scroll);
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, [recomputeMarkers]);
+
+  // Clamp the current index when the match set shrinks (query/case change).
+  useEffect(() => {
+    if (current > 0 && current >= matches.length) {
+      setCurrent(matches.length > 0 ? matches.length - 1 : 0);
+    }
+  }, [matches.length, current]);
+
+  // Jump to the first match whenever the query/case changes, the bar opens, or
+  // the page text finishes extracting (so a query typed before extraction
+  // completed still scrolls to its first hit).
+  useEffect(() => {
+    if (!findOpen) return;
+    setCurrent(0);
+    setSearchScrollNonce((n) => n + 1);
+  }, [query, caseSensitive, findOpen, pageText]);
+
+  const goToMatch = useCallback(
+    (dir: 1 | -1) => {
+      if (matches.length === 0) return;
+      setCurrent((c) => (c + dir + matches.length) % matches.length);
+      setSearchScrollNonce((n) => n + 1);
+    },
+    [matches.length],
+  );
+
+  const openFind = useCallback(() => {
+    setFindOpen(true);
+    requestAnimationFrame(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    });
+  }, []);
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    scrollRef.current?.focus();
+  }, []);
+
+  // Ctrl/Cmd+F opens the find bar; Esc closes it. Bound on the host so it fires
+  // wherever focus sits within the PDF pane (the scroll area is focusable).
+  const onHostKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        openFind();
+      } else if (e.key === "Escape" && findOpen) {
+        e.preventDefault();
+        closeFind();
+      }
+    },
+    [openFind, closeFind, findOpen],
+  );
+  const onFindKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      goToMatch(e.shiftKey ? -1 : 1);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeFind();
+    }
+  };
 
   // Probe for SyncTeX data beside the PDF; re-checked after each disk change
   // (a recompile may have just written it).
@@ -3101,7 +3355,7 @@ function PdfCanvas({
   }, [doc]);
 
   return (
-    <div className="file-viewer-pdf-host">
+    <div className="file-viewer-pdf-host" onKeyDown={onHostKeyDown}>
       <div className="file-viewer-pdf-toolbar" role="group" aria-label="PDF zoom controls">
         <button
           className="file-viewer-zoom-btn"
@@ -3130,6 +3384,16 @@ function PdfCanvas({
         >
           Fit width
         </button>
+        <button
+          className={`file-viewer-zoom-btn${findOpen ? " active" : ""}`}
+          onClick={() => (findOpen ? closeFind() : openFind())}
+          disabled={!doc}
+          title="Find (Ctrl+F)"
+          aria-label="Find"
+          aria-pressed={findOpen}
+        >
+          🔍
+        </button>
         {onOpenExternally && (
           <button
             className="file-viewer-open-external file-viewer-pdf-external"
@@ -3141,28 +3405,99 @@ function PdfCanvas({
           </button>
         )}
       </div>
-      <div
-        className="file-viewer-pdf-scroll"
-        ref={scrollRef}
-        onWheel={onWheel}
-        onScroll={onScrollPersist}
-      >
-        {error != null ? (
-          <div className="file-viewer-error">{error}</div>
-        ) : !doc ? (
-          <div className="file-viewer-loading">Loading…</div>
-        ) : (
-          <div className="file-viewer-pdf-pages" ref={contentRef}>
-            {Array.from({ length: doc.numPages }, (_, i) => (
-              <PdfPageCanvas
+      {findOpen && (
+        <div className="file-viewer-find file-viewer-find-pdf" role="search">
+          <div className="file-viewer-find-row">
+            <input
+              ref={findInputRef}
+              className="file-viewer-find-input"
+              type="text"
+              value={query}
+              placeholder="Find in document"
+              aria-label="Find"
+              spellCheck={false}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={onFindKeyDown}
+            />
+            <span className="file-viewer-find-count" aria-live="polite">
+              {matches.length > 0 ? `${current + 1}/${matches.length}` : query ? "0/0" : ""}
+            </span>
+            <button
+              className={`file-viewer-find-btn${caseSensitive ? " active" : ""}`}
+              onClick={() => setCaseSensitive((v) => !v)}
+              aria-pressed={caseSensitive}
+              title="Match case"
+              aria-label="Match case"
+            >
+              Aa
+            </button>
+            <button
+              className="file-viewer-find-btn"
+              onClick={() => goToMatch(-1)}
+              disabled={matches.length === 0}
+              title="Previous match (Shift+Enter)"
+              aria-label="Previous match"
+            >
+              ↑
+            </button>
+            <button
+              className="file-viewer-find-btn"
+              onClick={() => goToMatch(1)}
+              disabled={matches.length === 0}
+              title="Next match (Enter)"
+              aria-label="Next match"
+            >
+              ↓
+            </button>
+            <button
+              className="file-viewer-find-btn"
+              onClick={closeFind}
+              title="Close (Esc)"
+              aria-label="Close find"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="file-viewer-pdf-scroll-wrap">
+        <div
+          className="file-viewer-pdf-scroll"
+          ref={scrollRef}
+          tabIndex={0}
+          onWheel={onWheel}
+          onScroll={onScrollPersist}
+        >
+          {error != null ? (
+            <div className="file-viewer-error">{error}</div>
+          ) : !doc ? (
+            <div className="file-viewer-loading">Loading…</div>
+          ) : (
+            <div className="file-viewer-pdf-pages" ref={contentRef}>
+              {Array.from({ length: doc.numPages }, (_, i) => (
+                <PdfPageCanvas
+                  key={i}
+                  doc={doc}
+                  pageNumber={i + 1}
+                  scale={scale}
+                  cssSize={pageSizes?.[i]}
+                  onSyncClick={syncable ? onSyncClick : undefined}
+                  syncArmed={syncArmed}
+                  highlight={highlight && highlight.rect.page === i + 1 ? highlight : null}
+                  searchMatches={searchByPage.get(i + 1)}
+                  searchScrollNonce={currentPage === i + 1 ? searchScrollNonce : 0}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+        {findOpen && markerTops.length > 0 && (
+          <div className="file-viewer-pdf-search-rail" aria-hidden="true">
+            {markerTops.map((m, i) => (
+              <div
                 key={i}
-                doc={doc}
-                pageNumber={i + 1}
-                scale={scale}
-                cssSize={pageSizes?.[i]}
-                onSyncClick={syncable ? onSyncClick : undefined}
-                syncArmed={syncArmed}
-                highlight={highlight && highlight.rect.page === i + 1 ? highlight : null}
+                className={`file-viewer-pdf-search-tick${m.current ? " current" : ""}`}
+                style={{ top: m.top }}
               />
             ))}
           </div>

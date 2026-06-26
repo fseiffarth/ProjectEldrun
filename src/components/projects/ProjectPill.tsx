@@ -6,6 +6,7 @@ import { useTimerStore } from "../../stores/timer";
 import { useActivityStore } from "../../stores/activity";
 import { useProjectsStore } from "../../stores/projects";
 import { useTabsStore } from "../../stores/tabs";
+import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
 import { ActivityCalendar } from "./ActivityCalendar";
 import { OrbitSpinner } from "../common/OrbitSpinner";
 
@@ -42,6 +43,12 @@ function formatTime(secs: number): string {
 function projectDescription(project: ProjectEntry): string {
   return typeof project.description === "string" ? project.description.trim() : "";
 }
+
+const GIT_DOT_TITLE: Record<Exclude<GitDirtyState, "clean">, string> = {
+  dirty: "Uncommitted changes — not yet added",
+  staged: "Staged changes — not yet committed",
+  unpushed: "Committed — not yet pushed",
+};
 
 function formatCpu(pct: number): string {
   return pct < 0.1 ? "idle" : `${pct.toFixed(1)}%`;
@@ -150,8 +157,10 @@ function gitTypeLabel(gitType: unknown): string {
       return "Remote · public";
     case "remote-private":
       return "Remote · private";
+    case "none":
+      return "No git (local files only)";
     default:
-      return "Local only (no remote)";
+      return "Local repo (no remote)";
   }
 }
 
@@ -249,7 +258,9 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const getProjectSecs = useTimerStore((s) => s.getProjectSecs);
   const isLiveProject = timerActiveId === project.id;
   const busy = useActivityStore((s) => s.busyByScope[project.id] ?? false);
+  const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
+  const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const publishProject = useProjectsStore((s) => s.publishProject);
 
   // Live per-project CPU%: polled only while the hover popup is open. Keyed on
@@ -371,6 +382,17 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           >
             Publish to GitHub…
           </button>
+          {!project.remote && (
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                void setProjectSandbox(project.id, !project.sandbox?.enabled);
+              }}
+              title="Run this project's agent tabs inside a Docker container that mounts only the project directory"
+            >
+              {project.sandbox?.enabled ? "✓ " : ""}Run agents in Docker sandbox
+            </button>
+          )}
           <button
             onClick={() => {
               setContextMenu(null);
@@ -475,6 +497,13 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           <span className="project-pill-label">{project.name}</span>
           {busy && <OrbitSpinner className="pill-running-spinner" />}
         </button>
+        {gitDirty && gitDirty !== "clean" && (
+          <span
+            className={`pill-git-dot ${gitDirty}`}
+            title={GIT_DOT_TITLE[gitDirty]}
+            aria-label={GIT_DOT_TITLE[gitDirty]}
+          />
+        )}
         <button
           className="pill-close-btn"
           title="Close project"

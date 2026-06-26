@@ -1,6 +1,7 @@
 import { type TabDrag } from "../../stores/drag";
 import { findGroupOfTab, useTabsStore } from "../../stores/tabs";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
+import { useTabLandStore } from "../../stores/tabLand";
 import { openLinkedFile } from "../embed/FileViewerPane";
 
 /**
@@ -39,7 +40,9 @@ export function commitDrop(d: TabDrag | null) {
       const to = from < d.reorderIndex ? d.reorderIndex - 1 : d.reorderIndex;
       if (to !== from && to >= 0) store.reorderInGroup(d.reorderGroup, from, to);
     } else {
+      // Dropped into ANOTHER bar's slot: play the destination drop-in landing.
       store.moveTab(d.key, d.reorderGroup, d.reorderIndex);
+      useTabLandStore.getState().markLanded(d.key);
     }
     return;
   }
@@ -49,9 +52,13 @@ export function commitDrop(d: TabDrag | null) {
       // keep the tab where it is rather than moving it to the end of its own
       // group. (A non-center edge is a real split-off intent, so it's allowed.)
       if (d.overGroup === d.fromGroup) return;
+      // Merged into another subwindow's tab bar → land in its new group.
       store.moveTab(d.key, d.overGroup);
+      useTabLandStore.getState().markLanded(d.key);
     } else {
+      // Split off into a brand-new subwindow → land in the new group's bar.
       store.splitWithTab(d.key, d.overGroup, d.edge);
+      useTabLandStore.getState().markLanded(d.key);
     }
   }
 }

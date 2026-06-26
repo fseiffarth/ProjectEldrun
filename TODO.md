@@ -1130,6 +1130,22 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
+71. **Find in the native PDF viewer (`Ctrl`+`F`).** Add an in-document search bar
+    to the pdf.js-backed PDF viewer (the counterpart to #67's editor search).
+    `Ctrl`/`Cmd`+`F` (or the 🔍 toolbar button) opens a find bar — a static row
+    below the zoom toolbar — bound on the PDF host so it opens wherever focus sits
+    in the pane (the scroll area is `tabIndex=0`). It has a query input, a live
+    `n/total` count, `↑`/`↓` (and `Enter`/`Shift`+`Enter`) to cycle, a `Aa` match-
+    case toggle, and `Esc` to close. Each page's text is extracted lazily on first
+    use via `getTextContent()` (shared `pageTextItemBoxes`, the same boxes SyncTeX
+    word-refinement uses) and cached per document; the pure `pdfPageMatches`
+    (`lib/viewers/tex.ts`) slices matches into big-point boxes (one per text run a
+    match straddles). Matches paint as translucent overlays over the page canvases
+    (`.file-viewer-pdf-search-hit`), the current one brighter and scrolled into
+    view. Pure helper `pdfPageMatches`.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
 ---
 
 ## Group O — Project Security & Permissions (new feature)

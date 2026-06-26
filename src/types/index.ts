@@ -76,6 +76,13 @@ export interface RemoteSpec {
   openvpn?: OpenVpnSpec;
 }
 
+/** Per-project Docker sandbox config. When `enabled`, agent tabs run inside a
+ *  container that mounts only the project directory. Absent = run on host. */
+export interface SandboxSpec {
+  enabled: boolean;
+  image?: string;
+}
+
 export interface RemoteEntry {
   name: string;
   is_dir: boolean;
@@ -101,6 +108,8 @@ export interface ProjectEntry {
   directory?: string;
   description?: string;
   remote?: RemoteSpec;
+  /** Docker sandbox config; when `enabled`, agent tabs run in a container. */
+  sandbox?: SandboxSpec;
   /** Denormalized inverse of `ProjectBox.member_ids` (the box this pill is in). */
   box_id?: string;
   [key: string]: unknown;

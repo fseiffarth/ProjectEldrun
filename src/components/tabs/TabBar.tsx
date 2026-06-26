@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   FILES_TAB_CMD,
@@ -10,7 +11,13 @@ import {
   TabKind,
   RESUMABLE_AGENTS,
 } from "../../stores/tabs";
+import {
+  buildSeed,
+  detachedDropPreviewEvent,
+  detachedSeedEvent,
+} from "../../stores/detached";
 import { useDragStore } from "../../stores/drag";
+import { useTabLandStore } from "../../stores/tabLand";
 import { useDetachAnimStore, flyVector } from "../../stores/detachAnim";
 import { commitDrop } from "./commitDrop";
 import { useProjectsStore } from "../../stores/projects";
@@ -93,9 +100,6 @@ interface Props {
   showGroupClose: boolean;
 }
 
-// Fixed width of the gap that opens within the bar to receive a reordered tab.
-const REORDER_GAP = 80;
-
 export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // Fine-grained subscriptions (Eff #3/#4): this bar tracks ONLY its own group
   // node + that group's resolved tab payloads, so a tab change in another
@@ -126,6 +130,17 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const reorderIndex = useDragStore((s) =>
     s.drag && s.drag.reorderGroup === groupId ? s.drag.reorderIndex : null,
   );
+  // Label of whatever is being dragged, shown in the drop placeholder so the
+  // target bar previews WHICH tab will land there (a tab's label, or a dragged
+  // file's name). Only meaningful while this bar is the active reorder target.
+  const dragLabel = useDragStore((s) =>
+    s.drag && s.drag.reorderGroup === groupId ? s.drag.label : "",
+  );
+  // One-shot "landing" flourish: the tab that was just dropped into THIS bar
+  // (cross-group move / split) plays a drop-in animation as it mounts here.
+  const landedKey = useTabLandStore((s) => s.landed?.key ?? null);
+  const landedNonce = useTabLandStore((s) => s.landed?.nonce ?? 0);
+  const clearLanded = useTabLandStore((s) => s.clear);
   // Per-tab "working" map: a tab whose PTY is actively producing output shows a
   // spinner so busy agents/terminals are visible even when not the active tab.
   const busyByTab = useActivityStore((s) => s.busyByTab);
@@ -342,6 +357,70 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     const startY = e.clientY;
     let dragging = false;
 
+    // #42 (main → detached): an open popout of the current scope is a valid drop
+    // target — releasing the dragged tab over one docks it there instead of
+    // spawning a new window. Resolve each popout's on-screen bounds in
+    // logical/CSS px (matching ev.screenX/Y, which WebKitGTK reports in CSS px) so
+    // a synchronous hit-test on every move/release can tell whether the cursor —
+    // which leaves the main viewport while over a popout — is over one. The lookup
+    // is async (per-window IPC), so we kick it off when the drag starts and
+    // hit-test against whatever has resolved; an unfinished resolve simply means
+    // no popout target yet (falls back to the new-window detach).
+    let detachedTargets: {
+      label: string;
+      groupId: string;
+      scope: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    }[] = [];
+    let hoveredLabel: string | null = null;
+    const resolveDetachedTargets = async () => {
+      const st = useTabsStore.getState();
+      const dScope = st.scope;
+      const entries = st.detachedGroupsByScope[dScope] ?? [];
+      const out: typeof detachedTargets = [];
+      for (const entry of entries) {
+        try {
+          const w = await WebviewWindow.getByLabel(entry.label);
+          if (!w) continue;
+          const [pos, size, scale] = await Promise.all([
+            w.outerPosition(),
+            w.outerSize(),
+            w.scaleFactor(),
+          ]);
+          const sc = scale || 1;
+          out.push({
+            label: entry.label,
+            groupId: entry.id,
+            scope: dScope,
+            x: pos.x / sc,
+            y: pos.y / sc,
+            w: size.width / sc,
+            h: size.height / sc,
+          });
+        } catch {
+          /* window gone / not yet resolvable — skip it as a target */
+        }
+      }
+      detachedTargets = out;
+    };
+    const detachedAt = (sx: number, sy: number) =>
+      detachedTargets.find(
+        (t) => sx >= t.x && sx <= t.x + t.w && sy >= t.y && sy <= t.y + t.h,
+      ) ?? null;
+    // Toggle the drop-target highlight in whichever popout the cursor is over,
+    // clearing the previous one when it changes (or on release/abort).
+    const setHovered = (label: string | null) => {
+      if (label === hoveredLabel) return;
+      if (hoveredLabel)
+        void emit(detachedDropPreviewEvent(hoveredLabel), { active: false });
+      hoveredLabel = label;
+      if (hoveredLabel)
+        void emit(detachedDropPreviewEvent(hoveredLabel), { active: true });
+    };
+
     const onMove = (ev: PointerEvent) => {
       if (!dragging) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
@@ -383,58 +462,110 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           previewW,
           previewH,
         });
+        // Begin resolving popout drop targets now that a real drag is underway.
+        void resolveDetachedTargets();
       }
       useDragStore.getState().move(ev.clientX, ev.clientY);
+      // Highlight the popout under the cursor (if any). screenX/Y stay valid past
+      // the main viewport thanks to the pointer's implicit grab.
+      setHovered(detachedAt(ev.screenX, ev.screenY)?.label ?? null);
     };
     const onUp = (ev: PointerEvent) => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      // Clear any popout's drop-target highlight, however this release resolves.
+      setHovered(null);
       if (!dragging) {
         // Never dragged → this was a click: activate the tab.
         setGroupActive(groupId, tab.key);
         return;
       }
-      // Released OUTSIDE the main window (e.g. dragged onto another monitor): pop
-      // this single tab into its own standalone OS window at the cursor, mirroring
-      // the bar-drag detach (onBarPointerDown). The pointer's implicit capture
-      // keeps delivering coords beyond the viewport, so client coords falling
-      // outside [0,inner) is the outside-the-window signal. screenX/Y place the
-      // new window under the cursor (offset so the grab point lands on its frame).
-      const outside =
-        ev.clientX < 0 ||
-        ev.clientY < 0 ||
-        ev.clientX >= window.innerWidth ||
-        ev.clientY >= window.innerHeight;
-      if (outside) {
+      // Idempotency: if another committer already finished this drag (CenterPanel's
+      // redundant pointerup path on non-WebKitGTK), the store is cleared — do
+      // nothing rather than re-deciding a stale gesture (which could detach a tab
+      // that was just integrated).
+      const d = useDragStore.getState().drag;
+      if (!d) return;
+      // Pop the dragged tab into its own standalone OS window at the cursor,
+      // mirroring the bar-drag detach (onBarPointerDown). Reused by the Shift
+      // override and the free-space (outside-the-window) release below.
+      const popToNewWindow = () => {
         const bounds = {
           x: Math.round(ev.screenX - 80),
           y: Math.round(ev.screenY - 8),
           w: 900,
           h: 640,
         };
-        // Send-off animation: play a fly-out toward the edge the tab exited
-        // through before the drag state (and its ghost) tears down.
-        const d = useDragStore.getState().drag;
-        playDetachFlyOut(ev.clientX, ev.clientY, tab.label, d?.previewW, d?.previewH);
+        // Send-off animation toward the edge the tab exited through, before the
+        // drag state (and its ghost) tears down.
+        playDetachFlyOut(ev.clientX, ev.clientY, tab.label, d.previewW, d.previewH);
         detachTab(tab.key, bounds);
+        useDragStore.getState().end();
+      };
+      // Shift ALWAYS pops a new window — overriding both docking into a popout and
+      // integrating into a background subwindow. (May spawn the new window over a
+      // popout the cursor happens to be on; that's the intended "always new".)
+      if (ev.shiftKey) {
+        popToNewWindow();
+        return;
+      }
+      // #42: released over an existing popout → dock the tab straight into it (no
+      // new window). Re-hit-test at the release coords so it reflects exactly
+      // where the cursor ended. The popout's panes attach-only to PTYs the main
+      // keeps mounted, so the tab's terminal survives the move.
+      const overDetached = detachedAt(ev.screenX, ev.screenY);
+      if (overDetached) {
+        const store = useTabsStore.getState();
+        store.dockTabIntoDetached(overDetached.scope, overDetached.groupId, tab.key);
+        // Re-seed the popout so it renders the newly-docked tab (mirrors the
+        // dock-BACK re-seed in CenterPanel's DETACHED_DRAG_END handler).
+        const entry = useTabsStore
+          .getState()
+          .detachedGroupsByScope[overDetached.scope]?.find(
+            (d) => d.id === overDetached.groupId,
+          );
+        if (entry) {
+          const seed = buildSeed(
+            overDetached.scope,
+            overDetached.groupId,
+            useTabsStore.getState().tabsByScope[overDetached.scope] ?? [],
+            entry.subtree,
+          );
+          void emit(detachedSeedEvent(entry.label), seed);
+        }
+        // Send-off animation toward the edge the tab exited through.
+        playDetachFlyOut(ev.clientX, ev.clientY, tab.label, d.previewW, d.previewH);
         useDragStore.getState().end();
         return;
       }
-      // A drag did start: commit the drop HERE. This handler is bound inside the
+      // Released in FREE SPACE — outside the main window and not over a popout, so
+      // no Eldrun window is under the cursor (e.g. dragged onto the desktop or
+      // another monitor). Pop this tab into its own standalone OS window. The
+      // pointer's implicit capture keeps delivering coords beyond the viewport, so
+      // client coords falling outside [0,inner) is the outside-the-window signal.
+      const outside =
+        ev.clientX < 0 ||
+        ev.clientY < 0 ||
+        ev.clientX >= window.innerWidth ||
+        ev.clientY >= window.innerHeight;
+      if (outside) {
+        popToNewWindow();
+        return;
+      }
+      // Released over THIS main window without Shift → integrate into the
+      // background subwindow under the cursor. This handler is bound inside the
       // pointerdown handler — i.e. before the gesture's implicit pointer capture
       // begins — so on WebKitGTK it is the ONLY release handler that reliably
       // fires. CenterPanel's window listeners are added mid-gesture (after the
       // `start()` → React re-render) and, on WebKitGTK, receive pointermove but
       // never the terminal pointerup, so they cannot be the committer. The
       // target was already resolved into the drag store by CenterPanel's
-      // pointermove handler during the drag, so commit it verbatim. If
-      // CenterPanel's pointerup DID fire first (other platforms), it already
-      // committed + ended, so we see drag=null and no-op — no double-commit.
-      const d = useDragStore.getState().drag;
-      if (d != null) {
-        commitDrop(d);
-        useDragStore.getState().end();
-      }
+      // pointermove handler during the drag, so commit it verbatim. A null target
+      // (chrome / split divider) is a no-op — the tab stays put. If CenterPanel's
+      // pointerup DID fire first (other platforms), it already committed + ended,
+      // so the top-of-handler guard already returned — no double-commit.
+      commitDrop(d);
+      useDragStore.getState().end();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -489,8 +620,21 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     window.addEventListener("pointerup", onUp);
   }
 
+  // This bar is the live drop target of an in-flight drag: light up the whole
+  // bar and render a placeholder slot at the insertion point.
+  const isDropTarget = reorderGroup === groupId && reorderIndex != null;
+  const dropPlaceholder = (
+    <div className="tab tab-drop-placeholder" aria-hidden="true">
+      <span className="tab-drop-placeholder-label">{dragLabel || "New tab"}</span>
+    </div>
+  );
+
   return (
-    <div className="tab-bar" data-group-id={groupId} onPointerDown={onBarPointerDown}>
+    <div
+      className={`tab-bar${isDropTarget ? " drop-target" : ""}`}
+      data-group-id={groupId}
+      onPointerDown={onBarPointerDown}
+    >
       {canScrollLeft && (
         <button
           className="tab-scroll-btn left"
@@ -503,21 +647,21 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         </button>
       )}
       <div className="tab-strip" ref={stripRef} onWheel={onStripWheel}>
+      {/* Empty bar that's a drop target: the placeholder is the only slot. */}
+      {isDropTarget && tabs.length === 0 && (
+        <Fragment key="drop-marker">{dropPlaceholder}</Fragment>
+      )}
       {tabs.map((tab, index) => {
         const isActive = tab.key === activeKey;
         const isDragging = dragKey === tab.key;
-        const isLast = index === tabs.length - 1;
+        // The placeholder slot previewing where the dragged tab will land — shown
+        // immediately before the tab occupying the resolved insertion index.
+        const showMarkerBefore = isDropTarget && reorderIndex === index;
         // Files tabs have no PTY, so they never register output activity.
         const working = tab.kind !== "files" && !!busyByTab[tab.key];
-        // Open the gap by sliding the neighbouring tab away from the slot. A
-        // dragging tab is collapsed to nothing, so it never carries a gap.
         const style: React.CSSProperties = isActive
           ? { boxShadow: `inset 0 3px 0 ${TAB_ACCENT[tab.kind]}` }
           : {};
-        if (!isDragging && reorderGroup === groupId) {
-          if (reorderIndex === index) style.marginLeft = REORDER_GAP;
-          if (isLast && reorderIndex === tabs.length) style.marginRight = REORDER_GAP;
-        }
         // Agent tabs launched with a deterministic session id show it on hover.
         // This is the launch id (`--session-id <uuid>`): stable and unique per
         // tab. It does NOT follow a `/clear` (which rolls onto a new id) — that
@@ -526,15 +670,28 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           ? `${tab.label} session\n${tab.sessionId}\ncwd: ${tab.cwd}`
           : undefined;
         const editing = editingKey === tab.key;
+        // A tab freshly dropped into this bar plays the drop-in landing once.
+        const landing = !isDragging && landedKey === tab.key;
         return (
+          <Fragment key={tab.key}>
+          {showMarkerBefore && dropPlaceholder}
           <div
-            key={tab.key}
-            className={`tab ${isActive ? "active" : ""}${working ? " working" : ""}${isDragging ? " dragging" : ""}${editing ? " editing" : ""}`}
+            className={`tab ${isActive ? "active" : ""}${working ? " working" : ""}${isDragging ? " dragging" : ""}${editing ? " editing" : ""}${landing ? " landing" : ""}`}
             style={style}
             data-tab-index={index}
             title={editing ? undefined : title}
             onContextMenu={(e) => startInlineRename(e, tab.key)}
             onPointerDown={(e) => onTabPointerDown(e, tab)}
+            // Clear the landing once it finishes so the class doesn't linger
+            // (guard on currentTarget so a child's animationend — e.g. the
+            // working-spinner pulse — never clears it early).
+            onAnimationEnd={
+              landing
+                ? (e) => {
+                    if (e.target === e.currentTarget) clearLanded(landedNonce);
+                  }
+                : undefined
+            }
           >
             {working && (
               <span
@@ -579,8 +736,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
               ×
             </button>
           </div>
+          </Fragment>
         );
       })}
+      {/* Insertion at the end of the bar (slot === tab count). */}
+      {isDropTarget && reorderIndex === tabs.length && tabs.length > 0 && (
+        <Fragment key="drop-marker-end">{dropPlaceholder}</Fragment>
+      )}
       </div>
       {canScrollRight && (
         <button

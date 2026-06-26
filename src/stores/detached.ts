@@ -15,7 +15,14 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   useTabsStore,
-  type GroupNode,
+  orderedTabKeys,
+  findGroupOfTab,
+  mapGroup,
+  removeKeyFromTree,
+  splitSubtree,
+  allGroups,
+  type DropEdge,
+  type LayoutNode,
   type TabEntry,
   type WindowBounds,
 } from "./tabs";
@@ -85,6 +92,23 @@ export const DETACHED_DRAG_MOVE = "detached-drag-move";
 export const DETACHED_DRAG_END = "detached-drag-end";
 
 /**
+ * #42: main → detached drop preview. The mirror image of the DETACHED_DRAG_*
+ * stream: while a tab dragged OUT of the main window hovers over a popout, the
+ * main window streams `active:true` on the popout's label-namespaced channel so
+ * it highlights itself as a drop target; `active:false` (cursor left, released
+ * elsewhere, or drag cancelled) clears it. The dock itself is a main-side store
+ * mutation (`dockTabIntoDetached`) + re-seed — the popout only renders the
+ * highlight, never owns the layout. Namespaced per label (like the seed) so the
+ * main targets exactly the one popout under the cursor.
+ */
+export const detachedDropPreviewEvent = (label: string) =>
+  `detached-drop-preview-${label}`;
+/** Main → detached: toggle THIS popout's drop-target highlight. */
+export interface DetachedDropPreview {
+  active: boolean;
+}
+
+/**
  * Detached → main: begin a drag-to-dock. Without `tabKey` it drags the WHOLE
  * popout (the tab-bar handle); with `tabKey` it drags that single tab, which the
  * host docks on its own via `attachDetachedTab`.
@@ -113,6 +137,13 @@ export interface DetachedDragEnd {
   cancelled: boolean;
   screenX?: number;
   screenY?: number;
+  /**
+   * Shift held at release → keep the popout floating as its own window instead of
+   * docking it back into the main window (mirrors the main-window tab rule where
+   * Shift always means "new window"). For a drag that originates in a popout, the
+   * popout already IS a separate window, so "always new window" = don't dock.
+   */
+  shift?: boolean;
 }
 
 /** The seed the main window ships to a freshly-opened detached window. */
@@ -120,18 +151,19 @@ export interface DetachedSeed {
   scope: string;
   groupId: string;
   tabs: TabEntry[];
-  subtree: GroupNode;
+  subtree: LayoutNode;
 }
 
-/** Build a seed payload from a detached group's tabs + subtree. Pure. */
+/** Build a seed payload from a detached popout's tabs + subtree. Pure. The
+ *  subtree may be a split (multi-pane popout), so collect keys across the tree. */
 export function buildSeed(
   scope: string,
   groupId: string,
   allScopeTabs: TabEntry[],
-  subtree: GroupNode,
+  subtree: LayoutNode,
 ): DetachedSeed {
-  const keys = new Set(subtree.tabKeys);
-  // Ship only the group's own tabs (the detached window renders just this group).
+  const keys = new Set(orderedTabKeys(subtree));
+  // Ship only the popout's own tabs (it renders just this subtree).
   const tabs = allScopeTabs.filter((t) => keys.has(t.key));
   return { scope, groupId, tabs, subtree };
 }
@@ -144,7 +176,9 @@ export type DetachedEdit =
   | { kind: "activate"; key: string }
   | { kind: "rename"; key: string; label: string }
   | { kind: "close"; key: string }
-  | { kind: "reorder"; tabKeys: string[] };
+  | { kind: "reorder"; tabKeys: string[] }
+  // Multi-pane popouts: split `key` into a new pane at `edge` of `targetGroupId`.
+  | { kind: "split"; key: string; targetGroupId: string; edge: DropEdge };
 
 /** Envelope for a detached→main edit (identity + the edit itself). */
 export interface DetachedEditEnvelope {
@@ -181,30 +215,39 @@ export interface DetachedSeedRequest {
  * caller; this only updates the group node (tabKeys/activeKey).
  */
 export function applyEditToSubtree(
-  subtree: GroupNode,
+  subtree: LayoutNode,
   edit: DetachedEdit,
-): GroupNode {
+): LayoutNode | null {
   switch (edit.kind) {
-    case "activate":
-      return subtree.tabKeys.includes(edit.key)
-        ? { ...subtree, activeKey: edit.key }
+    case "activate": {
+      const g = findGroupOfTab(subtree, edit.key);
+      return g
+        ? mapGroup(subtree, g.group.id, (grp) => ({ ...grp, activeKey: edit.key }))
         : subtree;
-    case "close": {
-      const tabKeys = subtree.tabKeys.filter((k) => k !== edit.key);
-      const activeKey =
-        subtree.activeKey === edit.key ? (tabKeys[0] ?? null) : subtree.activeKey;
-      return { ...subtree, tabKeys, activeKey };
     }
+    case "close":
+      // Returns null if the popout emptied (caller closes the window).
+      return removeKeyFromTree(subtree, edit.key);
     case "reorder": {
-      // Keep only keys the group actually owns, preserving the requested order.
-      const owned = new Set(subtree.tabKeys);
-      const tabKeys = edit.tabKeys.filter((k) => owned.has(k));
-      if (tabKeys.length !== subtree.tabKeys.length) return subtree;
-      const activeKey =
-        subtree.activeKey && tabKeys.includes(subtree.activeKey)
-          ? subtree.activeKey
-          : (tabKeys[0] ?? null);
-      return { ...subtree, tabKeys, activeKey };
+      // Find the group whose tab set the reordered list permutes, then reapply.
+      const want = new Set(edit.tabKeys);
+      const g = allGroups(subtree).find(
+        (grp) =>
+          grp.tabKeys.length === edit.tabKeys.length &&
+          grp.tabKeys.every((k) => want.has(k)),
+      );
+      if (!g) return subtree;
+      return mapGroup(subtree, g.id, (grp) => {
+        const activeKey =
+          grp.activeKey && edit.tabKeys.includes(grp.activeKey)
+            ? grp.activeKey
+            : (edit.tabKeys[0] ?? null);
+        return { ...grp, tabKeys: edit.tabKeys, activeKey };
+      });
+    }
+    case "split": {
+      // Optimistic local split; null (invalid) leaves the popout unchanged.
+      return splitSubtree(subtree, edit.key, edit.targetGroupId, edit.edge) ?? subtree;
     }
     case "rename":
       // Label lives on the tab payload, not the group node — no node change.

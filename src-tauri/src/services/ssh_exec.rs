@@ -46,7 +46,7 @@ const CONTROL_PERSIST_SECS: u32 = 600;
 /// `~/.claude`); a forwarded local key/token would silently clobber that
 /// session (most CLIs prefer an env key over stored credentials). These are
 /// dropped from the exported env alongside `TERM`/`COLORTERM`.
-const AGENT_AUTH_ENV: &[&str] = &[
+pub(crate) const AGENT_AUTH_ENV: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",

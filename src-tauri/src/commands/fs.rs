@@ -323,6 +323,171 @@ pub fn move_path(
     remove.map_err(|e| e.to_string())
 }
 
+/// Import an external file or directory (dropped onto the right panel from the
+/// OS file manager) into the project. Unlike [`copy_path`], the SOURCE is an
+/// arbitrary absolute path outside the project, so it is not confined; only the
+/// DESTINATION is confined to the project root. `dest_rel` is the project-
+/// relative folder to drop into (empty = project root). On a name collision,
+/// `replace=false` appends " (n)" before the extension (keep both); `replace=
+/// true` overwrites the existing entry. Returns the final project-relative path
+/// of the imported copy. Callers prompt the user (see `project_path_exists`)
+/// before passing `replace=true`.
+#[tauri::command]
+pub fn import_external_file(
+    project_dir: String,
+    source_path: String,
+    dest_rel: String,
+    replace: bool,
+) -> Result<String, String> {
+    let src = canonical(&source_path)?;
+    let root = canonical(&project_dir)?;
+
+    let rel_dir = normalize_project_rel_path(&dest_rel)?;
+    let dest_dir = if rel_dir.is_empty() {
+        root.clone()
+    } else {
+        root.join(&rel_dir)
+    };
+    let dest_dir_c = canonical_or_new(&dest_dir);
+    enforce_confinement(&root, &dest_dir_c)?;
+    // Block copying a directory into its own subtree (would recurse forever).
+    if dest_dir_c.starts_with(&src) {
+        return Err("cannot copy a folder into itself".to_string());
+    }
+
+    let file_name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or_else(|| "source has no file name".to_string())?;
+    let dest = if replace {
+        dest_dir_c.join(&file_name)
+    } else {
+        unique_dest(&dest_dir_c, &file_name)
+    };
+    enforce_confinement(&root, &canonical_or_new(&dest))?;
+
+    fs::create_dir_all(&dest_dir_c).map_err(|e| e.to_string())?;
+    if replace && dest.exists() {
+        // Clear the existing entry first so a file→dir (or dir→file) replace is
+        // clean rather than merging into a stale tree.
+        if dest.is_dir() {
+            fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
+        } else {
+            fs::remove_file(&dest).map_err(|e| e.to_string())?;
+        }
+    }
+    copy_recursive(&src, &dest).map_err(|e| e.to_string())?;
+
+    Ok(dest
+        .strip_prefix(&root)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or(file_name))
+}
+
+/// Whether a project-relative path currently exists. The drag-drop importer
+/// calls this before copying so it can prompt rename-vs-replace on a collision.
+#[tauri::command]
+pub fn project_path_exists(project_dir: String, rel_path: String) -> Result<bool, String> {
+    let root = canonical(&project_dir)?;
+    let rel = normalize_project_rel_path(&rel_path)?;
+    let target = if rel.is_empty() { root.clone() } else { root.join(&rel) };
+    let target_c = canonical_or_new(&target);
+    enforce_confinement(&root, &target_c)?;
+    Ok(target_c.exists())
+}
+
+/// Extract a `.zip` archive in place. Contents land in a new sibling folder
+/// named after the archive (without its extension, deduped with " (n)"), inside
+/// the same directory as the archive — so a double-click in the file tree never
+/// dumps loose files over the current folder. Returns the project-relative path
+/// of the created folder.
+///
+/// Security: guards against Zip-Slip. Every entry's path goes through
+/// `enclosed_name` (which rejects `..`/absolute components), and the resolved
+/// output is additionally confined to the destination folder before any write.
+#[tauri::command]
+pub fn extract_archive(project_dir: String, rel_path: String) -> Result<String, String> {
+    let root = canonical(&project_dir)?;
+    let archive = canonical(&root.join(&rel_path).to_string_lossy().to_string())?;
+    enforce_confinement(&root, &archive)?;
+    if !archive.is_file() {
+        return Err("not a file".to_string());
+    }
+
+    let parent = archive
+        .parent()
+        .ok_or("archive has no parent directory")?
+        .to_path_buf();
+    let stem = archive
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "archive has no name".to_string())?;
+    // Reuse the " (n)" collision suffixing — `stem` has no extension, so the
+    // suffix simply lands at the end of the folder name.
+    let dest_dir = unique_dest(&parent, &stem);
+    enforce_confinement(&root, &canonical_or_new(&dest_dir))?;
+
+    let file = fs::File::open(&archive).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("read zip: {e}"))?;
+    fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        // `enclosed_name` returns None for any path that would escape the
+        // destination (`..`, absolute, drive prefix) — skip those rather than
+        // trusting the archive.
+        let rel = match entry.enclosed_name() {
+            Some(p) => p,
+            None => continue,
+        };
+        let out = dest_dir.join(&rel);
+        // Defense in depth: confine the resolved output to the dest folder.
+        enforce_confinement(&dest_dir, &canonical_or_new(&out))?;
+        if entry.is_dir() {
+            fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+        } else {
+            if let Some(p) = out.parent() {
+                fs::create_dir_all(p).map_err(|e| e.to_string())?;
+            }
+            let mut outfile = fs::File::create(&out).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut outfile).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(dest_dir
+        .strip_prefix(&root)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or(stem))
+}
+
+/// Pick a non-colliding destination path in `dir` for `file_name`, appending
+/// " (1)", " (2)", … before the extension until a free name is found.
+fn unique_dest(dir: &Path, file_name: &str) -> PathBuf {
+    let direct = dir.join(file_name);
+    if !direct.exists() {
+        return direct;
+    }
+    // A leading-dot name with no other dot (".gitignore") has no extension, so
+    // `stem` keeps the whole name and the suffix lands at the end.
+    let ext = Path::new(file_name).extension().and_then(|e| e.to_str());
+    let stem = match ext {
+        Some(e) => &file_name[..file_name.len() - e.len() - 1],
+        None => file_name,
+    };
+    for n in 1..10_000 {
+        let candidate = match ext {
+            Some(e) => format!("{stem} ({n}).{e}"),
+            None => format!("{stem} ({n})"),
+        };
+        let p = dir.join(candidate);
+        if !p.exists() {
+            return p;
+        }
+    }
+    direct
+}
+
 /// Validate and resolve a copy/move: confine both ends, refuse an existing
 /// destination, a no-op, and copying a directory into its own subtree.
 fn resolve_transfer(
@@ -861,6 +1026,79 @@ mod tests {
         assert_eq!(std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(), "2");
     }
 
+    // ── extract_archive ────────────────────────────────────────────────────
+
+    /// Write a minimal .zip (stored, no compression) at `path` from
+    /// (entry-name, contents) pairs. An entry name ending in `/` is a directory.
+    fn write_test_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts: zip::write::FileOptions<()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, data) in entries {
+            if name.ends_with('/') {
+                zip.add_directory(*name, opts).unwrap();
+            } else {
+                use std::io::Write;
+                zip.start_file(*name, opts).unwrap();
+                zip.write_all(data).unwrap();
+            }
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn extract_archive_unpacks_into_named_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
+        write_test_zip(
+            &tmp.path().join("bundle.zip"),
+            &[("a.txt", b"hello"), ("sub/", b""), ("sub/b.txt", b"world")],
+        );
+
+        let folder = extract_archive(dir.clone(), "bundle.zip".into()).unwrap();
+
+        assert_eq!(folder, "bundle");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("bundle/a.txt")).unwrap(),
+            "hello"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("bundle/sub/b.txt")).unwrap(),
+            "world"
+        );
+    }
+
+    #[test]
+    fn extract_archive_dedupes_existing_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
+        std::fs::create_dir(tmp.path().join("bundle")).unwrap();
+        write_test_zip(&tmp.path().join("bundle.zip"), &[("a.txt", b"x")]);
+
+        let folder = extract_archive(dir.clone(), "bundle.zip".into()).unwrap();
+
+        assert_eq!(folder, "bundle (1)");
+        assert!(tmp.path().join("bundle (1)/a.txt").exists());
+    }
+
+    #[test]
+    fn extract_archive_ignores_zip_slip_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
+        // A crafted entry trying to escape the destination via `..`.
+        write_test_zip(
+            &tmp.path().join("evil.zip"),
+            &[("../escaped.txt", b"pwned"), ("safe.txt", b"ok")],
+        );
+
+        extract_archive(dir.clone(), "evil.zip".into()).unwrap();
+
+        // The traversal entry is dropped; the sibling escape file never appears.
+        assert!(!tmp.path().join("escaped.txt").exists());
+        assert!(tmp.path().join("evil/safe.txt").exists());
+    }
+
     #[test]
     fn copy_path_refuses_directory_into_itself() {
         let tmp = tempfile::tempdir().unwrap();
@@ -881,6 +1119,121 @@ mod tests {
 
         assert!(!tmp.path().join("a.txt").exists());
         assert_eq!(std::fs::read_to_string(tmp.path().join("sub/b.txt")).unwrap(), "hello");
+    }
+
+    // ── import_external_file ───────────────────────────────────────────────
+
+    #[test]
+    fn import_external_file_copies_into_subfolder() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("photo.png"), "img").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::create_dir(proj.path().join("assets")).unwrap();
+
+        let rel = import_external_file(
+            proj.path().to_string_lossy().to_string(),
+            ext.path().join("photo.png").to_string_lossy().to_string(),
+            "assets".into(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(rel, "assets/photo.png");
+        assert_eq!(
+            std::fs::read_to_string(proj.path().join("assets/photo.png")).unwrap(),
+            "img"
+        );
+        // Source is left in place (copy, not move).
+        assert!(ext.path().join("photo.png").exists());
+    }
+
+    #[test]
+    fn import_external_file_renames_on_collision() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("a.txt"), "new").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::write(proj.path().join("a.txt"), "old").unwrap();
+
+        let rel = import_external_file(
+            proj.path().to_string_lossy().to_string(),
+            ext.path().join("a.txt").to_string_lossy().to_string(),
+            "".into(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(rel, "a (1).txt");
+        // The pre-existing file is untouched; the import lands beside it.
+        assert_eq!(std::fs::read_to_string(proj.path().join("a.txt")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(proj.path().join("a (1).txt")).unwrap(), "new");
+    }
+
+    #[test]
+    fn import_external_file_replace_overwrites() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("a.txt"), "new").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::write(proj.path().join("a.txt"), "old").unwrap();
+
+        let rel = import_external_file(
+            proj.path().to_string_lossy().to_string(),
+            ext.path().join("a.txt").to_string_lossy().to_string(),
+            "".into(),
+            true,
+        )
+        .unwrap();
+
+        // Same name, content overwritten — no " (1)" copy created.
+        assert_eq!(rel, "a.txt");
+        assert_eq!(std::fs::read_to_string(proj.path().join("a.txt")).unwrap(), "new");
+        assert!(!proj.path().join("a (1).txt").exists());
+    }
+
+    #[test]
+    fn project_path_exists_reports_presence() {
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::write(proj.path().join("here.txt"), "x").unwrap();
+        let dir = proj.path().to_string_lossy().to_string();
+        assert!(project_path_exists(dir.clone(), "here.txt".into()).unwrap());
+        assert!(!project_path_exists(dir, "missing.txt".into()).unwrap());
+    }
+
+    #[test]
+    fn import_external_file_recurses_into_directories() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::create_dir(ext.path().join("pkg")).unwrap();
+        std::fs::write(ext.path().join("pkg/mod.rs"), "fn x() {}").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+
+        let rel = import_external_file(
+            proj.path().to_string_lossy().to_string(),
+            ext.path().join("pkg").to_string_lossy().to_string(),
+            "".into(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(rel, "pkg");
+        assert_eq!(
+            std::fs::read_to_string(proj.path().join("pkg/mod.rs")).unwrap(),
+            "fn x() {}"
+        );
+    }
+
+    #[test]
+    fn import_external_file_rejects_escaping_dest() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("a.txt"), "x").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+
+        let err = import_external_file(
+            proj.path().to_string_lossy().to_string(),
+            ext.path().join("a.txt").to_string_lossy().to_string(),
+            "../escape".into(),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid path component"), "{err}");
     }
 
     // ── list_project_endings ───────────────────────────────────────────────

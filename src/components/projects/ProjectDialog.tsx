@@ -198,7 +198,7 @@ export function ProjectDialog({
       const project =
         kind === "new"
           ? await invoke<ProjectEntry>("create_project", {
-              req: { name, directory: targetDir, description, gitType, remote: remoteSpec },
+              req: { name, directory: targetDir, description, gitType, skipScaffold, remote: remoteSpec },
             })
           : await invoke<ProjectEntry>("import_project", {
               req: {
@@ -343,9 +343,10 @@ export function ProjectDialog({
         </label>
 
         <label>
-          Git push target
+          Git
           <select value={gitType} onChange={(e) => setGitType(e.target.value)}>
-            <option value="local">Local only (no remote)</option>
+            <option value="none">No git (local files only)</option>
+            <option value="local">Local repo (no remote)</option>
             <option value="remote-private">Remote · private</option>
             <option value="remote-public">Remote · public</option>
           </select>
@@ -368,16 +369,14 @@ export function ProjectDialog({
           </div>
         )}
 
-        {kind === "import" && (
-          <label className="skip-scaffold-row">
-            <input
-              type="checkbox"
-              checked={skipScaffold}
-              onChange={(e) => setSkipScaffold(e.target.checked)}
-            />
-            Skip scaffolding (do not generate any scaffold files)
-          </label>
-        )}
+        <label className="skip-scaffold-row">
+          <input
+            type="checkbox"
+            checked={skipScaffold}
+            onChange={(e) => setSkipScaffold(e.target.checked)}
+          />
+          Skip scaffolding (do not generate any scaffold files)
+        </label>
 
         {kind === "import" && !isRemoteProject && !skipScaffold && (
           <div className="scaffold-popover" role="group" aria-label="Import scaffold guidance">

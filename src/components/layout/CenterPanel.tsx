@@ -34,6 +34,7 @@ import {
 import { useSettingsStore } from "../../stores/settings";
 import { useDragStore } from "../../stores/drag";
 import { useDetachAnimStore } from "../../stores/detachAnim";
+import { useTabLandStore } from "../../stores/tabLand";
 import { commitDrop } from "../tabs/commitDrop";
 import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory } from "../../types";
@@ -276,6 +277,20 @@ export function CenterPanel() {
     return () => ro.disconnect();
   }, [measure, layout, scope]);
 
+  // Re-measure on OS-window resize. The ResizeObserver above misses OS-level
+  // resizes on older WebKitGTK builds (it fires for split drags but not for the
+  // window growing/shrinking), so panes — positioned at a JS-measured pixel
+  // width/height — would keep their stale size and the file viewers
+  // (markdown/text/PDF, sized off the pane box) never reflow to the new window
+  // width. AppShell bridges Tauri's reliable onResized/onScaleChanged into a DOM
+  // 'resize' event; listening for it here re-runs the measurement. (The detached
+  // window sidesteps this entirely by sizing its single pane with CSS insets.)
+  useEffect(() => {
+    const onResize = () => measure();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [measure]);
+
   const registerGroupBody = useCallback(
     (id: string) => (el: HTMLDivElement | null) => {
       if (el) groupBodyRefs.current.set(id, el);
@@ -491,6 +506,14 @@ export function CenterPanel() {
       listen<DetachedDragEnd>(DETACHED_DRAG_END, (ev) => {
         const d = useDragStore.getState().drag;
         if (d?.kind !== "detached") return;
+        // Shift held at release → keep the popout floating as its own window
+        // instead of docking it back (mirrors the main-window tab rule: Shift
+        // always means "new window"). The popout already IS a separate window, so
+        // honouring "new window" just means not docking. End the preview and bail.
+        if (ev.payload.shift) {
+          useDragStore.getState().end();
+          return;
+        }
         // END carries the LAST OS-cursor position (the DOM release event fires
         // inside the popout on WebKitGTK, so we cannot trust `d.pointerX/Y` here).
         // Re-map it to client coords and re-resolve the drop target so `inMain`
@@ -543,6 +566,9 @@ export function CenterPanel() {
             f.detachedTabKey,
             target,
           );
+          // Docked back into the active scope's layout → play the drop-in
+          // landing on the tab as it mounts in its destination bar.
+          if (sameScope) useTabLandStore.getState().markLanded(f.detachedTabKey);
           const entry = useTabsStore
             .getState()
             .detachedGroupsByScope[f.detachedScope]?.find(
@@ -746,6 +772,18 @@ export function CenterPanel() {
                   initialInput={tab.initialInput}
                   cwd={tab.cwd}
                   localOnly={tab.kind === "local_agent"}
+                  // Run agent tabs in a Docker sandbox when this tab's project
+                  // has the sandbox toggle on. Local projects only (a remote
+                  // project is ssh-wrapped instead). Derived here, not at tab
+                  // creation, so restored agent tabs are covered too.
+                  sandbox={
+                    tab.kind === "agent" &&
+                    scopeKey !== "root" &&
+                    (() => {
+                      const proj = projects.find((p) => p.id === scopeKey);
+                      return !!proj?.sandbox?.enabled && !proj?.remote;
+                    })()
+                  }
                   visible={visible}
                   focused={visible}
                 />
