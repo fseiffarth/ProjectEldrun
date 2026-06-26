@@ -50,37 +50,66 @@ html, body, #root {
   cursor: grabbing;
 }
 
+/* #42: full-window drop-target highlight painted while a tab dragged out of the
+   main window hovers over this popout (releasing there docks it in). Covers the
+   whole frame — a detached window renders exactly one group, so the only drop
+   target is "into this popout". A plain rgba fill (not color-mix, unreliable on
+   this WebKitGTK build) keeps it visible; pointer-events:none so it never eats
+   the gesture. z-index sits above the pane layer (z-index:2). */
+.detached-drop-target {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.22);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 /* ── Global scrollbar baseline ───────────────────────────────────────────
-   Theme every scrollable surface so none fall back to the native (white)
-   WebKitGTK scrollbar in dark themes. More specific rules below (e.g.
-   .file-browser-main) still win on the surfaces they target. */
+   ONE consistent thin, themed (bluish) scrollbar on every surface, across
+   WebKitGTK versions. The standard `scrollbar-color`/`scrollbar-width` is the
+   source of truth — it is the one mechanism every WebKitGTK build honors — and
+   the ::-webkit-scrollbar pseudo-elements below only mirror it as a fallback for
+   engines that implement them (inert in most WebKitGTK builds). Both use SOLID
+   themed colors so the bar never falls back to the native light GTK scrollbar
+   (white trough + grey slider), which happens when the track is `transparent`.
+   More specific rules below still win on the surfaces they target. */
 * {
-  scrollbar-color: var(--border-color) transparent;
   scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 *::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--scrollbar-track);
 }
 
 *::-webkit-scrollbar-thumb {
-  background-color: var(--border-color);
-  border: 2px solid transparent;
+  background-color: var(--scrollbar-thumb);
+  border: 2px solid var(--scrollbar-track);
   background-clip: padding-box;
   border-radius: 6px;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background-color: var(--accent);
+  background-color: var(--scrollbar-thumb-hover);
 }
 
 *::-webkit-scrollbar-corner {
-  background: transparent;
+  background: var(--scrollbar-track);
+}
+
+/* xterm's viewport has a pure-black background and `overflow-y: scroll`; it
+   inherits the same standard scrollbar-color as everything else so its bar
+   matches (a themed bluish thumb on a themed track). */
+.xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 /* ── Activity calendar color levels (shared across themes) ──────────── */
@@ -101,6 +130,16 @@ html, body, #root {
   --accent-hover: #5edcff;
   --accent-active: #1ca7d8;
   --accent-secondary: #b388ff;
+  /* Scrollbar colors. Defined ONCE on :root but referencing the theme's own
+     --accent / --bg-panel, which are re-declared per theme on this same <html>
+     element — so `var()`'s lazy resolution gives every theme a bluish (accent)
+     thumb on its own panel-colored track without per-theme scrollbar rules. Both
+     are SOLID on purpose: a `transparent` track makes some WebKitGTK builds fall
+     back to the native light GTK scrollbar (white trough + grey slider), and a
+     low-alpha thumb over that washes to grey — the bug this replaces. */
+  --scrollbar-thumb: var(--accent);
+  --scrollbar-thumb-hover: var(--accent-hover, var(--accent));
+  --scrollbar-track: var(--bg-panel);
   --control-bg: #18243b;
   --control-hover-bg: #22304a;
   --control-border: #293852;
@@ -1451,12 +1490,86 @@ select option {
   margin-left: auto;
 }
 
+/* Wraps the scroll area so the find-match marker rail can overlay its native
+   scrollbar without scrolling along with the content. Row flex so the scroll
+   area fills it; min-height/min-width:0 lets it shrink within the host column. */
+.file-viewer-pdf-scroll-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+
 .file-viewer-pdf-scroll {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   padding: 12px;
   background: var(--bg-main);
+}
+/* The scroll area is focusable (tabIndex) so Ctrl+F works without first clicking
+   a control; suppress the focus ring — the page content carries no caret. */
+.file-viewer-pdf-scroll:focus { outline: none; }
+
+/* #71 search-match markers: a non-interactive rail laid over the scroll area's
+   native scrollbar, one tick per Ctrl+F hit at its fractional document position
+   so off-screen matches stay locatable. pointer-events:none keeps the scrollbar
+   draggable; the current match's tick is brighter and a touch larger (mirrors
+   the on-page hit colours). */
+.file-viewer-pdf-search-rail {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 14px;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+.file-viewer-pdf-search-tick {
+  position: absolute;
+  right: 2px;
+  width: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(255, 213, 0, 0.85);
+  transform: translateY(-1px);
+}
+.file-viewer-pdf-search-tick.current {
+  right: 1px;
+  width: 11px;
+  height: 3px;
+  background: rgba(229, 110, 0, 1);
+}
+
+/* #71: the Ctrl+F bar for the native PDF viewer renders as a static row
+   between the zoom toolbar and the page stack (overriding the editor find bar's
+   floating position so it never covers the toolbar's trailing buttons). */
+.file-viewer-find-pdf {
+  position: static;
+  flex-direction: row;
+  align-items: center;
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+
+/* #71: a translucent box over each search hit on the page canvas; the
+   current match is brighter. Fixed rgba so it reads over white PDF pages in both
+   light and dark themes (mirrors the editor's search highlight colours). */
+.file-viewer-pdf-search-hit {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 1px;
+  background: rgba(255, 213, 0, 0.4);
+}
+.file-viewer-pdf-search-hit.current {
+  background: rgba(255, 145, 0, 0.6);
+  outline: 1px solid rgba(229, 110, 0, 0.9);
 }
 
 /* The page stack lives in an inner wrapper so a Ctrl+wheel zoom can grow it past
@@ -1740,12 +1853,12 @@ select option {
   word-break: break-word;
 }
 
-/* Rendered markdown. */
+/* Rendered markdown. Fills the full pane width — paragraphs reflow to the
+   window so a wide window uses the whole line (no fixed readable-column cap). */
 .markdown-body {
   padding: 16px 22px;
   font-size: 13px;
   line-height: 1.65;
-  max-width: 880px;
 }
 
 .markdown-body > :first-child { margin-top: 0; }
@@ -2201,12 +2314,92 @@ select option {
   transform: translateX(0);
 }
 
+/* OS file drag hovering over the panel: pulsing accent glow + dashed inset
+   border, plus a "drop to copy" hint banner sliding down from the top. */
+.right-panel.drop-active {
+  animation: right-panel-drop-pulse 1.1s ease-in-out infinite;
+}
+
+.right-panel.drop-active::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 2px dashed var(--accent);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 20;
+  animation: right-panel-drop-dash 0.4s ease-out;
+}
+
+.right-panel.drop-active::after {
+  content: "＋ Drop to copy into project";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 6px 8px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--bg-panel);
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 21;
+  animation: right-panel-drop-banner 0.18s ease-out;
+}
+
+/* One-shot confirmation when the drop lands. */
+.right-panel.drop-flash {
+  animation: right-panel-drop-flash 0.5s ease-out;
+}
+
+@keyframes right-panel-drop-pulse {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    box-shadow: inset 0 0 22px 0 color-mix(in srgb, var(--accent) 32%, transparent);
+  }
+}
+
+@keyframes right-panel-drop-dash {
+  from {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes right-panel-drop-banner {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes right-panel-drop-flash {
+  0% {
+    box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--accent) 38%, transparent);
+  }
+  100% {
+    box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
 .right-panel-scroll,
 .file-browser-main,
 .file-browser-sidebar,
 .project-search-popover,
 .settings-dialog {
-  scrollbar-color: var(--border-color) var(--bg-panel);
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   scrollbar-width: thin;
 }
 
@@ -2317,7 +2510,7 @@ select option {
 .file-browser-sidebar::-webkit-scrollbar-track,
 .project-search-popover::-webkit-scrollbar-track,
 .settings-dialog::-webkit-scrollbar-track {
-  background: var(--bg-panel);
+  background: var(--scrollbar-track);
 }
 
 .right-panel-scroll::-webkit-scrollbar-thumb,
@@ -2325,8 +2518,8 @@ select option {
 .file-browser-sidebar::-webkit-scrollbar-thumb,
 .project-search-popover::-webkit-scrollbar-thumb,
 .settings-dialog::-webkit-scrollbar-thumb {
-  background-color: var(--border-color);
-  border: 1px solid var(--bg-panel);
+  background-color: var(--scrollbar-thumb);
+  border: 1px solid var(--scrollbar-track);
   border-radius: 0;
 }
 
@@ -2335,7 +2528,7 @@ select option {
 .file-browser-sidebar::-webkit-scrollbar-thumb:hover,
 .project-search-popover::-webkit-scrollbar-thumb:hover,
 .settings-dialog::-webkit-scrollbar-thumb:hover {
-  background-color: var(--accent);
+  background-color: var(--scrollbar-thumb-hover);
 }
 
 .right-panel-scroll::-webkit-scrollbar-corner,
@@ -2343,7 +2536,7 @@ select option {
 .file-browser-sidebar::-webkit-scrollbar-corner,
 .project-search-popover::-webkit-scrollbar-corner,
 .settings-dialog::-webkit-scrollbar-corner {
-  background: var(--bg-panel);
+  background: var(--scrollbar-track);
 }
 
 .right-panel-header {
@@ -2863,6 +3056,30 @@ select option {
 .pill-close-btn:hover {
   background-color: var(--control-hover-bg);
   color: var(--text-primary);
+}
+
+/* Git "dirty" dot on a project pill: signals pending git state at a glance.
+   Colors mirror the file-tree markers — red (uncommitted/not added), orange
+   (staged, not committed), green (committed, not pushed). */
+.pill-git-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-right: 2px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--control-bg) 70%, transparent);
+}
+
+.pill-git-dot.dirty {
+  background-color: #f85149;
+}
+
+.pill-git-dot.staged {
+  background-color: #d29922;
+}
+
+.pill-git-dot.unpushed {
+  background-color: #3fb950;
 }
 
 /* ── Project box chip ───────────────────────────────────────────────── */
@@ -3503,6 +3720,106 @@ select option {
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
+}
+
+/* ── Drop target feedback (dragging a tab over another bar) ───────────────
+   While a tab (or file) is dragged over a tab bar, that bar becomes the active
+   drop target: it gets a subtle accent wash + top accent line so it's obvious
+   WHICH bar will receive the drop, and a placeholder slot is rendered at the
+   insertion point previewing WHERE the tab will land (with its label). */
+.tab-bar.drop-target {
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.tab-drop-placeholder {
+  /* A dashed accent slot the dragged tab will drop into. Sized like a tab so the
+     surrounding tabs slide to make exactly the room it will occupy. */
+  flex-shrink: 0;
+  align-self: flex-end;
+  height: 30px;
+  min-width: 96px;
+  max-width: 160px;
+  border: 1px dashed var(--accent);
+  border-bottom: none;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  pointer-events: none;
+  overflow: hidden;
+  animation: tab-drop-slot 0.16s ease-out;
+}
+
+.tab-drop-placeholder-label {
+  display: block;
+  padding: 0 12px;
+  line-height: 30px;
+  font-size: 12px;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Slot springs open from zero width so the insertion point reads as opening up
+   to receive the tab, not just appearing. */
+@keyframes tab-drop-slot {
+  0% {
+    min-width: 0;
+    max-width: 0;
+    opacity: 0;
+  }
+  100% {
+    min-width: 96px;
+    max-width: 160px;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-drop-placeholder {
+    animation: none;
+  }
+}
+
+/* ── Drop-in landing flourish ─────────────────────────────────────────────
+   A tab dropped into a DIFFERENT tab bar (cross-group move / split) mounts
+   fresh in its destination bar and plays this one-shot "settle" so it's clear
+   where the dragged tab landed: it drops in from slightly above, overshoots,
+   and settles, ringed by a fading accent glow. The animation overrides the
+   active tab's inset shadow for its duration, then the inline style resumes. */
+.tab.landing {
+  animation: tab-land 0.34s cubic-bezier(0.2, 0.7, 0.3, 1);
+  /* Lift above neighbours so the overshoot/glow isn't clipped by adjacent tabs. */
+  position: relative;
+  z-index: 12;
+}
+
+@keyframes tab-land {
+  0% {
+    transform: translateY(-10px) scale(1.14);
+    opacity: 0;
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+  55% {
+    transform: translateY(2px) scale(0.97);
+    opacity: 1;
+    box-shadow: 0 0 10px 1px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* Respect reduced-motion: collapse the landing to a plain fade-in. */
+@media (prefers-reduced-motion: reduce) {
+  .tab.landing {
+    animation: tab-land-fade 0.2s ease-out;
+  }
+  @keyframes tab-land-fade {
+    0% { opacity: 0; }
+    100% { opacity: 1; }
+  }
 }
 
 /* ── New-tab button + dropdown ───────────────────────────────────────── */

@@ -14,6 +14,7 @@ import {
   refineToWord,
   forwardInputCandidates,
   pickSyncRect,
+  pdfPageMatches,
   sourceColumnFraction,
   type SyncRect,
   type TextItemBox,
@@ -39,6 +40,54 @@ describe("SyncTeX coordinate math", () => {
   it("bigPointsToCssRect is the inverse mapping (multiply by scale)", () => {
     const css = bigPointsToCssRect({ page: 1, x: 100, y: 50, w: 200, h: 12 }, 2);
     expect(css).toEqual({ left: 200, top: 100, width: 400, height: 24 });
+  });
+});
+
+describe("pdfPageMatches (#71 — Ctrl+F over a PDF page's text)", () => {
+  // A single 11-char run "hello world" laid out 10 big points per character.
+  const oneRun: TextItemBox[] = [{ str: "hello world", x: 0, y: 0, w: 110, h: 10 }];
+
+  it("slices a single run to the matched character span", () => {
+    // "world" is chars 6..11 → x 60, width 50.
+    expect(pdfPageMatches(oneRun, 1, "world", false)).toEqual([
+      [{ page: 1, x: 60, y: 0, w: 50, h: 10 }],
+    ]);
+  });
+
+  it("is case-insensitive by default and case-sensitive on request", () => {
+    const run: TextItemBox[] = [{ str: "Hello", x: 0, y: 0, w: 50, h: 10 }];
+    expect(pdfPageMatches(run, 1, "hello", false)).toEqual([
+      [{ page: 1, x: 0, y: 0, w: 50, h: 10 }],
+    ]);
+    expect(pdfPageMatches(run, 1, "hello", true)).toEqual([]);
+  });
+
+  it("returns one box per run a match straddles", () => {
+    const runs: TextItemBox[] = [
+      { str: "foo", x: 0, y: 0, w: 30, h: 10 },
+      { str: "bar", x: 30, y: 0, w: 30, h: 10 },
+    ];
+    // "ooba" spans the join: "oo" in run 0 (x 10, w 20) + "ba" in run 1 (x 30, w 20).
+    expect(pdfPageMatches(runs, 2, "ooba", false)).toEqual([
+      [
+        { page: 2, x: 10, y: 0, w: 20, h: 10 },
+        { page: 2, x: 30, y: 0, w: 20, h: 10 },
+      ],
+    ]);
+  });
+
+  it("finds every non-overlapping occurrence", () => {
+    const run: TextItemBox[] = [{ str: "aaaa", x: 0, y: 0, w: 40, h: 10 }];
+    const out = pdfPageMatches(run, 1, "aa", false);
+    expect(out).toEqual([
+      [{ page: 1, x: 0, y: 0, w: 20, h: 10 }],
+      [{ page: 1, x: 20, y: 0, w: 20, h: 10 }],
+    ]);
+  });
+
+  it("yields nothing for an empty query or no hit", () => {
+    expect(pdfPageMatches(oneRun, 1, "", false)).toEqual([]);
+    expect(pdfPageMatches(oneRun, 1, "zzz", false)).toEqual([]);
   });
 });
 

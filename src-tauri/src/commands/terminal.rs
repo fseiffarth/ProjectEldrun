@@ -36,9 +36,15 @@ pub async fn pty_spawn(
     // twice.)
     opts = crate::services::agent_session::resolve_agent_session(opts);
 
-    // For remote (SSH) projects, rewrite the spawn to run on the remote host
-    // via `ssh -tt`. No-op for local projects or `local_only` tabs.
-    if !opts.local_only {
+    // Sandbox (Docker) and ssh-remote wrapping are mutually exclusive: sandbox
+    // is local-only. When `opts.sandbox` is set (frontend marks agent tabs of a
+    // sandbox-enabled local project), wrap the resolved command into a
+    // `docker run …` argv; otherwise fall back to ssh wrapping for remote
+    // projects. Both run after agent-session resolution so resume args/env ride
+    // into whichever wrapper applies.
+    if opts.sandbox {
+        crate::services::sandbox::wrap_pty_options_docker(&mut opts)?;
+    } else if !opts.local_only {
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
     }
 

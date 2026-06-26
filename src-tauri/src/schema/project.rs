@@ -103,6 +103,23 @@ pub struct OpenVpnSpec {
     pub extra: HashMap<String, Value>,
 }
 
+/// Per-project Docker sandbox config. When present and `enabled`, agent tabs
+/// (Claude/Codex/Gemini/Vibe) for this project are launched inside an ephemeral
+/// Docker container that mounts only the project directory, so an agent cannot
+/// reach host files outside the project. Absent (the default) = agents run on
+/// the host exactly as before. Local projects only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxSpec {
+    /// Whether agent tabs run inside the Docker sandbox.
+    pub enabled: bool,
+    /// Optional image override; falls back to the built-in default image when
+    /// absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
 /// Per-project `project.json` file.
 ///
 /// Most fields are optional because projects created by older app versions may
@@ -156,6 +173,9 @@ pub struct Project {
     pub open_tab_sessions: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteSpec>,
+    /// Docker sandbox config for agent tabs. Absent = run agents on the host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxSpec>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

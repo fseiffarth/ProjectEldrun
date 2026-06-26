@@ -316,7 +316,7 @@ fn rename_path_rejects_dest_traversal() {
 #[test]
 fn scaffold_project_integration_creates_full_structure() {
     let tmp = setup();
-    scaffold_project(tmp.path()).unwrap();
+    scaffold_project(tmp.path(), true).unwrap();
 
     // Every canonical scaffold file must be present.
     for f in &[
@@ -337,7 +337,7 @@ fn scaffold_project_integration_creates_full_structure() {
 #[test]
 fn scaffold_project_gitignore_contains_eldrun() {
     let tmp = setup();
-    scaffold_project(tmp.path()).unwrap();
+    scaffold_project(tmp.path(), true).unwrap();
 
     let gitignore = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
     assert!(
@@ -349,7 +349,7 @@ fn scaffold_project_gitignore_contains_eldrun() {
 #[test]
 fn scaffold_project_claude_settings_is_valid_json() {
     let tmp = setup();
-    scaffold_project(tmp.path()).unwrap();
+    scaffold_project(tmp.path(), true).unwrap();
 
     let content = fs::read_to_string(tmp.path().join(".claude/settings.json")).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&content)

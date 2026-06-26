@@ -58,19 +58,19 @@ describe("detached — buildSeed", () => {
 describe("detached — applyEditToSubtree", () => {
   it("activate switches activeKey only for an owned key", () => {
     const sub = group(["a", "b"], "a");
-    expect(applyEditToSubtree(sub, { kind: "activate", key: "b" }).activeKey).toBe("b");
+    expect((applyEditToSubtree(sub, { kind: "activate", key: "b" }) as GroupNode).activeKey).toBe("b");
     // A non-owned key is a no-op.
     expect(applyEditToSubtree(sub, { kind: "activate", key: "z" })).toBe(sub);
   });
 
   it("close drops the key and re-derives activeKey when it was active", () => {
-    const next = applyEditToSubtree(group(["a", "b"], "a"), { kind: "close", key: "a" });
+    const next = applyEditToSubtree(group(["a", "b"], "a"), { kind: "close", key: "a" }) as GroupNode;
     expect(next.tabKeys).toEqual(["b"]);
     expect(next.activeKey).toBe("b");
   });
 
   it("close keeps activeKey when a non-active key is closed", () => {
-    const next = applyEditToSubtree(group(["a", "b"], "b"), { kind: "close", key: "a" });
+    const next = applyEditToSubtree(group(["a", "b"], "b"), { kind: "close", key: "a" }) as GroupNode;
     expect(next.tabKeys).toEqual(["b"]);
     expect(next.activeKey).toBe("b");
   });
@@ -79,7 +79,7 @@ describe("detached — applyEditToSubtree", () => {
     const next = applyEditToSubtree(group(["a", "b", "c"], "b"), {
       kind: "reorder",
       tabKeys: ["c", "b", "a"],
-    });
+    }) as GroupNode;
     expect(next.tabKeys).toEqual(["c", "b", "a"]);
     expect(next.activeKey).toBe("b");
   });

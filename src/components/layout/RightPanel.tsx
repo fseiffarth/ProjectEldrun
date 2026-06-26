@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileTree } from "../files/FileTree";
 import { GitHistory } from "../files/GitHistory";
 import { SearchPanel } from "../files/SearchPanel";
@@ -10,6 +11,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore } from "../../stores/tabs";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import { resolveProjectDirectory } from "../../types";
+import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
 import { type SortKey, VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
 import type { ViewerPref } from "../../types";
 
@@ -52,6 +54,64 @@ function readStringList(project: ProjectJson | null, key: string): string[] {
   const raw = project?.[key];
   if (!Array.isArray(raw)) return [];
   return raw.filter((item): item is string => typeof item === "string");
+}
+
+type ConflictChoice = "replace" | "rename" | "skip";
+
+/** Heuristic: is this drag an external OS file drag (vs. an internal pill/text
+ *  drag)? `dragDropEnabled` stays false so HTML5 DnD keeps working for the
+ *  app's pointer/HTML drags; an OS file drag advertises Files/uri-list/html
+ *  (WebKitGTK uses text/html here). During dragover WebKit may hide the type
+ *  list, so an empty list is treated as a file drag too. */
+function isExternalFileDrag(dt: DataTransfer): boolean {
+  const types = Array.from(dt.types ?? []);
+  if (types.length === 0) return true;
+  return (
+    types.includes("Files") ||
+    types.includes("text/uri-list") ||
+    types.includes("text/html")
+  );
+}
+
+/** Convert one `file://` URI to an absolute local path (decoding `%20` etc.),
+ *  dropping any `file://host/…` authority. */
+function fileUriToPath(uri: string): string | null {
+  if (!uri.startsWith("file://")) return null;
+  let rest = uri.slice("file://".length);
+  const slash = rest.indexOf("/");
+  if (slash > 0) rest = rest.slice(slash);
+  try {
+    return decodeURIComponent(rest);
+  } catch {
+    return rest;
+  }
+}
+
+/** Extract absolute local paths from an OS HTML5 file drop. WebKitGTK withholds
+ *  `Files`/`text/uri-list` data here but leaks the `file://` URL inside
+ *  `text/html`, so scan every text payload for `file://` URIs and dedupe.
+ *  NOTE: this drag path is best-effort — some file managers only expose ONE
+ *  file this way. Use the Import button for reliable multi-file selection. */
+function parseDroppedFilePaths(dataTransfer: DataTransfer): string[] {
+  const sources = [
+    dataTransfer.getData("text/uri-list"),
+    dataTransfer.getData("text/plain"),
+    dataTransfer.getData("text/html"),
+  ];
+  const FILE_URI = /file:\/\/[^\s"'<>]+/g;
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const raw of sources) {
+    if (!raw) continue;
+    for (const match of raw.match(FILE_URI) ?? []) {
+      const p = fileUriToPath(match);
+      if (p && !seen.has(p)) {
+        seen.add(p);
+        paths.push(p);
+      }
+    }
+  }
+  return paths;
 }
 
 function mergeEndings(...groups: string[][]): string[] {
@@ -136,6 +196,13 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [view, setView] = useState<View>("files");
+  const [dropActive, setDropActive] = useState(false);
+  const [dropFlash, setDropFlash] = useState(false);
+  const [conflict, setConflict] = useState<
+    { name: string; remaining: number; resolve: (r: { choice: ConflictChoice; all: boolean }) => void } | null
+  >(null);
+  const [conflictAll, setConflictAll] = useState(false);
+  const dropFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [descending, setDescending] = useState(false);
@@ -161,16 +228,22 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
   // one round of parallel work. Each result still applies independently.
   const runRefreshGit = (dir: string) => {
     void Promise.all([
-      invoke<GitStatus>("git_status", { projectDir: dir })
-        .then(setGitStatus)
-        .catch(() => setGitStatus(null)),
-      invoke<Record<string, string>>("git_file_statuses", { projectDir: dir, relPath: "" })
-        .then(setGitFileList)
-        .catch(() => setGitFileList({})),
-      invoke<string[]>("git_unpushed_commits", { projectDir: dir })
-        .then(setUnpushedCommits)
-        .catch(() => setUnpushedCommits([])),
-    ]);
+      invoke<GitStatus>("git_status", { projectDir: dir }).catch(() => null),
+      invoke<Record<string, string>>("git_file_statuses", { projectDir: dir, relPath: "" }).catch(
+        () => ({}) as Record<string, string>,
+      ),
+      invoke<string[]>("git_unpushed_commits", { projectDir: dir }).catch(() => [] as string[]),
+    ]).then(([status, files, unpushed]) => {
+      setGitStatus(status);
+      setGitFileList(files);
+      setUnpushedCommits(unpushed);
+      // Keep the active project's pill dot in sync from the data we just fetched
+      // (no extra git subprocesses), so edits/commits/pushes reflect immediately
+      // instead of waiting for the switcher's periodic poll.
+      if (activeId && status) {
+        useGitDirtyStore.getState().set(activeId, gitDirtyState(status, unpushed.length));
+      }
+    });
   };
 
   // Debounced entry point (Eff #9): bursts of git-affecting actions (add →
@@ -187,6 +260,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
   useEffect(() => {
     return () => {
       if (refreshGitTimer.current) clearTimeout(refreshGitTimer.current);
+      if (dropFlashTimer.current) clearTimeout(dropFlashTimer.current);
     };
   }, []);
 
@@ -244,6 +318,94 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
     const sub = rightPanelFolder.replace(/^\/+|\/+$/g, "");
     const path = sub ? `${projectDir.replace(/\/+$/, "")}/${sub}` : projectDir;
     invoke("open_in_file_manager", { path }).catch((e) => console.error("open_in_file_manager", e));
+  };
+
+  // OS file drop → copy into the project. Confined to a single active project
+  // (a box scope has no single destination root). Driven by Tauri's NATIVE
+  // drag-drop event (dragDropEnabled=true) because WebKitGTK withholds the file
+  // paths from HTML5 drops; the native event hands us every dropped path.
+  const canImportDrop = !!projectDir && !activeBox;
+
+  const flashDrop = () => {
+    if (dropFlashTimer.current) clearTimeout(dropFlashTimer.current);
+    setDropFlash(false);
+    requestAnimationFrame(() => setDropFlash(true));
+    dropFlashTimer.current = setTimeout(() => setDropFlash(false), 500);
+  };
+
+  // Ask the user how to resolve a name collision; resolves via the modal's
+  // buttons. Returns the choice plus whether to apply it to all remaining.
+  const askConflict = (name: string, remaining: number) =>
+    new Promise<{ choice: ConflictChoice; all: boolean }>((resolve) => {
+      setConflictAll(false);
+      setConflict({ name, remaining, resolve });
+    });
+
+  // Copy each absolute source path into the project, prompting on collisions.
+  const importPaths = (paths: string[]) => {
+    if (!canImportDrop || !projectDir || paths.length === 0) return;
+    flashDrop();
+    const destRel = view === "files" ? rightPanelFolder : "";
+    void (async () => {
+      let blanket: ConflictChoice | null = null;
+      for (let i = 0; i < paths.length; i++) {
+        const sourcePath = paths[i];
+        const name = sourcePath.replace(/\/+$/, "").split("/").pop() || sourcePath;
+        const rel = destRel ? `${destRel}/${name}` : name;
+        let choice: ConflictChoice = "rename";
+        const exists = await invoke<boolean>("project_path_exists", { projectDir, relPath: rel }).catch(() => false);
+        if (exists) {
+          if (blanket) {
+            choice = blanket;
+          } else {
+            const res = await askConflict(name, paths.length - 1 - i);
+            setConflict(null);
+            choice = res.choice;
+            if (res.all) blanket = res.choice;
+          }
+        }
+        if (choice === "skip") continue;
+        try {
+          await invoke("import_external_file", { projectDir, sourcePath, destRel, replace: choice === "replace" });
+        } catch (err) {
+          console.error("import_external_file", sourcePath, err);
+        }
+      }
+      // FileTree auto-reloads via its fs-watch; refresh git so new untracked
+      // files show in the status counts immediately.
+      refreshGit(projectDir);
+    })();
+  };
+
+  // HTML5 drag-and-drop (dragDropEnabled stays false so pointer drags — tabs,
+  // splits, pills — keep working). Best-effort: WebKitGTK only leaks file paths
+  // via text/html and sometimes just one; the Import button is the reliable
+  // multi-file path.
+  const handleImportDragOver = (e: React.DragEvent) => {
+    if (!canImportDrop || !isExternalFileDrag(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    if (!dropActive) setDropActive(true);
+  };
+
+  const handleImportDragLeave = (e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setDropActive(false);
+  };
+
+  const handleImportDrop = (e: React.DragEvent) => {
+    setDropActive(false);
+    if (!canImportDrop || !isExternalFileDrag(e.dataTransfer)) return;
+    e.preventDefault();
+    importPaths(parseDroppedFilePaths(e.dataTransfer));
+  };
+
+  // Reliable multi-file import: native OS file picker → same copy+conflict flow.
+  const importViaDialog = async () => {
+    if (!canImportDrop) return;
+    const picked = await openDialog({ multiple: true, directory: false }).catch(() => null);
+    if (!picked) return;
+    importPaths(Array.isArray(picked) ? picked : [picked]);
   };
 
   useEffect(() => {
@@ -384,10 +546,55 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
 
   return (
     <div
-      className={`right-panel ${open ? "open" : ""}`}
+      className={`right-panel ${open ? "open" : ""}${dropActive ? " drop-active" : ""}${dropFlash ? " drop-flash" : ""}`}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
+      onDragEnter={handleImportDragOver}
+      onDragOver={handleImportDragOver}
+      onDragLeave={handleImportDragLeave}
+      onDrop={handleImportDrop}
     >
+      {conflict && createPortal(
+        <div
+          className="modal-backdrop"
+          onMouseDown={() => conflict.resolve({ choice: "skip", all: conflictAll })}
+        >
+          <div className="settings-dialog" style={{ maxWidth: 380 }} onMouseDown={(e) => e.stopPropagation()}>
+            <div className="settings-title-row">
+              <h2>File already exists</h2>
+            </div>
+            <p className="settings-help" style={{ wordBreak: "break-all" }}>
+              <code>{conflict.name}</code> already exists in this folder. Replace it, or keep both (the new copy is renamed)?
+            </p>
+            {conflict.remaining > 0 && (
+              <label className="viewer-pref-toggle" style={{ marginBottom: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={conflictAll}
+                  onChange={(e) => setConflictAll(e.target.checked)}
+                />
+                <span>Apply to the {conflict.remaining} remaining file{conflict.remaining > 1 ? "s" : ""}</span>
+              </label>
+            )}
+            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+              <button className="tab-add-btn" onClick={() => conflict.resolve({ choice: "skip", all: conflictAll })}>
+                Skip
+              </button>
+              <button className="tab-add-btn" onClick={() => conflict.resolve({ choice: "rename", all: conflictAll })}>
+                Keep both
+              </button>
+              <button
+                className="tab-add-btn"
+                style={{ color: "var(--danger, #f85149)" }}
+                onClick={() => conflict.resolve({ choice: "replace", all: conflictAll })}
+              >
+                Replace
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
       <div className="right-panel-header">
         {onTogglePin && (
           <button
@@ -413,6 +620,16 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
             {v === "files" ? "Files" : v === "git" ? "Git" : v === "search" ? "Search" : "Apps"}
           </button>
         ))}
+        {canImportDrop && (
+          <button
+            className="tab-add-btn"
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            onClick={() => void importViaDialog()}
+            title="Import files into this folder"
+          >
+            ⬇
+          </button>
+        )}
         {projectDir && (
           <button
             className="tab-add-btn"

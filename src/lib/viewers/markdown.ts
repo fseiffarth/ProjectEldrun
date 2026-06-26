@@ -34,6 +34,21 @@ function safeHref(url: string): string | null {
   return SAFE_HREF.test(trimmed) ? trimmed : null;
 }
 
+/** Classify an image URL from `![alt](url)`. Remote `http(s)` and `data:image/`
+ *  targets are emitted directly as the <img src>. Local targets (relative or
+ *  absolute filesystem paths, or `file:`) can't be loaded by the webview from the
+ *  app origin nor resolved here (the markdown file's directory is unknown), so
+ *  they are reported as `local` for the viewer to resolve and inline from disk.
+ *  Anything carrying another scheme (e.g. `javascript:`) is rejected. */
+function imgSrc(url: string): { kind: "remote" | "local"; url: string } | null {
+  const u = url.trim();
+  if (!u) return null;
+  if (/^(https?:\/\/|data:image\/)/i.test(u)) return { kind: "remote", url: u };
+  if (/^file:/i.test(u)) return { kind: "local", url: u };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(u)) return null; // other explicit scheme → reject
+  return { kind: "local", url: u }; // no scheme → relative/absolute local path
+}
+
 /** #49: true when a (already-safe) href points at a local file rather than a
  *  remote/anchor target, so the markdown viewer can mark it visibly clickable.
  *  Relative paths, absolute paths, and the `file:` scheme count; http(s)/
@@ -114,11 +129,16 @@ function renderInline(raw: string): string {
   // Pull links/images out next so their text/url are not mangled by emphasis.
   const links: string[] = [];
   text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_m, alt: string, url: string) => {
-    const href = safeHref(url);
     const altEsc = escapeHtml(alt);
-    const html = href
-      ? `<img src="${escapeHtml(href)}" alt="${altEsc}" />`
-      : `[${altEsc}]`;
+    const img = imgSrc(url);
+    // Local images get a placeholder (no `src`, so they don't 404 against the app
+    // origin); the markdown viewer resolves `data-md-src` against the file's dir
+    // and swaps in the bytes. Remote/data images are emitted directly.
+    const html = !img
+      ? `[${altEsc}]`
+      : img.kind === "remote"
+        ? `<img src="${escapeHtml(img.url)}" alt="${altEsc}" />`
+        : `<img class="md-img-local" data-md-src="${escapeHtml(img.url)}" alt="${altEsc}" />`;
     const idx = links.push(html) - 1;
     return ` L${idx} `;
   });

@@ -72,6 +72,7 @@ interface ProjectsStore {
   addProject: (project: ProjectEntry) => Promise<void>;
   deactivateProject: (id: string) => Promise<void>;
   updateProjectDescription: (id: string, description: string) => Promise<void>;
+  setProjectSandbox: (id: string, enabled: boolean) => Promise<void>;
   publishProject: (id: string, visibility: "public" | "private") => Promise<string>;
 }
 
@@ -317,6 +318,20 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     set((state) => ({
       projects: state.projects.map((project) =>
         project.id === id ? { ...project, description: cleaned ?? undefined } : project,
+      ),
+    }));
+  },
+
+  setProjectSandbox: async (id, enabled) => {
+    // Backend writes projects.json + project.json and returns the resulting
+    // enabled state; mirror it into local state so the pill toggle and the
+    // spawn-time gate (CenterPanel) see it immediately.
+    const result = await invoke<boolean>("set_project_sandbox", { projectId: id, enabled });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id
+          ? { ...project, sandbox: result ? { enabled: true } : undefined }
+          : project,
       ),
     }));
   },

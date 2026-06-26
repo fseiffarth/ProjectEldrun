@@ -17,8 +17,8 @@
     <g id="eldrun-branches">
       <!-- L1: node → vertical → 45° diagonal → leg → splayed foot. -->
       <path d="M 165 176 L 165 238 L 233 306 L 233 440 L 222 483" stroke-width="10" />
-      <!-- L2 → vertical → diagonal → L3 → 45° diagonal down into the leg. -->
-      <path d="M 98 235 L 98 289 L 144 335 L 233 405" stroke-width="10" />
+      <!-- L2 → vertical → diagonal → L3 (ring left clean) → 45° diagonal down into the leg. -->
+      <path d="M 98 235 L 98 289 L 134.1 325.1 M 155 343.7 L 233 405" stroke-width="10" />
       <!-- Node terminals (thinner stroke than the traces). -->
       <circle cx="165" cy="162" r="14" stroke-width="8" />
       <circle cx="98"  cy="221" r="14" stroke-width="8" />

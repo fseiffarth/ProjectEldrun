@@ -17,6 +17,13 @@ cd "$ROOT"
 # Desktop entries don't source ~/.bashrc, so Rust tools may not be in PATH.
 export PATH="$HOME/.cargo/bin:$PATH"
 
+# With GTK overlay scrolling on (the default on Cinnamon/GNOME), WebKitGTK draws
+# a native GTK overlay scrollbar and ignores the app's CSS `scrollbar-color`, so
+# the themed (blue) scrollbars fall back to the system GTK theme (white/grey in
+# Adwaita light). Disabling it forces the legacy scrollbar, which WebKitGTK
+# renders itself and themes from our CSS. Harmless where it's already off.
+export GTK_OVERLAY_SCROLLING=0
+
 printf 'root=%s\n' "$ROOT"
 printf 'PATH=%s\n' "$PATH"
 command -v node

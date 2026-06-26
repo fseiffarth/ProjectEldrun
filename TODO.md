@@ -265,11 +265,13 @@ toward broad, cloud, team-scale agent automation — and the defensibility
 ---
 
 ## Group E — Git Worktree (new feature)
-*No worktree code exists anywhere today.*
+*Implemented in `src-tauri/src/commands/git.rs` + `src/components/files/GitHistory.tsx`.*
 
-23. **Git worktree support.** Add backend commands to create/list/remove git
-    worktrees and surface them in the UI (likely tied to Group D.3 history view
-    and/or project switching). Net-new feature; scope to be defined when picked.
+23. **Git worktree support.** [DONE] Backend commands
+    `git_worktree_list`/`git_worktree_add`/`git_worktree_remove`/`git_worktree_prune`
+    (porcelain parser, registered in `lib.rs`) plus a "Worktrees" section in the
+    history view (list, create-from-branch, remove). STRETCH "open worktree as
+    project" intentionally deferred.
 
 ---
 
@@ -1126,6 +1128,22 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     persists pending edits first, so the PDF preview tracks the source. The
     no-engine fallback keeps `Ctrl`+`S` as a plain save.
     - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+71. **Find in the native PDF viewer (`Ctrl`+`F`).** Add an in-document search bar
+    to the pdf.js-backed PDF viewer (the counterpart to #67's editor search).
+    `Ctrl`/`Cmd`+`F` (or the 🔍 toolbar button) opens a find bar — a static row
+    below the zoom toolbar — bound on the PDF host so it opens wherever focus sits
+    in the pane (the scroll area is `tabIndex=0`). It has a query input, a live
+    `n/total` count, `↑`/`↓` (and `Enter`/`Shift`+`Enter`) to cycle, a `Aa` match-
+    case toggle, and `Esc` to close. Each page's text is extracted lazily on first
+    use via `getTextContent()` (shared `pageTextItemBoxes`, the same boxes SyncTeX
+    word-refinement uses) and cached per document; the pure `pdfPageMatches`
+    (`lib/viewers/tex.ts`) slices matches into big-point boxes (one per text run a
+    match straddles). Matches paint as translucent overlays over the page canvases
+    (`.file-viewer-pdf-search-hit`), the current one brighter and scrolled into
+    view. Pure helper `pdfPageMatches`.
+    - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
 ---

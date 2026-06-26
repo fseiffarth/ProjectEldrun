@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::paths;
-use crate::schema::project::{Project, RemoteSpec};
+use crate::schema::project::{Project, RemoteSpec, SandboxSpec};
 use crate::schema::projects::{ProjectEntry, ProjectsList};
 use crate::services::ssh_mount;
 use crate::storage;
@@ -45,6 +45,7 @@ pub(crate) fn normalize_git_type(value: &str) -> String {
         "private" => "remote-private",
         "public" => "remote-public",
         "local" => "local",
+        "none" => "none",
         "remote-private" => "remote-private",
         "remote-public" => "remote-public",
         _ => "local",
@@ -103,6 +104,54 @@ pub fn set_project_description(
     }
 
     Ok(cleaned)
+}
+
+/// Toggle the Docker sandbox for a project in both `projects.json` (so the pill
+/// list / frontend can flag it without reading project.json) and the project's
+/// own `project.json`. When `enabled` is false the `sandbox` field is cleared
+/// (treated identically to "never set" — agents run on the host). Returns the
+/// resulting enabled state.
+#[tauri::command]
+pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<bool, String> {
+    let spec = enabled.then(|| SandboxSpec {
+        enabled: true,
+        image: None,
+        extra: HashMap::new(),
+    });
+
+    // projects.json — mirror into the entry's flattened `sandbox`.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    match &spec {
+        Some(s) => {
+            let value = serde_json::to_value(s).map_err(|e| e.to_string())?;
+            entry.extra.insert("sandbox".to_string(), value);
+        }
+        None => {
+            entry.extra.remove("sandbox");
+        }
+    }
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project file consistent (best effort).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            project.sandbox = spec;
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(enabled)
 }
 
 // ── Per-project project.json ───────────────────────────────────────────────
@@ -180,7 +229,11 @@ pub struct ScaffoldPreviewItem {
 }
 
 /// Write the standard Eldrun project scaffold into a directory.
-pub fn scaffold_project(dir: &Path) -> std::io::Result<()> {
+///
+/// When `with_git` is false the scaffold files are still written but no git
+/// repository is initialized — used for "local, no git" projects (git_type
+/// `"none"`).
+pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
     fs::create_dir_all(dir)?;
     let dot_claude = dir.join(".claude");
     fs::create_dir_all(&dot_claude)?;
@@ -199,7 +252,7 @@ pub fn scaffold_project(dir: &Path) -> std::io::Result<()> {
     if !cs.exists() {
         fs::write(cs, CLAUDE_SETTINGS)?;
     }
-    if !dir.join(".git").exists() {
+    if with_git && !dir.join(".git").exists() {
         let _ = Command::new("git").args(["init"]).current_dir(dir).output();
     }
     Ok(())
@@ -249,6 +302,11 @@ pub struct CreateProjectRequest {
     pub directory: String,
     pub description: Option<String>,
     pub git_type: Option<String>,
+    /// Skip writing the Eldrun scaffold (and `git init`) — for new projects
+    /// that should start empty. `project.json` is still created so the project
+    /// registers normally.
+    #[serde(default)]
+    pub skip_scaffold: bool,
     /// When present the project is remote: `directory` is ignored and the
     /// project root becomes the local sshfs mountpoint for `remote`.
     #[serde(default)]
@@ -268,10 +326,15 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
     };
     let directory = dir.to_string_lossy().to_string();
 
-    scaffold_project(&dir).map_err(|e| e.to_string())?;
+    let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
+
+    if !req.skip_scaffold {
+        scaffold_project(&dir, git_type != "none").map_err(|e| e.to_string())?;
+    } else {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
 
     let now = chrono_now();
-    let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
     let description = clean_description(req.description);
 
     let project = Project {
@@ -421,12 +484,13 @@ fn finish_import(
         return Err("Project is already registered".to_string());
     }
 
+    let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
+
     if !req.skip_scaffold {
-        scaffold_project(&target).map_err(|e| e.to_string())?;
+        scaffold_project(&target, git_type != "none").map_err(|e| e.to_string())?;
     }
 
     let now = chrono_now();
-    let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
     let requested_description = clean_description(req.description);
 
     let project = if project_file.exists() {
@@ -649,6 +713,7 @@ mod tests {
     #[test]
     fn normalize_git_type_passes_through_canonical_values() {
         assert_eq!(normalize_git_type("local"), "local");
+        assert_eq!(normalize_git_type("none"), "none");
         assert_eq!(normalize_git_type("remote-private"), "remote-private");
         assert_eq!(normalize_git_type("remote-public"), "remote-public");
     }
@@ -665,7 +730,7 @@ mod tests {
     #[test]
     fn scaffold_project_creates_all_files() {
         let tmp = tempfile::tempdir().unwrap();
-        scaffold_project(tmp.path()).unwrap();
+        scaffold_project(tmp.path(), true).unwrap();
 
         for name in &[
             "AGENTS.md",
@@ -688,7 +753,7 @@ mod tests {
         let todo_path = tmp.path().join("TODO.md");
         std::fs::write(&todo_path, "original content").unwrap();
 
-        scaffold_project(tmp.path()).unwrap();
+        scaffold_project(tmp.path(), true).unwrap();
 
         let content = std::fs::read_to_string(&todo_path).unwrap();
         assert_eq!(
@@ -704,7 +769,7 @@ mod tests {
         let cs = tmp.path().join(".claude/settings.json");
         std::fs::write(&cs, r#"{"custom": true}"#).unwrap();
 
-        scaffold_project(tmp.path()).unwrap();
+        scaffold_project(tmp.path(), true).unwrap();
 
         let content = std::fs::read_to_string(&cs).unwrap();
         assert!(
@@ -716,9 +781,22 @@ mod tests {
     #[test]
     fn scaffold_project_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        scaffold_project(tmp.path()).unwrap();
-        scaffold_project(tmp.path()).unwrap(); // second call must not error
+        scaffold_project(tmp.path(), true).unwrap();
+        scaffold_project(tmp.path(), true).unwrap(); // second call must not error
         assert!(tmp.path().join("TODO.md").exists());
+    }
+
+    #[test]
+    fn scaffold_project_without_git_skips_init() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path(), false).unwrap();
+        // Scaffold files are still written, but no git repo is initialized.
+        assert!(tmp.path().join("TODO.md").exists());
+        assert!(tmp.path().join(".claude/settings.json").exists());
+        assert!(
+            !tmp.path().join(".git").exists(),
+            "git must not be initialized when with_git is false"
+        );
     }
 
     #[test]

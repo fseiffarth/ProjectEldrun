@@ -19,10 +19,24 @@ interface GitBranch {
   is_remote: boolean;
 }
 
+interface Worktree {
+  path: string;
+  branch: string;
+  head: string;
+  is_main: boolean;
+  is_locked: boolean;
+  is_bare: boolean;
+}
+
 interface Props {
   projectDir: string;
   /** Called after a checkout/reword so the parent can refresh git status. */
   onChanged?: () => void;
+}
+
+function basename(p: string): string {
+  const parts = p.split(/[/\\]/).filter(Boolean);
+  return parts[parts.length - 1] ?? p;
 }
 
 function parseRefs(refs: string): string[] {
@@ -169,6 +183,8 @@ const GRAPH_MODE_KEY = "eldrun.gitHistoryGraph";
 export function GitHistory({ projectDir, onChanged }: Props) {
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [branches, setBranches] = useState<GitBranch[]>([]);
+  const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  const [wtForm, setWtForm] = useState<{ path: string; branch: string; newBranch: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<GitCommit | null>(null);
@@ -197,12 +213,14 @@ export function GitHistory({ projectDir, onChanged }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const [log, br] = await Promise.all([
+      const [log, br, wt] = await Promise.all([
         invoke<GitCommit[]>("git_log", { projectDir, limit: 100 }),
         invoke<GitBranch[]>("git_branches", { projectDir }),
+        invoke<Worktree[]>("git_worktree_list", { projectDir }),
       ]);
       setCommits(log);
       setBranches(br);
+      setWorktrees(wt ?? []);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -220,6 +238,39 @@ export function GitHistory({ projectDir, onChanged }: Props) {
     try {
       await invoke("git_checkout", { projectDir, target });
       setSelected(null);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      setError(String(e));
+      setLoading(false);
+    }
+  }
+
+  async function createWorktree() {
+    if (!wtForm) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke("git_worktree_add", {
+        projectDir,
+        path: wtForm.path,
+        branch: wtForm.branch,
+        newBranch: wtForm.newBranch,
+      });
+      setWtForm(null);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      setError(String(e));
+      setLoading(false);
+    }
+  }
+
+  async function removeWorktree(path: string, force = false) {
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke("git_worktree_remove", { projectDir, path, force });
       await load();
       onChanged?.();
     } catch (e) {
@@ -287,6 +338,89 @@ export function GitHistory({ projectDir, onChanged }: Props) {
           ))}
         </div>
       )}
+
+      <div className="git-worktree-section">
+        <div className="git-worktree-header">
+          <span className="git-worktree-title">Worktrees</span>
+          <button
+            className="tab-add-btn"
+            onClick={() =>
+              setWtForm((f) =>
+                f ? null : { path: "", branch: localBranches[0]?.name ?? "", newBranch: false },
+              )
+            }
+            disabled={loading}
+            title="Add a worktree"
+          >
+            {wtForm ? "Cancel" : "+ Worktree"}
+          </button>
+        </div>
+        {worktrees.length > 0 && (
+          <div className="git-branch-list git-worktree-list">
+            {worktrees.map((wt) => {
+              const label = wt.branch || wt.head.slice(0, 7) || basename(wt.path);
+              return (
+                <span
+                  key={wt.path}
+                  className={`git-branch-pill${wt.is_main ? " current" : ""}`}
+                  title={wt.path}
+                >
+                  {wt.is_locked && <span aria-label="locked">🔒 </span>}
+                  {label}
+                  {!wt.is_main && (
+                    <button
+                      className="git-worktree-remove"
+                      onClick={() => removeWorktree(wt.path)}
+                      disabled={loading}
+                      aria-label={`Remove worktree ${wt.path}`}
+                      title={`Remove worktree ${wt.path}`}
+                    >
+                      ×
+                    </button>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        )}
+        {wtForm && (
+          <div className="git-worktree-form">
+            <select
+              value={wtForm.branch}
+              onChange={(e) => setWtForm({ ...wtForm, branch: e.target.value })}
+              aria-label="Branch"
+            >
+              {localBranches.map((b) => (
+                <option key={b.name} value={b.name}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+            <input
+              type="text"
+              placeholder="Worktree path"
+              value={wtForm.path}
+              onChange={(e) => setWtForm({ ...wtForm, path: e.target.value })}
+              aria-label="Worktree path"
+            />
+            <label className="git-worktree-newbranch">
+              <input
+                type="checkbox"
+                checked={wtForm.newBranch}
+                onChange={(e) => setWtForm({ ...wtForm, newBranch: e.target.checked })}
+              />
+              new branch
+            </label>
+            <button
+              className="tab-add-btn"
+              onClick={createWorktree}
+              disabled={loading || !wtForm.path.trim() || !wtForm.branch.trim()}
+            >
+              Create
+            </button>
+          </div>
+        )}
+      </div>
 
       {error && <div className="file-tree-error">{error}</div>}
       {loading && commits.length === 0 && <div className="file-tree-loading">Loading…</div>}

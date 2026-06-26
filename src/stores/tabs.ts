@@ -117,8 +117,12 @@ export interface WindowBounds {
  * arbitrary split subtree), keeping the re-attach merge math simple.
  */
 export interface DetachedGroup {
-  id: string; // the detached group node's id
-  subtree: GroupNode;
+  id: string; // the detached popout's identity (window/registry label key)
+  // The popout's layout. Usually a single GroupNode, but can be a SplitNode once
+  // the user splits panes inside the popout (multi-pane popouts). The root node's
+  // id need NOT equal `id` — `id` identifies the OS window, the subtree is its
+  // content.
+  subtree: LayoutNode;
   label: string; // backend window/registry label
   // Last-known OS geometry of the popout, streamed back by the window. Persisted
   // (via the saved tree) so the popout reopens at the same place/size on restart.
@@ -130,13 +134,16 @@ export interface DetachedGroup {
  * `detached.ts`) so `tabs.ts` stays free of a circular import; `detached.ts`'s
  * `DetachedEdit` is structurally identical.
  */
+export type DropEdge = "left" | "right" | "top" | "bottom" | "center";
+
 export type DetachedEditPayload =
   | { kind: "activate"; key: string }
   | { kind: "rename"; key: string; label: string }
   | { kind: "close"; key: string }
-  | { kind: "reorder"; tabKeys: string[] };
-
-export type DropEdge = "left" | "right" | "top" | "bottom" | "center";
+  | { kind: "reorder"; tabKeys: string[] }
+  // Multi-pane popouts: split `key` out into a new pane at `edge` of
+  // `targetGroupId` (a group within the popout's subtree).
+  | { kind: "split"; key: string; targetGroupId: string; edge: DropEdge };
 
 /** Flat tab shape as persisted in project.json's `tab_layout`. */
 export interface SavedTabEntry {
@@ -306,6 +313,20 @@ interface TabsStore {
     tabKey: string,
     opts?: { targetGroupId?: string; edge?: DropEdge; skipBackend?: boolean },
   ) => void;
+  // #42 (main → detached): dock a SINGLE existing in-window tab INTO an already
+  // open detached popout's group — the inverse of `attachDetachedTab`, fired when
+  // a tab dragged out of the main window is released over a popout (so no new OS
+  // window opens). Removes the tab from its source group in `scope`'s in-window
+  // layout (its payload STAYS in `tabsByScope`, so the PTY never dies: the main
+  // keeps the pane mounted-but-hidden and the popout re-attaches to it), appends
+  // it to the detached group's subtree, and activates it there. The caller
+  // re-seeds the popout so the new tab renders. No-op if the tab or detached
+  // group is gone.
+  dockTabIntoDetached: (
+    scope: string,
+    detachedGroupId: string,
+    tabKey: string,
+  ) => void;
   // #42: apply an edit streamed back from a detached window to the main store's
   // record of that detached group (its subtree node + tab payloads). Keeps the
   // main window — the single persistence owner — in sync with the detached one.
@@ -313,6 +334,18 @@ interface TabsStore {
     scope: string,
     groupId: string,
     edit: DetachedEditPayload,
+  ) => void;
+  // Multi-pane popouts: split a tab inside a detached popout's own subtree,
+  // carving a new pane at `edge` of `targetGroupId` (a group WITHIN the
+  // popout's subtree). Mirrors `splitWithTab` but mutates
+  // `detachedGroupsByScope[scope][i].subtree` instead of the in-window layout.
+  // The caller re-seeds the popout so it re-renders the new split.
+  splitDetachedGroup: (
+    scope: string,
+    detachedGroupId: string,
+    key: string,
+    targetGroupId: string,
+    edge: DropEdge,
   ) => void;
   // #42: dock-back for a group whose scope is NOT active. We re-inject the
   // detached subtree into that scope's STORED layout (`layoutByScope[scope]`,
@@ -413,8 +446,69 @@ export function allGroups(node: LayoutNode | null): GroupNode[] {
 }
 
 /** Flat list of all tab keys, in stable left-to-right tree order. */
-function orderedTabKeys(node: LayoutNode | null): string[] {
+export function orderedTabKeys(node: LayoutNode | null): string[] {
   return allGroups(node).flatMap((g) => g.tabKeys);
+}
+
+/** Remove a tab key from whichever group holds it within a subtree, collapsing
+ *  an emptied group / lone-child split. Returns the new (possibly null) subtree;
+ *  returns the input unchanged if the key isn't present. Used by the detached
+ *  subtree mutators, which (post-split) operate on a LayoutNode, not a single
+ *  group. */
+export function removeKeyFromTree(node: LayoutNode, key: string): LayoutNode | null {
+  const found = findGroupOfTab(node, key);
+  if (!found) return node;
+  const removed = mapGroup(node, found.group.id, (g) => {
+    const tabKeys = g.tabKeys.filter((k) => k !== key);
+    return {
+      ...g,
+      tabKeys,
+      activeKey: g.activeKey === key ? (tabKeys[0] ?? null) : g.activeKey,
+    };
+  });
+  return collapse(removed);
+}
+
+/** Append a tab key to a subtree's FIRST group (depth-first) and activate it
+ *  there. Mirrors the single-group append for a tree subtree. */
+function appendKeyToTree(node: LayoutNode, key: string): LayoutNode {
+  const g = firstGroup(node);
+  return mapGroup(node, g.id, (grp) => ({
+    ...grp,
+    tabKeys: [...grp.tabKeys, key],
+    activeKey: key,
+  }));
+}
+
+/** Split `key` out of its group into a new pane at `edge` of `targetGroupId`,
+ *  within `node`. Pure; mirrors `splitWithTab`'s algorithm but on an arbitrary
+ *  subtree so the in-window layout AND a detached popout's subtree share it.
+ *  Returns the new subtree, or null if the split is a no-op / invalid. */
+export function splitSubtree(
+  node: LayoutNode,
+  key: string,
+  targetGroupId: string,
+  edge: DropEdge,
+): LayoutNode | null {
+  if (edge === "center") return null; // center merges, it isn't a split
+  const source = findGroupOfTab(node, key);
+  const target = findGroup(node, targetGroupId);
+  if (!source || !target) return null;
+  // Dropping a group's only tab onto its own edge would remove then re-add it.
+  if (source.group.id === targetGroupId && source.group.tabKeys.length === 1) {
+    return null;
+  }
+  const cleaned = removeKeyFromTree(node, key);
+  if (!cleaned || !findGroup(cleaned, targetGroupId)) return null;
+  const newGroup: GroupNode = {
+    type: "group",
+    id: nextGroupId(),
+    tabKeys: [key],
+    activeKey: key,
+  };
+  const dir: SplitDir = edge === "left" || edge === "right" ? "row" : "column";
+  const before = edge === "left" || edge === "top";
+  return insertAdjacent(cleaned, targetGroupId, newGroup, dir, before);
 }
 
 export type NavDirection = "left" | "right" | "up" | "down";
@@ -566,7 +660,9 @@ function pruneCollapseCollect(
 function insertAdjacent(
   root: LayoutNode,
   targetId: string,
-  newGroup: GroupNode,
+  // The node to inject beside the target. Usually a fresh GroupNode, but may be
+  // a whole SplitNode (e.g. re-attaching a multi-pane detached popout's subtree).
+  newGroup: LayoutNode,
   dir: SplitDir,
   before: boolean,
 ): LayoutNode {
@@ -1352,8 +1448,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const tabs = s.tabsByScope[scope] ?? [];
       let layout = s.layoutByScope[scope] ?? null;
       // Regenerate the subtree's ids so a docked-then-redetached group never
-      // collides with a live node id.
-      const fresh = regenIds(entry.subtree) as GroupNode;
+      // collides with a live node id. The subtree may be a split (multi-pane
+      // popout), so keep it a LayoutNode.
+      const fresh = regenIds(entry.subtree);
       if (!layout) {
         // The in-window tree emptied while detached → install as the root.
         layout = fresh;
@@ -1365,23 +1462,26 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           layout = fresh;
         } else {
           const edge = opts?.edge ?? "right";
-          if (edge === "center") {
-            // Merge the detached tabs into the target group.
+          if (edge === "center" && fresh.type === "group") {
+            // Merge a single-group popout's tabs into the target group.
             layout = mapGroup(layout, target.id, (g) => ({
               ...g,
               tabKeys: [...g.tabKeys, ...fresh.tabKeys],
               activeKey: fresh.activeKey ?? g.activeKey,
             }));
           } else {
+            // Split popout (or a non-center edge): inject the whole subtree
+            // adjacent to the target as its own pane(s).
+            const e = edge === "center" ? "right" : edge;
             const dir: SplitDir =
-              edge === "left" || edge === "right" ? "row" : "column";
-            const before = edge === "left" || edge === "top";
+              e === "left" || e === "right" ? "row" : "column";
+            const before = e === "left" || e === "top";
             layout = insertAdjacent(layout, target.id, fresh, dir, before);
           }
         }
       }
       const remaining = entries.filter((d) => d.id !== detachedId);
-      const base = writeScope(s, scope, tabs, layout, fresh.id);
+      const base = writeScope(s, scope, tabs, layout, firstGroup(fresh).id);
       return {
         ...base,
         detachedGroupsByScope: {
@@ -1399,11 +1499,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   attachDetachedTab: (scope, detachedGroupId, tabKey, opts) => {
     const entries = get().detachedGroupsByScope[scope] ?? [];
     const entry = entries.find((d) => d.id === detachedGroupId);
-    if (!entry || !entry.subtree.tabKeys.includes(tabKey)) return;
+    if (!entry || !orderedTabKeys(entry.subtree).includes(tabKey)) return;
 
-    // The detached group is emptied by this tab leaving → close the popout.
-    const remainingKeys = entry.subtree.tabKeys.filter((k) => k !== tabKey);
-    const willEmpty = remainingKeys.length === 0;
+    // The detached popout is emptied by this tab leaving → close the window.
+    const willEmpty = orderedTabKeys(entry.subtree).filter((k) => k !== tabKey).length === 0;
 
     set((s) => {
       // 1. Insert the tab into the destination layout (the docked-into scope's,
@@ -1449,21 +1548,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       //    it leaves the popout empty.
       const nextEntries = willEmpty
         ? entries.filter((d) => d.id !== detachedGroupId)
-        : entries.map((d) =>
-            d.id === detachedGroupId
-              ? {
-                  ...d,
-                  subtree: {
-                    ...d.subtree,
-                    tabKeys: remainingKeys,
-                    activeKey:
-                      d.subtree.activeKey === tabKey
-                        ? (remainingKeys[0] ?? null)
-                        : d.subtree.activeKey,
-                  },
-                }
-              : d,
-          );
+        : entries.map((d) => {
+            if (d.id !== detachedGroupId) return d;
+            const sub = removeKeyFromTree(d.subtree, tabKey);
+            return sub ? { ...d, subtree: sub } : d;
+          });
 
       // 3. Commit the layout (writeScope keeps the payload + updates the live
       //    mirrors for the active scope; it's a no-op on the mirrors otherwise),
@@ -1484,6 +1573,51 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     }
   },
 
+  dockTabIntoDetached: (scope, detachedGroupId, tabKey) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const entry = entries.find((d) => d.id === detachedGroupId);
+    // Reject a no-op: the tab must exist in this scope and not already be in the
+    // target popout.
+    if (!entry || orderedTabKeys(entry.subtree).includes(tabKey)) return;
+
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      if (!tabs.some((t) => t.key === tabKey)) return {};
+      const layout = s.layoutByScope[scope] ?? null;
+      const focus = s.focusedGroupByScope[scope] ?? null;
+      // 1. Drop the tab from its source in-window group (its payload stays in
+      //    `tabs`, so writeScope keeps it and the pane stays mounted-but-hidden).
+      //    An emptied source group/layout is fine — the main center falls back to
+      //    the placeholder, exactly like `detachTab`.
+      const found = findGroupOfTab(layout, tabKey);
+      const stripped =
+        found && layout
+          ? mapGroup(layout, found.group.id, (g) => {
+              const tabKeys = g.tabKeys.filter((k) => k !== tabKey);
+              const activeKey =
+                g.activeKey === tabKey
+                  ? (tabKeys[Math.min(found.index, tabKeys.length - 1)] ?? null)
+                  : g.activeKey;
+              return { ...g, tabKeys, activeKey };
+            })
+          : layout;
+      const base = writeScope(s, scope, tabs, stripped, focus);
+      // 2. Append the tab to the detached group's subtree + activate it there.
+      const nextEntries = (s.detachedGroupsByScope[scope] ?? []).map((d) =>
+        d.id === detachedGroupId
+          ? { ...d, subtree: appendKeyToTree(d.subtree, tabKey) }
+          : d,
+      );
+      return {
+        ...base,
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: nextEntries,
+        },
+      };
+    });
+  },
+
   applyDetachedEdit: (scope, groupId, edit) => {
     set((s) => {
       const entries = s.detachedGroupsByScope[scope] ?? [];
@@ -1491,14 +1625,18 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       if (idx < 0) return {};
       const entry = entries[idx];
       const sub = entry.subtree;
-      let nextSub: GroupNode = sub;
+      // A subtree may be a split (multi-pane popout); each edit targets the group
+      // that owns `edit.key` (or, for reorder, the group whose tabs it permutes).
+      let nextSub: LayoutNode | null = sub;
       let nextTabs = s.tabsByScope[scope] ?? null;
       switch (edit.kind) {
-        case "activate":
-          if (sub.tabKeys.includes(edit.key)) {
-            nextSub = { ...sub, activeKey: edit.key };
+        case "activate": {
+          const g = findGroupOfTab(sub, edit.key);
+          if (g) {
+            nextSub = mapGroup(sub, g.group.id, (grp) => ({ ...grp, activeKey: edit.key }));
           }
           break;
+        }
         case "rename": {
           const label = edit.label.trim();
           if (label && nextTabs) {
@@ -1509,27 +1647,35 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           break;
         }
         case "close": {
-          const tabKeys = sub.tabKeys.filter((k) => k !== edit.key);
-          const activeKey =
-            sub.activeKey === edit.key ? (tabKeys[0] ?? null) : sub.activeKey;
-          nextSub = { ...sub, tabKeys, activeKey };
+          nextSub = removeKeyFromTree(sub, edit.key);
           // Drop the closed tab's payload (its pane in the detached window
           // unmounted; the PTY is killed there by the spawning pane's lifetime).
           if (nextTabs) nextTabs = nextTabs.filter((t) => t.key !== edit.key);
           break;
         }
         case "reorder": {
-          const owned = new Set(sub.tabKeys);
-          const tabKeys = edit.tabKeys.filter((k) => owned.has(k));
-          if (tabKeys.length === sub.tabKeys.length) {
-            nextSub = { ...sub, tabKeys };
+          // Find the group whose tab set the reordered list permutes, then
+          // reapply that order to it.
+          const want = new Set(edit.tabKeys);
+          const g = allGroups(sub).find(
+            (grp) =>
+              grp.tabKeys.length === edit.tabKeys.length &&
+              grp.tabKeys.every((k) => want.has(k)),
+          );
+          if (g) {
+            nextSub = mapGroup(sub, g.id, (grp) => ({ ...grp, tabKeys: edit.tabKeys }));
           }
           break;
         }
+        case "split":
+          // A pane split inside the popout: split the subtree, or no-op if the
+          // split is invalid (keeps the popout unchanged).
+          nextSub = splitSubtree(sub, edit.key, edit.targetGroupId, edit.edge) ?? sub;
+          break;
       }
       const nextEntries = [...entries];
-      // If the detached group emptied, remove it entirely.
-      if (nextSub.tabKeys.length === 0) {
+      // If the detached popout emptied, remove it entirely.
+      if (!nextSub || orderedTabKeys(nextSub).length === 0) {
         nextEntries.splice(idx, 1);
       } else {
         nextEntries[idx] = { ...entry, subtree: nextSub };
@@ -1545,6 +1691,21 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  splitDetachedGroup: (scope, detachedGroupId, key, targetGroupId, edge) => {
+    set((s) => {
+      const entries = s.detachedGroupsByScope[scope] ?? [];
+      const idx = entries.findIndex((d) => d.id === detachedGroupId);
+      if (idx < 0) return {};
+      const nextSub = splitSubtree(entries[idx].subtree, key, targetGroupId, edge);
+      if (!nextSub) return {};
+      const nextEntries = [...entries];
+      nextEntries[idx] = { ...entries[idx], subtree: nextSub };
+      return {
+        detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: nextEntries },
+      };
+    });
+  },
+
   dropDetachedGroup: (scope, groupId) => {
     const entries = get().detachedGroupsByScope[scope] ?? [];
     const entry = entries.find((d) => d.id === groupId);
@@ -1556,7 +1717,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       );
       // Re-inject the subtree into the inactive scope's STORED layout so its
       // tabs are referenced by a layout node (and thus persist) on next save.
-      const fresh = regenIds(entry.subtree) as GroupNode;
+      const fresh = regenIds(entry.subtree);
       const stored = s.layoutByScope[scope] ?? null;
       let nextLayout: LayoutNode;
       if (!stored) {
@@ -1582,7 +1743,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const entry = entries.find((d) => d.id === groupId);
     if (!entry) return;
 
-    const keys = entry.subtree.tabKeys;
+    const keys = orderedTabKeys(entry.subtree);
     const byKey = new Map((get().tabsByScope[scope] ?? []).map((t) => [t.key, t] as const));
     // Tear down each tab BEFORE the store mutation: discard its session-only
     // link routes (#50) and kill its PTY. Files/embed tabs have no PTY; terminal
@@ -1845,7 +2006,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 }));
 
 /** Replace the group `groupId` via `fn`, returning a new tree (structural). */
-function mapGroup(
+export function mapGroup(
   node: LayoutNode,
   groupId: string,
   fn: (g: GroupNode) => GroupNode,
@@ -2016,8 +2177,12 @@ export function withDetachedDocked(
   for (const d of detached ?? []) {
     const t = serializeTree(d.subtree);
     if (!t) continue;
-    // v1 detaches a single GroupNode, so the serialized subtree is a group; tag
-    // it so restore knows to respawn the popout instead of docking it.
+    // A single-group popout is tagged so restore respawns it as a floating window
+    // (the respawn path detaches a group by id). A MULTI-PANE popout's subtree is
+    // a split, which the group-by-id respawn can't re-detach yet (Phase 4) — so
+    // it's docked untagged: its tabs + split layout still persist and restore,
+    // just inside the main panel rather than as a separate popout. Graceful, no
+    // data loss.
     docked.push(t.type === "group" ? { ...t, detached: true, bounds: d.bounds } : t);
   }
   if (docked.length === 0) return inWindow;
@@ -2033,7 +2198,7 @@ export function withDetachedDocked(
 
 /** #42: the tab keys held by a scope's detached groups (for owned-keys unions). */
 export function detachedTabKeys(detached: DetachedGroup[] | undefined): string[] {
-  return (detached ?? []).flatMap((d) => d.subtree.tabKeys);
+  return (detached ?? []).flatMap((d) => orderedTabKeys(d.subtree));
 }
 
 // Re-export the id regeneration helper so consumers / tests that build trees
@@ -2056,7 +2221,7 @@ export function isDetachedPtyId(id: string): boolean {
   const scope = id.slice(0, idx);
   const tabKey = id.slice(idx + 1);
   const groups = useTabsStore.getState().detachedGroupsByScope[scope] ?? [];
-  return groups.some((g) => g.subtree.tabKeys.includes(tabKey));
+  return groups.some((g) => orderedTabKeys(g.subtree).includes(tabKey));
 }
 
 // ── Fine-grained per-group selectors (Eff #3/#4/#7 + Struct #3) ───────────────

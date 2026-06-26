@@ -147,6 +147,7 @@ fn create_project_preserves_existing_scaffolds() {
             directory: target.path().to_string_lossy().to_string(),
             description: Some("Create description".to_string()),
             git_type: None,
+            skip_scaffold: false,
             remote: None,
         };
 
@@ -335,6 +336,7 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
             directory: target.path().to_string_lossy().to_string(),
             description: Some("original".to_string()),
             git_type: None,
+            skip_scaffold: false,
             remote: None,
         })
         .expect("create project");

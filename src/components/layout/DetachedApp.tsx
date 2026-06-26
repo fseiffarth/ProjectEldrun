@@ -14,7 +14,7 @@ import {
   type DetachedParam,
   type DetachedSeed,
 } from "../../stores/detached";
-import type { GroupNode, TabEntry } from "../../stores/tabs";
+import { allGroups, orderedTabKeys, type LayoutNode, type TabEntry } from "../../stores/tabs";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
@@ -46,7 +46,9 @@ export function DetachedApp({ param }: Props) {
   const loadSettings = useSettingsStore((s) => s.load);
   const label = getCurrentWindow().label;
 
-  const [group, setGroup] = useState<GroupNode | null>(null);
+  // The popout's content tree. Usually a single group; can become a SplitNode
+  // once split-in-popout (multi-pane) lands in the renderer (Phase 2).
+  const [group, setGroup] = useState<LayoutNode | null>(null);
   const [tabs, setTabs] = useState<TabEntry[]>([]);
 
   // Theme injection (same as the main shell), but nothing project-switch-aware.
@@ -227,6 +229,22 @@ export function DetachedApp({ param }: Props) {
     void emit(DETACHED_EDIT, { scope: param.scope, groupId: param.groupId, edit });
   };
 
+  // Closing the LAST tab closes the whole popout window — an empty detached
+  // window has nothing to render (it would strand on "Loading subwindow…").
+  // Route it through the same teardown as a WM/title-bar close (DETACHED_CLOSE):
+  // the main window kills the remaining tab's PTY, drops the group, and persists.
+  // We then destroy this OS window directly (destroy() bypasses our own
+  // onCloseRequested, so it won't re-emit DETACHED_CLOSE).
+  const handleClose = (key: string) => {
+    const isLastTab = !group || orderedTabKeys(group).length <= 1;
+    if (isLastTab) {
+      void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
+      void getCurrentWindow().destroy();
+      return;
+    }
+    pushEdit({ kind: "close", key });
+  };
+
   // Close-on-close: closing this OS window via the WM/title-bar CLOSES the
   // group's tabs for good — they are not docked back and do not restore on next
   // launch (dock-back is done by Ctrl+dragging the tab bar onto the main window,
@@ -258,18 +276,22 @@ export function DetachedApp({ param }: Props) {
     };
   }, [param.scope, param.groupId]);
 
-  if (!group) {
+  if (!group || allGroups(group).length === 0) {
     return <div className="detached-loading">Loading subwindow…</div>;
   }
 
   return (
     <DetachedCenterPanel
       scope={param.scope}
-      group={group}
+      popoutId={param.groupId}
+      tree={group}
       tabs={tabs}
       onActivate={(key) => pushEdit({ kind: "activate", key })}
-      onClose={(key) => pushEdit({ kind: "close", key })}
+      onClose={handleClose}
       onReorder={(tabKeys) => pushEdit({ kind: "reorder", tabKeys })}
+      onSplit={(key, targetGroupId, edge) =>
+        pushEdit({ kind: "split", key, targetGroupId, edge })
+      }
     />
   );
 }

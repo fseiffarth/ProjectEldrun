@@ -124,7 +124,7 @@ describe("detached host (#42)", () => {
     expect(seedEvent).toBeDefined();
     const seed = seedEvent!.payload as DetachedSeed;
     expect(seed.tabs.map((t) => t.key)).toEqual([bKey]);
-    expect(seed.subtree.tabKeys).toEqual([bKey]);
+    expect((seed.subtree as GroupNode).tabKeys).toEqual([bKey]);
   });
 
   it("an edit is applied to the host's detached record", async () => {

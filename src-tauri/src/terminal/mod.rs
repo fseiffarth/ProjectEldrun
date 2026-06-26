@@ -48,6 +48,11 @@ pub struct PtyOptions {
     /// (e.g. Ollama `local_agent` tabs that depend on local `VIBE_HOME`).
     #[serde(default)]
     pub local_only: bool,
+    /// When true, run this (agent) tab inside a Docker sandbox that mounts only
+    /// the project directory. Set by the frontend only for `kind:"agent"` tabs
+    /// of a project whose sandbox toggle is enabled. See `services::sandbox`.
+    #[serde(default)]
+    pub sandbox: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

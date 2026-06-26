@@ -37,7 +37,7 @@ export function LogoIcon({ className }: LogoIconProps) {
             strokeWidth="10"
           />
           <path
-            d="M 98 235 L 98 289 L 144 335 L 233 405"
+            d="M 98 235 L 98 289 L 134.1 325.1 M 155 343.7 L 233 405"
             strokeWidth="10"
           />
           <circle cx="165" cy="162" r="14" strokeWidth="8" />

@@ -260,6 +260,56 @@ export function bigPointsToCssRect(
   };
 }
 
+/**
+ * Find every occurrence of `query` in a PDF page's extracted text runs,
+ * returning one entry per match — each a list of big-point boxes ({@link
+ * SyncRect}) covering it. Most matches yield a single box; a match that straddles
+ * text-run boundaries yields one box per run it touches. Case-insensitive unless
+ * `caseSensitive`. The runs are concatenated in reading order exactly as pdf.js
+ * emits them (no inserted separators), so a query matches the text a reader sees;
+ * each run's box is sliced by the matched character span using its uniform
+ * per-character width. An empty query (or no items) yields no matches. Pure —
+ * unit-tested; the caller derives `items` via `getTextContent()` at scale 1, the
+ * same boxes SyncTeX word-refinement uses, so highlights sit on the glyphs.
+ */
+export function pdfPageMatches(
+  items: TextItemBox[],
+  page: number,
+  query: string,
+  caseSensitive: boolean,
+): SyncRect[][] {
+  if (!query) return [];
+  // Concatenate the runs, remembering each run's start offset in the joined text.
+  let text = "";
+  const starts: number[] = [];
+  for (const it of items) {
+    starts.push(text.length);
+    text += it.str;
+  }
+  const hay = caseSensitive ? text : text.toLowerCase();
+  const needle = caseSensitive ? query : query.toLowerCase();
+  const out: SyncRect[][] = [];
+  for (let from = 0; ; ) {
+    const idx = hay.indexOf(needle, from);
+    if (idx < 0) break;
+    const end = idx + needle.length;
+    const rects: SyncRect[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const s = starts[i];
+      const e = s + it.str.length;
+      if (e <= idx || s >= end || it.w <= 0 || it.str.length === 0) continue;
+      const a = Math.max(idx, s) - s; // first matched char within this run
+      const b = Math.min(end, e) - s; // one past the last matched char
+      const charW = it.w / it.str.length;
+      rects.push({ page, x: it.x + a * charW, y: it.y, w: (b - a) * charW, h: it.h });
+    }
+    if (rects.length) out.push(rects);
+    from = end; // non-overlapping, mirroring findMatches
+  }
+  return out;
+}
+
 /** Character offset of the start of (1-based) `line` in `text`. Clamped to the
  *  valid range; a line past the end maps to the text length. */
 export function lineStartOffset(text: string, line: number): number {
