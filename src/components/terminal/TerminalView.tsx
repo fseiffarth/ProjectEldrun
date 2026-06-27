@@ -49,6 +49,9 @@ interface Props {
   // unmount (the main window's still-mounted pane owns the PTY lifetime). Such a
   // terminal opens blank and only shows output produced AFTER it attached.
   attachOnly?: boolean;
+  // When true (agent tabs), the pane is font-zoomable: Ctrl+wheel and
+  // Ctrl +/-/0 scale the font, with the level shared across all agent panes.
+  zoomable?: boolean;
 }
 
 function terminalTheme(scheme: string | undefined) {
@@ -105,7 +108,33 @@ function terminalTheme(scheme: string | undefined) {
 // scrollback on flush anyway.
 const PENDING_OUTPUT_CAP = 1_000_000;
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, visible, focused, attachOnly = false }: Props) {
+// Agent-terminal zoom. Agent TUIs (Claude, Codex, …) render dense layouts, so
+// zoomable agent panes let the user scale the font with Ctrl+wheel / Ctrl +/-/0.
+// The chosen size is a single global preference (one knob for every agent pane),
+// persisted in localStorage — mirrors the view-pref pattern used by FileTree /
+// GitHistory — and broadcast on a window event so all open agent panes restyle
+// live, not just the one being scrolled. Non-agent shells keep the fixed default.
+const AGENT_FONT_KEY = "eldrun.agentTermFontSize";
+const AGENT_ZOOM_EVENT = "eldrun-agent-zoom";
+const DEFAULT_FONT_SIZE = 13;
+const MIN_FONT_SIZE = 8;
+const MAX_FONT_SIZE = 32;
+
+function clampFontSize(n: number): number {
+  return Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(n)));
+}
+
+function readAgentFontSize(): number {
+  try {
+    const raw = localStorage.getItem(AGENT_FONT_KEY);
+    if (raw) return clampFontSize(parseInt(raw, 10) || DEFAULT_FONT_SIZE);
+  } catch {
+    /* ignore storage failures */
+  }
+  return DEFAULT_FONT_SIZE;
+}
+
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, visible, focused, attachOnly = false, zoomable = false }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -140,7 +169,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       scrollback: 5000,
       allowProposedApi: false,
       cursorBlink: true,
-      fontSize: 13,
+      fontSize: zoomable ? readAgentFontSize() : DEFAULT_FONT_SIZE,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
       theme: terminalTheme(colorScheme),
     });
@@ -213,8 +242,37 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // Ctrl+C alone so it still sends SIGINT to the running program (interrupting
     // an agent). Returning false swallows the chord so xterm doesn't also forward
     // it to the PTY as a control sequence.
+    // Apply a new font size to this pane and (when `persist`) save + broadcast it
+    // so every other open agent pane restyles to match. Refit on the next frame:
+    // xterm needs a beat to re-measure the cell after fontSize changes before
+    // FitAddon can read the new geometry.
+    const applyFontSize = (size: number, persist: boolean) => {
+      const next = clampFontSize(size);
+      if (next !== term.options.fontSize) {
+        term.options.fontSize = next;
+        requestAnimationFrame(() => { if (!cancelled) doFitRef.current?.(); });
+      }
+      if (persist) {
+        try {
+          localStorage.setItem(AGENT_FONT_KEY, String(next));
+        } catch {
+          /* ignore storage failures */
+        }
+        window.dispatchEvent(new CustomEvent<number>(AGENT_ZOOM_EVENT, { detail: next }));
+      }
+    };
+
     term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== "keydown" || !e.ctrlKey || !e.shiftKey) return true;
+      if (e.type !== "keydown") return true;
+      // Ctrl +/-/0 zoom (agent panes only). preventDefault stops WebKit's own
+      // page-zoom; returning false stops xterm forwarding the chord to the PTY.
+      if (zoomable && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        const cur = term.options.fontSize ?? DEFAULT_FONT_SIZE;
+        if (e.code === "Equal") { e.preventDefault(); applyFontSize(cur + 1, true); return false; }
+        if (e.code === "Minus") { e.preventDefault(); applyFontSize(cur - 1, true); return false; }
+        if (e.code === "Digit0") { e.preventDefault(); applyFontSize(DEFAULT_FONT_SIZE, true); return false; }
+      }
+      if (!e.ctrlKey || !e.shiftKey) return true;
       if (e.code === "KeyC") {
         const sel = term.getSelection();
         if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
@@ -348,10 +406,34 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // for viewport-level changes (maximize, fullscreen toggle).
     window.addEventListener("resize", doFit);
 
+    // Agent-pane zoom: Ctrl+wheel scales the font; a window event keeps every
+    // other open agent pane in sync with the shared level. Both are no-ops for
+    // non-agent shells. The wheel listener is non-passive so it can preventDefault.
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const cur = termRef.current?.options.fontSize ?? DEFAULT_FONT_SIZE;
+      applyFontSize(cur + (e.deltaY < 0 ? 1 : -1), true);
+    };
+    // Typed as the global EventListener because the `Event` identifier is shadowed
+    // here by Tauri's generic Event<T> import.
+    const onZoomEvent: EventListener = (e) => {
+      const size = (e as CustomEvent<number>).detail;
+      if (typeof size === "number") applyFontSize(size, false);
+    };
+    if (zoomable) {
+      containerRef.current?.addEventListener("wheel", onWheel, { passive: false });
+      window.addEventListener(AGENT_ZOOM_EVENT, onZoomEvent);
+    }
+
     return () => {
       cancelled = true;
       if (initialEnterTimer.current) clearTimeout(initialEnterTimer.current);
       window.removeEventListener("resize", doFit);
+      if (zoomable) {
+        containerRef.current?.removeEventListener("wheel", onWheel);
+        window.removeEventListener(AGENT_ZOOM_EVENT, onZoomEvent);
+      }
       ro.disconnect();
       doFitRef.current = null;
       unlistenOutput.current?.();
@@ -371,7 +453,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
       term.dispose();
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, attachOnly]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, attachOnly, zoomable]);
 
   useEffect(() => {
     if (termRef.current) {

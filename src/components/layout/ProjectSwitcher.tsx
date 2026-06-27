@@ -58,6 +58,18 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     invoke<boolean>("ollama_is_installed").then(setOllamaInstalled).catch(() => {});
   }, []);
 
+  // Allow other components (e.g. the header's Local Model button) to open the
+  // settings dialog on a specific panel via a window event.
+  useEffect(() => {
+    const onOpenSettings = (e: Event) => {
+      const panel = (e as CustomEvent).detail as SettingsPanelKind | undefined;
+      setSettingsPanel(panel ?? "main");
+      setShowSettings(true);
+    };
+    window.addEventListener("eldrun:open-settings", onOpenSettings);
+    return () => window.removeEventListener("eldrun:open-settings", onOpenSettings);
+  }, []);
+
   // Project projection that drives the pill strip. Reduced to just the fields
   // the bucketing reads (id/position/box_id) plus a join-key, so the heavier
   // box-bucketing memos below only recompute when one of those changes — not on
@@ -391,11 +403,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("main"); setShowSettings(true); }}>
                 Settings
               </button>
-              {ollamaInstalled && (
-                <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("ollama"); setShowSettings(true); }}>
-                  Ollama Models
-                </button>
-              )}
+              <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("ollama"); setShowSettings(true); }}>
+                {ollamaInstalled ? "Ollama Models" : "Install Ollama"}
+              </button>
               <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("help"); setShowSettings(true); }}>
                 Feature Guide
               </button>

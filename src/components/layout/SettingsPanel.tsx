@@ -13,7 +13,7 @@ import {
   type ShortcutAction,
   type ShortcutMap,
 } from "../../lib/shortcuts";
-import { FileTypeSettings, GlobalAppsSettings, OllamaPanel } from "./SettingsSubPanels";
+import { AgentsPanel, FileTypeSettings, GlobalAppsSettings, OllamaPanel } from "./SettingsSubPanels";
 
 interface HelpItem {
   term: string;
@@ -50,7 +50,7 @@ const HELP_SECTIONS: HelpSection[] = [
   {
     title: "AI & terminals",
     items: [
-      { term: "Default agent", desc: "Choose the default terminal command (claude, codex, gemini, vibe) in Settings. Missing commands fall back to a shell; closed agents respawn." },
+      { term: "Default agent", desc: "Choose the default terminal command (claude, codex, gemini, vibe, aider, opencode, cursor, copilot, grok, qwen) in Settings. Missing commands fall back to a shell; closed agents respawn." },
       { term: "Ollama models", desc: "When Ollama is installed, the gear menu shows local models. Ctrl+K opens the local-model prompt dialog for the active context." },
     ],
   },
@@ -185,7 +185,7 @@ function HelpPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
-export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "shortcuts" | "help";
+export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "help";
 
 export function SettingsDialog({
   onClose,
@@ -275,6 +275,20 @@ export function SettingsDialog({
             </label>
 
             <label className="settings-switch-row">
+              <span>Claude remote control</span>
+              <input
+                type="checkbox"
+                checked={settings?.agent_remote_control ?? true}
+                onChange={(e) => void updateSettings({ agent_remote_control: e.target.checked })}
+              />
+            </label>
+            <p className="settings-help">
+              Spawns Claude agent tabs with <code>--remote-control</code> so you can
+              monitor and steer them from the Claude app or web. Requires a Claude
+              subscription login (not an API key); only Claude supports it.
+            </p>
+
+            <label className="settings-switch-row">
               <span>Debug mode</span>
               <input
                 type="checkbox"
@@ -353,9 +367,10 @@ export function SettingsDialog({
             <div className="settings-link-row">
               <button type="button" onClick={() => setPanel("global")}>Global Apps...</button>
               <button type="button" onClick={() => setPanel("filetypes")}>File Type Apps...</button>
-              {ollamaInstalled && (
-                <button type="button" onClick={() => setPanel("ollama")}>Ollama...</button>
-              )}
+              <button type="button" onClick={() => setPanel("ollama")}>
+                {ollamaInstalled ? "Ollama..." : "Install Ollama..."}
+              </button>
+              <button type="button" onClick={() => setPanel("agents")}>Manage Agents...</button>
               <button type="button" onClick={() => setPanel("shortcuts")}>Keyboard Shortcuts...</button>
               <button type="button" onClick={() => setPanel("help")}>Feature Guide...</button>
             </div>
@@ -364,6 +379,7 @@ export function SettingsDialog({
         {panel === "global" && <GlobalAppsSettings onBack={() => setPanel("main")} />}
         {panel === "filetypes" && <FileTypeSettings onBack={() => setPanel("main")} />}
         {panel === "ollama" && <OllamaPanel onBack={() => setPanel("main")} />}
+        {panel === "agents" && <AgentsPanel onBack={() => setPanel("main")} />}
         {panel === "shortcuts" && <ShortcutsSettings onBack={() => setPanel("main")} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} />}
       </div>

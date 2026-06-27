@@ -21,6 +21,7 @@ import { renderMarkdown } from "../../lib/viewers/markdown";
 import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
 import { highlight, languageForPath } from "../../lib/viewers/highlight";
 import { internalViewerFor, disabledViewers, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
+import type { AutocompleteMode } from "../../types";
 import { TableView } from "./TableView";
 import { NotebookView } from "./NotebookView";
 import { DiffView } from "./DiffView";
@@ -314,6 +315,28 @@ function resolveLocalHref(mdPath: string, href: string): string | null {
   return "/" + stack.join("/");
 }
 
+/** MIME type for inlining a local image into the markdown preview as a Blob URL.
+ *  Raster formats render even from a typeless blob (the webview content-sniffs
+ *  the magic bytes), but SVG is XML text the browser will NOT sniff as an image —
+ *  an `<img>` only renders it when the blob is explicitly `image/svg+xml`. That's
+ *  why an SVG in a doc (e.g. README's "At a glance" map) showed blank. We set the
+ *  type for every known extension so all inlined images carry a correct MIME. */
+function imageMimeForPath(p: string): string {
+  const ext = p.slice(p.lastIndexOf(".")).toLowerCase();
+  switch (ext) {
+    case ".svg": return "image/svg+xml";
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".gif": return "image/gif";
+    case ".webp": return "image/webp";
+    case ".avif": return "image/avif";
+    case ".bmp": return "image/bmp";
+    case ".ico": return "image/x-icon";
+    default: return "";
+  }
+}
+
 /** The built-in viewer for a bare path (no FileEntry handy), used to route a
  *  SyncTeX source target. Defaults to the plain text editor (e.g. `.sty`). */
 export function viewerForPath(path: string): InternalViewer {
@@ -509,6 +532,25 @@ export function editHistoryReducer(state: EditHistory, action: EditAction): Edit
 
 // Coalesce keystrokes within this window into a single undo step.
 const COALESCE_MS = 400;
+
+// #45 automatic autocomplete: idle time after the last keystroke before a
+// suggestion is requested for the focused editor. Long enough not to fire on
+// every keystroke, short enough to feel responsive.
+const AUTO_AC_DEBOUNCE_MS = 600;
+
+// #45 completion-length modes. Cycle order for the live Ctrl+Shift+Space toggle
+// and human labels for the status line / settings dropdown. Kept in sync with the
+// Rust `CompletionMode`.
+const AC_MODES: AutocompleteMode[] = ["sentence", "block", "scope"];
+const AC_MODE_LABELS: Record<AutocompleteMode, string> = {
+  sentence: "Sentence",
+  block: "Block",
+  scope: "Scope",
+};
+/** Next mode in the cycle (wraps), for the live Ctrl+Shift+Space toggle. */
+function nextAcMode(m: AutocompleteMode): AutocompleteMode {
+  return AC_MODES[(AC_MODES.indexOf(m) + 1) % AC_MODES.length];
+}
 
 /** React wrapper over `editHistoryReducer` exposing `value`, a coalescing
  *  `setValue`, `undo`/`redo` (+ availability), and `reset`. */
@@ -1128,8 +1170,11 @@ function CodeEditor({
   /** Undo/redo handlers (#46) — wired to Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y. */
   undo?: () => void;
   redo?: () => void;
-  /** Opt-in local autocomplete config (#45). Disabled when undefined/off. */
-  autocomplete?: { enabled: boolean; model: string };
+  /** Opt-in local autocomplete config (#45). Disabled when undefined/off.
+   *  `preferred` is the user's active local model (🧠 menu); the completion runs
+   *  against whichever model is *currently loaded* in Ollama memory at trigger
+   *  time, preferring `preferred` when it is among the loaded set. */
+  autocomplete?: { enabled: boolean; preferred?: string; mode?: AutocompleteMode };
   /** Opt-in `\ref`/`\cite` key completion (LaTeX viewer only). When supplied, a
    *  dropdown of `\label` keys (refs) or `.bib` entry keys (cites) appears while
    *  typing inside a recognised command's braces; Enter/Tab accepts. */
@@ -1160,6 +1205,7 @@ function CodeEditor({
   const linkLayerRef = useRef<HTMLPreElement>(null);
   const searchLayerRef = useRef<HTMLPreElement>(null);
   const changeLayerRef = useRef<HTMLPreElement>(null);
+  const ghostRef = useRef<HTMLPreElement>(null);
   const measureRef = useRef<HTMLPreElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   // Link affordances over a recognised link (#49), only when `onFollowLink` is
@@ -1201,7 +1247,27 @@ function CodeEditor({
 
   // #45 autocomplete: a pending ghost-text suggestion + the caret it applies at.
   const [suggestion, setSuggestion] = useState<{ text: string; at: number } | null>(null);
+  // A short status shown to the user when a completion is in flight, returns
+  // nothing, or can't run (e.g. no local model loaded) — otherwise the feature
+  // fails silently and reads as broken. A trailing "…" marks a transient
+  // in-flight message; final messages auto-dismiss (see the effect below).
+  const [acStatus, setAcStatus] = useState<string | null>(null);
   const acAbort = useRef<AbortController | null>(null);
+  // #45 live completion-length mode: starts from the per-type default and is
+  // cycled in-editor with Ctrl+Shift+Space. Re-seeded if the per-type default
+  // changes (e.g. the user picks a new default in settings).
+  const [acMode, setAcMode] = useState<AutocompleteMode>(autocomplete?.mode ?? "sentence");
+  useEffect(() => {
+    setAcMode(autocomplete?.mode ?? "sentence");
+  }, [autocomplete?.mode]);
+
+  // Auto-dismiss a finished autocomplete status after a few seconds; keep the
+  // in-flight "…" message until the request resolves.
+  useEffect(() => {
+    if (!acStatus || acStatus.endsWith("…")) return;
+    const id = window.setTimeout(() => setAcStatus(null), 4000);
+    return () => window.clearTimeout(id);
+  }, [acStatus]);
 
   // \ref/\cite key completion (LaTeX viewer): the open dropdown's context, the
   // filtered items, the highlighted index, and the screen anchor. A caret tick
@@ -1289,6 +1355,13 @@ function CodeEditor({
     const transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
     for (const ref of [highlightRef, linkLayerRef, searchLayerRef, changeLayerRef]) {
       if (ref.current) ref.current.style.transform = transform;
+    }
+    // The ghost layer keeps the inset/overflow:hidden model (it masks the layers
+    // beneath with an opaque background, so it can't be sized to its own content
+    // like the transform-synced layers); scroll it programmatically instead.
+    if (ghostRef.current) {
+      ghostRef.current.scrollTop = scrollTop;
+      ghostRef.current.scrollLeft = scrollLeft;
     }
   }, []);
 
@@ -1639,35 +1712,107 @@ function CodeEditor({
     acAbort.current?.abort();
     acAbort.current = null;
     setSuggestion(null);
+    setAcStatus(null);
   }, []);
 
   // #45: request a completion at the caret. Privacy-gated by the caller (only
-  // wired when the per-type setting is on); also ensures Ollama is up first and
-  // fails silently otherwise.
-  const requestCompletion = useCallback(async () => {
+  // wired when the per-type setting is on). Completion runs against whichever
+  // local model is CURRENTLY LOADED in Ollama memory (the running set from
+  // /api/ps), preferring the user's active model when it is loaded.
+  //
+  // Two modes:
+  //  - manual (Ctrl+Space): surfaces a message when nothing is loaded / it fails,
+  //    so the user gets feedback rather than silence.
+  //  - auto (debounced as you type): only runs for the focused editor with a
+  //    collapsed caret and enough context, and stays SILENT on the unavailable/
+  //    error paths so typing isn't spammed with toasts. There is no remote
+  //    fallback either way (local-only by design, DECISION A).
+  const requestCompletion = useCallback(async (opts?: { auto?: boolean; mode?: AutocompleteMode }) => {
+    const auto = opts?.auto === true;
+    // Explicit override (from the live cycle key) wins over the current mode,
+    // since setState hasn't flushed yet when the key handler calls through.
+    const mode = opts?.mode ?? acMode;
     const el = textareaRef.current;
-    if (!el || !autocomplete?.enabled || !autocomplete.model) return;
+    if (!el || !autocomplete?.enabled) return;
+    // Auto mode: only the focused editor, only at a collapsed caret, and only
+    // with a little context to complete from — otherwise skip the round trip.
+    if (auto) {
+      if (document.activeElement !== el) return;
+      if (el.selectionStart !== el.selectionEnd) return;
+    }
     const caret = el.selectionStart;
     const prefix = draft.slice(0, caret);
     const suffix = draft.slice(caret);
+    if (auto && prefix.replace(/\s+/g, "").length < 3) return;
     acAbort.current?.abort();
     const ctl = new AbortController();
     acAbort.current = ctl;
+    setSuggestion(null);
+    setAcStatus(`Autocomplete · ${AC_MODE_LABELS[mode]}…`);
     try {
-      await invoke("ensure_ollama_running");
+      // Resolve the currently-loaded model at trigger time (it may have been
+      // unloaded since the editor mounted). `list_ollama_models_detailed`
+      // doubles as the running-check; "not_running" means Ollama is down.
+      const detailed = await invoke<{ name: string; running: boolean }[]>(
+        "list_ollama_models_detailed",
+      );
       if (ctl.signal.aborted) return;
+      const loaded = detailed.filter((m) => m.running).map((m) => m.name);
+      const model =
+        autocomplete.preferred && loaded.includes(autocomplete.preferred)
+          ? autocomplete.preferred
+          : loaded[0] ?? "";
+      if (!model) {
+        setAcStatus(
+          auto ? null : "Autocomplete unavailable — load a local model (🧠 menu) to enable it.",
+        );
+        return;
+      }
       const text = await invoke<string>("complete_text", {
         prefix,
         suffix,
-        model: autocomplete.model,
+        model,
         language: lang === "plain" ? "" : lang,
+        mode,
       });
       if (ctl.signal.aborted) return;
-      if (text) setSuggestion({ text, at: caret });
-    } catch {
-      // Ollama not running / errored → fail silently (no remote fallback).
+      if (text) {
+        setSuggestion({ text, at: caret });
+        setAcStatus(null);
+      } else {
+        setAcStatus(auto ? null : "No suggestion");
+      }
+    } catch (e) {
+      if (ctl.signal.aborted) return;
+      if (auto) {
+        setAcStatus(null);
+        return;
+      }
+      setAcStatus(
+        String(e).includes("not_running")
+          ? "Autocomplete unavailable — load a local model (🧠 menu) to enable it."
+          : "Autocomplete failed — see the local model.",
+      );
     }
-  }, [autocomplete, draft, lang]);
+  }, [autocomplete, draft, lang, acMode]);
+
+  // #45 automatic suggestions: when the per-type toggle is on, request a
+  // completion a short while after the user stops typing. Re-runs on each draft
+  // change; the cleanup clears the prior timer, so only an idle pause fires it.
+  // Skipped while a suggestion is already showing or the \ref/\cite dropdown is
+  // open. The focus/caret/context guards live in `requestCompletion`.
+  useEffect(() => {
+    if (!autocomplete?.enabled || !loaded) return;
+    if (suggestion || compl) return;
+    const id = window.setTimeout(() => void requestCompletion({ auto: true }), AUTO_AC_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [autocomplete?.enabled, loaded, draft, suggestion, compl, requestCompletion]);
+
+  // The ghost mounts fresh (scrollTop 0) each time a suggestion appears; align it
+  // to the editor's current scroll so the inserted preview lands at the caret.
+  useEffect(() => {
+    if (suggestion) syncScroll();
+  }, [suggestion, syncScroll]);
 
   const acceptSuggestion = useCallback(() => {
     const el = textareaRef.current;
@@ -1677,6 +1822,28 @@ function CodeEditor({
     edit(next);
     const caret = at + suggestion.text.length;
     setSuggestion(null);
+    requestAnimationFrame(() => {
+      el.selectionStart = el.selectionEnd = caret;
+    });
+  }, [suggestion, draft, edit]);
+
+  // #45 partial accept (→ Right arrow): insert only the next "word" of the pending
+  // suggestion and keep the remainder ghosted, so the user can walk a long
+  // suggestion in word-sized steps. A word = any leading whitespace (including a
+  // newline + indentation) plus the following run of non-space characters.
+  const acceptWord = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el || !suggestion) return;
+    const { text, at } = suggestion;
+    const m = text.match(/^\s*\S+/);
+    const take = m ? m[0].length : text.length;
+    const chunk = text.slice(0, take);
+    const rest = text.slice(take);
+    const next = draft.slice(0, at) + chunk + draft.slice(at);
+    edit(next);
+    const caret = at + chunk.length;
+    // Keep the rest ghosted at the new caret; clear once it's fully consumed.
+    setSuggestion(rest ? { text: rest, at: caret } : null);
     requestAnimationFrame(() => {
       el.selectionStart = el.selectionEnd = caret;
     });
@@ -1846,7 +2013,12 @@ function CodeEditor({
       }
     }
 
-    // #45: Ctrl+Space requests a suggestion; Tab accepts; Esc dismisses.
+    // #45: Ctrl+Space requests a suggestion. While a ghost suggestion is showing:
+    //  - Tab accepts the whole suggestion,
+    //  - Shift+Tab toggles the completion-length mode (Sentence → Block → Scope)
+    //    and re-requests in it,
+    //  - → (Right) accepts only the next word (repeat to walk word-by-word),
+    //  - Esc dismisses.
     if ((e.ctrlKey || e.metaKey) && e.key === " ") {
       e.preventDefault();
       void requestCompletion();
@@ -1855,7 +2027,22 @@ function CodeEditor({
     if (suggestion) {
       if (e.key === "Tab") {
         e.preventDefault();
-        acceptSuggestion();
+        if (e.shiftKey) {
+          // Toggle to the next mode and re-request, so the ghost switches to that
+          // mode's completion in place.
+          const m = nextAcMode(acMode);
+          setAcMode(m);
+          void requestCompletion({ mode: m });
+        } else {
+          acceptSuggestion();
+        }
+        return;
+      }
+      // Plain Right arrow accepts the next word; modified Right (select/word-move)
+      // falls through and dismisses so native navigation still works.
+      if (e.key === "ArrowRight" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        acceptWord();
         return;
       }
       if (e.key === "Escape") {
@@ -1934,12 +2121,12 @@ function CodeEditor({
   if (error != null) return <div className="file-viewer-error">{error}</div>;
   if (!loaded) return <div className="file-viewer-loading">Loading…</div>;
 
-  // Ghost text: render the draft up to the caret (transparent) then the
-  // suggestion (dimmed) so it sits inline where it would be inserted.
-  const ghost =
-    suggestion != null
-      ? draft.slice(0, suggestion.at) + suggestion.text
-      : null;
+  // Ghost text: while a suggestion is pending, render the WHOLE projected
+  // document — prefix + suggestion + the existing suffix shifted past it — over
+  // an opaque background that masks the real layers beneath. This pushes the
+  // text after the caret aside (horizontally and, for multi-line suggestions,
+  // downward) instead of painting the proposal on top of it.
+  const hasGhost = suggestion != null;
 
   // In wrap mode, pin every overlay <pre> to the textarea's content width so
   // they wrap line-for-line with it (see wrapWidth). A no-op otherwise.
@@ -1989,7 +2176,7 @@ function CodeEditor({
       <div
         className={`file-viewer-code-area${highlighted != null ? " highlighted" : ""}${
           linkHover ? " link-hover" : ""
-        }${wrap ? " is-wrapped" : ""}`}
+        }${wrap ? " is-wrapped" : ""}${hasGhost ? " has-suggestion" : ""}`}
       >
         {/* Hidden full-width mirror used only to measure each logical line's
             wrapped height for the gutter (wrap mode). Sized to the textarea's
@@ -2037,10 +2224,16 @@ function CodeEditor({
             dangerouslySetInnerHTML={{ __html: linkHtml + "\n" }}
           />
         )}
-        {ghost != null && (
-          <pre className="file-viewer-ghost" aria-hidden="true" style={overlayWidthStyle}>
-            <span className="file-viewer-ghost-hidden">{draft.slice(0, suggestion!.at)}</span>
+        {hasGhost && (
+          <pre
+            ref={ghostRef}
+            className="file-viewer-ghost"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+          >
+            {draft.slice(0, suggestion!.at)}
             <span className="file-viewer-ghost-text">{suggestion!.text}</span>
+            {draft.slice(suggestion!.at)}
           </pre>
         )}
         <textarea
@@ -2061,6 +2254,15 @@ function CodeEditor({
         />
       </div>
       {onFollowLink && <LinkOpenHint at={linkTip} />}
+      {acStatus && (
+        <div className="file-viewer-ac-status" role="status">
+          {/* A trailing "…" marks an in-flight request — show a spinner. */}
+          {acStatus.endsWith("…") && (
+            <span className="file-viewer-ac-spinner" aria-hidden="true" />
+          )}
+          {acStatus}
+        </div>
+      )}
       {compl && (
         <ul
           className={`file-viewer-tex-compl${compl.ctx.kind === "cite" ? " is-cite" : ""}`}
@@ -2262,15 +2464,21 @@ function useViewerPref(type: InternalViewer) {
   return useSettingsStore((s) => s.settings?.viewer_prefs?.[type]);
 }
 
-/** The model used for local autocomplete (#45). Reuses the global agent command
- *  when it is an Ollama model name; falls back to a small coder model. We don't
- *  add a separate setting — the per-type `autocomplete` toggle is the gate. */
-function useAutocompleteConfig(type: InternalViewer): { enabled: boolean; model: string } {
+/** Config for local autocomplete (#45). The per-type `autocomplete` toggle is
+ *  the gate; `preferred` is the user's active local model (🧠 menu). There is no
+ *  separate model setting — completion runs against whichever model is currently
+ *  loaded in Ollama memory, resolved at trigger time (see `requestCompletion`),
+ *  preferring this one when it is loaded. */
+function useAutocompleteConfig(
+  type: InternalViewer,
+): { enabled: boolean; preferred?: string; mode: AutocompleteMode } {
   const pref = useViewerPref(type);
-  const model = useSettingsStore(
-    (s) => (s.settings?.autocomplete_model as string | undefined) ?? "qwen2.5-coder:1.5b",
-  );
-  return { enabled: pref?.autocomplete === true, model };
+  const preferred = useSettingsStore((s) => s.settings?.ollama_model as string | undefined);
+  // The per-type default mode; the editor cycles a live override from here.
+  const mode: AutocompleteMode = AC_MODES.includes(pref?.autocomplete_mode as AutocompleteMode)
+    ? (pref!.autocomplete_mode as AutocompleteMode)
+    : "sentence";
+  return { enabled: pref?.autocomplete === true, preferred, mode };
 }
 
 // Code-editor font sizing. The default matches the .file-viewer-code CSS metrics
@@ -2475,6 +2683,12 @@ function MarkdownView({
   } = useEditableFile(path);
   const [mode, setMode] = useState<"preview" | "edit">("preview");
   const font = useEditorFontSize("markdown");
+  const ac = useAutocompleteConfig("markdown");
+  const viewPos = useViewerState(tabKey);
+  const persistScroll = useCallback(
+    (scrollTop: number) => viewPos.persist({ scrollTop }),
+    [viewPos],
+  );
   // Preview always reflects the live draft, so toggling shows unsaved edits.
   const html = useMemo(() => (loaded ? renderMarkdown(draft) : ""), [loaded, draft]);
 
@@ -2517,7 +2731,9 @@ function MarkdownView({
       invoke<number[]>("read_file_bytes", { path: target })
         .then((bytes) => {
           if (cancelled) return;
-          const objectUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes)]));
+          const objectUrl = URL.createObjectURL(
+            new Blob([new Uint8Array(bytes)], { type: imageMimeForPath(target) }),
+          );
           urls.push(objectUrl);
           img.src = objectUrl;
         })
@@ -2558,39 +2774,6 @@ function MarkdownView({
     [path, tabKey],
   );
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-      e.preventDefault();
-      void save();
-      return;
-    }
-    // #46 undo/redo for the plain markdown editor textarea.
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-      e.preventDefault();
-      if (e.shiftKey) redo();
-      else undo();
-      return;
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
-      e.preventDefault();
-      redo();
-      return;
-    }
-    // Text size: Ctrl/Cmd with "+"/"=" grows, "-" shrinks, "0" resets.
-    if (e.ctrlKey || e.metaKey) {
-      if (e.key === "+" || e.key === "=") {
-        e.preventDefault();
-        font.inc();
-      } else if (e.key === "-" || e.key === "_") {
-        e.preventDefault();
-        font.dec();
-      } else if (e.key === "0") {
-        e.preventDefault();
-        font.reset();
-      }
-    }
-  };
-
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
@@ -2619,22 +2802,36 @@ function MarkdownView({
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
       <div
-        className="file-viewer-body"
+        className={`file-viewer-body${mode === "edit" ? " file-viewer-code-body" : ""}`}
         onWheel={(e) => onCtrlWheelFont(e, font.inc, font.dec)}
       >
-        {error != null ? (
+        {mode === "edit" ? (
+          // The shared code editor gives markdown the same Tab/undo/save behaviour
+          // as the text/tex viewers — and local autocomplete (#45). `wrap` so prose
+          // soft-wraps. It renders its own load/error states.
+          <CodeEditor
+            path={path}
+            error={error}
+            draft={draft}
+            setDraft={setDraft}
+            loaded={loaded}
+            save={() => void save()}
+            undo={undo}
+            redo={redo}
+            autocomplete={ac}
+            fontSize={font.fontSize}
+            lineHeight={font.lineHeight}
+            incFont={font.inc}
+            decFont={font.dec}
+            resetFont={font.reset}
+            wrap
+            initialScrollTop={viewPos.initial?.scrollTop}
+            onScrollPersist={persistScroll}
+          />
+        ) : error != null ? (
           <div className="file-viewer-error">{error}</div>
         ) : !loaded ? (
           <div className="file-viewer-loading">Loading…</div>
-        ) : mode === "edit" ? (
-          <textarea
-            className="file-viewer-editor"
-            value={draft}
-            spellCheck={false}
-            style={{ fontSize: `${font.fontSize}px`, lineHeight: `${font.lineHeight}px` }}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onKeyDown}
-          />
         ) : (
           <div
             ref={previewRef}

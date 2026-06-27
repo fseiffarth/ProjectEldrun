@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod apps;
 pub mod boxes;
 pub mod clipboard;

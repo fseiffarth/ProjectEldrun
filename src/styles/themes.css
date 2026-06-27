@@ -489,16 +489,6 @@ select option {
   box-shadow: inset 0 3px 0 var(--accent);
 }
 
-/* ── Status lamp (● dot) ─────────────────────────────────────────────── */
-.status-lamp {
-  font-size: 16px;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
-.status-online  { color: var(--success); }
-.status-offline { color: var(--danger); }
-
 /* ── Version / debug / conn-type ─────────────────────────────────────── */
 .app-version-stack {
   display: flex;
@@ -572,6 +562,10 @@ select option {
   height: 14px;
   color: var(--text-primary);
   flex-shrink: 0;
+}
+
+.conn-type-icon.conn-offline {
+  color: var(--danger);
 }
 
 /* ── Clock ───────────────────────────────────────────────────────────── */
@@ -1360,10 +1354,65 @@ select option {
 }
 
 /* #45 ghost text: the accepted-on-Tab autocomplete suggestion, dimmed inline. */
-.file-viewer-ghost-hidden { color: transparent; }
+/* The ghost shows the whole projected document (prefix + suggestion + shifted
+   suffix) over an opaque background, masking the highlight/search/etc. layers so
+   the proposal displaces the existing text rather than overlaying it. Base text
+   renders in the normal colour; only the suggestion span is tinted. Syntax
+   colours are dropped for the brief moment a suggestion is on screen. */
+.file-viewer-ghost {
+  color: var(--text-primary);
+  background: var(--bg-panel);
+}
 .file-viewer-ghost-text {
-  color: var(--text-muted);
-  opacity: 0.8;
+  /* Distinct from the edited text so an auto-suggestion reads as a proposal,
+     not committed content. Accent-tinted + italic; Tab accepts it. */
+  color: var(--accent, #4493f8);
+  opacity: 0.85;
+  font-style: italic;
+}
+
+/* While a suggestion is on screen the opaque ghost shows the projected text, so
+   hide the textarea's own glyphs (keeping the caret) — even in plain-text mode
+   where there is no highlight layer making them transparent already. */
+.file-viewer-code-area.has-suggestion .file-viewer-code-editor {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--text-primary);
+}
+
+/* #45 autocomplete status toast: a small floating pill in the editor's
+   bottom-right reporting an in-flight/empty/unavailable completion so the
+   feature never fails silently. pointer-events:none so it never blocks a click. */
+.file-viewer-ac-status {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 80%;
+  padding: 3px 9px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-primary);
+  background: var(--bg-elevated, var(--bg-secondary, #1c2128));
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+/* In-flight spinner inside the autocomplete status pill (reuses file-viewer-spin). */
+.file-viewer-ac-spinner {
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--accent, #4493f8);
+  border-radius: 50%;
+  animation: file-viewer-spin 0.7s linear infinite;
 }
 
 /* #47 save-state icon button: square-ish, icon-only. */
@@ -1495,6 +1544,16 @@ select option {
   gap: 4px;
   color: var(--text-muted);
 }
+/* #45 per-type default completion-length mode (Sentence/Block/Scope). */
+.viewer-pref-mode {
+  font-size: 10px;
+  padding: 1px 4px;
+  color: var(--text-primary);
+  background: var(--bg-secondary, var(--bg-primary));
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+}
+.viewer-pref-mode:disabled { opacity: 0.5; }
 
 /* pdf.js viewer: a zoom toolbar above a scrolling stack of page canvases. The
    host and scroll surround use theme variables, so the viewer is dark in dark
@@ -2582,6 +2641,12 @@ select option {
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+/* Buttons keep their size; the title span (min-width:0) truncates instead, so
+   the rightmost actions never get pushed off the panel's right edge. */
+.right-panel-header > button {
+  flex-shrink: 0;
 }
 
 .right-panel-pin {
@@ -5984,6 +6049,14 @@ select option {
 .ollama-status-dot.running { background-color: var(--success); }
 .ollama-status-dot.stopped { background-color: var(--text-muted); }
 
+/* Vibe runtime section + its inline status dot (used inside flowing text). */
+.ollama-vibe-section { margin-top: 14px; }
+.ollama-vibe-section .ollama-status-dot {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
 .ollama-status-text {
   flex: 1;
   font-size: 12px;
@@ -6001,6 +6074,216 @@ select option {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+/* ── Local-model header button: live server-status dot ───────────────────── */
+.local-model-btn {
+  position: relative;
+}
+.local-model-status-dot {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  pointer-events: none;
+}
+/* Server unreachable (red) → up but no model in memory (yellow) → model loaded (green). */
+.local-model-status-dot.stopped { background-color: var(--danger); }
+.local-model-status-dot.idle { background-color: var(--warning); }
+.local-model-status-dot.loaded { background-color: var(--success); }
+
+/* ── Local-model menu: live "loaded in memory" status line ───────────────── */
+.local-model-loaded {
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--control-border);
+  margin-bottom: 2px;
+}
+.local-model-loaded-idle {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.local-model-loaded-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.local-model-loaded-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.local-model-loaded-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.local-model-loaded-badges > span {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.local-model-loaded-badges > span.gpu {
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+  color: var(--success);
+}
+
+/* In-flight downloads shown at the top of the brain menu. */
+.local-model-downloads {
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--control-border);
+  margin-bottom: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.local-model-download-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.local-model-download-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.local-model-download-pct {
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Install flow (shown when Ollama is missing) ─────────────────────────── */
+.ollama-install-steps {
+  margin: 4px 0 12px;
+  padding-left: 20px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.ollama-install-steps li {
+  margin-bottom: 8px;
+}
+
+.ollama-install-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+.ollama-install-cmd {
+  flex: 1;
+  padding: 4px 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-primary);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.ollama-pull-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+.ollama-pull-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ollama-pull-input:disabled {
+  opacity: 0.5;
+}
+
+.ollama-catalog-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+.ollama-catalog-sort {
+  padding: 3px 6px;
+  font-size: 11px;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.ollama-catalog-sort:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ollama-sort-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.ollama-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin: 4px 0;
+}
+.ollama-filter-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-right: 2px;
+  min-width: 40px;
+}
+.ollama-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 10px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-transform: capitalize;
+}
+.ollama-chip:hover {
+  border-color: var(--accent);
+}
+.ollama-chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg, #fff);
+}
+
+.ollama-install-log {
+  margin: 8px 0 12px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .ollama-action-btn {
@@ -6061,6 +6344,35 @@ select option {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.ollama-download-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.ollama-download-bar-fill {
+  height: 100%;
+  background: var(--accent, var(--text-primary));
+  transition: width 0.2s ease;
+}
+
+.ollama-download-bar-fill.indeterminate {
+  width: 35%;
+  border-radius: 3px;
+  animation: ollama-download-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes ollama-download-indeterminate {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+
+.ollama-download-status {
+  font-size: 10px;
+  color: var(--text-muted);
 }
 
 .ollama-badge {

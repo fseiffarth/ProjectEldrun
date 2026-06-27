@@ -9,12 +9,24 @@ export interface GlobalAppEntry {
  * the Rust `ViewerPref` serde serialization so settings.json round-trips. Keyed
  * by a viewer-type id (see VIEWER_PREF_TYPES in fileUtils).
  */
+/**
+ * Completion-length mode for local autocomplete (#45 modes), mirroring the Rust
+ * `CompletionMode`: how much the model is asked to complete at the caret.
+ *  - `"sentence"` — finish the current word/sentence/line (default).
+ *  - `"block"` — finish the current code block / paragraph (multi-line).
+ *  - `"scope"` — complete the whole enclosing function or scope.
+ */
+export type AutocompleteMode = "sentence" | "block" | "scope";
+
 export interface ViewerPref {
   /** Whether this native viewer is used at all. Absent/true → render in-app;
    *  false → the type opts out and its files open in the external default app. */
   enabled?: boolean;
   /** Whether Ctrl+Space local autocomplete is enabled for this type (#45). */
   autocomplete?: boolean;
+  /** Default completion-length mode for this type (#45 modes). Cycled live
+   *  in-editor with Ctrl+Shift+Space; absent → "sentence". */
+  autocomplete_mode?: AutocompleteMode;
   /** Editor font size in px for this type's in-app code editor. Adjusted from
    *  the viewer's A−/A+ controls (or Ctrl +/−/0); unset falls back to 12px. */
   font_size?: number;
@@ -45,6 +57,10 @@ export interface Settings {
    *  one; chosen in Settings → Ollama. Unset = no local model selected. */
   ollama_model?: string;
   run_scripts_in_background?: boolean;
+  /** When true (the default), Claude agent tabs are spawned with `--remote-control`
+   *  so the running session can be monitored/steered from the Claude app/web. Only
+   *  Claude supports this flag; other agents ignore the setting. */
+  agent_remote_control?: boolean;
   /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
   right_panel_pinned?: boolean;
   /** Minimum subwindow (split pane) width in px a divider drag may shrink to.

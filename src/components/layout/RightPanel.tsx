@@ -606,7 +606,15 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
             📌
           </button>
         )}
-        <span style={{ flex: 1 }}>
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
           {activeBox ? `▣ ${activeBox.name}` : activeProject ? activeProject.name : "Files"}
         </span>
         {(["files", "git", "search", "windows"] as View[]).map((v) => (
@@ -935,15 +943,32 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
                       <span>Enabled</span>
                     </label>
                     {t.autocomplete && (
-                      <label className="viewer-pref-toggle">
-                        <input
-                          type="checkbox"
-                          checked={pref.autocomplete === true}
-                          disabled={!enabled}
-                          onChange={(e) => patch({ autocomplete: e.target.checked })}
-                        />
-                        <span>Autocomplete</span>
-                      </label>
+                      <>
+                        <label className="viewer-pref-toggle">
+                          <input
+                            type="checkbox"
+                            checked={pref.autocomplete === true}
+                            disabled={!enabled}
+                            onChange={(e) => patch({ autocomplete: e.target.checked })}
+                          />
+                          <span>Autocomplete</span>
+                        </label>
+                        {/* #45 default completion-length mode; toggled live
+                            in-editor with Shift+Tab while a suggestion shows. */}
+                        <select
+                          className="viewer-pref-mode"
+                          value={pref.autocomplete_mode ?? "sentence"}
+                          disabled={!enabled || pref.autocomplete !== true}
+                          title="Default completion length (toggle live with Shift+Tab)"
+                          onChange={(e) =>
+                            patch({ autocomplete_mode: e.target.value as ViewerPref["autocomplete_mode"] })
+                          }
+                        >
+                          <option value="sentence">Sentence</option>
+                          <option value="block">Block</option>
+                          <option value="scope">Scope</option>
+                        </select>
+                      </>
                     )}
                   </div>
                 );

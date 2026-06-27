@@ -79,10 +79,16 @@ interface StaticMenuItem {
 // and only accept one when resuming, so there's no deterministic id to capture
 // up front — passing `--session-id` would just error and break the tab.
 const AGENT_ITEMS: StaticMenuItem[] = [
-  { label: "Claude",  cmd: "claude", kind: "agent", sessionRename: (n) => `/rename ${n}`, sessionIdArgs: (id) => ["--session-id", id] },
-  { label: "Codex",   cmd: "codex",  kind: "agent" },
-  { label: "Gemini",  cmd: "gemini", kind: "agent", sessionIdArgs: (id) => ["--session-id", id] },
-  { label: "Mistral", cmd: "vibe",   kind: "agent" },
+  { label: "Claude",   cmd: "claude",       kind: "agent", sessionRename: (n) => `/rename ${n}`, sessionIdArgs: (id) => ["--session-id", id] },
+  { label: "Codex",    cmd: "codex",        kind: "agent" },
+  { label: "Gemini",   cmd: "gemini",       kind: "agent", sessionIdArgs: (id) => ["--session-id", id] },
+  { label: "Mistral",  cmd: "vibe",         kind: "agent" },
+  { label: "Aider",    cmd: "aider",        kind: "agent" },
+  { label: "OpenCode", cmd: "opencode",     kind: "agent" },
+  { label: "Cursor",   cmd: "cursor-agent", kind: "agent" },
+  { label: "Copilot",  cmd: "copilot",      kind: "agent" },
+  { label: "Grok",     cmd: "grok",         kind: "agent" },
+  { label: "Qwen",     cmd: "qwen",         kind: "agent" },
 ];
 
 const SHELL_ITEMS: StaticMenuItem[] = [

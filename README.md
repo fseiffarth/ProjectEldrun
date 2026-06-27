@@ -4,8 +4,13 @@
 > Eldrun is a project-centric desktop layer that swaps your whole working
 > context as one unit, with AI agent terminals and in-app file viewers built in.
 
-Built with **Tauri 2 + React + TypeScript**, with optional KDE/X11 workspace
-integration. Linux-first.
+Eldrun is a **project-centric desktop layer**, not just an app that launches or
+embeds other apps: projects own their windows and desktop context, and selecting
+a project swaps that whole context — windows, files, apps, Git state, and layout
+— as a single unit. The AI agent terminals, file viewers, and app launcher ride
+on top, living *inside* a project once its desktop is restored. Built with
+**Tauri 2 + React + TypeScript** and optional KDE/X11 workspace integration;
+Linux-first today, with Windows and macOS support on the roadmap.
 
 ---
 
@@ -32,22 +37,17 @@ projects.
 
 > Select a project → Eldrun restores its complete working context.
 
-Eldrun is a **project-centric desktop layer**, not just an app that launches or
-embeds other apps. The core product is the window/workspace layer: projects own
-their windows and desktop context, and switching projects swaps that context as
-a single unit. The agent terminals, file viewers, and app launcher ride on top —
-they're what lives *inside* a project once its desktop is restored.
-
 A project's context already spans terminals, files, apps, windows, Git state,
 and layout; the direction of travel adds notes, AI/task metadata, and workflow
 state, so a project carries everything it needs to be resumed exactly where you
 left it.
 
 Today the implementation targets **Linux (X11 and KDE Wayland)** — the fastest
-path to reliable window control. The long-term shape is a stable Eldrun core
-behind pluggable compositor backends (X11, KDE/KWin, Hyprland, GNOME Shell, i3,
-Sway, and other Wayland environments), and eventually an Eldrun-native
-compositor for full control of projects, windows, and layout.
+path to reliable window control — but the design is cross-platform by intent.
+The long-term shape is a stable Eldrun core behind pluggable compositor backends
+(X11, KDE/KWin, Hyprland, GNOME Shell, i3, Sway, and other Wayland
+environments), native Windows and macOS support, and eventually an
+Eldrun-native compositor for full control of projects, windows, and layout.
 
 See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
 
@@ -60,6 +60,10 @@ layout hosts agent terminals, shells, and native file viewers. **③** the
 project-desktop layer (window parking, downloads, default apps, time tracking)
 follows the active project automatically, with the right panel (Files · Git ·
 Search) and the global app toolbar alongside.
+
+And here's how that looks in the running app:
+
+![Current Eldrun screen](screenshots/eldrun-current.png)
 
 ## How Eldrun compares
 
@@ -80,8 +84,6 @@ task orchestrators rather than a replacement — you can run one inside an Eldru
 project terminal for parallel task delegation while Eldrun handles switching the
 desktop between projects.
 
-![Current Eldrun screen](screenshots/eldrun-current.png)
-
 ## Stack
 
 - **Frontend:** React 18, TypeScript, Vite, Tailwind CSS, Zustand
@@ -89,6 +91,15 @@ desktop between projects.
 - **Backend:** Rust, Tauri v2
 - **PTY:** `portable-pty` crate
 - **Workspace:** `zbus` (DBus) and `xcb` (X11) — Linux only
+
+## Download
+
+Prebuilt packages are published on the
+[Releases page](https://github.com/fseiffarth/ProjectEldrun/releases). From the
+[latest release](https://github.com/fseiffarth/ProjectEldrun/releases/latest),
+grab the `.AppImage` (portable Linux) or `.deb` (Debian/Ubuntu), or the `.exe`
+installer on Windows. To build from source instead, follow the requirements
+below.
 
 ## Requirements
 
@@ -128,58 +139,6 @@ checkout's scripts, so you can install them as-is:
 cp Eldrun*.desktop ~/.local/share/applications/
 update-desktop-database ~/.local/share/applications/
 ```
-
-## Agent Support
-
-Eldrun launches agents in xterm.js PTY tabs. The table below describes the
-current integration state.
-
-### CLI agents (xterm.js terminal tabs)
-
-| Agent                                      | Integrated | Tested  | Notes                                                                                                                                               |
-| ------------------------------------------ | ---------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Claude** (`claude`)                      | Yes        | Yes     | Default agent command. Full tab lifecycle, layout persistence, project-scoped sandbox env.                                                          |
-| **Codex** (`codex`)                        | Yes        | Yes     | Selectable as default agent command in Settings. Same tab lifecycle as Claude.                                                                      |
-| **Gemini** (`gemini`)                      | Yes        | Yes     | Selectable as default agent command in Settings. Same tab lifecycle as Claude and Codex.                                                            |
-| **Vibe** (`vibe`)                          | Yes        | No      | Listed as a selectable agent command; same tab lifecycle.                                                                                           |
-| **Ollama via Vibe** (`vibe` + local model) | Yes        | Partial | Installed Ollama models appear under Local Agents. Each local tab gets an isolated per-model `VIBE_HOME` under `~/.local/share/eldrun/vibe_local/`. |
-| **Shell**                                  | Yes        | Yes     | Plain interactive shell tab in the project directory.                                                                                               |
-| Mistral CLI                                | No         | No      | Not integrated. Can be used in a plain shell tab.                                                                                                   |
-| Qwen CLI                                   | No         | No      | Not integrated.                                                                                                                                     |
-| Grok CLI                                   | No         | No      | Not integrated.                                                                                                                                     |
-
-The active agent command (`claude`, `codex`, `gemini`, or `vibe`) is set in
-Settings. If the configured command is not found in `$PATH`, Eldrun falls back
-to the system shell. Project-bound terminals also receive a best-effort project
-sandbox: the child process runs in the project directory with project-local XDG
-config, cache, data, state, and temp locations under
-`<project>/.eldrun/sandbox/`. The root orchestration terminal keeps the normal
-workspace environment.
-
-**Session resume.** Claude and Codex tabs that carry a session id are persisted
-across restarts and respawned with their prior conversation. Eldrun installs a
-`SessionStart` hook (into `~/.claude/settings.json` and `~/.codex/config.toml`)
-that records each tab's live session id keyed by an `ELDRUN_TAB_UID` env var, so
-resume follows the live session even across a `/clear`. (Codex hooks need a
-one-time `/hooks` trust before they fire; Gemini and Vibe tabs are still
-dropped.)
-
-Local Ollama models are available from the tab `+` menu when Ollama is
-installed and reachable. Eldrun can start the Ollama service, list installed
-models, and create a `vibe` tab for a selected model. The per-model `VIBE_HOME`
-config pins `active_model`, registers the Ollama provider, and disables Vibe
-tool calls for local models so local tabs do not mutate global `~/.vibe`
-configuration.
-
-## Platform Support
-
-| Platform                  | Status             | Notes                                                                                        |
-| ------------------------- | ------------------ | -------------------------------------------------------------------------------------------- |
-| **Linux — X11**           | Yes                | Two-desktop workspace parking model (EWMH/xcb). Primary development target.                  |
-| **Linux — KDE Wayland**   | Yes                | Per-project virtual desktop model via KWin DBus scripting. KDE 5 and KDE 6 supported.        |
-| **Linux — other Wayland** | Partial            | Null backend (no workspace switching, no sticky windows). Terminal and file management work. |
-| **Windows**               | Experimental shell | Null workspace backend. No native window/default-app/download integrations.                  |
-| **macOS**                 | Experimental shell | Null workspace backend. No native window/default-app/download integrations.                  |
 
 ## Main Features
 
@@ -258,34 +217,6 @@ configuration.
   project-wide literal content search and lists matching lines that jump straight
   into the in-app viewer. The panel can be pinned open instead of hover-revealed;
   additional views list tracked external windows.
-- **In-app file viewers**: drag a file from the tree onto a subwindow's tab bar
-  to open it in a tab. The viewer is chosen by extension. **Status legend:**
-  ✅ shipping · 🚧 in progress (opens in the external default app until landed).
-
-  | Viewer | File types | Status | What it does |
-  | ------ | ---------- | :----: | ------------ |
-  | **Text / code** | `.txt` `.json` `.py` `.rs` `.ts` `.bib` + many more, and extensionless files like `Dockerfile` | ✅ | Editable editor: line-number gutter, syntax highlighting, Tab/Shift+Tab indent, undo/redo (`Ctrl+Z`/`Ctrl+Shift+Z`), find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match nav + case toggle, save (`Ctrl+S`). Unsaved lines marked in the gutter; auto-reloads on disk change with a non-destructive Reload / Keep-mine banner. Opt-in local autocomplete. |
-  | **Markdown** | `.md` `.markdown` `.mdx` | ✅ | Rendered preview with an Edit/Preview toggle; links to local files are clickable. |
-  | **LaTeX** | `.tex` | ✅ | Code editor + compile (when a TeX engine is on `PATH`) with output-folder and engine-flag options (shell-escape always stripped). Compile opens the PDF in its own tab; `Ctrl`/`Cmd`+Click follows `\input{…}`/`\includegraphics{…}`; `\ref{…}`/`\cite{…}` completion from `\label` keys and `.bib` entries; failed compiles list parsed errors (incl. `\input`-ed children) that jump to the line; **bidirectional SyncTeX sync** between editor and PDF, across tiled panes or detached windows. |
-  | **PDF** | `.pdf` | ✅ | Rendered with a themed zoom toolbar. |
-  | **Images** | `.png` `.jpg` `.gif` `.webp` … | ✅ | Zoom-to-cursor / pan; draggable out as an OS drop source. |
-  | **Table / CSV** | `.csv` `.tsv` | ✅ | Read-only grid (RFC 4180-style parse); large files are windowed to keep the webview responsive. |
-  | **Jupyter notebook** | `.ipynb` | ✅ | Read-only render of cells top-to-bottom — markdown cells, Python-highlighted code cells, and their classified outputs. |
-  | **Diff / patch** | `.diff` `.patch` | ✅ | Color-coded add/del rendering that reads in light and dark themes. |
-  | **OpenDocument Text** | `.odt` | ✅ | Read-only: unzips the archive and renders `content.xml` to a safe HTML subset (headings, lists, tables, images). |
-  | **Spreadsheet** | `.xlsx` `.xls` `.xlsm` | 🚧 | Backend reader (calamine) into the table grid, with a sheet picker. |
-  | **SQLite** | `.db` `.sqlite` `.sqlite3` | 🚧 | Read-only table browser: table list + paged row grid. |
-  | **HTML / SVG** | `.html` `.htm` `.svg` | 🚧 | Sandboxed preview (no scripts) with a Preview ⇄ Source toggle. |
-  | **Audio / video** | `.mp3` `.mp4` `.webm` `.wav` … | 🚧 | Native in-tab `<audio>`/`<video>` player. |
-
-  Other office formats (`.docx`, `.pptx`, `.ods`, …) open in their external
-  default app. Viewer behaviour is configured per file type under **Settings →
-  Native Viewers**: the per-type autocomplete opt-in plus a global autosave
-  switch. The text/LaTeX/Markdown editors carry an `A−`/`A+` text-size control
-  (`Ctrl` +/−, `Ctrl`+0 to reset; scales the Markdown preview too), persisted
-  per file type. Every viewer remembers where you left off — editor/PDF scroll
-  position, PDF/image zoom, and image pan persist per tab, so reopening a file
-  (or restarting Eldrun) restores your position instead of jumping to the top.
 - **Local autocomplete (opt-in, private)**: in the editable text/LaTeX/markdown
   viewers, `Ctrl+Space` requests a single completion from a **local Ollama**
   model (`Tab` accepts, `Esc` dismisses). It is OFF by default and per file
@@ -301,6 +232,89 @@ configuration.
 - **Hover-revealed panels**: the global app bar and right file panel appear on
   pointer hover and disappear when the pointer leaves, keeping the center
   terminal unobstructed; the right panel can also be pinned permanently open.
+
+### In-app file viewers
+
+Drag a file from the tree onto a subwindow's tab bar to open it in a tab; the
+viewer is chosen by extension. In-progress types open in the external default
+app until they land.
+
+| Viewer | Extensions | Status | Notes |
+| ------ | ---------- | ------ | ----- |
+| **Text / code** | `.txt` `.json` `.py` `.rs` `.ts` `.bib` + many more, plus extensionless files like `Dockerfile` | ✅ Shipping | Editable editor: line-number gutter, syntax highlighting, Tab/Shift+Tab indent, undo/redo (`Ctrl+Z`/`Ctrl+Shift+Z`), find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match nav + case toggle, save (`Ctrl+S`); unsaved lines marked; non-destructive auto-reload banner; opt-in local autocomplete. |
+| **Markdown** | `.md` `.markdown` `.mdx` | ✅ Shipping | Rendered preview with an Edit/Preview toggle; links to local files are clickable. |
+| **LaTeX** | `.tex` | ✅ Shipping | Code editor + compile (when a TeX engine is on `PATH`, shell-escape stripped); follows `\input{…}`/`\includegraphics{…}`, `\ref`/`\cite` completion from `\label` keys and `.bib` entries; parsed compile errors jump to the line; bidirectional SyncTeX sync across tiled or detached panes. |
+| **PDF** | `.pdf` | ✅ Shipping | Rendered with a themed zoom toolbar. |
+| **Images** | `.png` `.jpg` `.gif` `.webp` … | ✅ Shipping | Zoom-to-cursor / pan; draggable out as an OS drop source. |
+| **Table / CSV** | `.csv` `.tsv` | ✅ Shipping | Read-only grid (RFC 4180-style parse); large files are windowed to keep the webview responsive. |
+| **Jupyter notebook** | `.ipynb` | ✅ Shipping | Read-only render of cells top-to-bottom — markdown cells, Python-highlighted code cells, and their classified outputs. |
+| **Diff / patch** | `.diff` `.patch` | ✅ Shipping | Color-coded add/del rendering that reads in light and dark themes. |
+| **OpenDocument Text** | `.odt` | ✅ Shipping | Read-only: unzips the archive and renders `content.xml` to a safe HTML subset (headings, lists, tables, images). |
+| **Spreadsheet** | `.xlsx` `.xls` `.xlsm` | 🚧 In progress | Backend reader (calamine) into the table grid, with a sheet picker. |
+| **SQLite** | `.db` `.sqlite` `.sqlite3` | 🚧 In progress | Read-only table browser: table list + paged row grid. |
+| **HTML / SVG** | `.html` `.htm` `.svg` | 🚧 In progress | Sandboxed preview (no scripts) with a Preview ⇄ Source toggle. |
+| **Audio / video** | `.mp3` `.mp4` `.webm` `.wav` … | 🚧 In progress | Native in-tab `<audio>`/`<video>` player. |
+
+Other office formats (`.docx`, `.pptx`, `.ods`, …) open in their external
+default app. Viewer behaviour is configured per file type under **Settings →
+Native Viewers**: the per-type autocomplete opt-in plus a global autosave
+switch. The text/LaTeX/Markdown editors carry an `A−`/`A+` text-size control
+(`Ctrl` +/−, `Ctrl`+0 to reset; scales the Markdown preview too), persisted
+per file type. Every viewer remembers where you left off — editor/PDF scroll
+position, PDF/image zoom, and image pan persist per tab, so reopening a file (or
+restarting Eldrun) restores your position instead of jumping to the top.
+
+### Agent support
+
+Eldrun launches agents in xterm.js PTY tabs. The table below describes the
+current integration state.
+
+#### CLI agents (xterm.js terminal tabs)
+
+| Agent                                      | Integrated | Tested  | Notes                                                                                                                                               |
+| ------------------------------------------ | ---------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Claude** (`claude`)                      | Yes        | Yes     | Default agent command. Full tab lifecycle, layout persistence, project-scoped sandbox env.                                                          |
+| **Codex** (`codex`)                        | Yes        | Yes     | Selectable as default agent command in Settings. Same tab lifecycle as Claude.                                                                      |
+| **Gemini** (`gemini`)                      | Yes        | Yes     | Selectable as default agent command in Settings. Same tab lifecycle as Claude and Codex.                                                            |
+| **Vibe** (`vibe`)                          | Yes        | No      | Listed as a selectable agent command; same tab lifecycle.                                                                                           |
+| **Ollama via Vibe** (`vibe` + local model) | Yes        | Partial | Installed Ollama models appear under Local Agents. Each local tab gets an isolated per-model `VIBE_HOME` under `~/.local/share/eldrun/vibe_local/`. |
+| **Shell**                                  | Yes        | Yes     | Plain interactive shell tab in the project directory.                                                                                               |
+| Mistral CLI                                | No         | No      | Not integrated. Can be used in a plain shell tab.                                                                                                   |
+| Qwen CLI                                   | No         | No      | Not integrated.                                                                                                                                     |
+| Grok CLI                                   | No         | No      | Not integrated.                                                                                                                                     |
+
+The active agent command (`claude`, `codex`, `gemini`, or `vibe`) is set in
+Settings. If the configured command is not found in `$PATH`, Eldrun falls back
+to the system shell. Project-bound terminals also receive a best-effort project
+sandbox: the child process runs in the project directory with project-local XDG
+config, cache, data, state, and temp locations under
+`<project>/.eldrun/sandbox/`. The root orchestration terminal keeps the normal
+workspace environment.
+
+**Session resume.** Claude and Codex tabs that carry a session id are persisted
+across restarts and respawned with their prior conversation. Eldrun installs a
+`SessionStart` hook (into `~/.claude/settings.json` and `~/.codex/config.toml`)
+that records each tab's live session id keyed by an `ELDRUN_TAB_UID` env var, so
+resume follows the live session even across a `/clear`. (Codex hooks need a
+one-time `/hooks` trust before they fire; Gemini and Vibe tabs are still
+dropped.)
+
+Local Ollama models are available from the tab `+` menu when Ollama is
+installed and reachable. Eldrun can start the Ollama service, list installed
+models, and create a `vibe` tab for a selected model. The per-model `VIBE_HOME`
+config pins `active_model`, registers the Ollama provider, and disables Vibe
+tool calls for local models so local tabs do not mutate global `~/.vibe`
+configuration.
+
+### Platform support
+
+| Platform                  | Status             | Notes                                                                                        |
+| ------------------------- | ------------------ | -------------------------------------------------------------------------------------------- |
+| **Linux — X11**           | Yes                | Two-desktop workspace parking model (EWMH/xcb). Primary development target.                  |
+| **Linux — KDE Wayland**   | Yes                | Per-project virtual desktop model via KWin DBus scripting. KDE 5 and KDE 6 supported.        |
+| **Linux — other Wayland** | Partial            | Null backend (no workspace switching, no sticky windows). Terminal and file management work. |
+| **Windows**               | Experimental shell | Null workspace backend. No native window/default-app/download integrations.                  |
+| **macOS**                 | Experimental shell | Null workspace backend. No native window/default-app/download integrations.                  |
 
 ### Platform and packaging
 

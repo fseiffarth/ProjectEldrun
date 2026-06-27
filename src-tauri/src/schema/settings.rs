@@ -46,6 +46,11 @@ pub struct Settings {
     /// as a detached background process instead of opening a terminal tab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_scripts_in_background: Option<bool>,
+    /// When true (the default), `claude` agent tabs are spawned with
+    /// `--remote-control` so the session can be monitored/steered from the Claude
+    /// app/web. Only Claude supports the flag; other agents ignore it. Default ON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_remote_control: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_apps: Option<HashMap<String, GlobalAppEntry>>,
     /// Minimum subwindow (split pane) width in px a divider drag may shrink a
@@ -109,6 +114,11 @@ pub struct ViewerPref {
     /// Defaults OFF (privacy: no model call unless explicitly turned on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autocomplete: Option<bool>,
+    /// Default completion-length mode for this type (#45 modes): `"sentence"`
+    /// (default), `"block"`, or `"scope"`. Cycled live in-editor with
+    /// Ctrl+Shift+Space; this is just the starting mode. Absent → `"sentence"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autocomplete_mode: Option<String>,
     /// Editor font size in px for this type's in-app code editor. Adjusted from
     /// the viewer's A−/A+ controls (or Ctrl +/−/0). Unset falls back to the
     /// frontend default (12px).
@@ -123,5 +133,11 @@ impl Settings {
 
     pub fn workspace_management(&self) -> bool {
         self.workspace_management.unwrap_or(false)
+    }
+
+    /// Whether Claude agent tabs should be spawned with `--remote-control`.
+    /// Defaults ON when unset so existing settings files opt in automatically.
+    pub fn agent_remote_control(&self) -> bool {
+        self.agent_remote_control.unwrap_or(true)
     }
 }

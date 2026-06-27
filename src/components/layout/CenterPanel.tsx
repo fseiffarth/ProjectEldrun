@@ -784,6 +784,9 @@ export function CenterPanel() {
                       return !!proj?.sandbox?.enabled && !proj?.remote;
                     })()
                   }
+                  // Agent panes are font-zoomable (Ctrl+wheel / Ctrl +/-/0);
+                  // plain shells keep the fixed default size.
+                  zoomable={tab.kind === "agent" || tab.kind === "local_agent"}
                   visible={visible}
                   focused={visible}
                 />

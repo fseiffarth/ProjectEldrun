@@ -76,10 +76,28 @@ fn ollama_http(method: &str, path: &str, json_body: Option<&str>) -> Result<Stri
             .ok()
             .and_then(|v| v["error"].as_str().map(String::from))
             .unwrap_or_else(|| format!("HTTP {status}"));
-        return Err(msg);
+        return Err(friendly_ollama_error(&msg));
     }
 
     Ok(body)
+}
+
+/// Rewrite a raw Ollama error into a clearer, actionable message for the failure
+/// modes that otherwise surface as an opaque HTTP 500 / "internal server error"
+/// (e.g. when driven through vibe). Currently detects a broken install whose
+/// inference runner (`llama-server`) is missing: Ollama answers API requests but
+/// cannot load any model, so every generate/chat call 500s. Unrecognised errors
+/// pass through unchanged. Pure + tested.
+fn friendly_ollama_error(raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("llama-server") && lower.contains("not found") {
+        return format!(
+            "Ollama's inference runner (llama-server) is missing, so Ollama can \
+            serve its API but cannot load any model — the install is incomplete. \
+            Reinstall Ollama with `{OLLAMA_INSTALL_CMD}`."
+        );
+    }
+    raw.to_string()
 }
 
 // ── New management commands ───────────────────────────────────────────────
@@ -94,6 +112,210 @@ pub async fn ollama_is_installed() -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// The official, distro-agnostic Ollama install command. Kept as a constant so
+/// the backend installer and the UI's copy-to-clipboard fallback stay in sync.
+pub const OLLAMA_INSTALL_CMD: &str = "curl -fsSL https://ollama.com/install.sh | sh";
+
+/// Install Ollama via its official install script (Linux/macOS).
+///
+/// Runs `curl -fsSL https://ollama.com/install.sh | sh` and streams its combined
+/// stdout+stderr to the frontend line-by-line via `ollama-install-progress`
+/// events (`{ line }`) so the UI can show live progress. The script needs root
+/// to drop the binary into `/usr/local` and register the systemd service; it
+/// invokes `sudo` itself, so a fully non-interactive run only succeeds when sudo
+/// is passwordless or Eldrun runs as root. When it can't elevate, the UI falls
+/// back to the manual step-by-step instructions (and the same copyable command).
+/// Returns the install log on success, or the tail of the output on failure.
+#[tauri::command]
+pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
+    use std::io::{BufRead, BufReader};
+    use tauri::Emitter;
+
+    if ollama_is_installed().await {
+        return Ok("Ollama is already installed.".to_string());
+    }
+
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return Err("Automatic install is only supported on Linux/macOS. \
+            Download Ollama from https://ollama.com/download."
+            .to_string());
+    }
+
+    let emit = |line: &str| {
+        let _ = app.emit("ollama-install-progress", serde_json::json!({ "line": line }));
+    };
+    emit("Starting Ollama installer…");
+
+    // Merge stderr into stdout (`2>&1`) so a single reader sees every line in
+    // order, then stream each line to the UI as it arrives.
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{OLLAMA_INSTALL_CMD} 2>&1"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to launch installer: {e}"))?;
+
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            emit(&line);
+            lines.push(line);
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("installer did not finish: {e}"))?;
+    let combined = lines.join("\n");
+    let combined = combined.trim().to_string();
+
+    if !status.success() {
+        let tail: Vec<&str> = combined.lines().rev().take(20).collect();
+        let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+        return Err(if tail.is_empty() {
+            format!(
+                "installer exited unsuccessfully ({status}). It likely needs sudo — \
+                run `{OLLAMA_INSTALL_CMD}` in a terminal."
+            )
+        } else {
+            tail
+        });
+    }
+
+    // The post-install check is the real source of truth: a script can print a
+    // sudo warning to stderr yet still have placed the binary, or vice versa.
+    if !ollama_is_installed().await {
+        return Err(format!(
+            "installer ran but `ollama` is still not on PATH. It likely needs \
+            sudo — run `{OLLAMA_INSTALL_CMD}` in a terminal.\n\n{combined}"
+        ));
+    }
+
+    emit("Done.");
+    Ok(if combined.is_empty() {
+        "Ollama installed.".to_string()
+    } else {
+        combined
+    })
+}
+
+// ── Vibe (local-model agent runtime) ──────────────────────────────────────
+//
+// Local Ollama models are driven through Mistral's `vibe` CLI (the Local Model
+// tab spawns `vibe` with a per-model VIBE_HOME). Vibe is a separate install
+// from Ollama itself, so without it the tab fails with "unable to spawn vibe".
+// We surface install/detection here, alongside the Ollama installer, so the
+// Ollama settings window can guide the user through the full prerequisite.
+
+/// The official Vibe install command. Installs via `uv` into the user's
+/// home (`~/.local/bin`); needs no `sudo`. Kept as a constant so the backend
+/// installer and the UI's copy-to-clipboard fallback stay in sync.
+pub const VIBE_INSTALL_CMD: &str = "curl -LsSf https://mistral.ai/vibe/install.sh | bash";
+
+/// True when the `vibe` binary is reachable. Checks `PATH` (via `which`) and the
+/// well-known user install locations the installer uses, since Eldrun's inherited
+/// `PATH` may omit `~/.local/bin` even when a login shell would include it.
+#[tauri::command]
+pub async fn vibe_is_installed() -> bool {
+    let on_path = std::process::Command::new("which")
+        .arg("vibe")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if on_path {
+        return true;
+    }
+    let home = crate::paths::home_dir();
+    [".local/bin/vibe", ".cargo/bin/vibe"]
+        .iter()
+        .any(|rel| home.join(rel).exists())
+}
+
+/// Install the Vibe CLI via its official install script (Linux/macOS).
+///
+/// Runs `curl -LsSf https://mistral.ai/vibe/install.sh | bash` and streams its
+/// combined stdout+stderr to the frontend line-by-line via `vibe-install-progress`
+/// events (`{ line }`) so the UI can show live progress. The script installs into
+/// the user's home (no `sudo`), so this runs non-interactively. Returns the install
+/// log on success, or the tail of the output on failure.
+#[tauri::command]
+pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
+    use std::io::{BufRead, BufReader};
+    use tauri::Emitter;
+
+    if vibe_is_installed().await {
+        return Ok("Vibe is already installed.".to_string());
+    }
+
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return Err("Automatic install is only supported on Linux/macOS. \
+            See https://docs.mistral.ai/getting-started/quickstarts/vibe-code/install-cli."
+            .to_string());
+    }
+
+    let emit = |line: &str| {
+        let _ = app.emit("vibe-install-progress", serde_json::json!({ "line": line }));
+    };
+    emit("Starting Vibe installer…");
+
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{VIBE_INSTALL_CMD} 2>&1"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to launch installer: {e}"))?;
+
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            emit(&line);
+            lines.push(line);
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("installer did not finish: {e}"))?;
+    let combined = lines.join("\n").trim().to_string();
+
+    if !status.success() {
+        let tail: Vec<&str> = combined.lines().rev().take(20).collect();
+        let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+        return Err(if tail.is_empty() {
+            format!("installer exited unsuccessfully ({status}). Run `{VIBE_INSTALL_CMD}` in a terminal.")
+        } else {
+            tail
+        });
+    }
+
+    // The post-install check is the real source of truth.
+    if !vibe_is_installed().await {
+        return Err(format!(
+            "installer ran but `vibe` is still not detected. It may need a new shell so \
+            `~/.local/bin` is on PATH — run `{VIBE_INSTALL_CMD}` in a terminal.\n\n{combined}"
+        ));
+    }
+
+    emit("Done.");
+    Ok(if combined.is_empty() {
+        "Vibe installed.".to_string()
+    } else {
+        combined
+    })
 }
 
 /// Return detailed info for every locally installed model, cross-referenced
@@ -150,26 +372,261 @@ pub async fn stop_ollama_model(model: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Pull (download or update) a model from the Ollama registry.
-/// Blocks until complete — may take minutes for large models.
-#[tauri::command]
-pub async fn pull_ollama_model(model: String) -> Result<(), String> {
-    let body = serde_json::json!({"model": model, "stream": false}).to_string();
-    let response = ollama_http("POST", "/api/pull", Some(&body))?;
+// ── Interrupted-pull tracking ─────────────────────────────────────────────
+// A pull that is in flight is recorded in a small JSON file so that if Eldrun
+// exits or crashes mid-download the model can be resumed on the next launch
+// (Ollama's /api/pull continues a partially-fetched model). The entry is added
+// when a pull starts and removed only on success; a caught error or a crash
+// leaves it behind so the UI can offer "Continue".
 
-    // Response may be multiple newline-delimited JSON objects; check last line.
-    for line in response.lines().rev() {
+fn pending_pulls_path() -> std::path::PathBuf {
+    crate::storage::state_dir().join("ollama_pending_pulls.json")
+}
+
+fn read_pending_pulls() -> Vec<String> {
+    crate::storage::read_json::<Vec<String>>(&pending_pulls_path()).unwrap_or_default()
+}
+
+fn mark_pending_pull(model: &str, active: bool) {
+    let mut list = read_pending_pulls();
+    let existed = list.iter().any(|m| m == model);
+    if active {
+        if existed {
+            return;
+        }
+        list.push(model.to_string());
+    } else {
+        if !existed {
+            return;
+        }
+        list.retain(|m| m != model);
+    }
+    let _ = crate::storage::write_json(&pending_pulls_path(), &list);
+}
+
+/// Model refs whose download was interrupted (Eldrun closed/crashed mid-pull).
+/// The UI reconciles these against the installed list and offers to resume them.
+#[tauri::command]
+pub async fn list_pending_ollama_pulls() -> Vec<String> {
+    read_pending_pulls()
+}
+
+/// An orphaned partial layer left in Ollama's blob cache by an interrupted pull.
+/// Ollama keys blobs by content digest with no on-disk name link, so a partial
+/// whose manifest was never written can't be mapped back to a model — we can
+/// only surface it (size) and offer to delete it to reclaim space.
+#[derive(serde::Serialize)]
+pub struct PartialBlob {
+    /// Short content digest, e.g. "6e9f90f02bb3".
+    pub digest: String,
+    /// Bytes on disk for the resumable partial layer.
+    pub size: u64,
+    /// Absolute path of the main `-partial` file (passed back to delete it).
+    pub path: String,
+}
+
+/// Ollama blob directories to scan (env override, user home, system service),
+/// de-duplicated and filtered to those that exist.
+fn ollama_blob_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(m) = std::env::var("OLLAMA_MODELS") {
+        if !m.is_empty() {
+            dirs.push(std::path::PathBuf::from(m).join("blobs"));
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(std::path::PathBuf::from(home).join(".ollama/models/blobs"));
+    }
+    if let Some(sys) = system_ollama_models_dir() {
+        dirs.push(sys.join("blobs"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    dirs.into_iter()
+        .filter(|d| d.is_dir() && seen.insert(d.clone()))
+        .collect()
+}
+
+/// Orphaned partial download layers sitting in Ollama's blob cache, largest
+/// first. Each is an interrupted download with no recoverable model name.
+#[tauri::command]
+pub async fn list_orphan_partial_blobs() -> Vec<PartialBlob> {
+    let mut out: Vec<PartialBlob> = Vec::new();
+    for dir in ollama_blob_dirs() {
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // The main data file ends exactly in "-partial"; per-chunk metadata
+            // files are "-partial-<N>", so counting only the former lists each
+            // interrupted layer once.
+            if !name.ends_with("-partial") {
+                continue;
+            }
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            let digest = name
+                .strip_suffix("-partial")
+                .unwrap_or(&name)
+                .strip_prefix("sha256-")
+                .unwrap_or(&name)
+                .chars()
+                .take(12)
+                .collect::<String>();
+            out.push(PartialBlob {
+                digest,
+                size,
+                path: entry.path().to_string_lossy().to_string(),
+            });
+        }
+    }
+    out.sort_by(|a, b| b.size.cmp(&a.size));
+    out
+}
+
+/// Delete an orphaned partial layer (the main `-partial` file plus its per-chunk
+/// `-partial-<N>` siblings) to reclaim disk. Validated to a file named `*-partial`
+/// inside a `blobs` directory so it can't be used to remove anything else.
+#[tauri::command]
+pub async fn delete_partial_blob(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("invalid path")?
+        .to_string();
+    if !name.ends_with("-partial") {
+        return Err("not a partial blob".into());
+    }
+    let dir = p.parent().ok_or("no parent directory")?;
+    if dir.file_name().and_then(|n| n.to_str()) != Some("blobs") {
+        return Err("not inside a blobs directory".into());
+    }
+    let mut removed = false;
+    let mut last_err: Option<String> = None;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if fname == name || fname.starts_with(&format!("{name}-")) {
+                match std::fs::remove_file(entry.path()) {
+                    Ok(()) => removed = true,
+                    Err(e) => last_err = Some(e.to_string()),
+                }
+            }
+        }
+    }
+    if removed {
+        Ok(())
+    } else {
+        Err(last_err.unwrap_or_else(|| "nothing to remove".into()))
+    }
+}
+
+/// Forget an interrupted pull (e.g. the user dismisses it, or it finished).
+#[tauri::command]
+pub async fn clear_pending_ollama_pull(model: String) {
+    mark_pending_pull(&model, false);
+}
+
+/// Load a model into memory now (an empty `/api/generate` warms it) and keep it
+/// resident until explicitly unloaded (`keep_alive: -1`), so the user controls
+/// residency by button rather than relying on first use to trigger the load.
+#[tauri::command]
+pub async fn load_ollama_model(model: String) -> Result<(), String> {
+    let body = serde_json::json!({"model": model, "keep_alive": -1}).to_string();
+    ollama_http("POST", "/api/generate", Some(&body))?;
+    Ok(())
+}
+
+/// Pull (download or update) a model from the Ollama registry, streaming
+/// download progress to the frontend. Emits `ollama-pull-progress` events
+/// (`{ model, status, completed, total }`) line-by-line as Ollama reports
+/// them so the UI can show a live percentage. Blocks until complete — may
+/// take minutes for large models.
+#[tauri::command]
+pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+    use std::io::{BufRead, BufReader};
+    use tauri::Emitter;
+
+    let body = serde_json::json!({"model": model, "stream": true}).to_string();
+
+    let stream =
+        TcpStream::connect("127.0.0.1:11434").map_err(|_| "not_running".to_string())?;
+    // 10-minute read timeout accommodates large model pulls between chunks.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(600)))
+        .map_err(|e| format!("set timeout: {e}"))?;
+
+    let req = format!(
+        "POST /api/pull HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.as_bytes().len()
+    );
+    let mut writer = stream.try_clone().map_err(|e| format!("clone: {e}"))?;
+    writer
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("write: {e}"))?;
+
+    // Record this as an in-flight pull; a crash/exit now leaves the entry behind
+    // so the next launch can offer to resume it. Removed only on success below.
+    mark_pending_pull(&model, true);
+
+    let mut reader = BufReader::new(stream);
+
+    // Consume the HTTP status line + headers up to the blank separator,
+    // capturing the status code so a 4xx/5xx can surface as an error.
+    let mut status_code = 200u16;
+    let mut header = String::new();
+    reader
+        .read_line(&mut header)
+        .map_err(|e| format!("read: {e}"))?;
+    if let Some(code) = header.split_whitespace().nth(1).and_then(|s| s.parse().ok()) {
+        status_code = code;
+    }
+    loop {
+        let mut h = String::new();
+        let n = reader.read_line(&mut h).map_err(|e| format!("read: {e}"))?;
+        if n == 0 || h == "\r\n" || h == "\n" {
+            break;
+        }
+    }
+
+    // Stream the newline-delimited JSON body, forwarding each progress line.
+    let mut last_err: Option<String> = None;
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).map_err(|e| format!("read: {e}"))?;
+        if n == 0 {
+            break;
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             if let Some(err) = v["error"].as_str() {
-                return Err(err.to_string());
+                last_err = Some(err.to_string());
+                continue;
             }
+            let _ = app.emit(
+                "ollama-pull-progress",
+                serde_json::json!({
+                    "model": model,
+                    "status": v["status"].as_str().unwrap_or_default(),
+                    "completed": v["completed"].as_u64().unwrap_or(0),
+                    "total": v["total"].as_u64().unwrap_or(0),
+                }),
+            );
         }
-        break;
     }
+
+    if let Some(err) = last_err {
+        return Err(friendly_ollama_error(&err));
+    }
+    if status_code >= 400 {
+        return Err(format!("HTTP {status_code}"));
+    }
+    // Completed cleanly — drop it from the interrupted-pull record.
+    mark_pending_pull(&model, false);
     Ok(())
 }
 
@@ -179,6 +636,208 @@ pub async fn delete_ollama_model(model: String) -> Result<(), String> {
     let body = serde_json::json!({"model": model}).to_string();
     ollama_http("DELETE", "/api/delete", Some(&body))?;
     Ok(())
+}
+
+/// Total download size in bytes for an installable model tag, read from the
+/// Ollama registry manifest. Used to show a model's size on hover before the
+/// user commits to a pull. Shells out to `curl` (no Rust TLS dep) and sums the
+/// manifest's config + layer sizes. `model` may be `name`, `name:tag`, or
+/// `namespace/name:tag`; an absent tag defaults to `latest`.
+#[tauri::command]
+pub async fn ollama_registry_size(model: String) -> Result<u64, String> {
+    validate_model_name(&model)?;
+
+    let (name, tag) = match model.split_once(':') {
+        Some((n, t)) => (n, t),
+        None => (model.as_str(), "latest"),
+    };
+    // Bare names live under the implicit `library/` namespace on the registry.
+    let repo = if name.contains('/') {
+        name.to_string()
+    } else {
+        format!("library/{name}")
+    };
+    let url = format!("https://registry.ollama.ai/v2/{repo}/manifests/{tag}");
+
+    // No shell — args are passed directly, and `validate_model_name` already
+    // restricts the characters that reach the URL.
+    let output = std::process::Command::new("curl")
+        .args([
+            "-fsSL",
+            "-H",
+            "Accept: application/vnd.docker.distribution.manifest.v2+json",
+            &url,
+        ])
+        .output()
+        .map_err(|e| format!("failed to query registry: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!("registry returned no manifest for {model}"));
+    }
+
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("manifest json: {e}"))?;
+
+    let layers_total: u64 = v["layers"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|l| l["size"].as_u64()).sum())
+        .unwrap_or(0);
+    let config_size = v["config"]["size"].as_u64().unwrap_or(0);
+    let total = layers_total + config_size;
+
+    if total == 0 {
+        return Err(format!("no size info in manifest for {model}"));
+    }
+    Ok(total)
+}
+
+// ── Live registry browse (ollama.com/search) ─────────────────────────────────
+//
+// Ollama exposes no JSON catalog API, but its search page is server-rendered
+// HTML carrying stable `x-test-*` hooks. We fetch it with `curl` (no TLS dep,
+// same as `ollama_registry_size`) and parse those hooks. This surfaces *every*
+// model in the registry — far beyond the curated `list_installable_models` — and
+// supports Ollama's own filters: free-text query, capability filter, sort, and
+// pagination for lazy loading. NB: Ollama provides no country/year metadata, so
+// "recency" comes only from its relative `updated` label and the `newest` sort.
+
+/// One model row parsed from an ollama.com/search results page.
+#[derive(serde::Serialize, Clone, PartialEq, Debug)]
+pub struct RegistryModel {
+    pub name: String,
+    pub description: String,
+    /// Capability badges: e.g. "tools", "vision", "thinking", "embedding", "audio".
+    pub capabilities: Vec<String>,
+    /// Parameter-size tags e.g. ["8b", "70b"] (also "e2b" for Gemma-3n variants).
+    pub sizes: Vec<String>,
+    /// Human pull count as shown, e.g. "65.8K".
+    pub pulls: String,
+    /// Relative update label as shown, e.g. "1 week ago".
+    pub updated: String,
+}
+
+/// Percent-encode a search query for safe inclusion in the URL's query string.
+/// Keeps RFC-3986 unreserved characters; everything else becomes %XX.
+fn percent_encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Minimal HTML-entity unescape for the text fragments we extract (names,
+/// descriptions). Covers the entities Ollama's templates actually emit.
+fn html_unescape(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&nbsp;", " ")
+}
+
+/// Text content right after an attribute marker: find `marker`, then the next
+/// '>', then return text up to the following '<' (unescaped, trimmed).
+fn tag_text_after(card: &str, marker: &str) -> Option<String> {
+    let i = card.find(marker)?;
+    let rest = &card[i + marker.len()..];
+    let gt = rest.find('>')?;
+    let after = &rest[gt + 1..];
+    let lt = after.find('<')?;
+    Some(html_unescape(after[..lt].trim()))
+}
+
+/// All text contents for a marker that repeats within a single card (e.g. the
+/// capability and size badges).
+fn all_tag_texts(card: &str, marker: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while let Some(i) = card[pos..].find(marker) {
+        let start = pos + i + marker.len();
+        let Some(gt) = card[start..].find('>') else { break };
+        let after = start + gt + 1;
+        if let Some(lt) = card[after..].find('<') {
+            let text = html_unescape(card[after..after + lt].trim());
+            if !text.is_empty() {
+                out.push(text);
+            }
+        }
+        pos = after;
+    }
+    out
+}
+
+/// Parse the ollama.com/search HTML into model rows. Pure + tested: each
+/// `<li x-test-model …>` becomes one `RegistryModel`.
+fn parse_search_html(html: &str) -> Vec<RegistryModel> {
+    // Each result card starts at an `x-test-model` marker; the first split chunk
+    // is the page header before any card, so skip it.
+    html.split("x-test-model")
+        .skip(1)
+        .filter_map(|card| {
+            let name = tag_text_after(card, "x-test-search-response-title")?;
+            if name.is_empty() {
+                return None;
+            }
+            // Description is the first <p> with the max-w-lg class.
+            let description = tag_text_after(card, "class=\"max-w-lg").unwrap_or_default();
+            Some(RegistryModel {
+                name,
+                description,
+                capabilities: all_tag_texts(card, "x-test-capability"),
+                sizes: all_tag_texts(card, "x-test-size"),
+                pulls: tag_text_after(card, "x-test-pull-count").unwrap_or_default(),
+                updated: tag_text_after(card, "x-test-updated").unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+/// Browse the full Ollama registry via its search page. Returns one page
+/// (~20 rows) of results so the frontend can lazy-load; an empty vec means no
+/// more pages. `capability` filters by a single capability ("" = any);
+/// `sort` is "newest" or anything else (popular, the default). `page` is 1-based.
+#[tauri::command]
+pub async fn search_ollama_registry(
+    query: String,
+    capability: String,
+    sort: String,
+    page: u32,
+) -> Result<Vec<RegistryModel>, String> {
+    let page = page.max(1);
+    let mut url = format!(
+        "https://ollama.com/search?q={}&page={page}",
+        percent_encode_query(query.trim())
+    );
+    // Only forward a capability we recognise, so we never inject arbitrary params.
+    const CAPS: [&str; 6] = ["tools", "vision", "thinking", "embedding", "audio", "cloud"];
+    if CAPS.contains(&capability.as_str()) {
+        url.push_str(&format!("&c={capability}"));
+    }
+    if sort == "newest" {
+        url.push_str("&o=newest");
+    }
+
+    // No shell — args passed directly; the URL is built only from a validated
+    // capability/sort and a percent-encoded query.
+    let output = std::process::Command::new("curl")
+        .args(["-fsSL", &url])
+        .output()
+        .map_err(|e| format!("failed to query registry: {e}"))?;
+
+    if !output.status.success() {
+        return Err("ollama.com search request failed".to_string());
+    }
+
+    let html = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_search_html(&html))
 }
 
 /// Return the built-in catalog of popular installable models.
@@ -366,6 +1025,39 @@ pub async fn list_installable_models() -> Vec<CatalogEntry> {
     ]
 }
 
+/// True when the Ollama server is reachable on its default port. Cheap enough
+/// (200 ms TCP connect) to poll from the UI for a live status indicator.
+#[tauri::command]
+pub async fn ollama_is_running() -> bool {
+    ollama_listening()
+}
+
+/// Three-state health of the local Ollama server for the header status lamp:
+/// - `"stopped"` — server unreachable (lamp red),
+/// - `"idle"` — server up but no model loaded in memory (lamp yellow),
+/// - `"loaded"` — at least one model currently loaded in memory (lamp green).
+///
+/// One round trip: `/api/ps` lists the models resident in memory, and a
+/// successful response also proves the server is reachable, so it doubles as
+/// the running check.
+#[tauri::command]
+pub async fn ollama_status() -> &'static str {
+    match ollama_http("GET", "/api/ps", None) {
+        Err(_) => "stopped",
+        Ok(body) => {
+            let loaded = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["models"].as_array().map(|a| !a.is_empty()))
+                .unwrap_or(false);
+            if loaded {
+                "loaded"
+            } else {
+                "idle"
+            }
+        }
+    }
+}
+
 fn ollama_listening() -> bool {
     TcpStream::connect_timeout(
         &"127.0.0.1:11434".parse().unwrap(),
@@ -473,29 +1165,133 @@ pub async fn list_ollama_models() -> Result<Vec<String>, String> {
 // ── Local code/text autocomplete (TODO Group M #45) ──────────────────────────
 //
 // DECISION A: completion is LOCAL OLLAMA ONLY and OPT-IN. We reuse `ollama_http`
-// against the same `/api/generate` endpoint as the rest of this module — no
-// remote endpoint is ever contacted. The frontend gates the call behind a
-// per-type `autocomplete` setting (default OFF) and an explicit Ctrl+Space, and
-// only fires after `ensure_ollama_running` succeeds; if Ollama isn't reachable
-// this returns the standard `not_running` error so the UI can fail silently.
+// against the local `/api/chat` endpoint — no remote endpoint is ever contacted.
+// The frontend gates the call behind a per-type `autocomplete` setting (default
+// OFF) and runs it against whichever model is currently loaded in memory; if none
+// is loaded / Ollama isn't reachable this returns `not_running` and the UI shows a
+// "load a local model" hint.
+//
+// We use /api/chat (not /api/generate) with a dedicated system role: a general
+// instruct/chat model like llama3.2 otherwise reads the surrounding text as a
+// *task* and replies "Here is the reformatted version…" instead of continuing it.
 
-/// Build the fill-in-the-middle prompt sent to the model: the text before the
-/// caret (`prefix`) and after it (`suffix`), with a short instruction so a
-/// general instruct model returns only the continuation. Pure + tested.
-fn completion_prompt(prefix: &str, suffix: &str, language: &str) -> String {
-    let lang = if language.is_empty() { "text" } else { language };
-    format!(
-        "You are an autocomplete engine for a code/text editor. Continue the {lang} \
-document at the cursor. Reply with ONLY the text that should be inserted at the \
-cursor — no explanation, no code fences, no repetition of the surrounding text.\n\n\
-<before>\n{prefix}\n</before>\n<after>\n{suffix}\n</after>\n\nInsertion:"
-    )
+/// System message that turns a general instruct/chat model into a fill-in-the-
+/// middle completion engine: it must INSERT between BEFORE and AFTER (not author a
+/// fresh reply). How *much* to insert is left to the per-request TASK hint (see
+/// [`CompletionMode`]) so the same engine serves sentence, block, and whole-scope
+/// completions. Verified against llama3.2:3b. Pure + sent as the chat `system` role.
+const COMPLETION_SYSTEM: &str = "You are a fill-in-the-middle autocomplete engine inside a code/text \
+editor. You receive the text BEFORE the cursor and the text AFTER the cursor. Output ONLY the raw text \
+to INSERT at the cursor so that BEFORE + your insertion + AFTER reads as one correct, natural, continuous \
+piece of text. Continue directly from the end of BEFORE and join smoothly into the start of AFTER. Insert \
+exactly what the TASK asks for and no more. Never repeat, rewrite, or quote any text from BEFORE or AFTER. \
+No preamble, no quotes, no code fences, no explanations, no labels.";
+
+/// How much of a completion to generate (#45 modes). Chosen per file type in
+/// settings and cycled live with Ctrl+Shift+Space. Drives both the TASK hint in
+/// [`completion_prompt`] and the `num_predict` output cap.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CompletionMode {
+    /// Finish the current word/sentence/line only (default; least intrusive).
+    Sentence,
+    /// Finish the current code block / paragraph (may span several lines).
+    Block,
+    /// Complete the whole enclosing function or scope.
+    Scope,
 }
 
-/// Strip wrapping artefacts a chat model sometimes adds around a raw completion
-/// (leading/trailing code fences). Pure + tested.
+impl CompletionMode {
+    /// Parse the frontend's mode string; anything unknown/absent falls back to the
+    /// conservative `Sentence` mode.
+    fn parse(s: &str) -> Self {
+        match s {
+            "block" => Self::Block,
+            "scope" => Self::Scope,
+            _ => Self::Sentence,
+        }
+    }
+
+    /// Output cap (tokens). Larger modes need more room, but each stays bounded so
+    /// a local model can't run away generating the rest of the file.
+    fn num_predict(self) -> u32 {
+        match self {
+            Self::Sentence => 128,
+            Self::Block => 256,
+            Self::Scope => 512,
+        }
+    }
+}
+
+/// True when the cursor sits in the middle of a sentence — i.e. the last
+/// non-space/tab character of `prefix` is a word/comma rather than a sentence
+/// terminator, a newline, or the start of the document. Used to bias the model
+/// toward finishing the current sentence first. Pure + tested.
+fn is_mid_sentence(prefix: &str) -> bool {
+    match prefix.trim_end_matches([' ', '\t']).chars().last() {
+        None => false,
+        Some(c) => !matches!(c, '.' | '!' | '?' | ':' | ';' | '\n'),
+    }
+}
+
+/// Build the user message paired with [`COMPLETION_SYSTEM`]: a per-caret TASK hint
+/// plus the text before the caret (`prefix`) and after it (`suffix`) as labelled
+/// sections, so the model inserts at the cursor rather than rewriting the document.
+/// The TASK is selected by `mode`: `Sentence` keeps the insertion to the current
+/// word/sentence/line (and, when mid-sentence, biases toward finishing it first),
+/// `Block` completes the current block/paragraph, and `Scope` the whole enclosing
+/// function or scope. Pure + tested.
+fn completion_prompt(prefix: &str, suffix: &str, language: &str, mode: CompletionMode) -> String {
+    let lang = if language.is_empty() { "text" } else { language };
+    let task = match mode {
+        CompletionMode::Sentence => {
+            if is_mid_sentence(prefix) {
+                "TASK: The cursor is in the middle of a sentence. Output only what completes the \
+current word and sentence so it joins smoothly into AFTER. Keep it to a single sentence or line; do \
+not begin a new paragraph."
+            } else {
+                "TASK: Continue from the end of BEFORE with a brief, on-topic insertion that leads \
+into AFTER. Keep it to one sentence or line; do not begin a new paragraph or topic."
+            }
+        }
+        CompletionMode::Block => {
+            "TASK: Continue from the end of BEFORE, completing the current line and the rest of the \
+current code block, statement, or paragraph. You may span several lines, but stop at the end of that \
+block — do not write the remainder of the document."
+        }
+        CompletionMode::Scope => {
+            "TASK: Continue from the end of BEFORE, completing the entire enclosing function, block, \
+or scope — its full body, with balanced brackets and indentation — so it joins into AFTER. Stop at \
+the end of that function or scope; do not continue past it."
+        }
+    };
+    format!("Language: {lang}\n{task}\n\nBEFORE:\n{prefix}\n\nAFTER:\n{suffix}")
+}
+
+/// Strip wrapping artefacts a chat model sometimes adds around a raw completion:
+/// a leading conversational preamble line ("Here is the continuation:") and
+/// leading/trailing code fences. Conservative — a preamble line is dropped only
+/// when it clearly reads as a preface AND ends with ':', so real first lines are
+/// never eaten. Pure + tested.
 fn clean_completion(raw: &str) -> String {
-    let mut s = raw.trim_end_matches('\n').to_string();
+    let mut s = raw.trim_matches('\n').to_string();
+
+    // Defense in depth (the system prompt already forbids it): drop a leading
+    // preamble line if the model added one anyway.
+    if let Some(nl) = s.find('\n') {
+        let first = s[..nl].trim();
+        let lower = first.to_ascii_lowercase();
+        let is_preamble = first.ends_with(':')
+            && [
+                "here is", "here's", "here are", "sure", "certainly", "of course",
+                "the continuation", "continuation", "the reformatted", "the completed",
+            ]
+            .iter()
+            .any(|p| lower.starts_with(p));
+        if is_preamble {
+            s = s[nl + 1..].trim_start_matches('\n').to_string();
+        }
+    }
+
     // Drop a leading ```lang fence and a trailing ``` if the model wrapped it.
     if s.starts_with("```") {
         if let Some(nl) = s.find('\n') {
@@ -508,6 +1304,51 @@ fn clean_completion(raw: &str) -> String {
     s
 }
 
+/// Smallest overlap we bother trimming, in chars — short enough to catch a
+/// repeated word/operator ("fox", "a +") but above incidental 1–2 char matches.
+const MIN_SEAM_OVERLAP: usize = 3;
+
+/// Largest number of leading chars of `b` that are also a suffix of `a` (aligned
+/// on char boundaries); 0 when there is no overlap. Completions are short, so the
+/// quadratic scan is cheap. Pure + tested.
+fn overlap_len(a: &str, b: &str) -> usize {
+    let max = a.len().min(b.len());
+    for k in (1..=max).rev() {
+        if b.is_char_boundary(k)
+            && a.is_char_boundary(a.len() - k)
+            && a[a.len() - k..] == b[..k]
+        {
+            return k;
+        }
+    }
+    0
+}
+
+/// Remove text the model echoed from the surrounding context, so only the genuinely
+/// new insertion remains. Small models often repeat the word/line just before the
+/// cursor (BEFORE "…return " → completion "return a + b") or pre-echo the text just
+/// after it. Trims a leading run of `completion` that repeats the tail of `prefix`
+/// and a trailing run that repeats the head of `suffix`, ignoring whitespace at the
+/// seam. Pure + tested.
+fn trim_context_overlap(prefix: &str, suffix: &str, completion: &str) -> String {
+    // Leading overlap with the end of BEFORE.
+    let head = completion.trim_start();
+    let p = prefix.trim_end();
+    let mut c = match overlap_len(p, head) {
+        n if n >= MIN_SEAM_OVERLAP => head[n..].trim_start(),
+        _ => completion,
+    };
+
+    // Trailing overlap with the start of AFTER.
+    let tail = c.trim_end();
+    let s = suffix.trim_start();
+    if overlap_len(tail, s) >= MIN_SEAM_OVERLAP {
+        let m = overlap_len(tail, s);
+        c = tail[..tail.len() - m].trim_end();
+    }
+    c.to_string()
+}
+
 /// Single-shot local completion: given the text around the caret, ask the local
 /// Ollama `model` for the insertion. Local-only (`ollama_http` talks to
 /// 127.0.0.1:11434); returns `not_running` when Ollama isn't reachable.
@@ -517,22 +1358,29 @@ pub async fn complete_text(
     suffix: String,
     model: String,
     language: String,
+    mode: Option<String>,
 ) -> Result<String, String> {
-    let prompt = completion_prompt(&prefix, &suffix, &language);
-    // `stream: false` returns one JSON object with the full `response`. Cap the
-    // output and use a low temperature so completions are short and deterministic.
+    let mode = CompletionMode::parse(mode.as_deref().unwrap_or("sentence"));
+    let user = completion_prompt(&prefix, &suffix, &language, mode);
+    // `/api/chat` with a system role keeps a chat model from treating the text as
+    // a task to rewrite. `stream: false` returns one JSON object; low temperature
+    // + a mode-scaled output cap keep completions tight and deterministic.
     let body = serde_json::json!({
         "model": model,
-        "prompt": prompt,
         "stream": false,
-        "options": { "temperature": 0.1, "num_predict": 128 }
+        "messages": [
+            { "role": "system", "content": COMPLETION_SYSTEM },
+            { "role": "user", "content": user }
+        ],
+        "options": { "temperature": 0.1, "num_predict": mode.num_predict() }
     })
     .to_string();
-    let response = ollama_http("POST", "/api/generate", Some(&body))?;
+    let response = ollama_http("POST", "/api/chat", Some(&body))?;
     let v: serde_json::Value =
         serde_json::from_str(&response).map_err(|e| format!("ollama json: {e}"))?;
-    let text = v["response"].as_str().unwrap_or("");
-    Ok(clean_completion(text))
+    let text = v["message"]["content"].as_str().unwrap_or("");
+    let text = clean_completion(text);
+    Ok(trim_context_overlap(&prefix, &suffix, &text))
 }
 
 /// Result of preparing a local Ollama agent for vibe.
@@ -800,11 +1648,107 @@ mod tests {
         );
     }
 
+    // ── friendly error mapping: broken Ollama runner (#vibe 500) ─────────────
+
+    #[test]
+    fn friendly_ollama_error_detects_missing_runner() {
+        // The exact shape Ollama returns when its llama-server binary is absent —
+        // this is what surfaces through vibe as an "internal server error".
+        let raw = "error starting llama-server: llama-server binary not found \
+            (checked: /usr/local/lib/ollama/llama-server, ...). Run 'cmake -S \
+            llama/server --preset cpu && cmake --build --preset cpu' first";
+        let msg = friendly_ollama_error(raw);
+        assert!(
+            msg.contains("inference runner") && msg.contains("incomplete"),
+            "missing-runner error should be rewritten to an actionable message, got: {msg}"
+        );
+        // It points the user at the reinstall command.
+        assert!(msg.contains(OLLAMA_INSTALL_CMD));
+        // And it no longer leaks the raw cmake/build hint.
+        assert!(!msg.contains("cmake"));
+    }
+
+    #[test]
+    fn friendly_ollama_error_is_case_insensitive() {
+        let msg = friendly_ollama_error("LLAMA-SERVER binary NOT FOUND");
+        assert!(msg.contains("inference runner"));
+    }
+
+    #[test]
+    fn friendly_ollama_error_passes_through_unrelated() {
+        // Errors we don't special-case must be returned verbatim, not swallowed.
+        for raw in ["model 'foo' not found, try pulling it first", "out of memory", "HTTP 500"] {
+            assert_eq!(friendly_ollama_error(raw), raw);
+        }
+    }
+
+    // ── registry search HTML parsing ─────────────────────────────────────────
+
+    // Trimmed-down but structurally faithful fixture of two ollama.com/search
+    // result cards (same `x-test-*` hooks the live page emits).
+    const SEARCH_FIXTURE: &str = r#"
+      <ul role="list">
+      <li x-test-model class="flex">
+        <a href="/library/glm-5.2">
+          <h2><span x-test-search-response-title>glm-5.2</span></h2>
+          <p class="max-w-lg break-words text-md">GLM-5.2 is Z.ai&#39;s flagship model &amp; more.</p>
+          <span x-test-capability class="...">tools</span>
+          <span x-test-capability class="...">thinking</span>
+          <span x-test-size class="...">8b</span>
+          <span x-test-size class="...">355b</span>
+          <span x-test-pull-count>65.8K</span>
+          <span x-test-updated>1 week ago</span>
+        </a>
+      </li>
+      <li x-test-model class="flex">
+        <a href="/library/nomic-embed-text">
+          <h2><span x-test-search-response-title>nomic-embed-text</span></h2>
+          <p class="max-w-lg break-words text-md">High-quality text embeddings.</p>
+          <span x-test-capability class="...">embedding</span>
+          <span x-test-size class="...">latest</span>
+          <span x-test-pull-count>30M</span>
+          <span x-test-updated>1 year ago</span>
+        </a>
+      </li>
+      </ul>"#;
+
+    #[test]
+    fn parse_search_html_extracts_all_fields() {
+        let models = parse_search_html(SEARCH_FIXTURE);
+        assert_eq!(models.len(), 2);
+
+        let glm = &models[0];
+        assert_eq!(glm.name, "glm-5.2");
+        // HTML entities are unescaped.
+        assert_eq!(glm.description, "GLM-5.2 is Z.ai's flagship model & more.");
+        assert_eq!(glm.capabilities, vec!["tools", "thinking"]);
+        assert_eq!(glm.sizes, vec!["8b", "355b"]);
+        assert_eq!(glm.pulls, "65.8K");
+        assert_eq!(glm.updated, "1 week ago");
+
+        let nomic = &models[1];
+        assert_eq!(nomic.name, "nomic-embed-text");
+        assert_eq!(nomic.capabilities, vec!["embedding"]);
+        assert_eq!(nomic.sizes, vec!["latest"]);
+    }
+
+    #[test]
+    fn parse_search_html_empty_when_no_cards() {
+        assert!(parse_search_html("<html><body>no results</body></html>").is_empty());
+    }
+
+    #[test]
+    fn percent_encode_query_escapes_unsafe_chars() {
+        assert_eq!(percent_encode_query("llama 3.2"), "llama%203.2");
+        assert_eq!(percent_encode_query("a&b=c"), "a%26b%3Dc");
+        assert_eq!(percent_encode_query("qwen2.5-coder"), "qwen2.5-coder");
+    }
+
     // ── completion prompt construction (#45) ──────────────────────────────────
 
     #[test]
     fn completion_prompt_includes_prefix_suffix_and_language() {
-        let p = completion_prompt("let x =", " + 1;", "rust");
+        let p = completion_prompt("let x =", " + 1;", "rust", CompletionMode::Sentence);
         assert!(p.contains("let x ="), "prefix must be embedded");
         assert!(p.contains(" + 1;"), "suffix must be embedded");
         assert!(p.contains("rust"), "language must be named");
@@ -814,8 +1758,70 @@ mod tests {
 
     #[test]
     fn completion_prompt_defaults_empty_language_to_text() {
-        let p = completion_prompt("a", "b", "");
-        assert!(p.contains("text document") || p.contains("the text document"));
+        let p = completion_prompt("a", "b", "", CompletionMode::Sentence);
+        assert!(p.contains("Language: text"), "empty language defaults to text");
+    }
+
+    #[test]
+    fn completion_prompt_labels_before_and_after_sections() {
+        // The BEFORE/AFTER framing is what stops a chat model rewriting the doc.
+        let p = completion_prompt("pre", "post", "rust", CompletionMode::Sentence);
+        assert!(p.contains("BEFORE:\npre"));
+        assert!(p.contains("AFTER:\npost"));
+        assert!(p.find("BEFORE:").unwrap() < p.find("AFTER:").unwrap());
+    }
+
+    #[test]
+    fn completion_mode_parse_and_caps_scale_by_mode() {
+        assert_eq!(CompletionMode::parse("block"), CompletionMode::Block);
+        assert_eq!(CompletionMode::parse("scope"), CompletionMode::Scope);
+        // Unknown / absent → the conservative default.
+        assert_eq!(CompletionMode::parse("sentence"), CompletionMode::Sentence);
+        assert_eq!(CompletionMode::parse("bogus"), CompletionMode::Sentence);
+        // Caps grow with scope so bigger modes have room to finish.
+        assert!(
+            CompletionMode::Sentence.num_predict() < CompletionMode::Block.num_predict()
+                && CompletionMode::Block.num_predict() < CompletionMode::Scope.num_predict()
+        );
+    }
+
+    #[test]
+    fn completion_prompt_block_and_scope_drop_the_single_sentence_bias() {
+        // Block/scope allow multi-line output; they must NOT carry the sentence
+        // mode's "do not begin a new paragraph" restriction.
+        let mid = "fn add(a: i32, b: i32) {\n    ";
+        let block = completion_prompt(mid, "\n}", "rust", CompletionMode::Block);
+        assert!(block.contains("block"));
+        assert!(!block.contains("middle of a sentence"));
+
+        let scope = completion_prompt(mid, "\n}", "rust", CompletionMode::Scope);
+        assert!(scope.contains("function") && scope.contains("scope"));
+        assert!(!scope.contains("middle of a sentence"));
+    }
+
+    #[test]
+    fn is_mid_sentence_detects_unfinished_sentences() {
+        // Mid-sentence: ends on a word, comma, or trailing space after a word.
+        assert!(is_mid_sentence("The main advantages are"));
+        assert!(is_mid_sentence("I am writing to "));
+        assert!(is_mid_sentence("a, b,"));
+        // Not mid-sentence: terminator, newline, or empty (start of document).
+        assert!(!is_mid_sentence("Done."));
+        assert!(!is_mid_sentence("Why?"));
+        assert!(!is_mid_sentence("Header:"));
+        assert!(!is_mid_sentence("paragraph end.\n"));
+        assert!(!is_mid_sentence(""));
+    }
+
+    #[test]
+    fn completion_prompt_biases_to_finishing_the_sentence_when_mid_sentence() {
+        let mid = completion_prompt("I am writing to ", " Best regards", "text", CompletionMode::Sentence);
+        assert!(mid.contains("middle of a sentence"));
+        assert!(mid.contains("complete") || mid.contains("completes"));
+        // At a sentence boundary it switches to the plain-continuation hint.
+        let cont = completion_prompt("First line.\n", "", "text", CompletionMode::Sentence);
+        assert!(!cont.contains("middle of a sentence"));
+        assert!(cont.contains("Continue"));
     }
 
     #[test]
@@ -824,6 +1830,64 @@ mod tests {
         assert_eq!(clean_completion("```rust\nfoo()\n```"), "foo()\n");
         // No fence → unchanged (bar a trailing newline trim).
         assert_eq!(clean_completion("plain"), "plain");
+    }
+
+    #[test]
+    fn clean_completion_strips_conversational_preamble() {
+        // The exact failure the user hit: a chat model prefacing the answer.
+        assert_eq!(
+            clean_completion("Here is the reformatted version of the text:\nreturn a + b"),
+            "return a + b",
+        );
+        assert_eq!(clean_completion("Sure, here you go:\nx = 1"), "x = 1");
+        // A real first line that merely ends in ':' is NOT a preamble — keep it.
+        assert_eq!(
+            clean_completion("def foo():\n    return 1"),
+            "def foo():\n    return 1",
+        );
+        // A normal multi-line completion is untouched.
+        assert_eq!(clean_completion("a + b\nc + d"), "a + b\nc + d");
+    }
+
+    #[test]
+    fn trim_context_overlap_drops_echoed_prefix_tail() {
+        // The exact case from llama3.2:3b: BEFORE ends with "return ", model echoes it.
+        assert_eq!(
+            trim_context_overlap("    return ", "\n\nprint(x)", "return a + b"),
+            "a + b",
+        );
+        // Repeated trailing word.
+        assert_eq!(
+            trim_context_overlap("The quick brown fox", " over the dog", "fox jumps"),
+            "jumps",
+        );
+    }
+
+    #[test]
+    fn trim_context_overlap_drops_echoed_suffix_head() {
+        // Model pre-echoes the start of AFTER at the end of its insertion.
+        assert_eq!(
+            trim_context_overlap("a = ", " + 1", "compute() + 1"),
+            "compute()",
+        );
+    }
+
+    #[test]
+    fn trim_context_overlap_keeps_unrelated_completion() {
+        // No overlap → returned unchanged.
+        assert_eq!(
+            trim_context_overlap("I am writing to ", " Best regards", "express my thanks"),
+            "express my thanks",
+        );
+        // A 1–2 char incidental match is below the threshold, so it is NOT trimmed.
+        assert_eq!(trim_context_overlap("foo a", "", "a list of items"), "a list of items");
+    }
+
+    #[test]
+    fn overlap_len_finds_seam() {
+        assert_eq!(overlap_len("    return", "return a"), 6);
+        assert_eq!(overlap_len("brown fox", "fox jumps"), 3);
+        assert_eq!(overlap_len("hello", "world"), 0);
     }
 
     // ── sanitize_alias turns ':' into '-' ─────────────────────────────────────

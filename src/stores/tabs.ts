@@ -2181,10 +2181,24 @@ export function mapGroup(
   };
 }
 
+// Commands that launch an AI coding agent (mirrors TabBar's AGENT_ITEMS and the
+// backend agent registry in commands::agents). Used to classify a tab by its cmd.
+const AGENT_CMDS = new Set([
+  "claude",
+  "codex",
+  "gemini",
+  "vibe",
+  "aider",
+  "opencode",
+  "cursor-agent",
+  "copilot",
+  "grok",
+  "qwen",
+]);
+
 export function cmdToKind(cmd: string): TabKind {
   if (cmd === FILES_TAB_CMD) return "files";
-  if (cmd === "claude" || cmd === "codex" || cmd === "gemini" || cmd === "vibe")
-    return "agent";
+  if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
 }
 
@@ -2207,9 +2221,19 @@ export function isRestorableKind(kind: TabKind): boolean {
 
 /**
  * Agents whose prior session can be resumed, mapping `cmd` → the launch args to
- * relaunch with that session. Claude (`--resume <id>`) and Codex (`codex resume`,
- * args injected by the backend) are wired; Gemini/Vibe stay excluded until their
- * resume path is confirmed (39d).
+ * relaunch with that session. Two resume styles are wired:
+ *
+ *  - id-based: Claude (`--resume <id>`) and Codex (`codex resume`, args injected
+ *    by the backend) resume a *specific* captured session.
+ *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor and Grok have no
+ *    caller-supplied launch id, so Eldrun re-launches with their "continue the
+ *    most recent session" flag. Because each agent tab launches in the project
+ *    directory, that most-recent session IS the tab's prior conversation. These
+ *    ignore the minted id (it only satisfies the persistence gate below and is
+ *    set as ELDRUN_TAB_UID). Caveat: two tabs of the same agent in one project
+ *    both resume that project's single latest session, so they can't be told
+ *    apart on restore. Gemini/Vibe stay excluded until their path is confirmed
+ *    (39d); Aider has no per-session resume (only `--restore-chat-history`).
  */
 export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   // Claude: `--resume <launch-id>`; the backend upgrades the id to the live one
@@ -2220,6 +2244,12 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   // reads the hook-recorded live id and injects `codex resume <live-id>` at spawn
   // (terminal::resolve_codex_session).
   codex: () => [],
+  // cwd "continue last session" — no captured id needed (see note above).
+  qwen: () => ["--continue"],
+  opencode: () => ["--continue"],
+  copilot: () => ["--continue"],
+  "cursor-agent": () => ["--continue"],
+  grok: () => ["--session", "latest"],
 };
 
 /**

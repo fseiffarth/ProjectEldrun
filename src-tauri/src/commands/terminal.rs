@@ -7,6 +7,19 @@ use crate::terminal::{PtyOptions, PtyRegistry};
 
 pub type RegistryState = Arc<Mutex<PtyRegistry>>;
 
+/// Read the global `agent_remote_control` setting, defaulting ON when the
+/// settings file or key is absent. A cheap per-spawn JSON read (spawns are
+/// infrequent), kept here so the spawn path has no `AppHandle` dependency.
+fn settings_agent_remote_control() -> bool {
+    let path = storage::state_dir().join("settings.json");
+    if !path.exists() {
+        return crate::schema::Settings::default().agent_remote_control();
+    }
+    storage::read_json::<crate::schema::Settings>(&path)
+        .map(|s| s.agent_remote_control())
+        .unwrap_or(true)
+}
+
 #[tauri::command]
 pub async fn pty_spawn(
     app: AppHandle,
@@ -35,6 +48,19 @@ pub async fn pty_spawn(
     // resolution `spawn_pty` used to do; it no longer does, to avoid resolving
     // twice.)
     opts = crate::services::agent_session::resolve_agent_session(opts);
+
+    // Claude remote control (global setting `agent_remote_control`, default ON):
+    // spawn `claude` agent tabs with `--remote-control` so the running session can
+    // be monitored/steered from the Claude app/web. Only Claude has this flag.
+    // Applied here — after session resolution but before ssh/docker wrapping — so
+    // it rides into the wrapped command for remote/sandboxed tabs too. Guarded
+    // against duplicates so a re-spawn never stacks the flag.
+    if opts.cmd == "claude"
+        && settings_agent_remote_control()
+        && !opts.args.iter().any(|a| a == "--remote-control")
+    {
+        opts.args.push("--remote-control".to_string());
+    }
 
     // Sandbox (Docker) and ssh-remote wrapping are mutually exclusive: sandbox
     // is local-only. When `opts.sandbox` is set (frontend marks agent tabs of a
