@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
+import type { AutocompleteMode } from "../types";
 import { useLinkRoutingStore } from "./linkRouting";
 
 export type TabKind = "agent" | "local_agent" | "shell" | "files" | "embed";
@@ -28,6 +29,35 @@ export interface ViewerState {
   scale?: number;
   offsetX?: number;
   offsetY?: number;
+  // Tab-local AI-assist overrides (#45). When set, they override the per-type
+  // `viewer_prefs` default for THIS tab only; when absent the editor falls back
+  // to the per-type setting. Toggled from the in-tab AI-assist controls.
+  autocomplete?: boolean;
+  autocompleteMode?: AutocompleteMode;
+  grammarCheck?: boolean;
+}
+
+// Detached windows render their tabs from a Tauri-event SEED into local React
+// state; those tabs never enter `useTabsStore` (the main window owns the layout
+// store — see DetachedApp/jumpToSource). Viewer hooks seed their per-tab state
+// (scroll/zoom + the #45 autocomplete/grammar overrides) from
+// `useTabsStore`, so in a detached window that probe misses and the editor falls
+// back to the per-type default — e.g. a per-tab autocomplete toggle silently
+// reverts to off. This per-window registry lets those hooks recover a detached
+// tab's seeded `viewerState` by key. Populated by DetachedApp from each seed;
+// lives only in the detached window's heap (no-op/empty in the main window).
+const detachedViewerState = new Map<string, ViewerState>();
+
+/** Register (or clear, when `vs` is undefined) a detached tab's seeded
+ *  `viewerState` so viewer hooks can read it when `useTabsStore` has no entry. */
+export function setDetachedViewerState(key: string, vs: ViewerState | undefined): void {
+  if (vs) detachedViewerState.set(key, vs);
+  else detachedViewerState.delete(key);
+}
+
+/** A detached tab's seeded `viewerState`, or undefined. See {@link setDetachedViewerState}. */
+export function getDetachedViewerState(key: string): ViewerState | undefined {
+  return detachedViewerState.get(key);
 }
 
 /**

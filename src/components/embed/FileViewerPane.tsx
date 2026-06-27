@@ -5,7 +5,12 @@ import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useWindowsStore } from "../../stores/windows";
-import { findGroupOfTab, useTabsStore, type ViewerState } from "../../stores/tabs";
+import {
+  findGroupOfTab,
+  getDetachedViewerState,
+  useTabsStore,
+  type ViewerState,
+} from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
@@ -43,7 +48,6 @@ import {
   resolveProjectDirectory,
   type AutocompleteMode,
   type GrammarIssue,
-  type ViewerPref,
 } from "../../types";
 import { ContextFilePicker } from "./ContextFilePicker";
 import { TableView } from "./TableView";
@@ -94,12 +98,24 @@ import {
  * project.json by CenterPanel's debounced saveLayout, so the position survives an
  * Eldrun restart. A no-op when `tabKey` is absent (e.g. tests).
  */
-export function useViewerState(tabKey: string | undefined) {
-  const [initial] = useState<ViewerState | undefined>(() =>
-    tabKey
-      ? useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState
-      : undefined,
+/**
+ * A tab's persisted `ViewerState` seed, read once. Normally from `useTabsStore`
+ * (the main window owns the layout store); in a DETACHED window that store has
+ * no entry for the tab — its tabs render from a Tauri seed into local React
+ * state, not the store — so fall back to the detached seed registry. Without
+ * this fallback a detached editor loses per-tab scroll/zoom and the #45
+ * autocomplete/grammar toggles, silently reverting to the per-type defaults.
+ */
+function seedViewerState(tabKey: string | undefined): ViewerState | undefined {
+  if (!tabKey) return undefined;
+  return (
+    useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState ??
+    getDetachedViewerState(tabKey)
   );
+}
+
+export function useViewerState(tabKey: string | undefined) {
+  const [initial] = useState<ViewerState | undefined>(() => seedViewerState(tabKey));
   const persist = useCallback(
     (patch: ViewerState) => {
       if (tabKey) useTabsStore.getState().setViewerState(tabKey, patch);
@@ -1504,6 +1520,15 @@ function CodeEditor({
   // appears — and the caret drifts from the coloured glyphs over wrapped lines.
   // Constraining the overlays to this width makes every layer wrap identically.
   const [wrapWidth, setWrapWidth] = useState<number | null>(null);
+  // Last `clientWidth` the textarea was re-broken at. A vertical scrollbar
+  // appearing/disappearing as the document grows past the editor height changes
+  // clientWidth WITHOUT changing the border box, so the ResizeObserver below
+  // never fires and the textarea keeps its stale wrapping (WebKitGTK won't
+  // re-break on its own — see the nudge there). The overlay <pre>s, sized to the
+  // fresh clientWidth each keystroke, then wrap at a different width, so the
+  // coloured glyphs and the last-change tint drift down a row. Tracking the
+  // width here lets the wrap layout effect nudge a re-break when it shifts.
+  const prevClientWidth = useRef<number | null>(null);
 
   // Syntax-highlighted HTML rendered in a <pre> layer behind a transparent
   // textarea, so the file colours by type while staying fully editable. `null`
@@ -1978,13 +2003,27 @@ function CodeEditor({
   useLayoutEffect(() => {
     if (!wrap || !loaded) {
       setWrapWidth(null);
+      prevClientWidth.current = null;
       return;
     }
     const measure = measureRef.current;
     const ta = textareaRef.current;
     if (!measure || !ta) return;
-    setWrapWidth(ta.clientWidth);
-    measure.style.width = `${ta.clientWidth}px`;
+    const cw = ta.clientWidth;
+    // If the content width changed since the last measure — most often a vertical
+    // scrollbar toggling as the doc crosses the editor height, which the
+    // ResizeObserver can't see — force the textarea to re-break to the new width
+    // with the same whiteSpace nudge used on resize (synchronous, pre-paint, so
+    // no flicker and the value/caret are untouched). Keeps its wrapping in lockstep
+    // with the overlay layers pinned to `cw`, so the last-change tint stays put.
+    if (prevClientWidth.current !== cw) {
+      prevClientWidth.current = cw;
+      ta.style.whiteSpace = "pre";
+      void ta.offsetWidth;
+      ta.style.whiteSpace = "";
+    }
+    setWrapWidth(cw);
+    measure.style.width = `${cw}px`;
     const next = Array.from(
       measure.children,
       (c) => (c as HTMLElement).offsetHeight,
@@ -3175,76 +3214,101 @@ function useViewerPref(type: InternalViewer) {
   return useSettingsStore((s) => s.settings?.viewer_prefs?.[type]);
 }
 
-/** Config for local autocomplete (#45). The per-type `autocomplete` toggle is
- *  the gate; `preferred` is the user's active local model (🧠 menu). There is no
- *  separate model setting — completion runs against whichever model is currently
- *  loaded in Ollama memory, resolved at trigger time (see `requestCompletion`),
- *  preferring this one when it is loaded. */
-function useAutocompleteConfig(
-  type: InternalViewer,
-): { enabled: boolean; preferred?: string; mode: AutocompleteMode } {
-  const pref = useViewerPref(type);
-  const preferred = useSettingsStore((s) => s.settings?.ollama_model as string | undefined);
-  // The per-type default mode; the editor cycles a live override from here.
-  const mode: AutocompleteMode = AC_MODES.includes(pref?.autocomplete_mode as AutocompleteMode)
-    ? (pref!.autocomplete_mode as AutocompleteMode)
-    : "sentence";
-  return { enabled: pref?.autocomplete === true, preferred, mode };
-}
-
-/** Per-type local grammar-check config (#45 follow-up): the opt-in toggle plus
- *  the user's active local model, mirroring {@link useAutocompleteConfig}. */
-function useGrammarCheckConfig(
-  type: InternalViewer,
-): { enabled: boolean; preferred?: string } {
-  const pref = useViewerPref(type);
-  const preferred = useSettingsStore((s) => s.settings?.ollama_model as string | undefined);
-  return { enabled: pref?.grammar_check === true, preferred };
+/** What {@link useTabAiPrefs} returns: the effective autocomplete/grammar config
+ *  for the editor, plus the current control state + setters for the in-tab UI. */
+export interface TabAiPrefs {
+  ac: { enabled: boolean; preferred?: string; mode: AutocompleteMode };
+  gc: { enabled: boolean; preferred?: string };
+  autocomplete: boolean;
+  grammar: boolean;
+  mode: AutocompleteMode;
+  toggleAutocomplete: () => void;
+  toggleGrammar: () => void;
+  setMode: (m: AutocompleteMode) => void;
 }
 
 /**
- * Read + write the per-type AI-assist prefs (autocomplete on/off + length mode,
- * grammar on/off) so each editor tab can toggle them inline, not just via
- * Settings → Native Viewers. Writes merge the whole `viewer_prefs` map back
- * through `updateSettings` (same as the settings panel), so the change persists
- * and the in-tab control and the settings checkbox stay in lockstep.
+ * Tab-local AI-assist prefs (#45). Each editor tab gets its OWN autocomplete
+ * on/off, completion-length mode, and grammar on/off, overriding the per-type
+ * `viewer_prefs` default for that tab only. The override is seeded once from the
+ * tab's persisted `viewerState` and written back there (like scroll/zoom), so it
+ * survives reopening the file and an Eldrun restart. Until the user touches a
+ * control, the value tracks the per-type setting reactively; once toggled, that
+ * tab pins its own value. `preferred` is the user's active local model (🧠 menu).
  */
-function useEditorAiControls(type: InternalViewer) {
+function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiPrefs {
   const pref = useViewerPref(type);
-  const autocomplete = pref?.autocomplete === true;
-  const grammar = pref?.grammar_check === true;
-  const mode: AutocompleteMode = AC_MODES.includes(pref?.autocomplete_mode as AutocompleteMode)
+  const preferred = useSettingsStore((s) => s.settings?.ollama_model as string | undefined);
+  const defAutocomplete = pref?.autocomplete === true;
+  const defGrammar = pref?.grammar_check === true;
+  const defMode: AutocompleteMode = AC_MODES.includes(pref?.autocomplete_mode as AutocompleteMode)
     ? (pref!.autocomplete_mode as AutocompleteMode)
     : "sentence";
-  const patch = useCallback(
-    (next: Partial<ViewerPref>) => {
-      const all = useSettingsStore.getState().settings?.viewer_prefs ?? {};
-      const cur = all[type] ?? {};
-      void useSettingsStore.getState().updateSettings({
-        viewer_prefs: { ...all, [type]: { ...cur, ...next } },
-      });
+
+  // Seed the tab-local override once from the persisted viewerState. `undefined`
+  // for a field means "no override yet" → fall through to the per-type default.
+  const [override, setOverride] = useState<{
+    autocomplete?: boolean;
+    grammar?: boolean;
+    mode?: AutocompleteMode;
+  }>(() => {
+    const vs = seedViewerState(tabKey);
+    return { autocomplete: vs?.autocomplete, grammar: vs?.grammarCheck, mode: vs?.autocompleteMode };
+  });
+
+  const persist = useCallback(
+    (patch: ViewerState) => {
+      if (tabKey) useTabsStore.getState().setViewerState(tabKey, patch);
     },
-    [type],
+    [tabKey],
   );
+
+  const autocomplete = override.autocomplete ?? defAutocomplete;
+  const grammar = override.grammar ?? defGrammar;
+  const mode = override.mode ?? defMode;
+
+  const toggleAutocomplete = useCallback(() => {
+    setOverride((o) => {
+      const next = !(o.autocomplete ?? defAutocomplete);
+      persist({ autocomplete: next });
+      return { ...o, autocomplete: next };
+    });
+  }, [persist, defAutocomplete]);
+  const toggleGrammar = useCallback(() => {
+    setOverride((o) => {
+      const next = !(o.grammar ?? defGrammar);
+      persist({ grammarCheck: next });
+      return { ...o, grammar: next };
+    });
+  }, [persist, defGrammar]);
+  const setMode = useCallback(
+    (m: AutocompleteMode) => {
+      persist({ autocompleteMode: m });
+      setOverride((o) => ({ ...o, mode: m }));
+    },
+    [persist],
+  );
+
   return {
+    ac: { enabled: autocomplete, preferred, mode },
+    gc: { enabled: grammar, preferred },
     autocomplete,
     grammar,
     mode,
-    toggleAutocomplete: useCallback(() => patch({ autocomplete: !autocomplete }), [patch, autocomplete]),
-    toggleGrammar: useCallback(() => patch({ grammar_check: !grammar }), [patch, grammar]),
-    setMode: useCallback((m: AutocompleteMode) => patch({ autocomplete_mode: m }), [patch]),
+    toggleAutocomplete,
+    toggleGrammar,
+    setMode,
   };
 }
 
 /**
  * In-tab AI-assist controls for the editable viewers (#45): an Autocomplete
  * on/off toggle with a length-mode picker (Sentence/Block/Scope), and a Grammar
- * on/off toggle. Both are local-only (Ollama) and write the per-type prefs via
- * {@link useEditorAiControls}, so they mirror the Settings → Native Viewers
- * checkboxes. Rendered in the viewer header next to the font/undo/save controls.
+ * on/off toggle. Both are local-only (Ollama). The state is tab-local (see
+ * {@link useTabAiPrefs}) — toggling here affects only this tab. Rendered in the
+ * viewer header next to the font/undo/save controls.
  */
-function EditorAiControls({ type }: { type: InternalViewer }) {
-  const ai = useEditorAiControls(type);
+function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
   return (
     <div className="file-viewer-ai-controls" role="group" aria-label="AI assist">
       <button
@@ -3446,8 +3510,9 @@ function TextView({
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
   } = useEditableFile(path);
-  const ac = useAutocompleteConfig(type);
-  const gc = useGrammarCheckConfig(type);
+  const ai = useTabAiPrefs(tabKey, type);
+  const ac = ai.ac;
+  const gc = ai.gc;
   const font = useEditorFontSize(type);
   const jump = useEditorJump(path);
   const viewPos = useViewerState(tabKey);
@@ -3486,7 +3551,7 @@ function TextView({
           />
         )}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-        {showEditor && <EditorAiControls type={type} />}
+        {showEditor && <EditorAiControls ai={ai} />}
         {showEditor && fmt.enabled && (
           <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
         )}
@@ -3556,8 +3621,9 @@ function MarkdownView({
   } = useEditableFile(path);
   const [mode, setMode] = useState<"preview" | "edit">("preview");
   const font = useEditorFontSize("markdown");
-  const ac = useAutocompleteConfig("markdown");
-  const gc = useGrammarCheckConfig("markdown");
+  const ai = useTabAiPrefs(tabKey, "markdown");
+  const ac = ai.ac;
+  const gc = ai.gc;
   const fmt = useFormatter(path, draft, setDraft);
   // Imperative editor handle the formatting toolbar drives (bold/italic/TOC/…).
   const editorApi = useRef<EditorApi | null>(null);
@@ -3672,7 +3738,7 @@ function MarkdownView({
         </div>
         {mode === "edit" && <MarkdownToolbar api={editorApi} />}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-        {mode === "edit" && <EditorAiControls type="markdown" />}
+        {mode === "edit" && <EditorAiControls ai={ai} />}
         {mode === "edit" && fmt.enabled && (
           <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
         )}
@@ -4742,8 +4808,9 @@ function TexView({
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
   } = useEditableFile(path);
-  const ac = useAutocompleteConfig("tex");
-  const gc = useGrammarCheckConfig("tex");
+  const ai = useTabAiPrefs(tabKey, "tex");
+  const ac = ai.ac;
+  const gc = ai.gc;
   const font = useEditorFontSize("tex");
   const viewPos = useViewerState(tabKey);
   const persistScroll = useCallback(
@@ -4990,7 +5057,7 @@ function TexView({
       <div className="file-viewer">
         <ViewerHeader onOpenExternally={onOpenExternally}>
           <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-          <EditorAiControls type="tex" />
+          <EditorAiControls ai={ai} />
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
           <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
         </ViewerHeader>
@@ -5084,7 +5151,7 @@ function TexView({
           </button>
         )}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-        <EditorAiControls type="tex" />
+        <EditorAiControls ai={ai} />
         <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
       </ViewerHeader>

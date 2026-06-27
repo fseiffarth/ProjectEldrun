@@ -461,7 +461,7 @@ export function FileTree({
       // past the main viewport thanks to the pointer's implicit grab.
       detached.hover(detached.at(ev.screenX, ev.screenY), ev.screenX, ev.screenY, entry.name);
     };
-    const onUp = (ev: PointerEvent) => {
+    const onUp = async (ev: PointerEvent) => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       // Clear the popout highlight + tear down the panes listener, however this
@@ -477,9 +477,19 @@ export function FileTree({
       if (d == null) return;
       // Released over an open popout → dock the file into it as an embed tab,
       // landing in the SPECIFIC pane the popout resolved under the cursor (mirrors
-      // a tab dragged onto a popout). Re-hit-test at the release coords.
+      // a tab dragged onto a popout). Re-hit-test at the release coords. BUT only
+      // if the popout is actually the front window at the drop point: its bounds
+      // can geometrically contain the cursor while it sits BEHIND the main window
+      // (the press raised the main window) or another app. Docking into a popout
+      // the user can't see is wrong — treat an occluded popout like a release into
+      // empty space outside the window so a NEW detached window opens instead.
       const overDetached = detached.at(ev.screenX, ev.screenY);
-      if (overDetached) {
+      const overFrontDetached =
+        overDetached &&
+        (await invoke<boolean>("detached_window_frontmost", {
+          registryId: overDetached.label,
+        }).catch(() => true));
+      if (overDetached && overFrontDetached) {
         commitFileDrop(d, projectId, projectDir, null, {
           scope: overDetached.scope,
           groupId: overDetached.groupId,
@@ -488,11 +498,13 @@ export function FileTree({
         useDragStore.getState().end();
         return;
       }
-      // Released OUTSIDE the main window (e.g. dragged onto another monitor):
-      // open the file in its own standalone detached window at the cursor. The
-      // pointer's implicit capture keeps delivering coords past the viewport,
-      // so client coords outside [0,inner) is the outside-the-window signal.
+      // Released OUTSIDE the main window (e.g. dragged onto another monitor), or
+      // over an OCCLUDED popout (handled above): open the file in its own
+      // standalone detached window at the cursor. The pointer's implicit capture
+      // keeps delivering coords past the viewport, so client coords outside
+      // [0,inner) — or being over a popout's bounds at all — is the signal.
       const outside =
+        !!overDetached ||
         ev.clientX < 0 ||
         ev.clientY < 0 ||
         ev.clientX >= window.innerWidth ||

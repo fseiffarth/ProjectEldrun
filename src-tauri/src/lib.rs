@@ -377,6 +377,7 @@ pub fn run() {
             // Detached subwindows (#42)
             commands::subwindow::detach_subwindow,
             commands::subwindow::attach_subwindow,
+            commands::subwindow::detached_window_frontmost,
             commands::workspace::workspace_name,
             commands::workspace::network_conn_type,
             // Project-runtime switching (replaces switch_project_windows)

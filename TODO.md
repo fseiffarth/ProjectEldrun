@@ -1307,6 +1307,12 @@ unchanged; the new agents are additive.
     `/api/chat`). First launch may run an interactive `ollama launch` setup —
     decide per agent whether to pass `--config`/`--yes` (e.g. `droid --config`
     "does not auto-launch"). Tab label e.g. `Claude Code · <model>`.
+    - **OpenClaw wired.** Added as a launch-only `LOCAL_DRIVERS` row in
+      `commands/ollama.rs` (`ollama launch openclaw --model <m>`, no fallback —
+      `ollama launch` installs+wires the gateway). Also registered as a standalone
+      installable agent in `commands/agents.rs` (`npm install -g openclaw`, bin
+      `openclaw`) and in `AGENT_ITEMS`/`AGENT_CMDS` so it appears in the regular
+      agent add-menu. Resume parity deferred to #77 (dropped on relaunch like vibe).
     - [ ] 🤖 Automated test — table test: each id → expected argv + endpoint note.
     - [ ] 🖐️ Manual test — each agent opens, sees the model, completes one edit.
 

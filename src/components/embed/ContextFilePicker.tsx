@@ -8,6 +8,7 @@
  * caller. Reuses the `.qo-*` styles from QuickOpen.css.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { fuzzyMatch, fuzzyRank } from "../../lib/fuzzy";
 import "../files/QuickOpen.css";
@@ -125,9 +126,25 @@ export function ContextFilePicker({
     [results, selected, onClose, onPick],
   );
 
-  return (
-    <div className="qo-backdrop" onMouseDown={onClose}>
-      <div className="qo-panel" onMouseDown={(e) => e.stopPropagation()}>
+  // Portal out of the editor: the picker is mounted deep inside `.pane-layer`
+  // (a `position:absolute; z-index:2` stacking context), so a `position:fixed`
+  // backdrop rendered in place has its z-index resolved *within* that context and
+  // paints under the rest of the UI (invisible). Portal it up to the app's root
+  // element so `z-index` reaches the top of the page.
+  //
+  // Target `#root` (the React app surface, painted in BOTH the main and detached
+  // windows) rather than `document.body`: a body-level portal can fail to paint
+  // in the detached pop-out webview, so the overlay went missing there. `#root`
+  // is still outside `.pane-layer`, so it escapes the trap just the same. Falls
+  // back to `document.body` if `#root` isn't present (e.g. in tests).
+  const portalTarget =
+    (typeof document !== "undefined" && document.getElementById("root")) ||
+    (typeof document !== "undefined" ? document.body : null);
+  if (!portalTarget) return null;
+  return createPortal(
+    <div className="qo-backdrop qo-context-backdrop" onMouseDown={onClose}>
+      <div className="qo-panel qo-context-panel" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="qo-context-header">Autocomplete context files</div>
         <input
           ref={inputRef}
           className="qo-input"
@@ -170,6 +187,7 @@ export function ContextFilePicker({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

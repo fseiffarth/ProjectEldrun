@@ -839,8 +839,10 @@ select option {
   padding: 3px 10px;
   font-size: 11px;
   color: var(--text-primary);
-  background: color-mix(in srgb, #e5534b 18%, var(--bg-panel));
-  border-bottom: 1px solid color-mix(in srgb, #e5534b 40%, var(--border-color));
+  /* Plain translucent red over the panel — color-mix is unreliable on this
+     WebKitGTK build (see .split-preview), so tint with a flat rgba instead. */
+  background: rgba(229, 83, 75, 0.16);
+  border-bottom: 1px solid rgba(229, 83, 75, 0.5);
 }
 
 .file-viewer-validation-dot {
@@ -1623,7 +1625,11 @@ select option {
   font-size: 11px;
   line-height: 1.3;
   color: var(--text-primary);
-  background: var(--bg-elevated, var(--bg-secondary, #1c2128));
+  /* --bg-elevated/--bg-secondary are never defined, so this used to pin to a
+     hardcoded dark (#1c2128): dark-on-dark and unreadable on light themes. Use
+     the defined panel token so the pill contrasts its --text-primary on every
+     theme. */
+  background: var(--bg-panel, #1c2128);
   border: 1px solid var(--border-color);
   border-radius: 4px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
@@ -1645,7 +1651,7 @@ select option {
   font-size: 11px;
   line-height: 1.3;
   color: var(--text-primary);
-  background: var(--bg-elevated, var(--bg-secondary, #1c2128));
+  background: var(--bg-panel, #1c2128);
   border: 1px solid var(--border-color);
   border-radius: 4px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
@@ -1684,7 +1690,9 @@ select option {
   font-size: 11px;
   line-height: 1.3;
   color: var(--text-secondary, var(--text-primary));
-  background: var(--bg-elevated, var(--bg-secondary, #1c2128));
+  /* --bg-elevated/--bg-secondary are undefined, so this used to pin to a dark
+     #1c2128 — unreadable on light themes. Use the defined panel token. */
+  background: var(--bg-panel, #1c2128);
   border: 1px solid var(--border-color);
   border-radius: 4px;
   cursor: pointer;
@@ -1704,7 +1712,7 @@ select option {
   font-size: 11px;
   line-height: 1.3;
   color: var(--text-primary);
-  background: var(--bg-elevated, var(--bg-secondary, #1c2128));
+  background: var(--bg-panel, #1c2128);
   border: 1px solid var(--border-color);
   border-radius: 4px;
   white-space: nowrap;
@@ -1729,7 +1737,9 @@ select option {
 }
 .file-viewer-ac-context-chip > button:hover {
   color: var(--text-primary);
-  background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+  /* Neutral gray reads on both light and dark panels (the white fallback was
+     invisible on light themes). */
+  background: var(--bg-hover, rgba(127, 127, 127, 0.18));
 }
 
 /* #47 save-state icon button: square-ish, icon-only. */

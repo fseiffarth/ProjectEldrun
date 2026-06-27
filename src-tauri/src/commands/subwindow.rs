@@ -170,6 +170,43 @@ pub fn attach_subwindow(
     Ok(())
 }
 
+/// Whether the detached window registered under `registry_id` is the front-most
+/// window at the current pointer location. The frontend calls this on a file
+/// drop that lands over a popout's bounds: if the popout is occluded (behind the
+/// main window or another app) it is NOT at front, so the drop must open a new
+/// window instead of merging into a window the user can't see (#42).
+///
+/// Defaults to `true` (allow the merge) when the popout has no resolved X11 id
+/// or on non-Linux, so a missing occlusion signal never suppresses a legit dock.
+#[tauri::command]
+pub fn detached_window_frontmost(
+    win_registry: State<'_, WindowRegistryState>,
+    registry_id: String,
+) -> bool {
+    let wid = win_registry
+        .lock()
+        .unwrap()
+        .windows
+        .get(&registry_id)
+        .and_then(|w| w.window_id);
+    match wid {
+        None => true,
+        Some(wid) => {
+            #[cfg(target_os = "linux")]
+            {
+                crate::platform::x11::frontmost_window_under_pointer()
+                    .map(|top| top == wid)
+                    .unwrap_or(false)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = wid;
+                true
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn resolve_detached_window_id(title: &str) -> Option<u64> {
     crate::platform::x11::find_window_for_title(title, 20)

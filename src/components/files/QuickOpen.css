@@ -16,9 +16,11 @@
   max-height: 60vh;
   display: flex;
   flex-direction: column;
-  background: var(--panel-bg, #1e1e1e);
-  color: var(--text, #e6e6e6);
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  /* Use the app's theme tokens (with neutral fallbacks) so the palette follows
+     the active theme rather than rendering as a hardcoded dark box. */
+  background: var(--bg-panel, #1e1e1e);
+  color: var(--text-primary, #e6e6e6);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
   border-radius: 8px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
   overflow: hidden;
@@ -30,10 +32,12 @@
   width: 100%;
   padding: 10px 12px;
   font-size: 14px;
-  color: inherit;
+  /* Explicit (not `inherit`) so the field text stays readable wherever the
+     palette is portaled. */
+  color: var(--text-primary, #e6e6e6);
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
   outline: none;
 }
 
@@ -47,6 +51,9 @@
   padding: 5px 12px;
   font-size: 13px;
   font-family: var(--mono-font, ui-monospace, SFMono-Regular, Menlo, monospace);
+  /* Explicit row text color so paths read clearly on the panel (the default
+     inherited color was the source of the low-contrast "blue on dark" rows). */
+  color: var(--text-primary, #e6e6e6);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -61,16 +68,66 @@
 }
 
 .qo-row-sel {
-  background: var(--accent-bg, rgba(120, 160, 255, 0.22));
+  /* A plain translucent fill — color-mix doesn't render reliably on this
+     WebKitGTK build, so don't tint from --accent at runtime. */
+  background: rgba(120, 160, 255, 0.22);
 }
 
 .qo-hl {
-  color: var(--accent, #79b8ff);
-  font-weight: 600;
+  /* Emphasised accent (higher contrast than the base --accent on both light and
+     dark panels) plus bold, so matched characters read clearly rather than as
+     dim "blue on dark". */
+  color: var(--accent-hover, var(--accent, #79b8ff));
+  font-weight: 700;
 }
 
 .qo-empty {
   padding: 12px;
   font-size: 13px;
-  opacity: 0.6;
+  color: var(--text-muted, #9aa6bf);
+}
+
+/* ── Context-files picker variant ──────────────────────────────────────────
+   A more prominent, accent-coloured take on the palette (it's invoked from deep
+   in the editor, so it should read unmistakably as an overlay). Scoped to the
+   ContextFilePicker via `qo-context-*` so the plain Ctrl/Cmd+P palette is
+   unchanged. --accent is used solid (no color-mix — unreliable on this WebKitGTK
+   build) for the frame and header. */
+.qo-context-backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.qo-context-panel {
+  border: 1px solid var(--accent, #79b8ff);
+  /* Bold accent cap along the top edge. */
+  border-top: 4px solid var(--accent, #79b8ff);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+}
+
+/* Solid accent header strip with contrasting text — the "coloured" part. */
+.qo-context-header {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+  /* Same blue as the autocomplete suggestion text (--accent, see
+     .file-viewer-ghost-text) so the overlay reads as part of the same feature. */
+  background: var(--accent, #79b8ff);
+}
+
+/* Accent underline under the search field to tie it to the header. */
+.qo-context-panel .qo-input {
+  border-bottom: 2px solid var(--accent, #79b8ff);
+}
+
+/* Match highlights in the same --accent blue as the autocomplete text. */
+.qo-context-panel .qo-hl {
+  color: var(--accent, #4493f8);
+}
+
+/* Stronger, accent-aligned selection fill so the active row stands out. */
+.qo-context-panel .qo-row-sel {
+  background: rgba(54, 197, 240, 0.28);
 }

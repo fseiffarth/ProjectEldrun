@@ -219,14 +219,16 @@ update-desktop-database ~/.local/share/applications/
   additional views list tracked external windows.
 - **Local autocomplete (opt-in, private)**: in the editable text/LaTeX/markdown
   viewers, `Ctrl+Space` requests a single completion from a **local Ollama**
-  model (`Tab` accepts, `Esc` dismisses). It is OFF by default and per file
-  type; nothing is sent anywhere unless you enable it, and if Ollama isn't
-  running it fails silently — no remote calls, ever.
+  model (`Tab` accepts, `Esc` dismisses). It is OFF by default; each editor tab
+  has its own **Autocomplete** toggle + length-mode (Sentence/Block/Scope) in the
+  header that overrides the per-type default, so you can enable it just for the
+  tab you're in. Nothing is sent anywhere unless you enable it, and if Ollama
+  isn't running it fails silently — no remote calls, ever.
 - **Local grammar check (opt-in, private)**: the same editable viewers can run a
   **local Ollama** proofreader after a typing pause, underlining spelling (red),
   grammar (blue), and style (green) issues; hover a mark for the explanation and a
-  one-click fix. Like autocomplete it is OFF by default, per file type, and
-  entirely local — no text leaves the machine.
+  one-click fix. Like autocomplete it is OFF by default with a per-tab **Grammar**
+  toggle in the header, and entirely local — no text leaves the machine.
 - **Global app toolbar**: cross-project roles (Browser, Mail, Calendar, File
   Manager, Password Manager, Notes, Screenshot, etc.) with launch-or-raise and
   icon resolution. The Screenshot role launches straight into interactive
@@ -262,8 +264,8 @@ app until they land.
 
 Other office formats (`.docx`, `.pptx`, `.ods`, …) open in their external
 default app. Viewer behaviour is configured per file type under **Settings →
-Native Viewers**: the per-type autocomplete and grammar-check opt-ins plus a
-global autosave switch. The text/LaTeX/Markdown editors carry an `A−`/`A+` text-size control
+Native Viewers**: the per-type autocomplete and grammar-check defaults (each tab
+can override them from its header) plus a global autosave switch. The text/LaTeX/Markdown editors carry an `A−`/`A+` text-size control
 (`Ctrl` +/−, `Ctrl`+0 to reset; scales the Markdown preview too), persisted
 per file type. Every viewer remembers where you left off — editor/PDF scroll
 position, PDF/image zoom, and image pan persist per tab, so reopening a file (or

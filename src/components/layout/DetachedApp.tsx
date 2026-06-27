@@ -14,7 +14,13 @@ import {
   type DetachedParam,
   type DetachedSeed,
 } from "../../stores/detached";
-import { allGroups, orderedTabKeys, type LayoutNode, type TabEntry } from "../../stores/tabs";
+import {
+  allGroups,
+  orderedTabKeys,
+  setDetachedViewerState,
+  type LayoutNode,
+  type TabEntry,
+} from "../../stores/tabs";
 import { useTabLandStore } from "../../stores/tabLand";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
@@ -182,6 +188,11 @@ export function DetachedApp({ param }: Props) {
     listen<DetachedSeed>(detachedSeedEvent(label), (ev) => {
       seeded = true;
       if (timer) clearTimeout(timer);
+      // Register each seeded tab's viewerState BEFORE rendering, so a viewer pane
+      // mounting this frame recovers its per-tab scroll/zoom + #45 autocomplete/
+      // grammar overrides (our tabs never enter `useTabsStore`, where the viewer
+      // hooks normally read them). Must precede setGroup/setTabs.
+      for (const t of ev.payload.tabs) setDetachedViewerState(t.key, t.viewerState);
       setGroup(ev.payload.subtree);
       setTabs(ev.payload.tabs);
       // A tab docked INTO this popout from another window arrives on a seed

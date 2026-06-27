@@ -1233,6 +1233,109 @@ fn is_mid_sentence(prefix: &str) -> bool {
     }
 }
 
+/// Line-comment token(s) for `language`, used to recognise an "intent comment" the
+/// user wrote to describe the code they want next (e.g. `// new for loop to compute
+/// the sum`). Known code languages map to their comment syntax; prose-ish languages
+/// (markdown / plain text / unknown-empty) return an empty slice so headings like
+/// `# Title` are never mistaken for a code-intent comment; any other named (but
+/// unrecognised) language falls back to the two most common tokens. Pure + tested.
+fn line_comment_tokens(language: &str) -> &'static [&'static str] {
+    match language.to_ascii_lowercase().as_str() {
+        "rust" | "c" | "cpp" | "c++" | "h" | "hpp" | "java" | "javascript" | "js" | "jsx"
+        | "typescript" | "ts" | "tsx" | "go" | "swift" | "kotlin" | "kt" | "scala" | "dart"
+        | "php" | "csharp" | "cs" | "c#" | "objc" | "objectivec" | "groovy" | "rust-objc" => {
+            &["//"]
+        }
+        "python" | "py" | "ruby" | "rb" | "bash" | "sh" | "shell" | "zsh" | "perl" | "pl" | "r"
+        | "yaml" | "yml" | "toml" | "makefile" | "make" | "dockerfile" | "elixir" | "ex"
+        | "nix" => &["#"],
+        "sql" | "lua" | "haskell" | "hs" | "ada" | "elm" => &["--"],
+        "lisp" | "clojure" | "clj" | "scheme" | "racket" | "asm" => &[";"],
+        "tex" | "latex" | "matlab" | "erlang" | "erl" => &["%"],
+        // Prose / unknown-empty: do not treat any line as a code-intent comment.
+        "" | "markdown" | "md" | "mdx" | "text" | "plain" | "txt" | "rst" | "html" | "xml"
+        | "css" => &[],
+        // Some other named code-ish language we don't have a table entry for.
+        _ => &["//", "#"],
+    }
+}
+
+/// If `line` is a single comment line, return its human-readable body (comment
+/// token, any repeated token chars like `///`/`##`, surrounding `/* */`, and
+/// whitespace stripped); otherwise `None`. Pure + tested.
+fn strip_comment_line(line: &str, tokens: &[&str]) -> Option<String> {
+    let t = line.trim();
+    // Single-line block comment `/* … */` (C-family only).
+    if tokens.contains(&"//") && t.starts_with("/*") {
+        let body = t.trim_start_matches("/*").trim_end_matches("*/").trim();
+        return Some(body.to_string());
+    }
+    for tok in tokens {
+        if let Some(rest) = t.strip_prefix(tok) {
+            // Drop extra repeats of the token's first char (`///`, `##`, `--!`).
+            let lead = tok.chars().next().unwrap_or(' ');
+            return Some(rest.trim_start_matches(lead).trim().to_string());
+        }
+    }
+    None
+}
+
+/// Detect an "intent comment" sitting immediately before the caret and return its
+/// combined text, so [`completion_prompt`] can switch from continuing prose to
+/// *implementing the comment as code*. Fires when the caret is on a fresh (blank or
+/// indent-only) line directly below a run of comment lines, or at the end of a
+/// comment line itself; consecutive comment lines above are merged into one
+/// instruction. Returns `None` for non-code languages, when there is no comment, or
+/// when the text doesn't read like an instruction (needs ≥2 words and ≥3 letters,
+/// so a lone `//` or a `// ----` divider never triggers). Pure + tested.
+fn trailing_comment_intent(prefix: &str, language: &str) -> Option<String> {
+    let tokens = line_comment_tokens(language);
+    if tokens.is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = prefix.split('\n').collect();
+    let n = lines.len();
+    if n == 0 {
+        return None;
+    }
+    // Index of the last comment line of the block to read.
+    let last = if lines[n - 1].trim().is_empty() {
+        // Caret on its own fresh line: the comment block is just above it.
+        if n < 2 {
+            return None;
+        }
+        n - 2
+    } else if strip_comment_line(lines[n - 1], tokens).is_some() {
+        // Caret at the end of a comment line itself.
+        n - 1
+    } else {
+        return None;
+    };
+    // Walk up the consecutive run of comment lines ending at `last`.
+    let mut texts = Vec::new();
+    let mut i = last as isize;
+    while i >= 0 {
+        match strip_comment_line(lines[i as usize], tokens) {
+            Some(t) => texts.push(t),
+            None => break,
+        }
+        i -= 1;
+    }
+    texts.reverse();
+    let intent = texts
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let letters = intent.chars().filter(|c| c.is_alphabetic()).count();
+    if letters >= 3 && intent.split_whitespace().count() >= 2 {
+        Some(intent)
+    } else {
+        None
+    }
+}
+
 /// A reference file the user attached to inform a completion (#45 context files).
 /// Its `content` is included (size-capped) as read-only CONTEXT in the prompt so
 /// the local model can draw on sibling project files when completing the current
@@ -1305,27 +1408,39 @@ fn completion_prompt(
     context: &str,
 ) -> String {
     let lang = if language.is_empty() { "text" } else { language };
-    let task = match mode {
-        CompletionMode::Sentence => {
-            if is_mid_sentence(prefix) {
-                "TASK: The cursor is in the middle of a sentence. Output only what completes the \
+    // When the caret sits just after a natural-language comment, switch from
+    // continuing text to *implementing that comment as code* (#45 intent comments).
+    let task: String = if let Some(desc) = trailing_comment_intent(prefix, language) {
+        format!(
+            "TASK: The comment line(s) immediately above the cursor describe the code to write \
+next: \"{desc}\". Output the {lang} code that implements that description, starting on a new line \
+below the comment, matching the surrounding indentation and style, and joining smoothly into AFTER. \
+Write only that code — do not repeat, rewrite, or extend the comment, and add no explanations."
+        )
+    } else {
+        match mode {
+            CompletionMode::Sentence => {
+                if is_mid_sentence(prefix) {
+                    "TASK: The cursor is in the middle of a sentence. Output only what completes the \
 current word and sentence so it joins smoothly into AFTER. Keep it to a single sentence or line; do \
 not begin a new paragraph."
-            } else {
-                "TASK: Continue from the end of BEFORE with a brief, on-topic insertion that leads \
+                } else {
+                    "TASK: Continue from the end of BEFORE with a brief, on-topic insertion that leads \
 into AFTER. Keep it to one sentence or line; do not begin a new paragraph or topic."
+                }
             }
-        }
-        CompletionMode::Block => {
-            "TASK: Continue from the end of BEFORE, completing the current line and the rest of the \
+            CompletionMode::Block => {
+                "TASK: Continue from the end of BEFORE, completing the current line and the rest of the \
 current code block, statement, or paragraph. You may span several lines, but stop at the end of that \
 block — do not write the remainder of the document."
-        }
-        CompletionMode::Scope => {
-            "TASK: Continue from the end of BEFORE, completing the entire enclosing function, block, \
+            }
+            CompletionMode::Scope => {
+                "TASK: Continue from the end of BEFORE, completing the entire enclosing function, block, \
 or scope — its full body, with balanced brackets and indentation — so it joins into AFTER. Stop at \
 the end of that function or scope; do not continue past it."
+            }
         }
+        .to_string()
     };
     let reference = if context.is_empty() {
         String::new()
@@ -1435,6 +1550,13 @@ pub async fn complete_text(
     let mode = CompletionMode::parse(mode.as_deref().unwrap_or("sentence"));
     let context_block = context.as_deref().map(build_context_block).unwrap_or_default();
     let user = completion_prompt(&prefix, &suffix, &language, mode, &context_block);
+    // Implementing a comment needs room for a whole statement/block even in the
+    // conservative Sentence mode, so give intent completions at least the Block cap.
+    let num_predict = if trailing_comment_intent(&prefix, &language).is_some() {
+        mode.num_predict().max(CompletionMode::Block.num_predict())
+    } else {
+        mode.num_predict()
+    };
     // `/api/chat` with a system role keeps a chat model from treating the text as
     // a task to rewrite. `stream: false` returns one JSON object; low temperature
     // + a mode-scaled output cap keep completions tight and deterministic.
@@ -1445,7 +1567,7 @@ pub async fn complete_text(
             { "role": "system", "content": COMPLETION_SYSTEM },
             { "role": "user", "content": user }
         ],
-        "options": { "temperature": 0.1, "num_predict": mode.num_predict() }
+        "options": { "temperature": 0.1, "num_predict": num_predict }
     })
     .to_string();
     let response = ollama_http("POST", "/api/chat", Some(&body))?;
@@ -2270,6 +2392,66 @@ mod tests {
         let scope = completion_prompt(mid, "\n}", "rust", CompletionMode::Scope, "");
         assert!(scope.contains("function") && scope.contains("scope"));
         assert!(!scope.contains("middle of a sentence"));
+    }
+
+    #[test]
+    fn trailing_comment_intent_detects_comment_above_a_fresh_line() {
+        // Caret on a fresh indented line directly below a `//` comment.
+        let p = "fn main() {\n    // new for loop to compute the sum\n    ";
+        assert_eq!(
+            trailing_comment_intent(p, "rust").as_deref(),
+            Some("new for loop to compute the sum")
+        );
+        // Caret at the end of the comment line itself (no newline yet).
+        let p2 = "# compute the average of the list";
+        assert_eq!(
+            trailing_comment_intent(p2, "python").as_deref(),
+            Some("compute the average of the list")
+        );
+    }
+
+    #[test]
+    fn trailing_comment_intent_merges_consecutive_comment_lines() {
+        let p = "    // compute the sum of all even numbers\n    /// and return the result\n    ";
+        assert_eq!(
+            trailing_comment_intent(p, "rust").as_deref(),
+            Some("compute the sum of all even numbers and return the result")
+        );
+        // Single-line block comment is recognised in C-family languages.
+        let blk = "/* build the lookup table */\n";
+        assert_eq!(
+            trailing_comment_intent(blk, "typescript").as_deref(),
+            Some("build the lookup table")
+        );
+    }
+
+    #[test]
+    fn trailing_comment_intent_ignores_non_instructions_and_prose() {
+        // Real code on the caret line → not an intent comment.
+        assert_eq!(trailing_comment_intent("let x = 1;\n", "rust"), None);
+        // Dividers / lone tokens don't read as instructions.
+        assert_eq!(trailing_comment_intent("// ----\n", "rust"), None);
+        assert_eq!(trailing_comment_intent("//\n", "rust"), None);
+        // Comment is no longer adjacent to the caret (intervening code line).
+        let gap = "// describe the loop\nlet y = 2;\n";
+        assert_eq!(trailing_comment_intent(gap, "rust"), None);
+        // Markdown headings must never be treated as code-intent comments.
+        assert_eq!(trailing_comment_intent("# My Heading\n", "markdown"), None);
+        // Shebang line is not a natural-language instruction.
+        assert_eq!(trailing_comment_intent("#!/bin/bash\n", "bash"), None);
+    }
+
+    #[test]
+    fn completion_prompt_switches_to_implement_mode_for_intent_comments() {
+        let p = "fn main() {\n    // new for loop to compute the sum\n    ";
+        let prompt = completion_prompt(p, "\n}", "rust", CompletionMode::Sentence, "");
+        // Implements the comment as code rather than continuing prose.
+        assert!(prompt.contains("implements that description"));
+        assert!(prompt.contains("new for loop to compute the sum"));
+        assert!(!prompt.contains("middle of a sentence"));
+        // Without a trailing comment it keeps the ordinary sentence behaviour.
+        let plain = completion_prompt("let x = ", "", "rust", CompletionMode::Sentence, "");
+        assert!(!plain.contains("implements that description"));
     }
 
     #[test]
