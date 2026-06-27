@@ -12,14 +12,16 @@ import { GlobalAppMenu } from "./GlobalAppMenu";
 import { LocalModelMenu } from "./LocalModelMenu";
 import { LogoIcon } from "./LogoIcon";
 import { useProjectsStore } from "../../stores/projects";
+// Single source of truth for the displayed version: read package.json (kept in
+// lockstep with src-tauri/Cargo.toml + tauri.conf.json on every bump) so the
+// header never drifts behind a release.
+import { version as APP_VERSION } from "../../../package.json";
 
 interface WorkspaceInfo {
   label: string;
   current_desktop: number | null;
   desktop_count: number | null;
 }
-
-const APP_VERSION = "0.1.0";
 
 const NON_DRAG_SELECTOR = [
   "button",

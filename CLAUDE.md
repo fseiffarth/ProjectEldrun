@@ -247,8 +247,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
 5. Every push to GitHub should produce a fresh packaged artifact from the
    workflow in `.github/workflows/ci-cd.yml`; use `npm run package` locally if
    you need to install the same release build under `~/.local/share/eldrun/`.
-   GitHub Releases are only published for `v0.<minor>.0` tags, so patch-only
-   bumps like `0.1.1 -> 0.1.2` do not create a release.
+   A GitHub Release is published for **every** `v*` tag (e.g. `v0.1.5`), so each
+   version bump should bump `package.json`, `src-tauri/Cargo.toml`, and
+   `src-tauri/tauri.conf.json` together, then tag `v<version>` to ship a release.
 
 6. Do not start Eldrun from Claude. Frontend (`src/`) edits hot-reload in the
    running instance — no restart needed. Only ask the user to rebuild/restart
