@@ -8,20 +8,52 @@
 # self-match. Run with changes staged: `git add -A && scripts/privacy-check.sh`.
 set -uo pipefail
 
+# Resolve a REAL grep binary. An interactive shell may shadow `grep` with a
+# wrapper (e.g. a ugrep function under some tooling) that mishandles these ERE
+# patterns; combined with a swallowed error that used to silently report
+# "clean". Always use a known binary, and FAIL LOUDLY (exit 2) if the scan tool
+# itself errors, rather than passing a scan that never actually ran.
+GREP=""
+for g in /usr/bin/grep /bin/grep "$(command -v grep 2>/dev/null || true)"; do
+  if [ -n "${g:-}" ] && [ -x "$g" ]; then GREP="$g"; break; fi
+done
+if [ -z "$GREP" ]; then
+  echo "privacy-check: no usable grep binary found; refusing to report clean." >&2
+  exit 2
+fi
+
+# Patterns to flag in ADDED lines. $USER/$HOME are added only when non-empty so
+# an empty value can't degrade into a match-everything pattern (a false pass).
+patterns=(
+  '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+  'password[[:space:]]*[:=]' 'secret[[:space:]]*[:=]'
+  'api[_-]?key[[:space:]]*[:=]' 'BEGIN [A-Z ]*PRIVATE KEY'
+  'ssh-rsa AAAA' 'ghp_[A-Za-z0-9]' 'glpat-'
+  '[0-9]{1,3}(\.[0-9]{1,3}){3}'
+)
+[ -n "${USER:-}" ] && patterns+=("$USER")
+[ -n "${HOME:-}" ] && patterns+=("$HOME")
+
+grep_args=()
+for p in "${patterns[@]}"; do grep_args+=(-e "$p"); done
+
 # Only inspect ADDED lines (+), not removed ones — deleting sensitive data must
 # not trip the check. Strip the `+++` file-header lines before matching.
-hits=$(git diff --cached -- . ':!scripts/privacy-check.sh' \
-  | grep -E '^\+' | grep -v '^\+\+\+' \
-  | grep -nEi \
-  -e "$USER" -e "$HOME" \
-  -e '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' \
-  -e 'password[[:space:]]*[:=]' -e 'secret[[:space:]]*[:=]' \
-  -e 'api[_-]?key[[:space:]]*[:=]' -e 'BEGIN [A-Z ]*PRIVATE KEY' \
-  -e 'ssh-rsa AAAA' -e 'ghp_[A-Za-z0-9]' -e 'glpat-' \
-  -e '[0-9]{1,3}(\.[0-9]{1,3}){3}' \
-  | grep -vi 'noreply' || true)
+added=$(git diff --cached -- . ':!scripts/privacy-check.sh' \
+  | "$GREP" -E '^\+' | "$GREP" -v '^[+][+][+]') || true
 
-if [ -n "$hits" ]; then
+# Run the match grep on its own so we can tell a real grep error (rc >= 2) from
+# "no matches" (rc 1). pipefail makes rc reflect grep, not the leading printf.
+matched=$(printf '%s\n' "$added" | "$GREP" -nEi "${grep_args[@]}")
+rc=$?
+if [ "$rc" -ge 2 ]; then
+  echo "privacy-check: scan tool error (grep rc=$rc); refusing to report clean." >&2
+  exit 2
+fi
+
+hits=$(printf '%s\n' "$matched" | "$GREP" -vi 'noreply') || true
+# The noreply filter can yield a single empty line; treat whitespace-only as none.
+if [ -n "${hits//[[:space:]]/}" ]; then
   echo "Privacy check: potential sensitive data in staged changes:" >&2
   echo "$hits" >&2
   echo >&2
