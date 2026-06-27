@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
 import type { KeyboardChord, Theme } from "../../types";
@@ -198,11 +197,6 @@ export function SettingsDialog({
   const [panel, setPanel] = useState<SettingsPanelKind>(initialPanel);
   const [gitProfileUrl, setGitProfileUrl] = useState(settings?.git_profile_url ?? "");
   const [gitToken, setGitToken] = useState(settings?.git_token ?? "");
-  const [ollamaInstalled, setOllamaInstalled] = useState(false);
-
-  useEffect(() => {
-    invoke<boolean>("ollama_is_installed").then(setOllamaInstalled).catch(() => {});
-  }, []);
 
   useEffect(() => {
     setGitProfileUrl(settings?.git_profile_url ?? "");
@@ -367,9 +361,6 @@ export function SettingsDialog({
             <div className="settings-link-row">
               <button type="button" onClick={() => setPanel("global")}>Global Apps...</button>
               <button type="button" onClick={() => setPanel("filetypes")}>File Type Apps...</button>
-              <button type="button" onClick={() => setPanel("ollama")}>
-                {ollamaInstalled ? "Ollama..." : "Install Ollama..."}
-              </button>
               <button type="button" onClick={() => setPanel("agents")}>Manage Agents...</button>
               <button type="button" onClick={() => setPanel("shortcuts")}>Keyboard Shortcuts...</button>
               <button type="button" onClick={() => setPanel("help")}>Feature Guide...</button>
