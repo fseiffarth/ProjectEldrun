@@ -1233,14 +1233,77 @@ fn is_mid_sentence(prefix: &str) -> bool {
     }
 }
 
+/// A reference file the user attached to inform a completion (#45 context files).
+/// Its `content` is included (size-capped) as read-only CONTEXT in the prompt so
+/// the local model can draw on sibling project files when completing the current
+/// one. Deserialized from the frontend's `context` array.
+#[derive(serde::Deserialize)]
+pub struct ContextFile {
+    pub name: String,
+    pub content: String,
+}
+
+/// Per-file and total caps (bytes) on attached context, so a few large files can't
+/// blow past a small local model's context window. Each file is truncated to the
+/// per-file cap; files are included in order until the total cap is reached.
+const MAX_CONTEXT_PER_FILE: usize = 6000;
+const MAX_CONTEXT_TOTAL: usize = 24000;
+
+/// Truncate `s` to at most `max` bytes, backing off to the nearest char boundary
+/// so the result is always valid UTF-8. Pure.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+/// Build the read-only CONTEXT preamble from attached reference files, size-capped
+/// (see [`MAX_CONTEXT_PER_FILE`]/[`MAX_CONTEXT_TOTAL`]). Each file becomes a labelled
+/// `--- <name> ---` block; empty/whitespace-only files are skipped. Returns an empty
+/// string when there is nothing to include, so [`completion_prompt`] can omit the
+/// section entirely. Pure + tested.
+fn build_context_block(files: &[ContextFile]) -> String {
+    let mut out = String::new();
+    let mut total = 0usize;
+    for f in files {
+        if total >= MAX_CONTEXT_TOTAL {
+            break;
+        }
+        let cap = MAX_CONTEXT_PER_FILE.min(MAX_CONTEXT_TOTAL - total);
+        let body = truncate_chars(f.content.trim(), cap);
+        if body.is_empty() {
+            continue;
+        }
+        total += body.len();
+        out.push_str("--- ");
+        out.push_str(f.name.trim());
+        out.push_str(" ---\n");
+        out.push_str(&body);
+        out.push_str("\n\n");
+    }
+    out
+}
+
 /// Build the user message paired with [`COMPLETION_SYSTEM`]: a per-caret TASK hint
 /// plus the text before the caret (`prefix`) and after it (`suffix`) as labelled
 /// sections, so the model inserts at the cursor rather than rewriting the document.
 /// The TASK is selected by `mode`: `Sentence` keeps the insertion to the current
 /// word/sentence/line (and, when mid-sentence, biases toward finishing it first),
 /// `Block` completes the current block/paragraph, and `Scope` the whole enclosing
-/// function or scope. Pure + tested.
-fn completion_prompt(prefix: &str, suffix: &str, language: &str, mode: CompletionMode) -> String {
+/// function or scope. When `context` is non-empty it is inserted as a read-only
+/// REFERENCE FILES section before BEFORE/AFTER. Pure + tested.
+fn completion_prompt(
+    prefix: &str,
+    suffix: &str,
+    language: &str,
+    mode: CompletionMode,
+    context: &str,
+) -> String {
     let lang = if language.is_empty() { "text" } else { language };
     let task = match mode {
         CompletionMode::Sentence => {
@@ -1264,7 +1327,15 @@ or scope — its full body, with balanced brackets and indentation — so it joi
 the end of that function or scope; do not continue past it."
         }
     };
-    format!("Language: {lang}\n{task}\n\nBEFORE:\n{prefix}\n\nAFTER:\n{suffix}")
+    let reference = if context.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "REFERENCE FILES (read-only context from the project — use only to inform the \
+insertion; never output, quote, or repeat them):\n{context}\n"
+        )
+    };
+    format!("Language: {lang}\n{task}\n\n{reference}BEFORE:\n{prefix}\n\nAFTER:\n{suffix}")
 }
 
 /// Strip wrapping artefacts a chat model sometimes adds around a raw completion:
@@ -1359,9 +1430,11 @@ pub async fn complete_text(
     model: String,
     language: String,
     mode: Option<String>,
+    context: Option<Vec<ContextFile>>,
 ) -> Result<String, String> {
     let mode = CompletionMode::parse(mode.as_deref().unwrap_or("sentence"));
-    let user = completion_prompt(&prefix, &suffix, &language, mode);
+    let context_block = context.as_deref().map(build_context_block).unwrap_or_default();
+    let user = completion_prompt(&prefix, &suffix, &language, mode, &context_block);
     // `/api/chat` with a system role keeps a chat model from treating the text as
     // a task to rewrite. `stream: false` returns one JSON object; low temperature
     // + a mode-scaled output cap keep completions tight and deterministic.
@@ -1381,6 +1454,159 @@ pub async fn complete_text(
     let text = v["message"]["content"].as_str().unwrap_or("");
     let text = clean_completion(text);
     Ok(trim_context_overlap(&prefix, &suffix, &text))
+}
+
+// ── Local grammar / spelling check (TODO Group M #45 follow-up) ───────────────
+//
+// Like the autocomplete above, this is LOCAL OLLAMA ONLY and OPT-IN: it reuses
+// `ollama_http` against 127.0.0.1's `/api/chat`, never a remote endpoint. The
+// editor sends the document text; the model returns a JSON list of issues, each
+// with the offending substring, a category (spelling/grammar/style), a one-line
+// message, and a suggested fix. The frontend resolves each issue to a character
+// range and underlines it (colour by category). Offsets are NOT asked of the
+// model — LLMs count characters unreliably — so we send the text with 1-based
+// line-number prefixes and the model reports WHICH line each issue is on, which
+// the frontend resolver uses to disambiguate duplicates.
+
+/// One proofreading issue the local model found. `bad` is the exact offending
+/// substring as it appears in the source (so the frontend can locate it); `line`
+/// is its 1-based line in the submitted text, used as a resolution hint.
+#[derive(serde::Serialize, Clone, PartialEq, Debug)]
+pub struct GrammarIssue {
+    /// 1-based line number in the submitted text.
+    pub line: u32,
+    /// The exact offending text as it appears in the source.
+    pub bad: String,
+    /// Suggested replacement ("" when the fix is simply to delete `bad`).
+    pub suggestion: String,
+    /// "spelling" | "grammar" | "style" (anything else is normalised to "grammar").
+    pub category: String,
+    /// Short human-readable explanation of the problem.
+    pub message: String,
+}
+
+/// Largest document (chars) we submit for a grammar check, so a huge file can't
+/// blow past a small local model's context window. Lines beyond the cap are not
+/// checked; because the cap only drops a trailing slice, the 1-based line numbers
+/// of everything before it stay valid for the frontend resolver.
+const MAX_GRAMMAR_CHARS: usize = 12000;
+
+/// System message turning a chat model into a strict proofreader that emits only
+/// machine-readable JSON. Pure + sent as the chat `system` role.
+const GRAMMAR_SYSTEM: &str = "You are a meticulous proofreader inside a text editor. You receive a \
+document whose lines are each prefixed with \"<n>: \" (a 1-based line number then a colon and a space). \
+Find ONLY genuine spelling, grammar, and punctuation mistakes — do not rewrite for style preference, do \
+not flag correct text, and do not invent issues. Respond with ONLY a JSON array (no prose, no code \
+fences) of objects, each exactly: {\"line\": <number>, \"bad\": \"<exact text from the document WITHOUT \
+the line-number prefix>\", \"suggestion\": \"<corrected replacement for bad>\", \"category\": one of \
+\"spelling\", \"grammar\", \"style\", \"message\": \"<short reason>\"}. The \"bad\" string must be copied \
+verbatim from the document so it can be located, and kept as short as possible (the smallest span that \
+contains the error). If there are no mistakes, respond with exactly [].";
+
+/// Per-language preamble appended to the user message so the model ignores markup
+/// it shouldn't proofread (LaTeX commands, Markdown syntax). Pure + tested.
+fn grammar_language_hint(language: &str) -> &'static str {
+    match language {
+        "latex" | "tex" => {
+            "This is a LaTeX document: ignore commands (\\command), math (between $...$ or \\[...\\]), \
+labels, citations, and environment markers — proofread only the human-readable prose.\n"
+        }
+        "markdown" => {
+            "This is Markdown: ignore code spans/blocks, link/image syntax, and formatting markers — \
+proofread only the human-readable prose.\n"
+        }
+        _ => "",
+    }
+}
+
+/// Prefix each line of `text` with its 1-based number and a colon, so the model
+/// can report which line an issue is on. The numbering matches the frontend's
+/// notion of a line (split on '\n'), so the resolver's line hint lines up. Pure +
+/// tested.
+fn number_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / 8 + 8);
+    for (i, line) in text.split('\n').enumerate() {
+        out.push_str(&format!("{}: {}\n", i + 1, line));
+    }
+    out
+}
+
+/// Extract the JSON array from a model reply that may carry stray prose or code
+/// fences, then build issues from it. Tolerant: a reply with no array, or a
+/// single malformed object, yields the issues that DID parse (a failed check
+/// shows fewer/no marks rather than erroring). The category is normalised to one
+/// of the three known kinds and entries with an empty `bad` are dropped. Pure +
+/// tested.
+fn parse_grammar_issues(raw: &str) -> Vec<GrammarIssue> {
+    let start = match raw.find('[') {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    let end = match raw.rfind(']') {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    if end <= start {
+        return Vec::new();
+    }
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&raw[start..=end]).unwrap_or_default();
+    arr.into_iter()
+        .filter_map(|v| {
+            let bad = v["bad"].as_str().unwrap_or("").to_string();
+            if bad.trim().is_empty() {
+                return None;
+            }
+            let line = v["line"].as_u64().unwrap_or(1).max(1) as u32;
+            let category = match v["category"].as_str().unwrap_or("grammar") {
+                "spelling" => "spelling",
+                "style" => "style",
+                _ => "grammar",
+            }
+            .to_string();
+            Some(GrammarIssue {
+                line,
+                bad,
+                suggestion: v["suggestion"].as_str().unwrap_or("").to_string(),
+                category,
+                message: v["message"].as_str().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Single-shot local grammar/spelling check: send the document `text` to the
+/// local Ollama `model` and return the issues it found. Local-only (`ollama_http`
+/// talks to 127.0.0.1:11434); returns `not_running` when Ollama isn't reachable.
+/// `language` (the file's syntax language, e.g. "latex"/"markdown") tailors the
+/// prompt so markup isn't proofread as prose.
+#[tauri::command]
+pub async fn check_grammar(
+    text: String,
+    model: String,
+    language: String,
+) -> Result<Vec<GrammarIssue>, String> {
+    let truncated = truncate_chars(&text, MAX_GRAMMAR_CHARS);
+    let numbered = number_lines(&truncated);
+    let hint = grammar_language_hint(&language);
+    let user = format!("{hint}Proofread this document:\n\n{numbered}");
+    // `/api/chat` with a system role keeps a chat model from treating the text as
+    // a task; `stream: false` returns one JSON object; temperature 0 + a generous
+    // output cap let it list every issue deterministically.
+    let body = serde_json::json!({
+        "model": model,
+        "stream": false,
+        "messages": [
+            { "role": "system", "content": GRAMMAR_SYSTEM },
+            { "role": "user", "content": user }
+        ],
+        "options": { "temperature": 0.0, "num_predict": 1024 }
+    })
+    .to_string();
+    let response = ollama_http("POST", "/api/chat", Some(&body))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&response).map_err(|e| format!("ollama json: {e}"))?;
+    let content = v["message"]["content"].as_str().unwrap_or("");
+    Ok(parse_grammar_issues(content))
 }
 
 /// Result of preparing a local Ollama agent for vibe.
@@ -1457,6 +1683,166 @@ pub async fn ensure_vibe_ollama_model(model: String) -> Result<String, String> {
     }
 
     Ok(alias)
+}
+
+// ── Local-model coding agents (ollama launch + fallbacks) ─────────────────────
+//
+// Beyond Mistral's `vibe` (see `prepare_local_agent`), the single active local
+// Ollama model can drive other coding agents. The preferred path is Ollama's own
+// `ollama launch <agent> --model <model>` (shipped v0.15): it wires Claude Code,
+// Codex, OpenCode and Droid to the local server — including Claude Code's
+// Anthropic-compatible endpoint, which we can't hand-roll the way vibe gets an
+// OpenAI one. When `ollama launch` is unavailable we fall back to a direct
+// invocation for the agents that natively accept a local Ollama endpoint.
+
+/// A coding agent that can drive the local Ollama model.
+#[derive(Clone, Copy)]
+struct LocalDriver {
+    /// Stable id used by the frontend picker and `prepare_local_launch`.
+    id: &'static str,
+    /// Human-readable label.
+    label: &'static str,
+    /// `ollama launch <sub> --model <model>` subcommand, when supported.
+    launch_sub: Option<&'static str>,
+    /// Direct fallback when `ollama launch` is unavailable: the binary to spawn
+    /// and its args (with the `{model}` placeholder substituted). `None` means
+    /// the agent can only be wired up by `ollama launch` itself.
+    fallback: Option<(&'static str, &'static [&'static str])>,
+}
+
+/// Registry of local-model coding agents, in picker order. `vibe` is intentionally
+/// absent — it keeps its bespoke per-model VIBE_HOME path in `prepare_local_agent`.
+const LOCAL_DRIVERS: &[LocalDriver] = &[
+    LocalDriver {
+        id: "claude",
+        label: "Claude Code",
+        launch_sub: Some("claude"),
+        // Claude Code needs an Anthropic-compatible endpoint, which only
+        // `ollama launch` stands up — no reliable hand-rolled fallback.
+        fallback: None,
+    },
+    LocalDriver {
+        id: "codex",
+        label: "Codex",
+        launch_sub: Some("codex"),
+        // `codex --oss -m <model>` talks to the local Ollama server directly.
+        fallback: Some(("codex", &["--oss", "-m", "{model}"])),
+    },
+    LocalDriver {
+        id: "opencode",
+        label: "OpenCode",
+        launch_sub: Some("opencode"),
+        // OpenCode's built-in `ollama` provider; `--model ollama/<model>` selects it.
+        fallback: Some(("opencode", &["--model", "ollama/{model}"])),
+    },
+    LocalDriver {
+        id: "droid",
+        label: "Droid",
+        launch_sub: Some("droid"),
+        // Droid is configured via ~/.factory/config.json; only `ollama launch`
+        // writes that wiring for us.
+        fallback: None,
+    },
+    LocalDriver {
+        id: "openclaw",
+        label: "OpenClaw",
+        launch_sub: Some("openclaw"),
+        // Launch-only: `ollama launch openclaw` installs OpenClaw if missing and
+        // stands up its gateway against the local Ollama endpoint. There's no
+        // documented standalone flag to point `openclaw` at a local server, so
+        // no hand-rolled fallback.
+        fallback: None,
+    },
+];
+
+/// True when the installed Ollama exposes the `launch` subcommand (v0.15+).
+/// Cheap probe: `ollama launch --help` exits 0 only when the subcommand exists.
+fn ollama_has_launch() -> bool {
+    std::process::Command::new("ollama")
+        .args(["launch", "--help"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Build the fallback launch spec for a driver, substituting `{model}`. Pure +
+/// tested; `prepare_local_launch` uses it only when `ollama launch` is missing.
+fn fallback_spec(driver: &LocalDriver, model: &str) -> Option<LocalLaunchSpec> {
+    driver.fallback.map(|(bin, args)| LocalLaunchSpec {
+        cmd: bin.to_string(),
+        args: args.iter().map(|a| a.replace("{model}", model)).collect(),
+    })
+}
+
+/// One local-model driver plus whether Eldrun currently has a way to launch it.
+#[derive(serde::Serialize)]
+pub struct LocalDriverInfo {
+    pub id: String,
+    pub label: String,
+    /// True when `ollama launch` supports it (and is available) or a direct
+    /// fallback exists. The menu hides drivers that are currently unreachable.
+    pub available: bool,
+}
+
+/// List the local-model coding agents (Claude Code, Codex, OpenCode, Droid) with
+/// their availability, so the Local Model menu can offer them alongside
+/// Mistral/vibe. Probes `ollama launch` once.
+#[tauri::command]
+pub async fn list_local_drivers() -> Vec<LocalDriverInfo> {
+    let has_launch = ollama_has_launch();
+    LOCAL_DRIVERS
+        .iter()
+        .map(|d| LocalDriverInfo {
+            id: d.id.to_string(),
+            label: d.label.to_string(),
+            available: (d.launch_sub.is_some() && has_launch) || d.fallback.is_some(),
+        })
+        .collect()
+}
+
+/// The command + args to spawn for a local-model agent tab.
+#[derive(serde::Serialize)]
+pub struct LocalLaunchSpec {
+    pub cmd: String,
+    pub args: Vec<String>,
+}
+
+/// Resolve how to drive the local Ollama `model` through `agent` (one of the
+/// [`LOCAL_DRIVERS`] ids). Prefers `ollama launch <agent> --model <model>`; falls
+/// back to a direct invocation when launch is unavailable. Errors when the agent
+/// is unknown, or it is launch-only and `ollama launch` is missing. The model is
+/// validated and passed as a discrete arg (no shell), so it can't inject.
+#[tauri::command]
+pub async fn prepare_local_launch(agent: String, model: String) -> Result<LocalLaunchSpec, String> {
+    validate_model_name(&model)?;
+    let driver = LOCAL_DRIVERS
+        .iter()
+        .find(|d| d.id == agent)
+        .ok_or_else(|| format!("unknown local driver: {agent}"))?;
+
+    if let Some(sub) = driver.launch_sub {
+        if ollama_has_launch() {
+            return Ok(LocalLaunchSpec {
+                cmd: "ollama".to_string(),
+                args: vec![
+                    "launch".to_string(),
+                    sub.to_string(),
+                    "--model".to_string(),
+                    model,
+                ],
+            });
+        }
+    }
+
+    fallback_spec(driver, &model).ok_or_else(|| {
+        format!(
+            "{} can only drive a local model through `ollama launch`, which isn't \
+             available. Update Ollama (v0.15+) to enable it.",
+            driver.label
+        )
+    })
 }
 
 fn sanitize_alias(model: &str) -> String {
@@ -1569,6 +1955,37 @@ mod tests {
                 validate_model_name(bad).is_err(),
                 "{bad:?} should be rejected"
             );
+        }
+    }
+
+    // ── local-driver registry (ollama launch + fallbacks) ────────────────────
+
+    #[test]
+    fn codex_fallback_substitutes_model_for_oss_mode() {
+        let d = LOCAL_DRIVERS.iter().find(|d| d.id == "codex").unwrap();
+        let spec = fallback_spec(d, "qwen2.5-coder:7b").expect("codex has a fallback");
+        assert_eq!(spec.cmd, "codex");
+        assert_eq!(spec.args, vec!["--oss", "-m", "qwen2.5-coder:7b"]);
+    }
+
+    #[test]
+    fn opencode_fallback_prefixes_the_ollama_provider() {
+        let d = LOCAL_DRIVERS.iter().find(|d| d.id == "opencode").unwrap();
+        let spec = fallback_spec(d, "llama3.2").expect("opencode has a fallback");
+        assert_eq!(spec.cmd, "opencode");
+        assert_eq!(spec.args, vec!["--model", "ollama/llama3.2"]);
+    }
+
+    #[test]
+    fn launch_only_drivers_have_no_fallback() {
+        // Claude Code / Droid need `ollama launch`; there is no hand-rolled spec.
+        for id in ["claude", "droid"] {
+            let d = LOCAL_DRIVERS.iter().find(|d| d.id == id).unwrap();
+            assert!(
+                fallback_spec(d, "any:model").is_none(),
+                "{id} must be launch-only"
+            );
+            assert!(d.launch_sub.is_some(), "{id} must support ollama launch");
         }
     }
 
@@ -1748,7 +2165,7 @@ mod tests {
 
     #[test]
     fn completion_prompt_includes_prefix_suffix_and_language() {
-        let p = completion_prompt("let x =", " + 1;", "rust", CompletionMode::Sentence);
+        let p = completion_prompt("let x =", " + 1;", "rust", CompletionMode::Sentence, "");
         assert!(p.contains("let x ="), "prefix must be embedded");
         assert!(p.contains(" + 1;"), "suffix must be embedded");
         assert!(p.contains("rust"), "language must be named");
@@ -1758,17 +2175,73 @@ mod tests {
 
     #[test]
     fn completion_prompt_defaults_empty_language_to_text() {
-        let p = completion_prompt("a", "b", "", CompletionMode::Sentence);
+        let p = completion_prompt("a", "b", "", CompletionMode::Sentence, "");
         assert!(p.contains("Language: text"), "empty language defaults to text");
     }
 
     #[test]
     fn completion_prompt_labels_before_and_after_sections() {
         // The BEFORE/AFTER framing is what stops a chat model rewriting the doc.
-        let p = completion_prompt("pre", "post", "rust", CompletionMode::Sentence);
+        let p = completion_prompt("pre", "post", "rust", CompletionMode::Sentence, "");
         assert!(p.contains("BEFORE:\npre"));
         assert!(p.contains("AFTER:\npost"));
         assert!(p.find("BEFORE:").unwrap() < p.find("AFTER:").unwrap());
+    }
+
+    #[test]
+    fn build_context_block_labels_files_and_skips_empty() {
+        let files = vec![
+            ContextFile { name: "util.rs".into(), content: "fn helper() {}".into() },
+            ContextFile { name: "blank.rs".into(), content: "   \n  ".into() },
+            ContextFile { name: "types.rs".into(), content: "struct Foo;".into() },
+        ];
+        let block = build_context_block(&files);
+        assert!(block.contains("--- util.rs ---\nfn helper() {}"));
+        assert!(block.contains("--- types.rs ---\nstruct Foo;"));
+        // Whitespace-only files contribute nothing.
+        assert!(!block.contains("blank.rs"));
+        // No files → empty string, so the prompt omits the section.
+        assert_eq!(build_context_block(&[]), "");
+    }
+
+    #[test]
+    fn build_context_block_caps_total_size() {
+        let big = "x".repeat(20_000);
+        let files = vec![
+            ContextFile { name: "a".into(), content: big.clone() },
+            ContextFile { name: "b".into(), content: big.clone() },
+            ContextFile { name: "c".into(), content: big },
+        ];
+        let block = build_context_block(&files);
+        // Each file is per-file capped and the total is bounded; allow for the
+        // labels/separators on top of the included bytes.
+        assert!(block.len() <= MAX_CONTEXT_TOTAL + 256, "total context stays bounded");
+        // The first file always makes it in.
+        assert!(block.contains("--- a ---"));
+    }
+
+    #[test]
+    fn truncate_chars_respects_utf8_boundaries() {
+        // Cutting mid-multibyte must back off to a valid boundary, never panic.
+        let s = "a\u{00e9}b"; // 'é' is 2 bytes → byte index 2 splits it
+        assert_eq!(truncate_chars(s, 2), "a");
+        assert_eq!(truncate_chars(s, 100), s);
+    }
+
+    #[test]
+    fn completion_prompt_embeds_reference_files_before_the_cursor_sections() {
+        let ctx = build_context_block(&[ContextFile {
+            name: "lib.rs".into(),
+            content: "pub fn answer() -> i32 { 42 }".into(),
+        }]);
+        let p = completion_prompt("let x = ", "", "rust", CompletionMode::Sentence, &ctx);
+        assert!(p.contains("REFERENCE FILES"));
+        assert!(p.contains("pub fn answer"));
+        // Reference context precedes the BEFORE/AFTER framing.
+        assert!(p.find("REFERENCE FILES").unwrap() < p.find("BEFORE:").unwrap());
+        // With no context the section is omitted entirely.
+        let plain = completion_prompt("let x = ", "", "rust", CompletionMode::Sentence, "");
+        assert!(!plain.contains("REFERENCE FILES"));
     }
 
     #[test]
@@ -1790,11 +2263,11 @@ mod tests {
         // Block/scope allow multi-line output; they must NOT carry the sentence
         // mode's "do not begin a new paragraph" restriction.
         let mid = "fn add(a: i32, b: i32) {\n    ";
-        let block = completion_prompt(mid, "\n}", "rust", CompletionMode::Block);
+        let block = completion_prompt(mid, "\n}", "rust", CompletionMode::Block, "");
         assert!(block.contains("block"));
         assert!(!block.contains("middle of a sentence"));
 
-        let scope = completion_prompt(mid, "\n}", "rust", CompletionMode::Scope);
+        let scope = completion_prompt(mid, "\n}", "rust", CompletionMode::Scope, "");
         assert!(scope.contains("function") && scope.contains("scope"));
         assert!(!scope.contains("middle of a sentence"));
     }
@@ -1815,11 +2288,11 @@ mod tests {
 
     #[test]
     fn completion_prompt_biases_to_finishing_the_sentence_when_mid_sentence() {
-        let mid = completion_prompt("I am writing to ", " Best regards", "text", CompletionMode::Sentence);
+        let mid = completion_prompt("I am writing to ", " Best regards", "text", CompletionMode::Sentence, "");
         assert!(mid.contains("middle of a sentence"));
         assert!(mid.contains("complete") || mid.contains("completes"));
         // At a sentence boundary it switches to the plain-continuation hint.
-        let cont = completion_prompt("First line.\n", "", "text", CompletionMode::Sentence);
+        let cont = completion_prompt("First line.\n", "", "text", CompletionMode::Sentence, "");
         assert!(!cont.contains("middle of a sentence"));
         assert!(cont.contains("Continue"));
     }
@@ -1888,6 +2361,76 @@ mod tests {
         assert_eq!(overlap_len("    return", "return a"), 6);
         assert_eq!(overlap_len("brown fox", "fox jumps"), 3);
         assert_eq!(overlap_len("hello", "world"), 0);
+    }
+
+    // ── grammar check: line numbering + JSON parsing ──────────────────────────
+
+    #[test]
+    fn number_lines_prefixes_each_line_one_based() {
+        assert_eq!(number_lines("a\nb"), "1: a\n2: b\n");
+        // A trailing newline produces a final (empty) numbered line; harmless.
+        assert_eq!(number_lines("only"), "1: only\n");
+    }
+
+    #[test]
+    fn parse_grammar_issues_reads_a_clean_array() {
+        let raw = r#"[{"line":2,"bad":"teh","suggestion":"the","category":"spelling","message":"typo"}]"#;
+        let issues = parse_grammar_issues(raw);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(
+            issues[0],
+            GrammarIssue {
+                line: 2,
+                bad: "teh".into(),
+                suggestion: "the".into(),
+                category: "spelling".into(),
+                message: "typo".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_grammar_issues_strips_prose_and_fences() {
+        // Models sometimes wrap the array in prose or a ```json fence; we extract
+        // the outermost [...] regardless.
+        let raw = "Sure! Here are the issues:\n```json\n[{\"line\":1,\"bad\":\"alot\",\"suggestion\":\"a lot\",\"category\":\"grammar\",\"message\":\"two words\"}]\n```";
+        let issues = parse_grammar_issues(raw);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].bad, "alot");
+        assert_eq!(issues[0].category, "grammar");
+    }
+
+    #[test]
+    fn parse_grammar_issues_normalises_category_and_drops_empty_bad() {
+        let raw = r#"[
+            {"line":1,"bad":"x","category":"weird","message":"m"},
+            {"line":1,"bad":"   ","category":"spelling","message":"blank"},
+            {"line":3,"bad":"y","category":"style"}
+        ]"#;
+        let issues = parse_grammar_issues(raw);
+        assert_eq!(issues.len(), 2, "blank-bad entry is dropped");
+        // Unknown category → grammar; missing suggestion/message default to "".
+        assert_eq!(issues[0].category, "grammar");
+        assert_eq!(issues[0].suggestion, "");
+        // Known categories pass through.
+        assert_eq!(issues[1].category, "style");
+    }
+
+    #[test]
+    fn parse_grammar_issues_empty_or_no_array() {
+        assert!(parse_grammar_issues("[]").is_empty());
+        assert!(parse_grammar_issues("no issues found").is_empty());
+        assert!(parse_grammar_issues("").is_empty());
+    }
+
+    #[test]
+    fn grammar_language_hint_targets_markup_languages() {
+        assert!(grammar_language_hint("latex").contains("LaTeX"));
+        assert!(grammar_language_hint("tex").contains("LaTeX"));
+        assert!(grammar_language_hint("markdown").contains("Markdown"));
+        // Plain text / code → no special markup hint.
+        assert_eq!(grammar_language_hint("text"), "");
+        assert_eq!(grammar_language_hint("rust"), "");
     }
 
     // ── sanitize_alias turns ':' into '-' ─────────────────────────────────────

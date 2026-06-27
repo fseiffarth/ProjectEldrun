@@ -16,6 +16,16 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 vi.mock("../stores/windows", () => ({
   useWindowsStore: { getState: () => ({ openFile: () => Promise.resolve() }) },
 }));
+// The file at /p/foo.py belongs to a project rooted at /p, so the context-file
+// picker (#45) lists that project's files.
+vi.mock("../stores/projects", () => ({
+  useProjectsStore: {
+    getState: () => ({
+      projects: [{ id: "proj", directory: "/p", local_file: "/p/project.json" }],
+      activeId: "proj",
+    }),
+  },
+}));
 
 const SOURCE = "def foo():\n    ";
 
@@ -35,6 +45,8 @@ function setup() {
   mockInvoke.mockImplementation((cmd: string) => {
     if (cmd === "read_file_text") return Promise.resolve(SOURCE);
     if (cmd === "file_mtime") return Promise.resolve(1000);
+    if (cmd === "list_project_paths")
+      return Promise.resolve([{ path: "helper.py", is_dir: false }]);
     if (cmd === "ensure_ollama_running") return Promise.resolve(null);
     // Completion runs against whichever model is currently loaded in memory.
     if (cmd === "list_ollama_models_detailed")
@@ -157,6 +169,38 @@ describe("local autocomplete (#45)", () => {
     });
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenCalledWith("complete_text", expect.objectContaining({ mode: "block" })),
+    );
+  });
+
+  it("attaches a project file as context and forwards it to complete_text (#45)", async () => {
+    autocompleteOn = true;
+    await renderTextView();
+    const textarea = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe(SOURCE));
+    textarea.selectionStart = textarea.selectionEnd = SOURCE.length;
+
+    // Open the context-file picker and pick the project's helper file.
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Add a project file as autocomplete context"));
+    });
+    const row = await screen.findByText("helper.py");
+    await act(async () => {
+      fireEvent.mouseDown(row);
+    });
+    // The chip for the attached file shows in the context bar.
+    await waitFor(() => expect(screen.getByTitle("helper.py")).toBeTruthy());
+
+    // Requesting a completion now carries the attached file as context.
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: " ", ctrlKey: true });
+    });
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "complete_text",
+        expect.objectContaining({
+          context: [{ name: "helper.py", content: SOURCE }],
+        }),
+      ),
     );
   });
 

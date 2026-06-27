@@ -968,6 +968,17 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
                           <option value="block">Block</option>
                           <option value="scope">Scope</option>
                         </select>
+                        {/* Local-model grammar/spelling check — underlines typos
+                            (red), grammar (blue), style (green) in the editor. */}
+                        <label className="viewer-pref-toggle">
+                          <input
+                            type="checkbox"
+                            checked={pref.grammar_check === true}
+                            disabled={!enabled}
+                            onChange={(e) => patch({ grammar_check: e.target.checked })}
+                          />
+                          <span>Grammar</span>
+                        </label>
                       </>
                     )}
                   </div>

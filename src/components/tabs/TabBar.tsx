@@ -89,6 +89,7 @@ const AGENT_ITEMS: StaticMenuItem[] = [
   { label: "Copilot",  cmd: "copilot",      kind: "agent" },
   { label: "Grok",     cmd: "grok",         kind: "agent" },
   { label: "Qwen",     cmd: "qwen",         kind: "agent" },
+  { label: "OpenClaw", cmd: "openclaw",     kind: "agent" },
 ];
 
 const SHELL_ITEMS: StaticMenuItem[] = [
@@ -160,6 +161,17 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // Model picker. The add menu offers ONE "Local Model" entry that launches it,
   // rather than listing every installed model.
   const localModel = useSettingsStore((s) => s.settings?.ollama_model);
+  // Coding agents that can drive the active local model besides Mistral/vibe —
+  // Claude Code, Codex, OpenCode, Droid via `ollama launch` (or a direct
+  // fallback). Loaded once; only the currently-available ones are offered.
+  const [localDrivers, setLocalDrivers] = useState<
+    { id: string; label: string; available: boolean }[]
+  >([]);
+  useEffect(() => {
+    invoke<{ id: string; label: string; available: boolean }[]>("list_local_drivers")
+      .then(setLocalDrivers)
+      .catch(() => {});
+  }, []);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
   // The tabs live in their own horizontally-scrolling strip; chevrons flank it
@@ -312,6 +324,32 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       });
     } catch {
       // Ollama not running or agent prep failed — don't create a tab with no model config.
+    }
+  }
+
+  // Drive the active local model through a non-vibe coding agent (Claude Code,
+  // Codex, OpenCode, Droid). The backend resolves the spawn command — `ollama
+  // launch <agent> --model <model>` when available, else a direct fallback — so
+  // everything the tab needs is carried in cmd+args (no env to re-hydrate).
+  async function handleLocalLaunch(agentId: string, label: string, model: string) {
+    setMenuPos(null);
+    try {
+      await invoke("ensure_ollama_running");
+      const { cmd, args } = await invoke<{ cmd: string; args: string[] }>(
+        "prepare_local_launch",
+        { agent: agentId, model },
+      );
+      focusGroup(groupId);
+      addTab({
+        label: `${model} · ${label}`,
+        cmd,
+        args,
+        env: {},
+        cwd: projectCwd,
+        kind: "local_agent",
+      });
+    } catch {
+      // ollama launch unavailable / agent prep failed — don't create a broken tab.
     }
   }
 
@@ -728,15 +766,33 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             </button>
           ))}
 
-          <div className="tab-new-menu-group-label">Local Model</div>
+          <div className="tab-new-menu-group-label">
+            {localModel ? `Local Model · ${localModel}` : "Local Model"}
+          </div>
           {localModel ? (
-            <button
-              className="tab-new-menu-item"
-              onClick={() => handleOllamaModel(localModel)}
-            >
-              <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
-              {localModel}
-            </button>
+            <>
+              {/* Mistral/vibe keeps its bespoke per-model VIBE_HOME path. */}
+              <button
+                className="tab-new-menu-item"
+                onClick={() => handleOllamaModel(localModel)}
+              >
+                <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
+                Mistral
+              </button>
+              {/* Other agents drive the same model via `ollama launch` / fallback. */}
+              {localDrivers
+                .filter((d) => d.available)
+                .map((d) => (
+                  <button
+                    key={d.id}
+                    className="tab-new-menu-item"
+                    onClick={() => handleLocalLaunch(d.id, d.label, localModel)}
+                  >
+                    <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
+                    {d.label}
+                  </button>
+                ))}
+            </>
           ) : (
             <div className="tab-new-menu-hint">No local model set — pick one in the app bar</div>
           )}

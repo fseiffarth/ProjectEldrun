@@ -339,6 +339,9 @@ pub fn run() {
             commands::fs::read_file_bytes,
             commands::fs::write_file_bytes,
             commands::fs::file_mtime,
+            commands::format::format_source,
+            commands::format::formatter_available,
+            commands::format::check_syntax,
             commands::fs_watch::watch_dir,
             commands::fs_watch::unwatch_dir,
             // LaTeX view / compile (gated on a TeX engine being on PATH)
@@ -417,6 +420,8 @@ pub fn run() {
             commands::ollama::list_ollama_models,
             commands::ollama::ensure_vibe_ollama_model,
             commands::ollama::prepare_local_agent,
+            commands::ollama::list_local_drivers,
+            commands::ollama::prepare_local_launch,
             commands::ollama::ensure_ollama_running,
             // Ollama model management
             commands::ollama::ollama_is_installed,
@@ -442,6 +447,8 @@ pub fn run() {
             commands::ollama::search_ollama_registry,
             // Local code/text autocomplete (opt-in, local-only)
             commands::ollama::complete_text,
+            // Local grammar/spelling check (opt-in, local-only)
+            commands::ollama::check_grammar,
         ])
         .plugin(tauri_plugin_dialog::init())
         .build(tauri::generate_context!())

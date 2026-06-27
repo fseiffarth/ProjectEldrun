@@ -2194,6 +2194,7 @@ const AGENT_CMDS = new Set([
   "copilot",
   "grok",
   "qwen",
+  "openclaw",
 ]);
 
 export function cmdToKind(cmd: string): TabKind {

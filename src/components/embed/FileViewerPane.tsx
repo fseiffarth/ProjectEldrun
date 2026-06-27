@@ -7,6 +7,7 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useWindowsStore } from "../../stores/windows";
 import { findGroupOfTab, useTabsStore, type ViewerState } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { useProjectsStore } from "../../stores/projects";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
 import {
   useEditorJumpStore,
@@ -20,14 +21,36 @@ import { Dropdown } from "../common/Dropdown";
 import { renderMarkdown } from "../../lib/viewers/markdown";
 import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
 import { highlight, languageForPath } from "../../lib/viewers/highlight";
+import {
+  formatJsonText,
+  isInProcessJson,
+  formatLangForPath,
+  validationLangForPath,
+  previewKindForPath,
+  buildPreviewDoc,
+  type PreviewKind,
+} from "../../lib/viewers/format";
+import {
+  toggleInline,
+  cycleHeading,
+  toggleLinePrefix,
+  makeLink,
+  generateToc,
+  type EditResult,
+} from "../../lib/viewers/markdownEdit";
 import { internalViewerFor, disabledViewers, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
-import type { AutocompleteMode } from "../../types";
+import {
+  resolveProjectDirectory,
+  type AutocompleteMode,
+  type GrammarIssue,
+  type ViewerPref,
+} from "../../types";
+import { ContextFilePicker } from "./ContextFilePicker";
 import { TableView } from "./TableView";
 import { NotebookView } from "./NotebookView";
 import { DiffView } from "./DiffView";
 import { OdtView } from "./OdtView";
 import { MediaView } from "./MediaView";
-import { HtmlView } from "./HtmlView";
 import { SqliteView } from "./SqliteView";
 import { ImageAnnotator } from "./ImageAnnotator";
 import {
@@ -234,7 +257,9 @@ export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
     return <MediaView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
   }
   if (viewer === "html") {
-    return <HtmlView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    // HTML is now the editable base editor with a sandboxed live preview, keyed
+    // to its own per-type prefs.
+    return <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} type="html" />;
   }
   if (viewer === "sqlite") {
     return <SqliteView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
@@ -472,6 +497,15 @@ export function ViewerHeader({
 
 /** Edit-history state: a stack of past values, the present value, and a redo
  *  stack of future values. Pure so it can be unit-tested without React. */
+/** Imperative editing surface exposed by {@link CodeEditor} via `editorApiRef`,
+ *  letting a toolbar transform the live value+selection. */
+export interface EditorApi {
+  /** Run `fn` over the current value and selection `[start, end)`, commit the
+   *  result through the editor's normal edit path, and restore the returned
+   *  selection. */
+  applyEdit: (fn: (value: string, start: number, end: number) => EditResult) => void;
+}
+
 export interface EditHistory {
   past: string[];
   present: string;
@@ -537,6 +571,11 @@ const COALESCE_MS = 400;
 // suggestion is requested for the focused editor. Long enough not to fire on
 // every keystroke, short enough to feel responsive.
 const AUTO_AC_DEBOUNCE_MS = 600;
+
+// #45 follow-up grammar check: idle time after the last keystroke before the
+// whole draft is re-checked. Longer than the autocomplete debounce — a full-
+// document check is heavier, and grammar marks needn't track every keystroke.
+const GRAMMAR_DEBOUNCE_MS = 2500;
 
 // #45 completion-length modes. Cycle order for the live Ctrl+Shift+Space toggle
 // and human labels for the status line / settings dropdown. Kept in sync with the
@@ -984,6 +1023,96 @@ export function decorateChangeRange(
   );
 }
 
+/** A grammar issue resolved to a concrete `{start, end}` character range in the
+ *  current draft, carrying its originating issue for the tooltip / apply-fix. */
+export interface GrammarRange {
+  start: number;
+  end: number;
+  issue: GrammarIssue;
+}
+
+/**
+ * Resolve each model-reported grammar issue to a character range in `text`. The
+ * model reports the offending substring `bad` plus its 1-based `line`; we search
+ * that line first (so duplicates of a word map to the right occurrence), then
+ * fall back to the whole document, so a small edit since the check doesn't drop
+ * every mark. Issues resolve in order with a per-line cursor, so several errors
+ * on one line each map to their own occurrence. Unlocatable issues are skipped;
+ * the result is sorted by start with overlaps pruned so the decorator's
+ * left-to-right walk stays clean. Pure — exported for tests.
+ */
+export function resolveGrammarRanges(text: string, issues: GrammarIssue[]): GrammarRange[] {
+  if (issues.length === 0) return [];
+  // 0-based offset where each 1-based line begins (lineStarts[n-1] = line n).
+  const lineStarts: number[] = [0];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "\n") lineStarts.push(i + 1);
+  }
+  // Per-line search cursor so repeated errors on a line advance past each other.
+  const lineCursor = new Map<number, number>();
+  const out: GrammarRange[] = [];
+  for (const issue of issues) {
+    const bad = issue.bad;
+    if (!bad) continue;
+    let start = -1;
+    const li = issue.line - 1;
+    if (li >= 0 && li < lineStarts.length) {
+      const lineStart = lineStarts[li];
+      const lineEnd = li + 1 < lineStarts.length ? lineStarts[li + 1] : text.length;
+      const from = Math.max(lineStart, lineCursor.get(li) ?? lineStart);
+      const idx = text.indexOf(bad, from);
+      if (idx >= 0 && idx < lineEnd) {
+        start = idx;
+        lineCursor.set(li, idx + bad.length);
+      }
+    }
+    if (start < 0) {
+      // The reported line drifted since the check — locate it anywhere.
+      const idx = text.indexOf(bad);
+      if (idx >= 0) start = idx;
+    }
+    if (start < 0) continue;
+    out.push({ start, end: start + bad.length, issue });
+  }
+  out.sort((a, b) => a.start - b.start);
+  const pruned: GrammarRange[] = [];
+  let lastEnd = -1;
+  for (const r of out) {
+    if (r.start < lastEnd) continue; // drop overlaps
+    pruned.push(r);
+    lastEnd = r.end;
+  }
+  return pruned;
+}
+
+/**
+ * Build the transparent grammar overlay: each range is wrapped in a
+ * `<span class="file-viewer-grammar-mark cat-<category>" data-gi="<i>">` so it
+ * paints a coloured wavy underline (colour by category) while the surrounding
+ * text stays plain/transparent. The `data-gi` index ties a span back to its
+ * `ranges` entry for hover hit-testing. SECURITY: every run of source text is
+ * HTML-escaped before output — mirrors `decorateSearchRanges`.
+ */
+export function decorateGrammarRanges(source: string, ranges: GrammarRange[]): string {
+  if (ranges.length === 0) return escapeHtmlText(source);
+  let out = "";
+  let pos = 0;
+  ranges.forEach((r, i) => {
+    if (r.start < pos || r.start >= r.end) return; // skip overlaps / empties
+    out += escapeHtmlText(source.slice(pos, r.start));
+    const cat =
+      r.issue.category === "spelling" || r.issue.category === "style"
+        ? r.issue.category
+        : "grammar";
+    out += `<span class="file-viewer-grammar-mark cat-${cat}" data-gi="${i}">${escapeHtmlText(
+      source.slice(r.start, r.end),
+    )}</span>`;
+    pos = r.end;
+  });
+  out += escapeHtmlText(source.slice(pos));
+  return out;
+}
+
 /**
  * Replace each `{start, end}` range in `text` with `replacement`, returning the
  * new string (#67 find-and-replace). Ranges are applied left-to-right; any that
@@ -1125,6 +1254,7 @@ function CodeEditor({
   undo,
   redo,
   autocomplete,
+  grammarCheck,
   texCompletions,
   fontSize,
   lineHeight,
@@ -1136,6 +1266,7 @@ function CodeEditor({
   onGotoApplied,
   onCaretChange,
   caretApiRef,
+  editorApiRef,
   initialScrollTop,
   onScrollPersist,
 }: {
@@ -1164,6 +1295,11 @@ function CodeEditor({
    *  no caret event fired this session — `onCaretChange`/its snapshot can be a
    *  stale 0 (e.g. the editor was never focused, or a WebKitGTK blur reset it). */
   caretApiRef?: React.MutableRefObject<(() => number | null) | null>;
+  /** When set, receives an imperative editing API so a toolbar (the Markdown
+   *  viewer's bold/italic/heading/… controls) can transform the current
+   *  value+selection; edits commit through the normal path so undo/redo and the
+   *  syntax overlay stay consistent. Cleared on unmount. */
+  editorApiRef?: React.MutableRefObject<EditorApi | null>;
   /** When set, returns the source ranges to decorate as clickable file links
    *  (#49). Currently the LaTeX viewer's `\input{…}`/`\includegraphics{…}` args. */
   linkRanges?: (source: string) => { start: number; end: number }[];
@@ -1175,6 +1311,11 @@ function CodeEditor({
    *  against whichever model is *currently loaded* in Ollama memory at trigger
    *  time, preferring `preferred` when it is among the loaded set. */
   autocomplete?: { enabled: boolean; preferred?: string; mode?: AutocompleteMode };
+  /** Opt-in local grammar/spelling check (#45 follow-up). When enabled, the whole
+   *  draft is checked against the currently-loaded local model after an idle
+   *  pause; issues are underlined (colour by category) with a hover tooltip and
+   *  one-click fix. `preferred` is the user's active local model (🧠 menu). */
+  grammarCheck?: { enabled: boolean; preferred?: string };
   /** Opt-in `\ref`/`\cite` key completion (LaTeX viewer only). When supplied, a
    *  dropdown of `\label` keys (refs) or `.bib` entry keys (cites) appears while
    *  typing inside a recognised command's braces; Enter/Tab accepts. */
@@ -1205,6 +1346,7 @@ function CodeEditor({
   const linkLayerRef = useRef<HTMLPreElement>(null);
   const searchLayerRef = useRef<HTMLPreElement>(null);
   const changeLayerRef = useRef<HTMLPreElement>(null);
+  const grammarLayerRef = useRef<HTMLPreElement>(null);
   const ghostRef = useRef<HTMLPreElement>(null);
   const measureRef = useRef<HTMLPreElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
@@ -1268,6 +1410,53 @@ function CodeEditor({
     const id = window.setTimeout(() => setAcStatus(null), 4000);
     return () => window.clearTimeout(id);
   }, [acStatus]);
+
+  // #45 context files: extra project files the user attaches as read-only context
+  // for completion. Per-editor (not persisted); each entry caches the file's text
+  // at attach time so requests don't re-read disk on every keystroke. `acPicker`
+  // toggles the QuickOpen-style file picker.
+  const [contextFiles, setContextFiles] = useState<
+    { rel: string; path: string; content: string }[]
+  >([]);
+  const [acPicker, setAcPicker] = useState(false);
+
+  // Resolve the project the edited file belongs to (the longest project directory
+  // that is a prefix of `path`), falling back to the active project — so the
+  // context-file picker lists the right project even in a detached window.
+  const acProjectDir = useMemo(() => {
+    const { projects, activeId } = useProjectsStore.getState();
+    let best = "";
+    for (const p of projects) {
+      const dir = resolveProjectDirectory(p);
+      if (dir && (path === dir || path.startsWith(dir + "/")) && dir.length > best.length) {
+        best = dir;
+      }
+    }
+    if (best) return best;
+    const active = projects.find((p) => p.id === activeId);
+    return active ? resolveProjectDirectory(active) : "";
+  }, [path]);
+
+  const addContextFile = useCallback(
+    async (rel: string) => {
+      if (!acProjectDir) return;
+      const abs = `${acProjectDir}/${rel}`;
+      if (contextFiles.some((f) => f.path === abs)) return; // already attached
+      try {
+        const content = await invoke<string>("read_file_text", { path: abs });
+        setContextFiles((prev) =>
+          prev.some((f) => f.path === abs) ? prev : [...prev, { rel, path: abs, content }],
+        );
+      } catch {
+        /* unreadable file: silently skip */
+      }
+    },
+    [acProjectDir, contextFiles],
+  );
+
+  const removeContextFile = useCallback((abs: string) => {
+    setContextFiles((prev) => prev.filter((f) => f.path !== abs));
+  }, []);
 
   // \ref/\cite key completion (LaTeX viewer): the open dropdown's context, the
   // filtered items, the highlighted index, and the screen anchor. A caret tick
@@ -1353,7 +1542,13 @@ function CodeEditor({
       gutterInnerRef.current.style.transform = `translateY(${-scrollTop}px)`;
     }
     const transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
-    for (const ref of [highlightRef, linkLayerRef, searchLayerRef, changeLayerRef]) {
+    for (const ref of [
+      highlightRef,
+      linkLayerRef,
+      searchLayerRef,
+      changeLayerRef,
+      grammarLayerRef,
+    ]) {
       if (ref.current) ref.current.style.transform = transform;
     }
     // The ghost layer keeps the inset/overflow:hidden model (it masks the layers
@@ -1526,6 +1721,157 @@ function CodeEditor({
     [loaded, draft, lastChange],
   );
 
+  // ── #45 follow-up: local-model grammar/spelling check ──────────────────────
+  // The whole draft is checked against the currently-loaded local model after an
+  // idle pause; the returned issues are resolved to ranges against the live draft
+  // (so they self-heal across small edits) and underlined, colour by category. A
+  // short status mirrors the autocomplete one. Disabled unless `grammarCheck`.
+  const [grammarIssues, setGrammarIssues] = useState<GrammarIssue[]>([]);
+  const [grammarStatus, setGrammarStatus] = useState<string | null>(null);
+  const [grammarTip, setGrammarTip] = useState<
+    { left: number; top: number; range: GrammarRange } | null
+  >(null);
+  const grammarAbort = useRef<AbortController | null>(null);
+  // The exact draft text last submitted, so an idle re-check is skipped when the
+  // document hasn't changed since the previous check.
+  const lastCheckedText = useRef<string | null>(null);
+  // Close the hover tooltip on a short delay, so the pointer can travel from the
+  // underlined mark up into the tooltip (to click Apply) without it vanishing.
+  const grammarTipTimer = useRef<number | null>(null);
+  const cancelGrammarTipClose = useCallback(() => {
+    if (grammarTipTimer.current != null) {
+      window.clearTimeout(grammarTipTimer.current);
+      grammarTipTimer.current = null;
+    }
+  }, []);
+  const scheduleGrammarTipClose = useCallback(() => {
+    cancelGrammarTipClose();
+    grammarTipTimer.current = window.setTimeout(() => setGrammarTip(null), 250);
+  }, [cancelGrammarTipClose]);
+  useEffect(() => () => cancelGrammarTipClose(), [cancelGrammarTipClose]);
+
+  const grammarRanges = useMemo(
+    () => (loaded && grammarIssues.length ? resolveGrammarRanges(draft, grammarIssues) : []),
+    [loaded, draft, grammarIssues],
+  );
+  const grammarHtml = useMemo(
+    () => (grammarRanges.length ? decorateGrammarRanges(draft, grammarRanges) : null),
+    [draft, grammarRanges],
+  );
+
+  // Auto-dismiss a finished grammar status; keep an in-flight "…" message.
+  useEffect(() => {
+    if (!grammarStatus || grammarStatus.endsWith("…")) return;
+    const id = window.setTimeout(() => setGrammarStatus(null), 4000);
+    return () => window.clearTimeout(id);
+  }, [grammarStatus]);
+
+  const runGrammarCheck = useCallback(async () => {
+    if (!grammarCheck?.enabled) return;
+    const text = draftRef.current;
+    if (!text.trim()) {
+      setGrammarIssues([]);
+      return;
+    }
+    lastCheckedText.current = text;
+    grammarAbort.current?.abort();
+    const ctl = new AbortController();
+    grammarAbort.current = ctl;
+    setGrammarStatus("Checking grammar…");
+    try {
+      // Resolve the currently-loaded model the same way autocomplete does, so the
+      // check runs against whatever is resident in Ollama at trigger time.
+      const detailed = await invoke<{ name: string; running: boolean }[]>(
+        "list_ollama_models_detailed",
+      );
+      if (ctl.signal.aborted) return;
+      const running = detailed.filter((m) => m.running).map((m) => m.name);
+      const model =
+        grammarCheck.preferred && running.includes(grammarCheck.preferred)
+          ? grammarCheck.preferred
+          : running[0] ?? "";
+      if (!model) {
+        setGrammarStatus("Grammar check unavailable — load a local model (🧠 menu) to enable it.");
+        return;
+      }
+      const issues = await invoke<GrammarIssue[]>("check_grammar", {
+        text,
+        model,
+        language: lang === "plain" ? "" : lang,
+      });
+      if (ctl.signal.aborted) return;
+      setGrammarIssues(issues);
+      setGrammarStatus(issues.length ? `${issues.length} issue${issues.length === 1 ? "" : "s"}` : "No issues");
+    } catch (e) {
+      if (ctl.signal.aborted) return;
+      setGrammarStatus(
+        String(e).includes("not_running")
+          ? "Grammar check unavailable — load a local model (🧠 menu) to enable it."
+          : "Grammar check failed — see the local model.",
+      );
+    }
+    // Primitive deps (the config object's identity changes every render) so the
+    // idle-check timer isn't reset by unrelated re-renders.
+  }, [grammarCheck?.enabled, grammarCheck?.preferred, lang]);
+
+  // Idle re-check: when enabled, run a short while after the user stops typing,
+  // skipping when the draft is unchanged from the last check. Clears stale marks
+  // immediately when the feature is turned off.
+  useEffect(() => {
+    if (!grammarCheck?.enabled || !loaded) {
+      setGrammarIssues([]);
+      setGrammarTip(null);
+      lastCheckedText.current = null;
+      return;
+    }
+    if (draft === lastCheckedText.current) return;
+    const id = window.setTimeout(() => void runGrammarCheck(), GRAMMAR_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [grammarCheck?.enabled, loaded, draft, runGrammarCheck]);
+
+  // Keep the grammar overlay aligned after it mounts/changes.
+  useEffect(() => {
+    if (grammarHtml) syncScroll();
+  }, [grammarHtml, syncScroll]);
+
+  // Apply a single issue's suggested fix: replace its resolved range with the
+  // suggestion and drop the issue so its mark clears (the rest re-resolve against
+  // the new draft). Leaves the caret after the inserted text.
+  const applyGrammarFix = useCallback(
+    (range: GrammarRange) => {
+      const repl = range.issue.suggestion;
+      edit(applyReplacements(draftRef.current, [{ start: range.start, end: range.end }], repl));
+      setGrammarIssues((prev) => prev.filter((i) => i !== range.issue));
+      setGrammarTip(null);
+      const caret = range.start + repl.length;
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (el) el.selectionStart = el.selectionEnd = caret;
+      });
+    },
+    [edit],
+  );
+
+  // Hit-test the grammar overlay at a screen point, returning the range under the
+  // cursor (its span carries `data-gi`, an index into `grammarRanges`). Mirrors
+  // the link-layer hit-test: the layer is scroll-synced over the textarea text, so
+  // its span rects are the on-screen marks.
+  const grammarHitAt = useCallback(
+    (x: number, y: number): GrammarRange | null => {
+      const layer = grammarLayerRef.current;
+      if (!layer) return null;
+      for (const span of layer.querySelectorAll<HTMLElement>(".file-viewer-grammar-mark")) {
+        const r = span.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+          const gi = Number(span.dataset.gi);
+          return grammarRanges[gi] ?? null;
+        }
+      }
+      return null;
+    },
+    [grammarRanges],
+  );
+
   // Replace the current match (#67). We re-place the textarea selection on the
   // match first so the change history records a single, intelligible edit, then
   // splice `replaceWith` in via setDraft. The match set recomputes on the new
@@ -1682,6 +2028,38 @@ function CodeEditor({
     };
   }, [caretApiRef]);
 
+  // Imperative editing API for a toolbar (the Markdown viewer). `applyEdit` runs
+  // a pure transform on the current value+selection and commits it through
+  // `edit`; the requested selection is stashed and restored by the layout effect
+  // below once React has re-rendered the textarea with the new value.
+  const pendingSelRef = useRef<{ start: number; end: number } | null>(null);
+  useEffect(() => {
+    if (!editorApiRef) return;
+    editorApiRef.current = {
+      applyEdit: (fn) => {
+        const el = textareaRef.current;
+        const start = el?.selectionStart ?? draftRef.current.length;
+        const end = el?.selectionEnd ?? start;
+        const res = fn(draftRef.current, start, end);
+        pendingSelRef.current = { start: res.selStart, end: res.selEnd };
+        el?.focus();
+        edit(res.value);
+      },
+    };
+    return () => {
+      editorApiRef.current = null;
+    };
+  }, [editorApiRef, edit]);
+  useLayoutEffect(() => {
+    const sel = pendingSelRef.current;
+    if (!sel) return;
+    pendingSelRef.current = null;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.selectionStart = sel.start;
+    el.selectionEnd = sel.end;
+  }, [draft]);
+
   // SyncTeX reverse search: on a new `gotoLine` nonce, place the caret at the
   // target line/column and scroll it to roughly the middle of the view. SyncTeX
   // reports a column (0 when it has none); we offset into the line by it, clamped
@@ -1774,6 +2152,9 @@ function CodeEditor({
         model,
         language: lang === "plain" ? "" : lang,
         mode,
+        context: contextFiles.length
+          ? contextFiles.map((f) => ({ name: f.rel, content: f.content }))
+          : undefined,
       });
       if (ctl.signal.aborted) return;
       if (text) {
@@ -1794,7 +2175,7 @@ function CodeEditor({
           : "Autocomplete failed — see the local model.",
       );
     }
-  }, [autocomplete, draft, lang, acMode]);
+  }, [autocomplete, draft, lang, acMode, contextFiles]);
 
   // #45 automatic suggestions: when the per-type toggle is on, request a
   // completion a short while after the user stops typing. Re-runs on each draft
@@ -2116,6 +2497,17 @@ function CodeEditor({
   const onMouseMove = (e: React.MouseEvent<HTMLTextAreaElement>) => {
     lastMouse.current = { x: e.clientX, y: e.clientY };
     updateLinkHover(e.clientX, e.clientY, e.ctrlKey || e.metaKey);
+    // Grammar tooltip: open it over a hovered mark, else schedule a close so the
+    // pointer can still reach the open tooltip's Apply button.
+    if (grammarRanges.length) {
+      const hit = grammarHitAt(e.clientX, e.clientY);
+      if (hit) {
+        cancelGrammarTipClose();
+        setGrammarTip({ left: e.clientX, top: e.clientY, range: hit });
+      } else if (grammarTip) {
+        scheduleGrammarTipClose();
+      }
+    }
   };
 
   if (error != null) return <div className="file-viewer-error">{error}</div>;
@@ -2215,6 +2607,15 @@ function CodeEditor({
             dangerouslySetInnerHTML={{ __html: searchHtml + "\n" }}
           />
         )}
+        {grammarHtml != null && (
+          <pre
+            ref={grammarLayerRef}
+            className="file-viewer-grammar-layer"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+            dangerouslySetInnerHTML={{ __html: grammarHtml + "\n" }}
+          />
+        )}
         {linkHtml != null && (
           <pre
             ref={linkLayerRef}
@@ -2247,7 +2648,7 @@ function CodeEditor({
           onKeyUp={(e) => { if (!(e.ctrlKey || e.metaKey)) setLinkHover(false); emitCaret(); }}
           onBlur={() => { setLinkHover(false); setLinkTip(null); dismissSuggestion(); setCompl(null); }}
           onMouseMove={onMouseMove}
-          onMouseLeave={() => { setLinkHover(false); setLinkTip(null); }}
+          onMouseLeave={() => { setLinkHover(false); setLinkTip(null); scheduleGrammarTipClose(); }}
           onClick={onClick}
           onSelect={emitCaret}
           onScroll={onScroll}
@@ -2262,6 +2663,72 @@ function CodeEditor({
           )}
           {acStatus}
         </div>
+      )}
+      {grammarStatus && (
+        <div className="file-viewer-grammar-status" role="status">
+          {grammarStatus.endsWith("…") && (
+            <span className="file-viewer-ac-spinner" aria-hidden="true" />
+          )}
+          {grammarStatus}
+        </div>
+      )}
+      {grammarTip && (
+        <div
+          className={`file-viewer-grammar-tip cat-${grammarTip.range.issue.category}`}
+          style={{ left: grammarTip.left, top: grammarTip.top }}
+          role="tooltip"
+          onMouseEnter={cancelGrammarTipClose}
+          onMouseLeave={scheduleGrammarTipClose}
+        >
+          <div className="file-viewer-grammar-tip-cat">{grammarTip.range.issue.category}</div>
+          {grammarTip.range.issue.message && (
+            <div className="file-viewer-grammar-tip-msg">{grammarTip.range.issue.message}</div>
+          )}
+          {grammarTip.range.issue.suggestion && (
+            <button
+              type="button"
+              className="file-viewer-grammar-tip-fix"
+              // mousedown keeps the textarea from stealing focus before the click.
+              onMouseDown={(e) => { e.preventDefault(); applyGrammarFix(grammarTip.range); }}
+            >
+              Fix → <span className="file-viewer-grammar-tip-sugg">{grammarTip.range.issue.suggestion}</span>
+            </button>
+          )}
+        </div>
+      )}
+      {/* #45 context files: a button to attach project files plus chips for the
+          attached ones, shown only when autocomplete is enabled for this type. */}
+      {autocomplete?.enabled && (
+        <div className="file-viewer-ac-context">
+          <button
+            type="button"
+            className="file-viewer-ac-context-add"
+            onClick={() => setAcPicker(true)}
+            title="Add a project file as autocomplete context"
+          >
+            + Context{contextFiles.length ? ` (${contextFiles.length})` : ""}
+          </button>
+          {contextFiles.map((f) => (
+            <span key={f.path} className="file-viewer-ac-context-chip" title={f.rel}>
+              {f.rel.split("/").pop()}
+              <button
+                type="button"
+                aria-label={`Remove ${f.rel} from context`}
+                onClick={() => removeContextFile(f.path)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {acPicker && (
+        <ContextFilePicker
+          projectDir={acProjectDir}
+          attached={contextFiles.map((f) => f.rel)}
+          onPick={(rel) => void addContextFile(rel)}
+          onClose={() => setAcPicker(false)}
+        />
       )}
       {compl && (
         <ul
@@ -2459,6 +2926,250 @@ function UndoRedoButtons({
   );
 }
 
+// ── Per-format extras: format, validation, preview, markup toolbar ───────────
+
+/**
+ * "Format document" support for the editable text viewers. JSON is prettified
+ * in-process; every other recognised type shells out to an external formatter
+ * (prettier/black/rustfmt/gofmt) via the backend, which is probed once per path
+ * so the button can disable itself when no tool is installed. A formatted result
+ * is written back through `setDraft`, so it lands as one undo step.
+ */
+function useFormatter(path: string, draft: string, setDraft: (v: string) => void) {
+  const lang = useMemo(() => formatLangForPath(path), [path]);
+  const inProcess = useMemo(() => isInProcessJson(path), [path]);
+  const enabled = inProcess || lang != null;
+  // JSON (in-process) is always available; an external formatter is probed.
+  const [available, setAvailable] = useState(inProcess);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  useEffect(() => {
+    if (!lang) {
+      setAvailable(inProcess);
+      return;
+    }
+    let cancelled = false;
+    invoke<boolean>("formatter_available", { lang, path })
+      .then((ok) => { if (!cancelled) setAvailable(inProcess || ok); })
+      .catch(() => { if (!cancelled) setAvailable(inProcess); });
+    return () => { cancelled = true; };
+  }, [lang, path, inProcess]);
+
+  // Auto-dismiss a finished status after a few seconds.
+  useEffect(() => {
+    if (!status) return;
+    const id = window.setTimeout(() => setStatus(null), 6000);
+    return () => window.clearTimeout(id);
+  }, [status]);
+
+  const run = useCallback(async () => {
+    if (busy) return;
+    const text = draftRef.current;
+    setStatus(null);
+    if (inProcess) {
+      const res = formatJsonText(text);
+      if (res.ok) {
+        if (res.text !== text) setDraft(res.text);
+      } else {
+        setStatus(`Can't format: ${res.error}`);
+      }
+      return;
+    }
+    if (!lang) return;
+    setBusy(true);
+    try {
+      const out = await invoke<string>("format_source", { text, lang, path });
+      if (out !== text) setDraft(out);
+    } catch (e) {
+      const msg = String(e);
+      if (msg.startsWith("formatter-unavailable")) {
+        setAvailable(false);
+        setStatus("No formatter installed for this file type");
+      } else {
+        setStatus(msg.length > 240 ? `${msg.slice(0, 240)}…` : msg);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, inProcess, lang, path, setDraft]);
+
+  return { enabled, available, busy, status, run };
+}
+
+/** "Format" toolbar button; disabled when no formatter is available or while a
+ *  format is in flight. Keeps editor focus so the document stays the target. */
+function FormatButton({
+  available,
+  busy,
+  run,
+}: {
+  available: boolean;
+  busy: boolean;
+  run: () => void;
+}) {
+  return (
+    <button
+      className="file-viewer-format-btn"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={run}
+      disabled={!available || busy}
+      title={available ? "Format document" : "No formatter found for this file type"}
+      aria-label="Format document"
+    >
+      {busy ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : "Format"}
+    </button>
+  );
+}
+
+interface SyntaxIssue {
+  line: number;
+  column: number;
+  message: string;
+}
+
+/** Debounced backend syntax check for JSON/YAML; returns the first parse error
+ *  (or null when valid / not a checked type). Re-runs as the draft changes. */
+function useSyntaxCheck(path: string, draft: string, loaded: boolean): SyntaxIssue | null {
+  const lang = useMemo(() => validationLangForPath(path), [path]);
+  const [issue, setIssue] = useState<SyntaxIssue | null>(null);
+  useEffect(() => {
+    if (!lang || !loaded) {
+      setIssue(null);
+      return;
+    }
+    let cancelled = false;
+    const id = window.setTimeout(() => {
+      invoke<SyntaxIssue | null>("check_syntax", { text: draft, lang })
+        .then((r) => { if (!cancelled) setIssue(r ?? null); })
+        .catch(() => { if (!cancelled) setIssue(null); });
+    }, 500);
+    return () => { cancelled = true; window.clearTimeout(id); };
+  }, [lang, draft, loaded]);
+  return lang ? issue : null;
+}
+
+/** Inline parse-error banner for JSON/YAML, with a jump to the offending line. */
+function ValidationBanner({
+  issue,
+  onJump,
+}: {
+  issue: SyntaxIssue | null;
+  onJump: (line: number, column: number) => void;
+}) {
+  if (!issue) return null;
+  const where = issue.line
+    ? ` (line ${issue.line}${issue.column ? `, col ${issue.column}` : ""})`
+    : "";
+  return (
+    <div className="file-viewer-validation" role="alert">
+      <span className="file-viewer-validation-dot" aria-hidden="true" />
+      <span className="file-viewer-validation-msg">
+        {issue.message}
+        {where}
+      </span>
+      {issue.line > 0 && (
+        <button
+          className="file-viewer-validation-jump"
+          onClick={() => onJump(issue.line, issue.column)}
+        >
+          Go to line
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Reusable Preview/Edit (Source) segmented toggle, styled like the existing
+ *  markdown mode buttons. */
+function ModeToggle<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string }[];
+}) {
+  return (
+    <div className="file-viewer-modes">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          className={`file-viewer-mode${value === o.value ? " active" : ""}`}
+          aria-pressed={value === o.value}
+          onClick={() => onChange(o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Rendered-preview pane for HTML/SVG/CSS — a fully sandboxed (`sandbox=""`,
+ *  no scripts) iframe so even a hostile file is inert. CSS is applied to a small
+ *  sample document; HTML/SVG render their own source. */
+function RenderedPreview({
+  kind,
+  content,
+  fileName,
+}: {
+  kind: PreviewKind;
+  content: string;
+  fileName: string;
+}) {
+  const doc = useMemo(() => buildPreviewDoc(kind, content), [kind, content]);
+  return (
+    <iframe
+      // sandbox="" is intentional and load-bearing: the most restrictive
+      // sandbox, so no script in the file can run.
+      sandbox=""
+      srcDoc={doc}
+      title={`Preview of ${fileName}`}
+      className="file-viewer-html-frame"
+      style={{ width: "100%", height: "100%", border: "none", background: "#fff" }}
+    />
+  );
+}
+
+/** Markdown editing toolbar (#md-toolbar): inline/structural formatting plus a
+ *  generated table of contents, applied through the editor's imperative API so
+ *  each action is one undo step. Buttons `preventDefault` on mousedown so the
+ *  editor keeps its selection as the action's target. */
+function MarkdownToolbar({ api }: { api: React.MutableRefObject<EditorApi | null> }) {
+  const act = (fn: (v: string, s: number, e: number) => EditResult) => () =>
+    api.current?.applyEdit(fn);
+  const btn = (label: React.ReactNode, title: string, fn: (v: string, s: number, e: number) => EditResult) => (
+    <button
+      className="file-viewer-md-btn"
+      title={title}
+      aria-label={title}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={act(fn)}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="file-viewer-md-toolbar" role="group" aria-label="Formatting">
+      {btn(<b>B</b>, "Bold", (v, s, e) => toggleInline(v, s, e, "**"))}
+      {btn(<i>I</i>, "Italic", (v, s, e) => toggleInline(v, s, e, "_"))}
+      {btn(<span style={{ fontFamily: "var(--font-mono, monospace)" }}>{"<>"}</span>, "Inline code", (v, s, e) => toggleInline(v, s, e, "`"))}
+      {btn("H", "Cycle heading", (v, s) => cycleHeading(v, s))}
+      {btn("🔗", "Link", (v, s, e) => makeLink(v, s, e))}
+      {btn("•", "Bulleted list", (v, s, e) => toggleLinePrefix(v, s, e, "- "))}
+      {btn("TOC", "Insert table of contents", (v, s, e) => {
+        const toc = generateToc(v);
+        const ins = toc ? `${toc}\n` : "";
+        return { value: v.slice(0, s) + ins + v.slice(e), selStart: s, selEnd: s + ins.length };
+      })}
+    </div>
+  );
+}
+
 /** Resolve the per-type viewer prefs for an InternalViewer from settings (#48). */
 function useViewerPref(type: InternalViewer) {
   return useSettingsStore((s) => s.settings?.viewer_prefs?.[type]);
@@ -2479,6 +3190,104 @@ function useAutocompleteConfig(
     ? (pref!.autocomplete_mode as AutocompleteMode)
     : "sentence";
   return { enabled: pref?.autocomplete === true, preferred, mode };
+}
+
+/** Per-type local grammar-check config (#45 follow-up): the opt-in toggle plus
+ *  the user's active local model, mirroring {@link useAutocompleteConfig}. */
+function useGrammarCheckConfig(
+  type: InternalViewer,
+): { enabled: boolean; preferred?: string } {
+  const pref = useViewerPref(type);
+  const preferred = useSettingsStore((s) => s.settings?.ollama_model as string | undefined);
+  return { enabled: pref?.grammar_check === true, preferred };
+}
+
+/**
+ * Read + write the per-type AI-assist prefs (autocomplete on/off + length mode,
+ * grammar on/off) so each editor tab can toggle them inline, not just via
+ * Settings → Native Viewers. Writes merge the whole `viewer_prefs` map back
+ * through `updateSettings` (same as the settings panel), so the change persists
+ * and the in-tab control and the settings checkbox stay in lockstep.
+ */
+function useEditorAiControls(type: InternalViewer) {
+  const pref = useViewerPref(type);
+  const autocomplete = pref?.autocomplete === true;
+  const grammar = pref?.grammar_check === true;
+  const mode: AutocompleteMode = AC_MODES.includes(pref?.autocomplete_mode as AutocompleteMode)
+    ? (pref!.autocomplete_mode as AutocompleteMode)
+    : "sentence";
+  const patch = useCallback(
+    (next: Partial<ViewerPref>) => {
+      const all = useSettingsStore.getState().settings?.viewer_prefs ?? {};
+      const cur = all[type] ?? {};
+      void useSettingsStore.getState().updateSettings({
+        viewer_prefs: { ...all, [type]: { ...cur, ...next } },
+      });
+    },
+    [type],
+  );
+  return {
+    autocomplete,
+    grammar,
+    mode,
+    toggleAutocomplete: useCallback(() => patch({ autocomplete: !autocomplete }), [patch, autocomplete]),
+    toggleGrammar: useCallback(() => patch({ grammar_check: !grammar }), [patch, grammar]),
+    setMode: useCallback((m: AutocompleteMode) => patch({ autocomplete_mode: m }), [patch]),
+  };
+}
+
+/**
+ * In-tab AI-assist controls for the editable viewers (#45): an Autocomplete
+ * on/off toggle with a length-mode picker (Sentence/Block/Scope), and a Grammar
+ * on/off toggle. Both are local-only (Ollama) and write the per-type prefs via
+ * {@link useEditorAiControls}, so they mirror the Settings → Native Viewers
+ * checkboxes. Rendered in the viewer header next to the font/undo/save controls.
+ */
+function EditorAiControls({ type }: { type: InternalViewer }) {
+  const ai = useEditorAiControls(type);
+  return (
+    <div className="file-viewer-ai-controls" role="group" aria-label="AI assist">
+      <button
+        type="button"
+        className={`file-viewer-ai-btn${ai.autocomplete ? " active" : ""}`}
+        onClick={ai.toggleAutocomplete}
+        aria-pressed={ai.autocomplete}
+        title={
+          ai.autocomplete
+            ? "Local autocomplete is on (Ctrl+Space) — click to disable"
+            : "Local autocomplete is off — click to enable (needs a loaded local model)"
+        }
+      >
+        Autocomplete
+      </button>
+      {ai.autocomplete && (
+        <select
+          className="file-viewer-ai-mode"
+          value={ai.mode}
+          title="Completion length (Ctrl+Shift+Space cycles it live)"
+          aria-label="Completion length"
+          onChange={(e) => ai.setMode(e.target.value as AutocompleteMode)}
+        >
+          <option value="sentence">Sentence</option>
+          <option value="block">Block</option>
+          <option value="scope">Scope</option>
+        </select>
+      )}
+      <button
+        type="button"
+        className={`file-viewer-ai-btn${ai.grammar ? " active" : ""}`}
+        onClick={ai.toggleGrammar}
+        aria-pressed={ai.grammar}
+        title={
+          ai.grammar
+            ? "Local grammar check is on — click to disable"
+            : "Local grammar check is off — click to enable (needs a loaded local model)"
+        }
+      >
+        Grammar
+      </button>
+    </div>
+  );
 }
 
 // Code-editor font sizing. The default matches the .file-viewer-code CSS metrics
@@ -2610,21 +3419,36 @@ function useEditorJump(path: string) {
   };
 }
 
+/**
+ * The capability-driven base editor for every text/source file. Beyond the
+ * shared code editor (highlight, line numbers, Tab indent, undo/redo, save,
+ * autocomplete) it derives per-format extras from the path:
+ *   - a "Format" button for prettifiable types (JSON in-process; CSS/HTML/JS/
+ *     YAML/Python/Rust/Go via a backend formatter when the tool is installed),
+ *   - an inline JSON/YAML validation banner with jump-to-line,
+ *   - a Preview ⇄ Edit toggle with a sandboxed rendered preview for HTML, SVG,
+ *     and CSS (CSS applied to a sample document).
+ * `type` keys the per-type prefs (font size / autocomplete); it is "text" for
+ * the generic editor and "html" for HTML files so their settings stay distinct.
+ */
 function TextView({
   path,
   onOpenExternally,
   tabKey,
+  type = "text",
 }: {
   path: string;
   onOpenExternally: () => void;
   tabKey?: string;
+  type?: InternalViewer;
 }) {
   const {
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
   } = useEditableFile(path);
-  const ac = useAutocompleteConfig("text");
-  const font = useEditorFontSize("text");
+  const ac = useAutocompleteConfig(type);
+  const gc = useGrammarCheckConfig(type);
+  const font = useEditorFontSize(type);
   const jump = useEditorJump(path);
   const viewPos = useViewerState(tabKey);
   const persistScroll = useCallback(
@@ -2632,37 +3456,86 @@ function TextView({
     [viewPos],
   );
 
+  const fmt = useFormatter(path, draft, setDraft);
+  const issue = useSyntaxCheck(path, draft, loaded);
+  const previewKind = useMemo(() => previewKindForPath(path), [path]);
+  // HTML/SVG open in preview; CSS opens in the editor (its preview is a sample).
+  const [mode, setMode] = useState<"preview" | "edit">(
+    previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
+  );
+  const fileName = path.slice(path.lastIndexOf("/") + 1);
+  const jumpToLine = useCallback(
+    (line: number, column: number) =>
+      useEditorJumpStore.getState().requestJump(path, line, column),
+    [path],
+  );
+
+  const showEditor = !previewKind || mode === "edit";
+
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
+        {previewKind && (
+          <ModeToggle
+            value={mode}
+            onChange={setMode}
+            options={[
+              { value: "preview", label: "Preview" },
+              { value: "edit", label: previewKind === "svg" ? "Source" : "Edit" },
+            ]}
+          />
+        )}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-        <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
+        {showEditor && <EditorAiControls type={type} />}
+        {showEditor && fmt.enabled && (
+          <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
+        )}
+        {showEditor && (
+          <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
+        )}
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
-      <div className="file-viewer-body file-viewer-code-body">
-        <CodeEditor
-          path={path}
-          error={error}
-          draft={draft}
-          setDraft={setDraft}
-          loaded={loaded}
-          save={() => void save()}
-          undo={undo}
-          redo={redo}
-          autocomplete={ac}
-          fontSize={font.fontSize}
-          lineHeight={font.lineHeight}
-          incFont={font.inc}
-          decFont={font.dec}
-          resetFont={font.reset}
-          wrap
-          gotoLine={jump.gotoLine}
-          onGotoApplied={jump.onGotoApplied}
-          initialScrollTop={viewPos.initial?.scrollTop}
-          onScrollPersist={persistScroll}
-        />
+      {fmt.status && <div className="file-viewer-status-line">{fmt.status}</div>}
+      {showEditor && <ValidationBanner issue={issue} onJump={jumpToLine} />}
+      <div
+        className={`file-viewer-body${showEditor ? " file-viewer-code-body" : ""}`}
+        onWheel={(e) => showEditor && onCtrlWheelFont(e, font.inc, font.dec)}
+      >
+        {!showEditor && previewKind ? (
+          error != null ? (
+            <div className="file-viewer-error">{error}</div>
+          ) : !loaded ? (
+            <div className="file-viewer-loading">Loading…</div>
+          ) : (
+            // Preview reflects the live draft, so it tracks unsaved edits.
+            <RenderedPreview kind={previewKind} content={draft} fileName={fileName} />
+          )
+        ) : (
+          <CodeEditor
+            path={path}
+            error={error}
+            draft={draft}
+            setDraft={setDraft}
+            loaded={loaded}
+            save={() => void save()}
+            undo={undo}
+            redo={redo}
+            autocomplete={ac}
+            grammarCheck={gc}
+            fontSize={font.fontSize}
+            lineHeight={font.lineHeight}
+            incFont={font.inc}
+            decFont={font.dec}
+            resetFont={font.reset}
+            wrap
+            gotoLine={jump.gotoLine}
+            onGotoApplied={jump.onGotoApplied}
+            initialScrollTop={viewPos.initial?.scrollTop}
+            onScrollPersist={persistScroll}
+          />
+        )}
       </div>
     </div>
   );
@@ -2684,6 +3557,10 @@ function MarkdownView({
   const [mode, setMode] = useState<"preview" | "edit">("preview");
   const font = useEditorFontSize("markdown");
   const ac = useAutocompleteConfig("markdown");
+  const gc = useGrammarCheckConfig("markdown");
+  const fmt = useFormatter(path, draft, setDraft);
+  // Imperative editor handle the formatting toolbar drives (bold/italic/TOC/…).
+  const editorApi = useRef<EditorApi | null>(null);
   const viewPos = useViewerState(tabKey);
   const persistScroll = useCallback(
     (scrollTop: number) => viewPos.persist({ scrollTop }),
@@ -2793,7 +3670,12 @@ function MarkdownView({
             Edit
           </button>
         </div>
+        {mode === "edit" && <MarkdownToolbar api={editorApi} />}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
+        {mode === "edit" && <EditorAiControls type="markdown" />}
+        {mode === "edit" && fmt.enabled && (
+          <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
+        )}
         {mode === "edit" && (
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         )}
@@ -2801,6 +3683,9 @@ function MarkdownView({
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
+      {mode === "edit" && fmt.status && (
+        <div className="file-viewer-status-line">{fmt.status}</div>
+      )}
       <div
         className={`file-viewer-body${mode === "edit" ? " file-viewer-code-body" : ""}`}
         onWheel={(e) => onCtrlWheelFont(e, font.inc, font.dec)}
@@ -2819,12 +3704,14 @@ function MarkdownView({
             undo={undo}
             redo={redo}
             autocomplete={ac}
+            grammarCheck={gc}
             fontSize={font.fontSize}
             lineHeight={font.lineHeight}
             incFont={font.inc}
             decFont={font.dec}
             resetFont={font.reset}
             wrap
+            editorApiRef={editorApi}
             initialScrollTop={viewPos.initial?.scrollTop}
             onScrollPersist={persistScroll}
           />
@@ -3856,6 +4743,7 @@ function TexView({
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
   } = useEditableFile(path);
   const ac = useAutocompleteConfig("tex");
+  const gc = useGrammarCheckConfig("tex");
   const font = useEditorFontSize("tex");
   const viewPos = useViewerState(tabKey);
   const persistScroll = useCallback(
@@ -4102,6 +4990,7 @@ function TexView({
       <div className="file-viewer">
         <ViewerHeader onOpenExternally={onOpenExternally}>
           <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
+          <EditorAiControls type="tex" />
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
           <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
         </ViewerHeader>
@@ -4120,6 +5009,7 @@ function TexView({
             undo={undo}
             redo={redo}
             autocomplete={ac}
+            grammarCheck={gc}
             texCompletions={completions}
             fontSize={font.fontSize}
             lineHeight={font.lineHeight}
@@ -4194,6 +5084,7 @@ function TexView({
           </button>
         )}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
+        <EditorAiControls type="tex" />
         <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
       </ViewerHeader>
@@ -4297,6 +5188,7 @@ function TexView({
           undo={undo}
           redo={redo}
           autocomplete={ac}
+          grammarCheck={gc}
           texCompletions={completions}
           fontSize={font.fontSize}
           lineHeight={font.lineHeight}

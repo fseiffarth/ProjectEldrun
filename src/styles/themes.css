@@ -726,6 +726,153 @@ select option {
   border-color: var(--text-muted);
 }
 
+/* "Format document" button — same chrome as the save button. */
+.file-viewer-format-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 1px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.file-viewer-format-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.file-viewer-format-btn:not(:disabled):hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* #45 in-tab AI-assist controls: Autocomplete on/off + length mode, Grammar
+   on/off. Same chrome as the save/format buttons; the "active" (enabled) state is
+   accent-filled so it's obvious at a glance whether each is on for this tab. */
+.file-viewer-ai-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.file-viewer-ai-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 1px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.file-viewer-ai-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+.file-viewer-ai-btn.active {
+  background: var(--accent, #4493f8);
+  border-color: var(--accent, #4493f8);
+  color: #fff;
+}
+.file-viewer-ai-mode {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+/* Markdown formatting toolbar (bold/italic/heading/link/list/TOC). */
+.file-viewer-md-toolbar {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.file-viewer-md-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 5px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 0;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-viewer-md-btn + .file-viewer-md-btn {
+  border-left: 1px solid var(--border-color);
+}
+
+.file-viewer-md-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover, rgba(127, 127, 127, 0.15));
+}
+
+/* Transient status line under the header (format errors / "no formatter"). */
+.file-viewer-status-line {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-color);
+  white-space: pre-wrap;
+}
+
+/* Inline JSON/YAML parse-error banner. */
+.file-viewer-validation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, #e5534b 18%, var(--bg-panel));
+  border-bottom: 1px solid color-mix(in srgb, #e5534b 40%, var(--border-color));
+}
+
+.file-viewer-validation-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e5534b;
+  flex-shrink: 0;
+}
+
+.file-viewer-validation-msg {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-viewer-validation-jump {
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 0 6px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.file-viewer-validation-jump:hover {
+  border-color: var(--text-muted);
+}
+
 .file-viewer-editor {
   width: 100%;
   height: 100%;
@@ -1111,6 +1258,7 @@ select option {
 .file-viewer-link-layer,
 .file-viewer-search-layer,
 .file-viewer-change-layer,
+.file-viewer-grammar-layer,
 .file-viewer-ghost {
   position: absolute;
   inset: 0;
@@ -1137,13 +1285,90 @@ select option {
    box). The ghost layer keeps the inset/overflow model above. */
 .file-viewer-link-layer,
 .file-viewer-search-layer,
-.file-viewer-change-layer {
+.file-viewer-change-layer,
+.file-viewer-grammar-layer {
   inset: auto;
   top: 0;
   left: 0;
   min-width: 100%;
   overflow: visible;
   will-change: transform;
+}
+
+/* Grammar/spelling check overlay: each flagged span paints a coloured wavy
+   underline (the layer sits below the textarea, so the underline shows beneath
+   the editable glyphs). Colour encodes the category — spelling=red, grammar=blue,
+   style=green. Fixed colours so they read on both light and dark themes. */
+.file-viewer-grammar-layer .file-viewer-grammar-mark {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 2px;
+  /* The mark text itself stays transparent (only the decoration paints); set the
+     decoration colour per category below. */
+}
+.file-viewer-grammar-layer .file-viewer-grammar-mark.cat-spelling {
+  text-decoration-color: #f85149;
+}
+.file-viewer-grammar-layer .file-viewer-grammar-mark.cat-grammar {
+  text-decoration-color: #4493f8;
+}
+.file-viewer-grammar-layer .file-viewer-grammar-mark.cat-style {
+  text-decoration-color: #3fb950;
+}
+
+/* Hover tooltip for a grammar mark: category, message, and a one-click fix.
+   position:fixed + anchored just above the pointer; pointer-events auto so the
+   Fix button is clickable (the underline overlay itself is pointer-events:none). */
+.file-viewer-grammar-tip {
+  position: fixed;
+  z-index: 60;
+  transform: translateY(-100%);
+  margin-top: -8px;
+  max-width: 320px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: var(--bg-main, #1f2430);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--border-color);
+  font-size: 11px;
+  line-height: 1.45;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+.file-viewer-grammar-tip.cat-spelling { border-left-color: #f85149; }
+.file-viewer-grammar-tip.cat-grammar { border-left-color: #4493f8; }
+.file-viewer-grammar-tip.cat-style { border-left-color: #3fb950; }
+.file-viewer-grammar-tip-cat {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 9px;
+  opacity: 0.7;
+  margin-bottom: 2px;
+}
+.file-viewer-grammar-tip-msg {
+  margin-bottom: 4px;
+}
+.file-viewer-grammar-tip-fix {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-viewer-grammar-tip-fix:hover {
+  border-color: var(--accent, #4493f8);
+}
+.file-viewer-grammar-tip-sugg {
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  color: var(--accent, #4493f8);
 }
 
 /* #67 in-editor search: the match spans paint a translucent highlight behind the
@@ -1332,6 +1557,7 @@ select option {
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-change-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1345,6 +1571,7 @@ select option {
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-change-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   min-width: 0;
   right: auto;
@@ -1403,6 +1630,28 @@ select option {
   pointer-events: none;
 }
 
+/* Grammar-check status pill: same look as the autocomplete pill, stacked just
+   above it (bottom offset) so the two never overlap when both are visible. */
+.file-viewer-grammar-status {
+  position: absolute;
+  right: 10px;
+  bottom: 36px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 80%;
+  padding: 3px 9px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-primary);
+  background: var(--bg-elevated, var(--bg-secondary, #1c2128));
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
 /* In-flight spinner inside the autocomplete status pill (reuses file-viewer-spin). */
 .file-viewer-ac-spinner {
   display: inline-block;
@@ -1413,6 +1662,74 @@ select option {
   border-top-color: var(--accent, #4493f8);
   border-radius: 50%;
   animation: file-viewer-spin 0.7s linear infinite;
+}
+
+/* #45 context-files bar: attach project files as read-only autocomplete context.
+   Pinned bottom-left (the status pill sits bottom-right) so the two never collide. */
+.file-viewer-ac-context {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  max-width: 60%;
+}
+
+.file-viewer-ac-context-add {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-secondary, var(--text-primary));
+  background: var(--bg-elevated, var(--bg-secondary, #1c2128));
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.file-viewer-ac-context-add:hover {
+  opacity: 1;
+  color: var(--text-primary);
+}
+
+.file-viewer-ac-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 160px;
+  padding: 2px 4px 2px 8px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-primary);
+  background: var(--bg-elevated, var(--bg-secondary, #1c2128));
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-viewer-ac-context-chip > button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-secondary, var(--text-primary));
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.file-viewer-ac-context-chip > button:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover, rgba(255, 255, 255, 0.08));
 }
 
 /* #47 save-state icon button: square-ish, icon-only. */

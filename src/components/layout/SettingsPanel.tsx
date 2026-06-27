@@ -50,7 +50,7 @@ const HELP_SECTIONS: HelpSection[] = [
   {
     title: "AI & terminals",
     items: [
-      { term: "Default agent", desc: "Choose the default terminal command (claude, codex, gemini, vibe, aider, opencode, cursor, copilot, grok, qwen) in Settings. Missing commands fall back to a shell; closed agents respawn." },
+      { term: "Default agent", desc: "Choose the default terminal command (claude, codex, gemini, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) in Settings. Missing commands fall back to a shell; closed agents respawn." },
       { term: "Ollama models", desc: "When Ollama is installed, the gear menu shows local models. Ctrl+K opens the local-model prompt dialog for the active context." },
     ],
   },

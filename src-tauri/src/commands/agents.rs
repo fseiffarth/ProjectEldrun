@@ -1,6 +1,6 @@
 //! Agent-CLI management: detect and install the AI coding-agent command-line
 //! tools Eldrun can launch as agent tabs (Claude, Codex, Gemini, Mistral/vibe,
-//! Aider, OpenCode, Cursor, Copilot, Grok, Qwen).
+//! Aider, OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw).
 //!
 //! This mirrors the local-model install flow in `commands::ollama` (see
 //! `install_vibe`), but is registry-driven so the set of agents lives in one
@@ -107,6 +107,14 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd: "npm install -g @qwen-code/qwen-code",
         extra_paths: &[".local/bin/qwen"],
         docs: "https://github.com/QwenLM/qwen-code",
+    },
+    AgentSpec {
+        id: "openclaw",
+        label: "OpenClaw",
+        bin: "openclaw",
+        install_cmd: "npm install -g openclaw",
+        extra_paths: &[".local/bin/openclaw"],
+        docs: "https://docs.openclaw.ai",
     },
 ];
 

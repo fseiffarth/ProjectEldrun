@@ -119,6 +119,10 @@ pub struct ViewerPref {
     /// Ctrl+Shift+Space; this is just the starting mode. Absent → `"sentence"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autocomplete_mode: Option<String>,
+    /// Whether the local-model grammar/spelling check is enabled for this type.
+    /// Like `autocomplete`, defaults OFF (no model call unless explicitly on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grammar_check: Option<bool>,
     /// Editor font size in px for this type's in-app code editor. Adjusted from
     /// the viewer's A−/A+ controls (or Ctrl +/−/0). Unset falls back to the
     /// frontend default (12px).

@@ -6,6 +6,7 @@ pub mod crash;
 pub mod debug;
 pub mod default_apps;
 pub mod downloads;
+pub mod format;
 pub mod fs;
 pub mod fs_watch;
 pub mod git;

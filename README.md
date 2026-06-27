@@ -222,6 +222,11 @@ update-desktop-database ~/.local/share/applications/
   model (`Tab` accepts, `Esc` dismisses). It is OFF by default and per file
   type; nothing is sent anywhere unless you enable it, and if Ollama isn't
   running it fails silently — no remote calls, ever.
+- **Local grammar check (opt-in, private)**: the same editable viewers can run a
+  **local Ollama** proofreader after a typing pause, underlining spelling (red),
+  grammar (blue), and style (green) issues; hover a mark for the explanation and a
+  one-click fix. Like autocomplete it is OFF by default, per file type, and
+  entirely local — no text leaves the machine.
 - **Global app toolbar**: cross-project roles (Browser, Mail, Calendar, File
   Manager, Password Manager, Notes, Screenshot, etc.) with launch-or-raise and
   icon resolution. The Screenshot role launches straight into interactive
@@ -241,7 +246,7 @@ app until they land.
 
 | Viewer | Extensions | Status | Notes |
 | ------ | ---------- | ------ | ----- |
-| **Text / code** | `.txt` `.json` `.py` `.rs` `.ts` `.bib` + many more, plus extensionless files like `Dockerfile` | ✅ Shipping | Editable editor: line-number gutter, syntax highlighting, Tab/Shift+Tab indent, undo/redo (`Ctrl+Z`/`Ctrl+Shift+Z`), find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match nav + case toggle, save (`Ctrl+S`); unsaved lines marked; non-destructive auto-reload banner; opt-in local autocomplete. |
+| **Text / code** | `.txt` `.json` `.py` `.rs` `.ts` `.bib` + many more, plus extensionless files like `Dockerfile` | ✅ Shipping | Editable editor: line-number gutter, syntax highlighting, Tab/Shift+Tab indent, undo/redo (`Ctrl+Z`/`Ctrl+Shift+Z`), find (`Ctrl+F`) and find-and-replace (`Ctrl+R`) with match nav + case toggle, save (`Ctrl+S`); unsaved lines marked; non-destructive auto-reload banner; opt-in local autocomplete and grammar check. |
 | **Markdown** | `.md` `.markdown` `.mdx` | ✅ Shipping | Rendered preview with an Edit/Preview toggle; links to local files are clickable. |
 | **LaTeX** | `.tex` | ✅ Shipping | Code editor + compile (when a TeX engine is on `PATH`, shell-escape stripped); follows `\input{…}`/`\includegraphics{…}`, `\ref`/`\cite` completion from `\label` keys and `.bib` entries; parsed compile errors jump to the line; bidirectional SyncTeX sync across tiled or detached panes. |
 | **PDF** | `.pdf` | ✅ Shipping | Rendered with a themed zoom toolbar. |
@@ -257,8 +262,8 @@ app until they land.
 
 Other office formats (`.docx`, `.pptx`, `.ods`, …) open in their external
 default app. Viewer behaviour is configured per file type under **Settings →
-Native Viewers**: the per-type autocomplete opt-in plus a global autosave
-switch. The text/LaTeX/Markdown editors carry an `A−`/`A+` text-size control
+Native Viewers**: the per-type autocomplete and grammar-check opt-ins plus a
+global autosave switch. The text/LaTeX/Markdown editors carry an `A−`/`A+` text-size control
 (`Ctrl` +/−, `Ctrl`+0 to reset; scales the Markdown preview too), persisted
 per file type. Every viewer remembers where you left off — editor/PDF scroll
 position, PDF/image zoom, and image pan persist per tab, so reopening a file (or

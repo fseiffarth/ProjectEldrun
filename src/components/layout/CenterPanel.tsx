@@ -184,12 +184,18 @@ export function CenterPanel() {
       .catch(() => {});
   }, [activeId, projectCwd, localFile, setScope, loadFromLayout]);
 
-  // Re-hydrate local_agent tabs that were saved without VIBE_HOME/VIBE_ACTIVE_MODEL.
+  // Re-hydrate vibe local_agent tabs that were saved without VIBE_HOME/
+  // VIBE_ACTIVE_MODEL. Only vibe needs this: `ollama launch`/fallback driver tabs
+  // (cmd "ollama"/"codex"/…) carry everything in cmd+args and have no env to
+  // restore, so they must be skipped — `prepare_local_agent` only knows vibe.
   useEffect(() => {
     if (!activeId) return;
     const { tabs: currentTabs } = useTabsStore.getState();
     const needsEnv = currentTabs.filter(
-      (t) => t.kind === "local_agent" && Object.keys(t.env ?? {}).length === 0,
+      (t) =>
+        t.kind === "local_agent" &&
+        t.cmd === "vibe" &&
+        Object.keys(t.env ?? {}).length === 0,
     );
     for (const tab of needsEnv) {
       invoke<{ vibe_home: string; alias: string }>("prepare_local_agent", { model: tab.label })

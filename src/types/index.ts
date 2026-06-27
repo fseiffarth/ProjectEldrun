@@ -18,6 +18,29 @@ export interface GlobalAppEntry {
  */
 export type AutocompleteMode = "sentence" | "block" | "scope";
 
+/**
+ * Category of a local-model grammar/spelling issue, mirroring the Rust
+ * `check_grammar` output. Drives the underline colour in the editor overlay.
+ *  - `"spelling"` — a misspelled word / typo (red).
+ *  - `"grammar"` — a grammar or punctuation mistake (blue).
+ *  - `"style"` — a style/wording suggestion (green).
+ */
+export type GrammarCategory = "spelling" | "grammar" | "style";
+
+/**
+ * One proofreading issue returned by the local-model grammar check, mirroring the
+ * Rust `GrammarIssue`. `bad` is the exact offending substring (the frontend
+ * locates it in the draft to draw the underline); `line` is its 1-based line in
+ * the checked text, used as a disambiguation hint when resolving the range.
+ */
+export interface GrammarIssue {
+  line: number;
+  bad: string;
+  suggestion: string;
+  category: GrammarCategory;
+  message: string;
+}
+
 export interface ViewerPref {
   /** Whether this native viewer is used at all. Absent/true → render in-app;
    *  false → the type opts out and its files open in the external default app. */
@@ -27,6 +50,9 @@ export interface ViewerPref {
   /** Default completion-length mode for this type (#45 modes). Cycled live
    *  in-editor with Ctrl+Shift+Space; absent → "sentence". */
   autocomplete_mode?: AutocompleteMode;
+  /** Whether the local-model grammar/spelling check is enabled for this type.
+   *  Local-only (Ollama) and opt-in; default OFF. */
+  grammar_check?: boolean;
   /** Editor font size in px for this type's in-app code editor. Adjusted from
    *  the viewer's A−/A+ controls (or Ctrl +/−/0); unset falls back to 12px. */
   font_size?: number;

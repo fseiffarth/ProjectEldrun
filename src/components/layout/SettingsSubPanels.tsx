@@ -269,7 +269,7 @@ interface AgentInfo {
 /**
  * "Manage Agents" panel: detect and one-click-install the AI coding-agent CLIs
  * Eldrun can launch as agent tabs (Claude, Codex, Gemini, Mistral/vibe, Aider,
- * OpenCode, Cursor, Copilot, Grok, Qwen). The
+ * OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw). The
  * registry lives in the backend (`commands::agents`); this just renders each
  * entry with an install button, a live install log, and a manual fallback.
  */
