@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ProjectEntry } from "../../types";
 import { resolveProjectDirectory } from "../../types";
+import { basename } from "../../lib/paths";
 import { cmdToKind, useTabsStore } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import {
@@ -101,7 +102,7 @@ export function ProjectDialog({
     if (typeof picked === "string") {
       setSourceDir(picked);
       if (!name.trim()) {
-        setName(picked.split("/").filter(Boolean).pop() ?? "");
+        setName(basename(picked));
       }
     }
   };
@@ -357,8 +358,8 @@ export function ProjectDialog({
             Import mode
             <select value={mode} onChange={(e) => setMode(e.target.value)}>
               <option value="keep">Keep location (register in place)</option>
-              <option value="copy">Copy to ~/eldrun/projects/</option>
-              <option value="move">Move to ~/eldrun/projects/</option>
+              <option value="copy">Copy into Eldrun's projects folder</option>
+              <option value="move">Move into Eldrun's projects folder</option>
             </select>
           </label>
         )}

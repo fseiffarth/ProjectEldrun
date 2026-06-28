@@ -60,7 +60,8 @@ pub fn github_publish(project_id: String, visibility: String) -> Result<String, 
                 shell_quote(&repo_name),
                 visibility,
             );
-            run_command(Command::new("ssh").args(&base).arg(script))?
+            // `command_no_window` avoids a console-window flash on Windows.
+            run_command(crate::paths::command_no_window("ssh").args(&base).arg(script))?
         }
         // Local project: run gh in the project directory.
         None => {
@@ -71,7 +72,7 @@ pub fn github_publish(project_id: String, visibility: String) -> Result<String, 
                     project.directory
                 ));
             }
-            let mut cmd = Command::new("gh");
+            let mut cmd = crate::paths::command_no_window("gh");
             cmd.current_dir(&dir).args([
                 "repo",
                 "create",

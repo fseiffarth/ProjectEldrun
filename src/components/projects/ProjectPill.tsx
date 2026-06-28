@@ -151,6 +151,69 @@ function EditDescriptionWindow({
   );
 }
 
+function RenameWindow({
+  project,
+  onSave,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onSave: (name: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(project.name);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async () => {
+    if (!value.trim()) {
+      setError("Name cannot be empty");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(value);
+      onClose();
+    } catch (err) {
+      setError(String(err));
+      setSaving(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div
+        className="project-dialog edit-description-window"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="settings-title-row">
+          <h2>Rename project</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <input
+          type="text"
+          value={value}
+          autoFocus
+          placeholder="Project name…"
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void save();
+            if (e.key === "Escape") onClose();
+          }}
+        />
+        {error && <div className="project-dialog-error">{error}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="button" onClick={() => void save()} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function gitTypeLabel(gitType: unknown): string {
   switch (gitType) {
     case "remote-public":
@@ -243,6 +306,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
   const [showActivity, setShowActivity] = useState(false);
   const [editDescription, setEditDescription] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const [showPublish, setShowPublish] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   // True while an Alt-drag hovers this pill: the drop will box the two
@@ -260,6 +324,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const busy = useActivityStore((s) => s.busyByScope[project.id] ?? false);
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
+  const renameProject = useProjectsStore((s) => s.renameProject);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const publishProject = useProjectsStore((s) => s.publishProject);
 
@@ -369,6 +434,14 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           <button
             onClick={() => {
               setContextMenu(null);
+              setRenaming(true);
+            }}
+          >
+            Rename…
+          </button>
+          <button
+            onClick={() => {
+              setContextMenu(null);
               setEditDescription(true);
             }}
           >
@@ -419,6 +492,15 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
       {/* Activity window */}
       {showActivity && (
         <ActivityWindow project={project} onClose={() => setShowActivity(false)} />
+      )}
+
+      {/* Rename window */}
+      {renaming && (
+        <RenameWindow
+          project={project}
+          onSave={(name) => renameProject(project.id, name)}
+          onClose={() => setRenaming(false)}
+        />
       )}
 
       {/* Edit description window */}

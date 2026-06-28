@@ -44,6 +44,7 @@ import {
   type EditResult,
 } from "../../lib/viewers/markdownEdit";
 import { internalViewerFor, disabledViewers, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
+import { basename, dirname, resolvePath, toFileUri } from "../../lib/paths";
 import {
   resolveProjectDirectory,
   type AutocompleteMode,
@@ -166,7 +167,7 @@ export function zoomOffset(
 /** A URI-list / DownloadURL dataTransfer payload for dragging a file out of the
  *  app as an OS-level drop source (#53). Mirrors FileTree's `file://` encoding. */
 function pathToFileUri(path: string): string {
-  return `file://${path.split("/").map(encodeURIComponent).join("/")}`;
+  return toFileUri(path);
 }
 
 /**
@@ -185,7 +186,7 @@ export function onImageDragStart(
   const dt = e.dataTransfer;
   if (!dt) return;
   const uri = pathToFileUri(path);
-  const name = path.slice(path.lastIndexOf("/") + 1);
+  const name = basename(path);
   dt.setData("text/uri-list", uri);
   dt.setData("text/plain", uri);
   // DownloadURL = "<mime>:<filename>:<absolute url>". An empty mime lets the OS
@@ -236,7 +237,7 @@ interface Props {
  * An "Open externally" button is always offered as a fallback.
  */
 export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
-  const fileName = path.split("/").filter(Boolean).pop() ?? path;
+  const fileName = basename(path) || path;
 
   const openExternally = () => {
     useWindowsStore
@@ -338,22 +339,18 @@ export function openLinkedFile(
 }
 
 /** Resolve a markdown local-file href (relative/absolute/`file:`) to an absolute
- *  POSIX path, against the directory of the markdown file `mdPath`. Drops any
- *  `?query`/`#fragment` and percent-decoding, and normalises `.`/`..` segments.
- *  Returns null for an empty target. */
+ *  path against the directory of the markdown file `mdPath`. Drops any
+ *  `?query`/`#fragment`, percent-decodes, and normalises `.`/`..` segments. The
+ *  result keeps `mdPath`'s separator style, so it is correct on Windows (native
+ *  backslashes + drive letter) as well as Unix. Returns null for an empty target. */
 function resolveLocalHref(mdPath: string, href: string): string | null {
   let h = href.trim().replace(/^file:\/\//i, "").replace(/[?#].*$/, "");
   if (!h) return null;
   try { h = decodeURIComponent(h); } catch { /* keep the raw href */ }
-  const dir = mdPath.slice(0, mdPath.lastIndexOf("/"));
-  const combined = h.startsWith("/") ? h : `${dir}/${h}`;
-  const stack: string[] = [];
-  for (const part of combined.split("/")) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") stack.pop();
-    else stack.push(part);
-  }
-  return "/" + stack.join("/");
+  // A `file:///C:/…` URI leaves a leading slash before the drive — drop it so the
+  // target is recognised as a Windows-absolute path rather than a POSIX one.
+  h = h.replace(/^\/([a-zA-Z]:)/, "$1");
+  return resolvePath(dirname(mdPath), h);
 }
 
 /** MIME type for inlining a local image into the markdown preview as a Blob URL.
@@ -381,7 +378,7 @@ function imageMimeForPath(p: string): string {
 /** The built-in viewer for a bare path (no FileEntry handy), used to route a
  *  SyncTeX source target. Defaults to the plain text editor (e.g. `.sty`). */
 export function viewerForPath(path: string): InternalViewer {
-  const name = path.slice(path.lastIndexOf("/") + 1);
+  const name = basename(path);
   const dot = name.lastIndexOf(".");
   const ext = dot >= 0 ? name.slice(dot).toLowerCase() : null;
   const entry: FileEntry = {
@@ -418,8 +415,8 @@ function isMainWindow(): boolean {
 /** Open/re-activate the source tab in THIS window and post the editor jump to its
  *  local editorJump store. The local half of {@link jumpToSource}. */
 function applySourceJump(input: string, line: number, column: number) {
-  const dir = input.slice(0, input.lastIndexOf("/")) || "/";
-  const label = input.slice(input.lastIndexOf("/") + 1);
+  const dir = dirname(input) || "/";
+  const label = basename(input);
   openLinkedFile(undefined, dir, { path: input, viewer: viewerForPath(input), label });
   useEditorJumpStore.getState().requestJump(input, line, column);
 }
@@ -3302,13 +3299,47 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
 }
 
 /**
+ * Whether at least one local (Ollama) model is currently loaded into memory.
+ * Both AI-assist features the controls expose (autocomplete + grammar) run only
+ * against a resident model, so the controls hide themselves entirely when none
+ * is loaded. Mirrors the lamp logic in `LocalModelMenu`: `ollama_status` is
+ * `"loaded"` iff `/api/ps` reports a resident model. Polled on the same 5s
+ * cadence as the 🧠 menu so the controls appear/disappear within a few seconds
+ * of a model being warmed or unloaded out of band.
+ */
+function useLocalModelLoaded(): boolean {
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const check = () =>
+      invoke<"stopped" | "idle" | "loaded">("ollama_status")
+        .then((s) => {
+          if (!cancelled) setLoaded(s === "loaded");
+        })
+        .catch(() => {
+          if (!cancelled) setLoaded(false);
+        });
+    void check();
+    const id = window.setInterval(check, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+  return loaded;
+}
+
+/**
  * In-tab AI-assist controls for the editable viewers (#45): an Autocomplete
  * on/off toggle with a length-mode picker (Sentence/Block/Scope), and a Grammar
  * on/off toggle. Both are local-only (Ollama). The state is tab-local (see
  * {@link useTabAiPrefs}) — toggling here affects only this tab. Rendered in the
- * viewer header next to the font/undo/save controls.
+ * viewer header next to the font/undo/save controls. Hidden entirely while no
+ * local model is loaded into memory, since neither feature can run then.
  */
 function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
+  const modelLoaded = useLocalModelLoaded();
+  if (!modelLoaded) return null;
   return (
     <div className="file-viewer-ai-controls" role="group" aria-label="AI assist">
       <button
@@ -3528,7 +3559,7 @@ function TextView({
   const [mode, setMode] = useState<"preview" | "edit">(
     previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
   );
-  const fileName = path.slice(path.lastIndexOf("/") + 1);
+  const fileName = basename(path);
   const jumpToLine = useCallback(
     (line: number, column: number) =>
       useEditorJumpStore.getState().requestJump(path, line, column),
@@ -3708,10 +3739,10 @@ function MarkdownView({
       if (!(e.ctrlKey || e.metaKey)) return;
       const target = resolveLocalHref(path, a.getAttribute("href") ?? "");
       if (!target) return;
-      openLinkedFile(tabKey, path.slice(0, path.lastIndexOf("/")), {
+      openLinkedFile(tabKey, dirname(path), {
         path: target,
         viewer: viewerForPath(target),
-        label: target.slice(target.lastIndexOf("/") + 1),
+        label: basename(target),
       });
     },
     [path, tabKey],
@@ -4839,7 +4870,7 @@ function TexView({
       );
       const resolved = await resolveTexRefAsync(path, target, disabled);
       if (!resolved) return false;
-      const dir = path.slice(0, path.lastIndexOf("/")) || "/";
+      const dir = dirname(path) || "/";
       openLinkedFile(tabKey, dir, resolved);
       return true;
     },
@@ -4922,9 +4953,9 @@ function TexView({
     return () => { cancelled = true; };
   }, [path]);
   const isChild = root !== path;
-  const rootName = root.slice(root.lastIndexOf("/") + 1);
+  const rootName = basename(root);
   // Directory the build runs in — error paths in the log are relative to it.
-  const rootDir = root.slice(0, root.lastIndexOf("/")) || "/";
+  const rootDir = dirname(root) || "/";
 
   // Open the compiled PDF as its own tab (it is a real file), reusing the embed
   // viewer. openLinkedFile dedupes against an already-open PDF tab for the same
@@ -4932,8 +4963,8 @@ function TexView({
   // so a reused tab reloads the freshly compiled bytes on its own.
   const openPdf = useCallback(
     (pdf: string) => {
-      const name = pdf.slice(pdf.lastIndexOf("/") + 1);
-      const dir = path.slice(0, path.lastIndexOf("/")) || "/";
+      const name = basename(pdf);
+      const dir = dirname(path) || "/";
       openLinkedFile(tabKey, dir, { path: pdf, viewer: "pdf", label: name });
     },
     [path, tabKey],

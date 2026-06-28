@@ -26,12 +26,13 @@ pub struct DownloadsStatus {
 #[tauri::command]
 pub fn configure_browser_downloads() -> Result<DownloadsStatus, String> {
     let home = home_dir();
-    let sep = if cfg!(target_os = "windows") {
-        '\\'
-    } else {
-        '/'
-    };
-    let target = format!("{home}{sep}Downloads");
+    // Build with the platform's path separator via `join` rather than hand-
+    // concatenating one, so the written browser pref is a valid native path on
+    // both Windows (`C:\Users\…\Downloads`) and Unix (`/home/…/Downloads`).
+    let target = PathBuf::from(&home)
+        .join("Downloads")
+        .to_string_lossy()
+        .into_owned();
     let mut status = DownloadsStatus {
         firefox_updated: false,
         chromium_updated: false,

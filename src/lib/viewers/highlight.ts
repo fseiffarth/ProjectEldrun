@@ -198,7 +198,7 @@ const FILENAME_LANG: Record<string, Lang> = {
  *  then shows the file uncoloured). Matched by extension first, then by a few
  *  well-known extensionless filenames. */
 export function languageForPath(path: string): Lang {
-  const name = (path.split("/").filter(Boolean).pop() ?? path).toLowerCase();
+  const name = (path.split(/[/\\]/).filter(Boolean).pop() ?? path).toLowerCase();
   const dot = name.lastIndexOf(".");
   // A leading-dot name (".gitignore") has no extension; only a dot past index 0
   // separates a real extension.

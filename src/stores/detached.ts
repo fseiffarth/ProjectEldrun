@@ -82,12 +82,15 @@ export const DETACHED_BOUNDS = "detached-bounds";
  * START opens the preview, MOVE updates it, and END commits (or cancels). One
  * popout drags at a time, so MOVE/END carry no id.
  *
- * The streamed coords are OS-level desktop CURSOR coords (logical/CSS px),
- * polled from `cursorPosition()` — NOT DOM pointer-event coords. On WebKitGTK
- * (esp. Wayland) DOM pointermove/up do not cross the OS window boundary, so once
- * the cursor leaves the popout the DOM stream dies at the popout's edge. Polling
- * the OS cursor keeps MOVE flowing over the main window, and END carries the last
- * polled cursor position so the drop resolves where the cursor really is.
+ * The streamed coords are OS-level desktop CURSOR coords in PHYSICAL desktop px
+ * (the canonical cross-window space — see `lib/coords`), polled from
+ * `cursorPosition()` — NOT DOM pointer-event coords. DOM `screenX/Y` units diverge
+ * across engines under DPI scaling, and on WebKitGTK (esp. Wayland) DOM
+ * pointermove/up don't cross the OS window boundary, so the DOM stream would die at
+ * the popout's edge. Polling the OS cursor keeps MOVE flowing over the main window
+ * in a single DPI-correct frame, and END carries the last polled cursor position so
+ * the drop resolves where the cursor really is. The receiver converts physical →
+ * its-own-client px at the leaf (`physToClient`), the only DPI-correct place.
  */
 export const DETACHED_DRAG_START = "detached-drag-start";
 export const DETACHED_DRAG_MOVE = "detached-drag-move";
@@ -116,11 +119,12 @@ export const detachedDropPreviewEvent = (label: string) =>
 export interface DetachedDropPreview {
   active: boolean;
   target?: { groupId: string; edge: DropEdge } | null;
-  // OS cursor (logical/CSS px) so the popout can position its own drag ghost while
-  // the main-window item hovers (the main's ghost lives in the main window and
-  // isn't visible over the popout). Cosmetic — the target drives the drop.
-  screenX?: number;
-  screenY?: number;
+  // OS cursor in PHYSICAL desktop px (see lib/coords) so the popout can position
+  // its own drag ghost while the main-window item hovers (the main's ghost lives in
+  // the main window and isn't visible over the popout). Cosmetic — the target
+  // drives the drop.
+  cursorPhysX?: number;
+  cursorPhysY?: number;
   label?: string;
 }
 
@@ -136,10 +140,11 @@ export interface DetachedPanesRequest {
 }
 /**
  * Detached → host: this popout's panes in CLIENT px (its own getBoundingClientRect
- * space, which equals `cursor − outerPosition` for a decorationless window). The
- * host hit-tests the cursor against these: over a bar → merge into that group;
- * over a body → edge-split (pickEdge). One channel carrying the label, so the host
- * needs a single listener.
+ * space). The host converts the physical cursor into THIS popout's client px via
+ * its `innerPosition`/scale (`physToClient` — never `outerPosition`, so an
+ * invisible frame/shadow can't skew it) before hit-testing against these: over a
+ * bar → merge into that group; over a body → edge-split (pickEdge). One channel
+ * carrying the label, so the host needs a single listener.
  */
 export const DETACHED_PANES = "detached-panes";
 export interface PaneRect {
@@ -161,26 +166,27 @@ export interface DetachedDragStart {
   scope: string;
   groupId: string;
   label: string;
-  screenX: number;
-  screenY: number;
+  cursorPhysX: number;
+  cursorPhysY: number;
   tabKey?: string;
 }
-/** Detached → main: the OS cursor moved (desktop logical/CSS px). */
+/** Detached → main: the OS cursor moved (physical desktop px — see lib/coords). */
 export interface DetachedDragMove {
-  screenX: number;
-  screenY: number;
+  cursorPhysX: number;
+  cursorPhysY: number;
 }
 /**
- * Detached → main: the drag ended; `cancelled` skips docking. `screenX/Y` carry
- * the LAST OS-level cursor position (logical/CSS px), so the main window resolves
- * the drop against where the cursor actually is — not the stale DOM coordinates of
- * the release event, which on WebKitGTK fire inside the popout even when the
- * cursor is released over the main window. Absent only on a cancel.
+ * Detached → main: the drag ended; `cancelled` skips docking. `cursorPhysX/Y` carry
+ * the LAST OS-level cursor position (physical desktop px — see lib/coords), so the
+ * main window resolves the drop against where the cursor actually is — not the
+ * stale DOM coordinates of the release event, which on WebKitGTK fire inside the
+ * popout even when the cursor is released over the main window. Absent only on a
+ * cancel.
  */
 export interface DetachedDragEnd {
   cancelled: boolean;
-  screenX?: number;
-  screenY?: number;
+  cursorPhysX?: number;
+  cursorPhysY?: number;
   /**
    * Shift held at release → keep the popout floating as its own window instead of
    * docking it back into the main window (mirrors the main-window tab rule where

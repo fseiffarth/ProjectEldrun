@@ -106,6 +106,45 @@ pub fn set_project_description(
     Ok(cleaned)
 }
 
+/// Rename a project: update its display `name` in both `projects.json` (the
+/// pill list) and the project's own `project.json`, keeping the two in sync.
+/// The on-disk `directory` is left untouched — only the human-facing name
+/// changes. A blank name is rejected. Returns the cleaned (trimmed) name.
+#[tauri::command]
+pub fn set_project_name(project_id: String, name: String) -> Result<String, String> {
+    let cleaned = name.trim().to_string();
+    if cleaned.is_empty() {
+        return Err("project name cannot be empty".to_string());
+    }
+
+    // projects.json — find the entry and update its `name`.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    entry.name = cleaned.clone();
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project file consistent (best effort: a
+    // missing file is not fatal since the list is the source of truth for pills).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            project.name = cleaned.clone();
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(cleaned)
+}
+
 /// Toggle the Docker sandbox for a project in both `projects.json` (so the pill
 /// list / frontend can flag it without reading project.json) and the project's
 /// own `project.json`. When `enabled` is false the `sandbox` field is cleared

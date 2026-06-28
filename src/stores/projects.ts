@@ -72,6 +72,7 @@ interface ProjectsStore {
   addProject: (project: ProjectEntry) => Promise<void>;
   deactivateProject: (id: string) => Promise<void>;
   updateProjectDescription: (id: string, description: string) => Promise<void>;
+  renameProject: (id: string, name: string) => Promise<void>;
   setProjectSandbox: (id: string, enabled: boolean) => Promise<void>;
   publishProject: (id: string, visibility: "public" | "private") => Promise<string>;
 }
@@ -318,6 +319,20 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     set((state) => ({
       projects: state.projects.map((project) =>
         project.id === id ? { ...project, description: cleaned ?? undefined } : project,
+      ),
+    }));
+  },
+
+  renameProject: async (id, name) => {
+    // Backend trims, rejects blank, and writes projects.json + project.json;
+    // mirror the cleaned name into local state so the pill updates immediately.
+    const cleaned = await invoke<string>("set_project_name", {
+      projectId: id,
+      name,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id ? { ...project, name: cleaned } : project,
       ),
     }));
   },

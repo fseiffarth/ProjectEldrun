@@ -84,9 +84,9 @@ struct PtyEntry {
 
 /// Invalidate the cached process tree used for CPU sampling. Called whenever a
 /// PTY is spawned or dies so the next `sysstat::descendant_pids` rebuilds rather
-/// than reusing a stale walk. No-op off Linux (sysstat is Linux-only).
+/// than reusing a stale walk. `sysstat` is cross-platform (Linux/Windows sample,
+/// other OSes return zero), so this is a plain atomic bump everywhere.
 fn invalidate_proc_tree_cache() {
-    #[cfg(target_os = "linux")]
     crate::sysstat::invalidate_descendant_cache();
 }
 
@@ -344,9 +344,48 @@ pub fn default_shell() -> String {
 
 // ── Command builder ────────────────────────────────────────────────────────
 
+/// Wrap a resolved absolute executable path into a `CommandBuilder`. A `.exe`
+/// (or a Unix binary) runs directly; a `.cmd`/`.bat` shim (npm-style) needs
+/// `cmd.exe /c` and a `.ps1` needs PowerShell, since `CreateProcess` can't exec
+/// those directly inside the PTY.
+fn command_for_resolved(path: std::path::PathBuf) -> CommandBuilder {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("cmd") | Some("bat") => {
+            let mut c = CommandBuilder::new("cmd.exe");
+            c.arg("/c");
+            c.arg(path);
+            c
+        }
+        Some("ps1") => {
+            let mut c = CommandBuilder::new("powershell.exe");
+            c.arg("-NoProfile");
+            c.arg("-ExecutionPolicy");
+            c.arg("Bypass");
+            c.arg("-File");
+            c.arg(path);
+            c
+        }
+        _ => CommandBuilder::new(path),
+    }
+}
+
 fn build_command(opts: &PtyOptions) -> CommandBuilder {
     let cmd_str = if opts.cmd.is_empty() { default_shell() } else { opts.cmd.clone() };
-    let mut cmd = CommandBuilder::new(&cmd_str);
+    // A bare tool name (e.g. "vibe"/"ollama") that Eldrun detected as installed
+    // may still not be launchable on Windows: winget/uv/npm install into per-user
+    // dirs (%LOCALAPPDATA%\Programs, %USERPROFILE%\.local\bin, %APPDATA%\npm, …)
+    // that the PATH this process inherited often omits. Resolve to an absolute
+    // path so the spawn finds it. No-op when the name already resolves on PATH or
+    // carries a path — so ssh/docker-wrapped tabs (cmd "ssh"/"docker", both on
+    // PATH) keep their remote/in-container binary names, which live in `args`.
+    let mut cmd = match crate::paths::resolve_offpath_binary(&cmd_str) {
+        Some(resolved) => command_for_resolved(resolved),
+        None => CommandBuilder::new(&cmd_str),
+    };
     for arg in &opts.args {
         cmd.arg(arg);
     }

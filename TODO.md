@@ -798,6 +798,75 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     and QA browser download-preference editing across Firefox/Chrome/Chromium/
     Chrome Beta profile layouts.
 
+    **Cross-platform detection audit (2026-06-27).** A sweep for Linux-only code
+    paths that broke on Windows, fixing the directly-portable ones and tracking
+    the rest as the sub-items below.
+    - [x] **30a — Cross-platform binary detection.** ✅ Done. Every "is this CLI
+      installed?" probe hardcoded `Command::new("which")`, which does not exist on
+      Windows, so all agents (Claude included), the TeX toolchain, `sshfs`,
+      `sshpass`, and `openvpn`/`pkexec` reported as missing. Centralized one
+      `crate::paths::binary_on_path` (`where` on Windows, `which` elsewhere, via
+      `paths::path_finder(OsKind)`); `commands/agents.rs`, `commands/tex.rs`,
+      `commands/ollama.rs`, `services/ssh_mount.rs`, `services/openvpn.rs` all
+      route through it. Agent extra-path fallback also matches Windows exe
+      extensions (`.exe`/`.cmd`/`.bat`/`.ps1`).
+      - [x] 🤖 Automated test — `paths::path_finder_is_where_on_windows_which_elsewhere`
+      - [ ] 🖐️ Manual test — "Manage agents" lists installed agents on Windows
+    - [x] **30b — Cross-platform per-process CPU/RSS sampling.** ✅ Done. `sysstat`
+      was entirely `#![cfg(target_os = "linux")]`, so `project_cpu_percent` and
+      `debug_app_resource_usage` returned 0 on Windows. Refactored into a shared
+      cache/BFS layer over a per-OS backend: Linux `/proc`, **Windows** ToolHelp
+      snapshot (`CreateToolhelp32Snapshot`) for the process tree +
+      `GetProcessTimes` (kernel+user, 100-ns units) + `GetProcessMemoryInfo`
+      (working set), and a zero fallback for other OSes. CPU "ticks"/`clk_tck()`
+      abstraction keeps the caller's `busy_secs = ticks / clk_tck()` formula valid
+      on every backend. Added `Win32_System_{Diagnostics_ToolHelp,ProcessStatus,
+      Threading}` to the `windows` crate features. `terminal.rs`/`debug.rs` no
+      longer gate on Linux.
+      - [x] 🤖 Automated test — `sysstat` tests now run on Windows too
+        (`sum_jiffies`/`sum_rss_kib` against the live process, tree walk, cache)
+      - [ ] 🖐️ Manual test — pill popup shows live CPU/RSS on Windows
+    - [x] **30c — Native PID liveness.** ✅ Done. `check_pid_alive`
+      (`commands/apps.rs`) no longer shells out to `tasklist` on Windows; it uses
+      `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess`,
+      treating `STILL_ACTIVE` (259) as alive (a handle to an exited process still
+      opens, so the exit code must be inspected — not just OpenProcess success).
+      Linux `/proc` and macOS/Unix `kill(pid,0)` branches unchanged.
+      - [x] 🤖 Automated test — covered by `cargo build --lib` compile + existing
+        callers; no behavioral unit test (needs a live pid)
+      - [ ] 🖐️ Manual test
+    - [x] **30d — App discovery + launching on Windows.** ✅ Done. Linux XDG
+      `.desktop` discovery is gated behind `cfg(not(windows))`; Windows now enumerates
+      Start-Menu `.lnk` shortcuts (`%ProgramData%` + `%APPDATA%`, recursive, deduped
+      by resolved target) for `list_installed_apps`, resolves targets/icons via the
+      existing `IShellLinkW` scaffold, and `run_script_detached` runs `.ps1` via
+      `powershell -NoProfile -ExecutionPolicy Bypass -File` and `.bat`/`.cmd`/assoc
+      via `cmd /C` instead of `bash`. Launch/open/embed commands keep their
+      signatures. Degrades gracefully: `xdg-mime` handler resolution no-ops (falls
+      back to configured/explicit handlers), icon rasterization is best-effort, and
+      `os_embeddable` is false (no Windows embedding backend yet).
+      - [x] 🤖 Automated test — `cargo test --lib apps` (incl. a Windows-gated
+        interpreter-selection test) passes
+      - [ ] 🖐️ Manual test
+    - [x] **30e — Screenshot capture on Windows.** ✅ Done. `commands/screenshot.rs`
+      refactored to a cfg-selected `platform` submodule (Linux tool-spawn unchanged).
+      Windows uses native Win32 GDI — `GetSystemMetrics(SM_*VIRTUALSCREEN)` for the
+      full multi-monitor virtual screen, `GetDC`/`CreateCompatibleDC`/`BitBlt`/
+      `GetDIBits`, BGRA→RGBA, then PNG-encoded via the existing `png` crate to a
+      timestamped file (same public command + output dir as Linux). All GDI handles
+      freed on success and error paths. Added `Win32_Graphics_Gdi`.
+      - [x] 🤖 Automated test — shared filename/date tests retained; build verified
+      - [ ] 🖐️ Manual test
+    - [x] **30f — VPN-gated projects on Windows.** ✅ Done (graceful degradation —
+      the explicitly-allowed deliverable). `services/openvpn.rs` is cfg-split:
+      Windows `openvpn_available()` probes only the `openvpn` binary (no `pkexec`),
+      and `connect`/`disconnect`/`is_connected`/`disconnect_all` are no-ops/clear
+      errors ("VPN-gated projects are not yet supported on Windows — connect the
+      OpenVPN tunnel manually …"). No UAC/elevation system built. Linux pkexec path
+      byte-for-byte unchanged (only cfg-gated); non-VPN remote projects unaffected.
+      - [x] 🤖 Automated test — `cargo test --lib openvpn` passes on Windows
+      - [ ] 🖐️ Manual test
+
 31. **macOS support follow-ups.** macOS has initial cross-platform code (state
     paths, default shell, browser profiles, network detection, Unix symlinks,
     null workspace-backend fallback). Remaining: add bundle support when
@@ -810,6 +879,19 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     `CGWindowList`) only if project-owned standalone windows need reliable
     show/hide; and keep the null workspace backend as the default unless a clear
     need justifies Accessibility permissions or private APIs.
+    - [~] **31a — Native CPU/RSS sampling backend.** ✅ Code-complete, ⚠️
+      **unverified** (compiles only on macOS; written/reviewed on a Windows host).
+      Added a `#[cfg(target_os = "macos")] mod platform` in `sysstat.rs` using
+      libproc: `proc_pidinfo(PROC_PIDTASKINFO)` → `pti_total_user + pti_total_system`
+      (nanoseconds; `clk_tck()` = 1e9) and `pti_resident_size` for RSS;
+      `proc_pidinfo(PROC_PIDTBSDINFO)` → `pbi_ppid`; `proc_listallpids` for the tree.
+      Fallback cfg narrowed to `not(any(linux, windows, macos))`. Callers
+      (`terminal.rs`/`debug.rs`/`terminal/mod.rs`) are already cross-platform.
+      - [ ] 🤖 Automated test — `sysstat` tests run on macOS (currently only
+        compile-verifiable on a mac); no macOS CI yet
+      - [ ] 🖐️ Manual test — needs a real macOS build to confirm the libc bindings
+        (`proc_taskinfo`/`proc_bsdinfo`/`proc_listallpids`) resolve in pinned
+        `libc 0.2`; if any is absent, add a minimal `extern "C"`/`#[repr(C)]` decl.
 
 ---
 

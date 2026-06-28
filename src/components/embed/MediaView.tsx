@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ViewerHeader } from "./FileViewerPane";
+import { basename } from "../../lib/paths";
 
 /**
  * Audio/video player viewer (Dev D). Plays `.mp3`/`.mp4`/`.webm`/… in-tab via
@@ -42,7 +43,7 @@ const VIDEO_EXTS = new Set(["mp4", "m4v", "webm", "mov", "mkv", "ogv"]);
 
 /** Lowercased extension (no dot) of a path, or "" when it has none. */
 function extOf(path: string): string {
-  const name = path.slice(path.lastIndexOf("/") + 1);
+  const name = basename(path);
   const dot = name.lastIndexOf(".");
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
 }

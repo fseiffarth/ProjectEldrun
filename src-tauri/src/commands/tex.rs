@@ -10,7 +10,7 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 
@@ -79,16 +79,10 @@ pub struct SyncRect {
     pub h: f64,
 }
 
-/// True if `bin` resolves on `PATH`.
+/// True if `bin` resolves on `PATH`. Uses the shared cross-platform probe so the
+/// TeX toolchain is detected on Windows too (where `which` does not exist).
 fn on_path(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    crate::paths::binary_on_path(bin)
 }
 
 /// Probe `PATH` for the TeX toolchain. Cheap enough to call on demand.
@@ -118,8 +112,10 @@ struct RunOut {
 }
 
 /// Run `bin args…` with `dir` as the working directory, capturing stdout+stderr.
+/// Spawned via `command_no_window` so MiKTeX's console tools (engine, `bibtex`,
+/// `synctex`) don't flash a console window per invocation on Windows.
 fn run_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, bin: &str, args: &[S]) -> Result<RunOut, String> {
-    let out = Command::new(bin)
+    let out = crate::paths::command_no_window(bin)
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())

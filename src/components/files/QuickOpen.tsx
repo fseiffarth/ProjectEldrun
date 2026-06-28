@@ -15,6 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory } from "../../types";
 import { fuzzyMatch, fuzzyRank } from "../../lib/fuzzy";
+import { basename, resolvePath } from "../../lib/paths";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
 import "./QuickOpen.css";
 
@@ -140,11 +141,11 @@ export function QuickOpen() {
     (rel: string) => {
       const projectDir = activeProjectDir();
       if (!projectDir) return;
-      const absPath = `${projectDir}/${rel}`;
+      const absPath = resolvePath(projectDir, rel);
       openLinkedFile(undefined, projectDir, {
         path: absPath,
         viewer: viewerForPath(absPath),
-        label: absPath.slice(absPath.lastIndexOf("/") + 1),
+        label: basename(absPath),
       });
       close();
     },

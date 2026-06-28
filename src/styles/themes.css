@@ -6492,6 +6492,16 @@ select option {
   font-variant-numeric: tabular-nums;
 }
 
+/* A "load into memory" row in the brain menu: the menu item plus, while the
+   model is warming, an indeterminate bar under it (Ollama streams no load %). */
+.local-model-load-row {
+  display: flex;
+  flex-direction: column;
+}
+.local-model-load-bar {
+  margin: 2px 12px 4px;
+}
+
 /* ── Install flow (shown when Ollama is missing) ─────────────────────────── */
 .ollama-install-steps {
   margin: 4px 0 12px;
@@ -6700,6 +6710,14 @@ select option {
 .ollama-download-status {
   font-size: 10px;
   color: var(--text-muted);
+}
+
+/* Indeterminate "loading into memory" strip under a model row in settings. */
+.ollama-load-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
 }
 
 .ollama-badge {

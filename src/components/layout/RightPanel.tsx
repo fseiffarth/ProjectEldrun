@@ -13,6 +13,7 @@ import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes"
 import { resolveProjectDirectory } from "../../types";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
 import { type SortKey, VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
+import { basename, fromFileUri } from "../../lib/paths";
 import type { ViewerPref } from "../../types";
 
 interface GitStatus {
@@ -74,17 +75,10 @@ function isExternalFileDrag(dt: DataTransfer): boolean {
 }
 
 /** Convert one `file://` URI to an absolute local path (decoding `%20` etc.),
- *  dropping any `file://host/…` authority. */
+ *  dropping any `file://host/…` authority. Delegates to the shared OS-aware
+ *  helper, which also strips the extra leading slash of Windows `file:///C:/…`. */
 function fileUriToPath(uri: string): string | null {
-  if (!uri.startsWith("file://")) return null;
-  let rest = uri.slice("file://".length);
-  const slash = rest.indexOf("/");
-  if (slash > 0) rest = rest.slice(slash);
-  try {
-    return decodeURIComponent(rest);
-  } catch {
-    return rest;
-  }
+  return fromFileUri(uri);
 }
 
 /** Extract absolute local paths from an OS HTML5 file drop. WebKitGTK withholds
@@ -350,7 +344,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
       let blanket: ConflictChoice | null = null;
       for (let i = 0; i < paths.length; i++) {
         const sourcePath = paths[i];
-        const name = sourcePath.replace(/\/+$/, "").split("/").pop() || sourcePath;
+        const name = basename(sourcePath) || sourcePath;
         const rel = destRel ? `${destRel}/${name}` : name;
         let choice: ConflictChoice = "rename";
         const exists = await invoke<boolean>("project_path_exists", { projectDir, relPath: rel }).catch(() => false);
@@ -852,8 +846,8 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
               <div key={w.id} className="file-entry">
                 <span className="file-icon">🪟</span>
                 <span className="file-name" title={w.exec}>
-                  {w.exec.split("/").pop() ?? w.exec}
-                  {w.file && <span style={{ color: "var(--text-muted)" }}> {w.file.split("/").pop()}</span>}
+                  {basename(w.exec) || w.exec}
+                  {w.file && <span style={{ color: "var(--text-muted)" }}> {basename(w.file)}</span>}
                 </span>
                 <button
                   className="tab-close"

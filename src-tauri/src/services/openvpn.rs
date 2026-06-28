@@ -16,31 +16,40 @@
 //! (no leading `-`, no control characters) and passed to the child as a separate
 //! argv item.
 
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::process::{Child, Command, Stdio};
+#[cfg(target_os = "linux")]
 use std::sync::{Mutex, OnceLock};
+#[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
 use crate::services::ssh_mount::validate_arg;
 use crate::storage;
 
 /// OpenVPN prints this once the tunnel is fully up.
+#[cfg(target_os = "linux")]
 const READY_MARKER: &str = "Initialization Sequence Completed";
 /// Give the tunnel this long to come up before we give up and kill it.
+#[cfg(target_os = "linux")]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// A running tunnel: the `pkexec openvpn` child plus the pidfile OpenVPN wrote
 /// (so we can `pkexec kill` the root process on teardown).
+#[cfg(target_os = "linux")]
 struct VpnProc {
     child: Child,
     pidfile: PathBuf,
 }
 
 /// Process-global registry of live tunnels, keyed by config path.
+#[cfg(target_os = "linux")]
 fn registry() -> &'static Mutex<HashMap<String, VpnProc>> {
     static REG: OnceLock<Mutex<HashMap<String, VpnProc>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
@@ -85,17 +94,19 @@ pub fn store_config(src: &str) -> Result<String, String> {
     Ok(dest.to_string_lossy().into_owned())
 }
 
-/// True if `openvpn` and `pkexec` are both available on `PATH`.
+/// True if `openvpn` and `pkexec` are both available on `PATH` (both are needed:
+/// OpenVPN to build the tunnel, polkit's `pkexec` to launch it elevated).
+#[cfg(target_os = "linux")]
 pub fn openvpn_available() -> bool {
-    which_exists("openvpn") && which_exists("pkexec")
+    crate::paths::binary_on_path("openvpn") && crate::paths::binary_on_path("pkexec")
 }
 
-fn which_exists(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// True if the `openvpn` binary is present. Windows has no `pkexec`/polkit, so
+/// only the binary itself is probed; managing the tunnel is still out of scope
+/// (see [`connect`]).
+#[cfg(target_os = "windows")]
+pub fn openvpn_available() -> bool {
+    crate::paths::binary_on_path("openvpn")
 }
 
 /// Build the `openvpn` argv (without the leading `pkexec`/`openvpn`) for a
@@ -150,6 +161,7 @@ fn safe_stem(config: &str) -> String {
 }
 
 /// Write `password` to an owner-only (0600) askpass file and return its path.
+#[cfg(target_os = "linux")]
 fn write_askpass(stem: &str, password: &str) -> Result<PathBuf, String> {
     let dir = runtime_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create openvpn dir: {e}"))?;
@@ -167,6 +179,7 @@ fn write_askpass(stem: &str, password: &str) -> Result<PathBuf, String> {
 
 /// True if a tunnel for `config` is currently up (registered and its process is
 /// still alive).
+#[cfg(target_os = "linux")]
 pub fn is_connected(config: &str) -> bool {
     let mut reg = registry().lock().unwrap();
     match reg.get_mut(config) {
@@ -186,6 +199,7 @@ pub fn is_connected(config: &str) -> bool {
 /// Bring up the OpenVPN tunnel for `config`, authenticating with `password`.
 /// No-op (returns `Ok`) if already connected. Blocks until OpenVPN reports the
 /// tunnel up, the process exits, or `CONNECT_TIMEOUT` elapses.
+#[cfg(target_os = "linux")]
 pub fn connect(config: &str, password: &str) -> Result<(), String> {
     let config = config.trim();
     validate_arg("OpenVPN config", config)?;
@@ -246,6 +260,7 @@ pub fn connect(config: &str, password: &str) -> Result<(), String> {
 
 /// Read the child's stdout until the ready marker appears (Ok), the stream ends
 /// (Err with the tail), or the timeout elapses (Err).
+#[cfg(target_os = "linux")]
 fn wait_for_ready(child: &mut Child) -> Result<(), String> {
     let stdout = child
         .stdout
@@ -282,6 +297,7 @@ fn wait_for_ready(child: &mut Child) -> Result<(), String> {
 /// Tear down the tunnel for `config` if it is up. Best-effort: signals the root
 /// OpenVPN process via `pkexec kill` (reading the pid OpenVPN wrote), then reaps
 /// our child. A missing/already-dead tunnel is treated as success.
+#[cfg(target_os = "linux")]
 pub fn disconnect(config: &str) -> Result<(), String> {
     let proc = registry().lock().unwrap().remove(config);
     let Some(mut proc) = proc else {
@@ -295,6 +311,7 @@ pub fn disconnect(config: &str) -> Result<(), String> {
 }
 
 /// `pkexec kill` the pid recorded in `pidfile` (the root OpenVPN process).
+#[cfg(target_os = "linux")]
 fn kill_pidfile(pidfile: &Path) {
     let Ok(contents) = std::fs::read_to_string(pidfile) else {
         return;
@@ -312,6 +329,7 @@ fn kill_pidfile(pidfile: &Path) {
 
 /// Tear down every live tunnel. Used at app exit; errors are swallowed so
 /// shutdown never blocks.
+#[cfg(target_os = "linux")]
 pub fn disconnect_all() {
     let keys: Vec<String> = {
         let reg = registry().lock().unwrap();
@@ -321,6 +339,46 @@ pub fn disconnect_all() {
         let _ = disconnect(&k);
     }
 }
+
+// --- Windows: graceful, honest degradation (TODO 30f) ---------------------
+//
+// Windows has no `pkexec`/polkit and no clean non-interactive privileged-spawn
+// analogue, and a full UAC/OpenVPN-service integration is out of scope. So
+// Eldrun does not manage VPN tunnels here: availability is reported honestly
+// (the binary may be installed), but bringing the tunnel up/down is left to the
+// user via the OpenVPN GUI/service. The connect/teardown paths fail loudly with
+// an actionable message rather than silently pretending to work. Non-VPN remote
+// projects are unaffected (they never call into this module).
+
+/// Message returned by the Windows connect/teardown stubs.
+#[cfg(target_os = "windows")]
+const WINDOWS_UNSUPPORTED: &str = "VPN-gated projects are not yet supported on Windows — connect the OpenVPN tunnel manually (OpenVPN GUI/service), or use this project on Linux.";
+
+/// Eldrun does not manage tunnels on Windows, so it cannot know the state of a
+/// manually established one — report "not connected" rather than guess.
+#[cfg(target_os = "windows")]
+pub fn is_connected(_config: &str) -> bool {
+    false
+}
+
+/// Bringing up an OpenVPN tunnel needs privilege Eldrun cannot acquire
+/// non-interactively on Windows; fail with an actionable message.
+#[cfg(target_os = "windows")]
+pub fn connect(_config: &str, _password: &str) -> Result<(), String> {
+    Err(WINDOWS_UNSUPPORTED.to_string())
+}
+
+/// Eldrun never brought a tunnel up on Windows, so there is nothing it can tear
+/// down; report the same actionable message for symmetry with [`connect`].
+#[cfg(target_os = "windows")]
+pub fn disconnect(_config: &str) -> Result<(), String> {
+    Err(WINDOWS_UNSUPPORTED.to_string())
+}
+
+/// No Eldrun-managed tunnels exist on Windows, so there is nothing to tear down
+/// at exit.
+#[cfg(target_os = "windows")]
+pub fn disconnect_all() {}
 
 #[cfg(test)]
 mod tests {

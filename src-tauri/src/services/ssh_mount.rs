@@ -107,11 +107,7 @@ pub fn sshpass_available() -> bool {
 }
 
 fn which_exists(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    crate::paths::binary_on_path(bin)
 }
 
 /// True if `path` is currently a mountpoint. Reads `/proc/mounts` (Linux) and

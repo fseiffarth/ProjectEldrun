@@ -5,6 +5,26 @@
 //! apps are tracked by PID and launched/raised as separate windows.
 //! `project.json["open_apps"]` is preserved for backward compatibility but
 //! treated as best-effort restore metadata.
+//!
+//! ## Per-OS backends (TODO 30d)
+//!
+//! App discovery, icon resolution and launching are inherently OS-specific, so
+//! the platform-divergent pieces are gated behind `cfg`:
+//! - **Linux** uses the freedesktop/XDG model: it scans `.desktop` entries under
+//!   `~/.local/share/applications` and `/usr/share/applications`, resolves icons
+//!   through the icon-theme directories, and launches the `Exec=` line directly.
+//! - **Windows** has no XDG layer, so [`list_installed_apps`] instead enumerates
+//!   Start-Menu `.lnk` shortcuts under `%ProgramData%`/`%APPDATA%`, reading each
+//!   shortcut's display name and resolving its target executable via
+//!   `IShellLinkW` (see [`windows_shortcuts`]). Launching resolves a bare app
+//!   name or `.lnk` back to that target exe ([`resolve_windows_launch_exec`]) and
+//!   spawns it; [`run_script_detached`] runs scripts through `cmd`/PowerShell
+//!   rather than `bash`. Icons are best-effort: a `.png`/`.ico` referenced by the
+//!   shortcut is inlined as a data URL, otherwise the target path is returned for
+//!   the frontend to resolve lazily (no native HICON rasterization — that would
+//!   need GDI, which is out of scope here).
+//! - **Other OSes** fall back to empty/no-op results so the commands never fail
+//!   to build or error at runtime.
 
 use std::collections::HashMap;
 use std::fs;
@@ -308,11 +328,16 @@ pub fn open_file(
 /// Run a shell script as a fire-and-forget detached process.
 ///
 /// Used by the right-panel "run in background" mode: the script is spawned with
-/// `bash <path>`, stdio fully detached, and is not tracked as a window or tab.
-/// No output is surfaced — callers that want to watch a script should open a
-/// terminal tab instead. When a `run_id` is supplied, a background thread waits
-/// for the process and emits a `script-finished` event (`{ runId, success }`)
-/// so the UI can show a running animation that clears on completion.
+/// stdio fully detached, and is not tracked as a window or tab. No output is
+/// surfaced — callers that want to watch a script should open a terminal tab
+/// instead. When a `run_id` is supplied, a background thread waits for the
+/// process and emits a `script-finished` event (`{ runId, success }`) so the UI
+/// can show a running animation that clears on completion.
+///
+/// On Linux/Unix the script is run with `bash <path>`. Windows has no `bash`, so
+/// [`windows_script_command`] picks an interpreter by extension (`.ps1` →
+/// PowerShell, everything else → `cmd /C`, which honours `.bat`/`.cmd` and the
+/// file's shell association) while still yielding a waitable child process.
 #[tauri::command]
 pub fn run_script_detached(
     app: tauri::AppHandle,
@@ -320,8 +345,14 @@ pub fn run_script_detached(
     cwd: Option<String>,
     run_id: Option<String>,
 ) -> Result<(), String> {
-    let mut cmd = Command::new("bash");
-    cmd.arg(&script_path);
+    #[cfg(target_os = "windows")]
+    let mut cmd = windows_script_command(&script_path);
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut cmd = Command::new("bash");
+        cmd.arg(&script_path);
+        cmd
+    };
     if let Some(dir) = cwd.as_deref().filter(|d| !d.is_empty()) {
         cmd.current_dir(dir);
     }
@@ -536,32 +567,65 @@ pub struct InstalledApp {
     pub icon: Option<String>,
 }
 
-/// List installed applications by scanning `.desktop` entries in the standard
-/// application directories. Powers the search box in the "set default app"
-/// dialog. Skips hidden entries (`NoDisplay=true`) and non-`Application` types,
-/// dedupes by executable basename (user dirs take precedence), sorted by name.
+/// List installed applications, powering the search box in the "set default app"
+/// dialog. On Linux this scans `.desktop` entries in the standard application
+/// directories (skipping hidden entries and non-`Application` types, deduped by
+/// executable basename with user dirs taking precedence); on Windows it
+/// enumerates Start-Menu shortcuts. Sorted by name.
 #[tauri::command]
 pub fn list_installed_apps() -> Vec<InstalledApp> {
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut apps: Vec<InstalledApp> = Vec::new();
-    for dir in desktop_app_dirs() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+    #[cfg(target_os = "windows")]
+    {
+        return windows_installed_apps();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut apps: Vec<InstalledApp> = Vec::new();
+        for dir in desktop_app_dirs() {
+            let Ok(entries) = fs::read_dir(&dir) else {
                 continue;
-            }
-            if let Some(app) = parse_installed_app(&path) {
-                let key = Path::new(&app.exec)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_lowercase())
-                    .unwrap_or_else(|| app.exec.to_lowercase());
-                if seen.insert(key) {
-                    apps.push(app);
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                    continue;
+                }
+                if let Some(app) = parse_installed_app(&path) {
+                    let key = Path::new(&app.exec)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_else(|| app.exec.to_lowercase());
+                    if seen.insert(key) {
+                        apps.push(app);
+                    }
                 }
             }
+        }
+        apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        apps
+    }
+}
+
+/// Windows installed-app list: every Start-Menu `.lnk` shortcut, mapped to its
+/// display name and resolved target executable (which is what the picker stores
+/// and later launches). Deduped by target-exe path (case-insensitive), sorted by
+/// name. The icon is left to lazy resolution via [`resolve_app_icon`].
+#[cfg(target_os = "windows")]
+fn windows_installed_apps() -> Vec<InstalledApp> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut apps: Vec<InstalledApp> = Vec::new();
+    for shortcut in windows_shortcuts() {
+        let exec = shortcut.target_path.to_string_lossy().into_owned();
+        if exec.trim().is_empty() {
+            continue;
+        }
+        if seen.insert(exec.to_lowercase()) {
+            apps.push(InstalledApp {
+                name: shortcut.display_name,
+                exec,
+                icon: None,
+            });
         }
     }
     apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -571,6 +635,9 @@ pub fn list_installed_apps() -> Vec<InstalledApp> {
 /// Parse a single `.desktop` file into an `InstalledApp`, or `None` when it is
 /// hidden, not an application, or has no `Exec`. First value of each key wins so
 /// the unlocalized `Name=`/`Exec=` take precedence over later `[Action]` groups.
+/// Linux-only (Windows lists Start-Menu shortcuts instead); kept compiled for the
+/// shared unit tests.
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 fn parse_installed_app(path: &Path) -> Option<InstalledApp> {
     let content = fs::read_to_string(path).ok()?;
     let mut in_entry = false;
@@ -704,6 +771,33 @@ fn resolve_windows_launch_exec(exec: &str) -> Option<String> {
         .map(|shortcut| shortcut.target_path.to_string_lossy().into_owned())
 }
 
+/// Build the [`Command`] that runs `script_path` on Windows, choosing an
+/// interpreter by extension: `.ps1` is run through PowerShell with an execution
+/// policy bypass; anything else is handed to `cmd /C`, which executes `.bat`/
+/// `.cmd` directly and otherwise opens the file via its shell association. Either
+/// way the returned command spawns a child whose exit status the caller can wait
+/// on for the `script-finished` event.
+#[cfg(target_os = "windows")]
+fn windows_script_command(script_path: &str) -> Command {
+    let is_ps1 = Path::new(script_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map_or(false, |ext| ext.eq_ignore_ascii_case("ps1"));
+    // `command_no_window` sets CREATE_NO_WINDOW so a background "run script"
+    // action doesn't pop a transient console window — its output is intentionally
+    // not surfaced (callers wanting output open a terminal tab instead).
+    if is_ps1 {
+        let mut cmd = crate::paths::command_no_window("powershell");
+        cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+        cmd.arg(script_path);
+        cmd
+    } else {
+        let mut cmd = crate::paths::command_no_window("cmd");
+        cmd.args(["/C", script_path]);
+        cmd
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn resolve_windows_app_icon(exec: &str) -> Option<String> {
     let direct = PathBuf::from(exec.trim_matches('"'));
@@ -818,16 +912,179 @@ fn resolve_windows_shortcut(path: &Path) -> Option<ShortcutEntry> {
 
 #[cfg(target_os = "windows")]
 fn windows_icon_to_data_url(path: &Path) -> Option<String> {
+    // A raster `.png` is already a valid `<img>` source, so inline it directly
+    // with the correct MIME. Everything else — `.exe`/`.dll` (no embedded raster),
+    // `.ico` (whose `image/png` mislabel did not render reliably), or an extension-
+    // less target — is rasterized through the shell to a real PNG data URL below.
+    // Returning a bare filesystem path here (the prior behaviour) produced an
+    // `<img src="C:\...\app.exe">` the WebView cannot load, hence blank icons.
     if path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map_or(false, |ext| {
-            ext.eq_ignore_ascii_case("png") || ext.eq_ignore_ascii_case("ico")
-        })
+        .map_or(false, |ext| ext.eq_ignore_ascii_case("png"))
     {
         return icon_to_data_url(path);
     }
-    Some(path.to_string_lossy().into_owned())
+    extract_windows_icon_png(path)
+}
+
+/// Rasterize the shell icon for `path` (an `.exe`/`.ico`/`.dll`/associated file)
+/// to a base64 PNG data URL via GDI. Returns `None` on any failure so the
+/// frontend falls back to its glyph rather than rendering a broken image. Every
+/// GDI/shell handle acquired here is released on all paths.
+#[cfg(target_os = "windows")]
+fn extract_windows_icon_png(path: &Path) -> Option<String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+    use windows::Win32::UI::Shell::{
+        SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+    // SAFETY: the HICON returned in `info.hIcon` is destroyed before returning on
+    // both the success and failure paths.
+    unsafe {
+        let wide = wide_null(path.as_os_str());
+        let mut info = SHFILEINFOW::default();
+        let res = SHGetFileInfoW(
+            PCWSTR(wide.as_ptr()),
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            Some(&mut info),
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_LARGEICON,
+        );
+        if res == 0 || info.hIcon.is_invalid() {
+            return None;
+        }
+        let rgba = hicon_to_rgba(info.hIcon);
+        let _ = DestroyIcon(info.hIcon);
+        let (width, height, pixels) = rgba?;
+        encode_png_data_url(width, height, &pixels)
+    }
+}
+
+/// Convert an `HICON` to a top-down RGBA buffer `(width, height, pixels)`. The
+/// icon's color bitmap supplies BGR (and per-pixel alpha for modern 32-bit
+/// icons); when that alpha channel is entirely zero — legacy icons — opacity is
+/// reconstructed from the 1-bpp AND mask instead. The color/mask GDI bitmaps from
+/// `GetIconInfo` are deleted on every path.
+#[cfg(target_os = "windows")]
+unsafe fn hicon_to_rgba(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) -> Option<(u32, u32, Vec<u8>)> {
+    use std::ffi::c_void;
+    use windows::Win32::Graphics::Gdi::{
+        DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
+
+    let mut icon_info = ICONINFO::default();
+    if GetIconInfo(hicon, &mut icon_info).is_err() {
+        return None;
+    }
+    let color = icon_info.hbmColor;
+    let mask = icon_info.hbmMask;
+
+    let result = (|| {
+        if color.is_invalid() {
+            return None;
+        }
+        let mut bmp = BITMAP::default();
+        let got = GetObjectW(
+            HGDIOBJ(color.0),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bmp as *mut BITMAP as *mut c_void),
+        );
+        if got == 0 || bmp.bmWidth <= 0 || bmp.bmHeight <= 0 {
+            return None;
+        }
+        let width = bmp.bmWidth;
+        let height = bmp.bmHeight;
+        let pixel_count = (width as usize) * (height as usize);
+
+        // Negative biHeight requests top-down rows (the order the PNG encoder
+        // wants); 32-bit BI_RGB unpacks any source depth to BGRA scanlines.
+        let header = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0 as u32,
+            ..Default::default()
+        };
+
+        let dc = GetDC(None);
+        if dc.is_invalid() {
+            return None;
+        }
+
+        let read_dib = |hbm: windows::Win32::Graphics::Gdi::HBITMAP, buf: &mut [u8]| -> bool {
+            let mut info = BITMAPINFO {
+                bmiHeader: header,
+                ..Default::default()
+            };
+            GetDIBits(
+                dc,
+                hbm,
+                0,
+                height as u32,
+                Some(buf.as_mut_ptr() as *mut c_void),
+                &mut info,
+                DIB_RGB_COLORS,
+            ) != 0
+        };
+
+        let mut pixels = vec![0u8; pixel_count * 4];
+        let outcome = (|| {
+            if !read_dib(color, &mut pixels) {
+                return None;
+            }
+            // Reconstruct alpha from the AND mask when the color bitmap carries
+            // none (mask: 0 = opaque, white = transparent).
+            if !pixels.chunks_exact(4).any(|px| px[3] != 0) && !mask.is_invalid() {
+                let mut mask_px = vec![0u8; pixel_count * 4];
+                if read_dib(mask, &mut mask_px) {
+                    for (px, m) in pixels.chunks_exact_mut(4).zip(mask_px.chunks_exact(4)) {
+                        px[3] = if m[0] == 0 { 0xFF } else { 0x00 };
+                    }
+                } else {
+                    for px in pixels.chunks_exact_mut(4) {
+                        px[3] = 0xFF;
+                    }
+                }
+            }
+            // GDI delivers BGRA; the PNG encoder wants RGBA.
+            for px in pixels.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+            Some((width as u32, height as u32, pixels))
+        })();
+
+        ReleaseDC(None, dc);
+        outcome
+    })();
+
+    if !color.is_invalid() {
+        let _ = DeleteObject(HGDIOBJ(color.0));
+    }
+    if !mask.is_invalid() {
+        let _ = DeleteObject(HGDIOBJ(mask.0));
+    }
+    result
+}
+
+/// Encode a top-down RGBA buffer to a base64 `data:image/png` URL in memory.
+#[cfg(target_os = "windows")]
+fn encode_png_data_url(width: u32, height: u32, rgba: &[u8]) -> Option<String> {
+    let mut buf = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut buf, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().ok()?;
+        writer.write_image_data(rgba).ok()?;
+    }
+    Some(format!("data:image/png;base64,{}", base64_encode(&buf)))
 }
 
 #[cfg(target_os = "windows")]
@@ -995,16 +1252,38 @@ pub fn check_pid_alive(pid: u32) -> bool {
     if cfg!(target_os = "linux") {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
     } else if cfg!(target_os = "windows") {
-        // tasklist /FI "PID eq <pid>" exits 0 even if the PID is not found;
-        // check that the PID number appears in the output instead.
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
-            .output()
-            .map(|o| {
-                let out = String::from_utf8_lossy(&o.stdout);
-                out.contains(&format!(",\"{}\",", pid))
-            })
-            .unwrap_or(false)
+        // Native liveness check: open the process and read its exit code.
+        // STILL_ACTIVE (259) means the process is still running. A handle to an
+        // already-exited process still opens successfully but GetExitCodeProcess
+        // then reports the real exit code, so OpenProcess succeeding alone is not
+        // enough — we must inspect the code. A failed OpenProcess (e.g. the PID
+        // no longer exists) is treated as dead.
+        #[cfg(target_os = "windows")]
+        {
+            use windows::Win32::Foundation::CloseHandle;
+            use windows::Win32::System::Threading::{
+                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            };
+            const STILL_ACTIVE: u32 = 259;
+            unsafe {
+                match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                    Ok(handle) => {
+                        let mut code: u32 = 0;
+                        let alive =
+                            GetExitCodeProcess(handle, &mut code).is_ok() && code == STILL_ACTIVE;
+                        let _ = CloseHandle(handle);
+                        alive
+                    }
+                    Err(_) => false,
+                }
+            }
+        }
+        // On non-Windows targets this branch is never taken at runtime; the
+        // `false` keeps the expression well-typed when the cfg above is absent.
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
+        }
     } else {
         // macOS / non-Linux Unix: kill(pid, 0) returns 0 if process exists.
         // On non-Unix platforms this branch is never reached (Windows is
@@ -1545,5 +1824,18 @@ mod tests {
     #[test]
     fn shortcut_does_not_match_unrelated_name() {
         assert!(!shortcut_matches("notepad", &shortcut()));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_script_command_picks_interpreter_by_extension() {
+        // .ps1 → PowerShell; .bat / .cmd / everything else → cmd /C.
+        let ps1 = windows_script_command(r"C:\tmp\build.ps1");
+        assert_eq!(ps1.get_program().to_string_lossy(), "powershell");
+
+        for script in [r"C:\tmp\build.bat", r"C:\tmp\run.cmd", r"C:\tmp\go.sh"] {
+            let cmd = windows_script_command(script);
+            assert_eq!(cmd.get_program().to_string_lossy(), "cmd");
+        }
     }
 }

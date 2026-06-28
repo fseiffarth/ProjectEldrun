@@ -16,6 +16,8 @@ import { useDetachAnimStore, flyVector } from "../../stores/detachAnim";
 import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
+import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
+import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
@@ -93,7 +95,10 @@ const AGENT_ITEMS: StaticMenuItem[] = [
 ];
 
 const SHELL_ITEMS: StaticMenuItem[] = [
-  { label: "Shell", cmd: "bash",          kind: "shell" },
+  // Empty cmd → backend `default_shell()` picks the OS-appropriate shell
+  // (cmd.exe on Windows, zsh on macOS, bash on Linux). Hardcoding "bash" here
+  // fails to spawn on Windows where bash isn't on PATH.
+  { label: "Shell", cmd: "",              kind: "shell" },
   { label: "Files", cmd: FILES_TAB_CMD,   kind: "files" },
 ];
 
@@ -171,6 +176,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     invoke<{ id: string; label: string; available: boolean }[]>("list_local_drivers")
       .then(setLocalDrivers)
       .catch(() => {});
+  }, []);
+  // Installed agent CLIs (by id == cmd). The add menu only offers agents whose
+  // binary is actually present, so it never lists ones the user can't launch.
+  // `null` until the probe resolves; render nothing until then to avoid a flash
+  // of the full list. Loaded once.
+  const [installedAgents, setInstalledAgents] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    invoke<{ id: string; installed: boolean }[]>("list_agents")
+      .then((list) =>
+        setInstalledAgents(new Set(list.filter((a) => a.installed).map((a) => a.id))),
+      )
+      .catch(() => setInstalledAgents(new Set()));
   }, []);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
@@ -373,6 +390,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // HTML5 native DnD is unreliable on WebKitGTK, so we drive the whole drag from
   // plain window listeners. CenterPanel owns the drop authority (its pointerup
   // commits + ends); this handler only seeds the drag and handles the click case.
+  //
+  // Cross-window position is POLL-DRIVEN: `startCursorPoll` reports the OS cursor
+  // in physical desktop px (the only DPI-correct, cross-engine source — DOM
+  // `screenX/Y` units diverge across WebKitGTK/WebView2/WKWebView). The in-window
+  // ghost + the "outside this window" test stay on DOM `clientX/clientY` (reliable
+  // CSS px on every engine). The terminal release is centralized through
+  // `bindDragRelease`, which applies the engine-correct cancel-vs-commit policy.
   function onTabPointerDown(
     e: React.PointerEvent,
     tab: (typeof tabs)[number],
@@ -387,14 +411,29 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     e.preventDefault();
     const startX = e.clientX;
     const startY = e.clientY;
+    const pointerId = e.pointerId;
+    // Capture on the document root, NOT the dragged tab. When this tab is the
+    // lone tab of its subwindow, CenterPanel collapses that subwindow LIVE the
+    // moment the drag starts — which unmounts this tab's DOM node. Removing the
+    // pointer-capture *target* mid-gesture drops the capture (and on Chromium/
+    // WebView2 can fire a spurious pointercancel → abort). The root never
+    // unmounts, so the capture — which on Win/mac is what keeps the terminal
+    // pointerup landing on this window once the cursor leaves it — survives.
+    const captureEl = document.documentElement;
     let dragging = false;
 
     // #42 (main → detached): an open popout of the current scope is a valid drop
     // target — releasing the dragged tab over one docks it there instead of
-    // spawning a new window. The shared session resolves each popout's on-screen
-    // bounds (async), hit-tests the cursor against them, and toggles the popout's
-    // drop-target highlight — the SAME logic the file drag uses (FileTree).
+    // spawning a new window. The shared session resolves each popout's physical-px
+    // frame (async), hit-tests the physical cursor against them, and toggles the
+    // popout's drop-target highlight — the SAME logic the file drag uses (FileTree).
     const detached = startDetachedDropSession();
+
+    // Latest in-window client coords (ghost + "outside this window" test) and the
+    // latest physical desktop cursor (cross-window hit-test, poll-driven).
+    let lastClient = { x: startX, y: startY };
+    let lastPhys: PhysPoint | null = null;
+    let stopPoll: (() => void) | null = null;
 
     const onMove = (ev: PointerEvent) => {
       if (!dragging) {
@@ -439,19 +478,46 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         });
         // Begin resolving popout drop targets now that a real drag is underway.
         void detached.resolve();
+        // Capture the terminal pointer event on engines that don't keep delivering
+        // it past the source window's HWND (Win/mac); WebKitGTK keeps the implicit
+        // grab, so capturing there is unnecessary (and the flag leaves it off).
+        if (dragPlatform.needsPointerCapture) {
+          try {
+            captureEl.setPointerCapture(pointerId);
+          } catch {
+            /* capture is best-effort; the OS-cursor poll does not depend on it */
+          }
+        }
+        // Poll the OS cursor (physical desktop px) to drive the popout hover past
+        // the main viewport — DOM pointermove may not cross the OS window boundary.
+        stopPoll = startCursorPoll((p) => {
+          lastPhys = p;
+          detached.hover(detached.at(p), p, tab.label);
+        });
       }
+      lastClient = { x: ev.clientX, y: ev.clientY };
       useDragStore.getState().move(ev.clientX, ev.clientY);
-      // Drive the drop preview in the popout under the cursor (if any) — it
-      // resolves the pane and renders the per-pane preview. screenX/Y stay valid
-      // past the main viewport thanks to the pointer's implicit grab.
-      detached.hover(detached.at(ev.screenX, ev.screenY), ev.screenX, ev.screenY, tab.label);
     };
-    const onUp = (ev: PointerEvent) => {
+
+    // Tear down the move listener, poll, popout highlight, and pointer capture —
+    // however the gesture resolves.
+    const cleanup = () => {
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      // Clear the popout highlight + tear down the panes listener, however this
-      // release resolves. `targetAt` still hit-tests the cached pane geometry.
+      stopPoll?.();
+      // Clear the popout highlight + tear down the panes listener. `targetAt`
+      // still hit-tests the cached pane geometry for the commit below.
       detached.dispose();
+      if (dragPlatform.needsPointerCapture) {
+        try {
+          captureEl.releasePointerCapture(pointerId);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
+    const onCommit = async (shiftKey: boolean) => {
+      cleanup();
       if (!dragging) {
         // Never dragged → this was a click: activate the tab.
         setGroupActive(groupId, tab.key);
@@ -463,35 +529,52 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       // that was just integrated).
       const d = useDragStore.getState().drag;
       if (!d) return;
+      // Claim ownership of the gesture SYNCHRONOUSLY, before the `await` below.
+      // On Chromium/WebView2 (Windows) CenterPanel's window listeners DO see the
+      // terminal pointer event and run their own `finish()` synchronously — which,
+      // if the store were still populated during our await, would commit/end the
+      // drag first and swallow the outside-detach / popout-dock decisions made
+      // here. Emptying the store now makes that racing handler bail (its `d` is
+      // null); we proceed using the local `d` snapshot captured above. (On
+      // WebKitGTK only this handler ever fires, so clearing early is a harmless
+      // no-op there. The later `end()` calls become redundant no-ops.)
+      useDragStore.getState().end();
+      // Final physical cursor at release (a fresh read; falls back to the last poll
+      // reading if the IPC fails). Mirrors FileTree: the last poll tick can be up to
+      // ~16 ms stale — or `null` if released before the first tick — which would
+      // otherwise spawn the new window at the (−80,−8) corner.
+      const phys = (await desktopCursor().catch(() => null)) ?? lastPhys;
       // Pop the dragged tab into its own standalone OS window at the cursor,
       // mirroring the bar-drag detach (onBarPointerDown). Reused by the Shift
-      // override and the free-space (outside-the-window) release below.
+      // override and the free-space (outside-the-window) release below. The new
+      // window's bounds feed Rust `.position(x,y)`, which is PHYSICAL — so place it
+      // at the physical cursor (the last poll reading), not DOM screen coords.
       const popToNewWindow = () => {
         const bounds = {
-          x: Math.round(ev.screenX - 80),
-          y: Math.round(ev.screenY - 8),
+          x: Math.round((phys?.x ?? 0) - 80),
+          y: Math.round((phys?.y ?? 0) - 8),
           w: 900,
           h: 640,
         };
         // Send-off animation toward the edge the tab exited through, before the
         // drag state (and its ghost) tears down.
-        playDetachFlyOut(ev.clientX, ev.clientY, tab.label, d.previewW, d.previewH);
+        playDetachFlyOut(lastClient.x, lastClient.y, tab.label, d.previewW, d.previewH);
         detachTab(tab.key, bounds);
         useDragStore.getState().end();
       };
       // Shift ALWAYS pops a new window — overriding both docking into a popout and
       // integrating into a background subwindow. (May spawn the new window over a
       // popout the cursor happens to be on; that's the intended "always new".)
-      if (ev.shiftKey) {
+      if (shiftKey) {
         popToNewWindow();
         return;
       }
       // #42: released over an existing popout → dock the tab straight into it (no
-      // new window). Re-hit-test at the release coords so it reflects exactly
+      // new window). Hit-tested at the final physical cursor so it reflects exactly
       // where the cursor ended. The popout's panes attach-only to PTYs the main
       // keeps mounted, so the tab's terminal survives the move.
-      const overDetached = detached.at(ev.screenX, ev.screenY);
-      if (overDetached) {
+      const overDetached = phys ? detached.at(phys) : null;
+      if (overDetached && phys) {
         // Dock into the SPECIFIC pane under the cursor (a body edge splits, a bar
         // merges) — resolved synchronously at the release coords, so no stale
         // cross-window cache and never always-the-first-pane.
@@ -501,48 +584,56 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             overDetached.scope,
             overDetached.groupId,
             tab.key,
-            detached.targetAt(overDetached, ev.screenX, ev.screenY),
+            detached.targetAt(overDetached, phys),
           );
         // Re-seed the popout so it renders the newly-docked tab, tagged so it
         // plays the drop-in landing for this cross-window merge (mirrors the
         // dock-BACK re-seed in CenterPanel's DETACHED_DRAG_END handler).
         reseedDetached(overDetached.scope, overDetached.groupId, tab.key);
         // Send-off animation toward the edge the tab exited through.
-        playDetachFlyOut(ev.clientX, ev.clientY, tab.label, d.previewW, d.previewH);
+        playDetachFlyOut(lastClient.x, lastClient.y, tab.label, d.previewW, d.previewH);
         useDragStore.getState().end();
         return;
       }
       // Released in FREE SPACE — outside the main window and not over a popout, so
       // no Eldrun window is under the cursor (e.g. dragged onto the desktop or
-      // another monitor). Pop this tab into its own standalone OS window. The
-      // pointer's implicit capture keeps delivering coords beyond the viewport, so
-      // client coords falling outside [0,inner) is the outside-the-window signal.
+      // another monitor). Pop this tab into its own standalone OS window. Client
+      // coords falling outside [0,inner) is the outside-the-window signal (DOM
+      // clientX/Y is reliable CSS px on every engine).
       const outside =
-        ev.clientX < 0 ||
-        ev.clientY < 0 ||
-        ev.clientX >= window.innerWidth ||
-        ev.clientY >= window.innerHeight;
+        lastClient.x < 0 ||
+        lastClient.y < 0 ||
+        lastClient.x >= window.innerWidth ||
+        lastClient.y >= window.innerHeight;
       if (outside) {
         popToNewWindow();
         return;
       }
       // Released over THIS main window without Shift → integrate into the
-      // background subwindow under the cursor. This handler is bound inside the
-      // pointerdown handler — i.e. before the gesture's implicit pointer capture
-      // begins — so on WebKitGTK it is the ONLY release handler that reliably
-      // fires. CenterPanel's window listeners are added mid-gesture (after the
-      // `start()` → React re-render) and, on WebKitGTK, receive pointermove but
-      // never the terminal pointerup, so they cannot be the committer. The
-      // target was already resolved into the drag store by CenterPanel's
-      // pointermove handler during the drag, so commit it verbatim. A null target
-      // (chrome / split divider) is a no-op — the tab stays put. If CenterPanel's
-      // pointerup DID fire first (other platforms), it already committed + ended,
-      // so the top-of-handler guard already returned — no double-commit.
+      // background subwindow under the cursor. `bindDragRelease` binds the terminal
+      // listeners synchronously at pointerdown — i.e. before the gesture's pointer
+      // capture begins — so on WebKitGTK it is the ONLY release handler that
+      // reliably fires. CenterPanel's window listeners are added mid-gesture (after
+      // the `start()` → React re-render) and, on WebKitGTK, receive pointermove but
+      // never the terminal pointerup, so they cannot be the committer. The target
+      // was already resolved into the drag store by CenterPanel's pointermove
+      // handler during the drag, so commit it verbatim. A null target (chrome /
+      // split divider) is a no-op — the tab stays put. If CenterPanel's pointerup
+      // DID fire first (other platforms), it already committed + ended, so the
+      // top-of-handler guard already returned — no double-commit.
       commitDrop(d);
       useDragStore.getState().end();
     };
+
+    // Escape / blur / a genuine pointercancel (Win/mac) aborts: tear down and drop
+    // any in-flight drag without committing.
+    const onAbort = () => {
+      cleanup();
+      if (dragging) useDragStore.getState().end();
+    };
+
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    bindDragRelease({ onCommit: (shiftKey) => void onCommit(shiftKey), onAbort });
   }
 
   // #42: grab the subwindow's top frame (the empty tab-bar area) and drag it out
@@ -571,22 +662,30 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 8) return;
       detaching = true;
       cleanup();
+      const clientX = ev.clientX;
+      const clientY = ev.clientY;
+      const activeLabel = tabs.find((t) => t.key === activeKey)?.label;
       // Spawn the popout under the cursor (offset so the grab point lands on its
       // top frame), then hand the move to the WM via startDragging — the still-
-      // pressed pointer drives a native window move until release.
-      const bounds = {
-        x: Math.round(ev.screenX - 80),
-        y: Math.round(ev.screenY - 8),
-        w: 900,
-        h: 640,
-      };
-      const label = detachGroup(groupId, { bounds });
-      if (!label) return; // lone group can't detach — abort quietly.
-      // Send-off animation at the grab point, flying toward the exit edge.
-      const activeLabel = tabs.find((t) => t.key === activeKey)?.label;
-      playDetachFlyOut(ev.clientX, ev.clientY, activeLabel ?? "Subwindow");
-      WebviewWindow.getByLabel(label)
-        .then((w) => w?.startDragging())
+      // pressed pointer drives a native window move until release. The bounds feed
+      // Rust `.position(x,y)` (PHYSICAL), so read the OS cursor in physical px
+      // (desktopCursor) rather than DOM screenX/Y, whose units diverge under DPI.
+      void desktopCursor()
+        .then((p) => {
+          const bounds = {
+            x: Math.round(p.x - 80),
+            y: Math.round(p.y - 8),
+            w: 900,
+            h: 640,
+          };
+          const label = detachGroup(groupId, { bounds });
+          if (!label) return; // lone group can't detach — abort quietly.
+          // Send-off animation at the grab point, flying toward the exit edge.
+          playDetachFlyOut(clientX, clientY, activeLabel ?? "Subwindow");
+          WebviewWindow.getByLabel(label)
+            .then((w) => w?.startDragging())
+            .catch(() => {});
+        })
         .catch(() => {});
     };
     const onUp = () => cleanup();
@@ -755,7 +854,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           style={{ position: "fixed", left: menuPos.x, top: menuPos.y }}
         >
           <div className="tab-new-menu-group-label">Agents</div>
-          {AGENT_ITEMS.map((item) => (
+          {AGENT_ITEMS.filter((item) => installedAgents?.has(item.cmd)).map((item) => (
             <button
               key={item.cmd}
               className="tab-new-menu-item"

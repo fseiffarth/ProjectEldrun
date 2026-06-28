@@ -4,9 +4,10 @@
 //! Tauri `WebviewWindow` rendering the same React bundle under a
 //! `?detached=<project>:<group>` query. The detached window is registered as a
 //! project-owned `TrackedWindow` (origin `detached_subwindow`) and its resolved
-//! X11 id is opted into the workspace backend's parkable override, so the
-//! existing `project_runtime::switch` hide/show path parks it when its project
-//! goes inactive and re-shows it on switch-back — no parallel parking path.
+//! native id (X11 window on Linux, HWND on Windows) is opted into the workspace
+//! backend's parkable override, so the existing `project_runtime::switch`
+//! hide/show path parks it when its project goes inactive and re-shows it on
+//! switch-back — no parallel parking path.
 //!
 //! Persistence is session-only: a detached group re-docks into the main layout
 //! on restart (no OS-window respawn). The MAIN window owns project.json writes;
@@ -39,7 +40,7 @@ pub fn detached_query(scope: &str, group_id: &str) -> String {
 
 /// Pop a tab group out into its own borderless OS window bound to `project_id`.
 ///
-/// Resolves the window's X11 id *before returning* (bounded retry) so the
+/// Resolves the window's native id *before returning* so the
 /// registry always carries a `window_id` before the window is usable — an
 /// unresolved id would float across projects until resolved (reviewer Finding 7).
 /// Returns the registry id the frontend uses to later dock it back.
@@ -73,6 +74,17 @@ pub fn detach_subwindow(
     )
     .title(&title)
     .decorations(false);
+    // Windows: a freshly runtime-created WebView2 window commonly presents a blank
+    // WHITE surface until it is shown/focused or genuinely resized — and the rapid
+    // +1/-1px resize nudge that fixes the analogous BLACK WebKitGTK surface tends
+    // to coalesce without a repaint here. Build it HIDDEN and reveal it once the
+    // webview has initialized (the deferred thread below): toggling visibility
+    // forces WebView2's first composite. Linux keeps building visible so the X11
+    // title-based id resolver can find the mapped window.
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.visible(false);
+    }
     match (width, height) {
         (Some(w), Some(h)) if w > 0.0 && h > 0.0 => {
             builder = builder.inner_size(w, h);
@@ -88,8 +100,10 @@ pub fn detach_subwindow(
         .build()
         .map_err(|e| format!("build detached window: {e}"))?;
 
-    // Resolve the X11 id by the unique title (bypasses the protected filter).
-    let window_id = resolve_detached_window_id(&title);
+    // Resolve the native window id so the switch path can park this popout. On
+    // X11 we match the unique title (bypasses the protected filter); on Windows
+    // we read the HWND straight off the Tauri window by its label.
+    let window_id = resolve_detached_window_id(&app, &label, &title);
 
     if let Some(wid) = window_id {
         // Opt the detached window into the parkable override so the switch path
@@ -119,19 +133,30 @@ pub fn detach_subwindow(
         .windows
         .insert(label.clone(), win);
 
-    // A freshly-created second WebKitGTK webview commonly presents an unpainted
-    // (black) GL surface until a real OS-level size change forces the compositor
-    // to allocate and paint it — the main window only avoids this because its
-    // startup fullscreen transition is itself such a resize. The borderless
-    // detached window gets no such resize, so nudge its size by 1px and back
-    // shortly after creation to force the first paint. Deferred on a thread so
-    // the webview has mounted; the window stays mapped throughout, so the X11 id
-    // resolved above remains valid.
+    // Force the detached webview's first paint shortly after creation, deferred on
+    // a thread so the webview has mounted. The window stays mapped throughout, so
+    // the X11 id resolved above remains valid.
+    //
+    // - Linux/WebKitGTK: a freshly-created second webview presents an unpainted
+    //   (BLACK) GL surface until a real OS-level size change forces the compositor
+    //   to allocate and paint it — the main window only avoids this because its
+    //   startup fullscreen transition is itself such a resize. The borderless
+    //   detached window gets no such resize, so nudge its size by 1px and back.
+    // - Windows/WebView2: the same window instead presents a blank WHITE surface
+    //   and the resize nudge is unreliable (rapid +1/-1 resizes coalesce without a
+    //   repaint). The window was built HIDDEN above; show()+set_focus() here
+    //   toggles WebView2's visibility, which forces the first composite. The resize
+    //   nudge is kept as a belt-and-suspenders kick.
     let nudge_app = app.clone();
     let nudge_label = label.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(250));
         if let Some(w) = nudge_app.get_webview_window(&nudge_label) {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
             if let Ok(sz) = w.inner_size() {
                 let _ = w.set_size(PhysicalSize::new(sz.width + 1, sz.height));
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -208,12 +233,22 @@ pub fn detached_window_frontmost(
 }
 
 #[cfg(target_os = "linux")]
-fn resolve_detached_window_id(title: &str) -> Option<u64> {
+fn resolve_detached_window_id(_app: &AppHandle, _label: &str, title: &str) -> Option<u64> {
     crate::platform::x11::find_window_for_title(title, 20)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn resolve_detached_window_id(_title: &str) -> Option<u64> {
+/// Windows: read the popout's HWND directly from the Tauri window by its stable
+/// label (more robust than title enumeration, and the window is already built),
+/// so the parkable override (#42) is reachable on Windows too — not X11-only.
+#[cfg(target_os = "windows")]
+fn resolve_detached_window_id(app: &AppHandle, label: &str, _title: &str) -> Option<u64> {
+    let win = app.get_webview_window(label)?;
+    let hwnd = win.hwnd().ok()?;
+    Some(hwnd.0 as usize as u64)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn resolve_detached_window_id(_app: &AppHandle, _label: &str, _title: &str) -> Option<u64> {
     None
 }
 

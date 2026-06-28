@@ -54,9 +54,24 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const pillsScrollRef = useRef<HTMLDivElement>(null);
   const [pillOverflow, setPillOverflow] = useState({ left: false, right: false });
 
+  // Poll while Ollama is still undetected so installing it mid-session flips the
+  // "Install Ollama" entry to "Ollama Models" without a restart; stop once found.
   useEffect(() => {
-    invoke<boolean>("ollama_is_installed").then(setOllamaInstalled).catch(() => {});
-  }, []);
+    if (ollamaInstalled) return;
+    let cancelled = false;
+    const check = () =>
+      invoke<boolean>("ollama_is_installed")
+        .then((ok) => {
+          if (!cancelled) setOllamaInstalled(ok);
+        })
+        .catch(() => {});
+    void check();
+    const id = window.setInterval(check, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [ollamaInstalled]);
 
   // Allow other components (e.g. the header's Local Model button) to open the
   // settings dialog on a specific panel via a window event.

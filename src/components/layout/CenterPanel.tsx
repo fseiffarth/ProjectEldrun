@@ -19,6 +19,7 @@ import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
 import { Subwindow } from "../tabs/Subwindow";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
+import { dragPreviewLayout } from "../tabs/dragPreview";
 import {
   DEFAULT_MIN_SUBWINDOW_PX,
   EMPTY_GROUP_ID,
@@ -36,6 +37,8 @@ import { useDragStore } from "../../stores/drag";
 import { useDetachAnimStore } from "../../stores/detachAnim";
 import { useTabLandStore } from "../../stores/tabLand";
 import { commitDrop } from "../tabs/commitDrop";
+import { snapshotFrame, physToClient, type WindowFrame } from "../../lib/coords";
+import { dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory } from "../../types";
 
@@ -120,6 +123,13 @@ export function CenterPanel() {
   // re-render — and tear down/re-add its window listeners — each frame. Live
   // drag state is read via useDragStore.getState() inside the handlers.
   const dragging = useDragStore((s) => s.drag != null);
+  // The dragged tab's identity (stable for the whole gesture — start() sets it
+  // once; the per-frame move/setTarget only swap coords/target). Subscribed as
+  // scalars so they don't re-render the panel on every pointermove, only on
+  // drag start/end. They drive the live source-subwindow collapse below.
+  const dragKind = useDragStore((s) => s.drag?.kind ?? null);
+  const dragKey = useDragStore((s) => s.drag?.key ?? null);
+  const dragFromGroup = useDragStore((s) => s.drag?.fromGroup ?? null);
 
   // Measured pane regions per group id (current scope only). The flat pane
   // layer positions each active pane over its group's body so PTYs never
@@ -131,6 +141,19 @@ export function CenterPanel() {
   const activeProject = projects.find((p) => p.id === activeId);
   const localFile = activeProject?.local_file as string | undefined;
   const projectCwd = resolveProjectDirectory(activeProject);
+
+  // The layout to RENDER: normally the store layout, but while dragging a
+  // subwindow's lone tab it's that layout with the (about-to-empty) source
+  // subwindow pruned — so it collapses live and the siblings reflow to fill,
+  // rather than lingering until the drop. Render-only; the store is untouched
+  // (an aborted drag restores instantly), and the dragged tab's pane stays
+  // mounted in the flat pane layer below (its PTY survives). All measurement and
+  // drop-target resolution keys off THIS tree so the previewed layout is what
+  // the pointer hit-tests against.
+  const renderLayout = useMemo(
+    () => dragPreviewLayout(layout, dragKind, dragKey, dragFromGroup, fullscreenGroupId != null),
+    [layout, dragKind, dragKey, dragFromGroup, fullscreenGroupId],
+  );
 
   useEffect(() => {
     const nextScope = activeId ?? "root";
@@ -268,10 +291,11 @@ export function CenterPanel() {
     });
   }, []);
 
-  // Re-measure when the current scope's layout tree changes.
+  // Re-measure when the rendered layout tree changes — including the live drag
+  // collapse/restore, so siblings' reflowed rects are picked up immediately.
   useLayoutEffect(() => {
     measure();
-  }, [measure, layout, scope]);
+  }, [measure, renderLayout, scope]);
 
   // Re-measure on panel resize (split drags resize children without remount).
   useEffect(() => {
@@ -281,7 +305,7 @@ export function CenterPanel() {
     ro.observe(panel);
     for (const el of groupBodyRefs.current.values()) ro.observe(el);
     return () => ro.disconnect();
-  }, [measure, layout, scope]);
+  }, [measure, renderLayout, scope]);
 
   // Re-measure on OS-window resize. The ResizeObserver above misses OS-level
   // resizes on older WebKitGTK builds (it fires for split drags but not for the
@@ -402,11 +426,13 @@ export function CenterPanel() {
     const onMouseUp = () => finish();
     // WebKitGTK frequently fires `pointercancel` INSTEAD of `pointerup` to end a
     // mouse drag (its native gesture/selection heuristic claims the stream after
-    // pointermove). Treating cancel as an abort therefore silently swallowed
-    // every drop. So a pointercancel commits the drop too — only an explicit
-    // Escape (aborted) ends without committing.
+    // pointermove), so on Linux a cancel commits the drop (else every drop is
+    // swallowed). On Chromium/WKWebView (Win/mac) a real `pointerup` fires and a
+    // `pointercancel` is a genuine capture loss → abort, not commit. The
+    // `dragPlatform.cancelCommits` flag encodes exactly this split. An explicit
+    // Escape (aborted) always ends without committing.
     const onCancel = () => {
-      if (aborted) { useDragStore.getState().end(); return; }
+      if (aborted || !dragPlatform.cancelCommits) { useDragStore.getState().end(); return; }
       finish();
     };
     const onKeyDown = (e: KeyboardEvent) => {
@@ -430,38 +456,37 @@ export function CenterPanel() {
   }, [dragging, resolveTarget]);
 
   // ── Cross-window drag-to-dock (#42) ───────────────────────────────────────
-  // A popped-out window dragged with Ctrl held streams its pointer (screen CSS
-  // px) to this main window. We map those to our client space, drive the SAME
-  // drop preview as an in-window tab drag (via `resolveTarget` + the drag
-  // store), and dock the group on release. `resolveTarget` is read through a ref
-  // so this listener — mounted once — always hit-tests against current group
-  // rects. Setting the detached drag in the store flips `.center-panel.dragging`
-  // on, which makes panes pointer-events:none so elementFromPoint can reach the
-  // tab bars/bodies. The popout owns the pointer (implicit grab), so the main
-  // window never sees real pointer events during the gesture and the in-window
-  // drag effect above stays inert (its handlers also guard `kind === "detached"`).
+  // A popped-out window dragged back streams its OS cursor (PHYSICAL desktop px —
+  // the canonical cross-window space, see lib/coords) to this main window. We map
+  // it into OUR client px via our own frame (innerPhys/scale — the only DPI-correct
+  // conversion), drive the SAME drop preview as an in-window tab drag (via
+  // `resolveTarget` + the drag store), and dock the group on release.
+  // `resolveTarget` is read through a ref so this listener — mounted once — always
+  // hit-tests against current group rects. Setting the detached drag in the store
+  // flips `.center-panel.dragging` on, which makes panes pointer-events:none so
+  // elementFromPoint can reach the tab bars/bodies. The popout owns the pointer, so
+  // the main window never sees real pointer events during the gesture and the
+  // in-window drag effect above stays inert (its handlers also guard `kind ===
+  // "detached"`).
   const resolveTargetRef = useRef(resolveTarget);
   resolveTargetRef.current = resolveTarget;
   useEffect(() => {
     const win = getCurrentWindow();
-    // The main window's content-area origin in screen CSS px. Streamed screen
-    // coords minus this origin give client coords. Refreshed at each drag start
-    // (the main window doesn't move mid-gesture).
-    let origin = { x: 0, y: 0 };
-    const refreshOrigin = async () => {
+    // Our own window frame (physical px). Streamed physical cursor → our client px
+    // via `physToClient` (innerPhys/scale). Snapshotted at each drag start (the
+    // main window doesn't move mid-gesture).
+    let frame: WindowFrame | null = null;
+    const refreshFrame = async () => {
       try {
-        const scale = await win.scaleFactor();
-        const pos = await win.innerPosition();
-        const logical = pos.toLogical(scale);
-        origin = { x: logical.x, y: logical.y };
+        frame = await snapshotFrame(win);
       } catch {
-        origin = { x: 0, y: 0 };
+        frame = null;
       }
     };
-    const toClient = (screenX: number, screenY: number) => ({
-      x: screenX - origin.x,
-      y: screenY - origin.y,
-    });
+    const toClient = (cursorPhysX: number, cursorPhysY: number) =>
+      frame
+        ? physToClient(frame, { x: cursorPhysX, y: cursorPhysY })
+        : { x: cursorPhysX, y: cursorPhysY };
 
     const unsubs: Array<() => void> = [];
     let cancelled = false;
@@ -475,12 +500,12 @@ export function CenterPanel() {
 
     reg(
       listen<DetachedDragStart>(DETACHED_DRAG_START, (ev) => {
-        const { scope: dScope, groupId, label, screenX, screenY, tabKey } = ev.payload;
+        const { scope: dScope, groupId, label, cursorPhysX, cursorPhysY, tabKey } = ev.payload;
         // Start the drag synchronously so the high-frequency MOVE poll that
         // follows isn't dropped by its `kind !== "detached"` guard while we await
-        // the origin. Seed with the current (stale) origin; refreshOrigin() then
-        // corrects it and we re-resolve. The main window doesn't move mid-gesture.
-        const seed = toClient(screenX, screenY);
+        // the frame. Seed with the current (stale/identity) frame; refreshFrame()
+        // then corrects it and we re-resolve. The main window doesn't move mid-gesture.
+        const seed = toClient(cursorPhysX, cursorPhysY);
         useDragStore.getState().startDetachedDrag({
           label,
           pointerX: seed.x,
@@ -490,9 +515,9 @@ export function CenterPanel() {
           detachedTabKey: tabKey,
         });
         resolveTargetRef.current(seed.x, seed.y);
-        void refreshOrigin().then(() => {
+        void refreshFrame().then(() => {
           if (useDragStore.getState().drag?.kind !== "detached") return;
-          const { x, y } = toClient(screenX, screenY);
+          const { x, y } = toClient(cursorPhysX, cursorPhysY);
           useDragStore.getState().move(x, y);
           resolveTargetRef.current(x, y);
         });
@@ -502,7 +527,7 @@ export function CenterPanel() {
     reg(
       listen<DetachedDragMove>(DETACHED_DRAG_MOVE, (ev) => {
         if (useDragStore.getState().drag?.kind !== "detached") return;
-        const { x, y } = toClient(ev.payload.screenX, ev.payload.screenY);
+        const { x, y } = toClient(ev.payload.cursorPhysX, ev.payload.cursorPhysY);
         useDragStore.getState().move(x, y);
         resolveTargetRef.current(x, y);
       }),
@@ -520,14 +545,14 @@ export function CenterPanel() {
           useDragStore.getState().end();
           return;
         }
-        // END carries the LAST OS-cursor position (the DOM release event fires
-        // inside the popout on WebKitGTK, so we cannot trust `d.pointerX/Y` here).
-        // Re-map it to client coords and re-resolve the drop target so `inMain`
-        // and the target reflect where the cursor actually is on release.
+        // END carries the LAST OS-cursor position in PHYSICAL desktop px (the DOM
+        // release event fires inside the popout on WebKitGTK, so we cannot trust
+        // `d.pointerX/Y` here). Re-map it to client coords and re-resolve the drop
+        // target so `inMain` and the target reflect where the cursor actually is.
         let px = d.pointerX;
         let py = d.pointerY;
-        if (ev.payload.screenX != null && ev.payload.screenY != null) {
-          const c = toClient(ev.payload.screenX, ev.payload.screenY);
+        if (ev.payload.cursorPhysX != null && ev.payload.cursorPhysY != null) {
+          const c = toClient(ev.payload.cursorPhysX, ev.payload.cursorPhysY);
           px = c.x;
           py = c.y;
           useDragStore.getState().move(px, py);
@@ -588,6 +613,54 @@ export function CenterPanel() {
               entry.subtree,
             );
             void emit(detachedSeedEvent(entry.label), seed);
+          }
+          useDragStore.getState().end();
+          return;
+        }
+        // Per-tab FREE-SPACE release (outside both windows): pop the dragged tab
+        // into its OWN new popout at the cursor — the popout analog of TabBar's
+        // `popToNewWindow`. Bounds use the PHYSICAL cursor (`cursorPhysX/Y`), as
+        // Rust `.position()` is physical (the client `px/py` would be wrong under
+        // DPI scaling), matching detachTab/popToNewWindow. After splitting we
+        // re-seed the SOURCE popout so it drops the tab that just left.
+        if (
+          !ev.payload.cancelled &&
+          !inMain &&
+          f?.kind === "detached" &&
+          f.detachedScope &&
+          f.detachedGroupId &&
+          f.detachedTabKey &&
+          ev.payload.cursorPhysX != null &&
+          ev.payload.cursorPhysY != null
+        ) {
+          const store = useTabsStore.getState();
+          const bounds = {
+            x: Math.round(ev.payload.cursorPhysX - 80),
+            y: Math.round(ev.payload.cursorPhysY - 8),
+            w: 900,
+            h: 640,
+          };
+          const newLabel = store.detachTabToNewWindow(
+            f.detachedScope,
+            f.detachedGroupId,
+            f.detachedTabKey,
+            bounds,
+          );
+          if (newLabel) {
+            const src = useTabsStore
+              .getState()
+              .detachedGroupsByScope[f.detachedScope]?.find(
+                (d) => d.id === f.detachedGroupId,
+              );
+            if (src) {
+              const seed = buildSeed(
+                f.detachedScope,
+                f.detachedGroupId,
+                useTabsStore.getState().tabsByScope[f.detachedScope] ?? [],
+                src.subtree,
+              );
+              void emit(detachedSeedEvent(src.label), seed);
+            }
           }
           useDragStore.getState().end();
           return;
@@ -673,9 +746,9 @@ export function CenterPanel() {
       {/* Subwindow frame layer: the recursive layout tree for the current scope.
           Each group body is an empty measured slot; panes are positioned over
           it by the flat layer below. */}
-      {layout ? (
+      {renderLayout ? (
         <LayoutTree
-          node={layout}
+          node={renderLayout}
           projectCwd={projectCwd}
           resizeSplit={resizeSplit}
           panelRef={panelRef}

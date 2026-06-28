@@ -117,7 +117,9 @@ fn run_ssh_auth(
                 );
             }
             let base = ssh_password_base_args(user, host, port)?;
-            let mut cmd = Command::new("sshpass");
+            // `command_no_window` keeps the ssh/sshpass probe from flashing a
+            // console window on Windows (no-op on Linux/macOS).
+            let mut cmd = crate::paths::command_no_window("sshpass");
             cmd.arg("-e"); // read the password from the SSHPASS env var
             cmd.env("SSHPASS", pw);
             cmd.arg("ssh");
@@ -127,7 +129,7 @@ fn run_ssh_auth(
         }
         None => {
             let base = ssh_base_args(user, host, port)?;
-            let mut cmd = Command::new("ssh");
+            let mut cmd = crate::paths::command_no_window("ssh");
             cmd.args(&base);
             cmd.args(remote);
             capture(cmd, "ssh")

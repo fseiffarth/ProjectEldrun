@@ -162,7 +162,9 @@ pub(crate) fn detect_conn_type_linux(net_dir: &Path) -> String {
 
 fn detect_conn_type_windows() -> String {
     // Check for an active Wi-Fi connection via `netsh wlan show interfaces`.
-    if let Ok(out) = std::process::Command::new("netsh")
+    // `command_no_window` keeps these probes from flashing a console window on
+    // every poll (Eldrun is a windowed app with no console).
+    if let Ok(out) = crate::paths::command_no_window("netsh")
         .args(["wlan", "show", "interfaces"])
         .output()
     {
@@ -172,7 +174,7 @@ fn detect_conn_type_windows() -> String {
         }
     }
     // Check for any active Ethernet via `netsh interface show interface`.
-    if let Ok(out) = std::process::Command::new("netsh")
+    if let Ok(out) = crate::paths::command_no_window("netsh")
         .args(["interface", "show", "interface"])
         .output()
     {

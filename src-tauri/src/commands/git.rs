@@ -1,6 +1,12 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Command;
+
+// All git invocations go through `crate::paths::command_no_window("git")` rather
+// than a bare `Command::new`: Eldrun is a windowed app with no console, so on
+// Windows every `git` subprocess would otherwise flash a transient console
+// window — and `git_status`/`git_file_statuses` are polled continuously for the
+// file tree. `command_no_window` sets CREATE_NO_WINDOW on Windows and is a no-op
+// elsewhere.
 
 #[derive(serde::Serialize)]
 pub struct GitStatus {
@@ -18,7 +24,7 @@ pub fn git_status(project_dir: String) -> Result<GitStatus, String> {
         return Ok(GitStatus { staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
     }
 
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["status", "--porcelain"])
         .current_dir(&project_dir)
         .output()
@@ -40,7 +46,7 @@ pub fn git_status(project_dir: String) -> Result<GitStatus, String> {
         }
     }
 
-    let has_remote = Command::new("git")
+    let has_remote = crate::paths::command_no_window("git")
         .args(["remote"])
         .current_dir(&project_dir)
         .output()
@@ -52,7 +58,7 @@ pub fn git_status(project_dir: String) -> Result<GitStatus, String> {
 
 #[tauri::command]
 pub fn git_add_all(project_dir: String) -> Result<(), String> {
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["add", "-A"])
         .current_dir(&project_dir)
         .output()
@@ -65,7 +71,7 @@ pub fn git_add_all(project_dir: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn git_generate_commit_message(project_dir: String) -> Result<String, String> {
-    let files_out = Command::new("git")
+    let files_out = crate::paths::command_no_window("git")
         .args(["diff", "--staged", "--name-only"])
         .current_dir(&project_dir)
         .output()
@@ -75,7 +81,7 @@ pub fn git_generate_commit_message(project_dir: String) -> Result<String, String
 
     // Also check untracked / unstaged if nothing staged
     let files: Vec<String> = if staged.is_empty() {
-        let all = Command::new("git")
+        let all = crate::paths::command_no_window("git")
             .args(["diff", "--name-only"])
             .current_dir(&project_dir)
             .output()
@@ -131,7 +137,7 @@ fn format_commit_message(kind: &str, files: &[String]) -> String {
 
 #[tauri::command]
 pub fn git_commit(project_dir: String, message: String) -> Result<(), String> {
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["commit", "-m", &message])
         .current_dir(&project_dir)
         .output()
@@ -160,7 +166,7 @@ pub fn git_file_statuses(
         return Ok(HashMap::new());
     }
 
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["status", "--porcelain", "--ignored"])
         .current_dir(&project_dir)
         .output()
@@ -230,7 +236,7 @@ pub fn git_file_statuses(
     }
 
     // Files in commits that exist locally but are not on the upstream branch.
-    if let Ok(out) = Command::new("git")
+    if let Ok(out) = crate::paths::command_no_window("git")
         .args(["log", "@{u}..", "--name-only", "--pretty=format:"])
         .current_dir(&project_dir)
         .output()
@@ -252,7 +258,7 @@ pub fn git_file_statuses(
 /// Stages a specific path (file or directory) via `git add`.
 #[tauri::command]
 pub fn git_add_path(project_dir: String, rel_path: String) -> Result<(), String> {
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["add", "--", &rel_path])
         .current_dir(&project_dir)
         .output()
@@ -271,7 +277,7 @@ pub fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> 
     if !dir.join(".git").exists() {
         return Ok(vec![]);
     }
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["log", "@{u}..", "--oneline"])
         .current_dir(&project_dir)
         .output()
@@ -285,7 +291,7 @@ pub fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> 
 
 #[tauri::command]
 pub fn git_push(project_dir: String) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["push"])
         .current_dir(&project_dir)
         .output()
@@ -315,7 +321,7 @@ pub struct GitCommit {
 }
 
 fn git_head_hash(project_dir: &str) -> Option<String> {
-    Command::new("git")
+    crate::paths::command_no_window("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(project_dir)
         .output()
@@ -335,7 +341,7 @@ pub fn git_log(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>
     let max = limit.unwrap_or(100);
     // Fields separated by US (0x1f) so subjects can contain anything but a newline.
     let fmt = "--pretty=format:%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ar\u{1f}%D\u{1f}%P";
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["log", &format!("--max-count={max}"), fmt])
         .current_dir(&project_dir)
         .output()
@@ -387,7 +393,7 @@ pub fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
         return Ok(vec![]);
     }
     let fmt = "--format=%(if)%(HEAD)%(then)*%(else) %(end)\u{1f}%(refname:short)\u{1f}%(refname)";
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["branch", "-a", fmt])
         .current_dir(&project_dir)
         .output()
@@ -417,7 +423,7 @@ pub fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
 /// (e.g. when the working tree has conflicting uncommitted changes).
 #[tauri::command]
 pub fn git_checkout(project_dir: String, target: String) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["checkout", &target])
         .current_dir(&project_dir)
         .output()
@@ -433,7 +439,7 @@ pub fn git_checkout(project_dir: String, target: String) -> Result<String, Strin
 /// Returns the full commit message (subject + body) for a single commit.
 #[tauri::command]
 pub fn git_commit_message(project_dir: String, hash: String) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["log", "-1", "--pretty=format:%B", &hash])
         .current_dir(&project_dir)
         .output()
@@ -451,7 +457,7 @@ pub fn git_reword_head(project_dir: String, message: String) -> Result<(), Strin
     if message.trim().is_empty() {
         return Err("Commit message cannot be empty".to_string());
     }
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["commit", "--amend", "-m", &message])
         .current_dir(&project_dir)
         .output()
@@ -472,7 +478,7 @@ pub fn git_reword_head(project_dir: String, message: String) -> Result<(), Strin
 /// non-empty stdout as success regardless of exit status.
 #[tauri::command]
 pub fn git_diff_file(project_dir: String, rel_path: String) -> Result<String, String> {
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["diff", "--", &rel_path])
         .current_dir(&project_dir)
         .output()
@@ -488,7 +494,7 @@ pub fn git_diff_file(project_dir: String, rel_path: String) -> Result<String, St
     // Tracked diff is empty (e.g. untracked file). Show the whole file as added.
     // `--no-index` exits non-zero when differences exist, which is the normal
     // case here, so treat any non-empty stdout as success.
-    let fallback = Command::new("git")
+    let fallback = crate::paths::command_no_window("git")
         .args(["diff", "--no-index", "--", "/dev/null", &rel_path])
         .current_dir(&project_dir)
         .output()
@@ -582,7 +588,7 @@ pub fn git_worktree_list(project_dir: String) -> Result<Vec<Worktree>, String> {
     if !Path::new(&project_dir).join(".git").exists() {
         return Ok(vec![]);
     }
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(&project_dir)
         .output()
@@ -619,7 +625,7 @@ pub fn git_worktree_add(
         args.push(&path);
         args.push(&branch);
     }
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(&args)
         .current_dir(&project_dir)
         .output()
@@ -642,7 +648,7 @@ pub fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Re
         args.push("--force");
     }
     args.push(&path);
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(&args)
         .current_dir(&project_dir)
         .output()
@@ -659,7 +665,7 @@ pub fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Re
 /// out-of-band (`git worktree prune`).
 #[tauri::command]
 pub fn git_worktree_prune(project_dir: String) -> Result<(), String> {
-    let out = Command::new("git")
+    let out = crate::paths::command_no_window("git")
         .args(["worktree", "prune"])
         .current_dir(&project_dir)
         .output()
@@ -676,11 +682,10 @@ pub fn git_worktree_prune(project_dir: String) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::process::Command;
 
     /// Returns true when `git` is on PATH; tests skip gracefully otherwise.
     fn git_available() -> bool {
-        Command::new("git")
+        crate::paths::command_no_window("git")
             .arg("--version")
             .output()
             .map(|o| o.status.success())
@@ -689,7 +694,7 @@ mod tests {
 
     fn init_repo(dir: &std::path::Path) {
         let run = |args: &[&str]| {
-            let ok = Command::new("git")
+            let ok = crate::paths::command_no_window("git")
                 .args(args)
                 .current_dir(dir)
                 .output()
@@ -715,7 +720,7 @@ mod tests {
 
         let file = dir.join("note.txt");
         fs::write(&file, "first line\nsecond line\n").expect("write");
-        let add_ok = Command::new("git")
+        let add_ok = crate::paths::command_no_window("git")
             .args(["add", "note.txt"])
             .current_dir(dir)
             .output()
@@ -723,7 +728,7 @@ mod tests {
             .status
             .success();
         assert!(add_ok, "git add failed");
-        let real_commit = Command::new("git")
+        let real_commit = crate::paths::command_no_window("git")
             .args(["commit", "-m", "init"])
             .current_dir(dir)
             .output()
@@ -840,7 +845,7 @@ mod tests {
         let root_str = root.to_string_lossy().to_string();
 
         let run = |args: &[&str]| {
-            Command::new("git")
+            crate::paths::command_no_window("git")
                 .args(args)
                 .current_dir(&root)
                 .output()

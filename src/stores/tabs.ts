@@ -359,6 +359,22 @@ interface TabsStore {
     tabKey: string,
     opts?: { targetGroupId?: string; edge?: DropEdge; skipBackend?: boolean },
   ) => void;
+  // #42: pop a SINGLE tab OUT of an existing detached popout into its OWN brand
+  // new detached OS window (the popout analog of TabBar's `popToNewWindow`),
+  // fired when a tab dragged out of a popout is released in FREE SPACE — outside
+  // both the main window and the popout. Removes `tabKey` from the source
+  // popout's subtree and records a fresh single-tab detached entry at `bounds`,
+  // then spawns its OS window. The tab payload stays in `tabsByScope[scope]`
+  // (shared), so the new popout self-seeds and the PTY never dies. No-ops
+  // (returns null) when the source/tab is gone OR when removing the tab would
+  // empty the source popout — a lone-tab popout dragged whole is already its own
+  // window, so re-detaching it would be needless churn. Returns the new label.
+  detachTabToNewWindow: (
+    scope: string,
+    fromGroupId: string,
+    tabKey: string,
+    bounds: WindowBounds,
+  ) => string | null;
   // #42 (main → detached): dock a SINGLE existing in-window tab INTO an already
   // open detached popout's group — the inverse of `attachDetachedTab`, fired when
   // a tab dragged out of the main window is released over a popout (so no new OS
@@ -1747,6 +1763,54 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     if (willEmpty && !opts?.skipBackend) {
       invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
     }
+  },
+
+  detachTabToNewWindow: (scope, fromGroupId, tabKey, bounds) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const src = entries.find((d) => d.id === fromGroupId);
+    // The source popout (and the tab within it) must still exist.
+    if (!src || !orderedTabKeys(src.subtree).includes(tabKey)) return null;
+    // A lone-tab popout dragged whole is already its own window — re-detaching it
+    // would empty the source and churn for nothing, so refuse that case.
+    const remaining = removeKeyFromTree(src.subtree, tabKey);
+    if (!remaining || orderedTabKeys(remaining).length === 0) return null;
+
+    const groupId = nextGroupId();
+    const label = `detached-${scope}-${groupId}`;
+    // The popped tab becomes the sole member of a fresh single-tab group; its
+    // payload stays in tabsByScope (shared), so the new popout self-seeds and the
+    // PTY never unmounts (mirrors `detachTab`).
+    const subtree: GroupNode = {
+      type: "group",
+      id: groupId,
+      tabKeys: [tabKey],
+      activeKey: tabKey,
+    };
+
+    set((s) => {
+      const existing = s.detachedGroupsByScope[scope] ?? [];
+      // One atomic update: strip the tab from the source popout's subtree AND
+      // append the new detached entry. The payload in `tabsByScope` is untouched.
+      const nextEntries = existing.map((d) =>
+        d.id === fromGroupId ? { ...d, subtree: remaining } : d,
+      );
+      return {
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: [...nextEntries, { id: groupId, subtree, label, bounds }],
+        },
+      };
+    });
+
+    invoke("detach_subwindow", {
+      projectId: scope,
+      groupId,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.w,
+      height: bounds.h,
+    }).catch(() => {});
+    return label;
   },
 
   dockTabIntoDetached: (scope, detachedGroupId, tabKey, target) => {

@@ -15,6 +15,10 @@ pub mod null;
 pub mod wayland_kde;
 #[cfg(target_os = "windows")]
 pub mod windows;
+/// Pure parking logic for the Windows backend. Compiled on every OS (not
+/// `#[cfg]`-gated) so its safety-critical unit tests run on any platform; the
+/// Win32 FFI that consumes it lives in `windows.rs`.
+pub mod windows_park;
 #[cfg(target_os = "linux")]
 pub mod x11;
 
@@ -92,7 +96,7 @@ pub trait WorkspaceBackend: Send + Sync {
 pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
     #[cfg(target_os = "windows")]
     {
-        return Box::new(windows::WindowsBackend);
+        return Box::new(windows::WindowsBackend::new());
     }
 
     #[cfg(target_os = "linux")]
@@ -124,7 +128,13 @@ pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
         }
     }
 
-    Box::new(null::NullBackend)
+    // Fallback for every non-Windows platform (Linux desktops that matched no
+    // backend above, plus macOS/other). On Windows the early return above is the
+    // only path, so gating this keeps it from being flagged as unreachable.
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Box::new(null::NullBackend);
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

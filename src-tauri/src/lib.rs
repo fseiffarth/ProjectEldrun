@@ -4,7 +4,6 @@ pub mod platform;
 pub mod schema;
 pub mod services;
 pub mod storage;
-#[cfg(target_os = "linux")]
 pub mod sysstat;
 pub mod terminal;
 
@@ -258,6 +257,25 @@ pub fn run() {
                     }
                 });
             }
+            // Windows: the HWND is known synchronously from Tauri, so no off-thread
+            // title scan is needed. Binding the main-window id arms the structural
+            // guard so the override can never park the main window (defense-in-depth
+            // on top of the self_pid protection that already shields it).
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::Manager;
+                let workspace = _app.state::<WorkspaceStateArc>().inner().clone();
+                if let Some(hwnd) = _app
+                    .get_webview_window("main")
+                    .and_then(|w| w.hwnd().ok())
+                {
+                    workspace
+                        .lock()
+                        .unwrap()
+                        .backend
+                        .set_main_window_id(hwnd.0 as usize as u64);
+                }
+            }
             // Install the global Claude SessionStart hook so Eldrun can follow a
             // tab's live session id across `/clear` (see services::agent_session).
             if let Err(e) = services::agent_session::install_session_start_hook() {
@@ -277,6 +295,7 @@ pub fn run() {
             commands::projects::load_project,
             commands::projects::save_project,
             commands::projects::set_project_description,
+            commands::projects::set_project_name,
             commands::projects::set_project_sandbox,
             commands::projects::save_tab_layout,
             commands::projects::root_work_dir,
@@ -427,8 +446,10 @@ pub fn run() {
             // Ollama model management
             commands::ollama::ollama_is_installed,
             commands::ollama::install_ollama,
+            commands::ollama::ollama_install_strategy,
             commands::ollama::vibe_is_installed,
             commands::ollama::install_vibe,
+            commands::ollama::vibe_install_strategy,
             commands::agents::agent_is_installed,
             commands::agents::list_agents,
             commands::agents::install_agent,

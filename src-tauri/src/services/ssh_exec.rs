@@ -39,6 +39,8 @@ const SSH_KEEPALIVE: &[&str] = &[
 ];
 
 /// How long the multiplexing master stays alive after the last session closes.
+/// Multiplexing is Unix-only (see [`ssh_pty_args`]), so this is unused on Windows.
+#[cfg(not(target_os = "windows"))]
 const CONTROL_PERSIST_SECS: u32 = 600;
 
 /// Agent-auth environment variables that must **not** be forwarded to the
@@ -167,17 +169,26 @@ pub fn remote_command(
 ///         [-p <port>] <[user@]host> <remote_command>`.
 pub fn ssh_pty_args(remote: &RemoteSpec, remote_command: &str) -> Result<Vec<String>, String> {
     let target = ssh_target(&remote.user, &remote.host)?;
-    let control_path = control_dir().join("cm-%C");
 
-    let mut args: Vec<String> = vec![
-        "-tt".to_string(),
-        "-o".to_string(),
-        "ControlMaster=auto".to_string(),
-        "-o".to_string(),
-        format!("ControlPath={}", control_path.to_string_lossy()),
-        "-o".to_string(),
-        format!("ControlPersist={CONTROL_PERSIST_SECS}"),
-    ];
+    let mut args: Vec<String> = vec!["-tt".to_string()];
+
+    // Connection multiplexing (ControlMaster/ControlPath/ControlPersist) is a
+    // Unix-only OpenSSH feature: it relies on a Unix-domain control socket with
+    // file-descriptor passing, which the Windows OpenSSH client does not
+    // implement (it warns and the session can fail to bind the socket). Skip it
+    // on Windows — each tab simply opens its own connection — while keeping the
+    // reconnect/keepalive options below, which work on every platform.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let control_path = control_dir().join("cm-%C");
+        args.push("-o".to_string());
+        args.push("ControlMaster=auto".to_string());
+        args.push("-o".to_string());
+        args.push(format!("ControlPath={}", control_path.to_string_lossy()));
+        args.push("-o".to_string());
+        args.push(format!("ControlPersist={CONTROL_PERSIST_SECS}"));
+    }
+
     for a in SSH_KEEPALIVE {
         args.push((*a).to_string());
     }
@@ -378,9 +389,15 @@ mod tests {
         let args = ssh_pty_args(&s, "cd '/srv/p' && exec sh").unwrap();
 
         assert_eq!(args[0], "-tt");
-        assert!(args.iter().any(|a| a == "ControlMaster=auto"));
-        assert!(args.iter().any(|a| a.starts_with("ControlPath=")));
-        assert!(args.iter().any(|a| a.starts_with("ControlPersist=")));
+        // Multiplexing is Unix-only: present on Unix, omitted on Windows.
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(args.iter().any(|a| a == "ControlMaster=auto"));
+            assert!(args.iter().any(|a| a.starts_with("ControlPath=")));
+            assert!(args.iter().any(|a| a.starts_with("ControlPersist=")));
+        }
+        #[cfg(target_os = "windows")]
+        assert!(!args.iter().any(|a| a == "ControlMaster=auto"));
         assert!(args.iter().any(|a| a == "ServerAliveInterval=15"));
         // Interactive PTY: BatchMode must NOT be forced.
         assert!(!args.iter().any(|a| a == "BatchMode=yes"));

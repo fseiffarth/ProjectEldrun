@@ -170,7 +170,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       allowProposedApi: false,
       cursorBlink: true,
       fontSize: zoomable ? readAgentFontSize() : DEFAULT_FONT_SIZE,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+      // Consolas/Cascadia Mono are the guaranteed Windows monospace fonts; keep
+      // them ahead of the generic fallback so the terminal isn't a bitmap font on
+      // Windows when the preferred coding fonts aren't installed.
+      fontFamily:
+        "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Cascadia Mono', Consolas, Menlo, monospace",
       theme: terminalTheme(colorScheme),
     });
 

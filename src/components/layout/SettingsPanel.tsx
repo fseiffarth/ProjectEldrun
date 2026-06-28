@@ -13,6 +13,11 @@ import {
   type ShortcutMap,
 } from "../../lib/shortcuts";
 import { AgentsPanel, FileTypeSettings, GlobalAppsSettings, OllamaPanel } from "./SettingsSubPanels";
+import { IS_WINDOWS } from "../../lib/paths";
+
+// The panel-toggle key reads as the Windows key on Windows (the webview reports
+// it as "Meta"), and "Super" on Linux/KDE — keep the help text honest per OS.
+const PANEL_TOGGLE_KEY = IS_WINDOWS ? "the Windows key" : "Super";
 
 interface HelpItem {
   term: string;
@@ -29,9 +34,9 @@ const HELP_SECTIONS: HelpSection[] = [
   {
     title: "Workspace layout",
     intro:
-      "Eldrun keeps your AI-assisted development in a single window. Press Super while Eldrun is focused to toggle the panels, and F11 for fullscreen.",
+      `Eldrun keeps your AI-assisted development in a single window. Press ${PANEL_TOGGLE_KEY} while Eldrun is focused to toggle the panels, and F11 for fullscreen.`,
     items: [
-      { term: "Root terminal (▣)", desc: "The control terminal that always lives at ~/eldrun/root/, independent of any project." },
+      { term: "Root terminal (▣)", desc: "The control terminal that always lives in Eldrun's root folder, independent of any project." },
       { term: "Project pills", desc: "One pill per active project in the project switcher. Click to switch; each project keeps its own terminal and tabs. Drag pills to reorder them." },
       { term: "Center panel & tabs", desc: "The active project's terminals. Right-click the tab bar to add a Claude/Codex/Gemini agent or a plain shell, rename, or close tabs. Drag tabs to reorder." },
       { term: "Right file panel", desc: "A file-tree overlay for the active project. Open files, rename, and toggle hidden file types. The panel remembers the last folder per project." },
@@ -40,7 +45,7 @@ const HELP_SECTIONS: HelpSection[] = [
   {
     title: "Projects",
     items: [
-      { term: "Add (+)", desc: "Create a New Project (scaffolds files and a git repo under ~/eldrun/projects/) or Import an existing folder without touching its contents." },
+      { term: "Add (+)", desc: "Create a New Project (scaffolds files and a git repo in Eldrun's projects folder) or Import an existing folder without touching its contents." },
       { term: "Search inactive", desc: "The search box finds projects that aren't currently open; pick one to activate its pill and terminal." },
       { term: "Remote (SSH) projects", desc: "Projects on a remote host are sshfs-mounted locally and behave like any other project. Requires sshfs/FUSE installed." },
       { term: "Tasks", desc: "Right-click a tab to set, complete, or clear an agent task. Tasks persist in the project's project.json and can seed a new agent's prompt." },
@@ -57,7 +62,7 @@ const HELP_SECTIONS: HelpSection[] = [
     title: "Settings & extras",
     items: [
       { term: "Settings (⚙)", desc: "Theme, default agent, Git hosting profile/token, workspace management, background scripts, and debug mode." },
-      { term: "Workspace integration", desc: "Optional KDE/X11 virtual-desktop isolation per project when workspace management is enabled." },
+      { term: "Workspace integration", desc: "Optional KDE/X11 virtual-desktop isolation per project when workspace management is enabled (Linux only)." },
       { term: "Time tracking", desc: "Eldrun records active session time so you can see how long you spend per project." },
     ],
   },

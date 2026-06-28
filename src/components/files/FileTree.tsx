@@ -7,11 +7,14 @@ import { useTabsStore } from "../../stores/tabs";
 import { useDragStore, type EmbedCap } from "../../stores/drag";
 import { commitFileDrop } from "../tabs/commitFileDrop";
 import { startDetachedDropSession } from "../tabs/detachedDropTargets";
+import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
+import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
+import { basename, toFileUri } from "../../lib/paths";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 
 // Persist whether the collapsed "hidden" files section is expanded, so the
@@ -95,7 +98,7 @@ function GitMarker({ status }: { status: string | undefined }) {
 }
 
 function pathToFileUri(path: string): string {
-  return `file://${path.split("/").map(encodeURIComponent).join("/")}`;
+  return toFileUri(path);
 }
 
 function shellQuote(value: string): string {
@@ -425,12 +428,21 @@ export function FileTree({
     e.preventDefault();
     const startX = e.clientX;
     const startY = e.clientY;
+    const pointerId = e.pointerId;
+    const captureEl = e.currentTarget as HTMLElement;
     let dragging = false;
     // #42: an open popout of the current scope is a valid drop target — releasing
     // the file over one docks it there as an embed tab instead of spawning a new
     // window. SAME shared session the tab drag (TabBar) uses, so a file dragged
     // over a popout behaves exactly like one dragged over the main window.
     const detached = startDetachedDropSession();
+
+    // Latest in-window client coords ("outside this window" test) and the latest
+    // physical desktop cursor (cross-window hit-test, poll-driven — see lib/coords;
+    // DOM screenX/Y units diverge across WebKitGTK/WebView2/WKWebView).
+    let lastClient = { x: startX, y: startY };
+    let lastPhys: PhysPoint | null = null;
+    let stopPoll: (() => void) | null = null;
 
     const onMove = (ev: PointerEvent) => {
       if (!dragging) {
@@ -454,19 +466,46 @@ export function FileTree({
         }
         // Begin resolving popout drop targets now that a real drag is underway.
         void detached.resolve();
+        // Capture the terminal pointer event on engines that don't keep delivering
+        // it past the source window's HWND (Win/mac); WebKitGTK keeps the implicit
+        // grab, so the flag leaves capture off there.
+        if (dragPlatform.needsPointerCapture) {
+          try {
+            captureEl.setPointerCapture(pointerId);
+          } catch {
+            /* capture is best-effort; the OS-cursor poll does not depend on it */
+          }
+        }
+        // Poll the OS cursor (physical desktop px) to drive the popout hover past
+        // the main viewport — DOM pointermove may not cross the OS window boundary.
+        stopPoll = startCursorPoll((p) => {
+          lastPhys = p;
+          detached.hover(detached.at(p), p, entry.name);
+        });
       }
+      lastClient = { x: ev.clientX, y: ev.clientY };
       useDragStore.getState().move(ev.clientX, ev.clientY);
-      // Drive the drop preview in the popout under the cursor (if any) — it
-      // resolves the pane and renders the per-pane preview. screenX/Y stay valid
-      // past the main viewport thanks to the pointer's implicit grab.
-      detached.hover(detached.at(ev.screenX, ev.screenY), ev.screenX, ev.screenY, entry.name);
     };
-    const onUp = async (ev: PointerEvent) => {
+
+    // Tear down the move listener, poll, popout highlight, and pointer capture —
+    // however the gesture resolves.
+    const cleanup = () => {
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      // Clear the popout highlight + tear down the panes listener, however this
-      // release resolves. `targetAt` still hit-tests the cached pane geometry.
+      stopPoll?.();
+      // Clear the popout highlight + tear down the panes listener. `targetAt`
+      // still hit-tests the cached pane geometry for the commit below.
       detached.dispose();
+      if (dragPlatform.needsPointerCapture) {
+        try {
+          captureEl.releasePointerCapture(pointerId);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
+    const commitRelease = async () => {
+      cleanup();
       if (!dragging) {
         // Never moved → a plain click does NOT open. Opening a file is a
         // double-click (onDoubleClick → handleClick); dragging it onto a tab bar
@@ -475,53 +514,65 @@ export function FileTree({
       }
       const d = useDragStore.getState().drag;
       if (d == null) return;
+      // Final physical cursor at release (a fresh read; falls back to the last
+      // poll reading if the IPC fails). This is the canonical cross-window space.
+      const phys = (await desktopCursor().catch(() => null)) ?? lastPhys;
       // Released over an open popout → dock the file into it as an embed tab,
       // landing in the SPECIFIC pane the popout resolved under the cursor (mirrors
-      // a tab dragged onto a popout). Re-hit-test at the release coords. BUT only
-      // if the popout is actually the front window at the drop point: its bounds
-      // can geometrically contain the cursor while it sits BEHIND the main window
-      // (the press raised the main window) or another app. Docking into a popout
-      // the user can't see is wrong — treat an occluded popout like a release into
-      // empty space outside the window so a NEW detached window opens instead.
-      const overDetached = detached.at(ev.screenX, ev.screenY);
+      // a tab dragged onto a popout). BUT only if the popout is actually the front
+      // window at the drop point: its bounds can geometrically contain the cursor
+      // while it sits BEHIND the main window (the press raised the main window) or
+      // another app. Docking into a popout the user can't see is wrong — treat an
+      // occluded popout like a release into empty space so a NEW window opens.
+      const overDetached = phys ? detached.at(phys) : null;
       const overFrontDetached =
         overDetached &&
         (await invoke<boolean>("detached_window_frontmost", {
           registryId: overDetached.label,
         }).catch(() => true));
-      if (overDetached && overFrontDetached) {
+      if (overDetached && overFrontDetached && phys) {
         commitFileDrop(d, projectId, projectDir, null, {
           scope: overDetached.scope,
           groupId: overDetached.groupId,
-          target: detached.targetAt(overDetached, ev.screenX, ev.screenY),
+          target: detached.targetAt(overDetached, phys),
         });
         useDragStore.getState().end();
         return;
       }
       // Released OUTSIDE the main window (e.g. dragged onto another monitor), or
       // over an OCCLUDED popout (handled above): open the file in its own
-      // standalone detached window at the cursor. The pointer's implicit capture
-      // keeps delivering coords past the viewport, so client coords outside
-      // [0,inner) — or being over a popout's bounds at all — is the signal.
+      // standalone detached window at the cursor. Client coords outside [0,inner)
+      // — or being over a popout's bounds at all — is the signal. The new window's
+      // bounds feed Rust `.position(x,y)`, which is PHYSICAL → use the physical
+      // cursor, not DOM screen coords.
       const outside =
         !!overDetached ||
-        ev.clientX < 0 ||
-        ev.clientY < 0 ||
-        ev.clientX >= window.innerWidth ||
-        ev.clientY >= window.innerHeight;
-      const detachBounds = outside
-        ? {
-            x: Math.round(ev.screenX - 80),
-            y: Math.round(ev.screenY - 8),
-            w: 900,
-            h: 640,
-          }
-        : null;
+        lastClient.x < 0 ||
+        lastClient.y < 0 ||
+        lastClient.x >= window.innerWidth ||
+        lastClient.y >= window.innerHeight;
+      const detachBounds =
+        outside && phys
+          ? {
+              x: Math.round(phys.x - 80),
+              y: Math.round(phys.y - 8),
+              w: 900,
+              h: 640,
+            }
+          : null;
       commitFileDrop(d, projectId, projectDir, detachBounds);
       useDragStore.getState().end();
     };
+
+    // Escape / blur / a genuine pointercancel (Win/mac) aborts: tear down and drop
+    // any in-flight drag without committing.
+    const onAbort = () => {
+      cleanup();
+      if (dragging) useDragStore.getState().end();
+    };
+
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    bindDragRelease({ onCommit: () => void commitRelease(), onAbort });
   }
 
   function relForEntry(entry: FileEntry): string {
@@ -764,7 +815,7 @@ export function FileTree({
     );
     if (prior) store.removeTab(prior.key);
     store.addTab({
-      label: pdfPath.split("/").filter(Boolean).pop() ?? pdfPath,
+      label: basename(pdfPath) || pdfPath,
       cmd: "",
       cwd: projectDir,
       kind: "embed",
@@ -1142,7 +1193,7 @@ export function FileTree({
                   {clipboard?.op === "cut" ? "Move" : "Copy"} <strong>{clipboard?.name}</strong>
                 </>
               )}{" "}
-              into <strong>{relPath || projectDir.split("/").pop() || "project root"}</strong> as:
+              into <strong>{relPath || basename(projectDir) || "project root"}</strong> as:
             </p>
             <input
               className="file-paste-name"

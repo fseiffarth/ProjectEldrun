@@ -3,6 +3,15 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import {
+  snapshotFrame,
+  physToClient,
+  clientToPhys,
+  desktopCursor,
+  type PhysPoint,
+  type WindowFrame,
+} from "../../lib/coords";
+import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import {
   DETACHED_DRAG_END,
   DETACHED_DRAG_MOVE,
   DETACHED_DRAG_START,
@@ -233,16 +242,15 @@ export function DetachedCenterPanel({
     const win = getCurrentWindow();
     const label = win.label;
     let active = false;
-    // `origin` maps the streamed OS cursor (logical px) into our client space for
-    // the ghost position; resolved lazily on the first hover (window doesn't move).
-    let origin = { x: 0, y: 0 };
-    const refreshOrigin = async () => {
+    // Our window frame (physical px), used to map the streamed physical cursor into
+    // our own client px for the ghost position; snapshotted lazily on the first
+    // hover (the popout doesn't move/rescale mid-gesture).
+    let frame: WindowFrame | null = null;
+    const refreshFrame = async () => {
       try {
-        const scale = (await win.scaleFactor()) || 1;
-        const lg = (await win.innerPosition()).toLogical(scale);
-        origin = { x: lg.x, y: lg.y };
+        frame = await snapshotFrame(win);
       } catch {
-        origin = { x: 0, y: 0 };
+        frame = null;
       }
     };
     const reg = (p: Promise<() => void>) =>
@@ -250,8 +258,11 @@ export function DetachedCenterPanel({
 
     // Render the host-resolved target as our split-preview, and follow the ghost.
     const apply = (p: DetachedDropPreview) => {
-      if (p.screenX != null && p.screenY != null) {
-        useDragStore.getState().move(p.screenX - origin.x, p.screenY - origin.y);
+      if (p.cursorPhysX != null && p.cursorPhysY != null && frame) {
+        // physical desktop px → our own client px (via innerPhys/scale, the only
+        // DPI-correct conversion); valid even though the cursor is outside us.
+        const c = physToClient(frame, { x: p.cursorPhysX, y: p.cursorPhysY });
+        useDragStore.getState().move(c.x, c.y);
       }
       const t = p.target;
       useDragStore.getState().setTarget(
@@ -306,7 +317,7 @@ export function DetachedCenterPanel({
             previewW: 0,
             previewH: 0,
           });
-          void refreshOrigin().then(() => apply(p));
+          void refreshFrame().then(() => apply(p));
           return;
         }
         apply(p);
@@ -423,21 +434,20 @@ export function DetachedCenterPanel({
     return true;
   };
 
-  // #42: drag-to-dock. We stream the gesture's OS-LEVEL CURSOR position to the
-  // main window, which maps it into its client space, renders the dock preview,
-  // and docks on release. We do NOT rely on DOM pointer events crossing into the
-  // main window: on WebKitGTK (especially Wayland) DOM pointermove/up do not cross
-  // the OS window boundary, so the stream would die at the popout's edge and the
-  // drop would commit at stale coords. Instead we POLL `cursorPosition()`; that is
-  // a desktop-global PHYSICAL position, so we (a) divide by our scale factor to
-  // emit logical/CSS px for the main window and (b) use the raw physical position
-  // to move our OWN window so it follows the cursor. Release is via DOM
-  // pointerup/pointercancel; END carries the LAST polled cursor position. Only
-  // Escape cancels; pointercancel commits (WebKitGTK fires it for pointerup).
+  // #42: drag-to-dock. We stream the gesture's OS-LEVEL CURSOR position (PHYSICAL
+  // desktop px — the canonical cross-window space, see lib/coords) to the main
+  // window, which maps it into its own client space and renders the dock preview /
+  // docks on release. We do NOT rely on DOM pointer events crossing into the main
+  // window: on WebKitGTK (esp. Wayland) DOM pointermove/up don't cross the OS
+  // window boundary, and DOM `screenX/Y` units diverge across engines under DPI
+  // scaling. Instead we POLL `cursorPosition()` (already physical, cross-engine):
+  // (a) emit it verbatim for the main window, and (b) on Linux only — see
+  // `followWindowOnDockDrag` — use it to move our OWN window so it follows the
+  // cursor (on Win/mac `setPosition` under a held button can drop pointer capture).
+  // Release is centralized through `bindDragRelease`, which applies the
+  // engine-correct cancel-vs-commit policy; END carries the last polled cursor.
   const beginDockDrag = (args: {
     pointerId: number;
-    screenX: number;
-    screenY: number;
     clientX?: number;
     clientY?: number;
     captureEl: HTMLElement | null;
@@ -448,49 +458,39 @@ export function DetachedCenterPanel({
     tabKey?: string;
   }) => {
     const { pointerId, captureEl, label: dragLabel, moveWindow, tabKey, sourceGroup } = args;
-    try {
-      captureEl?.setPointerCapture(pointerId);
-    } catch {
-      /* capture is best-effort; the OS-cursor poll does not depend on it */
+    // Per-tab drags pass `captureEl: null` (no stable element under the pointer);
+    // on engines that need capture to deliver the terminal event, fall back to a
+    // stable element (the panel root, else document.body). Without this, dragging a
+    // SINGLE tab out of a popout never receives its release on Win/mac and never
+    // docks. WebKitGTK keeps the implicit grab, so it needs no capture at all.
+    const capEl =
+      captureEl ??
+      (dragPlatform.needsPointerCapture ? (panelRef.current ?? document.body) : null);
+    // Capture whenever a real element is present (preserves the old unconditional
+    // Linux capture for whole-window/group/titlebar drags); the `capEl` fallback
+    // ADDS capture only on engines that need it (Win/mac) for the per-tab case.
+    if (capEl) {
+      try {
+        capEl.setPointerCapture(pointerId);
+      } catch {
+        /* capture is best-effort; the OS-cursor poll does not depend on it */
+      }
     }
 
     const win = getCurrentWindow();
-    let last = { x: args.screenX, y: args.screenY };
-    let scale = 1;
+    // `last` tracks the physical desktop cursor (the canonical cross-window space).
+    let last: PhysPoint = { x: 0, y: 0 };
     let done = false;
     let grab: { x: number; y: number } | null = null;
     let moving = false;
-    let origin = { x: 0, y: 0 };
+    // Our own window frame (physical px), for mapping the physical cursor back into
+    // our client px for the local per-tab hit-test. Snapshotted up front.
+    let popoutFrame: WindowFrame | null = null;
+    let pollId: number | null = null;
+    let unbindRelease: (() => void) | null = null;
 
-    void win
-      .scaleFactor()
-      .then(async (s) => {
-        scale = s || 1;
-        if (tabKey != null) {
-          const ip = await win.innerPosition();
-          const lg = ip.toLogical(scale);
-          origin = { x: lg.x, y: lg.y };
-        }
-      })
-      .catch(() => {});
-    if (moveWindow) {
-      void Promise.all([win.outerPosition(), cursorPosition()])
-        .then(([pos, cur]) => {
-          grab = { x: cur.x - pos.x, y: cur.y - pos.y };
-        })
-        .catch(() => {});
-    }
-
-    void emit(DETACHED_DRAG_START, {
-      scope,
-      // Cross-window protocol identifies the popout RECORD, not the inner group.
-      groupId: popoutId,
-      label: dragLabel,
-      screenX: last.x,
-      screenY: last.y,
-      tabKey,
-    } satisfies DetachedDragStart);
-
+    // Per-tab drags show a local ghost immediately (no frame needed): clone the
+    // dragged pane and seed the popout's own drag store synchronously on press.
     if (tabKey != null) {
       const pane =
         Array.from(
@@ -525,93 +525,153 @@ export function DetachedCenterPanel({
       });
     }
 
-    const poll = window.setInterval(() => {
-      void cursorPosition()
-        .then((p) => {
-          if (done) return;
-          last = { x: p.x / scale, y: p.y / scale };
-          void emit(DETACHED_DRAG_MOVE, {
-            screenX: last.x,
-            screenY: last.y,
-          } satisfies DetachedDragMove);
-          if (moveWindow && grab && !moving) {
-            moving = true;
-            void win
-              .setPosition(
-                new PhysicalPosition(
-                  Math.round(p.x - grab.x),
-                  Math.round(p.y - grab.y),
-                ),
-              )
-              .catch(() => {})
-              .finally(() => {
-                moving = false;
-              });
-          }
-          if (tabKey != null && sourceGroup) {
-            const cx = last.x - origin.x;
-            const cy = last.y - origin.y;
-            const overPopout =
-              cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight;
-            if (overPopout) {
-              useDragStore.getState().move(cx, cy);
-              resolveLocalTarget(cx, cy);
-            } else if (
-              useDragStore.getState().drag?.reorderGroup ||
-              useDragStore.getState().drag?.overGroup
-            ) {
-              useDragStore.getState().setTarget({
-                overGroup: null,
-                edge: null,
-                reorderGroup: null,
-                reorderIndex: null,
-              });
+    const startPoll = () => {
+      pollId = window.setInterval(() => {
+        void cursorPosition()
+          .then((p) => {
+            if (done) return;
+            last = { x: p.x, y: p.y };
+            void emit(DETACHED_DRAG_MOVE, {
+              cursorPhysX: p.x,
+              cursorPhysY: p.y,
+            } satisfies DetachedDragMove);
+            // Linux-only cosmetic window-follow (Win/mac: the main window already
+            // paints the preview + ghost; setPosition would fight the OS).
+            if (moveWindow && dragPlatform.followWindowOnDockDrag && grab && !moving) {
+              moving = true;
+              void win
+                .setPosition(
+                  new PhysicalPosition(
+                    Math.round(p.x - grab.x),
+                    Math.round(p.y - grab.y),
+                  ),
+                )
+                .catch(() => {})
+                .finally(() => {
+                  moving = false;
+                });
             }
+            if (tabKey != null && sourceGroup && popoutFrame) {
+              // physical desktop px → our own client px (innerPhys/scale), the only
+              // DPI-correct conversion — never outerPosition.
+              const c = physToClient(popoutFrame, { x: p.x, y: p.y });
+              const overPopout =
+                c.x >= 0 && c.y >= 0 && c.x <= window.innerWidth && c.y <= window.innerHeight;
+              if (overPopout) {
+                useDragStore.getState().move(c.x, c.y);
+                resolveLocalTarget(c.x, c.y);
+              } else if (
+                useDragStore.getState().drag?.reorderGroup ||
+                useDragStore.getState().drag?.overGroup
+              ) {
+                useDragStore.getState().setTarget({
+                  overGroup: null,
+                  edge: null,
+                  reorderGroup: null,
+                  reorderIndex: null,
+                });
+              }
+            }
+          })
+          .catch(() => {});
+      }, 16);
+    };
+
+    // Snapshot our frame, seed the gesture's initial physical cursor, emit START,
+    // THEN start the poll — so a MOVE never reaches the main window before START
+    // (the main's MOVE/END handlers guard on the in-flight detached drag).
+    void snapshotFrame(win)
+      .then(async (f) => {
+        if (done) return;
+        popoutFrame = f;
+        // Seed: for a per-tab drag, derive from the press's client coords (exact
+        // origin of the gesture); otherwise read the OS cursor (physical).
+        const seed: PhysPoint =
+          tabKey != null && args.clientX != null && args.clientY != null
+            ? clientToPhys(f, { x: args.clientX, y: args.clientY })
+            : await desktopCursor().catch(() => ({ x: f.innerPhys.x, y: f.innerPhys.y }));
+        if (done) return;
+        last = seed;
+        if (moveWindow) {
+          // Grab offset = cursor − window origin, both physical, so the window
+          // tracks the cursor without jumping. Computed for BOTH window-follow
+          // modes: on Linux the poll uses it per-tick to follow the cursor; on
+          // Win/mac (`!followWindowOnDockDrag`) the poll skips the follow, but
+          // `finish` uses this same offset for ONE final `setPosition` so a
+          // free-space release lands the popout where it was dropped instead of
+          // leaving it frozen at its start position (the Windows regression).
+          try {
+            const cur = await cursorPosition();
+            grab = { x: cur.x - f.outerPhys.x, y: cur.y - f.outerPhys.y };
+          } catch {
+            grab = null;
           }
-        })
-        .catch(() => {});
-    }, 16);
+        }
+        void emit(DETACHED_DRAG_START, {
+          scope,
+          // Cross-window protocol identifies the popout RECORD, not the inner group.
+          groupId: popoutId,
+          label: dragLabel,
+          cursorPhysX: seed.x,
+          cursorPhysY: seed.y,
+          tabKey,
+        } satisfies DetachedDragStart);
+        startPoll();
+      })
+      .catch(() => {});
 
     const finish = (cancelled: boolean, shift = false) => {
       if (done) return;
       done = true;
-      window.clearInterval(poll);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onCancel);
-      window.removeEventListener("keydown", onKey);
+      if (pollId != null) window.clearInterval(pollId);
+      unbindRelease?.();
       try {
-        captureEl?.releasePointerCapture(pointerId);
+        capEl?.releasePointerCapture(pointerId);
       } catch {
         /* ignore */
       }
       if (tabKey != null) useDragStore.getState().end();
+      // Win/mac whole-window free-space release: the per-tick window-follow is
+      // disabled there (`!followWindowOnDockDrag`), so the popout never moved
+      // during the gesture and the main window's END no-ops on a free-space
+      // (inMain=false) drop — leaving the popout frozen at its origin. Move it
+      // ONCE here to where it was dropped, using the same grab offset the Linux
+      // follow uses. Skipped on cancel (Escape leaves it put). Harmless vs a
+      // dock-back: if released over the main window, attach_subwindow destroys
+      // this window an instant later, so a stray setPosition has no effect.
+      if (!cancelled && moveWindow && !dragPlatform.followWindowOnDockDrag && grab) {
+        void win
+          .setPosition(
+            new PhysicalPosition(
+              Math.round(last.x - grab.x),
+              Math.round(last.y - grab.y),
+            ),
+          )
+          .catch(() => {});
+      }
       void emit(DETACHED_DRAG_END, {
         cancelled,
-        screenX: last.x,
-        screenY: last.y,
+        cursorPhysX: last.x,
+        cursorPhysY: last.y,
         shift,
       } satisfies DetachedDragEnd);
     };
     const release = (shift = false) => {
-      if (tabKey != null && sourceGroup) {
-        const handledLocally = handleLocalTabRelease(
-          tabKey,
-          last.x - origin.x,
-          last.y - origin.y,
-        );
+      if (tabKey != null && sourceGroup && popoutFrame) {
+        const c = physToClient(popoutFrame, last);
+        const handledLocally = handleLocalTabRelease(tabKey, c.x, c.y);
         finish(handledLocally, shift);
         return;
       }
       finish(false, shift);
     };
-    const onUp = (ev: PointerEvent) => release(ev.shiftKey);
-    const onCancel = (ev: PointerEvent) => release(ev.shiftKey);
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") finish(true);
-    };
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onCancel);
-    window.addEventListener("keydown", onKey);
+    // bindDragRelease applies the engine-correct policy (WebKitGTK: pointercancel
+    // commits; Win/mac: pointercancel aborts) + a blur backstop. Bound synchronously
+    // so the terminal event is captured from the start of the gesture.
+    unbindRelease = bindDragRelease({
+      onCommit: (shift) => release(shift),
+      onAbort: () => finish(true),
+    });
   };
 
   // #42: grab a group's empty bar area to move/dock the WHOLE popout window.
@@ -626,8 +686,6 @@ export function DetachedCenterPanel({
         .find((t) => t?.key === group.activeKey)?.label ?? "Subwindow";
     beginDockDrag({
       pointerId: e.pointerId,
-      screenX: e.screenX,
-      screenY: e.screenY,
       captureEl: e.currentTarget as HTMLElement,
       label: activeLabel,
       moveWindow: true,
@@ -648,8 +706,6 @@ export function DetachedCenterPanel({
       (first ? tabs.find((t) => t.key === first.activeKey)?.label : undefined) ?? "Subwindow";
     beginDockDrag({
       pointerId: e.pointerId,
-      screenX: e.screenX,
-      screenY: e.screenY,
       captureEl: e.currentTarget as HTMLElement,
       label: activeLabel,
       moveWindow: true,
@@ -657,24 +713,24 @@ export function DetachedCenterPanel({
   };
 
   // #42: dragging a SINGLE tab out of `group`. Activate on press, then once the
-  // pointer crosses a threshold start a per-tab dock drag.
+  // pointer crosses a threshold start a per-tab dock drag. The threshold uses DOM
+  // `clientX/Y` (reliable in-window CSS px on every engine); cross-window position
+  // is poll-driven inside beginDockDrag. The press's client coords seed the gesture.
   const onTabPointerDown = (e: React.PointerEvent, group: GroupNode, tab: TabEntry) => {
     if (e.button !== 0) return;
     e.stopPropagation();
     onActivate(tab.key);
-    const startX = e.screenX;
-    const startY = e.screenY;
+    const startX = e.clientX;
+    const startY = e.clientY;
     let armed = false;
     const onMove = (ev: PointerEvent) => {
       if (armed) return;
-      if (Math.hypot(ev.screenX - startX, ev.screenY - startY) < 5) return;
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
       armed = true;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       beginDockDrag({
         pointerId: ev.pointerId,
-        screenX: ev.screenX,
-        screenY: ev.screenY,
         clientX: ev.clientX,
         clientY: ev.clientY,
         captureEl: null,

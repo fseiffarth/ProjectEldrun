@@ -16,11 +16,11 @@ struct AgentSpec {
     id: &'static str,
     /// Human-readable label.
     label: &'static str,
-    /// Binary name to probe on `PATH` (via `which`).
+    /// Binary name to probe on `PATH` (`where` on Windows, `which` elsewhere).
     bin: &'static str,
     /// Official non-interactive install command (Linux/macOS).
     install_cmd: &'static str,
-    /// Extra home-relative paths to check when `which` misses (PATH gaps).
+    /// Extra home-relative paths to check when the PATH lookup misses (PATH gaps).
     extra_paths: &'static [&'static str],
     /// Docs URL shown when automatic install isn't possible.
     docs: &'static str,
@@ -135,19 +135,27 @@ fn find_spec(id: &str) -> Option<&'static AgentSpec> {
 
 /// True when an agent's binary is reachable on `PATH` or in one of its
 /// well-known user install locations.
+///
+/// PATH lookup goes through the shared cross-platform helper (`where` on Windows,
+/// `which` elsewhere): `which` does not exist on Windows, so probing it directly
+/// reported every Windows install — Claude included — as missing.
 fn spec_is_installed(spec: &AgentSpec) -> bool {
-    let on_path = std::process::Command::new("which")
-        .arg(spec.bin)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if on_path {
+    if crate::paths::binary_on_path(spec.bin) {
         return true;
     }
     let home = crate::paths::home_dir();
-    spec.extra_paths.iter().any(|rel| home.join(rel).exists())
+    spec.extra_paths.iter().any(|rel| {
+        let base = home.join(rel);
+        if base.exists() {
+            return true;
+        }
+        // On Windows the extra paths omit the executable extension that the
+        // installer actually writes (e.g. `.local/bin/claude` → `claude.exe`).
+        cfg!(target_os = "windows")
+            && ["exe", "cmd", "bat", "ps1"]
+                .iter()
+                .any(|ext| base.with_extension(ext).exists())
+    })
 }
 
 /// True when the given agent (by id) is installed. Unknown ids return false.

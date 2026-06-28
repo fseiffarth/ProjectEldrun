@@ -16,6 +16,7 @@ import {
   relFromAbs,
   visibleEntries,
 } from "../../lib/viewers/fileUtils";
+import { basename, dirname, isAbsolute } from "../../lib/paths";
 
 type ProjectJson = Record<string, unknown>;
 
@@ -250,7 +251,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   function revealSelected() {
     const target = firstSelectedEntry();
     if (!target) return;
-    const path = target.is_dir ? target.path : target.path.slice(0, target.path.lastIndexOf("/"));
+    const path = target.is_dir ? target.path : dirname(target.path);
     openFile(path, undefined, projectId, "middle_file_browser").catch((e) =>
       setError(String(e)),
     );
@@ -294,8 +295,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   function submitPath(event: React.FormEvent) {
     event.preventDefault();
     const raw = pathEntry.trim();
-    const root = projectDir.replace(/\/+$/, "");
-    const nextRel = raw.startsWith("/") ? relFromAbs(root, raw) : raw.replace(/^\/+/, "");
+    const nextRel = isAbsolute(raw) ? relFromAbs(projectDir, raw) : raw.replace(/^\/+/, "");
     load(nextRel);
   }
 
@@ -313,7 +313,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
         <button onClick={() => load(parentRel(relPath))} disabled={!relPath} title="Up">↑</button>
         <button onClick={() => load(relPath, { replace: true })} title="Refresh">↻</button>
         <form className="file-browser-path" onSubmit={submitPath}>
-          <span>{projectDir.split("/").pop() || projectDir}</span>
+          <span>{basename(projectDir) || projectDir}</span>
           <input value={pathEntry} onChange={(e) => setPathEntry(e.target.value)} placeholder="/" />
         </form>
         <input

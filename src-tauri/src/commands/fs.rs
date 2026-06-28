@@ -79,7 +79,7 @@ pub fn list_dir(project_dir: String, rel_path: String) -> Result<Vec<FileEntry>,
 
         result.push(FileEntry {
             name,
-            path: path.to_string_lossy().to_string(),
+            path: display_path(&path),
             is_dir: meta.is_dir(),
             size: if meta.is_file() { meta.len() } else { 0 },
             modified_secs: meta
@@ -807,6 +807,29 @@ fn canonical(path: &str) -> Result<PathBuf, String> {
     fs::canonicalize(path).map_err(|e| format!("canonicalize {path}: {e}"))
 }
 
+/// Render a (typically canonicalized) path as the string handed to the frontend.
+///
+/// `fs::canonicalize` returns *verbatim* paths on Windows — `\\?\C:\proj\file`
+/// for a drive path, `\\?\UNC\server\share\...` for a network path. The frontend
+/// (`src/lib/paths.ts`) expects NATIVE paths (`C:\proj\file`, `\\server\share`)
+/// and prefix-matches `entry.path` against the project directory (stored without
+/// the verbatim prefix); the `\\?\` prefix would break that match and `file://`
+/// URI building. This strips it. No-op on Unix and for paths lacking the prefix.
+pub(crate) fn display_path(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            // `\\?\UNC\server\share` → `\\server\share`
+            return format!(r"\\{rest}");
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return rest.to_string();
+        }
+    }
+    s.into_owned()
+}
+
 fn collect_project_endings(
     root: &Path,
     dir: &Path,
@@ -1437,5 +1460,33 @@ mod tests {
     #[test]
     fn confine_abs_within_empty_roots_refuses_everything() {
         assert!(confine_abs_within(Path::new("/home/u/code/projectx/a"), &[]).is_err());
+    }
+
+    // ── display_path ───────────────────────────────────────────────────────
+
+    #[test]
+    fn display_path_is_noop_without_verbatim_prefix() {
+        // A plain path is returned unchanged on every platform.
+        let p = if cfg!(target_os = "windows") {
+            r"C:\Users\u\proj\file.txt"
+        } else {
+            "/home/u/proj/file.txt"
+        };
+        assert_eq!(display_path(Path::new(p)), p);
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn display_path_strips_windows_verbatim_prefixes() {
+        // Drive verbatim prefix is removed so the frontend sees a native path.
+        assert_eq!(
+            display_path(Path::new(r"\\?\C:\proj\file.txt")),
+            r"C:\proj\file.txt"
+        );
+        // UNC verbatim prefix collapses back to a `\\server\share` path.
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\share\file.txt")),
+            r"\\server\share\file.txt"
+        );
     }
 }

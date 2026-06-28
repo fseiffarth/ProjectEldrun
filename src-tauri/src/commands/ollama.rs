@@ -91,10 +91,11 @@ fn ollama_http(method: &str, path: &str, json_body: Option<&str>) -> Result<Stri
 fn friendly_ollama_error(raw: &str) -> String {
     let lower = raw.to_ascii_lowercase();
     if lower.contains("llama-server") && lower.contains("not found") {
+        let cmd = ollama_install_cmd();
         return format!(
             "Ollama's inference runner (llama-server) is missing, so Ollama can \
             serve its API but cannot load any model — the install is incomplete. \
-            Reinstall Ollama with `{OLLAMA_INSTALL_CMD}`."
+            Reinstall Ollama with `{cmd}`."
         );
     }
     raw.to_string()
@@ -102,31 +103,63 @@ fn friendly_ollama_error(raw: &str) -> String {
 
 // ── New management commands ───────────────────────────────────────────────
 
-/// True when the `ollama` binary is available in PATH.
+// PATH lookups go through the shared, cross-platform `crate::paths::binary_on_path`
+// (`where` on Windows, `which` elsewhere); see that module for the rationale.
+use crate::paths::binary_on_path;
+
+/// True when the `ollama` binary is available. Checks PATH first, then (on
+/// Windows) the well-known per-user install location, since winget/the GUI
+/// installer drop `ollama.exe` under `%LOCALAPPDATA%\Programs\Ollama` and a
+/// running Eldrun's inherited PATH won't pick it up until a new session.
 #[tauri::command]
 pub async fn ollama_is_installed() -> bool {
-    std::process::Command::new("which")
-        .arg("ollama")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    if binary_on_path("ollama") {
+        return true;
+    }
+    if cfg!(target_os = "windows") {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            if std::path::Path::new(&local)
+                .join("Programs")
+                .join("Ollama")
+                .join("ollama.exe")
+                .exists()
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
-/// The official, distro-agnostic Ollama install command. Kept as a constant so
-/// the backend installer and the UI's copy-to-clipboard fallback stay in sync.
-pub const OLLAMA_INSTALL_CMD: &str = "curl -fsSL https://ollama.com/install.sh | sh";
+/// The manual download page, offered as a last-resort fallback on every OS.
+pub const OLLAMA_DOWNLOAD_URL: &str = "https://ollama.com/download";
 
-/// Install Ollama via its official install script (Linux/macOS).
+/// The recommended Ollama install command for the host OS. Kept here so the
+/// backend installer, the error messages, and the UI's copy-to-clipboard
+/// fallback all stay in sync with whatever the installer actually runs.
 ///
-/// Runs `curl -fsSL https://ollama.com/install.sh | sh` and streams its combined
-/// stdout+stderr to the frontend line-by-line via `ollama-install-progress`
-/// events (`{ line }`) so the UI can show live progress. The script needs root
-/// to drop the binary into `/usr/local` and register the systemd service; it
-/// invokes `sudo` itself, so a fully non-interactive run only succeeds when sudo
-/// is passwordless or Eldrun runs as root. When it can't elevate, the UI falls
-/// back to the manual step-by-step instructions (and the same copyable command).
+/// - Windows: winget (present on all supported Windows 10/11 builds).
+/// - Linux/macOS: the official distro-agnostic install script.
+pub fn ollama_install_cmd() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "winget install --id Ollama.Ollama -e --silent --accept-source-agreements --accept-package-agreements"
+    } else {
+        "curl -fsSL https://ollama.com/install.sh | sh"
+    }
+}
+
+/// Install Ollama using the host OS's native package mechanism, streaming its
+/// combined stdout+stderr to the frontend line-by-line via
+/// `ollama-install-progress` events (`{ line }`) so the UI can show live progress.
+///
+/// Per-OS strategy (see [`ollama_install_cmd`]):
+/// - **Windows**: `winget install --id Ollama.Ollama …` (silent, per-user). winget
+///   ships with all supported Windows 10/11 builds; if it is absent or fails, the
+///   UI falls back to the manual command + the ollama.com download link.
+/// - **Linux/macOS**: the official `curl … install.sh | sh` script. It needs root
+///   to drop the binary and register the systemd service; it invokes `sudo` itself,
+///   so a non-interactive run only succeeds with passwordless sudo or as root.
+///
 /// Returns the install log on success, or the tail of the output on failure.
 #[tauri::command]
 pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
@@ -137,22 +170,38 @@ pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
         return Ok("Ollama is already installed.".to_string());
     }
 
-    if !cfg!(any(target_os = "linux", target_os = "macos")) {
-        return Err("Automatic install is only supported on Linux/macOS. \
-            Download Ollama from https://ollama.com/download."
-            .to_string());
-    }
+    let cmd = ollama_install_cmd();
+
+    // Build the OS-native invocation. We merge stderr into stdout (`2>&1`) at the
+    // shell level so a single reader sees every line in order. On unsupported
+    // platforms there is no automated path — point at the manual download.
+    let (program, args): (&str, Vec<String>) = if cfg!(target_os = "windows") {
+        ("cmd", vec!["/C".into(), format!("{cmd} 2>&1")])
+    } else if cfg!(any(target_os = "linux", target_os = "macos")) {
+        ("sh", vec!["-c".into(), format!("{cmd} 2>&1")])
+    } else {
+        return Err(format!(
+            "Automatic install isn't supported on this OS. Download Ollama from {OLLAMA_DOWNLOAD_URL}."
+        ));
+    };
+
+    // Per-OS hint appended to failure messages (the likely reason it didn't take).
+    let fail_hint: &str = if cfg!(target_os = "windows") {
+        "It may need winget (App Installer) or administrator rights"
+    } else {
+        "It likely needs sudo"
+    };
 
     let emit = |line: &str| {
         let _ = app.emit("ollama-install-progress", serde_json::json!({ "line": line }));
     };
     emit("Starting Ollama installer…");
 
-    // Merge stderr into stdout (`2>&1`) so a single reader sees every line in
-    // order, then stream each line to the UI as it arrives.
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{OLLAMA_INSTALL_CMD} 2>&1"))
+    // `command_no_window` suppresses the transient console window the `cmd`/`sh`
+    // wrapper would otherwise pop on Windows; progress is surfaced in-app via the
+    // piped stdout below.
+    let mut child = crate::paths::command_no_window(program)
+        .args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -181,20 +230,21 @@ pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
         let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
         return Err(if tail.is_empty() {
             format!(
-                "installer exited unsuccessfully ({status}). It likely needs sudo — \
-                run `{OLLAMA_INSTALL_CMD}` in a terminal."
+                "installer exited unsuccessfully ({status}). {fail_hint} — \
+                run `{cmd}` in a terminal."
             )
         } else {
             tail
         });
     }
 
-    // The post-install check is the real source of truth: a script can print a
-    // sudo warning to stderr yet still have placed the binary, or vice versa.
+    // The post-install check is the real source of truth: an installer can print a
+    // warning to stderr yet still have placed the binary, or vice versa.
     if !ollama_is_installed().await {
         return Err(format!(
-            "installer ran but `ollama` is still not on PATH. It likely needs \
-            sudo — run `{OLLAMA_INSTALL_CMD}` in a terminal.\n\n{combined}"
+            "installer ran but `ollama` is still not detected. {fail_hint}, or it \
+            may need a fresh session so the install dir is on PATH — run `{cmd}` in \
+            a terminal.\n\n{combined}"
         ));
     }
 
@@ -206,6 +256,45 @@ pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
     })
 }
 
+/// OS-appropriate install guidance for the frontend, so the UI can render the
+/// right command and wording without hardcoding a platform. `auto` is true when
+/// [`install_ollama`] can drive the install itself on this OS.
+#[derive(serde::Serialize, Clone)]
+pub struct OllamaInstallStrategy {
+    /// "windows" | "macos" | "linux" | "unknown".
+    pub os: String,
+    /// The exact command Eldrun runs / the user can copy-paste.
+    pub command: String,
+    /// Whether one-click `install_ollama` is supported on this OS.
+    pub auto: bool,
+    /// Manual download page, always provided as a last resort.
+    pub download_url: String,
+}
+
+/// Report the OS-dependent Ollama install strategy (detect OS + suggest command).
+#[tauri::command]
+pub async fn ollama_install_strategy() -> OllamaInstallStrategy {
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
+    };
+    OllamaInstallStrategy {
+        os: os.to_string(),
+        command: ollama_install_cmd().to_string(),
+        auto: cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )),
+        download_url: OLLAMA_DOWNLOAD_URL.to_string(),
+    }
+}
+
 // ── Vibe (local-model agent runtime) ──────────────────────────────────────
 //
 // Local Ollama models are driven through Mistral's `vibe` CLI (the Local Model
@@ -214,39 +303,62 @@ pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
 // We surface install/detection here, alongside the Ollama installer, so the
 // Ollama settings window can guide the user through the full prerequisite.
 
-/// The official Vibe install command. Installs via `uv` into the user's
-/// home (`~/.local/bin`); needs no `sudo`. Kept as a constant so the backend
-/// installer and the UI's copy-to-clipboard fallback stay in sync.
-pub const VIBE_INSTALL_CMD: &str = "curl -LsSf https://mistral.ai/vibe/install.sh | bash";
+/// The official Vibe install command for the host OS. Kept here so the backend
+/// installer, the error messages, and the UI's copy-to-clipboard fallback all
+/// stay in sync with whatever the installer actually runs. Both paths install
+/// per-user (no administrator rights / `sudo`).
+///
+/// - **Windows**: install Astral's `uv` (per-user, into `%USERPROFILE%\.local\bin`)
+///   via its PowerShell installer, then `uv tool install mistral-vibe`, which drops
+///   `vibe.exe` alongside it. uv isn't on `PATH` in the same session that just
+///   installed it, so the command invokes `uv.exe` by full path to work in one shot.
+/// - **Linux/macOS**: the official `curl … install.sh | bash` script (installs via
+///   `uv` into `~/.local/bin`).
+pub fn vibe_install_cmd() -> &'static str {
+    if cfg!(target_os = "windows") {
+        // PowerShell. The second statement calls uv by full path because the
+        // freshly-installed uv is not yet on this session's PATH.
+        "irm https://astral.sh/uv/install.ps1 | iex; & \"$env:USERPROFILE\\.local\\bin\\uv.exe\" tool install mistral-vibe"
+    } else {
+        "curl -LsSf https://mistral.ai/vibe/install.sh | bash"
+    }
+}
 
-/// True when the `vibe` binary is reachable. Checks `PATH` (via `which`) and the
-/// well-known user install locations the installer uses, since Eldrun's inherited
-/// `PATH` may omit `~/.local/bin` even when a login shell would include it.
+/// True when the `vibe` binary is reachable. Checks `PATH` (cross-platform, via
+/// `where`/`which`) and the well-known user install locations the installer uses,
+/// since Eldrun's inherited `PATH` may omit `~/.local/bin` even when a login shell
+/// would include it.
 #[tauri::command]
 pub async fn vibe_is_installed() -> bool {
-    let on_path = std::process::Command::new("which")
-        .arg("vibe")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if on_path {
+    if binary_on_path("vibe") {
         return true;
     }
     let home = crate::paths::home_dir();
-    [".local/bin/vibe", ".cargo/bin/vibe"]
-        .iter()
-        .any(|rel| home.join(rel).exists())
+    [".local/bin/vibe", ".cargo/bin/vibe"].iter().any(|rel| {
+        let base = home.join(rel);
+        if base.exists() {
+            return true;
+        }
+        // On Windows the install dir holds `vibe.exe` (the uv tool shim), which
+        // the bare extensionless relative path misses.
+        cfg!(target_os = "windows")
+            && ["exe", "cmd", "bat", "ps1"]
+                .iter()
+                .any(|ext| base.with_extension(ext).exists())
+    })
 }
 
-/// Install the Vibe CLI via its official install script (Linux/macOS).
+/// Install the Vibe CLI via its official per-user install command (see
+/// [`vibe_install_cmd`]).
 ///
-/// Runs `curl -LsSf https://mistral.ai/vibe/install.sh | bash` and streams its
-/// combined stdout+stderr to the frontend line-by-line via `vibe-install-progress`
-/// events (`{ line }`) so the UI can show live progress. The script installs into
-/// the user's home (no `sudo`), so this runs non-interactively. Returns the install
-/// log on success, or the tail of the output on failure.
+/// Streams the installer's combined stdout+stderr to the frontend line-by-line via
+/// `vibe-install-progress` events (`{ line }`) so the UI can show live progress. The
+/// install is per-user (no `sudo` / administrator rights), so this runs
+/// non-interactively. Returns the install log on success, or the tail of the output
+/// on failure.
+///
+/// Per-OS the command is driven through the native shell: PowerShell on Windows
+/// (uv → `uv tool install mistral-vibe`), the POSIX shell on Linux/macOS.
 #[tauri::command]
 pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
     use std::io::{BufRead, BufReader};
@@ -256,20 +368,38 @@ pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
         return Ok("Vibe is already installed.".to_string());
     }
 
-    if !cfg!(any(target_os = "linux", target_os = "macos")) {
-        return Err("Automatic install is only supported on Linux/macOS. \
+    let cmd = vibe_install_cmd();
+
+    // Build the OS-native invocation, merging stderr into stdout (`2>&1`) so a
+    // single reader sees every line in order.
+    let (program, args): (&str, Vec<String>) = if cfg!(target_os = "windows") {
+        (
+            "powershell",
+            vec![
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-Command".into(),
+                format!("{cmd} 2>&1"),
+            ],
+        )
+    } else if cfg!(any(target_os = "linux", target_os = "macos")) {
+        ("sh", vec!["-c".into(), format!("{cmd} 2>&1")])
+    } else {
+        return Err("Automatic install isn't supported on this OS. \
             See https://docs.mistral.ai/getting-started/quickstarts/vibe-code/install-cli."
             .to_string());
-    }
+    };
 
     let emit = |line: &str| {
         let _ = app.emit("vibe-install-progress", serde_json::json!({ "line": line }));
     };
     emit("Starting Vibe installer…");
 
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{VIBE_INSTALL_CMD} 2>&1"))
+    // `command_no_window` suppresses the transient console window the PowerShell/
+    // `sh` wrapper would otherwise pop on Windows; progress is surfaced in-app.
+    let mut child = crate::paths::command_no_window(program)
+        .args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -296,7 +426,7 @@ pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
         let tail: Vec<&str> = combined.lines().rev().take(20).collect();
         let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
         return Err(if tail.is_empty() {
-            format!("installer exited unsuccessfully ({status}). Run `{VIBE_INSTALL_CMD}` in a terminal.")
+            format!("installer exited unsuccessfully ({status}). Run `{cmd}` in a terminal.")
         } else {
             tail
         });
@@ -306,7 +436,7 @@ pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
     if !vibe_is_installed().await {
         return Err(format!(
             "installer ran but `vibe` is still not detected. It may need a new shell so \
-            `~/.local/bin` is on PATH — run `{VIBE_INSTALL_CMD}` in a terminal.\n\n{combined}"
+            the install dir (`~/.local/bin`) is on PATH — run `{cmd}` in a terminal.\n\n{combined}"
         ));
     }
 
@@ -316,6 +446,45 @@ pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
     } else {
         combined
     })
+}
+
+/// OS-appropriate Vibe install guidance for the frontend, so the UI renders the
+/// right command and wording without hardcoding a platform. `auto` is true when
+/// [`install_vibe`] can drive the install itself on this OS.
+#[derive(serde::Serialize, Clone)]
+pub struct VibeInstallStrategy {
+    /// "windows" | "macos" | "linux" | "unknown".
+    pub os: String,
+    /// The exact command Eldrun runs / the user can copy-paste.
+    pub command: String,
+    /// Whether one-click `install_vibe` is supported on this OS.
+    pub auto: bool,
+    /// Docs URL, always provided as a last resort.
+    pub docs: String,
+}
+
+/// Report the OS-dependent Vibe install strategy (detect OS + suggest command).
+#[tauri::command]
+pub async fn vibe_install_strategy() -> VibeInstallStrategy {
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
+    };
+    VibeInstallStrategy {
+        os: os.to_string(),
+        command: vibe_install_cmd().to_string(),
+        auto: cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )),
+        docs: "https://docs.mistral.ai/getting-started/quickstarts/vibe-code/install-cli".to_string(),
+    }
 }
 
 /// Return detailed info for every locally installed model, cross-referenced
@@ -531,10 +700,30 @@ pub async fn clear_pending_ollama_pull(model: String) {
 /// Load a model into memory now (an empty `/api/generate` warms it) and keep it
 /// resident until explicitly unloaded (`keep_alive: -1`), so the user controls
 /// residency by button rather than relying on first use to trigger the load.
+///
+/// Ollama's warm-up call returns only once the model is fully resident and streams
+/// no load percentage, so progress here is coarse: an `ollama-load-progress` event
+/// (`{ model, status }`, status `loading`→`success`/`error`) is emitted around the
+/// blocking call so any surface (the brain menu, the settings panel) can show a
+/// live "Loading into memory…" indicator for a load started anywhere.
 #[tauri::command]
-pub async fn load_ollama_model(model: String) -> Result<(), String> {
+pub async fn load_ollama_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let _ = app.emit(
+        "ollama-load-progress",
+        serde_json::json!({ "model": model, "status": "loading" }),
+    );
     let body = serde_json::json!({"model": model, "keep_alive": -1}).to_string();
-    ollama_http("POST", "/api/generate", Some(&body))?;
+    let result = ollama_http("POST", "/api/generate", Some(&body));
+    let _ = app.emit(
+        "ollama-load-progress",
+        match &result {
+            Ok(_) => serde_json::json!({ "model": model, "status": "success" }),
+            Err(e) => serde_json::json!({ "model": model, "status": "error", "error": e }),
+        },
+    );
+    result?;
     Ok(())
 }
 
@@ -660,8 +849,9 @@ pub async fn ollama_registry_size(model: String) -> Result<u64, String> {
     let url = format!("https://registry.ollama.ai/v2/{repo}/manifests/{tag}");
 
     // No shell — args are passed directly, and `validate_model_name` already
-    // restricts the characters that reach the URL.
-    let output = std::process::Command::new("curl")
+    // restricts the characters that reach the URL. `command_no_window` keeps
+    // `curl` from flashing a console window on Windows (Win10/11 ship curl.exe).
+    let output = crate::paths::command_no_window("curl")
         .args([
             "-fsSL",
             "-H",
@@ -826,8 +1016,9 @@ pub async fn search_ollama_registry(
     }
 
     // No shell — args passed directly; the URL is built only from a validated
-    // capability/sort and a percent-encoded query.
-    let output = std::process::Command::new("curl")
+    // capability/sort and a percent-encoded query. `command_no_window` avoids a
+    // console-window flash on Windows.
+    let output = crate::paths::command_no_window("curl")
         .args(["-fsSL", &url])
         .output()
         .map_err(|e| format!("failed to query registry: {e}"))?;
@@ -1078,29 +1269,47 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         return Ok(());
     }
 
-    // Try the system service first — it runs as the ollama user and sees all
-    // system-wide models (e.g. /usr/share/ollama/.ollama/models).
-    let service_started = std::process::Command::new("systemctl")
-        .args(["start", "ollama"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    // Try the system service first (Linux only) — it runs as the ollama user and
+    // sees all system-wide models (e.g. /usr/share/ollama/.ollama/models).
+    #[cfg(target_os = "linux")]
+    {
+        let service_started = std::process::Command::new("systemctl")
+            .args(["start", "ollama"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
 
-    if service_started {
-        let deadline = Instant::now() + Duration::from_secs(8);
-        if wait_for_ollama(deadline) {
-            return Ok(());
+        if service_started {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            if wait_for_ollama(deadline) {
+                return Ok(());
+            }
         }
     }
 
     // Fall back to spawning a user process, but point it at the system models
-    // directory if it exists so models installed via the system service are visible.
-    let mut cmd = std::process::Command::new("ollama");
+    // directory if it exists so models installed via the system service are
+    // visible. Resolve `ollama` to an absolute path: on Windows the winget/GUI
+    // installer drops `ollama.exe` under %LOCALAPPDATA%\Programs\Ollama, which is
+    // detected by `ollama_is_installed` but is not on this process's PATH.
+    let ollama_bin = crate::paths::resolve_offpath_binary("ollama")
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| "ollama".into());
+    let mut cmd = std::process::Command::new(&ollama_bin);
     cmd.arg("serve")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
+    // Background server: keep it from flashing/owning a console window on Windows.
+    // (`ollama_bin` may be a full path, so we can't route through the &str-keyed
+    // `command_no_window` helper here — set the flag directly.)
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
     if let Some(sys_models) = system_ollama_models_dir() {
         cmd.env("OLLAMA_MODELS", sys_models);
@@ -2202,7 +2411,7 @@ mod tests {
             "missing-runner error should be rewritten to an actionable message, got: {msg}"
         );
         // It points the user at the reinstall command.
-        assert!(msg.contains(OLLAMA_INSTALL_CMD));
+        assert!(msg.contains(ollama_install_cmd()));
         // And it no longer leaks the raw cmake/build hint.
         assert!(!msg.contains("cmake"));
     }
