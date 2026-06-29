@@ -55,6 +55,7 @@ function setupInvoke() {
       );
     }
     if (cmd === "git_status") return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
+    if (cmd === "git_unpushed_commits") return Promise.resolve([]);
     if (cmd === "git_file_statuses") return Promise.resolve({});
     if (cmd === "load_project") return Promise.resolve({});
     if (cmd === "list_project_endings") return Promise.resolve([]);
@@ -112,8 +113,10 @@ describe("file tree navigation", () => {
     const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("created.ts");
     await renderPanel();
 
-    // Right-click an entry to open the shared context menu, then choose New File.
-    fireEvent.contextMenu(await screen.findByText("sub"));
+    // Right-click the file-tree background to open the root context menu (New
+    // File / New Folder live there, not on the per-entry menu), then choose New File.
+    await screen.findByText("sub");
+    fireEvent.contextMenu(document.querySelector(".file-tree")!);
     await user.click(await screen.findByText("New File"));
 
     expect(promptSpy).toHaveBeenCalled();
