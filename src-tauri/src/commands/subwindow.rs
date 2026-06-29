@@ -76,8 +76,18 @@ pub fn detached_size(width: Option<f64>, height: Option<f64>) -> Option<Size> {
 /// registry always carries a `window_id` before the window is usable — an
 /// unresolved id would float across projects until resolved (reviewer Finding 7).
 /// Returns the registry id the frontend uses to later dock it back.
+///
+/// MUST be `async`. A synchronous Tauri command runs on the main (UI) thread, and
+/// `WebviewWindowBuilder::build()` on Windows blocks waiting for the main-thread
+/// event loop to pump WebView2's `create_controller` callback — which the in-flight
+/// sync command is itself blocking → deadlock (wry#583 / tauri#4121), surfacing as
+/// a blank white popout that never renders. An `async` command is driven off the
+/// main thread, so `.build()` can dispatch to and await the (now free) event loop.
+/// This body holds no lock guard across an `.await` (it has none), so the future
+/// stays `Send`. On Linux/macOS the loop isn't blocked the same way, which is why a
+/// sync command worked on the dev box but not on Windows (#42).
 #[tauri::command]
-pub fn detach_subwindow(
+pub async fn detach_subwindow(
     app: AppHandle,
     workspace: State<'_, WorkspaceStateArc>,
     win_registry: State<'_, WindowRegistryState>,

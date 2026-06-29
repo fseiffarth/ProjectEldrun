@@ -9,8 +9,9 @@ embeds other apps: projects own their windows and desktop context, and selecting
 a project swaps that whole context — windows, files, apps, Git state, and layout
 — as a single unit. The AI agent terminals, file viewers, and app launcher ride
 on top, living *inside* a project once its desktop is restored. Built with
-**Tauri 2 + React + TypeScript** and optional KDE/X11 workspace integration;
-Linux-first today, with Windows and macOS support on the roadmap.
+**Tauri 2 + React + TypeScript**. Linux (X11 / KDE Wayland) and Windows both get
+native workspace, app-launch, default-app, and download integration today; macOS
+runs as a shell with a no-op workspace backend (on the roadmap).
 
 ---
 
@@ -42,12 +43,13 @@ and layout; the direction of travel adds notes, AI/task metadata, and workflow
 state, so a project carries everything it needs to be resumed exactly where you
 left it.
 
-Today the implementation targets **Linux (X11 and KDE Wayland)** — the fastest
-path to reliable window control — but the design is cross-platform by intent.
-The long-term shape is a stable Eldrun core behind pluggable compositor backends
-(X11, KDE/KWin, Hyprland, GNOME Shell, i3, Sway, and other Wayland
-environments), native Windows and macOS support, and eventually an
-Eldrun-native compositor for full control of projects, windows, and layout.
+The implementation runs natively on **Linux (X11 and KDE Wayland)** and
+**Windows** today — both with real per-project window parking — and the design is
+cross-platform by intent. The long-term shape is a stable Eldrun core behind
+pluggable compositor/window backends (X11, KDE/KWin, Hyprland, GNOME Shell, i3,
+Sway, and other Wayland environments; the Win32 backend on Windows), native macOS
+support, and eventually an Eldrun-native compositor for full control of projects,
+windows, and layout.
 
 See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
 
@@ -90,7 +92,9 @@ desktop between projects.
 - **Terminal UI:** xterm.js (`@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`)
 - **Backend:** Rust, Tauri v2
 - **PTY:** `portable-pty` crate
-- **Workspace:** `zbus` (DBus) and `xcb` (X11) — Linux only
+- **Workspace:** `zbus` (DBus) and `xcb` (X11) on Linux; the Win32 API
+  (`windows` crate — `SW_HIDE`/`SW_SHOW`, `EnumWindows`, virtual-desktop manager,
+  shell-link/icon resolution) on Windows
 
 ## Download
 
@@ -103,15 +107,15 @@ below.
 
 ## Requirements
 
-- Linux desktop (X11 or KDE Wayland)
+- Linux desktop (X11 or KDE Wayland) **or** Windows 10/11
 - Rust toolchain (`rustup`) and Node 18+
-- `sshfs` + FUSE (optional, only for remote/SSH projects)
+- Remote/SSH projects (optional): `sshfs` + FUSE on Linux, or
+  [SSHFS-Win](https://github.com/winfsp/sshfs-win) (+ WinFsp) on Windows
 
 ```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Install Rust (all platforms): https://rustup.rs
 
-# Tauri system dependencies (Debian / Ubuntu)
+# Linux: Tauri system dependencies (Debian / Ubuntu)
 sudo apt install libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
     libayatana-appindicator3-dev librsvg2-dev
 
@@ -119,24 +123,26 @@ sudo apt install libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
 npm install
 ```
 
+On Windows the Tauri webview uses the system WebView2 runtime (preinstalled on
+Windows 11); no GTK/WebKit packages are needed.
+
 ## Run
 
+A development build with hot-reload (all platforms):
+
 ```bash
-./start-eldrun-tauri.sh
+npm run tauri:dev
 ```
 
-Or for a development build with hot-reload:
+On Linux you can also use the convenience scripts in `docs/`:
+`docs/start-eldrun-tauri.sh` (packaged build) and
+`docs/start-eldrun-tauri-hotreload.sh` (hot reload). The desktop launchers
+`docs/Eldrun.desktop` and `docs/EldrunHotReload.desktop` carry a
+`/path/to/projecteldrun/...` placeholder — point them at your checkout, then
+install them:
 
 ```bash
-npm run tauri dev
-```
-
-The desktop launchers are `Eldrun.desktop` for the normal packaged app and
-`EldrunHotReload.desktop` for hot reload. They already point at this
-checkout's scripts, so you can install them as-is:
-
-```bash
-cp Eldrun*.desktop ~/.local/share/applications/
+cp docs/Eldrun*.desktop ~/.local/share/applications/
 update-desktop-database ~/.local/share/applications/
 ```
 
@@ -144,11 +150,14 @@ update-desktop-database ~/.local/share/applications/
 
 ### Project desktop (the differentiator)
 
-- **Workspace management**: X11 two-desktop parking model and KDE Wayland
-  per-project virtual desktop model; global app windows stay visible across
-  all project switches.
-- **External window tracking**: file opens use `xdg-open`; launched windows are
-  tracked by PID and shown in the right panel instead of embedded in the UI.
+- **Workspace management**: X11 two-desktop parking model, KDE Wayland
+  per-project virtual desktop model, and a Windows `SW_HIDE`/`SW_SHOW` parking
+  model (with best-effort virtual-desktop pinning); global app windows stay
+  visible across all project switches.
+- **External window tracking**: file opens use `xdg-open` (Linux) / the shell
+  open verb (Windows); launched windows are tracked by PID — found via
+  `EnumWindows` on Windows — and shown in the right panel instead of embedded in
+  the UI.
 - **Downloads routing**: `~/eldrun/downloads` symlink always points to the active
   project's `tmp/downloads/`; Firefox and Chromium preferences are updated
   automatically.
@@ -197,7 +206,7 @@ update-desktop-database ~/.local/share/applications/
   with the agent CLI auto-detected/bootstrapped on the remote and authenticated
   with the remote's own login. VPN-gated hosts bring up an OpenVPN tunnel first.
   Auth uses your existing SSH setup (keys / agent / `~/.ssh/config`,
-  `BatchMode`); requires `sshfs`/FUSE on the local machine.
+  `BatchMode`); requires `sshfs`/FUSE on Linux or SSHFS-Win/WinFsp on Windows.
 - **Publish to GitHub**: a local (or SSH-remote) git project can be published to
   a new GitHub repository from the project pill menu. Choose public or private;
   Eldrun runs `gh repo create … --source=. --push` via the system `gh` CLI (over
@@ -257,10 +266,10 @@ app until they land.
 | **Jupyter notebook** | `.ipynb` | ✅ Shipping | Read-only render of cells top-to-bottom — markdown cells, Python-highlighted code cells, and their classified outputs. |
 | **Diff / patch** | `.diff` `.patch` | ✅ Shipping | Color-coded add/del rendering that reads in light and dark themes. |
 | **OpenDocument Text** | `.odt` | ✅ Shipping | Read-only: unzips the archive and renders `content.xml` to a safe HTML subset (headings, lists, tables, images). |
-| **Spreadsheet** | `.xlsx` `.xls` `.xlsm` | 🚧 In progress | Backend reader (calamine) into the table grid, with a sheet picker. |
-| **SQLite** | `.db` `.sqlite` `.sqlite3` | 🚧 In progress | Read-only table browser: table list + paged row grid. |
-| **HTML / SVG** | `.html` `.htm` `.svg` | 🚧 In progress | Sandboxed preview (no scripts) with a Preview ⇄ Source toggle. |
-| **Audio / video** | `.mp3` `.mp4` `.webm` `.wav` … | 🚧 In progress | Native in-tab `<audio>`/`<video>` player. |
+| **Spreadsheet** | `.xlsx` `.xls` `.xlsm` | ✅ Shipping | Backend reader (calamine) into the table grid, with a sheet picker. |
+| **SQLite** | `.db` `.sqlite` `.sqlite3` | ✅ Shipping | Read-only table browser: table list + paged row grid. |
+| **HTML / SVG** | `.html` `.htm` `.svg` | ✅ Shipping | Editable source editor with a sandboxed (no-script) live preview, Preview ⇄ Source toggle. |
+| **Audio / video** | `.mp3` `.mp4` `.webm` `.wav` … | ✅ Shipping | Native in-tab `<audio>`/`<video>` player. |
 
 Other office formats (`.docx`, `.pptx`, `.ods`, …) open in their external
 default app. Viewer behaviour is configured per file type under **Settings →
@@ -300,11 +309,11 @@ workspace environment.
 
 **Session resume.** Claude and Codex tabs that carry a session id are persisted
 across restarts and respawned with their prior conversation. Eldrun installs a
-`SessionStart` hook (into `~/.claude/settings.json` and `~/.codex/config.toml`)
-that records each tab's live session id keyed by an `ELDRUN_TAB_UID` env var, so
-resume follows the live session even across a `/clear`. (Codex hooks need a
-one-time `/hooks` trust before they fire; Gemini and Vibe tabs are still
-dropped.)
+`SessionStart` hook (into `~/.claude/settings.json` and `~/.codex/config.toml`) —
+a POSIX shell script on Linux, a PowerShell `.ps1` on Windows — that records each
+tab's live session id keyed by an `ELDRUN_TAB_UID` env var, so resume follows the
+live session even across a `/clear`. (Codex hooks need a one-time `/hooks` trust
+before they fire; Gemini and Vibe tabs are still dropped.)
 
 Local Ollama models are available from the tab `+` menu when Ollama is
 installed and reachable. Eldrun can start the Ollama service, list installed
@@ -320,8 +329,8 @@ configuration.
 | **Linux — X11**           | Yes                | Two-desktop workspace parking model (EWMH/xcb). Primary development target.                  |
 | **Linux — KDE Wayland**   | Yes                | Per-project virtual desktop model via KWin DBus scripting. KDE 5 and KDE 6 supported.        |
 | **Linux — other Wayland** | Partial            | Null backend (no workspace switching, no sticky windows). Terminal and file management work. |
-| **Windows**               | Experimental shell | Null workspace backend. No native window/default-app/download integrations.                  |
-| **macOS**                 | Experimental shell | Null workspace backend. No native window/default-app/download integrations.                  |
+| **Windows**               | Yes                | Win32 `SW_HIDE`/`SW_SHOW` parking model (+ best-effort virtual-desktop pinning). Start-Menu app launch with `.lnk`/icon resolution, default-app mapping, downloads routing, external-window tracking, OpenVPN, sshfs via SSHFS-Win, and Claude/Codex agent resume. |
+| **macOS**                 | Experimental shell | Null workspace backend (no per-project window parking). Browser downloads config and local Ollama detection work; app launching and file defaults fall back to the OS. |
 
 ### Platform and packaging
 
@@ -330,23 +339,25 @@ configuration.
 - **Keyboard shortcuts**: Eldrun opens fullscreen by default; `F11` toggles
   fullscreen; `Super` toggles all panels.
 - **Crash logging**: Rust panic hook appends to `~/.local/share/eldrun/crash.log`.
-- **Packaging**: Debian `.deb` and AppImage targets.
+- **Packaging**: Linux `.deb` and AppImage plus a Windows NSIS `.exe` installer,
+  built and published per `v*` tag by `.github/workflows/ci-cd.yml`.
 
 ## Current Limits
 
-- Live X11 window embedding (frameless reparenting of an external app into a
-  tab) is not yet implemented; files render in built-in in-app viewers where
-  available, otherwise open via `xdg-open` and are tracked as external windows.
+- Live window embedding (frameless reparenting of an external app into a tab) is
+  not yet implemented; files render in built-in in-app viewers where available,
+  otherwise open in the OS default app (`xdg-open` / shell open) and are tracked
+  as external windows.
 - KDE Wayland workspace management needs live-session QA.
+- macOS runs on the null workspace backend (no per-project window parking).
 - Terminal/tab layout is persisted per project; shell, file-viewer, and
   resumable Claude/Codex agent tabs are restored on relaunch, but other agent
   tabs (Gemini, Vibe) and live PTY scrollback are not.
 - Detached (popped-out) subwindows and project-box scopes are session-only: the
   former re-docks and the latter's tabs are dropped on project switch / restart.
 - Non-KDE Wayland compositors fall back to the null backend.
-- Some native viewers are still landing (spreadsheets, SQLite, HTML/SVG,
-  audio/video — marked 🚧 above); until each lands, those types open in the
-  external default app.
+- Remaining office formats (`.docx`, `.pptx`, `.ods`, …) have no native viewer
+  yet and open in the external default app.
 
 ## Project Storage
 
@@ -368,8 +379,9 @@ Global Eldrun state lives in `~/.local/share/eldrun/`:
   each local Ollama model tab.
 
 Project-local state lives in each project's `project.json`, alongside
-scaffolded files such as `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `TODO.md`,
-`ROADMAP.md`, `STATUS.md`, and `DOCUMENTATION.md`.
+scaffolded files (created when missing): `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
+`TODO.md`, `ROADMAP.md`, `STATUS.md`, `README.md`, `DOCUMENTATION.md`, plus
+`.gitignore` and `.claude/settings.json`.
 
 See [DOCUMENTATION.md](DOCUMENTATION.md) for the detailed architecture, data
 schemas, behavior notes, and known limitations.

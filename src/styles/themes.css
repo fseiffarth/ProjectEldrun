@@ -41,6 +41,33 @@ html, body, #root {
   height: 100%;
 }
 
+/* #42 (Windows): while the popout is moved by a native title-bar drag, take the
+   heavy pane content OUT of compositing so WebView2 only paints the cheap
+   placeholder and can keep up with the OS-moved frame (otherwise the terminal
+   canvases lag/swim behind the frame). `visibility: hidden` (not display:none)
+   keeps the layout intact, so no xterm reflow/refit churn on release — the
+   content reappears at the same size the instant the move ends. */
+.detached-center.moving .pane-layer {
+  visibility: hidden;
+}
+/* The placeholder shown in place of the hidden content during the move. Solid,
+   opaque, trivially cheap to composite. Fills the body (its positioning context,
+   `.detached-body { position: relative }`); sits above the panes but below nothing
+   that matters during a move. Click-through so it never swallows the gesture. */
+.detached-move-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel);
+  color: var(--text-muted, #9fb0d0);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
 /* #42: the popout's own title bar — a full-width strip above the tab layout that
    always hosts the min/max/close controls in the top-right corner. Before, the
    controls lived in the root group's tab bar; once the popout was split the root
@@ -2863,9 +2890,8 @@ select option {
 }
 .set-default-app-row {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   text-align: left;
   background: transparent;
@@ -2884,6 +2910,25 @@ select option {
 }
 .set-default-app-row.selected .set-default-app-exec {
   color: rgba(255, 255, 255, 0.8);
+}
+.set-default-app-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  image-rendering: -webkit-optimize-contrast;
+}
+.set-default-app-icon-placeholder {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+.set-default-app-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
 }
 .set-default-app-name {
   flex: 1;
@@ -2905,8 +2950,34 @@ select option {
   gap: 6px;
   margin-top: 4px;
 }
+.set-default-app-manual button,
+.set-default-app-actions button {
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 5px 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+}
 .set-default-app-manual button {
   flex-shrink: 0;
+}
+.set-default-app-manual button:hover,
+.set-default-app-actions button:not(:disabled):hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+.set-default-app-actions button:last-child {
+  background: var(--accent);
+  color: var(--bg-main);
+  border-color: var(--accent);
+}
+.set-default-app-actions button.danger {
+  color: var(--danger);
+}
+.set-default-app-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 .set-default-app-actions {
   display: flex;

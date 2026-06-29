@@ -10,7 +10,7 @@ import {
   type PhysPoint,
   type WindowFrame,
 } from "../../lib/coords";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform";
 import {
   DETACHED_DRAG_END,
   DETACHED_DRAG_MOVE,
@@ -120,6 +120,13 @@ export function DetachedCenterPanel({
   // the toggle on our label-namespaced channel and commits the dock itself (it
   // owns the layout); we only render the cue. See `detachedDropPreviewEvent`.
   const [dropActive, setDropActive] = useState(false);
+  // #42 (Windows): true while the popout is being moved by a NATIVE title-bar drag.
+  // It swaps the heavy pane content (terminal canvases) for a cheap placeholder so
+  // WebView2 has a trivial surface to composite during the OS modal move loop and
+  // can keep up with the frame — the panes would otherwise visibly lag/swim behind
+  // the moving frame. Set on the first `onMoved`, cleared on release (or when the
+  // window stops moving), so a plain title-bar click never flashes the placeholder.
+  const [windowDragging, setWindowDragging] = useState(false);
   // Within-bar reorder visuals, driven by THIS popout's own drag store (a
   // separate JS heap from the main window). While a tab is dragged, the dragged
   // tab collapses and a gap slides open at the live drop slot.
@@ -692,6 +699,49 @@ export function DetachedCenterPanel({
     });
   };
 
+  // #42 (Windows): show the cheap move placeholder for the duration of a NATIVE
+  // title-bar drag (`startDragging`), so WebView2 isn't repainting the terminal
+  // canvases during the OS modal move loop (which it can't do fast enough → the
+  // content lags the frame). End detection is deliberately belt-and-suspenders
+  // because the native move loop can swallow the terminal `pointerup`:
+  //   • show on the FIRST `onMoved` (so a non-drag click never flashes it),
+  //   • hide on `pointerup`/`pointercancel` (the normal release, cursor over us),
+  //   • hide once the window has stopped moving for a beat (release over ANOTHER
+  //     monitor, where our webview never sees the pointerup), and
+  //   • a hard timeout so the placeholder can never get stuck on.
+  const beginWindowMove = () => {
+    const win = getCurrentWindow();
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    let unMoved: (() => void) | undefined;
+    let shown = false;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (idle) clearTimeout(idle);
+      clearTimeout(hardStop);
+      unMoved?.();
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      if (shown) setWindowDragging(false);
+    };
+    const onMoved = () => {
+      if (!shown) {
+        shown = true;
+        setWindowDragging(true);
+      }
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(finish, 250);
+    };
+    const hardStop = setTimeout(finish, 10000);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    win
+      .onMoved(onMoved)
+      .then((fn) => (done ? fn() : (unMoved = fn)))
+      .catch(() => {});
+  };
+
   // #42: grab the popout's outer title bar to move/dock the WHOLE window. Mirrors
   // the group-bar handle, but anchored to the always-full-width title strip so it
   // works the same whether or not the content is split. The window controls carry
@@ -701,6 +751,23 @@ export function DetachedCenterPanel({
     const target = e.target as HTMLElement;
     if (target.closest(".detached-titlebar-controls, button, .no-drag")) return;
     e.preventDefault();
+    // Windows: move the borderless popout with the NATIVE OS window drag, the same
+    // mechanism the main window's HeaderBar uses. The custom poll+setPosition dock
+    // gesture (`beginDockDrag`) can't move the window on Windows — window-follow is
+    // disabled there (`followWindowOnDockDrag=false`), AND the focus loss when the
+    // main window paints its dock ghost trips the `blur` backstop in
+    // `bindDragRelease` (armed because `needsPointerCapture` is true on Windows),
+    // which aborts the gesture with `cancelled=true` and so SKIPS the on-release
+    // `setPosition`. The popout was therefore frozen during the drag and never
+    // jumped on release. `startDragging` hands the move to the OS: live, DPI-correct,
+    // and correct across monitors. Dock-back-into-main stays available via the group
+    // tab-bar handle (`onGroupBarPointerDown`). Other platforms keep the unified
+    // move+dock gesture, where window-follow already works — untouched.
+    if (PLATFORM === "windows") {
+      beginWindowMove();
+      void getCurrentWindow().startDragging().catch(() => {});
+      return;
+    }
     const first = allGroups(tree)[0];
     const activeLabel =
       (first ? tabs.find((t) => t.key === first.activeKey)?.label : undefined) ?? "Subwindow";
@@ -927,8 +994,15 @@ export function DetachedCenterPanel({
     );
   };
 
+  // Label shown on the move placeholder: the first group's active tab, else a
+  // generic fallback. Cheap to compute; only painted while `windowDragging`.
+  const firstGroup = allGroups(tree)[0];
+  const moveLabel =
+    (firstGroup ? tabs.find((t) => t.key === firstGroup.activeKey)?.label : undefined) ??
+    "Subwindow";
+
   return (
-    <div className="detached-center center-panel">
+    <div className={`detached-center center-panel${windowDragging ? " moving" : ""}`}>
       {/* #42: the popout's own title bar — a full-width strip ABOVE the tab layout
           that always hosts the min/max/close controls top-right. They used to live
           in the root group's tab bar, which slid left (with the root group) once
@@ -946,6 +1020,15 @@ export function DetachedCenterPanel({
         {/* Split preview: the translucent half/whole a split drop would carve out,
             drawn above the per-group panes (mirrors the main window). */}
         <SplitPreviewOverlay groupRects={groupRects} />
+        {/* #42 (Windows): the move placeholder. While shown, `.detached-center.moving`
+            hides the heavy pane content so this trivial surface is all WebView2 has to
+            composite during the native drag — keeping the content aligned with the
+            frame instead of lagging behind it. */}
+        {windowDragging && (
+          <div className="detached-move-overlay">
+            <span>{moveLabel}</span>
+          </div>
+        )}
       </div>
       {dropActive && <div className="detached-drop-target" />}
       <DragGhost />
