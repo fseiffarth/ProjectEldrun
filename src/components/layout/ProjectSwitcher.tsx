@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ProjectPill, PILL_DRAG_TYPE } from "../projects/ProjectPill";
 import { BoxPill } from "../projects/BoxPill";
@@ -39,7 +38,6 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const [showSettings, setShowSettings] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanelKind>("main");
-  const [ollamaInstalled, setOllamaInstalled] = useState(false);
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [dialog, setDialog] = useState<"new" | "import" | null>(null);
 
@@ -53,25 +51,6 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   }, [open]);
   const pillsScrollRef = useRef<HTMLDivElement>(null);
   const [pillOverflow, setPillOverflow] = useState({ left: false, right: false });
-
-  // Poll while Ollama is still undetected so installing it mid-session flips the
-  // "Install Ollama" entry to "Ollama Models" without a restart; stop once found.
-  useEffect(() => {
-    if (ollamaInstalled) return;
-    let cancelled = false;
-    const check = () =>
-      invoke<boolean>("ollama_is_installed")
-        .then((ok) => {
-          if (!cancelled) setOllamaInstalled(ok);
-        })
-        .catch(() => {});
-    void check();
-    const id = window.setInterval(check, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [ollamaInstalled]);
 
   // Allow other components (e.g. the header's Local Model button) to open the
   // settings dialog on a specific panel via a window event.
@@ -244,7 +223,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // children, so a press on one lands on it (target !== currentTarget) and is
   // left alone. Bypasses the header's `.no-drag` by dragging directly. (#dnd)
   const startWindowDrag = (e: React.MouseEvent) => {
-    if (e.buttons !== 1) return;
+    // `button` (singular, 0 = left), not `buttons`: WebKitGTK reports
+    // `buttons === 0` on the opening mousedown, which swallowed the drag on Linux.
+    if (e.button !== 0) return;
     if (e.target !== e.currentTarget) return;
     getCurrentWindow().startDragging().catch(() => {});
   };
@@ -405,6 +386,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         <div className="project-switcher-add-wrap" onClick={(e) => e.stopPropagation()}>
           <button
             className="project-switcher-action-btn"
+            data-hint-anchor="settings"
             title="Settings"
             onClick={() => {
               setShowAddMenu(false);
@@ -418,14 +400,17 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("main"); setShowSettings(true); }}>
                 Settings
               </button>
-              <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("ollama"); setShowSettings(true); }}>
-                {ollamaInstalled ? "Ollama Models" : "Install Ollama"}
-              </button>
               <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("help"); setShowSettings(true); }}>
                 Feature Guide
               </button>
               <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:open-how-to-start")); }}>
                 How to start
+              </button>
+              <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:start-tour")); }}>
+                Take a tour
+              </button>
+              <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:open-lessons")); }}>
+                Lessons
               </button>
             </div>
           )}

@@ -14,15 +14,14 @@
  * `file://` URIs, and round-tripped paths read correctly.
  */
 
-/** True when running on Windows, detected once from the webview. Only consulted
- *  when a path's own separators can't reveal its style (e.g. a bare relative
- *  segment with no separator at all). */
-export const IS_WINDOWS: boolean = (() => {
-  if (typeof navigator === "undefined") return false;
-  const platform = navigator.platform || "";
-  if (platform) return /^win/i.test(platform);
-  return /windows/i.test(navigator.userAgent || "");
-})();
+// OS detection lives in the dependency-free `platform.ts` single source of
+// truth. Imported for local use (sepFor) AND re-exported under the stable
+// `IS_WINDOWS` name this widely-imported module has always exposed. Only
+// consulted when a path's own separators can't reveal its style (e.g. a bare
+// relative segment with no separator at all).
+import { IS_WINDOWS } from "./platform";
+
+export { IS_WINDOWS };
 
 /** A Windows drive prefix like `C:` (anchored at the start). */
 const DRIVE_RE = /^[a-zA-Z]:(?=[/\\]|$)/;

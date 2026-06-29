@@ -1,10 +1,23 @@
-import { IS_WINDOWS } from "./paths";
+import { IS_MAC, IS_WINDOWS } from "./platform";
 
 // The panel-toggle key reads as the Windows key on Windows (the webview reports
-// it as "Meta"), and "Super" on Linux/KDE — keep onboarding copy honest per OS.
-// Single source of truth shared by the Feature Guide, the How-to-start dialog,
-// and the contextual hints so the wording never drifts between them.
-export const PANEL_TOGGLE_KEY = IS_WINDOWS ? "the Windows key" : "Super";
+// it as "Meta"), "Cmd (⌘)" on macOS, and "Super" on Linux/KDE — keep onboarding
+// copy honest per OS. Single source of truth shared by the Feature Guide, the
+// How-to-start dialog, and the contextual hints so the wording never drifts.
+export const PANEL_TOGGLE_KEY = IS_MAC
+  ? "Cmd (⌘)"
+  : IS_WINDOWS
+    ? "the Windows key"
+    : "Super";
+
+// How to enter "focus mode" (panels hidden). On Linux/Windows a lone modifier
+// (Super / the Windows key) toggles the panels; on macOS that key is reserved
+// for Cmd shortcuts, so the lone-key toggle is disabled (see useKeyboard) — there
+// the panels stay reachable via the cursor-to-edge reveal. F11 always toggles
+// fullscreen. Keeps the onboarding copy accurate per OS.
+export const FOCUS_MODE_TIP = IS_MAC
+  ? "Panels auto-reveal when you push the cursor to a screen edge; press F11 for fullscreen."
+  : `Press ${PANEL_TOGGLE_KEY} (while Eldrun is focused) to hide the panels for a full-screen terminal, and F11 for fullscreen.`;
 
 /** One numbered step in the first-run "How to start" instruction. The same copy
  *  feeds the dialog and the Feature Guide so onboarding stays in lockstep. */
@@ -32,7 +45,7 @@ export const HOW_TO_START_STEPS: HowToStep[] = [
   {
     title: "Find your files and focus",
     body:
-      `Push your cursor to the right edge to reveal the file tree; click the pin to dock it. Press ${PANEL_TOGGLE_KEY} (while Eldrun is focused) to hide the panels for a full-screen terminal, and F11 for fullscreen.`,
+      `Push your cursor to the right edge to reveal the file tree; click the pin to dock it. ${FOCUS_MODE_TIP}`,
   },
 ];
 
@@ -92,7 +105,7 @@ export const HINTS: HintDef[] = [
     anchor: null,
     placement: "top",
     title: "Focus mode",
-    body: `Press ${PANEL_TOGGLE_KEY} (while Eldrun is focused) to hide the panels for a full-screen terminal. F11 toggles fullscreen.`,
+    body: FOCUS_MODE_TIP,
     when: (c) => c.activeId !== null,
   },
   {

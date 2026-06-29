@@ -108,6 +108,10 @@ export interface Settings {
   min_subwindow_height?: number;
   /** When true, in-app editors debounce-save edits automatically (#47). Default OFF. */
   autosave?: boolean;
+  /** When true (the default), the text/TeX editors tint recently typed runs with a
+   *  sequential new→old colour trail that fades as you keep typing. Default ON;
+   *  only an explicit `false` disables it. */
+  change_tint?: boolean;
   /** Per-type native-viewer prefs (#48): opt-in local autocomplete (#45). */
   viewer_prefs?: Record<string, ViewerPref>;
   global_apps?: Record<string, GlobalAppEntry>;
@@ -126,6 +130,10 @@ export interface Settings {
   hints_seen?: string[];
   /** Master switch for the contextual hint system; default ON when unset. */
   hints_enabled?: boolean;
+  /** True once the guided "Take a tour" walkthrough has been completed or
+   *  skipped. Cosmetic only (never auto-launches the tour); the tour is always
+   *  replayable from the gear menu / Settings. */
+  tour_completed?: boolean;
   [key: string]: unknown;
 }
 

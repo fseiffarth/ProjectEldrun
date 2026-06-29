@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../../lib/dragPlatform";
+import { IS_MAC } from "../../lib/platform";
 import { trackWindowMove } from "../../stores/windowMove";
 import { AppTimerDisplay } from "../header/AppTimerDisplay";
 import { AppResourceDisplay } from "../header/AppResourceDisplay";
@@ -38,7 +39,12 @@ const NON_DRAG_SELECTOR = [
 ].join(",");
 
 function handleDrag(e: React.MouseEvent) {
-  if (e.buttons !== 1) return;
+  // Gate on `button` (singular: 0 = left) not `buttons` (the held-button bitmask).
+  // WebKitGTK reports `buttons === 0` during the mousedown that begins a press —
+  // the bit isn't set until the next event — so `buttons !== 1` swallowed every
+  // drag on Linux (no grab ever started). `button === 0` is reliable on mousedown
+  // across WebKitGTK/Chromium/WKWebView and also ignores middle/right clicks.
+  if (e.button !== 0) return;
   const target = e.target as HTMLElement;
   if (!target.closest(NON_DRAG_SELECTOR)) {
     // Windows: hide the heavy terminal panes for the duration of the OS move loop
@@ -87,7 +93,10 @@ export function HeaderBar() {
     connType === "lan" ? "lan" : connType === "wlan" ? "wlan" : null;
 
   return (
-    <header className="app-header" onMouseDown={handleDrag}>
+    <header
+      className={`app-header${IS_MAC ? " is-mac" : ""}`}
+      onMouseDown={handleDrag}
+    >
       <div className="header-left" data-tauri-drag-region>
         <button
           type="button"

@@ -49,15 +49,68 @@ pub fn command_no_window(bin: &str) -> std::process::Command {
 
 /// True when `bin` resolves on `PATH` on the current OS. Centralised so every
 /// "is this CLI installed?" probe is correct cross-platform — see [`path_finder`].
+///
+/// On macOS the PATH the probe (`which`) sees is augmented with
+/// [`extra_path_dirs`] so that a Finder/Dock-launched Eldrun — whose inherited
+/// PATH omits Homebrew/MacTeX dirs — still detects tools installed there.
 pub fn binary_on_path(bin: &str) -> bool {
-    command_no_window(path_finder(OsKind::current()))
-        .arg(bin)
+    let mut cmd = command_no_window(path_finder(OsKind::current()));
+    cmd.arg(bin)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::null());
+    augment_command_path(&mut cmd);
+    cmd.status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+/// Standard directories macOS package managers (Homebrew, MacTeX) install CLI
+/// tools into but which a Finder/Dock-launched GUI app's inherited PATH omits —
+/// so a tool can be installed yet unreachable by bare name. The macOS analogue of
+/// the per-user dirs in [`launch_search_dirs`].
+#[cfg(target_os = "macos")]
+const MACOS_EXTRA_DIRS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/sbin",
+    "/Library/TeX/texbin",
+];
+
+/// Directories to prepend to a child process's PATH so a GUI-launched Eldrun can
+/// resolve Homebrew/MacTeX-installed tools (tex/ollama/sshfs/…). Only existing
+/// dirs are returned. Empty on every non-macOS platform, where the inherited
+/// PATH already covers these locations.
+pub fn extra_path_dirs() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        MACOS_EXTRA_DIRS
+            .iter()
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
+
+/// Prepend [`extra_path_dirs`] to `cmd`'s PATH env so the child can find tools a
+/// GUI-launched Eldrun's inherited PATH omits. No-op when there are no extra dirs
+/// (every non-macOS platform), preserving the inherited PATH unchanged.
+pub fn augment_command_path(cmd: &mut std::process::Command) {
+    let extra = extra_path_dirs();
+    if extra.is_empty() {
+        return;
+    }
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<PathBuf> = extra;
+    paths.extend(std::env::split_paths(&current));
+    if let Ok(joined) = std::env::join_paths(&paths) {
+        cmd.env("PATH", joined);
+    }
 }
 
 /// Well-known per-user directories that package managers drop CLI tools into but
@@ -83,6 +136,15 @@ fn launch_search_dirs() -> Vec<PathBuf> {
         if let Some(appdata) = std::env::var_os("APPDATA") {
             // npm global bin (shims live here as .cmd).
             dirs.push(PathBuf::from(appdata).join("npm"));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Homebrew/MacTeX dirs a GUI-launched app's PATH omits (see
+        // `MACOS_EXTRA_DIRS`). Harmless if absent: `resolve_in_dirs` only returns
+        // entries that exist.
+        for dir in MACOS_EXTRA_DIRS {
+            dirs.push(PathBuf::from(dir));
         }
     }
     dirs

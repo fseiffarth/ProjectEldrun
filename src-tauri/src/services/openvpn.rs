@@ -21,7 +21,12 @@ use std::collections::HashMap;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
+// `OpenOptionsExt::mode` is only used by `write_askpass`, which is compiled on
+// Linux/Windows but not macOS — scope its import to Linux to avoid an unused
+// import there (macOS still uses `PermissionsExt` in `store_config`).
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::process::{Child, Stdio};
@@ -114,6 +119,14 @@ pub fn openvpn_available() -> bool {
     resolve_openvpn().is_some()
 }
 
+/// macOS has no wired OpenVPN backend yet (no `pkexec`/polkit analogue and the
+/// tunnel-management flow needs runtime testing), so VPN-gated projects report as
+/// unavailable rather than the crate failing to build.
+#[cfg(target_os = "macos")]
+pub fn openvpn_available() -> bool {
+    false
+}
+
 /// Build the `openvpn` argv (without the leading `pkexec`/`openvpn`) for a
 /// connect. Returned as `Vec<String>` so it is unit-testable without launching.
 ///
@@ -203,6 +216,12 @@ pub fn is_connected(config: &str) -> bool {
         },
         None => false,
     }
+}
+
+/// macOS stub: no tunnels are tracked, so none are ever connected.
+#[cfg(target_os = "macos")]
+pub fn is_connected(_config: &str) -> bool {
+    false
 }
 
 /// Bring up the OpenVPN tunnel for `config`, authenticating with `password`.
@@ -477,6 +496,31 @@ pub fn disconnect(config: &str) -> Result<(), String> {
     let _ = std::fs::remove_file(&proc.pidfile);
     Ok(())
 }
+
+// --- macOS: not yet supported -----------------------------------------------
+//
+// macOS has no `pkexec`/polkit non-interactive escalation analogue, and driving
+// the bundled OpenVPN client (or Tunnelblick) needs runtime testing, so the
+// tunnel lifecycle is stubbed: connect errors with a clear message and the
+// teardown paths are no-ops. `is_connected`/`openvpn_available` already report
+// false above, so VPN-gated projects degrade gracefully rather than failing to
+// build.
+
+/// macOS stub: bringing up a tunnel is not implemented yet.
+#[cfg(target_os = "macos")]
+pub fn connect(_config: &str, _password: &str) -> Result<(), String> {
+    Err("OpenVPN-gated projects are not yet supported on macOS".into())
+}
+
+/// macOS stub: nothing is ever connected, so teardown is a no-op success.
+#[cfg(target_os = "macos")]
+pub fn disconnect(_config: &str) -> Result<(), String> {
+    Ok(())
+}
+
+/// macOS stub: no live tunnels to tear down at app exit.
+#[cfg(target_os = "macos")]
+pub fn disconnect_all() {}
 
 #[cfg(test)]
 mod tests {

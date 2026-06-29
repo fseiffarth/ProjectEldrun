@@ -418,6 +418,79 @@ function GitHostingWindow({
   );
 }
 
+function DisableGitWindow({
+  project,
+  onConfirm,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  // Require the exact project name to arm the destructive button.
+  const armed = typed.trim() === project.name.trim() && !busy;
+
+  const run = async () => {
+    if (!armed) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onConfirm();
+      onClose();
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{project.name} — Remove git &amp; history</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="project-dialog-error">
+          This permanently deletes this project's <code>.git</code> directory —
+          every commit, branch, stash, and remote. <strong>It cannot be undone.</strong>
+          {" "}The project becomes a “No git (local files only)” project; your working
+          files are left untouched.
+        </div>
+        <label>
+          Type the project name <code>{project.name}</code> to confirm
+          <input
+            type="text"
+            value={typed}
+            autoFocus
+            placeholder={project.name}
+            onChange={(e) => setTyped(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void run();
+              if (e.key === "Escape") onClose();
+            }}
+          />
+        </label>
+        {error && <div className="project-dialog-error">{error}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button
+            type="button"
+            className="danger"
+            onClick={() => void run()}
+            disabled={!armed}
+          >
+            {busy ? "Removing…" : "Delete git history"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export function ProjectPill({ project, active, onClick, onClose, onReorder, onGroup, boxId, onLeaveBox }: Props) {
   const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
   const [timeToday, setTimeToday] = useState<number | null>(null);
@@ -428,6 +501,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const [renaming, setRenaming] = useState(false);
   const [showPublish, setShowPublish] = useState(false);
   const [showGitHosting, setShowGitHosting] = useState(false);
+  const [showDisableGit, setShowDisableGit] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   // True while an Alt-drag hovers this pill: the drop will box the two
   // projects together rather than reorder. Drives the distinct hover affordance.
@@ -446,6 +520,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
   const renameProject = useProjectsStore((s) => s.renameProject);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
+  const setProjectGitDisabled = useProjectsStore((s) => s.setProjectGitDisabled);
   const publishProject = useProjectsStore((s) => s.publishProject);
 
   // Live per-project CPU%: polled only while the hover popup is open. Keyed on
@@ -587,6 +662,30 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
             </button>
           )}
           {!project.remote && (
+            project.git_type === "none" ? (
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  void setProjectGitDisabled(project.id, false);
+                }}
+                title="Run git init to start version-controlling this project"
+              >
+                Enable git (git init)
+              </button>
+            ) : (
+              <button
+                className="danger"
+                onClick={() => {
+                  setContextMenu(null);
+                  setShowDisableGit(true);
+                }}
+                title="Delete this project's .git directory and all version-control history (cannot be undone)"
+              >
+                Remove git &amp; history…
+              </button>
+            )
+          )}
+          {!project.remote && (
             <button
               onClick={() => {
                 setContextMenu(null);
@@ -655,6 +754,15 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
       {/* Per-project git-hosting override window */}
       {showGitHosting && (
         <GitHostingWindow project={project} onClose={() => setShowGitHosting(false)} />
+      )}
+
+      {/* Destructive: delete .git + history (typed-confirm) */}
+      {showDisableGit && (
+        <DisableGitWindow
+          project={project}
+          onConfirm={() => setProjectGitDisabled(project.id, true)}
+          onClose={() => setShowDisableGit(false)}
+        />
       )}
 
       <div

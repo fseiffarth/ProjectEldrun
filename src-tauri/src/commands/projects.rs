@@ -193,6 +193,88 @@ pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<bool, St
     Ok(enabled)
 }
 
+/// Enable or disable git version control for an existing project.
+///
+/// **Destructive when disabling.** Disabling deletes the project's `.git`
+/// directory outright — every commit, branch, stash, and remote is gone and
+/// cannot be recovered — and moves the project to `git_type` `"none"`, the same
+/// state a "No git (local files only)" project starts in. Enabling runs
+/// `git init` (a no-op if a repo already exists) and moves the project to
+/// `git_type` `"local"`.
+///
+/// Returns the resulting `git_type`. Mirrors the change into both
+/// `projects.json` and `project.json`, like `set_project_sandbox`.
+#[tauri::command]
+pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<String, String> {
+    // projects.json — locate the entry and resolve its on-disk directory.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    let local_file = entry.local_file.clone();
+    let directory = entry
+        .extra
+        .get("directory")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| "project has no directory".to_string())?;
+    if !directory.is_dir() {
+        return Err(format!(
+            "project directory does not exist: {}",
+            directory.display()
+        ));
+    }
+
+    let git_dir = directory.join(".git");
+    let new_git_type = if disabled {
+        // Destroy version-control history. `.git` is the single source of truth
+        // for it, so removing the directory is the whole operation.
+        if git_dir.exists() {
+            fs::remove_dir_all(&git_dir)
+                .map_err(|e| format!("failed to remove .git: {e}"))?;
+        }
+        "none".to_string()
+    } else {
+        if !git_dir.exists() {
+            let output = Command::new("git")
+                .args(["init"])
+                .current_dir(&directory)
+                .output()
+                .map_err(|e| format!("failed to run git init: {e}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "git init failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+        }
+        "local".to_string()
+    };
+
+    // projects.json — mirror the new push-axis type into the flattened entry.
+    entry
+        .extra
+        .insert("git_type".to_string(), Value::String(new_git_type.clone()));
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project file consistent (best effort).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            project.git_type = Some(new_git_type.clone());
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(new_git_type)
+}
+
 // ── Per-project project.json ───────────────────────────────────────────────
 
 #[tauri::command]

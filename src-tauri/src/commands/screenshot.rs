@@ -13,6 +13,8 @@
 //!   directed to write its PNG into the project's `screenshots/` folder.
 //! - **Windows** grabs the whole virtual screen natively via GDI and encodes it
 //!   to PNG with the `png` crate — no external tool required.
+//! - **macOS** drives the built-in `screencapture` CLI in interactive region
+//!   mode, writing the PNG into the project's `screenshots/` folder.
 //! - **Any other OS** returns an error rather than failing to build.
 
 use std::path::PathBuf;
@@ -326,10 +328,38 @@ mod platform {
     }
 }
 
+// ── macOS backend (built-in `screencapture` CLI) ─────────────────────────────
+#[cfg(target_os = "macos")]
+mod platform {
+    //! Drives macOS's built-in `screencapture` in interactive region mode,
+    //! routing its output into the project's `screenshots/` folder. Like the Linux
+    //! backend, the tool is spawned detached — region selection blocks the *tool*,
+    //! not Eldrun — and the project's filesystem watch surfaces the new PNG. The
+    //! configured `exec` is ignored (the OS tool is always used).
+
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    /// Spawn `screencapture -i <file>` (interactive region capture) writing into
+    /// `dir`. `_exec` is unused on macOS.
+    pub fn capture(dir: &Path, _exec: Option<&str>) -> Result<(), String> {
+        let file = dir.join(super::screenshot_filename());
+        Command::new("screencapture")
+            .arg("-i")
+            .arg(&file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("launch screencapture: {e}"))?;
+        Ok(())
+    }
+}
+
 // ── Fallback backend (other OSes) ────────────────────────────────────────────
-// macOS and any other target have no native path wired yet; capture fails with a
-// clear error rather than the crate failing to build.
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+// Any remaining target has no native path wired yet; capture fails with a clear
+// error rather than the crate failing to build.
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 mod platform {
     use std::path::Path;
 

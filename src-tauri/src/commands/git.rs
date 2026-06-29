@@ -269,6 +269,112 @@ pub fn git_add_path(project_dir: String, rel_path: String) -> Result<(), String>
     Ok(())
 }
 
+/// A single changed file with its line delta, used by the action-button change
+/// tree (Add/Commit/Push). `binary` files report 0/0 — git emits "-" for them.
+#[derive(serde::Serialize)]
+pub struct FileChange {
+    pub path: String,
+    pub added: i64,
+    pub deleted: i64,
+    pub binary: bool,
+}
+
+/// Per-file line stats (`git diff --numstat`) for one of three scopes:
+///   "unstaged" – working-tree changes + untracked files (the Add list)
+///   "staged"   – index vs HEAD (the Commit list)
+///   "unpushed" – local commits ahead of upstream (the Push list)
+/// The frontend folds these flat paths into a navigable folder tree.
+#[tauri::command]
+pub fn git_change_stats(project_dir: String, scope: String) -> Result<Vec<FileChange>, String> {
+    let dir = Path::new(&project_dir);
+    if !dir.join(".git").exists() {
+        return Ok(vec![]);
+    }
+
+    let numstat_args: &[&str] = match scope.as_str() {
+        "staged" => &["diff", "--cached", "--numstat", "--"],
+        "unpushed" => &["diff", "@{u}..", "--numstat", "--"],
+        _ => &["diff", "--numstat", "--"],
+    };
+
+    let mut changes: Vec<FileChange> = Vec::new();
+    if let Ok(out) = crate::paths::command_no_window("git")
+        .args(numstat_args)
+        .current_dir(&project_dir)
+        .output()
+    {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                let mut parts = line.splitn(3, '\t');
+                let a = parts.next().unwrap_or("");
+                let d = parts.next().unwrap_or("");
+                let p = parts.next().unwrap_or("");
+                if p.is_empty() {
+                    continue;
+                }
+                changes.push(FileChange {
+                    path: normalize_numstat_path(p),
+                    added: a.parse().unwrap_or(0),
+                    deleted: d.parse().unwrap_or(0),
+                    binary: a == "-" || d == "-",
+                });
+            }
+        }
+    }
+
+    // Untracked files never appear in `git diff`; list them separately and count
+    // their lines as additions (the Add list shows them alongside modified files).
+    if scope == "unstaged" {
+        if let Ok(out) = crate::paths::command_no_window("git")
+            .args(["ls-files", "--others", "--exclude-standard", "-z"])
+            .current_dir(&project_dir)
+            .output()
+        {
+            if out.status.success() {
+                for chunk in out.stdout.split(|&b| b == 0) {
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    let rel = String::from_utf8_lossy(chunk).into_owned();
+                    let (added, binary) = count_added_lines(&dir.join(&rel));
+                    changes.push(FileChange { path: rel, added, deleted: 0, binary });
+                }
+            }
+        }
+    }
+
+    Ok(changes)
+}
+
+/// `git --numstat` renders renames as `old => new`, optionally with a braced
+/// common segment (`src/{a => b}/f.rs`). Reduce either form to the new path.
+fn normalize_numstat_path(p: &str) -> String {
+    let Some(arrow) = p.find(" => ") else {
+        return p.to_string();
+    };
+    if let (Some(lb), Some(rb)) = (p.find('{'), p.find('}')) {
+        if lb < arrow && arrow < rb {
+            return format!("{}{}{}", &p[..lb], &p[arrow + 4..rb], &p[rb + 1..]);
+        }
+    }
+    p[arrow + 4..].to_string()
+}
+
+/// Line count of an untracked file, treating NUL-containing files as binary
+/// (0 lines). A final line without a trailing newline still counts.
+fn count_added_lines(path: &Path) -> (i64, bool) {
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.contains(&0) => (0, true),
+        Ok(bytes) => {
+            let newlines = bytes.iter().filter(|&&b| b == b'\n').count() as i64;
+            let trailing = matches!(bytes.last(), Some(&b) if b != b'\n') as i64;
+            (newlines + trailing, false)
+        }
+        Err(_) => (0, false),
+    }
+}
+
 /// Returns one-line summaries of commits ahead of the upstream (not yet pushed).
 /// Returns an empty vec when there is no upstream or the repo is not git.
 #[tauri::command]

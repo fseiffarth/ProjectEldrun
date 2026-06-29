@@ -8,17 +8,11 @@
  * unchanged. Each flag is documented at its declaration; together they isolate
  * every event-semantics uncertainty into ONE file a single runtime session can flip.
  */
-import { IS_WINDOWS } from "./paths";
+// OS detection lives in the dependency-free `platform.ts` single source of
+// truth; re-exported here so existing `dragPlatform` importers keep working.
+import { PLATFORM } from "./platform";
 
-/** True on macOS (and iOS, harmless here). Detected once from the webview. */
-const IS_MAC: boolean =
-  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "");
-
-export const PLATFORM: "windows" | "macos" | "linux" = IS_WINDOWS
-  ? "windows"
-  : IS_MAC
-    ? "macos"
-    : "linux";
+export { PLATFORM };
 
 export interface DragPlatform {
   /**

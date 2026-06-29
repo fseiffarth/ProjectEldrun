@@ -79,6 +79,9 @@ export function LocalModelMenu() {
   const [downloads, setDownloads] = useState<Record<string, { pct: number | null }>>({});
   // Models whose download the user paused this session — each offers Resume/Delete.
   const [paused, setPaused] = useState<Set<string>>(new Set());
+  // Resident models being unloaded from memory (stop_ollama_model in flight), so
+  // the row can show "Unloading…" and disable the control until it settles.
+  const [unloading, setUnloading] = useState<Set<string>>(new Set());
   const closeTimer = useRef<number | null>(null);
 
   // Detect whether Ollama is installed. Poll while it's still missing so that
@@ -223,6 +226,26 @@ export function LocalModelMenu() {
       });
   };
 
+  // Evict a resident model from memory (keep_alive=0) without deleting it from
+  // disk. Re-reads the model list afterwards so the row drops out of the resident
+  // section; the auto-assign effect then re-points tasks if a single model is left.
+  const unloadFromMemory = (model: string) => {
+    setUnloading((s) => new Set(s).add(model));
+    setError(null);
+    invoke("stop_ollama_model", { model })
+      .then(() => fetchModels())
+      .catch((e: string) =>
+        setError(typeof e === "string" && e === "not_running" ? "Ollama not running" : "Failed to unload model"),
+      )
+      .finally(() =>
+        setUnloading((s) => {
+          const n = new Set(s);
+          n.delete(model);
+          return n;
+        }),
+      );
+  };
+
   // Pause an in-flight download; the backend keeps the partial blobs and emits a
   // "paused" event that flips the row to Resume / Delete.
   const pausePull = (model: string) => {
@@ -277,18 +300,31 @@ export function LocalModelMenu() {
     setOpen(false);
   };
 
-  // The first model to become resident is, by default, the default model and is
-  // wired to every task (autocomplete/grammar/tabs) so a fresh install works out
-  // of the box. Only fires when nothing has been configured yet, so it never
-  // overrides an explicit choice the user later makes.
+  // When exactly one model is resident in memory, make it the model for
+  // everything — the default plus every task tag (autocomplete/grammar/tabs) —
+  // so loading a single model "just works" without wiring each task by hand.
+  // Tracked per resident model via a ref so we auto-apply once per newly-loaded
+  // sole model: manual reassignments the user makes afterwards (while that model
+  // stays the only resident one) are preserved. Dropping to zero or rising to
+  // two+ resident models re-arms it, so the next single-model load re-applies.
+  const autoAppliedFor = useRef<string | null>(null);
   useEffect(() => {
     if (!settings) return;
-    if (settings.ollama_model || Object.keys(settings.ollama_roles ?? {}).length > 0) return;
-    const first = models.find((m) => m.running);
-    if (!first) return;
+    const resident = models.filter((m) => m.running);
+    if (resident.length !== 1) {
+      autoAppliedFor.current = null;
+      return;
+    }
+    const only = resident[0].name;
+    if (autoAppliedFor.current === only) return;
+    autoAppliedFor.current = only;
+    const current = settings.ollama_roles ?? {};
+    const already =
+      settings.ollama_model === only && MODEL_ROLES.every((r) => current[r.key] === only);
+    if (already) return;
     const allRoles: Record<string, string> = {};
-    for (const r of MODEL_ROLES) allRoles[r.key] = first.name;
-    void updateSettings({ ollama_model: first.name, ollama_roles: allRoles });
+    for (const r of MODEL_ROLES) allRoles[r.key] = only;
+    void updateSettings({ ollama_model: only, ollama_roles: allRoles });
   }, [models, settings, updateSettings]);
 
   // Per-task model tags. Each task maps to exactly one model; tagging a model for
@@ -452,6 +488,16 @@ export function LocalModelMenu() {
                           </button>
                         );
                       })}
+                      {/* Evict this model from memory (keeps it on disk). */}
+                      <button
+                        type="button"
+                        className="local-model-role-chip local-model-unload"
+                        disabled={unloading.has(m.name)}
+                        title={`Unload ${m.name} from memory`}
+                        onClick={() => unloadFromMemory(m.name)}
+                      >
+                        {unloading.has(m.name) ? "Unloading…" : "Unload"}
+                      </button>
                     </div>
                   </div>
                 ))

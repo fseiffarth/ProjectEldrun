@@ -70,10 +70,14 @@ interface ProjectsStore {
   setRightPanelFolder: (projectId: string, folder: string) => void;
   clearSwitchToast: () => void;
   addProject: (project: ProjectEntry) => Promise<void>;
+  activateProject: (id: string) => Promise<void>;
   deactivateProject: (id: string) => Promise<void>;
   updateProjectDescription: (id: string, description: string) => Promise<void>;
   renameProject: (id: string, name: string) => Promise<void>;
   setProjectSandbox: (id: string, enabled: boolean) => Promise<void>;
+  /** Disable (delete .git → git_type "none") or re-enable (git init → "local")
+   * git for an existing project. Destructive when disabling. */
+  setProjectGitDisabled: (id: string, disabled: boolean) => Promise<void>;
   publishProject: (id: string, visibility: "public" | "private") => Promise<string>;
   getProjectGitHosting: (id: string) => Promise<GitHostingInfo>;
   setProjectGitHosting: (
@@ -293,6 +297,27 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     await useProjectsStore.getState().setActive(project.id);
   },
 
+  activateProject: async (id) => {
+    // Promote an inactive project to "active" (available, but NOT the current
+    // focused project). Leaves activeId/scope untouched — opening (making it
+    // current) is a separate, explicit action via setActive.
+    let nextProjects: ProjectEntry[] = [];
+    let changed = false;
+    set((state) => {
+      nextProjects = state.projects.map((project) => {
+        if (project.id === id && project.status === "inactive") {
+          changed = true;
+          return { ...project, status: "active" };
+        }
+        return project;
+      });
+      return changed ? { projects: nextProjects } : {};
+    });
+    if (changed) {
+      await invoke<void>("save_projects", { projects: nextProjects });
+    }
+  },
+
   deactivateProject: async (id) => {
     let nextProjects: ProjectEntry[] = [];
     let nextActiveId: string | null = null;
@@ -352,6 +377,21 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
         project.id === id
           ? { ...project, sandbox: result ? { enabled: true } : undefined }
           : project,
+      ),
+    }));
+  },
+
+  setProjectGitDisabled: async (id, disabled) => {
+    // Backend deletes/inits .git, writes projects.json + project.json, and
+    // returns the resulting git_type ("none" or "local"); mirror it so the pill
+    // label and context-menu state update immediately.
+    const gitType = await invoke<string>("set_project_git_disabled", {
+      projectId: id,
+      disabled,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id ? { ...project, git_type: gitType } : project,
       ),
     }));
   },

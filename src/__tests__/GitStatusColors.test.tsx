@@ -35,6 +35,8 @@ const ACTIVE_PROJECT = {
   local_file: "/tmp/test-project/project.json",
 };
 
+type Change = { path: string; added: number; deleted: number; binary: boolean };
+
 function setupInvoke({
   staged = 0,
   unstaged = 0,
@@ -42,11 +44,13 @@ function setupInvoke({
   has_remote = true,
   fileList = {} as Record<string, string>,
   unpushedCommits = [] as string[],
+  changeStats = {} as Record<string, Change[]>,
 } = {}) {
-  mockInvoke.mockImplementation((cmd: string) => {
+  mockInvoke.mockImplementation((cmd: string, args?: { scope?: string }) => {
     if (cmd === "git_status") return Promise.resolve({ staged, unstaged, untracked, has_remote, is_repo: true });
     if (cmd === "git_file_statuses") return Promise.resolve(fileList);
     if (cmd === "git_unpushed_commits") return Promise.resolve(unpushedCommits);
+    if (cmd === "git_change_stats") return Promise.resolve(changeStats[args?.scope ?? ""] ?? []);
     if (cmd === "load_project") return Promise.resolve({});
     if (cmd === "list_project_endings") return Promise.resolve([]);
     if (cmd === "list_dir") return Promise.resolve([]);
@@ -136,7 +140,7 @@ describe("git action button bars", () => {
   });
 });
 
-describe("git button hover lists", () => {
+describe("git change tree", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseProjectsStore.mockReturnValue({ projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>);
@@ -150,57 +154,70 @@ describe("git button hover lists", () => {
     return result!;
   }
 
-  it("hovering Add shows untracked and modified files", async () => {
+  it("the tree is closed until its caret is clicked", async () => {
+    setupInvoke({ untracked: 1, changeStats: { unstaged: [{ path: "new.ts", added: 3, deleted: 0, binary: false }] } });
+    await renderOpenPanel();
+    await screen.findByTitle(/Stage all changes/);
+    expect(screen.queryByTestId("git-change-tree")).toBeNull();
+  });
+
+  it("opening Add shows the changed files with +/- stats", async () => {
     const user = userEvent.setup();
     setupInvoke({
       untracked: 1,
       unstaged: 1,
-      fileList: { "new.ts": "untracked", "changed.ts": "modified", "staged.ts": "staged" },
+      changeStats: {
+        unstaged: [
+          { path: "src/changed.ts", added: 12, deleted: 5, binary: false },
+          { path: "new.ts", added: 3, deleted: 0, binary: false },
+        ],
+      },
     });
     await renderOpenPanel();
-    const addBtn = await screen.findByTitle(/Stage all changes/);
-    await user.hover(addBtn);
-    const list = await screen.findByTestId("git-hover-list");
-    expect(list.textContent).toContain("new.ts");
-    expect(list.textContent).toContain("changed.ts");
-    expect(list.textContent).not.toContain("staged.ts");
+    const toggle = await screen.findByLabelText("Show changed files");
+    await user.click(toggle);
+    const tree = await screen.findByTestId("git-change-tree");
+    expect(tree.textContent).toContain("changed.ts");
+    expect(tree.textContent).toContain("new.ts");
+    expect(tree.textContent).toContain("+12");
+    expect(tree.textContent).toContain("-5");
+    // The directory is rendered as a navigable node above its file.
+    expect(tree.textContent).toContain("src");
   });
 
-  it("hovering Commit shows staged files", async () => {
+  it("opening Commit requests the staged scope", async () => {
     const user = userEvent.setup();
     setupInvoke({
-      staged: 2,
-      fileList: { "staged.ts": "staged", "other.ts": "staged", "untracked.ts": "untracked" },
+      staged: 1,
+      changeStats: { staged: [{ path: "staged.ts", added: 7, deleted: 1, binary: false }] },
     });
     await renderOpenPanel();
-    const commitBtn = await screen.findByTitle(/Commit 2 staged/);
-    await user.hover(commitBtn);
-    const list = await screen.findByTestId("git-hover-list");
-    expect(list.textContent).toContain("staged.ts");
-    expect(list.textContent).toContain("other.ts");
-    expect(list.textContent).not.toContain("untracked.ts");
+    const toggle = await screen.findByLabelText("Show staged files");
+    await user.click(toggle);
+    const tree = await screen.findByTestId("git-change-tree");
+    expect(tree.textContent).toContain("staged.ts");
+    expect(tree.textContent).toContain("+7");
+    expect(mockInvoke).toHaveBeenCalledWith("git_change_stats", { projectDir: expect.any(String), scope: "staged" });
   });
 
-  it("hovering Push shows unpushed commit messages", async () => {
+  it("clicking the caret again closes the tree", async () => {
     const user = userEvent.setup();
-    setupInvoke({
-      has_remote: true,
-      unpushedCommits: ["abc1234 feat: add widget", "def5678 fix: correct typo"],
-    });
+    setupInvoke({ staged: 1, changeStats: { staged: [{ path: "staged.ts", added: 1, deleted: 0, binary: false }] } });
     await renderOpenPanel();
-    const pushBtn = await screen.findByTitle(/Push 2 commits to remote/);
-    await user.hover(pushBtn);
-    const list = await screen.findByTestId("git-hover-list");
-    expect(list.textContent).toContain("feat: add widget");
-    expect(list.textContent).toContain("fix: correct typo");
+    const toggle = await screen.findByLabelText("Show staged files");
+    await user.click(toggle);
+    await screen.findByTestId("git-change-tree");
+    await user.click(toggle);
+    expect(screen.queryByTestId("git-change-tree")).toBeNull();
   });
 
-  it("hover list is absent when there are no items", async () => {
+  it("shows 'No changes' when the scope is empty", async () => {
     const user = userEvent.setup();
-    setupInvoke({ staged: 1, fileList: {} });
+    setupInvoke({ staged: 1, changeStats: { staged: [] } });
     await renderOpenPanel();
-    const commitBtn = await screen.findByTitle(/Commit 1 staged/);
-    await user.hover(commitBtn);
-    expect(screen.queryByTestId("git-hover-list")).toBeNull();
+    const toggle = await screen.findByLabelText("Show staged files");
+    await user.click(toggle);
+    const tree = await screen.findByTestId("git-change-tree");
+    expect(tree.textContent).toContain("No changes");
   });
 });

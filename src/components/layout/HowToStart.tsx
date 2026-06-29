@@ -56,6 +56,24 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
           >
             Open Feature Guide...
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              window.dispatchEvent(new Event("eldrun:start-tour"));
+            }}
+          >
+            Take a tour
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              window.dispatchEvent(new Event("eldrun:open-lessons"));
+            }}
+          >
+            Lessons
+          </button>
           <button type="button" className="how-to-start-got-it" onClick={onClose}>
             Got it
           </button>

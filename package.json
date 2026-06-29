@@ -11,6 +11,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:bundle": "tauri build --bundles appimage,deb",
+    "tauri:bundle:mac": "tauri build --bundles dmg",
     "package": "./scripts/package-local.sh",
     "test": "vitest run",
     "test:watch": "vitest"

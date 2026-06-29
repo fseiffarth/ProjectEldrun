@@ -16,6 +16,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory } from "../../types";
 import { fuzzyMatch, fuzzyRank } from "../../lib/fuzzy";
 import { basename, resolvePath } from "../../lib/paths";
+import { IS_MAC } from "../../lib/platform";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
 import "./QuickOpen.css";
 
@@ -25,9 +26,6 @@ interface PathEntry {
 }
 
 const MAX_RESULTS = 50;
-
-const isMac =
-  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "");
 
 /** Render the rel path with the fuzzy-matched characters emphasised. */
 function HighlightedPath({ text, query }: { text: string; query: string }) {
@@ -100,7 +98,7 @@ export function QuickOpen() {
   // Global Ctrl/Cmd+P toggle.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const mod = isMac ? e.metaKey : e.ctrlKey;
+      const mod = IS_MAC ? e.metaKey : e.ctrlKey;
       if (mod && !e.altKey && !e.shiftKey && (e.key === "p" || e.key === "P")) {
         const dir = activeProjectDir();
         if (!dir) return; // no active project → leave the event alone

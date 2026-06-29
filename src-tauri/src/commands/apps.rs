@@ -444,7 +444,18 @@ pub fn resolve_default_handler(
 }
 
 /// System-default handler via `xdg-mime` → `.desktop` `Exec` first token.
+///
+/// Linux-only: `xdg-mime` and `.desktop` entries are a freedesktop concept. On
+/// other platforms this is a no-op (`None`) so the caller falls back to
+/// `opener::open` / the OS default.
 fn resolve_handler_via_mime(path: &str) -> Option<String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        None
+    }
+    #[cfg(target_os = "linux")]
+    {
     let mime = Command::new("xdg-mime")
         .args(["query", "filetype", path])
         .stdin(Stdio::null())
@@ -473,8 +484,12 @@ fn resolve_handler_via_mime(path: &str) -> Option<String> {
         }
     }
     None
+    }
 }
 
+/// Linux-only after the mime-resolver was platform-gated; the icon resolver still
+/// uses the separate `desktop_files`, so keep this compiled but quiet elsewhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn desktop_app_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![
         PathBuf::from("/usr/share/applications"),
@@ -578,7 +593,11 @@ pub fn list_installed_apps() -> Vec<InstalledApp> {
     {
         return windows_installed_apps();
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_installed_apps();
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut apps: Vec<InstalledApp> = Vec::new();
@@ -630,6 +649,78 @@ fn windows_installed_apps() -> Vec<InstalledApp> {
     }
     apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     apps
+}
+
+/// macOS installed-app list: scan the standard application bundle directories for
+/// `*.app` bundles. The display name is the bundle filename without `.app`; the
+/// `exec` is the launchable binary inside `Contents/MacOS/` (so the existing
+/// `Command::new(exec)` launch path works), falling back to the bundle path
+/// itself. Deduped by name (case-insensitive), sorted by name. Icons are left to
+/// lazy resolution (currently a no-op on macOS).
+#[cfg(target_os = "macos")]
+fn macos_installed_apps() -> Vec<InstalledApp> {
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+        PathBuf::from("/System/Applications/Utilities"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.insert(0, PathBuf::from(home).join("Applications"));
+    }
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut apps: Vec<InstalledApp> = Vec::new();
+    for root in roots {
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("app") {
+                continue;
+            }
+            let Some(name) = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .filter(|s| !s.trim().is_empty())
+            else {
+                continue;
+            };
+            if !seen.insert(name.to_lowercase()) {
+                continue;
+            }
+            apps.push(InstalledApp {
+                name,
+                exec: macos_app_exec(&path),
+                icon: None,
+            });
+        }
+    }
+    apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    apps
+}
+
+/// Resolve the launchable executable for a macOS `.app` bundle: prefer the binary
+/// in `Contents/MacOS/` that matches the bundle name, then the first file there,
+/// and finally the bundle path itself when neither is readable.
+#[cfg(target_os = "macos")]
+fn macos_app_exec(app: &Path) -> String {
+    let macos_dir = app.join("Contents").join("MacOS");
+    if let Some(stem) = app.file_stem() {
+        let cand = macos_dir.join(stem);
+        if cand.is_file() {
+            return cand.to_string_lossy().into_owned();
+        }
+    }
+    if let Ok(entries) = fs::read_dir(&macos_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    app.to_string_lossy().into_owned()
 }
 
 /// Parse a single `.desktop` file into an `InstalledApp`, or `None` when it is

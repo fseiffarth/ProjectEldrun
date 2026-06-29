@@ -15,7 +15,9 @@ import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { QuickOpen } from "../files/QuickOpen";
 import { HintHost } from "./HintHost";
+import { TourHost } from "./TourHost";
 import { HowToStart } from "./HowToStart";
+import { LessonsMenu } from "./LessonsMenu";
 import { useHintsStore } from "../../stores/hints";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
 import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
@@ -59,24 +61,28 @@ export function AppShell() {
   const [rightOpen, setRightOpen] = useState(false);
   const [rightPinned, setRightPinned] = useState(false);
   const [showHowToStart, setShowHowToStart] = useState(false);
+  const [showLessons, setShowLessons] = useState(false);
   const rightCloseTimer = useRef<number | null>(null);
 
   useEffect(() => {
     loadSettings();
     loadProjects();
     const win = getCurrentWindow();
-    if (PLATFORM === "windows") {
-      // Windows: real fullscreen turns the window borderless-fullscreen, which
-      // strips the resizable/maximize window styles — and with them Aero Snap
-      // (drag to an edge → maximize / half-tile) and the smooth native title-bar
-      // drag every other app has. Use a normal MAXIMIZED window instead: it still
-      // fills the monitor, but keeps the standard styles, so dragging the header
-      // restores-and-follows the cursor and snaps to edges like any other app.
-      // (The Windows fullscreen backend is a stub anyway — see the resize bridge
-      // and REVEAL_EDGE_PX notes below.)
-      win.setFullscreen(false).then(() => win.maximize()).catch(() => {});
+    if (PLATFORM === "macos") {
+      // macOS: real fullscreen is the platform-expected behavior (own Space) and
+      // the system traffic-light controls keep the window manageable, so keep it.
+      win.setFullscreen(true).catch(() => {});
     } else {
-      getCurrentWindow().setFullscreen(true).catch(() => {});
+      // Windows AND Linux: real (borderless) fullscreen makes the window
+      // UNMOVABLE — the OS refuses to let a fullscreen window be dragged, so the
+      // header title-bar drag (startDragging) silently does nothing. On Windows it
+      // additionally strips the resizable/maximize styles Aero Snap relies on. Use
+      // a normal MAXIMIZED window instead: with decorations:false it fills the
+      // monitor identically, but keeps the standard styles so dragging the header
+      // restores-and-follows the cursor (and snaps to edges on Windows) like any
+      // other app. (Windows' fullscreen backend is a stub anyway — see the resize
+      // bridge and REVEAL_EDGE_PX notes below.)
+      win.setFullscreen(false).then(() => win.maximize()).catch(() => {});
     }
   }, [loadSettings, loadProjects]);
 
@@ -142,6 +148,25 @@ export function AppShell() {
     const open = () => setShowHowToStart(true);
     window.addEventListener("eldrun:open-how-to-start", open);
     return () => window.removeEventListener("eldrun:open-how-to-start", open);
+  }, []);
+
+  // Open the lessons picker on demand, and let a tour/lesson step force the
+  // (otherwise hover-revealed) file panel open so it has something to spotlight.
+  useEffect(() => {
+    const openLessons = () => setShowLessons(true);
+    const revealPanel = () => {
+      if (rightCloseTimer.current !== null) {
+        window.clearTimeout(rightCloseTimer.current);
+        rightCloseTimer.current = null;
+      }
+      setRightOpen(true);
+    };
+    window.addEventListener("eldrun:open-lessons", openLessons);
+    window.addEventListener("eldrun:reveal-right-panel", revealPanel);
+    return () => {
+      window.removeEventListener("eldrun:open-lessons", openLessons);
+      window.removeEventListener("eldrun:reveal-right-panel", revealPanel);
+    };
   }, []);
 
   // Load boxes once projects are in memory so deriving each project's box_id
@@ -345,11 +370,18 @@ export function AppShell() {
             onMouseLeave={() => !rightPinned && scheduleClose(rightCloseTimer, setRightOpen)}
           />
         )}
+        {/* Invisible marker at the right-edge reveal band so the guided tour has
+            a stable element to spotlight for the "find your files" step. */}
+        {panelTarget && !panelsHidden && (
+          <div className="tour-edge-marker" data-hint-anchor="file-tree-edge" aria-hidden />
+        )}
       </div>
       <VpnPasswordPrompt />
       <QuickOpen />
       <HintHost />
+      <TourHost />
       {showHowToStart && <HowToStart onClose={() => setShowHowToStart(false)} />}
+      {showLessons && <LessonsMenu onClose={() => setShowLessons(false)} />}
     </div>
   );
 }

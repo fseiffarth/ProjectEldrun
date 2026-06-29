@@ -82,6 +82,11 @@ pub struct Settings {
     /// counterpart for external changes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autosave: Option<bool>,
+    /// When true (the default), the in-app text/TeX editors tint recently typed
+    /// runs with a sequential new→old colour trail that fades as typing
+    /// continues. Defaults ON; only an explicit `false` disables it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_tint: Option<bool>,
     /// Per-file-type native-viewer preferences (#48), keyed by a type id derived
     /// from `fileUtils` (e.g. "tex", "text", "markdown"). Holds the opt-in
     /// autocomplete toggle (#45). Optional + flat so older settings files

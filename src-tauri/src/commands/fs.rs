@@ -540,9 +540,9 @@ fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
 // ── MIME detection (magic bytes) ──────────────────────────────────────────
 
 #[tauri::command]
-pub fn detect_mime(path: String) -> Result<String, String> {
+pub fn detect_mime(path: String, project_id: Option<String>) -> Result<String, String> {
     let p = PathBuf::from(&path);
-    confine_abs_read(&p)?;
+    confine_abs_read(&p, project_id.as_deref())?;
     // 1. Try magic bytes via infer.
     if let Ok(mut f) = fs::File::open(&p) {
         let mut buf = [0u8; 8192];
@@ -577,9 +577,9 @@ const MAX_BINARY_VIEW_BYTES: u64 = 64 * 1024 * 1024;
 /// `~/.ssh/id_rsa`. Refuses files over `MAX_TEXT_VIEW_BYTES` and non-UTF-8
 /// (binary) files.
 #[tauri::command]
-pub fn read_file_text(path: String) -> Result<String, String> {
+pub fn read_file_text(path: String, project_id: Option<String>) -> Result<String, String> {
     let p = PathBuf::from(&path);
-    confine_abs_read(&p)?;
+    confine_abs_read(&p, project_id.as_deref())?;
     let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a file".to_string());
@@ -603,9 +603,13 @@ pub fn read_file_text(path: String) -> Result<String, String> {
 /// `MAX_TEXT_VIEW_BYTES`, and only writes to an existing regular file (the
 /// editor edits files opened from the tree; it never creates new paths).
 #[tauri::command]
-pub fn write_file_text(path: String, content: String) -> Result<(), String> {
+pub fn write_file_text(
+    path: String,
+    content: String,
+    project_id: Option<String>,
+) -> Result<(), String> {
     let p = PathBuf::from(&path);
-    confine_abs_write(&p)?;
+    confine_abs_write(&p, project_id.as_deref())?;
     let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a file".to_string());
@@ -625,9 +629,13 @@ pub fn write_file_text(path: String, content: String) -> Result<(), String> {
 /// image annotator can "Save as…" a sibling PNG), but still refuses paths
 /// outside the allowed roots and oversized payloads.
 #[tauri::command]
-pub fn write_file_bytes(path: String, content: Vec<u8>) -> Result<(), String> {
+pub fn write_file_bytes(
+    path: String,
+    content: Vec<u8>,
+    project_id: Option<String>,
+) -> Result<(), String> {
     let p = PathBuf::from(&path);
-    confine_abs_write(&p)?;
+    confine_abs_write(&p, project_id.as_deref())?;
     if content.len() as u64 > MAX_BINARY_VIEW_BYTES {
         return Err(format!(
             "content too large to save ({} bytes; limit {})",
@@ -644,9 +652,9 @@ pub fn write_file_bytes(path: String, content: Vec<u8>) -> Result<(), String> {
 /// `MAX_BINARY_VIEW_BYTES`. The frontend wraps the returned bytes in a Blob URL
 /// so the PDF renders in-tab without an external viewer.
 #[tauri::command]
-pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
+pub fn read_file_bytes(path: String, project_id: Option<String>) -> Result<Vec<u8>, String> {
     let p = PathBuf::from(&path);
-    confine_abs_read(&p)?;
+    confine_abs_read(&p, project_id.as_deref())?;
     let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a file".to_string());
@@ -667,9 +675,9 @@ pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
 /// (#43 diff-aware auto-reload). Confined to Eldrun's known roots (Security #1).
 /// Mirrors the `FileEntry.modified_secs` machinery in `list_dir`.
 #[tauri::command]
-pub fn file_mtime(path: String) -> Result<u64, String> {
+pub fn file_mtime(path: String, project_id: Option<String>) -> Result<u64, String> {
     let p = PathBuf::from(&path);
-    confine_abs_read(&p)?;
+    confine_abs_read(&p, project_id.as_deref())?;
     let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
     let secs = meta
         .modified()
@@ -682,37 +690,55 @@ pub fn file_mtime(path: String) -> Result<u64, String> {
 
 // ── Absolute-path confinement (Security #1) ────────────────────────────────
 
-/// The set of directories the absolute-path file commands may touch: the
-/// **current** project's own directory, plus the directories of any projects
-/// that share a box with it. Switching to project X makes X's tree reachable and
-/// a sibling project Y's tree *un*reachable — unless X and Y are members of the
-/// same box, in which case box members are deliberately co-accessible (the whole
-/// point of grouping them). This is stricter and more intuitive than the earlier
-/// root-based confinement: imported "keep"-mode projects living anywhere on disk
-/// are reachable while they (or a box sibling) are current, and nothing else is.
+/// The set of directories the absolute-path file commands may touch for a given
+/// **scope**: the scope project's own directory, plus the directories of any
+/// projects that share a box with it. Projects are filesystem-isolated from one
+/// another — a file command made on behalf of project X can reach X's tree (and
+/// any box sibling's tree, since box members are deliberately co-accessible), and
+/// nothing else.
 ///
-/// Returns an empty set when no project is current (e.g. at startup), which makes
-/// every absolute-path command fail closed. See REVIEW.md Security #1.
-fn allowed_roots() -> Vec<PathBuf> {
+/// Crucially the scope is the project that *owns the calling viewer* (passed by
+/// the frontend), NOT whichever project is globally "current". In-app viewers
+/// stay mounted across project switches, are restored on relaunch, and can live
+/// in detached windows; binding confinement to the current project made those
+/// fail with a spurious "path is not in the current project" error the moment you
+/// switched away (e.g. a `file_mtime` poll or `read_file_text` reload). Binding
+/// it to the viewer's own project keeps strict per-project isolation while
+/// letting a viewer keep working regardless of which project is current.
+///
+/// `scope_id` of `None` (root scope, or a caller that supplied no project) falls
+/// back to the current project + its box siblings. Returns an empty set when the
+/// scope resolves to no project (e.g. first run), which makes every absolute-path
+/// command fail closed. See REVIEW.md Security #1.
+fn allowed_roots(scope_id: Option<&str>) -> Vec<PathBuf> {
     let projects: ProjectsList = read_state_json("projects.json");
     let boxes: BoxesList = read_state_json("boxes.json");
-    compute_allowed_roots(&projects, &boxes)
+    compute_allowed_roots(&projects, &boxes, scope_id)
 }
 
 /// Pure core of [`allowed_roots`], split out so the project/box scoping logic is
 /// testable without touching the real state dir.
-fn compute_allowed_roots(projects: &ProjectsList, boxes: &BoxesList) -> Vec<PathBuf> {
-    let Some(current) = projects.iter().find(|e| e.status == "current") else {
+fn compute_allowed_roots(
+    projects: &ProjectsList,
+    boxes: &BoxesList,
+    scope_id: Option<&str>,
+) -> Vec<PathBuf> {
+    // Anchor on the scope project when one is named, else the current project.
+    let anchor = match scope_id {
+        Some(id) => projects.iter().find(|e| e.id == id),
+        None => projects.iter().find(|e| e.status == "current"),
+    };
+    let Some(anchor) = anchor else {
         return Vec::new();
     };
 
-    // Start with the current project, then fold in every member of any box the
-    // current project belongs to (`member_ids` is the authoritative membership —
+    // Start with the anchor project, then fold in every member of any box the
+    // anchor belongs to (`member_ids` is the authoritative membership —
     // see schema::boxes::ProjectBox).
     let mut ids: HashSet<&str> = HashSet::new();
-    ids.insert(current.id.as_str());
+    ids.insert(anchor.id.as_str());
     for b in boxes {
-        if b.member_ids.iter().any(|m| m == &current.id) {
+        if b.member_ids.iter().any(|m| m == &anchor.id) {
             for m in &b.member_ids {
                 ids.insert(m.as_str());
             }
@@ -773,8 +799,8 @@ fn resolve_for_confinement(p: &Path) -> PathBuf {
     }
 }
 
-fn confine_abs(p: &Path) -> Result<(), String> {
-    confine_abs_within(p, &allowed_roots())
+fn confine_abs(p: &Path, scope_id: Option<&str>) -> Result<(), String> {
+    confine_abs_within(p, &allowed_roots(scope_id))
 }
 
 /// Pure confinement check against an explicit root set. Empty `roots` (no current
@@ -791,14 +817,14 @@ fn confine_abs_within(p: &Path, roots: &[PathBuf]) -> Result<(), String> {
     }
 }
 
-/// Confine a read of an absolute path to the known roots.
-fn confine_abs_read(p: &Path) -> Result<(), String> {
-    confine_abs(p)
+/// Confine a read of an absolute path to the scope's known roots.
+fn confine_abs_read(p: &Path, scope_id: Option<&str>) -> Result<(), String> {
+    confine_abs(p, scope_id)
 }
 
-/// Confine a write of an absolute path to the known roots.
-fn confine_abs_write(p: &Path) -> Result<(), String> {
-    confine_abs(p)
+/// Confine a write of an absolute path to the scope's known roots.
+fn confine_abs_write(p: &Path, scope_id: Option<&str>) -> Result<(), String> {
+    confine_abs(p, scope_id)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1377,24 +1403,39 @@ mod tests {
     }
 
     #[test]
-    fn allowed_roots_scoped_to_current_project_only() {
+    fn allowed_roots_scoped_to_named_project_not_current() {
+        // The scope is the *viewer's own* project, not whichever is current. A
+        // viewer owned by Y stays able to reach Y even while X is current — and
+        // X's tree is NOT reachable through Y's scope (per-project isolation).
         let projects = vec![
             entry("x", "current", "/home/u/code/projectx"),
             entry("y", "inactive", "/home/u/code/projecty"),
         ];
-        let roots = compute_allowed_roots(&projects, &Vec::new());
-        // Only X (the current project) is reachable; sibling Y is not.
-        assert!(roots
-            .iter()
-            .any(|r| r.ends_with("projectx")));
+        let roots = compute_allowed_roots(&projects, &Vec::new(), Some("y"));
         assert!(
-            !roots.iter().any(|r| r.ends_with("projecty")),
-            "a non-current sibling project must not be reachable"
+            roots.iter().any(|r| r.ends_with("projecty")),
+            "the scope project must be reachable even when it is not current"
+        );
+        assert!(
+            !roots.iter().any(|r| r.ends_with("projectx")),
+            "a project outside the scope must not be reachable"
         );
     }
 
     #[test]
-    fn allowed_roots_includes_box_siblings() {
+    fn allowed_roots_falls_back_to_current_when_no_scope() {
+        // No scope id (root scope / legacy caller) → the current project.
+        let projects = vec![
+            entry("x", "current", "/home/u/code/projectx"),
+            entry("y", "inactive", "/home/u/code/projecty"),
+        ];
+        let roots = compute_allowed_roots(&projects, &Vec::new(), None);
+        assert!(roots.iter().any(|r| r.ends_with("projectx")));
+        assert!(!roots.iter().any(|r| r.ends_with("projecty")));
+    }
+
+    #[test]
+    fn allowed_roots_includes_box_siblings_of_scope() {
         let projects = vec![
             entry("x", "current", "/home/u/code/projectx"),
             entry("y", "inactive", "/home/u/code/projecty"),
@@ -1403,23 +1444,30 @@ mod tests {
         let boxes = vec![crate::schema::boxes::ProjectBox {
             id: "b1".to_string(),
             name: "grp".to_string(),
-            member_ids: vec!["x".to_string(), "y".to_string()],
+            member_ids: vec!["y".to_string(), "z".to_string()],
             ..Default::default()
         }];
-        let roots = compute_allowed_roots(&projects, &boxes);
-        // X (current) and Y (box sibling) are reachable; Z (unrelated) is not.
-        assert!(roots.iter().any(|r| r.ends_with("projectx")));
+        // Scope is Y; its box sibling Z is co-accessible, X (current) is not.
+        let roots = compute_allowed_roots(&projects, &boxes, Some("y"));
         assert!(roots.iter().any(|r| r.ends_with("projecty")));
+        assert!(roots.iter().any(|r| r.ends_with("projectz")));
         assert!(
-            !roots.iter().any(|r| r.ends_with("projectz")),
-            "a project outside the current box must not be reachable"
+            !roots.iter().any(|r| r.ends_with("projectx")),
+            "a project outside the scope's box must not be reachable"
         );
     }
 
     #[test]
-    fn allowed_roots_empty_when_no_current_project() {
+    fn allowed_roots_empty_when_scope_unknown() {
+        let projects = vec![entry("x", "current", "/home/u/code/projectx")];
+        // An unknown scope id resolves to no project → fail closed.
+        assert!(compute_allowed_roots(&projects, &Vec::new(), Some("nope")).is_empty());
+    }
+
+    #[test]
+    fn allowed_roots_empty_when_no_current_and_no_scope() {
         let projects = vec![entry("x", "inactive", "/home/u/code/projectx")];
-        assert!(compute_allowed_roots(&projects, &Vec::new()).is_empty());
+        assert!(compute_allowed_roots(&projects, &Vec::new(), None).is_empty());
     }
 
     #[test]

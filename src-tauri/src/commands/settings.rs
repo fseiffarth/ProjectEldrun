@@ -44,7 +44,11 @@ fn default_global_apps()
     {
         detect_windows_global_apps()
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        detect_macos_global_apps()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         None
     }
@@ -52,7 +56,7 @@ fn default_global_apps()
 
 /// First existing path among `candidates`, or `None`. Used to pick the
 /// best-available executable for a role across install locations.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn first_existing(candidates: &[String]) -> Option<String> {
     candidates
         .iter()
@@ -129,6 +133,86 @@ fn detect_windows_global_apps()
             vec![
                 env_join("ProgramFiles", "KeePassXC\\KeePassXC.exe"),
                 env_join("ProgramFiles(x86)", "KeePass Password Safe 2\\KeePass.exe"),
+            ],
+        ),
+    ];
+
+    let detected: HashMap<String, GlobalAppEntry> = candidates
+        .into_iter()
+        .filter_map(|(role, paths)| {
+            first_existing(&paths).map(|exec| {
+                (
+                    role.to_string(),
+                    GlobalAppEntry {
+                        exec,
+                        visible: true,
+                        extra: HashMap::new(),
+                    },
+                )
+            })
+        })
+        .collect();
+
+    if detected.is_empty() {
+        None
+    } else {
+        Some(detected)
+    }
+}
+
+/// Seed the global-app toolbar with stock macOS apps for the common roles. Each
+/// `exec` points at the launchable binary inside the bundle's `Contents/MacOS/`
+/// (not the `.app` path) so the existing `Command::new(exec)` launch path works.
+/// Roles whose app is absent (e.g. iTerm) are skipped; the toolbar is never empty
+/// on a stock install since Safari/Finder/Mail are always present.
+#[cfg(target_os = "macos")]
+fn detect_macos_global_apps()
+-> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
+    use crate::schema::settings::GlobalAppEntry;
+    use std::collections::HashMap;
+
+    // role -> ordered candidate executable paths (first existing wins).
+    let candidates: [(&str, Vec<String>); 7] = [
+        (
+            "browser",
+            vec![
+                "/Applications/Safari.app/Contents/MacOS/Safari".to_string(),
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string(),
+                "/Applications/Firefox.app/Contents/MacOS/firefox".to_string(),
+            ],
+        ),
+        (
+            "mail",
+            vec!["/System/Applications/Mail.app/Contents/MacOS/Mail".to_string()],
+        ),
+        (
+            "file_manager",
+            vec!["/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder".to_string()],
+        ),
+        (
+            "system_monitor",
+            vec![
+                "/System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor"
+                    .to_string(),
+            ],
+        ),
+        (
+            "notes",
+            vec!["/System/Applications/Notes.app/Contents/MacOS/Notes".to_string()],
+        ),
+        (
+            "media_player",
+            vec![
+                "/System/Applications/QuickTime Player.app/Contents/MacOS/QuickTime Player"
+                    .to_string(),
+                "/System/Applications/Music.app/Contents/MacOS/Music".to_string(),
+            ],
+        ),
+        (
+            "screenshot",
+            vec![
+                "/System/Applications/Utilities/Screenshot.app/Contents/MacOS/Screenshot"
+                    .to_string(),
             ],
         ),
     ];

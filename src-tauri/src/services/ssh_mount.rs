@@ -175,7 +175,13 @@ fn sshfs_missing_message() -> String {
          to mount remote projects on Windows"
             .to_string()
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        "sshfs not found — install macFUSE + sshfs (e.g. `brew install --cask macfuse` \
+         and `brew install gromgit/fuse/sshfs-mac`) to mount remote projects on macOS"
+            .to_string()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         "sshfs not found — install sshfs/FUSE to use remote projects".to_string()
     }
@@ -193,29 +199,57 @@ fn which_exists(bin: &str) -> bool {
 }
 
 /// True if `path` is currently a mountpoint. Reads `/proc/mounts` (Linux) and
-/// falls back to `mountpoint -q` where that file is unavailable.
+/// falls back to `mountpoint -q` where that file is unavailable. macOS has
+/// neither, so it parses `mount(8)` output instead (see [`macos_is_mounted`]).
 #[cfg(unix)]
 pub fn is_mounted(path: &Path) -> bool {
-    let target = path.to_string_lossy();
-    if let Ok(contents) = std::fs::read_to_string("/proc/mounts") {
-        for line in contents.lines() {
-            // fields: <src> <mountpoint> <fstype> <opts> ...
-            if let Some(mp) = line.split_whitespace().nth(1) {
-                // /proc/mounts escapes spaces as \040; a plain compare is enough
-                // for our mount paths (project ids never contain spaces).
-                if mp == target {
-                    return true;
+    #[cfg(target_os = "macos")]
+    {
+        return macos_is_mounted(path);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let target = path.to_string_lossy();
+        if let Ok(contents) = std::fs::read_to_string("/proc/mounts") {
+            for line in contents.lines() {
+                // fields: <src> <mountpoint> <fstype> <opts> ...
+                if let Some(mp) = line.split_whitespace().nth(1) {
+                    // /proc/mounts escapes spaces as \040; a plain compare is enough
+                    // for our mount paths (project ids never contain spaces).
+                    if mp == target {
+                        return true;
+                    }
                 }
             }
+            return false;
         }
-        return false;
+        Command::new("mountpoint")
+            .arg("-q")
+            .arg(path)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
-    Command::new("mountpoint")
-        .arg("-q")
-        .arg(path)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+}
+
+/// macOS mountpoint check: there is no `/proc/mounts` or `mountpoint`, so parse
+/// `mount(8)`, whose lines read `host:path on /mountpoint (macfuse, …)`. We match
+/// the canonical target path between ` on ` and the trailing ` (`. The mountpoint
+/// dir is canonicalized first (macOS reports real paths, e.g. `/private/var/…`)
+/// so it lines up with `mount`'s output; if that fails (path absent) the raw path
+/// is used.
+#[cfg(target_os = "macos")]
+fn macos_is_mounted(path: &Path) -> bool {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let target = canonical.to_string_lossy();
+    let needle = format!(" on {target} ");
+    let output = match Command::new("/sbin/mount").output() {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return false,
+    };
+    String::from_utf8_lossy(&output)
+        .lines()
+        .any(|line| line.contains(&needle))
 }
 
 /// True if `path` looks like a live WinFsp/SSHFS-Win mount. Windows has no
@@ -331,21 +365,30 @@ pub fn mount(remote: &RemoteSpec, project_id: &str) -> Result<PathBuf, String> {
 
 /// Unmount `path` if it is mounted. Tries `fusermount -u`, then falls back to
 /// `umount`. A "not mounted" path is treated as success (idempotent).
+///
+/// macFUSE ships no `fusermount`, so on macOS we skip straight to `umount`.
 #[cfg(unix)]
 pub fn unmount(path: &Path) -> Result<(), String> {
     if !is_mounted(path) {
         return Ok(());
     }
 
-    // Preferred: fusermount -u (FUSE unmount, no root needed).
-    let fuser = Command::new("fusermount").arg("-u").arg(path).output();
-    if let Ok(out) = &fuser {
-        if out.status.success() {
-            return Ok(());
+    // Preferred on Linux: fusermount -u (FUSE unmount, no root needed). macFUSE
+    // has no `fusermount`, so on macOS this is skipped and we use `umount` below.
+    #[cfg(target_os = "macos")]
+    let fuser: Option<std::process::Output> = None;
+    #[cfg(not(target_os = "macos"))]
+    let fuser = {
+        let out = Command::new("fusermount").arg("-u").arg(path).output().ok();
+        if let Some(o) = &out {
+            if o.status.success() {
+                return Ok(());
+            }
         }
-    }
+        out
+    };
 
-    // Fallback: umount.
+    // Fallback (and macOS primary): umount.
     let umount = Command::new("umount").arg(path).output();
     match umount {
         Ok(out) if out.status.success() => Ok(()),
@@ -356,7 +399,6 @@ pub fn unmount(path: &Path) -> Result<(), String> {
             }
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
             let fuser_err = fuser
-                .ok()
                 .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
                 .unwrap_or_default();
             Err(format!(

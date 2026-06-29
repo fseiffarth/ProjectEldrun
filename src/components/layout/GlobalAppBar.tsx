@@ -229,6 +229,9 @@ const SCREENSHOT_REGION_ARGS: Record<string, string[]> = {
   "xfce4-screenshooter": ["--region"],
   ksnip: ["--rectarea"],
   shutter: ["--select"],
+  // macOS built-in: `screencapture -i <outfile>` starts interactive selection,
+  // letting the user drag a rectangular region (or spacebar to grab a window).
+  screencapture: ["-i"],
 };
 
 function screenshotRegionArgs(exec: string): string[] {

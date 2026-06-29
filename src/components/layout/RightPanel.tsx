@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileTree } from "../files/FileTree";
 import { GitHistory } from "../files/GitHistory";
+import { GitChangeTree, type ChangeScope } from "../files/GitChangeTree";
 import { SearchPanel } from "../files/SearchPanel";
 import { useProjectsStore } from "../../stores/projects";
 import { useWindowsStore } from "../../stores/windows";
@@ -208,28 +209,24 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
   const [settingsError, setSettingsError] = useState<string | null>(null);
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
-  const [gitFileList, setGitFileList] = useState<Record<string, string>>({});
   const [unpushedCommits, setUnpushedCommits] = useState<string[]>([]);
-  const [hoveredBtn, setHoveredBtn] = useState<"add" | "commit" | "push" | null>(null);
+  const [openTree, setOpenTree] = useState<"add" | "commit" | "push" | null>(null);
   const [commitMsg, setCommitMsg] = useState<string | null>(null);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitError, setGitError] = useState<string | null>(null);
   const commitRef = useRef<HTMLTextAreaElement>(null);
+  const actionBarRef = useRef<HTMLDivElement>(null);
   const refreshGitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Run all three git probes concurrently (Eff #9): they hit independent
-  // subprocesses, so `Promise.all` collapses three serially-awaited chains into
+  // Run both git probes concurrently (Eff #9): they hit independent
+  // subprocesses, so `Promise.all` collapses two serially-awaited chains into
   // one round of parallel work. Each result still applies independently.
   const runRefreshGit = (dir: string) => {
     void Promise.all([
       invoke<GitStatus>("git_status", { projectDir: dir }).catch(() => null),
-      invoke<Record<string, string>>("git_file_statuses", { projectDir: dir, relPath: "" }).catch(
-        () => ({}) as Record<string, string>,
-      ),
       invoke<string[]>("git_unpushed_commits", { projectDir: dir }).catch(() => [] as string[]),
-    ]).then(([status, files, unpushed]) => {
+    ]).then(([status, unpushed]) => {
       setGitStatus(status);
-      setGitFileList(files);
       setUnpushedCommits(unpushed);
       // Keep the active project's pill dot in sync from the data we just fetched
       // (no extra git subprocesses), so edits/commits/pushes reflect immediately
@@ -258,14 +255,27 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
     };
   }, []);
 
-  const hoverItems: string[] =
-    hoveredBtn === "add"
-      ? Object.entries(gitFileList).filter(([, s]) => s === "untracked" || s === "modified").map(([f]) => f)
-      : hoveredBtn === "commit"
-      ? Object.entries(gitFileList).filter(([, s]) => s === "staged").map(([f]) => f)
-      : hoveredBtn === "push"
-      ? unpushedCommits
-      : [];
+  // The change tree is click-opened and persistent; close it on Escape or a
+  // click anywhere outside the action bar (which contains both the toggles and
+  // the tree itself).
+  useEffect(() => {
+    if (!openTree) return;
+    const onDown = (e: MouseEvent) => {
+      if (!actionBarRef.current?.contains(e.target as Node)) setOpenTree(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenTree(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [openTree]);
+
+  const treeScope: ChangeScope | null =
+    openTree === "add" ? "unstaged" : openTree === "commit" ? "staged" : openTree === "push" ? "unpushed" : null;
 
   const activeProject = projects.find((p) => p.id === activeId);
   const projectDir = resolveProjectDirectory(activeProject);
@@ -619,22 +629,21 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
             gitStatus.unstaged + gitStatus.untracked > 0 ||
             gitStatus.staged > 0 ||
             (gitStatus.has_remote && unpushedCommits.length > 0)) && (
-          <div className="git-action-bar git-action-bar--inline" style={{ position: "relative" }} onMouseLeave={() => setHoveredBtn(null)}>
+          <div ref={actionBarRef} className="git-action-bar git-action-bar--inline" style={{ position: "relative" }}>
             {commitMsg !== null ? (
               <>
                 <button
-                  className="git-action-btn"
+                  className="git-action-btn git-action-btn--commit"
                   disabled={gitBusy}
                   onClick={handleCommitConfirm}
                   title="Confirm commit"
-                  onMouseEnter={() => setHoveredBtn("commit")}
                 >
                   <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
                   <span>↵</span>
                   <span className="git-btn-label">Confirm</span>
                 </button>
                 <button
-                  className="git-action-btn"
+                  className="git-action-btn git-action-btn--back"
                   disabled={gitBusy}
                   onClick={() => setCommitMsg(null)}
                   title="Go back"
@@ -648,52 +657,83 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
                 {/* Each action only appears when it has work to do: Add when there
                     are unstaged/untracked changes, Commit when something is staged,
                     Push when commits are ahead of the remote. A clean, pushed repo
-                    shows no buttons. */}
+                    shows no buttons. The caret beside each action opens a
+                    navigable folder tree of the files it touches, with line
+                    stats. */}
                 {gitStatus.unstaged + gitStatus.untracked > 0 && (
-                  <button
-                    className="git-action-btn"
-                    disabled={gitBusy}
-                    onClick={handleAdd}
-                    title={`Stage all changes (${gitStatus.unstaged + gitStatus.untracked} unstaged)`}
-                    onMouseEnter={() => setHoveredBtn("add")}
-                  >
-                    <span data-testid="add-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#f85149" }} />
-                    <span>⊕</span>
-                    <span className="git-btn-label">Add ({gitStatus.unstaged + gitStatus.untracked})</span>
-                  </button>
+                  <div className="git-action git-action--add">
+                    <button
+                      className="git-action-btn git-action-btn--add"
+                      disabled={gitBusy}
+                      onClick={handleAdd}
+                      title={`Stage all changes (${gitStatus.unstaged + gitStatus.untracked} unstaged)`}
+                    >
+                      <span data-testid="add-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#f85149" }} />
+                      <span>⊕</span>
+                      <span className="git-btn-label">Add ({gitStatus.unstaged + gitStatus.untracked})</span>
+                    </button>
+                    <button
+                      className="git-action-toggle"
+                      disabled={gitBusy}
+                      aria-label="Show changed files"
+                      aria-expanded={openTree === "add"}
+                      title="Show changed files"
+                      onClick={() => setOpenTree((t) => (t === "add" ? null : "add"))}
+                    >
+                      {openTree === "add" ? "▴" : "▾"}
+                    </button>
+                  </div>
                 )}
                 {gitStatus.staged > 0 && (
-                  <button
-                    className="git-action-btn"
-                    disabled={gitBusy}
-                    onClick={handleCommitOpen}
-                    title={`Commit ${gitStatus.staged} staged`}
-                    onMouseEnter={() => setHoveredBtn("commit")}
-                  >
-                    <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
-                    <span>✔</span>
-                    <span className="git-btn-label">Commit ({gitStatus.staged})</span>
-                  </button>
+                  <div className="git-action git-action--commit">
+                    <button
+                      className="git-action-btn git-action-btn--commit"
+                      disabled={gitBusy}
+                      onClick={handleCommitOpen}
+                      title={`Commit ${gitStatus.staged} staged`}
+                    >
+                      <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
+                      <span>✔</span>
+                      <span className="git-btn-label">Commit ({gitStatus.staged})</span>
+                    </button>
+                    <button
+                      className="git-action-toggle"
+                      disabled={gitBusy}
+                      aria-label="Show staged files"
+                      aria-expanded={openTree === "commit"}
+                      title="Show staged files"
+                      onClick={() => setOpenTree((t) => (t === "commit" ? null : "commit"))}
+                    >
+                      {openTree === "commit" ? "▴" : "▾"}
+                    </button>
+                  </div>
                 )}
                 {gitStatus.has_remote && unpushedCommits.length > 0 && (
-                  <button
-                    className="git-action-btn"
-                    disabled={gitBusy}
-                    onClick={handlePush}
-                    title={`Push ${unpushedCommits.length} commit${unpushedCommits.length === 1 ? "" : "s"} to remote`}
-                    onMouseEnter={() => setHoveredBtn("push")}
-                  >
-                    <span data-testid="push-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#3fb950" }} />
-                    <span>⬆</span>
-                    <span className="git-btn-label">Push ({unpushedCommits.length})</span>
-                  </button>
-                )}
-                {hoveredBtn && hoverItems.length > 0 && (
-                  <div className="git-hover-list" data-testid="git-hover-list">
-                    {hoverItems.map((item, i) => (
-                      <div key={i} className="git-hover-item">{item}</div>
-                    ))}
+                  <div className="git-action git-action--push">
+                    <button
+                      className="git-action-btn git-action-btn--push"
+                      disabled={gitBusy}
+                      onClick={handlePush}
+                      title={`Push ${unpushedCommits.length} commit${unpushedCommits.length === 1 ? "" : "s"} to remote`}
+                    >
+                      <span data-testid="push-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#3fb950" }} />
+                      <span>⬆</span>
+                      <span className="git-btn-label">Push ({unpushedCommits.length})</span>
+                    </button>
+                    <button
+                      className="git-action-toggle"
+                      disabled={gitBusy}
+                      aria-label="Show files in unpushed commits"
+                      aria-expanded={openTree === "push"}
+                      title="Show files in unpushed commits"
+                      onClick={() => setOpenTree((t) => (t === "push" ? null : "push"))}
+                    >
+                      {openTree === "push" ? "▴" : "▾"}
+                    </button>
                   </div>
+                )}
+                {treeScope && projectDir && (
+                  <GitChangeTree projectDir={projectDir} scope={treeScope} />
                 )}
               </>
             )}
@@ -917,6 +957,14 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
                 onChange={(e) => void updateSettings({ autosave: e.target.checked })}
               />
               <span>Autosave edits</span>
+            </label>
+            <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
+              <input
+                type="checkbox"
+                checked={settings?.change_tint !== false}
+                onChange={(e) => void updateSettings({ change_tint: e.target.checked })}
+              />
+              <span>Highlight recent edits (new→old colour trail)</span>
             </label>
             <div className="viewer-prefs-list">
               {VIEWER_PREF_TYPES.map((t) => {

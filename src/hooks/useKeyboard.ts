@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../lib/dragPlatform";
+import { IS_MAC } from "../lib/platform";
 import {
   allGroups,
   findGroup,
@@ -85,8 +86,11 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Super key — toggle right panel.
-      if (e.key === "Meta" || e.key === "Super") {
+      // Super key — toggle right panel. Disabled on macOS: there Cmd reports as
+      // "Meta" and is the platform-primary shortcut modifier (see
+      // shortcuts.chordMatches), so a lone-key toggle would fire on every Cmd+key
+      // chord. Mac users reveal the panels via the cursor-to-edge hover instead.
+      if (!IS_MAC && (e.key === "Meta" || e.key === "Super")) {
         e.preventDefault();
         onTogglePanels();
         return;

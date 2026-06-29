@@ -13,12 +13,18 @@ import {
   type ShortcutMap,
 } from "../../lib/shortcuts";
 import { AgentsPanel, FileTypeSettings, GlobalAppsSettings, OllamaPanel } from "./SettingsSubPanels";
-import { IS_WINDOWS } from "../../lib/paths";
+import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
 
-// The panel-toggle key reads as the Windows key on Windows (the webview reports
-// it as "Meta"), and "Super" on Linux/KDE — keep the help text honest per OS.
-const PANEL_TOGGLE_KEY = IS_WINDOWS ? "the Windows key" : "Super";
+// The workspace-layout help text. On Linux/Windows a lone modifier (Super / the
+// Windows key) toggles the panels; on macOS that key is reserved for Cmd
+// shortcuts, so the lone-key toggle is disabled (see useKeyboard) — there the
+// panels stay reachable via the cursor-to-edge reveal. Keep the copy honest per OS.
+const WORKSPACE_LAYOUT_INTRO = IS_MAC
+  ? "Eldrun keeps your AI-assisted development in a single window. Push your cursor to a screen edge to reveal the panels, and press F11 for fullscreen."
+  : `Eldrun keeps your AI-assisted development in a single window. Press ${
+      IS_WINDOWS ? "the Windows key" : "Super"
+    } while Eldrun is focused to toggle the panels, and F11 for fullscreen.`;
 
 interface HelpItem {
   term: string;
@@ -34,8 +40,7 @@ interface HelpSection {
 const HELP_SECTIONS: HelpSection[] = [
   {
     title: "Workspace layout",
-    intro:
-      `Eldrun keeps your AI-assisted development in a single window. Press ${PANEL_TOGGLE_KEY} while Eldrun is focused to toggle the panels, and F11 for fullscreen.`,
+    intro: WORKSPACE_LAYOUT_INTRO,
     items: [
       { term: "Root terminal (▣)", desc: "The control terminal that always lives in Eldrun's root folder, independent of any project." },
       { term: "Project pills", desc: "One pill per active project in the project switcher. Click to switch; each project keeps its own terminal and tabs. Drag pills to reorder them." },
@@ -346,6 +351,24 @@ export function SettingsDialog({
                 }}
               >
                 How to start...
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new Event("eldrun:start-tour"));
+                }}
+              >
+                Take a tour
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new Event("eldrun:open-lessons"));
+                }}
+              >
+                Lessons
               </button>
               <button type="button" onClick={() => useHintsStore.getState().reset()}>
                 Reset hints

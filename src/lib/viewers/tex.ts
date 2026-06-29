@@ -1071,7 +1071,10 @@ export interface TexCompletions {
  * best-effort: a missing/unreadable file is skipped. Pure parsing is delegated
  * to the tested helpers above.
  */
-export async function gatherTexCompletions(currentPath: string): Promise<TexCompletions> {
+export async function gatherTexCompletions(
+  currentPath: string,
+  projectId: string | null = null,
+): Promise<TexCompletions> {
   const root = await resolveTexRoot(currentPath);
   const seenTex = new Set<string>();
   const queue = [root, currentPath];
@@ -1084,7 +1087,7 @@ export async function gatherTexCompletions(currentPath: string): Promise<TexComp
     seenTex.add(file);
     let text: string;
     try {
-      text = await invoke<string>("read_file_text", { path: file });
+      text = await invoke<string>("read_file_text", { path: file, projectId });
     } catch {
       continue;
     }
@@ -1102,7 +1105,7 @@ export async function gatherTexCompletions(currentPath: string): Promise<TexComp
   for (const bib of bibPaths) {
     let text: string;
     try {
-      text = await invoke<string>("read_file_text", { path: bib });
+      text = await invoke<string>("read_file_text", { path: bib, projectId });
     } catch {
       continue;
     }

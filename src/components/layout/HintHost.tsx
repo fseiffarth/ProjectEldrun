@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useHintsStore } from "../../stores/hints";
+import { useTourStore } from "../../stores/tour";
 import { HINTS, pickHint, type HintCtx, type HintId } from "../../lib/hints";
 import { HintBubble } from "../common/HintBubble";
 
@@ -28,6 +29,9 @@ export function HintHost() {
   const show = useHintsStore((s) => s.show);
   const dismiss = useHintsStore((s) => s.dismiss);
   const disableAll = useHintsStore((s) => s.disableAll);
+  // The guided tour is a fuller-screen overlay; suppress contextual hints while
+  // it runs so the two onboarding surfaces never paint at once.
+  const tourActive = useTourStore((s) => s.active);
 
   const mountedAt = useRef(Date.now());
   const lastClearedAt = useRef(0);
@@ -39,6 +43,7 @@ export function HintHost() {
   // the seen-set, or the active hint changes.
   useEffect(() => {
     if (active) return; // one at a time
+    if (tourActive) return; // never surface a hint over the guided tour
     if (!settingsLoaded || !projectsLoaded || !hintsEnabled) return;
     const seen = new Set<string>(Array.isArray(seenList) ? (seenList as string[]) : []);
     const ctx: HintCtx = { projectCount, activeId };
@@ -58,6 +63,7 @@ export function HintHost() {
     return () => window.clearTimeout(t);
   }, [
     active,
+    tourActive,
     settingsLoaded,
     projectsLoaded,
     hintsEnabled,

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { ViewerHeader } from "./FileViewerPane";
+import { useFileScope, readFileBytes } from "./fileAccess";
 import { basename } from "../../lib/paths";
 
 /**
@@ -55,6 +55,7 @@ function extOf(path: string): string {
  * the backend's large-file rejection) surfaces as `error`.
  */
 function useMediaBlobUrl(path: string, type: string) {
+  const scope = useFileScope();
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const urlRef = useRef<string | null>(null);
@@ -63,7 +64,7 @@ function useMediaBlobUrl(path: string, type: string) {
     let cancelled = false;
     setUrl(null);
     setError(null);
-    invoke<number[]>("read_file_bytes", { path })
+    readFileBytes(path, scope)
       .then((bytes) => {
         if (cancelled) return;
         const blob = new Blob([new Uint8Array(bytes)], type ? { type } : undefined);
@@ -79,7 +80,7 @@ function useMediaBlobUrl(path: string, type: string) {
     return () => {
       cancelled = true;
     };
-  }, [path, type]);
+  }, [path, type, scope]);
 
   // Revoke the last live URL on unmount.
   useEffect(

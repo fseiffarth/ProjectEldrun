@@ -11,7 +11,7 @@
  * call site in FileViewerPane.tsx.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useFileScope, writeFileBytes } from "./fileAccess";
 import "./ImageAnnotator.css";
 
 type Tool = "pen" | "rect" | "arrow" | "text";
@@ -48,6 +48,7 @@ export function ImageAnnotator({
   /** Close the overlay and return to the plain image viewer. */
   onClose: () => void;
 }) {
+  const scope = useFileScope();
   const baseRef = useRef<HTMLCanvasElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -307,17 +308,14 @@ export function ImageAnnotator({
           return;
         }
         const buf = await blob.arrayBuffer();
-        await invoke("write_file_bytes", {
-          path: targetPath,
-          content: Array.from(new Uint8Array(buf)),
-        });
+        await writeFileBytes(targetPath, new Uint8Array(buf), scope);
         onClose();
       } catch (err) {
         setError(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
         setSaving(false);
       }
     },
-    [saving, flatten, onClose],
+    [saving, flatten, onClose, scope],
   );
 
   // Esc cancels.

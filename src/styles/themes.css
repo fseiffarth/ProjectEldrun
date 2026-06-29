@@ -430,6 +430,14 @@ select option {
 
 }
 
+/* macOS draws native traffic-light buttons over the top-left of the window
+   (Overlay title-bar style; see tauri.macos.conf.json). Reserve room so the
+   logo and version don't sit under them, and the custom `.wm-controls` are
+   hidden in WindowControls.tsx on macOS. */
+.app-header.is-mac .header-left {
+  padding-left: 78px;
+}
+
 /* ── Window controls (traffic lights) ───────────────────────────────── */
 .wm-controls {
   display: flex;
@@ -1411,14 +1419,69 @@ select option {
   background: rgba(255, 145, 0, 0.6);
 }
 
-/* Last-change marker: tint the most recently inserted/edited run so the latest
-   edit stands out. Sits below the textarea like the other overlays, so the tint
-   paints behind the editable glyphs. A green "changed" tint, distinct from the
-   yellow/orange search highlight; fixed rgba so it reads on both light and dark
-   themes (color-mix/theme vars are unreliable on WebKitGTK here). */
+/* Change-tint trail: tint recently typed runs so the latest edits stand out,
+   sequenced new→old across tiers (.tier-0 newest … .tier-17 oldest). Each tier
+   shifts hue green→teal→blue and fades, so the freshest keystrokes read brightest
+   and older runs cool off before the idle decay retires them. Sits below the
+   textarea like the other overlays, so the tint paints behind the editable
+   glyphs. Fixed rgba so it reads on both light and dark themes (color-mix/theme
+   vars are unreliable on WebKitGTK here). Must stay in sync with CHANGE_TIERS. */
 .file-viewer-change-layer .file-viewer-change-mark {
   border-radius: 2px;
-  background: rgba(63, 185, 80, 0.28);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-0 {
+  background: rgba(63, 185, 80, 0.34);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-1 {
+  background: rgba(64, 181, 88, 0.33);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-2 {
+  background: rgba(65, 177, 95, 0.31);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-3 {
+  background: rgba(66, 173, 103, 0.30);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-4 {
+  background: rgba(67, 169, 111, 0.28);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-5 {
+  background: rgba(67, 165, 118, 0.27);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-6 {
+  background: rgba(68, 161, 126, 0.25);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-7 {
+  background: rgba(69, 157, 134, 0.24);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-8 {
+  background: rgba(70, 153, 141, 0.22);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-9 {
+  background: rgba(71, 148, 149, 0.21);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-10 {
+  background: rgba(72, 144, 156, 0.19);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-11 {
+  background: rgba(73, 140, 164, 0.18);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-12 {
+  background: rgba(74, 136, 172, 0.16);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-13 {
+  background: rgba(74, 132, 179, 0.15);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-14 {
+  background: rgba(75, 128, 187, 0.13);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-15 {
+  background: rgba(76, 124, 195, 0.12);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-16 {
+  background: rgba(77, 120, 202, 0.10);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-17 {
+  background: rgba(78, 116, 210, 0.09);
 }
 
 /* #49: recognised file links read as clickable — a dotted underline in the link
@@ -2711,6 +2774,59 @@ select option {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
 }
+/* Pointer-anchored info card shown while hovering a node (project description /
+   box details). Rendered in a body portal so it's never clipped or scaled by
+   the 3D scene. */
+.blob-hover-card {
+  position: fixed;
+  z-index: 40;
+  width: max-content;
+  max-width: 760px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.blob-hover-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blob-hover-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  text-transform: capitalize;
+  color: var(--accent);
+}
+.blob-hover-desc {
+  margin-top: 6px;
+  max-width: 360px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* The embedded GitHub-style activity heatmap inside the hover card. The card is
+   pointer-events:none, so the calendar reads as a static "how much I worked"
+   strip — its per-cell tooltips intentionally don't fire here. */
+.blob-hover-activity {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.blob-hover-hint {
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
 
 /* ── Split preview (shown while a tab is being dragged over a subwindow) ──── */
 /* CenterPanel's hit-test sets the hovered group's edge; CenterPanel renders this
@@ -3193,6 +3309,7 @@ select option {
 .right-panel-header .git-action-bar--inline {
   flex: 0 1 auto;
   min-width: 0;
+  gap: 4px;
   padding: 0;
   margin-left: 8px;
   border-bottom: none;
@@ -3200,7 +3317,7 @@ select option {
 
 .right-panel-header .git-action-bar--inline .git-action-btn {
   flex: 0 0 auto;
-  padding: 2px 5px;
+  padding: 3px 8px;
   font-size: 12px;
 }
 
@@ -3277,16 +3394,21 @@ select option {
 }
 
 .git-action-btn {
-  background: transparent;
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  border-radius: 4px;
+  /* Per-action accent; each button overrides --git-btn-accent below so its
+     colour matches the status dot it carries (red=add, yellow=commit,
+     green=push). Defaults to the theme accent for the confirm/back buttons. */
+  --git-btn-accent: var(--accent);
+  background: color-mix(in srgb, var(--git-btn-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--git-btn-accent) 55%, transparent);
+  color: var(--git-btn-accent);
+  border-radius: 5px;
   cursor: pointer;
-  padding: 3px 7px;
-  font-size: 14px;
+  padding: 4px 9px;
+  font-size: 13px;
+  font-weight: 600;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   font-family: inherit;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
   white-space: nowrap;
@@ -3295,48 +3417,144 @@ select option {
 }
 
 .git-action-btn:hover {
-  background: var(--pill-active-bg);
-  color: var(--accent-hover);
-  border-color: var(--accent-hover);
+  background: color-mix(in srgb, var(--git-btn-accent) 26%, transparent);
+  border-color: var(--git-btn-accent);
 }
 
 .git-action-btn:disabled {
-  opacity: 0.3;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
-.git-btn-label {
-  display: none;
+/* Action-specific accents, matched to the inline status dots. Set on the
+   group wrapper too so the caret toggle inherits the same colour. */
+.git-action-btn--add,
+.git-action--add { --git-btn-accent: #f85149; }
+.git-action-btn--commit,
+.git-action--commit { --git-btn-accent: #e3b341; }
+.git-action-btn--push,
+.git-action--push { --git-btn-accent: #3fb950; }
+
+/* An action + its disclosure caret, joined into one pill so the two read as a
+   single control. The action button loses its right rounding, the caret its
+   left, and they share a divider. */
+.git-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.git-action .git-action-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.git-action-toggle {
+  --git-btn-accent: var(--accent);
+  background: color-mix(in srgb, var(--git-btn-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--git-btn-accent) 55%, transparent);
+  border-left: none;
+  color: var(--git-btn-accent);
+  border-radius: 0 5px 5px 0;
+  cursor: pointer;
+  padding: 0 5px;
   font-size: 10px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.git-action-toggle:hover {
+  background: color-mix(in srgb, var(--git-btn-accent) 26%, transparent);
+  border-color: var(--git-btn-accent);
+}
+
+.git-action-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* The label is always shown now (not hover-only) so each action reads clearly
+   without pointing at it; the leading glyph stays as a quick visual marker. */
+.git-btn-label {
+  display: inline;
+  font-size: 11px;
   line-height: 1;
 }
 
-.git-action-btn:hover .git-btn-label {
-  display: inline;
-}
-
-.git-hover-list {
+/* Click-opened navigable change tree under the Add/Commit/Push actions.
+   Anchored to the right edge of the action bar and grown leftward: the panel
+   hugs the app's right frame, so anchoring left would push a wide tree off
+   screen. Sized to the longest path (min keeps it readable, max caps depth). */
+.git-change-tree {
   position: absolute;
-  top: 100%;
-  left: 0;
+  top: calc(100% + 4px);
   right: 0;
+  left: auto;
+  min-width: 280px;
+  max-width: 480px;
+  width: max-content;
   z-index: 200;
   background: var(--bg-panel, #1e1e1e);
   border: 1px solid var(--border-color);
-  border-top: none;
-  max-height: 160px;
+  border-radius: 6px;
+  max-height: 320px;
   overflow-y: auto;
-  font-size: 10px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-size: 11px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  padding: 4px 0;
 }
 
-.git-hover-item {
-  padding: 2px 8px;
+.git-change-empty {
+  padding: 8px 12px;
+  color: var(--text-muted);
+}
+
+.git-change-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px 2px 0;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   color: var(--text-primary);
 }
+
+.git-change-row.is-dir {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.git-change-row.is-dir:hover {
+  background: var(--pill-hover-bg);
+}
+
+.git-change-caret {
+  display: inline-block;
+  width: 10px;
+  flex-shrink: 0;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.git-change-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-change-stat {
+  flex-shrink: 0;
+  display: inline-flex;
+  gap: 5px;
+  margin-left: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.git-change-add { color: #3fb950; }
+.git-change-del { color: #f85149; }
+.git-change-zero,
+.git-change-stat--bin { color: var(--text-muted); }
 
 /* ── Git history view ────────────────────────────────────────────────── */
 .git-history {
@@ -3377,6 +3595,9 @@ select option {
 }
 
 .git-branch-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: transparent;
   border: 1px solid var(--border-color);
   color: var(--text-primary);
@@ -3386,6 +3607,15 @@ select option {
   cursor: pointer;
   font-family: inherit;
   white-space: nowrap;
+}
+
+/* Lane-colored dot echoing the commit graph: the same color the branch's tip
+   wears in the graph and on its ref label. */
+.git-branch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .git-branch-pill:hover:not(:disabled) {
@@ -6206,6 +6436,15 @@ select option {
   cursor: default;
 }
 
+/* Destructive confirm (e.g. delete git history) — overrides the accent style
+   the last-child rule otherwise applies. */
+.project-dialog-actions button.danger,
+.project-dialog-actions button.danger:last-child {
+  background: var(--danger);
+  color: var(--bg-main);
+  border-color: var(--danger);
+}
+
 .project-dialog-path {
   min-height: 16px;
   color: var(--text-muted);
@@ -6787,6 +7026,17 @@ select option {
   border-color: var(--accent);
   color: var(--accent);
   font-weight: 600;
+}
+.local-model-role-chip.local-model-unload {
+  margin-left: auto;
+}
+.local-model-role-chip.local-model-unload:hover {
+  border-color: var(--danger, #e5534b);
+  color: var(--danger, #e5534b);
+}
+.local-model-role-chip.local-model-unload:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* Installed agent CLIs listed in the brain menu's Agents section: a green
@@ -7513,4 +7763,190 @@ select option {
   50% {
     box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent);
   }
+}
+
+/* ── Guided tour ("Take a tour") ──────────────────────────────────────────── */
+
+/* Invisible anchor at the right-edge reveal band; gives the file-tree tour step
+   a stable element to spotlight without affecting layout or hit-testing. */
+.tour-edge-marker {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  width: 6px;
+  height: 120px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+/* Full-screen layer hosting the blocker, spotlight, and bubble. Above the hint
+   bubble (z 90) and most chrome; portaled to document.body. */
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+
+/* Transparent click-catcher: makes the tour narrated/can't-get-lost — every
+   pointer event over the app is swallowed so the user advances with Next. The
+   dim itself comes from the spotlight's box-shadow (or the banner backdrop). */
+.tour-blocker {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+}
+
+/* The cutout around the highlighted control: its huge box-shadow IS the dim, so
+   everything outside this rect darkens while the target stays clear. Visual
+   only (no pointer events) — the blocker beneath handles clicks. */
+.tour-spotlight {
+  position: fixed;
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 9999px rgba(0, 0, 0, 0.58),
+    0 0 0 2px var(--accent),
+    0 0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
+  pointer-events: none;
+  animation: tour-spotlight-in 0.2s ease-out;
+}
+
+@keyframes tour-spotlight-in {
+  from {
+    box-shadow:
+      0 0 0 9999px rgba(0, 0, 0, 0);
+  }
+}
+
+.tour-bubble {
+  position: fixed;
+  z-index: 201;
+  pointer-events: auto;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  color: var(--text-primary);
+  font-size: 12px;
+  animation: hint-bubble-in 0.22s ease-out;
+}
+
+/* Centered card fallback when a step's target isn't on screen. */
+.tour-bubble--banner {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 32px));
+}
+
+.tour-bubble-title {
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+.tour-bubble-body {
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.tour-bubble-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.tour-bubble-count {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tour-bubble-skip {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.tour-bubble-skip:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.tour-bubble-back {
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.tour-bubble-back:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.tour-bubble-next {
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 14px;
+  cursor: pointer;
+}
+
+.tour-bubble-next:hover {
+  background: var(--accent-hover, var(--accent));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-spotlight,
+  .tour-bubble {
+    animation: none;
+  }
+}
+
+/* Lesson picker (LessonsMenu): a vertical list of task walkthroughs. */
+.lessons-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.lesson-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.lesson-item:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+}
+
+.lesson-item-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.lesson-item-blurb {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.4;
 }

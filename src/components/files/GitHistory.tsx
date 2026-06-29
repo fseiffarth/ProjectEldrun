@@ -138,7 +138,19 @@ const LANE_W = 14;
 const GRAPH_ROW_H = 22;
 const cx = (col: number) => col * LANE_W + LANE_W / 2;
 
-function CommitGraphCell({ row, height, lanes, head }: { row: RowLayout; height: number; lanes: number; head: boolean }) {
+function CommitGraphCell({
+  row,
+  height,
+  lanes,
+  head,
+  tip,
+}: {
+  row: RowLayout;
+  height: number;
+  lanes: number;
+  head: boolean;
+  tip: boolean;
+}) {
   const mid = height / 2;
   const width = lanes * LANE_W;
   const x = (c: number) => cx(c);
@@ -173,6 +185,11 @@ function CommitGraphCell({ row, height, lanes, head }: { row: RowLayout; height:
           strokeWidth={1.5}
         />
       ))}
+      {/* Branch tips get a hollow ring in their lane color so the heads stand
+          out from ordinary commits along the same lane. */}
+      {tip && (
+        <circle cx={dotX} cy={mid} r={head ? 7 : 6} fill="none" stroke={laneColor(row.col)} strokeWidth={1.5} />
+      )}
       <circle cx={dotX} cy={mid} r={head ? 4.5 : 3.5} fill={laneColor(row.col)} stroke="var(--bg-panel)" strokeWidth={head ? 1.5 : 1} />
     </svg>
   );
@@ -279,11 +296,32 @@ export function GitHistory({ projectDir, onChanged }: Props) {
     }
   }
 
-  const graph = useMemo(() => (graphMode ? computeGraph(commits) : []), [graphMode, commits]);
+  // The graph layout is computed regardless of view mode so the per-lane colors
+  // can also tint the branch selector and the ref labels in list view; only the
+  // SVG cell itself is gated on graphMode below.
+  const graph = useMemo(() => computeGraph(commits), [commits]);
   const graphLanes = useMemo(
     () => graph.reduce((max, r) => Math.max(max, r.laneCount), 1),
     [graph],
   );
+
+  // Map each ref (branch tip / remote / tag) to the color of the lane its commit
+  // occupies in the graph, so a branch wears one consistent color everywhere it
+  // appears: the selector pill, its ref label, and its lane in the graph. Tag
+  // refs ("tag: …") are skipped — only branch heads get a color. First write wins
+  // when several refs share a commit (they share the lane anyway).
+  const branchColor = useMemo(() => {
+    const m = new Map<string, string>();
+    commits.forEach((c, i) => {
+      const col = graph[i]?.col;
+      if (col == null) return;
+      for (const r of parseRefs(c.refs)) {
+        if (r.startsWith("tag: ") || m.has(r)) continue;
+        m.set(r, laneColor(col));
+      }
+    });
+    return m;
+  }, [commits, graph]);
 
   const current = branches.find((b) => b.is_current)?.name;
   const localBranches = branches.filter((b) => !b.is_remote);
@@ -322,6 +360,9 @@ export function GitHistory({ projectDir, onChanged }: Props) {
               disabled={loading || b.is_current}
               title={b.is_current ? `On ${b.name}` : `Checkout ${b.name}`}
             >
+              {branchColor.has(b.name) && (
+                <span className="git-branch-dot" style={{ background: branchColor.get(b.name) }} aria-hidden />
+              )}
               {b.name}
             </button>
           ))}
@@ -333,6 +374,9 @@ export function GitHistory({ projectDir, onChanged }: Props) {
               disabled={loading}
               title={`Checkout ${b.name}`}
             >
+              {branchColor.has(b.name) && (
+                <span className="git-branch-dot" style={{ background: branchColor.get(b.name) }} aria-hidden />
+              )}
               {b.name}
             </button>
           ))}
@@ -431,6 +475,8 @@ export function GitHistory({ projectDir, onChanged }: Props) {
       <div className={`git-commit-list${graphMode ? " graph" : ""}`}>
         {commits.map((c, i) => {
           const refs = parseRefs(c.refs);
+          // A branch tip carries at least one non-tag ref; mark it in the graph.
+          const isTip = refs.some((r) => !r.startsWith("tag: "));
           return (
             <button
               key={c.hash}
@@ -439,13 +485,28 @@ export function GitHistory({ projectDir, onChanged }: Props) {
               title={c.subject}
             >
               {graphMode && (
-                <CommitGraphCell row={graph[i]} height={GRAPH_ROW_H} lanes={graphLanes} head={c.is_head} />
+                <CommitGraphCell
+                  row={graph[i]}
+                  height={GRAPH_ROW_H}
+                  lanes={graphLanes}
+                  head={c.is_head}
+                  tip={isTip}
+                />
               )}
               <span className="git-commit-hash">{c.short}</span>
               <span className="git-commit-subject">{c.subject}</span>
-              {refs.map((r) => (
-                <span key={r} className="git-commit-ref">{r}</span>
-              ))}
+              {refs.map((r) => {
+                const color = branchColor.get(r);
+                return (
+                  <span
+                    key={r}
+                    className="git-commit-ref"
+                    style={color ? { background: color } : undefined}
+                  >
+                    {r}
+                  </span>
+                );
+              })}
               <span className="git-commit-date">{c.date}</span>
             </button>
           );

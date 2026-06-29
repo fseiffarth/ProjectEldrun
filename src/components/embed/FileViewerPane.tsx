@@ -45,12 +45,21 @@ import {
 } from "../../lib/viewers/markdownEdit";
 import { internalViewerFor, disabledViewers, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
 import { basename, dirname, resolvePath, toFileUri } from "../../lib/paths";
+import { IS_MAC } from "../../lib/platform";
 import {
   resolveProjectDirectory,
   type AutocompleteMode,
   type GrammarIssue,
 } from "../../types";
 import { ContextFilePicker } from "./ContextFilePicker";
+import {
+  FileScopeContext,
+  useFileScope,
+  readFileText,
+  readFileBytes,
+  writeFileText,
+  fileMtime,
+} from "./fileAccess";
 import { TableView } from "./TableView";
 import { NotebookView } from "./NotebookView";
 import { DiffView } from "./DiffView";
@@ -130,11 +139,7 @@ export function useViewerState(tabKey: string | undefined) {
 
 // The modifier that opens a recognised file link (Ctrl/Cmd+Click). Shown verbatim
 // in the hover hint, so it must read as the key the user actually presses.
-const OPEN_MODIFIER = /Mac|iPhone|iPad/i.test(
-  (typeof navigator !== "undefined" && (navigator.platform || navigator.userAgent)) || "",
-)
-  ? "⌘"
-  : "Ctrl";
+const OPEN_MODIFIER = IS_MAC ? "⌘" : "Ctrl";
 const OPEN_LINK_HINT = `${OPEN_MODIFIER}+Click to open`;
 
 /** A small floating "{Ctrl}+Click to open" hint, anchored just above a hovered
@@ -246,42 +251,38 @@ export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
       .catch((e) => console.error(e));
   };
 
+  // Pick the concrete viewer, then publish this pane's owning project as the file
+  // scope so every nested viewer/hook confines its file commands to this project
+  // (and its box siblings) regardless of which project is globally current.
+  let view: React.ReactNode;
   if (viewer === "image") {
-    return <ImageView path={path} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  if (viewer === "pdf") {
-    return <PdfView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  if (viewer === "markdown") {
-    return <MarkdownView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  if (viewer === "tex") {
-    return <TexView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  if (viewer === "table") {
-    return <TableView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  if (viewer === "notebook") {
-    return <NotebookView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  if (viewer === "diff") {
-    return <DiffView path={path} projectId={projectId} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  if (viewer === "odt") {
-    return <OdtView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  if (viewer === "media") {
-    return <MediaView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  if (viewer === "html") {
+    view = <ImageView path={path} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "pdf") {
+    view = <PdfView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "markdown") {
+    view = <MarkdownView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "tex") {
+    view = <TexView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "table") {
+    view = <TableView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "notebook") {
+    view = <NotebookView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "diff") {
+    view = <DiffView path={path} projectId={projectId} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "odt") {
+    view = <OdtView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "media") {
+    view = <MediaView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "html") {
     // HTML is now the editable base editor with a sandboxed live preview, keyed
     // to its own per-type prefs.
-    return <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} type="html" />;
+    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} type="html" />;
+  } else if (viewer === "sqlite") {
+    view = <SqliteView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else {
+    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
   }
-  if (viewer === "sqlite") {
-    return <SqliteView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
-  }
-  return <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  return <FileScopeContext.Provider value={projectId}>{view}</FileScopeContext.Provider>;
 }
 
 /**
@@ -657,6 +658,7 @@ const RELOAD_POLL_MS = 1500;
  *    when the buffer is dirty (Reload / Keep mine) — never clobbering edits.
  */
 function useEditableFile(path: string) {
+  const scope = useFileScope();
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [baseline, setBaseline] = useState<string | null>(null);
@@ -700,17 +702,17 @@ function useEditableFile(path: string) {
     setBaseline(null);
     setExternalChange(false);
     lastMtime.current = null;
-    invoke<string>("read_file_text", { path })
+    readFileText(path, scope)
       .then((text) => {
         if (cancelled) return;
         seedFromDisk(text);
       })
       .catch((e) => { if (!cancelled) setError(String(e)); });
-    invoke<number>("file_mtime", { path })
+    fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [path, seedFromDisk]);
+  }, [path, scope, seedFromDisk]);
 
   const loaded = content != null;
   const isDirty = loaded && baseline != null && draft !== baseline;
@@ -723,13 +725,13 @@ function useEditableFile(path: string) {
     setSaveError(null);
     try {
       const toSave = draftRef.current;
-      await invoke("write_file_text", { path, content: toSave });
+      await writeFileText(path, toSave, scope);
       setBaseline(toSave);
       setExternalChange(false);
       // Our own write advances mtime; refresh so the poller doesn't see it as an
       // external change.
       try {
-        lastMtime.current = await invoke<number>("file_mtime", { path });
+        lastMtime.current = await fileMtime(path, scope);
       } catch {
         /* mtime refresh is best-effort */
       }
@@ -738,7 +740,7 @@ function useEditableFile(path: string) {
     } finally {
       setSaving(false);
     }
-  }, [saving, path]);
+  }, [saving, path, scope]);
 
   // #47 autosave: when the setting is on, write the buffer to disk on every
   // change — each keystroke as well as the moment autosave is toggled on with
@@ -753,7 +755,7 @@ function useEditableFile(path: string) {
     if (!loaded) return;
     let cancelled = false;
     const id = setInterval(() => {
-      invoke<number>("file_mtime", { path })
+      fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null) return;
           if (m <= lastMtime.current) return;
@@ -764,22 +766,22 @@ function useEditableFile(path: string) {
             return;
           }
           // Clean buffer → silently re-read + reseed baseline/draft.
-          invoke<string>("read_file_text", { path })
+          readFileText(path, scope)
             .then((text) => { if (!cancelled) seedFromDisk(text); })
             .catch(() => {});
         })
         .catch(() => {});
     }, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path, loaded, seedFromDisk]);
+  }, [path, scope, loaded, seedFromDisk]);
 
   // Banner actions (#43): take the disk version, or keep mine (dismiss banner +
   // adopt current mtime so the next external change re-triggers).
   const reloadFromDisk = useCallback(() => {
-    invoke<string>("read_file_text", { path })
+    readFileText(path, scope)
       .then((text) => seedFromDisk(text))
       .catch((e) => setSaveError(String(e)));
-  }, [path, seedFromDisk]);
+  }, [path, scope, seedFromDisk]);
   const keepMine = useCallback(() => setExternalChange(false), []);
 
   return {
@@ -882,6 +884,7 @@ export function escapeHtmlText(s: string): string {
  * machinery. Returns the raw text (or null while loading) and an error string.
  */
 export function useReadonlyFile(path: string) {
+  const scope = useFileScope();
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lastMtime = useRef<number | null>(null);
@@ -891,32 +894,32 @@ export function useReadonlyFile(path: string) {
     setContent(null);
     setError(null);
     lastMtime.current = null;
-    invoke<string>("read_file_text", { path })
+    readFileText(path, scope)
       .then((text) => { if (!cancelled) setContent(text); })
       .catch((e) => { if (!cancelled) setError(String(e)); });
-    invoke<number>("file_mtime", { path })
+    fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [path]);
+  }, [path, scope]);
 
   // Diff-aware reload: poll mtime and silently re-read on an external advance.
   useEffect(() => {
     if (content == null) return;
     let cancelled = false;
     const id = setInterval(() => {
-      invoke<number>("file_mtime", { path })
+      fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
           lastMtime.current = m;
-          invoke<string>("read_file_text", { path })
+          readFileText(path, scope)
             .then((text) => { if (!cancelled) setContent(text); })
             .catch(() => {});
         })
         .catch(() => {});
     }, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path, content]);
+  }, [path, scope, content]);
 
   return { content, error, loaded: content != null };
 }
@@ -1001,6 +1004,23 @@ export function decorateSearchRanges(
  * zero-width in `next`, so there is nothing to paint).
  */
 export function diffRange(prev: string, next: string): { start: number; end: number } | null {
+  const span = editSpan(prev, next);
+  return span && span.endNext > span.start ? { start: span.start, end: span.endNext } : null;
+}
+
+/**
+ * The full span of an edit between `prev` and `next`: `start` is the common
+ * prefix length, `endPrev`/`endNext` are where the differing run ends in each
+ * string (so `prev.slice(start, endPrev)` was replaced by `next.slice(start,
+ * endNext)`). Unlike `diffRange` this is reported for deletions too (where
+ * `endNext === start`), since the change-tint trail must still re-map older
+ * ranges through a deletion. Returns `null` only for equal strings. Pure —
+ * exported for tests.
+ */
+export function editSpan(
+  prev: string,
+  next: string,
+): { start: number; endPrev: number; endNext: number } | null {
   if (prev === next) return null;
   const max = Math.min(prev.length, next.length);
   let start = 0;
@@ -1011,27 +1031,74 @@ export function diffRange(prev: string, next: string): { start: number; end: num
     endPrev--;
     endNext--;
   }
-  return endNext > start ? { start, end: endNext } : null;
+  return { start, endPrev, endNext };
+}
+
+/** How many recent edit runs the change-tint trail keeps (and how many colour
+ *  tiers `themes.css` defines, `.tier-0` … `.tier-(N-1)`). */
+export const CHANGE_TIERS = 18;
+/** Idle delay before the trail retires its oldest run, in ms — once typing stops
+ *  the trail fades a tier at a time over CHANGE_TIERS × this. */
+const CHANGE_DECAY_MS = 1800;
+
+/** One run of recently typed text in the change-tint trail. `tier` is its age:
+ *  0 is the newest edit, higher tiers are progressively older (and fainter). */
+export interface ChangeRange {
+  start: number;
+  end: number;
+  tier: number;
 }
 
 /**
- * Build the transparent last-change overlay: the single `{start, end}` range is
- * wrapped in `<span class="file-viewer-change-mark">` so only it paints a tint,
- * the rest emitted plain. SECURITY: every run is HTML-escaped — mirrors
- * `decorateSearchRanges`.
+ * Re-map an existing change range through a new edit so it keeps pointing at the
+ * same characters: untouched if it sits entirely before the edit, shifted by the
+ * length delta if entirely after, and dropped (returns `null`) if it overlaps the
+ * edited region (its text was overwritten). Pure — exported for tests.
  */
-export function decorateChangeRange(
-  source: string,
+export function remapChangeRange(
   range: { start: number; end: number },
+  span: { start: number; endPrev: number; endNext: number },
+): { start: number; end: number } | null {
+  const delta = span.endNext - span.endPrev;
+  if (range.end <= span.start) return range;
+  if (range.start >= span.endPrev) {
+    return { start: range.start + delta, end: range.end + delta };
+  }
+  return null;
+}
+
+/**
+ * Build the transparent change-tint overlay: each recent edit range is wrapped in
+ * `<span class="file-viewer-change-mark tier-N">` so it paints its age-graded
+ * tint (tier 0 newest), the rest emitted plain. Ranges must be non-overlapping;
+ * they are sorted left-to-right here. SECURITY: every run is HTML-escaped —
+ * mirrors `decorateSearchRanges`.
+ */
+export function decorateChangeRanges(
+  source: string,
+  ranges: ChangeRange[],
 ): string {
-  const start = Math.max(0, Math.min(range.start, source.length));
-  const end = Math.max(start, Math.min(range.end, source.length));
-  if (end <= start) return escapeHtmlText(source);
-  return (
-    escapeHtmlText(source.slice(0, start)) +
-    `<span class="file-viewer-change-mark">${escapeHtmlText(source.slice(start, end))}</span>` +
-    escapeHtmlText(source.slice(end))
-  );
+  const clamped = ranges
+    .map((r) => ({
+      start: Math.max(0, Math.min(r.start, source.length)),
+      end: Math.max(0, Math.min(r.end, source.length)),
+      tier: r.tier,
+    }))
+    .filter((r) => r.end > r.start)
+    .sort((a, b) => a.start - b.start);
+  if (clamped.length === 0) return escapeHtmlText(source);
+  let out = "";
+  let pos = 0;
+  for (const r of clamped) {
+    if (r.start < pos) continue; // defensive: skip any residual overlap
+    out += escapeHtmlText(source.slice(pos, r.start));
+    out += `<span class="file-viewer-change-mark tier-${r.tier}">${escapeHtmlText(
+      source.slice(r.start, r.end),
+    )}</span>`;
+    pos = r.end;
+  }
+  out += escapeHtmlText(source.slice(pos));
+  return out;
 }
 
 /** A grammar issue resolved to a concrete `{start, end}` character range in the
@@ -1430,6 +1497,7 @@ function CodeEditor({
     { rel: string; path: string; content: string }[]
   >([]);
   const [acPicker, setAcPicker] = useState(false);
+  const scope = useFileScope();
 
   // Resolve the project the edited file belongs to (the longest project directory
   // that is a prefix of `path`), falling back to the active project — so the
@@ -1454,7 +1522,7 @@ function CodeEditor({
       const abs = `${acProjectDir}/${rel}`;
       if (contextFiles.some((f) => f.path === abs)) return; // already attached
       try {
-        const content = await invoke<string>("read_file_text", { path: abs });
+        const content = await readFileText(abs, scope);
         setContextFiles((prev) =>
           prev.some((f) => f.path === abs) ? prev : [...prev, { rel, path: abs, content }],
         );
@@ -1462,7 +1530,7 @@ function CodeEditor({
         /* unreadable file: silently skip */
       }
     },
-    [acProjectDir, contextFiles],
+    [acProjectDir, contextFiles, scope],
   );
 
   const removeContextFile = useCallback((abs: string) => {
@@ -1712,33 +1780,71 @@ function CodeEditor({
   const draftRef = useRef(draft);
   draftRef.current = draft;
 
-  // Last-change marker: tint the run of text most recently inserted/edited. Every
-  // edit flows through `edit`, which diffs old→new and records the range;
-  // `lastEditRef` holds the value we set so the effect can tell our own edits from
-  // a draft change by another path (disk reload, undo/redo) and drop a now-stale
-  // range. Reloads go through the parent's `reset`, never `edit`, so they never
-  // light the marker.
-  const [lastChange, setLastChange] = useState<{ start: number; end: number } | null>(null);
+  // Change-tint trail: tint recently typed runs with a sequential new→old colour
+  // gradient that fades as typing continues. Every edit flows through `edit`,
+  // which diffs old→new: the new run becomes tier 0 (newest), existing runs are
+  // re-mapped through the edit so they keep tracking their characters and are
+  // pushed one tier older; anything past CHANGE_TIERS or overwritten by the edit
+  // drops off. `lastEditRef` lets the effect tell our own edits from a draft
+  // change by another path (disk reload, undo/redo) and clear a now-stale trail.
+  // Reloads go through the parent's `reset`, never `edit`, so they never light the
+  // trail. A short idle decay retires the oldest run on a timer so the trail
+  // fades away after typing stops. The whole feature is gated on the (default-ON)
+  // `change_tint` setting.
+  const changeTint = useSettingsStore((s) => s.settings?.change_tint !== false);
+  const changeTintRef = useRef(changeTint);
+  changeTintRef.current = changeTint;
+  const [changes, setChanges] = useState<ChangeRange[]>([]);
   const lastEditRef = useRef<string | null>(null);
   const edit = useCallback(
     (next: string) => {
       if (next !== draftRef.current) {
-        setLastChange(diffRange(draftRef.current, next));
+        if (changeTintRef.current) {
+          const span = editSpan(draftRef.current, next);
+          if (span) {
+            setChanges((prev) => {
+              const remapped = prev
+                .map((r) => remapChangeRange(r, span))
+                .filter((r): r is { start: number; end: number } => r != null);
+              const merged =
+                span.endNext > span.start
+                  ? [{ start: span.start, end: span.endNext }, ...remapped]
+                  : remapped;
+              // newest-first → re-index so tier === age (0 = newest).
+              return merged.slice(0, CHANGE_TIERS).map((r, i) => ({ ...r, tier: i }));
+            });
+          }
+        }
         lastEditRef.current = next;
       }
       setDraft(next);
     },
     [setDraft],
   );
+  // Drop a stale trail when the draft changes by some path other than our own
+  // `edit` (disk reload, undo/redo), and clear it when the feature is turned off.
   useEffect(() => {
     if (lastEditRef.current !== null && draft !== lastEditRef.current) {
-      setLastChange(null);
+      setChanges([]);
       lastEditRef.current = null;
     }
   }, [draft]);
+  useEffect(() => {
+    if (!changeTint) setChanges([]);
+  }, [changeTint]);
+  // Idle decay: each keystroke resets this timer (re-runs on every `changes`
+  // update), so while typing the trail stays; once typing stops it retires the
+  // oldest run every CHANGE_DECAY_MS until the trail is gone.
+  useEffect(() => {
+    if (changes.length === 0) return;
+    const id = window.setTimeout(() => {
+      setChanges((prev) => prev.slice(0, -1).map((r, i) => ({ ...r, tier: i })));
+    }, CHANGE_DECAY_MS);
+    return () => window.clearTimeout(id);
+  }, [changes]);
   const changeHtml = useMemo(
-    () => (loaded && lastChange ? decorateChangeRange(draft, lastChange) : null),
-    [loaded, draft, lastChange],
+    () => (loaded && changeTint && changes.length ? decorateChangeRanges(draft, changes) : null),
+    [loaded, draft, changes, changeTint],
   );
 
   // ── #45 follow-up: local-model grammar/spelling check ──────────────────────
@@ -3657,6 +3763,7 @@ function MarkdownView({
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
   } = useEditableFile(path);
+  const scope = useFileScope();
   const [mode, setMode] = useState<"preview" | "edit">("preview");
   const font = useEditorFontSize("markdown");
   const ai = useTabAiPrefs(tabKey, "markdown");
@@ -3709,7 +3816,7 @@ function MarkdownView({
     for (const img of imgs) {
       const target = resolveLocalHref(path, img.getAttribute("data-md-src") ?? "");
       if (!target) continue;
-      invoke<number[]>("read_file_bytes", { path: target })
+      readFileBytes(target, scope)
         .then((bytes) => {
           if (cancelled) return;
           const objectUrl = URL.createObjectURL(
@@ -3724,7 +3831,7 @@ function MarkdownView({
       cancelled = true;
       for (const u of urls) URL.revokeObjectURL(u);
     };
-  }, [html, mode, path]);
+  }, [html, mode, path, scope]);
 
   const onPreviewMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const a = (e.target as HTMLElement).closest?.("a.file-link") as HTMLElement | null;
@@ -3849,6 +3956,7 @@ function MarkdownView({
  *  URL only once the new bytes are ready (no flash to a loading state); the old
  *  URL is revoked then, and the last URL is revoked on unmount. */
 function useBlobUrl(path: string, type: string) {
+  const scope = useFileScope();
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const urlRef = useRef<string | null>(null);
@@ -3869,7 +3977,7 @@ function useBlobUrl(path: string, type: string) {
   // once its replacement is ready.
   useEffect(() => {
     let cancelled = false;
-    invoke<number[]>("read_file_bytes", { path })
+    readFileBytes(path, scope)
       .then((bytes) => {
         if (cancelled) return;
         const blob = new Blob([new Uint8Array(bytes)], type ? { type } : undefined);
@@ -3881,7 +3989,7 @@ function useBlobUrl(path: string, type: string) {
       })
       .catch((e) => { if (!cancelled) setError(String(e)); });
     return () => { cancelled = true; };
-  }, [path, type, diskVersion]);
+  }, [path, type, diskVersion, scope]);
 
   // Revoke the last live URL on unmount.
   useEffect(
@@ -3897,11 +4005,11 @@ function useBlobUrl(path: string, type: string) {
   // Poll mtime; on an external advance, bump diskVersion to re-read fresh bytes.
   useEffect(() => {
     let cancelled = false;
-    invoke<number>("file_mtime", { path })
+    fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
     const id = setInterval(() => {
-      invoke<number>("file_mtime", { path })
+      fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
           lastMtime.current = m;
@@ -3910,7 +4018,7 @@ function useBlobUrl(path: string, type: string) {
         .catch(() => {});
     }, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path]);
+  }, [path, scope]);
 
   return { url, error };
 }
@@ -4160,6 +4268,7 @@ function PdfCanvas({
   /** This viewer tab's key, for #viewerpos scroll/zoom persistence. */
   tabKey?: string;
 }) {
+  const scope = useFileScope();
   const viewPos = useViewerState(tabKey);
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -4403,12 +4512,12 @@ function PdfCanvas({
     let cancelled = false;
     const base = path.replace(/\.pdf$/i, "");
     const exists = (p: string) =>
-      invoke<number>("file_mtime", { path: p }).then(() => true).catch(() => false);
+      fileMtime(p, scope).then(() => true).catch(() => false);
     void Promise.all([exists(`${base}.synctex.gz`), exists(`${base}.synctex`)]).then(
       ([gz, raw]) => { if (!cancelled) setSyncable(gz || raw); },
     );
     return () => { cancelled = true; };
-  }, [path, diskVersion]);
+  }, [path, scope, diskVersion]);
 
   // Reverse search: a click on a page → which source line produced it → jump.
   const onSyncClick = useCallback(
@@ -4424,11 +4533,11 @@ function PdfCanvas({
   useEffect(() => {
     lastMtime.current = null;
     let cancelled = false;
-    invoke<number>("file_mtime", { path })
+    fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
     const id = setInterval(() => {
-      invoke<number>("file_mtime", { path })
+      fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
           lastMtime.current = m;
@@ -4437,7 +4546,7 @@ function PdfCanvas({
         .catch(() => {});
     }, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path]);
+  }, [path, scope]);
 
   // Load (and reload on path / disk change) the document. pdf.js detaches the
   // backing buffer, so each load gets a fresh Uint8Array; the prior document is
@@ -4471,7 +4580,7 @@ function PdfCanvas({
     setError(null);
     (async () => {
       try {
-        const bytes = await invoke<number[]>("read_file_bytes", { path });
+        const bytes = await readFileBytes(path, scope);
         if (cancelled) return;
         loaded = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
         if (cancelled) {
@@ -4495,7 +4604,7 @@ function PdfCanvas({
       loaded?.destroy();
       if (restoreDeadline) clearTimeout(restoreDeadline);
     };
-  }, [path, diskVersion]);
+  }, [path, scope, diskVersion]);
 
   // Intrinsic (scale-1) CSS dimensions of every page, computed once per document
   // load. Lets each PdfPageCanvas reserve its true size before rendering so the
@@ -4846,6 +4955,7 @@ function TexView({
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
   } = useEditableFile(path);
+  const scope = useFileScope();
   const ai = useTabAiPrefs(tabKey, "tex");
   const ac = ai.ac;
   const gc = ai.gc;
@@ -4918,11 +5028,11 @@ function TexView({
   const [gathered, setGathered] = useState<TexCompletions>({ labels: [], cites: [] });
   useEffect(() => {
     let cancelled = false;
-    gatherTexCompletions(path)
+    gatherTexCompletions(path, scope)
       .then((c) => { if (!cancelled) setGathered(c); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [path, pdfVersion]);
+  }, [path, scope, pdfVersion]);
   const completions = useMemo<TexCompletions>(
     () => ({
       labels: Array.from(new Set([...parseTexLabels(draft), ...gathered.labels])),
