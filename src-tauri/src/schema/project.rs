@@ -134,6 +134,13 @@ pub struct Project {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_type: Option<String>,
+    /// Per-project git-hosting profile URL (e.g. `https://github.com/me`) that
+    /// overrides the global `settings.git_profile_url` for this project's push /
+    /// publish. Non-secret, so it lives here; the matching token is kept in the
+    /// OS keyring (see `services::git_credentials`), never in this file (which is
+    /// inside the project's committed git tree).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_profile_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

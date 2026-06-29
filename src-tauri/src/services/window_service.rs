@@ -93,6 +93,42 @@ pub fn load_window_session(local_file: &str) -> WindowSession {
     WindowSession::default()
 }
 
+/// Back-populate `window_id` for project-owned windows whose id was never
+/// resolved at launch time. For each window matching `project_id` that is
+/// project-owned and currently has no `window_id`, call `resolve(pid)` and store
+/// the result. Used on Windows just before the project-switch hide so a
+/// launch-time miss (the visible top-level belonging to a child of the spawned
+/// pid, or a cold-start race) is no longer permanent — the resolved id then
+/// flows through the unchanged id-based hide AND switch-back show paths.
+///
+/// Pure over its inputs (the resolver is injected), so it is unit-tested with a
+/// fake resolver on any OS. Only the `None`-id case is touched, so windows that
+/// already resolved their id are left exactly as-is.
+///
+/// Detached subwindows (#42) are deliberately EXCLUDED even though they are
+/// project-owned: they carry Eldrun's OWN pid (subwindow.rs), so resolving by
+/// pid here could match an arbitrary Eldrun-owned top-level (the main window or
+/// another detached window) and back-populate the wrong HWND. They resolve their
+/// own id by Tauri label and park via the separate `hide()`/`show()` path
+/// (project_runtime steps 5b/8b), so they never need — and must not undergo —
+/// pid-based re-resolution. This keeps the never-touch-the-wrong-Eldrun-window
+/// invariant structural rather than reliant on label resolution always succeeding.
+pub fn resolve_missing_window_ids(
+    windows: &mut HashMap<String, TrackedWindow>,
+    project_id: Option<&str>,
+    resolve: impl Fn(u32) -> Option<u64>,
+) {
+    for w in windows.values_mut() {
+        if w.project_id.as_deref() == project_id
+            && is_project_owned(&w.origin)
+            && w.origin != ORIGIN_DETACHED_SUBWINDOW
+            && w.window_id.is_none()
+        {
+            w.window_id = resolve(w.pid);
+        }
+    }
+}
+
 fn is_project_owned(origin: &str) -> bool {
     matches!(
         origin,
@@ -173,6 +209,65 @@ mod tests {
         )]);
         let ids = project_tracked_ids(&wins, Some("p1"));
         assert_eq!(ids, vec!["detached-p1-g3".to_string()]);
+    }
+
+    #[test]
+    fn resolve_missing_window_ids_back_populates_only_unresolved_project_owned() {
+        let mut wins = registry(vec![
+            tracked("a", Some("p1"), ORIGIN_RIGHT_FILE_TREE, None), // pid 10
+            tracked("b", Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(5)), // pid 11
+            tracked("c", Some("p1"), ORIGIN_GLOBAL_APP, None),     // pid 12
+            tracked("d", Some("p2"), ORIGIN_RIGHT_FILE_TREE, None), // pid 13
+        ]);
+        // Give each a distinct pid so the fake resolver can be asserted per-window.
+        wins.get_mut("a").unwrap().pid = 10;
+        wins.get_mut("b").unwrap().pid = 11;
+        wins.get_mut("c").unwrap().pid = 12;
+        wins.get_mut("d").unwrap().pid = 13;
+
+        resolve_missing_window_ids(&mut wins, Some("p1"), |pid| Some(pid as u64 * 100));
+
+        // (a) unresolved + project-owned + this project → back-populated.
+        assert_eq!(wins["a"].window_id, Some(1000));
+        // (b) already resolved → left untouched (not overwritten).
+        assert_eq!(wins["b"].window_id, Some(5));
+        // (c) global app is not project-owned → never resolved.
+        assert_eq!(wins["c"].window_id, None);
+        // (d) different project → out of scope.
+        assert_eq!(wins["d"].window_id, None);
+    }
+
+    #[test]
+    fn resolve_missing_window_ids_leaves_none_when_resolver_fails() {
+        let mut wins = registry(vec![tracked(
+            "a",
+            Some("p1"),
+            ORIGIN_RIGHT_FILE_TREE,
+            None,
+        )]);
+        // A window the OS could not map (e.g. opener::open pid=0) stays unparked.
+        resolve_missing_window_ids(&mut wins, Some("p1"), |_pid| None);
+        assert_eq!(wins["a"].window_id, None);
+    }
+
+    #[test]
+    fn resolve_missing_window_ids_never_touches_detached_subwindows() {
+        // Detached subwindows carry Eldrun's OWN pid, so pid-based resolution
+        // could match an arbitrary Eldrun top-level. They must be excluded from
+        // re-resolution even though they are project-owned (they park via the
+        // Tauri label path instead). A resolver that would resolve anything must
+        // still leave a None-id detached window untouched.
+        let mut wins = registry(vec![tracked(
+            "detached-p1-g1",
+            Some("p1"),
+            ORIGIN_DETACHED_SUBWINDOW,
+            None,
+        )]);
+        resolve_missing_window_ids(&mut wins, Some("p1"), |pid| Some(pid as u64 * 100));
+        assert_eq!(
+            wins["detached-p1-g1"].window_id, None,
+            "a detached subwindow must never be pid-resolved at hide time"
+        );
     }
 
     #[test]

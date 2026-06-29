@@ -37,6 +37,13 @@ pub struct Settings {
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_model: Option<String>,
+    /// Per-task local-model assignments set from the 🧠 menu's role chips. Maps a
+    /// task key (`"autocomplete"`, `"grammar"`, `"tabs"`) to the model name that
+    /// serves it, so several loaded models can run different jobs in parallel.
+    /// Optional + flat so older settings files round-trip cleanly; a task absent
+    /// here falls back to `ollama_model`. Frontend logic only — persisted here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_roles: Option<HashMap<String, String>>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_autostart: Option<bool>,
@@ -51,6 +58,15 @@ pub struct Settings {
     /// app/web. Only Claude supports the flag; other agents ignore it. Default ON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_remote_control: Option<bool>,
+    /// Header resource-monitor row toggles. Each defaults ON when unset so the
+    /// pill shows CPU/RAM/GPU by default; flip one off to hide that row. Shown in
+    /// every build (independent of `debug`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_cpu_usage: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_ram_usage: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_gpu_usage: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_apps: Option<HashMap<String, GlobalAppEntry>>,
     /// Minimum subwindow (split pane) width in px a divider drag may shrink a

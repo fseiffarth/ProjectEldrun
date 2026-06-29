@@ -697,6 +697,99 @@ pub async fn clear_pending_ollama_pull(model: String) {
     mark_pending_pull(&model, false);
 }
 
+// ── Pausable pulls ────────────────────────────────────────────────────────
+// Ollama's /api/pull has no native pause, but dropping the connection mid-stream
+// leaves the partial blobs on disk, and a later /api/pull continues from them. We
+// implement "pause" as a cooperative cancel: `pause_ollama_pull` records a model
+// ref, and the streaming loop in `pull_ollama_model` notices it on its next chunk,
+// stops reading, and returns — keeping the pending-pull record so the UI can offer
+// Resume (re-pull) or Delete (drop the partials).
+
+fn paused_pulls() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Request that an in-flight pull of `model` pause at the next streamed chunk.
+/// The partial download is preserved so it can be resumed later.
+#[tauri::command]
+pub async fn pause_ollama_pull(model: String) {
+    if let Ok(mut set) = paused_pulls().lock() {
+        set.insert(model);
+    }
+}
+
+/// True (consuming the flag) if a pause was requested for `model`.
+fn take_pause_request(model: &str) -> bool {
+    paused_pulls()
+        .lock()
+        .map(|mut set| set.remove(model))
+        .unwrap_or(false)
+}
+
+/// Delete a paused/interrupted download: clear its pending record, remove the
+/// partial blobs it left in Ollama's cache, and delete any committed model of the
+/// same ref. Best-effort — the partial blobs are resolved from the registry
+/// manifest's layer digests, so a missing network leaves them for the orphan-blob
+/// cleanup to reclaim instead. Always clears the pending record so the UI settles.
+#[tauri::command]
+pub async fn delete_ollama_pull(model: String) -> Result<(), String> {
+    mark_pending_pull(&model, false);
+    // Drop any committed manifest/blobs (no-op 404 if the pull never got that far).
+    let body = serde_json::json!({ "model": model }).to_string();
+    let _ = ollama_http("DELETE", "/api/delete", Some(&body));
+    // Remove the partial layers this model's pull was fetching.
+    if let Ok(digests) = registry_layer_digests(&model) {
+        delete_partials_for_digests(&digests);
+    }
+    Ok(())
+}
+
+/// The set of blob digests (`sha256:<hex>`) a model ref is composed of — its
+/// config plus every layer — read from the Ollama registry manifest. Used to map
+/// a paused download back to the specific `-partial` files it created.
+fn registry_layer_digests(model: &str) -> Result<Vec<String>, String> {
+    let v = fetch_registry_manifest(model)?;
+    let mut out: Vec<String> = Vec::new();
+    if let Some(d) = v["config"]["digest"].as_str() {
+        out.push(d.to_string());
+    }
+    if let Some(arr) = v["layers"].as_array() {
+        for l in arr {
+            if let Some(d) = l["digest"].as_str() {
+                out.push(d.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Delete the `*-partial` (and per-chunk `*-partial-<N>`) files matching any of
+/// the given `sha256:<hex>` digests, across all known blob directories.
+fn delete_partials_for_digests(digests: &[String]) {
+    // Blob files are named `sha256-<hex>`; the manifest gives `sha256:<hex>`.
+    let stems: std::collections::HashSet<String> = digests
+        .iter()
+        .map(|d| d.replace(':', "-"))
+        .collect();
+    for dir in ollama_blob_dirs() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(rest) = name.strip_suffix("-partial").or_else(|| {
+                // per-chunk metadata file: `<stem>-partial-<N>`
+                name.rsplit_once("-partial-").map(|(head, _)| head)
+            }) else {
+                continue;
+            };
+            if stems.contains(rest) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 /// Load a model into memory now (an empty `/api/generate` warms it) and keep it
 /// resident until explicitly unloaded (`keep_alive: -1`), so the user controls
 /// residency by button rather than relying on first use to trigger the load.
@@ -758,6 +851,9 @@ pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(
     // Record this as an in-flight pull; a crash/exit now leaves the entry behind
     // so the next launch can offer to resume it. Removed only on success below.
     mark_pending_pull(&model, true);
+    // Consume any stale pause flag from a previous run so this fresh pull (e.g. a
+    // resume) isn't cancelled before it starts.
+    take_pause_request(&model);
 
     let mut reader = BufReader::new(stream);
 
@@ -782,6 +878,16 @@ pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(
     // Stream the newline-delimited JSON body, forwarding each progress line.
     let mut last_err: Option<String> = None;
     loop {
+        // Cooperative pause: if the user asked to pause this pull, stop reading and
+        // drop the connection. Ollama keeps the partial blobs, and the pending-pull
+        // record is left in place so the UI can offer Resume or Delete.
+        if take_pause_request(&model) {
+            let _ = app.emit(
+                "ollama-pull-progress",
+                serde_json::json!({ "model": model, "status": "paused" }),
+            );
+            return Ok(());
+        }
         let mut line = String::new();
         let n = reader.read_line(&mut line).map_err(|e| format!("read: {e}"))?;
         if n == 0 {
@@ -827,18 +933,16 @@ pub async fn delete_ollama_model(model: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Total download size in bytes for an installable model tag, read from the
-/// Ollama registry manifest. Used to show a model's size on hover before the
-/// user commits to a pull. Shells out to `curl` (no Rust TLS dep) and sums the
-/// manifest's config + layer sizes. `model` may be `name`, `name:tag`, or
-/// `namespace/name:tag`; an absent tag defaults to `latest`.
-#[tauri::command]
-pub async fn ollama_registry_size(model: String) -> Result<u64, String> {
-    validate_model_name(&model)?;
+/// Fetch the Ollama registry manifest (config + layers) for a model ref. Shells
+/// out to `curl` (no Rust TLS dep); `model` may be `name`, `name:tag`, or
+/// `namespace/name:tag`, with an absent tag defaulting to `latest`. Shared by the
+/// size hint and the paused-download partial-blob resolver.
+fn fetch_registry_manifest(model: &str) -> Result<serde_json::Value, String> {
+    validate_model_name(model)?;
 
     let (name, tag) = match model.split_once(':') {
         Some((n, t)) => (n, t),
-        None => (model.as_str(), "latest"),
+        None => (model, "latest"),
     };
     // Bare names live under the implicit `library/` namespace on the registry.
     let repo = if name.contains('/') {
@@ -865,8 +969,15 @@ pub async fn ollama_registry_size(model: String) -> Result<u64, String> {
         return Err(format!("registry returned no manifest for {model}"));
     }
 
-    let v: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("manifest json: {e}"))?;
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("manifest json: {e}"))
+}
+
+/// Total download size in bytes for an installable model tag, read from the
+/// Ollama registry manifest. Used to show a model's size on hover before the
+/// user commits to a pull. Sums the manifest's config + layer sizes.
+#[tauri::command]
+pub async fn ollama_registry_size(model: String) -> Result<u64, String> {
+    let v = fetch_registry_manifest(&model)?;
 
     let layers_total: u64 = v["layers"]
         .as_array()
@@ -1247,6 +1358,21 @@ pub async fn ollama_status() -> &'static str {
             }
         }
     }
+}
+
+/// Total VRAM (bytes) currently in use across all models resident in Ollama's
+/// memory, summed from `/api/ps`'s `size_vram`. Returns `0` when the server is
+/// unreachable or no model is loaded on the GPU, so callers can treat it as a
+/// plain "GPU bytes in use" gauge that degrades to zero rather than erroring.
+pub fn total_vram_in_use() -> u64 {
+    ollama_http("GET", "/api/ps", None)
+        .ok()
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["models"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .map(|m| m["size_vram"].as_u64().unwrap_or(0))
+        .sum()
 }
 
 fn ollama_listening() -> bool {
@@ -2033,6 +2159,10 @@ struct LocalDriver {
     id: &'static str,
     /// Human-readable label.
     label: &'static str,
+    /// The agent's own binary name. The driver is only offered when this is
+    /// actually installed — `ollama launch <sub>` still drives the agent's CLI,
+    /// so a missing binary means the tab can't run regardless of `launch`.
+    bin: &'static str,
     /// `ollama launch <sub> --model <model>` subcommand, when supported.
     launch_sub: Option<&'static str>,
     /// Direct fallback when `ollama launch` is unavailable: the binary to spawn
@@ -2047,6 +2177,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
     LocalDriver {
         id: "claude",
         label: "Claude Code",
+        bin: "claude",
         launch_sub: Some("claude"),
         // Claude Code needs an Anthropic-compatible endpoint, which only
         // `ollama launch` stands up — no reliable hand-rolled fallback.
@@ -2055,6 +2186,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
     LocalDriver {
         id: "codex",
         label: "Codex",
+        bin: "codex",
         launch_sub: Some("codex"),
         // `codex --oss -m <model>` talks to the local Ollama server directly.
         fallback: Some(("codex", &["--oss", "-m", "{model}"])),
@@ -2062,6 +2194,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
     LocalDriver {
         id: "opencode",
         label: "OpenCode",
+        bin: "opencode",
         launch_sub: Some("opencode"),
         // OpenCode's built-in `ollama` provider; `--model ollama/<model>` selects it.
         fallback: Some(("opencode", &["--model", "ollama/{model}"])),
@@ -2069,6 +2202,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
     LocalDriver {
         id: "droid",
         label: "Droid",
+        bin: "droid",
         launch_sub: Some("droid"),
         // Droid is configured via ~/.factory/config.json; only `ollama launch`
         // writes that wiring for us.
@@ -2077,6 +2211,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
     LocalDriver {
         id: "openclaw",
         label: "OpenClaw",
+        bin: "openclaw",
         launch_sub: Some("openclaw"),
         // Launch-only: `ollama launch openclaw` installs OpenClaw if missing and
         // stands up its gateway against the local Ollama endpoint. There's no
@@ -2112,8 +2247,9 @@ fn fallback_spec(driver: &LocalDriver, model: &str) -> Option<LocalLaunchSpec> {
 pub struct LocalDriverInfo {
     pub id: String,
     pub label: String,
-    /// True when `ollama launch` supports it (and is available) or a direct
-    /// fallback exists. The menu hides drivers that are currently unreachable.
+    /// True when the agent's binary is installed *and* Eldrun has a way to wire
+    /// it to the local model (`ollama launch` supports it, or a direct fallback
+    /// exists). The menu hides drivers that aren't installed or are unreachable.
     pub available: bool,
 }
 
@@ -2128,7 +2264,11 @@ pub async fn list_local_drivers() -> Vec<LocalDriverInfo> {
         .map(|d| LocalDriverInfo {
             id: d.id.to_string(),
             label: d.label.to_string(),
-            available: (d.launch_sub.is_some() && has_launch) || d.fallback.is_some(),
+            // Both must hold: the agent itself is installed, and we have a wiring
+            // path (ollama launch or a direct fallback). A driver whose binary is
+            // missing (e.g. Droid) is no longer offered.
+            available: crate::commands::agents::binary_is_installed(d.bin)
+                && ((d.launch_sub.is_some() && has_launch) || d.fallback.is_some()),
         })
         .collect()
 }

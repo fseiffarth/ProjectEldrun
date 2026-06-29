@@ -13,6 +13,26 @@ interface LocalModelInfo {
   size_vram: number;
 }
 
+/** Subset of the backend `AgentInfo` the menu lists (installed agent CLIs). */
+interface AgentInfo {
+  id: string;
+  label: string;
+  installed: boolean;
+}
+
+/**
+ * The tasks a loaded model can be tagged for. Each maps to a key under
+ * `settings.ollama_roles`; a model wearing a tag is the one used for that task
+ * (autocomplete + grammar in the editor, "Local Model" agent tabs), so several
+ * resident models can each own a different job. A task with no tag falls back to
+ * the default `ollama_model`. Mirrors the consumers in `FileViewerPane`/`TabBar`.
+ */
+const MODEL_ROLES: Array<{ key: string; label: string }> = [
+  { key: "autocomplete", label: "Autocomplete" },
+  { key: "grammar", label: "Grammar" },
+  { key: "tabs", label: "Tabs" },
+];
+
 function fmtBytes(n: number): string {
   if (n === 0) return "0 B";
   if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(0) + " MB";
@@ -20,11 +40,14 @@ function fmtBytes(n: number): string {
 }
 
 /**
- * Header button (left of the global-apps button) that sets the single active
- * local (Ollama) model. Hovering reveals the models currently loaded in memory
- * (the running set from `list_ollama_models_detailed`) — and picking one writes
- * `settings.ollama_model`. A "Local Model" tab (TabBar's add menu) then launches
- * whichever model is active. Always shown: when Ollama isn't installed (or no
+ * Header button (left of the global-apps button) for the local (Ollama) models.
+ * Hovering reveals the models currently loaded in memory (the running set from
+ * `list_ollama_models_detailed`), each shown with a green "loaded" lamp. Clicking
+ * a model's name makes it the default (`settings.ollama_model`); its task tags
+ * (Autocomplete / Grammar / Tabs → `settings.ollama_roles`) pin individual jobs
+ * to specific loaded models, so several can run different tasks in parallel. A
+ * task with no tag falls back to the default model. Always shown: when Ollama
+ * isn't installed (or no
  * models are present yet) the menu offers an "Install models…" entry that opens
  * the Ollama Settings panel, where Ollama itself and any model can be installed.
  */
@@ -40,6 +63,9 @@ export function LocalModelMenu() {
   // Every installed model (from list_ollama_models_detailed). Resident ones are
   // selectable as the active local model; the rest can be loaded into memory.
   const [models, setModels] = useState<LocalModelInfo[]>([]);
+  // Installed agent CLIs (from list_agents), shown in the Agents section so the
+  // ones already available are visible without opening "Manage agents".
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Models currently being loaded into memory, keyed by name (from the global
@@ -51,6 +77,8 @@ export function LocalModelMenu() {
   // events emitted by `pull_ollama_model`), so downloads started anywhere show
   // here too. `pct` is null during the manifest/verify phases (no byte totals).
   const [downloads, setDownloads] = useState<Record<string, { pct: number | null }>>({});
+  // Models whose download the user paused this session — each offers Resume/Delete.
+  const [paused, setPaused] = useState<Set<string>>(new Set());
   const closeTimer = useRef<number | null>(null);
 
   // Detect whether Ollama is installed. Poll while it's still missing so that
@@ -80,6 +108,14 @@ export function LocalModelMenu() {
       "ollama-pull-progress",
       (e) => {
         const { model, status, completed, total } = e.payload;
+        if (status === "paused") {
+          setDownloads((d) => {
+            const { [model]: _drop, ...rest } = d;
+            return rest;
+          });
+          setPaused((p) => new Set(p).add(model));
+          return;
+        }
         setDownloads((d) => {
           if (status === "success") {
             const { [model]: _done, ...rest } = d;
@@ -154,12 +190,21 @@ export function LocalModelMenu() {
       .finally(() => setLoading(false));
   };
 
+  // Probe the installed agent CLIs (cheap PATH lookups in the backend) so the
+  // Agents section can list the ones already available.
+  const fetchAgents = () => {
+    invoke<AgentInfo[]>("list_agents")
+      .then((all) => setAgents(all.filter((a) => a.installed)))
+      .catch(() => {});
+  };
+
   const reveal = () => {
     if (closeTimer.current !== null) {
       window.clearTimeout(closeTimer.current);
       closeTimer.current = null;
     }
     setOpen(true);
+    fetchAgents();
     if (!installed) return; // nothing to list yet — only the install entry shows
     void fetchModels();
   };
@@ -176,6 +221,32 @@ export function LocalModelMenu() {
         setLoads((d) => ({ ...d, [model]: "error" }));
         setError(typeof e === "string" && e === "not_running" ? "Ollama not running" : "Failed to load model");
       });
+  };
+
+  // Pause an in-flight download; the backend keeps the partial blobs and emits a
+  // "paused" event that flips the row to Resume / Delete.
+  const pausePull = (model: string) => {
+    void invoke("pause_ollama_pull", { model });
+  };
+
+  // Resume a paused download — Ollama continues from the partial blobs.
+  const resumePull = (model: string) => {
+    setPaused((p) => {
+      const n = new Set(p);
+      n.delete(model);
+      return n;
+    });
+    invoke("pull_ollama_model", { model }).catch(() => {});
+  };
+
+  // Delete a paused download's partial data.
+  const deletePausedPull = (model: string) => {
+    setPaused((p) => {
+      const n = new Set(p);
+      n.delete(model);
+      return n;
+    });
+    void invoke("delete_ollama_pull", { model }).catch(() => {});
   };
 
   // Open the Ollama Settings panel (owned by ProjectSwitcher) to install Ollama
@@ -204,6 +275,31 @@ export function LocalModelMenu() {
   const select = (model: string | undefined) => {
     void updateSettings({ ollama_model: model });
     setOpen(false);
+  };
+
+  // The first model to become resident is, by default, the default model and is
+  // wired to every task (autocomplete/grammar/tabs) so a fresh install works out
+  // of the box. Only fires when nothing has been configured yet, so it never
+  // overrides an explicit choice the user later makes.
+  useEffect(() => {
+    if (!settings) return;
+    if (settings.ollama_model || Object.keys(settings.ollama_roles ?? {}).length > 0) return;
+    const first = models.find((m) => m.running);
+    if (!first) return;
+    const allRoles: Record<string, string> = {};
+    for (const r of MODEL_ROLES) allRoles[r.key] = first.name;
+    void updateSettings({ ollama_model: first.name, ollama_roles: allRoles });
+  }, [models, settings, updateSettings]);
+
+  // Per-task model tags. Each task maps to exactly one model; tagging a model for
+  // a task it already owns clears the tag (toggle). Kept open so several tags can
+  // be assigned in one pass. Unassigned tasks fall back to the default model.
+  const roles = settings?.ollama_roles ?? {};
+  const toggleRole = (role: string, model: string) => {
+    const next = { ...roles };
+    if (next[role] === model) delete next[role];
+    else next[role] = model;
+    void updateSettings({ ollama_roles: next });
   };
 
   // Resident models are selectable; the rest are offered as "load into memory".
@@ -242,7 +338,7 @@ export function LocalModelMenu() {
       {open && (
         <div className="tab-new-menu">
           <div className="tab-new-menu-group-label">Local Model</div>
-          {installed && Object.keys(downloads).length > 0 && (
+          {installed && (Object.keys(downloads).length > 0 || paused.size > 0) && (
             <div className="local-model-downloads">
               {Object.entries(downloads).map(([model, d]) => (
                 <div key={model} className="local-model-download-row" title="Downloading">
@@ -251,12 +347,44 @@ export function LocalModelMenu() {
                     <span className="local-model-download-pct">
                       {d.pct != null ? `${d.pct}%` : "…"}
                     </span>
+                    <button
+                      type="button"
+                      className="local-model-download-action"
+                      title="Pause download"
+                      onClick={() => pausePull(model)}
+                    >
+                      Pause
+                    </button>
                   </div>
                   <div className="ollama-download-bar">
                     <div
                       className={`ollama-download-bar-fill${d.pct == null ? " indeterminate" : ""}`}
                       style={d.pct != null ? { width: `${d.pct}%` } : undefined}
                     />
+                  </div>
+                </div>
+              ))}
+              {[...paused].map((model) => (
+                <div key={`paused:${model}`} className="local-model-download-row" title="Paused">
+                  <div className="local-model-download-head">
+                    <span className="local-model-loaded-name">{model}</span>
+                    <span className="local-model-download-pct">paused</span>
+                    <button
+                      type="button"
+                      className="local-model-download-action"
+                      title="Resume download"
+                      onClick={() => resumePull(model)}
+                    >
+                      Resume
+                    </button>
+                    <button
+                      type="button"
+                      className="local-model-download-action danger"
+                      title="Delete partial download"
+                      onClick={() => deletePausedPull(model)}
+                    >
+                      Delete
+                    </button>
                   </div>
                 </div>
               ))}
@@ -279,27 +407,53 @@ export function LocalModelMenu() {
                 <div className="tab-new-menu-hint">No model loaded</div>
               ) : (
                 running.map((m) => (
-                  <button
-                    key={m.name}
-                    className="tab-new-menu-item"
-                    title="Loaded in memory"
-                    onClick={() => select(m.name)}
-                  >
-                    <span
-                      className="tab-new-menu-dot"
-                      style={{ color: activeModel === m.name ? "var(--warning)" : "transparent" }}
+                  <div key={m.name} className="local-model-row">
+                    <button
+                      className="tab-new-menu-item local-model-pick"
+                      title={
+                        activeModel === m.name
+                          ? "Default local model · loaded in memory"
+                          : "Loaded in memory — click to make default"
+                      }
+                      onClick={() => select(m.name)}
                     >
-                      ●
-                    </span>
-                    <span className="local-model-loaded-name">{m.name}</span>
-                    <span className="local-model-loaded-badges">
-                      {m.parameter_size && <span>{m.parameter_size}</span>}
-                      {m.quantization && <span>{m.quantization}</span>}
-                      <span className={m.size_vram > 0 ? "gpu" : "cpu"}>
-                        {m.size_vram > 0 ? `GPU ${fmtBytes(m.size_vram)}` : "CPU"}
+                      {/* Green lamp: this model is resident in Ollama's memory. */}
+                      <span className="local-model-lamp" aria-hidden="true" />
+                      <span className="local-model-loaded-name">{m.name}</span>
+                      {activeModel === m.name && (
+                        <span className="local-model-default-tag">default</span>
+                      )}
+                      <span className="local-model-loaded-badges">
+                        {m.parameter_size && <span>{m.parameter_size}</span>}
+                        {m.quantization && <span>{m.quantization}</span>}
+                        <span className={m.size_vram > 0 ? "gpu" : "cpu"}>
+                          {m.size_vram > 0 ? `GPU ${fmtBytes(m.size_vram)}` : "CPU"}
+                        </span>
                       </span>
-                    </span>
-                  </button>
+                    </button>
+                    {/* Task tags: pin this model to a job (autocomplete/grammar/
+                        tabs). Several loaded models can each own a different one. */}
+                    <div className="local-model-roles">
+                      {MODEL_ROLES.map((r) => {
+                        const on = roles[r.key] === m.name;
+                        return (
+                          <button
+                            key={r.key}
+                            type="button"
+                            className={`local-model-role-chip${on ? " on" : ""}`}
+                            title={
+                              on
+                                ? `Used for ${r.label.toLowerCase()} — click to unassign`
+                                : `Use ${m.name} for ${r.label.toLowerCase()}`
+                            }
+                            onClick={() => toggleRole(r.key, m.name)}
+                          >
+                            {r.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 ))
               )}
               {/* Installed-but-not-resident models — click to load into memory. */}
@@ -350,6 +504,13 @@ export function LocalModelMenu() {
             {installed ? "Manage local models…" : "Install Ollama…"}
           </button>
           <div className="tab-new-menu-group-label">Agents</div>
+          {agents.map((a) => (
+            <div key={a.id} className="local-model-agent-row" title={`${a.label} installed`}>
+              {/* Green lamp mirrors a loaded model: this agent CLI is installed. */}
+              <span className="local-model-lamp" aria-hidden="true" />
+              <span className="local-model-loaded-name">{a.label}</span>
+            </div>
+          ))}
           <button className="tab-new-menu-item" onClick={openAgents}>
             <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
               ●

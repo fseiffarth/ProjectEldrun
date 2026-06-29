@@ -1404,6 +1404,18 @@ fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
     crate::platform::windows::find_window_for_pid(pid, attempts)
 }
 
+/// Single-pass, non-blocking window-id resolver injected into `window_service`
+/// at project-switch (hide) time. A launch-time miss (race, or the visible
+/// top-level belonging to a child of the spawned pid) leaves `window_id` None;
+/// re-resolving here just before hiding lets such a window still be parked, and
+/// the back-populated id keeps the later switch-back SHOW symmetric. `attempts:
+/// 1` does one enumeration with no `thread::sleep`, so it never stalls the
+/// switch worker.
+#[cfg(target_os = "windows")]
+pub fn resolve_window_id_for_pid(pid: u32) -> Option<u64> {
+    crate::platform::windows::find_window_for_pid(pid, 1)
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn find_window_for_pid(_pid: u32, _attempts: usize) -> Option<u64> {
     None

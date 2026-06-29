@@ -501,7 +501,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
     setGitBusy(true);
     setGitError(null);
     try {
-      await invoke("git_push", { projectDir });
+      await invoke("git_push", { projectDir, projectId: activeId ?? null });
       refreshGit(projectDir);
     } catch (e) {
       setGitError(String(e));
@@ -611,58 +611,15 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
         >
           {activeBox ? `▣ ${activeBox.name}` : activeProject ? activeProject.name : "Files"}
         </span>
-        {(["files", "git", "search", "windows"] as View[]).map((v) => (
-          <button
-            key={v}
-            className={`tab-add-btn${view === v ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: v === "files" ? 0 : 2 }}
-            aria-pressed={view === v}
-            onClick={() => setView(v)}
-          >
-            {v === "files" ? "Files" : v === "git" ? "Git" : v === "search" ? "Search" : "Apps"}
-          </button>
-        ))}
-        {canImportDrop && (
-          <button
-            className="tab-add-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
-            onClick={() => void importViaDialog()}
-            title="Import files into this folder"
-          >
-            ⬇
-          </button>
-        )}
-        {projectDir && (
-          <button
-            className="tab-add-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
-            onClick={openInOsBrowser}
-            title="Open folder in file manager"
-          >
-            ⧉
-          </button>
-        )}
-        {activeId && (
-          <button
-            className="tab-add-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
-            onClick={() => setShowSettings(true)}
-            title="Project settings"
-          >
-            ⚙
-          </button>
-        )}
-      </div>
-
-      {!activeBox && gitStatus?.is_repo && view === "files" && (
-        <>
-          {/* Only render the action bar when there's something to do (or we're
-              mid-commit) — an empty strip with no actions just wastes space. */}
-          {(commitMsg !== null ||
+        {/* Git status/action buttons sit right of the project name in the header
+            row. Only rendered when there's something to do (or we're mid-commit)
+            — an empty strip with no actions just wastes space. */}
+        {!activeBox && gitStatus?.is_repo &&
+          (commitMsg !== null ||
             gitStatus.unstaged + gitStatus.untracked > 0 ||
             gitStatus.staged > 0 ||
             (gitStatus.has_remote && unpushedCommits.length > 0)) && (
-          <div className="git-action-bar" style={{ position: "relative" }} onMouseLeave={() => setHoveredBtn(null)}>
+          <div className="git-action-bar git-action-bar--inline" style={{ position: "relative" }} onMouseLeave={() => setHoveredBtn(null)}>
             {commitMsg !== null ? (
               <>
                 <button
@@ -742,6 +699,54 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
             )}
           </div>
           )}
+      </div>
+
+      <div className="right-panel-toolbar">
+        {(["files", "git", "search", "windows"] as View[]).map((v) => (
+          <button
+            key={v}
+            className={`tab-add-btn${view === v ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: v === "files" ? 0 : 2 }}
+            aria-pressed={view === v}
+            onClick={() => setView(v)}
+          >
+            {v === "files" ? "Files" : v === "git" ? "Git" : v === "search" ? "Search" : "Apps"}
+          </button>
+        ))}
+        {canImportDrop && (
+          <button
+            className="tab-add-btn"
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            onClick={() => void importViaDialog()}
+            title="Import files into this folder"
+          >
+            ⬇
+          </button>
+        )}
+        {projectDir && (
+          <button
+            className="tab-add-btn"
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            onClick={openInOsBrowser}
+            title="Open folder in file manager"
+          >
+            ⧉
+          </button>
+        )}
+        {activeId && (
+          <button
+            className="tab-add-btn"
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            onClick={() => setShowSettings(true)}
+            title="Project settings"
+          >
+            ⚙
+          </button>
+        )}
+      </div>
+
+      {!activeBox && gitStatus?.is_repo && (
+        <>
           {commitMsg !== null && (
             <div style={{ padding: "4px 6px", borderBottom: "1px solid var(--border-color)" }}>
               <textarea

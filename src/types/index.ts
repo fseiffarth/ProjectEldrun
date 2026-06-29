@@ -79,10 +79,21 @@ export interface Settings {
   git_token?: string;
   color_scheme?: string;
   default_agent_cmd?: string;
-  /** The single active local (Ollama) model. A "Local Model" tab launches this
-   *  one; chosen in Settings → Ollama. Unset = no local model selected. */
+  /** The default local (Ollama) model. Used by any task without its own
+   *  per-task assignment in `ollama_roles`, and as the legacy "active model".
+   *  Chosen in the 🧠 menu (click a loaded model's name). Unset = none. */
   ollama_model?: string;
+  /** Per-task local-model assignments (🧠 menu role chips). Maps a task key —
+   *  `"autocomplete"`, `"grammar"`, or `"tabs"` — to the model name that should
+   *  serve it, so several loaded models can run different jobs in parallel. A
+   *  task absent here falls back to `ollama_model`, then to any loaded model. */
+  ollama_roles?: Record<string, string>;
   run_scripts_in_background?: boolean;
+  /** Header resource-monitor row toggles. Each defaults ON (undefined → shown).
+   *  Independent of `debug`; the pill is available in every build. */
+  show_cpu_usage?: boolean;
+  show_ram_usage?: boolean;
+  show_gpu_usage?: boolean;
   /** When true (the default), Claude agent tabs are spawned with `--remote-control`
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
@@ -107,6 +118,14 @@ export interface Settings {
    * original hard-coded behaviour.
    */
   keyboard_shortcuts?: Record<string, KeyboardChord>;
+  /** True once the first-run "How to start" welcome has been shown/dismissed, so
+   *  it never re-opens automatically. Re-openable manually from Settings. */
+  onboarding_seen?: boolean;
+  /** Ids of contextual hints (see `src/lib/hints.ts`) the user has seen/dismissed
+   *  or implicitly acted on, so each surfaces at most once. */
+  hints_seen?: string[];
+  /** Master switch for the contextual hint system; default ON when unset. */
+  hints_enabled?: boolean;
   [key: string]: unknown;
 }
 
@@ -160,7 +179,27 @@ export interface ProjectEntry {
   sandbox?: SandboxSpec;
   /** Denormalized inverse of `ProjectBox.member_ids` (the box this pill is in). */
   box_id?: string;
+  /** Per-project git-hosting profile URL that overrides the global one. Mirrored
+   *  from project.json into the pill list; the matching token lives in the OS
+   *  keyring, never here. See `GitHostingInfo`. */
+  git_profile_url?: string;
   [key: string]: unknown;
+}
+
+/**
+ * Per-project git-hosting config as returned by `get_project_git_hosting`. The
+ * token is never sent to the renderer — only whether one is stored — and the
+ * global values are surfaced so the editor can show what is inherited by default.
+ */
+export interface GitHostingInfo {
+  /** Per-project profile URL override, if set (else inherits `global_profile_url`). */
+  profile_url: string | null;
+  /** Whether a per-project token is stored in the keyring. */
+  has_token: boolean;
+  /** Global fallback profile URL (from settings), shown as the inherited default. */
+  global_profile_url: string | null;
+  /** Whether a global token exists to fall back on. */
+  has_global_token: boolean;
 }
 
 /**

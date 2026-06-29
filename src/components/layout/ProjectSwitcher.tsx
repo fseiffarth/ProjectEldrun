@@ -424,6 +424,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               <button onClick={() => { setShowSettingsMenu(false); setSettingsPanel("help"); setShowSettings(true); }}>
                 Feature Guide
               </button>
+              <button onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new Event("eldrun:open-how-to-start")); }}>
+                How to start
+              </button>
             </div>
           )}
         </div>
@@ -432,6 +435,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         <div className="project-switcher-add-wrap" onClick={(e) => e.stopPropagation()}>
           <button
             className="project-switcher-add-btn"
+            data-hint-anchor="add-project"
             title="Add or import project"
             onClick={() => {
               setShowSettings(false);

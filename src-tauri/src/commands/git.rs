@@ -290,12 +290,33 @@ pub fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> 
 }
 
 #[tauri::command]
-pub fn git_push(project_dir: String) -> Result<String, String> {
-    let out = crate::paths::command_no_window("git")
-        .args(["push"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub fn git_push(project_dir: String, project_id: Option<String>) -> Result<String, String> {
+    // Effective per-project → global token (if any) for the project being pushed.
+    let token = project_id
+        .as_deref()
+        .and_then(|id| crate::commands::git_hosting::effective_git_creds(id).1);
+
+    let mut cmd = crate::paths::command_no_window("git");
+    cmd.current_dir(&project_dir);
+    if let Some(tok) = token.as_deref() {
+        // Authenticate an https push with the effective token via an ephemeral
+        // inline credential helper. The token is read from the child's env INSIDE
+        // the helper snippet, so it never lands in argv or on disk. The leading
+        // empty `credential.helper=` clears any system helper (e.g. GCM) so only
+        // ours runs. Harmless for SSH remotes — git won't call an http helper.
+        cmd.args([
+            "-c",
+            "credential.helper=",
+            "-c",
+            "credential.helper=!f() { test \"$1\" = get && echo username=x-access-token && echo \"password=$ELDRUN_GIT_TOKEN\"; }; f",
+            "push",
+        ]);
+        cmd.env("ELDRUN_GIT_TOKEN", tok);
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+    } else {
+        cmd.args(["push"]);
+    }
+    let out = cmd.output().map_err(|e| e.to_string())?;
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {

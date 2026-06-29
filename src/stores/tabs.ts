@@ -5,9 +5,17 @@ import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
 import { useLinkRoutingStore } from "./linkRouting";
 
-export type TabKind = "agent" | "local_agent" | "shell" | "files" | "embed";
+export type TabKind = "agent" | "local_agent" | "shell" | "files" | "embed" | "projects3d";
 
 export const FILES_TAB_CMD = "__eldrun_files__";
+
+/**
+ * Sentinel `cmd` for the 3D project-blob tab (root scope only): a navigable 3D
+ * cloud of every project (active + inactive) and box. Carries no PTY — like the
+ * files tab it's a pure-frontend pane, identified by this command so cmdToKind
+ * can recover its kind from a bare command string.
+ */
+export const BLOB_TAB_CMD = "__eldrun_blob__";
 
 /**
  * Synthetic group id for the empty-state placeholder subwindow (rendered by
@@ -2293,6 +2301,7 @@ const AGENT_CMDS = new Set([
 
 export function cmdToKind(cmd: string): TabKind {
   if (cmd === FILES_TAB_CMD) return "files";
+  if (cmd === BLOB_TAB_CMD) return "projects3d";
   if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
 }

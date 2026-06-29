@@ -638,10 +638,8 @@ function useEditHistory(initial: string) {
   };
 }
 
-// Poll interval for the diff-aware auto-reload (#43) and the autosave debounce
-// (#47), both ~1.5s.
+// Poll interval for the diff-aware auto-reload (#43), ~1.5s.
 const RELOAD_POLL_MS = 1500;
-const AUTOSAVE_DEBOUNCE_MS = 1500;
 
 /**
  * Editable-file state shared by the code and markdown editors: loads `path`,
@@ -652,8 +650,8 @@ const AUTOSAVE_DEBOUNCE_MS = 1500;
  * Adds (Group M):
  *  - #46 undo/redo: the draft is backed by `useEditHistory`; `undo`/`redo` are
  *    surfaced for keybindings + toolbar buttons.
- *  - #47 autosave: when `settings.autosave` is on, a dirty buffer is saved after
- *    a debounce.
+ *  - #47 autosave: when `settings.autosave` is on, a dirty buffer is saved on
+ *    every change (each keystroke).
  *  - #43 diff-aware reload: polls `file_mtime`; when the file changes on disk it
  *    silently re-reads into a clean buffer, or surfaces a non-destructive banner
  *    when the buffer is dirty (Reload / Keep mine) — never clobbering edits.
@@ -742,11 +740,11 @@ function useEditableFile(path: string) {
     }
   }, [saving, path]);
 
-  // #47 autosave: debounce-save a dirty buffer when the setting is on.
+  // #47 autosave: when the setting is on, write the buffer to disk on every
+  // change — each keystroke as well as the moment autosave is toggled on with
+  // unsaved edits. `save()` no-ops when the buffer is clean or already saving.
   useEffect(() => {
-    if (!autosave || !isDirty) return;
-    const id = setTimeout(() => { void save(); }, AUTOSAVE_DEBOUNCE_MS);
-    return () => clearTimeout(id);
+    if (autosave && isDirty) void save();
   }, [autosave, isDirty, draft, save]);
 
   // #43 diff-aware reload: poll mtime; on an external advance, re-read into a
@@ -3231,11 +3229,20 @@ export interface TabAiPrefs {
  * tab's persisted `viewerState` and written back there (like scroll/zoom), so it
  * survives reopening the file and an Eldrun restart. Until the user touches a
  * control, the value tracks the per-type setting reactively; once toggled, that
- * tab pins its own value. `preferred` is the user's active local model (🧠 menu).
+ * tab pins its own value. The `preferred` model for each task is its 🧠-menu tag
+ * (`ollama_roles.autocomplete` / `.grammar`), falling back to `ollama_model`.
  */
 function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiPrefs {
   const pref = useViewerPref(type);
-  const preferred = useSettingsStore((s) => s.settings?.ollama_model as string | undefined);
+  // Per-task model preference (🧠 menu role chips): autocomplete and grammar can
+  // each pin a different loaded model, falling back to the default `ollama_model`
+  // when that task has no explicit assignment. Resolved against the resident set
+  // at trigger time (see the request paths above).
+  const defaultModel = useSettingsStore((s) => s.settings?.ollama_model as string | undefined);
+  const acRole = useSettingsStore((s) => s.settings?.ollama_roles?.autocomplete as string | undefined);
+  const gcRole = useSettingsStore((s) => s.settings?.ollama_roles?.grammar as string | undefined);
+  const acPreferred = acRole ?? defaultModel;
+  const gcPreferred = gcRole ?? defaultModel;
   const defAutocomplete = pref?.autocomplete === true;
   const defGrammar = pref?.grammar_check === true;
   const defMode: AutocompleteMode = AC_MODES.includes(pref?.autocomplete_mode as AutocompleteMode)
@@ -3287,8 +3294,8 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   );
 
   return {
-    ac: { enabled: autocomplete, preferred, mode },
-    gc: { enabled: grammar, preferred },
+    ac: { enabled: autocomplete, preferred: acPreferred, mode },
+    gc: { enabled: grammar, preferred: gcPreferred },
     autocomplete,
     grammar,
     mode,

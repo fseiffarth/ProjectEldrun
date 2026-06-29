@@ -2573,6 +2573,17 @@ select option {
   pointer-events: none;
 }
 
+/* Windows: while the whole window is moved by a native title-bar drag, take the
+   heavy pane content OUT of compositing so WebView2 only paints the cheap frame
+   (tab bars / empty bodies) and can keep up with the OS-moved window — otherwise
+   the terminal canvases lag/swim behind the frame. Mirrors `.detached-center.moving`
+   (#42). `visibility: hidden` (not display:none) keeps the layout intact, so no
+   xterm reflow/refit churn — the content reappears at the same size the instant
+   the move ends. */
+.center-panel.moving .pane-layer {
+  visibility: hidden;
+}
+
 /* Each pane is absolutely positioned by CenterPanel to a group's body rect.
    Hidden panes keep their PTY mounted via display:none. */
 .center-pane {
@@ -2580,6 +2591,125 @@ select option {
   flex-direction: column;
   overflow: hidden;
   pointer-events: auto;
+}
+
+/* ── 3D project blob (root "Projects" tab) ───────────────────────────────────
+   A navigable cloud of every project + box. The viewport owns the orbit/zoom
+   pointer surface; the scene is a preserve-3d space whose rotation/zoom is
+   written straight to the DOM by ProjectBlobPane's rAF loop. Nodes ride the
+   sphere via translate3d and counter-rotate to billboard toward the camera. */
+.blob-viewport {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--accent) 12%, transparent) 0%, transparent 60%),
+    var(--bg-main);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  perspective: 1100px;
+}
+.blob-viewport:active {
+  cursor: grabbing;
+}
+.blob-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.blob-empty-card {
+  padding: 16px 22px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.blob-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-panel) 75%, transparent);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.blob-stage {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+}
+.blob-scene {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+.blob-node {
+  position: absolute;
+  /* Center each card on its sphere point (translate3d in the inline transform). */
+  left: -70px;
+  top: -16px;
+  width: 140px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  will-change: transform;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.blob-node:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--bg-panel);
+}
+.blob-node-icon {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+}
+.blob-node-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blob-node-sub {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-secondary) 25%, transparent);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+/* Status coloring of the leading dot/glyph + accents. */
+.blob-status-current .blob-node-icon { color: var(--accent); }
+.blob-status-active .blob-node-icon { color: var(--success); }
+.blob-status-inactive { opacity: 0.55; }
+.blob-status-inactive .blob-node-icon { color: var(--text-muted); }
+.blob-node-box .blob-node-icon { color: var(--accent-secondary); }
+.blob-node-box { border-style: dashed; }
+.blob-node-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 /* ── Split preview (shown while a tab is being dragged over a subwindow) ──── */
@@ -3045,6 +3175,33 @@ select option {
    the rightmost actions never get pushed off the panel's right edge. */
 .right-panel-header > button {
   flex-shrink: 0;
+}
+
+/* Second header row: view switch (Files/Git/Search/Apps) + import/open/settings,
+   moved below the project-name row so git status can share the name's row. */
+.right-panel-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Inline variant of the git action bar when it lives in the header row next to
+   the project name: drop the full-width strip styling so it hugs its buttons. */
+.right-panel-header .git-action-bar--inline {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0;
+  margin-left: 8px;
+  border-bottom: none;
+}
+
+.right-panel-header .git-action-bar--inline .git-action-btn {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  font-size: 12px;
 }
 
 .right-panel-pin {
@@ -4407,10 +4564,13 @@ select option {
 .tab-new-menu-group-label {
   padding: 6px 10px 2px;
   font-size: 9px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  /* Menu section header: accent so the groups ("Local Model" / "Load into
+     memory" / "Agents") separate from the item rows instead of reading like a
+     dimmed, disabled entry. */
+  color: var(--accent);
   user-select: none;
 }
 
@@ -5591,7 +5751,9 @@ select option {
   flex: 1;
   font-size: 16px;
   font-weight: 650;
-  color: var(--text-primary);
+  /* Top-level panel header: accent so it clearly outranks the section titles
+     (accent-secondary) and the body text below it. */
+  color: var(--accent);
 }
 
 .dialog-close-btn,
@@ -5723,8 +5885,12 @@ select option {
   margin-top: 2px;
   padding-top: 12px;
   border-top: 1px solid var(--border-subtle);
-  color: var(--text-primary);
+  /* Section / per-agent headers: a distinct accent (one step below the panel
+     header) so a grouping like an agent name reads as a heading, not as the
+     primary-coloured body text, button labels and commands around it. */
+  color: var(--accent-secondary);
   font-weight: 650;
+  letter-spacing: 0.01em;
 }
 
 .settings-link-row {
@@ -6449,6 +6615,20 @@ select option {
 
 /* Vibe runtime section + its inline status dot (used inside flowing text). */
 .ollama-vibe-section { margin-top: 14px; }
+
+/* Each agent rendered as a separated, card-like list entry in Manage Agents. */
+.agent-list-entry {
+  margin-top: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.03));
+}
+.agent-list-entry .settings-section-title {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
 .ollama-vibe-section .ollama-status-dot {
   display: inline-block;
   vertical-align: middle;
@@ -6536,6 +6716,89 @@ select option {
   color: var(--success);
 }
 
+/* ── Loaded-model row: green "resident" lamp + per-task tag chips ─────────── */
+/* The row (not the inner name button) owns the hover border/fill so the
+   highlight wraps the task tags below the name, not just the name itself. */
+.local-model-row {
+  display: flex;
+  flex-direction: column;
+  background: var(--control-bg);
+  border: 1px solid transparent;
+  border-radius: 0;
+  transition: background-color 0.1s, border-color 0.1s;
+}
+.local-model-row:hover {
+  background-color: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+/* The clickable name button sits inside the row; the lamp replaces the old
+   leading dot and a "default" tag marks the fallback model. It stays transparent
+   so the row's hover treatment shows through and there's no double outline. */
+.local-model-pick,
+.local-model-row:hover .local-model-pick,
+.local-model-pick:hover {
+  width: 100%;
+  background: transparent;
+  border-color: transparent;
+}
+.local-model-lamp {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--success);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--success) 70%, transparent);
+}
+.local-model-default-tag {
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  color: var(--warning);
+}
+/* Tag chips sit just under the model name, indented past the lamp. */
+.local-model-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 10px 6px 25px;
+}
+.local-model-role-chip {
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.1s, border-color 0.1s, color 0.1s;
+}
+.local-model-role-chip:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.local-model-role-chip.on {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Installed agent CLIs listed in the brain menu's Agents section: a green
+   "installed" lamp next to the agent label, matching a loaded-model row. */
+.local-model-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 4px 10px;
+}
+
 /* In-flight downloads shown at the top of the brain menu. */
 .local-model-downloads {
   padding: 4px 10px 6px;
@@ -6556,12 +6819,36 @@ select option {
   justify-content: space-between;
   gap: 8px;
 }
+.local-model-download-head {
+  /* Name grows; pct + action buttons hug the right edge. */
+}
+.local-model-download-head .local-model-loaded-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .local-model-download-pct {
   font-size: 11px;
   color: var(--text-secondary);
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
+/* Pause / Resume / Delete control on a (paused) download row in the brain menu. */
+.local-model-download-action {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.local-model-download-action:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+.local-model-download-action.danger { color: var(--danger); }
+.local-model-download-action.danger:hover { border-color: var(--danger); }
 
 /* A "load into memory" row in the brain menu: the menu item plus, while the
    model is warming, an indeterminate bar under it (Ollama streams no load %). */
@@ -6594,11 +6881,14 @@ select option {
 .ollama-install-cmd {
   flex: 1;
   padding: 4px 8px;
-  background: var(--control-bg);
+  background: var(--bg-main);
   border: 1px solid var(--control-border);
+  border-left: 2px solid var(--accent-secondary);
   font-family: var(--font-mono, monospace);
   font-size: 11px;
-  color: var(--text-primary);
+  /* Terminal command: monospace on the deeper window background with a coloured
+     gutter so it reads as a shell entry, not a button or a heading. */
+  color: var(--text-secondary);
   overflow-x: auto;
   white-space: nowrap;
 }
@@ -6685,8 +6975,10 @@ select option {
   max-height: 160px;
   overflow: auto;
   padding: 8px;
-  background: var(--control-bg);
+  /* Live installer output: same terminal treatment as the command snippet. */
+  background: var(--bg-main);
   border: 1px solid var(--control-border);
+  border-left: 2px solid var(--accent-secondary);
   font-family: var(--font-mono, monospace);
   font-size: 11px;
   color: var(--text-secondary);
@@ -6716,6 +7008,20 @@ select option {
 .ollama-action-btn.danger { color: var(--danger); }
 .ollama-action-btn.danger:hover:not(:disabled) {
   border-color: var(--danger);
+}
+
+/* Primary call-to-action (Install …). Filled accent so the main action stands
+   apart from the secondary outline buttons (Copy / Re-check / Refresh) sharing
+   this class. */
+.ollama-action-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-main);
+  font-weight: 600;
+}
+.ollama-action-btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .ollama-model-row {
@@ -6944,4 +7250,267 @@ select option {
   overflow: hidden;
   text-overflow: ellipsis;
   animation: toast-fade 2.2s ease forwards;
+}
+
+/* ── Onboarding: empty-state card, "How to start" dialog, contextual hints ── */
+
+.center-placeholder-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  max-width: 360px;
+  padding: 0 16px;
+}
+
+.center-placeholder-title {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.center-placeholder-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.center-placeholder-key {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 5px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* "How to start" reuses .modal-backdrop + .settings-dialog; just the step list. */
+.how-to-start-steps {
+  list-style: none;
+  margin: 8px 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.how-to-start-step {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.how-to-start-num {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.how-to-start-step-title {
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.how-to-start-got-it {
+  margin-left: auto;
+  border-color: var(--accent) !important;
+}
+
+/* Contextual hint coachmark/banner. z-index 90: above the header (80) so it can
+   point at chrome, but below true modals (.modal-backdrop, 100) so a dialog is
+   never pierced by a stray hint. Portaled to body (see HintBubble). */
+.hint-bubble {
+  position: fixed;
+  z-index: 90;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  color: var(--text-primary);
+  font-size: 12px;
+  /* Fade in on appearance, then keep a slow accent breathing on the border so a
+     freshly-surfaced hint draws the eye without nagging. Opacity-only entry so it
+     never fights the inline/class positioning transforms (translateY/translateX).
+     Shares the pulse vocabulary of tab-working-pulse / right-panel-drop-pulse. */
+  animation: hint-bubble-in 0.24s ease-out,
+    hint-bubble-breathe 2.4s ease-in-out 0.24s infinite;
+}
+
+@keyframes hint-bubble-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hint-bubble-breathe {
+  0%,
+  100% {
+    border-color: var(--border-color);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  }
+  50% {
+    border-color: var(--accent);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45),
+      0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+
+/* The chrome a hint points at (the + button, etc.): a pulsing accent fill + inset
+   ring so the eye lands on the thing to click, not just the bubble. HintHost
+   toggles this class on the anchored element while its hint is on screen. The
+   effect is kept *inside* the element bounds (inset ring, no outward glow) so it
+   survives an overflow:hidden ancestor like the .tab-bar that clips the + button. */
+.hint-target {
+  animation: hint-target-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes hint-target-pulse {
+  0%,
+  100% {
+    background: color-mix(in srgb, var(--accent) 0%, transparent);
+    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+  }
+}
+
+.hint-bubble--banner {
+  left: 50%;
+  top: 16px;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 32px));
+  /* Banners have no anchor element to pulse, so the bubble itself breathes with a
+     gentle scale alongside the shared border glow. The transform-animating
+     keyframes must carry the centering translateX(-50%); the entry runs first and
+     the scale pulse starts when it ends (matched delay), so they never overlap on
+     the transform property. */
+  animation: hint-banner-in 0.24s ease-out,
+    hint-bubble-breathe 2.4s ease-in-out 0.24s infinite,
+    hint-banner-pulse 1.8s ease-in-out 0.24s infinite;
+}
+
+@keyframes hint-banner-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes hint-banner-pulse {
+  0%,
+  100% {
+    transform: translateX(-50%) scale(1);
+  }
+  50% {
+    transform: translateX(-50%) scale(1.03);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hint-bubble,
+  .hint-bubble--banner,
+  .hint-target {
+    animation: none;
+  }
+}
+
+.hint-bubble-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.hint-bubble-close:hover {
+  color: var(--text-primary);
+}
+
+.hint-bubble-title {
+  font-weight: 600;
+  margin: 0 16px 4px 0;
+}
+
+.hint-bubble-body {
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.hint-bubble-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.hint-bubble-link {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.hint-bubble-link:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.hint-bubble-got-it {
+  margin-left: auto;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.hint-bubble-got-it:hover {
+  background: var(--accent-hover, var(--accent));
+}
+
+/* The element a coachmark points at gets this class while the hint is shown, so
+   the eye lands on the thing to click (see HintHost). */
+.hint-target {
+  animation: hint-target-pulse 1.6s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+@keyframes hint-target-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 65%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
 }

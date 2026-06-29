@@ -49,6 +49,10 @@ pub fn github_publish(project_id: String, visibility: String) -> Result<String, 
         return Err("Project name does not yield a valid GitHub repo name".to_string());
     }
 
+    // Effective per-project → global token. When set, run `gh` as that token's
+    // account via GH_TOKEN instead of relying on the ambient `gh auth login`.
+    let (_profile, token) = crate::commands::git_hosting::effective_git_creds(&project_id);
+
     let stdout = match project.remote.as_ref() {
         // Remote project: run gh on the host where the bytes live.
         Some(remote) => {
@@ -82,6 +86,12 @@ pub fn github_publish(project_id: String, visibility: String) -> Result<String, 
                 "--remote=origin",
                 "--push",
             ]);
+            // GH_TOKEN, when present, makes gh authenticate as the effective
+            // (per-project or global) token's account. Absent → gh falls back to
+            // the user's ambient `gh auth login`, exactly as before.
+            if let Some(tok) = token.as_deref() {
+                cmd.env("GH_TOKEN", tok);
+            }
             run_command(&mut cmd)?
         }
     };

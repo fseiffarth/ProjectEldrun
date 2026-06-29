@@ -38,9 +38,10 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, EnumWindows, GetForegroundWindow, GetParent, GetWindow,
-    GetWindowThreadProcessId, IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, GW_OWNER,
-    SW_HIDE, SW_SHOW,
+    BringWindowToTop, EnumWindows, GetForegroundWindow, GetParent, GetWindow, GetWindowLongPtrW,
+    GetWindowThreadProcessId, IsWindow, IsWindowVisible, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, GW_OWNER, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WS_MAXIMIZEBOX, WS_THICKFRAME,
 };
 
 pub struct WindowsBackend {
@@ -222,31 +223,108 @@ pub fn list_window_ids() -> Vec<u64> {
     enumerate_windows().into_iter().map(hwnd_to_u64).collect()
 }
 
+/// Ensure the main window participates in Aero Snap (drag to the top edge →
+/// maximize; drag to a side edge → half-tile) and is OS-resizable.
+///
+/// A borderless wry window (`decorations: false`) is created WITHOUT the
+/// `WS_MAXIMIZEBOX` / `WS_THICKFRAME` styles, and Windows only offers snap during
+/// the native move loop (`startDragging`) for windows that carry them — so without
+/// this the header drag never snaps to the screen edges. We OR the two styles in
+/// (idempotent) and force a frame recalculation so the change takes effect. wry's
+/// own `WM_NCCALCSIZE` handling keeps the added sizing border visually frameless,
+/// so the custom title bar / borderless look is unaffected. Called once at startup
+/// with the Tauri-provided HWND.
+pub fn enable_aero_snap(window_id: u64) {
+    let Ok(hwnd) = hwnd_from_u64(window_id) else {
+        return;
+    };
+    if !is_window(hwnd) {
+        return;
+    }
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        if style == 0 {
+            return; // couldn't read the style; leave the window untouched
+        }
+        let wanted = style | (WS_THICKFRAME.0 as isize) | (WS_MAXIMIZEBOX.0 as isize);
+        if wanted == style {
+            return; // already snappable — nothing to do
+        }
+        SetWindowLongPtrW(hwnd, GWL_STYLE, wanted);
+        // Apply the style change immediately; the SWP_NO* flags mean only the frame
+        // recalculation happens (no move/resize/restack/activation).
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+}
+
+/// Resolve a top-level window owned by `pid` OR any of its descendants. A
+/// launcher stub commonly spawns the real GUI exe as a CHILD, so the visible
+/// top-level's owning pid is a descendant of — not equal to — the spawned pid.
+/// `descendant_pids(&[pid])` always includes the root pid, so the exact-pid case
+/// is still covered. The X11 analog resolves via `_NET_WM_PID`; this is the
+/// Windows equivalent that also tolerates the child-process hand-off. With
+/// `attempts == 1` this does a single no-sleep enumeration (used by the
+/// hide-time resolver, which must not block the switch worker).
 pub fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
-    for _ in 0..attempts {
+    for attempt in 0..attempts {
+        let pids = crate::sysstat::descendant_pids(&[pid]);
         if let Some(hwnd) = enumerate_windows()
             .into_iter()
-            .find(|&hwnd| window_pid(hwnd) == Some(pid))
+            .find(|&hwnd| window_pid(hwnd).map_or(false, |p| pids.contains(&p)))
         {
             return Some(hwnd_to_u64(hwnd));
         }
-        thread::sleep(Duration::from_millis(100));
+        if attempt + 1 < attempts {
+            thread::sleep(Duration::from_millis(100));
+        }
     }
     None
 }
 
 pub fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
-    for _ in 0..attempts {
+    for attempt in 0..attempts {
         if let Some(hwnd) = enumerate_windows()
             .into_iter()
+            // Mirror x11.rs's `!w.protected` filter: never latch onto Eldrun's
+            // own or a protected shell window (explorer/dwm/…) that happens to
+            // appear during the poll — only a genuinely new app window.
+            .filter(|&hwnd| !is_protected_owner(hwnd))
             .map(hwnd_to_u64)
             .find(|id| !before.contains(id))
         {
             return Some(hwnd);
         }
-        thread::sleep(Duration::from_millis(100));
+        if attempt + 1 < attempts {
+            thread::sleep(Duration::from_millis(100));
+        }
     }
     None
+}
+
+/// Whether `hwnd`'s owning process is Eldrun itself or a protected shell/system
+/// process. Free helper (no `&self`) so `find_new_window` can drop such windows
+/// before they ever enter a tracked set — the FFI-side analog of x11.rs's
+/// `w.protected` flag. Owning-process identity (self) is checked directly here;
+/// the name list reuses the pure `is_protected_process_name`.
+fn is_protected_owner(hwnd: HWND) -> bool {
+    let Some(pid) = window_pid(hwnd) else {
+        return true; // no owner → conservatively protected
+    };
+    if pid == unsafe { GetCurrentProcessId() } {
+        return true; // Eldrun's own window
+    }
+    match process_exe_basename(pid) {
+        Some(basename) => is_protected_process_name(&basename),
+        None => false,
+    }
 }
 
 fn current_desktop_id() -> Result<GUID, String> {

@@ -362,8 +362,10 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
         <p className="settings-help">Checking installed agents…</p>
       ) : (
         <div className="settings-list">
-          {agents.map((a) => (
-            <div key={a.id} className="ollama-vibe-section">
+          {[...agents]
+            .sort((a, b) => Number(b.installed) - Number(a.installed))
+            .map((a) => (
+            <div key={a.id} className="ollama-vibe-section agent-list-entry">
               <div className="settings-section-title">
                 {a.label}{" "}
                 {a.installed ? (
@@ -379,7 +381,7 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                   <div className="ollama-install-cmd-row">
                     <button
                       type="button"
-                      className="ollama-action-btn"
+                      className="ollama-action-btn primary"
                       disabled={installing !== null}
                       onClick={() => void installAgent(a.id)}
                     >
@@ -494,6 +496,9 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   // persisted by the backend. Each can be resumed ("Continue") since Ollama
   // picks up a partially-fetched model where it left off.
   const [interrupted, setInterrupted] = useState<string[]>([]);
+  // Model refs the user paused mid-download this session. A paused pull keeps its
+  // partial blobs (so it can be resumed) and offers Resume / Delete.
+  const [paused, setPaused] = useState<Set<string>>(new Set());
   // Orphaned partial layers in Ollama's blob cache with no recoverable model
   // name — surfaced only so the user can delete them to reclaim space.
   const [orphans, setOrphans] = useState<{ digest: string; size: number; path: string }[]>([]);
@@ -568,6 +573,16 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
       "ollama-pull-progress",
       (e) => {
         const { model, status, completed, total } = e.payload;
+        // A paused pull stops streaming here — move it out of the live-progress
+        // map and into the paused set so its row offers Resume / Delete.
+        if (status === "paused") {
+          setPullProgress((p) => {
+            const { [model]: _drop, ...rest } = p;
+            return rest;
+          });
+          setPaused((p) => new Set(p).add(model));
+          return;
+        }
         setPullProgress((p) => ({
           ...p,
           [model]: {
@@ -655,6 +670,36 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   const dismissPull = (model: string) => {
     setInterrupted((p) => p.filter((m) => m !== model));
     void invoke("clear_pending_ollama_pull", { model });
+  };
+
+  // Pause an in-flight download. The backend stops the stream at the next chunk,
+  // keeps the partial blobs, and emits a "paused" progress event that flips the
+  // row into the paused state (Resume / Delete).
+  const pausePull = (model: string) => {
+    void invoke("pause_ollama_pull", { model });
+  };
+
+  // Resume a paused download — re-pull, which Ollama continues from the partials.
+  const resumePull = (model: string) => {
+    setPaused((p) => {
+      const n = new Set(p);
+      n.delete(model);
+      return n;
+    });
+    void withBusy(`${model}:pull`, () => invoke("pull_ollama_model", { model }));
+  };
+
+  // Delete a paused download: drop its partial blobs and clear its pending record.
+  const deletePausedPull = (model: string) => {
+    setPaused((p) => {
+      const n = new Set(p);
+      n.delete(model);
+      return n;
+    });
+    setInterrupted((p) => p.filter((m) => m !== model));
+    void invoke("delete_ollama_pull", { model })
+      .then(() => refresh())
+      .catch((e) => setError(String(e)));
   };
 
   const installVibe = async () => {
@@ -908,7 +953,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
           <div className="ollama-install-cmd-row">
             <button
               type="button"
-              className="ollama-action-btn"
+              className="ollama-action-btn primary"
               disabled={vibeInstalling}
               onClick={() => void installVibe()}
             >
@@ -995,7 +1040,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
         <div className="ollama-install-cmd-row">
           <button
             type="button"
-            className="ollama-action-btn"
+            className="ollama-action-btn primary"
             disabled={installing}
             onClick={() => void installOllama()}
           >
@@ -1106,10 +1151,11 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
       {(() => {
         // Interrupted entries not currently being (re)pulled — these get a
         // "Continue" action; live pulls show their streaming progress bar.
-        const resumable = interrupted.filter((m) => !(m in pullProgress));
+        const resumable = interrupted.filter((m) => !(m in pullProgress) && !paused.has(m));
         if (
           Object.keys(pullProgress).length === 0 &&
           resumable.length === 0 &&
+          paused.size === 0 &&
           orphans.length === 0
         )
           return null;
@@ -1132,6 +1178,44 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                     />
                   </div>
                   {pr.status && <div className="ollama-download-status">{pr.status}</div>}
+                  <div className="ollama-model-actions">
+                    <button
+                      type="button"
+                      className="ollama-action-btn"
+                      title="Pause this download (resume later)"
+                      onClick={() => pausePull(model)}
+                    >
+                      Pause
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {[...paused].map((model) => (
+                <div className="ollama-model-row" key={`paused:${model}`}>
+                  <div className="ollama-model-header">
+                    <span className="ollama-model-name">{model}</span>
+                    <span className="ollama-model-size">paused</span>
+                  </div>
+                  <div className="ollama-download-status">
+                    Download paused — resume to finish it, or delete the partial data.
+                  </div>
+                  <div className="ollama-model-actions">
+                    <button
+                      type="button"
+                      className="ollama-action-btn"
+                      onClick={() => resumePull(model)}
+                    >
+                      Resume
+                    </button>
+                    <button
+                      type="button"
+                      className="ollama-action-btn danger"
+                      title="Delete the partial download to reclaim disk space"
+                      onClick={() => deletePausedPull(model)}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
               ))}
               {resumable.map((model) => (

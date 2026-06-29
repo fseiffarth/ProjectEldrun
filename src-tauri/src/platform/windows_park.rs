@@ -169,6 +169,17 @@ mod tests {
         assert!(!is_protected_process_name("explorerplus.exe"));
     }
 
+    #[test]
+    fn find_new_window_protection_rejects_shell_accepts_ordinary() {
+        // The FFI-free name half of `windows.rs::is_protected_owner`, which
+        // `find_new_window` uses to skip Eldrun-self/shell windows that appear
+        // during the launch poll. A protected basename is rejected; an ordinary
+        // app basename is accepted (and would thus be a candidate new window).
+        assert!(is_protected_process_name("explorer.exe"));
+        assert!(is_protected_process_name("ApplicationFrameHost.exe"));
+        assert!(!is_protected_process_name("code.exe"));
+    }
+
     // ── parkable override (#42) ─────────────────────────────────────────────
 
     #[test]

@@ -269,11 +269,12 @@ pub fn run() {
                     .get_webview_window("main")
                     .and_then(|w| w.hwnd().ok())
                 {
-                    workspace
-                        .lock()
-                        .unwrap()
-                        .backend
-                        .set_main_window_id(hwnd.0 as usize as u64);
+                    let id = hwnd.0 as usize as u64;
+                    workspace.lock().unwrap().backend.set_main_window_id(id);
+                    // Add the WS_MAXIMIZEBOX/WS_THICKFRAME styles a borderless wry
+                    // window lacks, so dragging the header against a screen edge
+                    // triggers the native Aero Snap (top → maximize, sides → half).
+                    platform::windows::enable_aero_snap(id);
                 }
             }
             // Install the global Claude SessionStart hook so Eldrun can follow a
@@ -328,6 +329,8 @@ pub fn run() {
             commands::openvpn::openvpn_store_config,
             // GitHub publishing
             commands::github::github_publish,
+            commands::git_hosting::get_project_git_hosting,
+            commands::git_hosting::set_project_git_hosting,
             // Timer flush + activity
             commands::timer::timer_flush_app,
             commands::timer::timer_flush_project,
@@ -464,6 +467,8 @@ pub fn run() {
             commands::ollama::list_orphan_partial_blobs,
             commands::ollama::delete_partial_blob,
             commands::ollama::pull_ollama_model,
+            commands::ollama::pause_ollama_pull,
+            commands::ollama::delete_ollama_pull,
             commands::ollama::delete_ollama_model,
             commands::ollama::list_installable_models,
             commands::ollama::search_ollama_registry,

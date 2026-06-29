@@ -164,6 +164,18 @@ pub async fn agent_is_installed(id: String) -> bool {
     find_spec(&id).map(spec_is_installed).unwrap_or(false)
 }
 
+/// Sync install probe for callers outside the agent registry (e.g. the local-
+/// model drivers in `commands::ollama`). Looks `bin` up in the registry first so
+/// it reuses the known user install locations; falls back to a bare PATH lookup
+/// for binaries the registry doesn't track (e.g. Droid).
+pub fn binary_is_installed(bin: &str) -> bool {
+    AGENTS
+        .iter()
+        .find(|a| a.bin == bin)
+        .map(spec_is_installed)
+        .unwrap_or_else(|| crate::paths::binary_on_path(bin))
+}
+
 /// List every known agent CLI with its current installed status.
 #[tauri::command]
 pub async fn list_agents() -> Vec<AgentInfo> {

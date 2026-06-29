@@ -5,6 +5,10 @@ pub struct AppResourceUsage {
     pub cpu_percent: f64,
     pub rss_bytes: u64,
     pub process_count: usize,
+    /// VRAM (bytes) in use by local models loaded in Ollama's memory. `0` when
+    /// the Ollama server is down or no model is resident on the GPU. This is
+    /// system-wide GPU usage by Ollama, not part of Eldrun's own process tree.
+    pub vram_bytes: u64,
 }
 
 /// Debug-only live resource usage for Eldrun's own process tree.
@@ -31,6 +35,7 @@ pub async fn debug_app_resource_usage() -> Result<AppResourceUsage, String> {
         cpu_percent: (cpu_percent * 10.0).round() / 10.0,
         rss_bytes,
         process_count: pids.len(),
+        vram_bytes: crate::commands::ollama::total_vram_in_use(),
     })
 }
 

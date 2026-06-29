@@ -1,4 +1,5 @@
 pub mod agent_session;
+pub mod git_credentials;
 pub mod openvpn;
 pub mod project_runtime;
 pub mod remote_agents;

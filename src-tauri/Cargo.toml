@@ -1,6 +1,6 @@
 [package]
 name = "eldrun"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 
 [lib]
@@ -35,6 +35,11 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 # Extract dropped/double-clicked .zip archives in place (deflate covers the vast
 # majority of real-world zips; "stored" entries need no feature).
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Store git-hosting access tokens in the OS credential store (Windows Credential
+# Manager / macOS Keychain / Linux Secret Service) instead of plaintext on disk.
+# The backend deps are target-gated inside the crate, so enabling all three
+# native backends is the standard cross-platform recipe.
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
 
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]

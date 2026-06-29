@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
+  BLOB_TAB_CMD,
   FILES_TAB_CMD,
   useTabsStore,
   useGroup,
@@ -57,6 +58,7 @@ const TAB_ACCENT: Record<TabKind, string> = {
   shell: "var(--success)",
   files: "#888",
   embed: "var(--info, #4aa3df)",
+  projects3d: "var(--accent-secondary)",
 };
 
 interface StaticMenuItem {
@@ -120,6 +122,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // a single boolean rather than the full tab array so it doesn't widen the bar's
   // subscription back out to every tab.
   const hasAnyTabs = useTabsStore((s) => s.tabs.length > 0);
+  // The 3D project-blob tab is a root-scope feature, offered only once at least
+  // one project exists (it has nothing to show otherwise).
+  const scope = useTabsStore((s) => s.scope);
+  const hasProjects = useProjectsStore((s) => s.projects.length > 0);
+  const showBlobItem = scope === "root" && hasProjects;
   const focusGroup = useTabsStore((s) => s.focusGroup);
   const setGroupActive = useTabsStore((s) => s.setGroupActive);
   const renameTab = useTabsStore((s) => s.renameTab);
@@ -162,10 +169,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // #56: a right-click on a tab enters inline rename mode for that key (no menu,
   // no prompt dialog). The label becomes a focused, text-selected <input>.
   const [editingKey, setEditingKey] = useState<string | null>(null);
-  // The single active local (Ollama) model, set in the global app bar's Local
-  // Model picker. The add menu offers ONE "Local Model" entry that launches it,
-  // rather than listing every installed model.
-  const localModel = useSettingsStore((s) => s.settings?.ollama_model);
+  // The local (Ollama) model a "Local Model" tab launches: the model tagged for
+  // the "tabs" task in the 🧠 menu, falling back to the default `ollama_model`.
+  // The add menu offers ONE "Local Model" entry that launches it, rather than
+  // listing every installed model.
+  const localModel = useSettingsStore(
+    (s) => s.settings?.ollama_roles?.tabs ?? s.settings?.ollama_model,
+  );
   // Coding agents that can drive the active local model besides Mistral/vibe —
   // Claude Code, Codex, OpenCode, Droid via `ollama launch` (or a direct
   // fallback). Loaded once; only the currently-available ones are offered.
@@ -319,6 +329,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       ...(tracked && sessionId ? { ELDRUN_TAB_UID: sessionId } : {}),
     };
     addTab({ label: item.label, cmd: item.cmd, args, env, cwd: projectCwd, kind: item.kind, initialInput, sessionId });
+    setMenuPos(null);
+  }
+
+  // Open (or focus, if already open) the 3D project-blob tab in this group.
+  function handleAddBlob() {
+    focusGroup(groupId);
+    ensureTab(
+      { label: "Projects", cmd: BLOB_TAB_CMD, cwd: projectCwd, kind: "projects3d" },
+      (tab) => tab.kind === "projects3d",
+    );
     setMenuPos(null);
   }
 
@@ -827,6 +847,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         <button
           ref={addBtnRef}
           className="tab-new-btn"
+          data-hint-anchor="tab-add"
           title="New tab"
           onClick={openAddMenu}
         >
@@ -869,29 +890,45 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             {localModel ? `Local Model · ${localModel}` : "Local Model"}
           </div>
           {localModel ? (
-            <>
-              {/* Mistral/vibe keeps its bespoke per-model VIBE_HOME path. */}
-              <button
-                className="tab-new-menu-item"
-                onClick={() => handleOllamaModel(localModel)}
-              >
-                <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
-                Mistral
-              </button>
-              {/* Other agents drive the same model via `ollama launch` / fallback. */}
-              {localDrivers
-                .filter((d) => d.available)
-                .map((d) => (
-                  <button
-                    key={d.id}
-                    className="tab-new-menu-item"
-                    onClick={() => handleLocalLaunch(d.id, d.label, localModel)}
-                  >
-                    <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
-                    {d.label}
-                  </button>
-                ))}
-            </>
+            (() => {
+              // Only offer agents whose binary is actually installed: Mistral/vibe
+              // (checked against `installedAgents`) and the drivers the backend
+              // already marks `available` (which now includes an installed check).
+              const vibeInstalled = installedAgents?.has("vibe") ?? false;
+              const drivers = localDrivers.filter((d) => d.available);
+              if (!vibeInstalled && drivers.length === 0) {
+                return (
+                  <div className="tab-new-menu-hint">
+                    No local agent installed — install one in the 🧠 menu
+                  </div>
+                );
+              }
+              return (
+                <>
+                  {/* Mistral/vibe keeps its bespoke per-model VIBE_HOME path. */}
+                  {vibeInstalled && (
+                    <button
+                      className="tab-new-menu-item"
+                      onClick={() => handleOllamaModel(localModel)}
+                    >
+                      <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
+                      Mistral
+                    </button>
+                  )}
+                  {/* Other agents drive the same model via `ollama launch` / fallback. */}
+                  {drivers.map((d) => (
+                    <button
+                      key={d.id}
+                      className="tab-new-menu-item"
+                      onClick={() => handleLocalLaunch(d.id, d.label, localModel)}
+                    >
+                      <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
+                      {d.label}
+                    </button>
+                  ))}
+                </>
+              );
+            })()
           ) : (
             <div className="tab-new-menu-hint">No local model set — pick one in the app bar</div>
           )}
@@ -920,6 +957,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
               {item.label}
             </button>
           ))}
+
+          {showBlobItem && (
+            <>
+              <div className="tab-new-menu-group-label">Workspace</div>
+              <button className="tab-new-menu-item" onClick={handleAddBlob}>
+                <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["projects3d"] }}>◍</span>
+                Projects (3D)
+              </button>
+            </>
+          )}
 
           <div className="tab-new-menu-group-label">Project</div>
           <button

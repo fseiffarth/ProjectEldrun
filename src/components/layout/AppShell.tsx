@@ -7,12 +7,16 @@ import {
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { PLATFORM } from "../../lib/dragPlatform";
 import { notePtyOutput, useActivityStore } from "../../stores/activity";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { QuickOpen } from "../files/QuickOpen";
+import { HintHost } from "./HintHost";
+import { HowToStart } from "./HowToStart";
+import { useHintsStore } from "../../stores/hints";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
 import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
 import { listenPdfReveal } from "../../stores/pdfSync";
@@ -24,6 +28,14 @@ import { useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
 import { useKeyboard } from "../../hooks/useKeyboard";
 
+// Width of the right-edge band that reveals the (unpinned) right panel on hover.
+// Kept wide because on Windows/WebView2 the window often isn't true-fullscreen
+// (the Windows platform backend is a stub, so setFullscreen may not take) and
+// the OS resize border swallows mousemove events for the last few edge pixels —
+// a 2px strip there is unreachable, so the panel never opened. A wider band is
+// crossed on the way to the edge, so the reveal fires before the dead-zone.
+const REVEAL_EDGE_PX = 24;
+
 export function AppShell() {
   const loadSettings = useSettingsStore((s) => s.load);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
@@ -31,6 +43,8 @@ export function AppShell() {
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const loadProjects = useProjectsStore((s) => s.load);
   const projectsLoaded = useProjectsStore((s) => s.loaded);
+  const projectCount = useProjectsStore((s) => s.projects.length);
+  const onboardingSeen = useSettingsStore((s) => s.settings?.onboarding_seen ?? false);
   const loadBoxes = useBoxesStore((s) => s.load);
   const activeId = useProjectsStore((s) => s.activeId);
   const scope = useTabsStore((s) => s.scope);
@@ -44,12 +58,26 @@ export function AppShell() {
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [rightPinned, setRightPinned] = useState(false);
+  const [showHowToStart, setShowHowToStart] = useState(false);
   const rightCloseTimer = useRef<number | null>(null);
 
   useEffect(() => {
     loadSettings();
     loadProjects();
-    getCurrentWindow().setFullscreen(true).catch(() => {});
+    const win = getCurrentWindow();
+    if (PLATFORM === "windows") {
+      // Windows: real fullscreen turns the window borderless-fullscreen, which
+      // strips the resizable/maximize window styles — and with them Aero Snap
+      // (drag to an edge → maximize / half-tile) and the smooth native title-bar
+      // drag every other app has. Use a normal MAXIMIZED window instead: it still
+      // fills the monitor, but keeps the standard styles, so dragging the header
+      // restores-and-follows the cursor and snaps to edges like any other app.
+      // (The Windows fullscreen backend is a stub anyway — see the resize bridge
+      // and REVEAL_EDGE_PX notes below.)
+      win.setFullscreen(false).then(() => win.maximize()).catch(() => {});
+    } else {
+      getCurrentWindow().setFullscreen(true).catch(() => {});
+    }
   }, [loadSettings, loadProjects]);
 
   // WebKitGTK doesn't reliably fire DOM 'resize' / ResizeObserver for OS-level
@@ -97,6 +125,24 @@ export function AppShell() {
   useEffect(() => {
     if (settingsLoaded) setRightPinned(pinnedSetting);
   }, [settingsLoaded, pinnedSetting]);
+
+  // First-run "How to start": show once on a genuinely empty install (the
+  // `projects.length === 0` guard keeps upgrading users — who already have
+  // projects but no flag — from seeing it). Mark seen immediately (optimistic)
+  // so a hot-reload or transient re-render can't reopen it.
+  useEffect(() => {
+    if (settingsLoaded && projectsLoaded && !onboardingSeen && projectCount === 0) {
+      setShowHowToStart(true);
+      void updateSettings({ onboarding_seen: true });
+    }
+  }, [settingsLoaded, projectsLoaded, onboardingSeen, projectCount, updateSettings]);
+
+  // Let the Settings dialog / gear menu re-open the welcome on demand.
+  useEffect(() => {
+    const open = () => setShowHowToStart(true);
+    window.addEventListener("eldrun:open-how-to-start", open);
+    return () => window.removeEventListener("eldrun:open-how-to-start", open);
+  }, []);
 
   // Load boxes once projects are in memory so deriving each project's box_id
   // (from the authoritative member_ids) runs over the loaded project list.
@@ -262,13 +308,19 @@ export function AppShell() {
     }, delay);
   };
 
-  useKeyboard({ onTogglePanels: () => setPanelsHidden((v) => !v) });
+  useKeyboard({
+    onTogglePanels: () => {
+      useHintsStore.getState().markSeen("toggle-panels");
+      setPanelsHidden((v) => !v);
+    },
+  });
 
   const revealRight = panelTarget && !panelsHidden && (rightOpen || rightPinned);
 
   const handleBodyMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (!panelTarget || panelsHidden || rightOpen) return;
-    if (window.innerWidth - event.clientX <= 2) {
+    if (window.innerWidth - event.clientX <= REVEAL_EDGE_PX) {
+      useHintsStore.getState().markSeen("file-tree");
       reveal(rightCloseTimer, setRightOpen);
     }
   };
@@ -296,6 +348,8 @@ export function AppShell() {
       </div>
       <VpnPasswordPrompt />
       <QuickOpen />
+      <HintHost />
+      {showHowToStart && <HowToStart onClose={() => setShowHowToStart(false)} />}
     </div>
   );
 }

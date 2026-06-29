@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { resolveProjectDirectory, type ProjectEntry } from "../../types";
+import { resolveProjectDirectory, type GitHostingInfo, type ProjectEntry } from "../../types";
 import { useTimerStore } from "../../stores/timer";
 import { useActivityStore } from "../../stores/activity";
 import { useProjectsStore } from "../../stores/projects";
@@ -299,6 +299,125 @@ function PublishWindow({
   );
 }
 
+function GitHostingWindow({
+  project,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onClose: () => void;
+}) {
+  const getProjectGitHosting = useProjectsStore((s) => s.getProjectGitHosting);
+  const setProjectGitHosting = useProjectsStore((s) => s.setProjectGitHosting);
+  const [info, setInfo] = useState<GitHostingInfo | null>(null);
+  const [profileUrl, setProfileUrl] = useState("");
+  const [newToken, setNewToken] = useState("");
+  const [clearToken, setClearToken] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void getProjectGitHosting(project.id)
+      .then((i) => {
+        if (cancelled) return;
+        setInfo(i);
+        setProfileUrl(i.profile_url ?? "");
+      })
+      .catch((e) => !cancelled && setError(String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id, getProjectGitHosting]);
+
+  // A typed token always wins over a "remove" request, so clearing only applies
+  // when the user hasn't also entered a replacement.
+  const effectiveClear = clearToken && !newToken.trim();
+
+  const tokenStatus = (() => {
+    if (newToken.trim()) return "Will set a project token (overrides global).";
+    if (effectiveClear) return "Will remove the project token; reverts to the global one.";
+    if (info?.has_token) return "A project token is set (hidden). Leave blank to keep it.";
+    if (info?.has_global_token) return "Inherits the global token.";
+    return "No token set — pushes use your system git credentials.";
+  })();
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await setProjectGitHosting(project.id, {
+        profileUrl: profileUrl.trim() || null,
+        token: newToken.trim() || null,
+        clearToken: effectiveClear,
+      });
+      onClose();
+    } catch (err) {
+      setError(String(err));
+      setSaving(false);
+    }
+  };
+
+  const globalUrl = info?.global_profile_url ?? "";
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{project.name} — Git hosting</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="project-dialog-path">
+          Overrides the global git hosting for this project only. Leave fields blank
+          to inherit the global settings.
+        </div>
+
+        <label>
+          Profile URL
+          <input
+            type="text"
+            value={profileUrl}
+            placeholder={globalUrl ? `Inherits global: ${globalUrl}` : "https://github.com/username"}
+            onChange={(e) => setProfileUrl(e.target.value)}
+          />
+        </label>
+
+        <label>
+          {info?.has_token ? "Replace access token" : "Access token"}
+          <input
+            type="password"
+            value={newToken}
+            placeholder={info?.has_token ? "Enter a new token to replace…" : "ghp_… / glpat-…"}
+            onChange={(e) => {
+              setNewToken(e.target.value);
+              if (e.target.value) setClearToken(false);
+            }}
+          />
+        </label>
+        <div className="project-dialog-path">{tokenStatus}</div>
+        {info?.has_token && !newToken.trim() && (
+          <label className="settings-switch-row">
+            <span>Remove the project token (use global)</span>
+            <input
+              type="checkbox"
+              checked={clearToken}
+              onChange={(e) => setClearToken(e.target.checked)}
+            />
+          </label>
+        )}
+
+        {error && <div className="project-dialog-error">{error}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="button" onClick={() => void save()} disabled={saving || !info}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export function ProjectPill({ project, active, onClick, onClose, onReorder, onGroup, boxId, onLeaveBox }: Props) {
   const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
   const [timeToday, setTimeToday] = useState<number | null>(null);
@@ -308,6 +427,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const [editDescription, setEditDescription] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [showPublish, setShowPublish] = useState(false);
+  const [showGitHosting, setShowGitHosting] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   // True while an Alt-drag hovers this pill: the drop will box the two
   // projects together rather than reorder. Drives the distinct hover affordance.
@@ -455,6 +575,17 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           >
             Publish to GitHub…
           </button>
+          {typeof project.git_type === "string" && project.git_type.startsWith("remote") && (
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                setShowGitHosting(true);
+              }}
+              title="Override the global git hosting (profile URL + token) for this project only"
+            >
+              Git hosting…
+            </button>
+          )}
           {!project.remote && (
             <button
               onClick={() => {
@@ -519,6 +650,11 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           onPublish={(visibility) => publishProject(project.id, visibility)}
           onClose={() => setShowPublish(false)}
         />
+      )}
+
+      {/* Per-project git-hosting override window */}
+      {showGitHosting && (
+        <GitHostingWindow project={project} onClose={() => setShowGitHosting(false)} />
       )}
 
       <div

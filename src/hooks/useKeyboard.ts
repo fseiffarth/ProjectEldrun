@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { PLATFORM } from "../lib/dragPlatform";
 import {
   allGroups,
   findGroup,
@@ -68,11 +69,19 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     const win = getCurrentWindow();
 
     async function onKeyDown(e: KeyboardEvent) {
-      // F11 — OS fullscreen toggle (unchanged).
+      // F11 — OS fullscreen toggle. On Windows, real fullscreen strips the
+      // window styles that Aero Snap and native title-bar dragging rely on (see
+      // AppShell's startup), so toggle MAXIMIZE there instead — same "fill the
+      // screen" effect, but the window stays snappable/draggable like other apps.
       if (e.key === "F11") {
         e.preventDefault();
-        const isFs = await win.isFullscreen();
-        win.setFullscreen(!isFs);
+        if (PLATFORM === "windows") {
+          if (await win.isMaximized()) win.unmaximize();
+          else win.maximize();
+        } else {
+          const isFs = await win.isFullscreen();
+          win.setFullscreen(!isFs);
+        }
         return;
       }
 

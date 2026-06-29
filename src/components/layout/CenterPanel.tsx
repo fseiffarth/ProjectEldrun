@@ -17,10 +17,12 @@ import { TerminalView } from "../terminal/TerminalView";
 import { FileBrowser } from "../files/FileBrowser";
 import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
+import { ProjectBlobPane } from "../common/ProjectBlobPane";
 import { Subwindow } from "../tabs/Subwindow";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
 import {
+  BLOB_TAB_CMD,
   DEFAULT_MIN_SUBWINDOW_PX,
   EMPTY_GROUP_ID,
   FILES_TAB_CMD,
@@ -34,6 +36,7 @@ import {
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useDragStore } from "../../stores/drag";
+import { useWindowMoveStore } from "../../stores/windowMove";
 import { useDetachAnimStore } from "../../stores/detachAnim";
 import { useTabLandStore } from "../../stores/tabLand";
 import { commitDrop } from "../tabs/commitDrop";
@@ -115,6 +118,10 @@ export function CenterPanel() {
   // sized to the whole panel — panes stay MOUNTED (we reposition, never unmount,
   // so PTYs survive). The frame layer (tab bars/splits) keeps rendering beneath.
   const fullscreenGroupId = useTabsStore((s) => s.fullscreenGroupId);
+  // True while the whole window is being moved by a native title-bar drag
+  // (Windows). Drives `.center-panel.moving`, which hides the heavy pane layer so
+  // WebView2 can keep the frame aligned with the cursor during the OS move loop.
+  const windowMoving = useWindowMoveStore((s) => s.moving);
 
   const { projects, activeId } = useProjectsStore();
 
@@ -160,7 +167,23 @@ export function CenterPanel() {
     setScope(nextScope);
 
     if (!activeId || !localFile) {
-      // Root context: never auto-spawn; leave empty until the user opens a tab.
+      // Root context: the 3D project-blob is the default tab. Seed it the first
+      // time the root scope is entered this session, but only when projects
+      // exist (an empty cloud has nothing to show) and the scope hasn't been
+      // initialized yet — so an intentionally-closed/emptied root stays empty
+      // and we never clobber existing root tabs.
+      if (
+        !activeId &&
+        useProjectsStore.getState().projects.length > 0 &&
+        !("root" in useTabsStore.getState().tabsByScope)
+      ) {
+        useTabsStore.getState().addTab({
+          label: "Projects",
+          cmd: BLOB_TAB_CMD,
+          cwd: "",
+          kind: "projects3d",
+        });
+      }
       return;
     }
 
@@ -741,7 +764,7 @@ export function CenterPanel() {
   return (
     <div
       ref={panelRef}
-      className={`center-panel${dragging ? " dragging" : ""}${fsActive ? " fullscreen" : ""}`}
+      className={`center-panel${dragging ? " dragging" : ""}${fsActive ? " fullscreen" : ""}${windowMoving ? " moving" : ""}`}
     >
       {/* Subwindow frame layer: the recursive layout tree for the current scope.
           Each group body is an empty measured slot; panes are positioned over
@@ -769,7 +792,13 @@ export function CenterPanel() {
             className="center-placeholder"
             style={{ height: "100%" }}
           >
-            No tabs open — use + to create one
+            <div className="center-placeholder-card">
+              <div className="center-placeholder-title">No tabs open</div>
+              <div className="center-placeholder-hint">
+                Use <span className="center-placeholder-key">+</span> on the tab bar above to open a
+                shell or an AI agent.
+              </div>
+            </div>
           </div>
         </Subwindow>
       )}
@@ -816,7 +845,9 @@ export function CenterPanel() {
               data-tab-key={tab.key}
               style={style}
             >
-              {tab.kind === "files" ? (
+              {tab.kind === "projects3d" ? (
+                <ProjectBlobPane />
+              ) : tab.kind === "files" ? (
                 <FileBrowser
                   projectDir={tab.cwd}
                   projectId={scopeKey === "root" ? null : scopeKey}

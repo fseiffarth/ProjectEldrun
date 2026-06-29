@@ -14,6 +14,7 @@ import {
 } from "../../lib/shortcuts";
 import { AgentsPanel, FileTypeSettings, GlobalAppsSettings, OllamaPanel } from "./SettingsSubPanels";
 import { IS_WINDOWS } from "../../lib/paths";
+import { useHintsStore } from "../../stores/hints";
 
 // The panel-toggle key reads as the Windows key on Windows (the webview reports
 // it as "Meta"), and "Super" on Linux/KDE — keep the help text honest per OS.
@@ -295,6 +296,61 @@ export function SettingsDialog({
                 onChange={(e) => void updateSettings({ debug: e.target.checked })}
               />
             </label>
+
+            <div className="settings-section-title">Resource monitor</div>
+            <label className="settings-switch-row">
+              <span>Show CPU usage</span>
+              <input
+                type="checkbox"
+                checked={settings?.show_cpu_usage ?? true}
+                onChange={(e) => void updateSettings({ show_cpu_usage: e.target.checked })}
+              />
+            </label>
+            <label className="settings-switch-row">
+              <span>Show RAM usage</span>
+              <input
+                type="checkbox"
+                checked={settings?.show_ram_usage ?? true}
+                onChange={(e) => void updateSettings({ show_ram_usage: e.target.checked })}
+              />
+            </label>
+            <label className="settings-switch-row">
+              <span>Show GPU usage</span>
+              <input
+                type="checkbox"
+                checked={settings?.show_gpu_usage ?? true}
+                onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
+              />
+            </label>
+            <p className="settings-help">
+              CPU and RAM cover Eldrun's own process tree; GPU shows VRAM in use by
+              local models loaded in Ollama. The pill appears in the header next to
+              the timer.
+            </p>
+
+            <div className="settings-section-title">Hints & onboarding</div>
+            <label className="settings-switch-row">
+              <span>Show contextual hints</span>
+              <input
+                type="checkbox"
+                checked={settings?.hints_enabled ?? true}
+                onChange={(e) => void updateSettings({ hints_enabled: e.target.checked })}
+              />
+            </label>
+            <div className="settings-link-row">
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new Event("eldrun:open-how-to-start"));
+                }}
+              >
+                How to start...
+              </button>
+              <button type="button" onClick={() => useHintsStore.getState().reset()}>
+                Reset hints
+              </button>
+            </div>
 
             <div className="settings-section-title">Layout</div>
             <p className="settings-help">

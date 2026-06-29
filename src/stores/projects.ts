@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import { resolveProjectDirectory, type ProjectEntry } from "../types";
+import { resolveProjectDirectory, type GitHostingInfo, type ProjectEntry } from "../types";
 import {
   cmdToKind,
   isRestorableTab,
@@ -75,6 +75,11 @@ interface ProjectsStore {
   renameProject: (id: string, name: string) => Promise<void>;
   setProjectSandbox: (id: string, enabled: boolean) => Promise<void>;
   publishProject: (id: string, visibility: "public" | "private") => Promise<string>;
+  getProjectGitHosting: (id: string) => Promise<GitHostingInfo>;
+  setProjectGitHosting: (
+    id: string,
+    args: { profileUrl?: string | null; token?: string | null; clearToken?: boolean },
+  ) => Promise<GitHostingInfo>;
 }
 
 export const useProjectsStore = create<ProjectsStore>((set, get) => ({
@@ -363,6 +368,30 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       ),
     }));
     return output;
+  },
+
+  getProjectGitHosting: async (id) => {
+    return invoke<GitHostingInfo>("get_project_git_hosting", { projectId: id });
+  },
+
+  setProjectGitHosting: async (id, args) => {
+    // Backend writes the profile URL to project.json + projects.json and the
+    // token to the OS keyring, then returns the resulting (token-free) info.
+    // Mirror the profile URL into local pill state so it's visible immediately.
+    const info = await invoke<GitHostingInfo>("set_project_git_hosting", {
+      projectId: id,
+      profileUrl: args.profileUrl ?? null,
+      token: args.token ?? null,
+      clearToken: args.clearToken ?? false,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id
+          ? { ...project, git_profile_url: info.profile_url ?? undefined }
+          : project,
+      ),
+    }));
+    return info;
   },
 }));
 

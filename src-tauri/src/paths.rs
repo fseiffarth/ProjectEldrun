@@ -255,7 +255,10 @@ mod tests {
     #[test]
     fn resolve_in_dirs_expands_windows_extensions_in_order() {
         let dirs = vec![PathBuf::from(r"C:\Users\a\.local\bin")];
-        let present = PathBuf::from(r"C:\Users\a\.local\bin\vibe.exe");
+        // Build the expected path via `join` (as `resolve_in_dirs` does) so the
+        // separator is correct on every OS: a hardcoded backslash literal only
+        // equals `dir.join(..)` on Windows, so it failed on the Linux CI runner.
+        let present = dirs[0].join("vibe.exe");
         let found = resolve_in_dirs(&dirs, "vibe", &["exe", "cmd", "bat"], &|p| p == present);
         assert_eq!(found, Some(present));
     }
