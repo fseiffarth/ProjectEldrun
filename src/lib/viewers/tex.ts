@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { internalViewerFor, type FileEntry, type InternalViewer } from "./fileUtils";
+import { basename, dirname, isAbsolute, normalizePath, resolvePath } from "../paths";
 
 /** Which TeX tools are on PATH; mirrors the backend `TexCapability`. */
 export type TexCapability = {
@@ -84,10 +85,10 @@ export function parseTexErrors(log: string): TexError[] {
  *  (the TeX root's folder) into an absolute path the editor can open. Absolute
  *  paths and `./`-relative paths are both handled. */
 export function resolveTexErrorPath(rootDir: string, file: string): string {
-  if (file.startsWith("/")) return file;
-  const rel = file.replace(/^\.\//, "");
-  const base = rootDir.replace(/\/+$/, "");
-  return base ? `${base}/${rel}` : rel;
+  // Absolute (POSIX `/x`, Windows `C:\x` / UNC) passes through unchanged.
+  if (isAbsolute(file)) return file;
+  const rel = file.replace(/^\.[/\\]+/, "");
+  return rootDir ? resolvePath(rootDir, rel) : rel;
 }
 
 // --- SyncTeX forward/reverse search -----------------------------------------
@@ -207,9 +208,8 @@ export function pickSyncRect(records: SyncRect[], frac: number): SyncRect | null
  *  (deduped). Pure / unit-tested — {@link synctexViewBest} feeds each to
  *  `synctex view -i` until one matches. */
 export function forwardInputCandidates(input: string, rootDir: string): string[] {
-  const dir = rootDir.replace(/\/+$/, "") + "/";
-  const rel = input.startsWith(dir) ? input.slice(dir.length) : null;
-  const base = input.slice(input.lastIndexOf("/") + 1);
+  const rel = forwardRelative(rootDir, input);
+  const base = basename(input);
   // SyncTeX may have stored the path with a `./` prefix (a common engine
   // spelling); try those forms too.
   const out: string[] = [input];
@@ -218,6 +218,18 @@ export function forwardInputCandidates(input: string, rootDir: string): string[]
     out.push(r, `./${r}`);
   }
   return Array.from(new Set(out));
+}
+
+/** `file` expressed relative to directory `dir`, using forward slashes (the
+ *  spelling SyncTeX records on every platform), or null when `file` is not under
+ *  `dir`. Accepts either separator on either argument so it is correct for native
+ *  Windows paths (`C:\proj` + `C:\proj\ch\x.tex` → `ch/x.tex`) as well as POSIX. */
+function forwardRelative(dir: string, file: string): string | null {
+  const trimmed = dir.replace(/[/\\]+$/, "");
+  if (!trimmed) return null;
+  const nDir = trimmed.replace(/\\/g, "/");
+  const nFile = file.replace(/\\/g, "/");
+  return nFile.startsWith(nDir + "/") ? nFile.slice(nDir.length + 1) : null;
 }
 
 /** Resolve the file that should actually be compiled for `path` (a child file
@@ -761,15 +773,15 @@ export function resolveTexRef(
   const token = target.token.trim();
   if (!token) return null;
 
-  const base = token.slice(token.lastIndexOf("/") + 1);
+  const base = basename(token);
   const dot = base.lastIndexOf(".");
   const hasExt = dot > 0 && dot < base.length - 1;
   const rel = hasExt ? token : def == null ? null : token + def;
   if (rel == null) return null;
 
-  const dir = currentPath.slice(0, currentPath.lastIndexOf("/"));
-  const abs = rel.startsWith("/") ? normalizePath(rel) : normalizePath(`${dir}/${rel}`);
-  const name = abs.slice(abs.lastIndexOf("/") + 1);
+  const dir = dirname(currentPath);
+  const abs = resolvePath(dir, rel);
+  const name = basename(abs);
   const lastDot = name.lastIndexOf(".");
   const extension = lastDot > 0 ? name.slice(lastDot).toLowerCase() : null;
   const entry: FileEntry = {
@@ -812,15 +824,16 @@ export async function resolveTexRefAsync(
 
   const token = target.token.trim();
   if (!token) return null;
+  // TeX reference tokens are written with forward slashes regardless of OS.
   const slash = token.lastIndexOf("/");
   const sub = slash >= 0 ? token.slice(0, slash) : "";
   const stem = (slash >= 0 ? token.slice(slash + 1) : token).toLowerCase();
   if (!stem) return null;
 
-  const dir = currentPath.slice(0, currentPath.lastIndexOf("/"));
-  const absDir = token.startsWith("/")
+  const dir = dirname(currentPath);
+  const absDir = isAbsolute(token)
     ? normalizePath(sub || "/")
-    : normalizePath(`${dir}/${sub}`);
+    : resolvePath(dir, sub);
 
   let entries: FileEntry[];
   try {
@@ -1033,11 +1046,11 @@ function texCommandTokens(source: string, commands: string[]): string[] {
 /** Resolve a `\input`/`\bibliography` token to an absolute path against the
  *  referencing file's dir, appending `defExt` when it has none. */
 function resolveSibling(fromFile: string, token: string, defExt: string): string {
-  const base = token.slice(token.lastIndexOf("/") + 1);
+  const base = basename(token);
   const hasExt = base.includes(".");
   const rel = hasExt ? token : token + defExt;
-  const dir = fromFile.slice(0, fromFile.lastIndexOf("/")) || "/";
-  return rel.startsWith("/") ? normalizePath(rel) : normalizePath(`${dir}/${rel}`);
+  const dir = dirname(fromFile) || "/";
+  return resolvePath(dir, rel);
 }
 
 const TEX_INPUT_CMDS = ["input", "include", "subfile", "subfileinclude"];
@@ -1101,20 +1114,4 @@ export async function gatherTexCompletions(currentPath: string): Promise<TexComp
   }
 
   return { labels: Array.from(new Set(labels)), cites };
-}
-
-/** Collapse `.`/`..` segments in a `/`-separated path, preserving a leading `/`. */
-function normalizePath(p: string): string {
-  const isAbs = p.startsWith("/");
-  const out: string[] = [];
-  for (const seg of p.split("/")) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === "..") {
-      if (out.length && out[out.length - 1] !== "..") out.pop();
-      else if (!isAbs) out.push("..");
-    } else {
-      out.push(seg);
-    }
-  }
-  return (isAbs ? "/" : "") + out.join("/");
 }

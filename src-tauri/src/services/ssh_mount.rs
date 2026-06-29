@@ -11,8 +11,17 @@
 //! for an option (a leading `-`) or that contain control characters are
 //! rejected. The validation/argv helpers here are the single source of truth;
 //! `commands::ssh` re-uses `validate_arg`/`ssh_base_args` from this module.
+//!
+//! **Windows:** the FUSE/`sshfs` stack is Unix-only, but the same on-disk
+//! `sshfs` CLI ships in the **SSHFS-Win** distribution (which builds on
+//! **WinFsp**). On Windows we resolve that `sshfs.exe` (PATH or the standard
+//! `Program Files\SSHFS-Win\bin` location) and drive it, mounting the remote
+//! directory at `%APPDATA%\eldrun\mounts\<id>` via WinFsp's directory-mount mode.
+//! `fusermount`/`umount`/`/proc/mounts` have no Windows analogue, so those bits
+//! are `cfg`-gated to Unix and Windows uses its own mount-state/teardown paths.
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 
 use crate::schema::project::RemoteSpec;
@@ -94,9 +103,82 @@ pub fn mounts_root() -> PathBuf {
     storage::state_dir().join("mounts")
 }
 
-/// True if `sshfs` is available on `PATH`.
+/// True if an `sshfs` binary can be located: on `PATH`, in a per-user install
+/// dir, or (Windows) under the standard SSHFS-Win `Program Files` location.
 pub fn sshfs_available() -> bool {
-    which_exists("sshfs")
+    resolve_sshfs().is_some()
+}
+
+/// Locate the `sshfs` executable, returning the bare name when it is on `PATH`
+/// (so the child inherits the resolved PATH entry) or an absolute path when it
+/// is only reachable off-PATH. On Windows the SSHFS-Win distribution installs
+/// `sshfs.exe` under `Program Files\SSHFS-Win\bin`, which a GUI app's inherited
+/// PATH usually omits — so that location is probed explicitly.
+fn resolve_sshfs() -> Option<PathBuf> {
+    if crate::paths::binary_on_path("sshfs") {
+        return Some(PathBuf::from("sshfs"));
+    }
+    // Off-PATH resolution only on Windows, so Linux behaviour (PATH-only,
+    // matching the previous `which sshfs` probe) is unchanged.
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(p) = crate::paths::resolve_offpath_binary("sshfs") {
+            return Some(p);
+        }
+        for cand in sshfs_win_candidates() {
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// Standard install locations for the SSHFS-Win `sshfs.exe`.
+#[cfg(target_os = "windows")]
+fn sshfs_win_candidates() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    for key in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+        if let Some(pf) = std::env::var_os(key) {
+            v.push(
+                PathBuf::from(pf)
+                    .join("SSHFS-Win")
+                    .join("bin")
+                    .join("sshfs.exe"),
+            );
+        }
+    }
+    v
+}
+
+/// True if WinFsp (the kernel filesystem driver SSHFS-Win mounts through) is
+/// installed. Probed by its standard `Program Files` install directory; used to
+/// give a precise "install WinFsp" error rather than a cryptic mount failure.
+#[cfg(target_os = "windows")]
+fn winfsp_installed() -> bool {
+    for key in ["ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"] {
+        if let Some(pf) = std::env::var_os(key) {
+            if PathBuf::from(pf).join("WinFsp").is_dir() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Actionable "sshfs missing" message, tailored per platform.
+fn sshfs_missing_message() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        "sshfs not found — install SSHFS-Win and WinFsp \
+         (https://github.com/winfsp/sshfs-win/releases and https://winfsp.dev/) \
+         to mount remote projects on Windows"
+            .to_string()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "sshfs not found — install sshfs/FUSE to use remote projects".to_string()
+    }
 }
 
 /// True if `sshpass` is available on `PATH`. Required for password auth, which
@@ -112,6 +194,7 @@ fn which_exists(bin: &str) -> bool {
 
 /// True if `path` is currently a mountpoint. Reads `/proc/mounts` (Linux) and
 /// falls back to `mountpoint -q` where that file is unavailable.
+#[cfg(unix)]
 pub fn is_mounted(path: &Path) -> bool {
     let target = path.to_string_lossy();
     if let Ok(contents) = std::fs::read_to_string("/proc/mounts") {
@@ -133,6 +216,17 @@ pub fn is_mounted(path: &Path) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// True if `path` looks like a live WinFsp/SSHFS-Win mount. Windows has no
+/// `/proc/mounts`; WinFsp's directory-mount mode *creates* the mountpoint
+/// directory on mount and *removes* it on unmount, so the directory existing is
+/// the available signal. NOTE (runtime-verify): a directory left behind by a
+/// hard crash would read as "mounted" here; `mount()` clears a stale empty dir
+/// before remounting to mitigate that.
+#[cfg(windows)]
+pub fn is_mounted(path: &Path) -> bool {
+    path.exists()
 }
 
 /// The `sshfs` options we always pass (after `-o`): non-interactive auth plus
@@ -165,25 +259,59 @@ pub fn sshfs_args(remote: &RemoteSpec, mountpoint: &Path) -> Result<Vec<String>,
 }
 
 /// Ensure `remote` is mounted at its project mountpoint, returning the
-/// mountpoint. No-op if already mounted. Creates the mountpoint directory.
+/// mountpoint. No-op if already mounted.
+///
+/// Mountpoint-directory handling differs by platform: FUSE expects the
+/// mountpoint to *exist* (we `create_dir_all` it), whereas WinFsp's
+/// directory-mount mode requires it to be *absent* and creates it itself — so on
+/// Windows we only ensure the parent and clear a stale empty leftover.
 pub fn mount(remote: &RemoteSpec, project_id: &str) -> Result<PathBuf, String> {
     let mountpoint = mountpoint_for(project_id);
 
-    std::fs::create_dir_all(&mountpoint)
-        .map_err(|e| format!("failed to create mountpoint {}: {e}", mountpoint.display()))?;
-
-    if is_mounted(&mountpoint) {
-        return Ok(mountpoint);
+    #[cfg(not(windows))]
+    {
+        std::fs::create_dir_all(&mountpoint)
+            .map_err(|e| format!("failed to create mountpoint {}: {e}", mountpoint.display()))?;
     }
 
-    if !sshfs_available() {
-        return Err(
-            "sshfs not found — install sshfs/FUSE to use remote projects".to_string(),
-        );
+    if is_mounted(&mountpoint) {
+        #[cfg(not(windows))]
+        {
+            return Ok(mountpoint);
+        }
+        // On Windows an existing dir may be a stale post-crash leftover rather
+        // than a live mount. If it is empty, `remove_dir` succeeds and we fall
+        // through to (re)mount; a non-empty dir (a live mount) fails to remove,
+        // so reuse it.
+        #[cfg(windows)]
+        if std::fs::remove_dir(&mountpoint).is_err() {
+            return Ok(mountpoint);
+        }
+    }
+
+    let sshfs = resolve_sshfs().ok_or_else(sshfs_missing_message)?;
+
+    #[cfg(windows)]
+    {
+        if !winfsp_installed() {
+            return Err("WinFsp not found — install WinFsp (https://winfsp.dev/), the \
+                        filesystem driver SSHFS-Win mounts through, to use remote projects \
+                        on Windows"
+                .to_string());
+        }
+        // Ensure the parent (`…\eldrun\mounts`) exists; WinFsp creates the
+        // mountpoint leaf itself.
+        if let Some(parent) = mountpoint.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create mounts dir {}: {e}", parent.display()))?;
+        }
     }
 
     let args = sshfs_args(remote, &mountpoint)?;
-    let output = Command::new("sshfs")
+    // `command_no_window` is a plain `Command::new` on Unix (identical to the
+    // prior behaviour) and adds CREATE_NO_WINDOW on Windows so driving sshfs-win
+    // never flashes a console window.
+    let output = crate::paths::command_no_window(&sshfs.to_string_lossy())
         .args(&args)
         .output()
         .map_err(|e| format!("failed to run sshfs: {e}"))?;
@@ -203,6 +331,7 @@ pub fn mount(remote: &RemoteSpec, project_id: &str) -> Result<PathBuf, String> {
 
 /// Unmount `path` if it is mounted. Tries `fusermount -u`, then falls back to
 /// `umount`. A "not mounted" path is treated as success (idempotent).
+#[cfg(unix)]
 pub fn unmount(path: &Path) -> Result<(), String> {
     if !is_mounted(path) {
         return Ok(());
@@ -243,6 +372,39 @@ pub fn unmount(path: &Path) -> Result<(), String> {
             Err(format!("failed to run umount on {}: {e}", path.display()))
         }
     }
+}
+
+/// Unmount a WinFsp/SSHFS-Win directory mount. WinFsp directory mounts have no
+/// `fusermount`/`umount` analogue: the mount is served by a background
+/// `sshfs.exe` that SSHFS-Win daemonises after the mount is established, so we do
+/// not hold its PID. Teardown therefore terminates `sshfs.exe` via `taskkill`
+/// and removes the (now stale) mountpoint directory.
+///
+/// NOTE (runtime-verify): this is coarse — `taskkill /IM sshfs.exe` tears down
+/// *all* Eldrun sshfs-win mounts, not just `path`. Today this is acceptable
+/// because `unmount` is only invoked at app exit (`unmount_all`), where tearing
+/// every mount down is exactly what we want; there is no live per-project
+/// unmount path (see the project-removal NOTE below). A precise per-mount
+/// unmount would need sshfs-win run in the foreground (`-f`) with its child
+/// tracked, which needs runtime testing to wire the ready handshake.
+#[cfg(windows)]
+pub fn unmount(path: &Path) -> Result<(), String> {
+    if !is_mounted(path) {
+        return Ok(());
+    }
+    let _ = crate::paths::command_no_window("taskkill")
+        .args(["/F", "/IM", "sshfs.exe"])
+        .output();
+    // Best-effort: clear the mountpoint dir WinFsp left behind once its server
+    // process is gone.
+    let _ = std::fs::remove_dir(path);
+    if is_mounted(path) {
+        return Err(format!(
+            "failed to unmount {} — terminate the sshfs.exe serving it manually",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 // NOTE (project-removal unmount): there is no project-delete command today, so

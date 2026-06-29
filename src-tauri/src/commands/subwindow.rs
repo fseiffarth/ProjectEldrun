@@ -15,7 +15,10 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tauri::{AppHandle, Manager, PhysicalSize, State, WebviewWindowBuilder, WebviewUrl};
+use tauri::{
+    AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, State,
+    WebviewWindowBuilder, WebviewUrl,
+};
 
 use crate::commands::apps::{TrackedWindow, WindowRegistryState, ORIGIN_DETACHED_SUBWINDOW};
 use crate::commands::workspace::WorkspaceStateArc;
@@ -36,6 +39,35 @@ pub fn detached_title(scope: &str, group_id: &str) -> String {
 /// The query string the DetachedApp renderer reads to mount a single group.
 pub fn detached_query(scope: &str, group_id: &str) -> String {
     format!("index.html?detached={scope}:{group_id}")
+}
+
+/// PHYSICAL-pixel position to apply to a freshly-built detached window from the
+/// optional restore-geometry args, or `None` to let the WM place it.
+///
+/// The frontend's bounds are PHYSICAL desktop px (the canonical cross-window
+/// space — `src/lib/coords.ts`), so they MUST be applied via the `Physical`
+/// dpi variant. The builder's `.position()` takes LOGICAL px; feeding physical
+/// numbers to it multiplied them by the display scale, placing the window
+/// off-screen on every scale != 1.0 display — invisible on a scaled Windows
+/// display, while harmless on the scale-1.0 Linux dev box (#42).
+pub fn detached_position(x: Option<f64>, y: Option<f64>) -> Option<Position> {
+    match (x, y) {
+        (Some(x), Some(y)) => Some(Position::Physical(PhysicalPosition::new(x as i32, y as i32))),
+        _ => None,
+    }
+}
+
+/// PHYSICAL-pixel size to apply to a freshly-built detached window, or `None`
+/// to keep the default size. Same physical-vs-logical rationale as
+/// [`detached_position`] (the builder's `.inner_size()` is LOGICAL). Non-positive
+/// dimensions are rejected so a stale/zero payload can never yield a 0×0 window.
+pub fn detached_size(width: Option<f64>, height: Option<f64>) -> Option<Size> {
+    match (width, height) {
+        (Some(w), Some(h)) if w > 0.0 && h > 0.0 => {
+            Some(Size::Physical(PhysicalSize::new(w as u32, h as u32)))
+        }
+        _ => None,
+    }
 }
 
 /// Pop a tab group out into its own borderless OS window bound to `project_id`.
@@ -85,20 +117,27 @@ pub fn detach_subwindow(
     {
         builder = builder.visible(false);
     }
-    match (width, height) {
-        (Some(w), Some(h)) if w > 0.0 && h > 0.0 => {
-            builder = builder.inner_size(w, h);
-        }
-        _ => {
-            builder = builder.inner_size(900.0, 640.0);
-        }
-    }
-    if let (Some(x), Some(y)) = (x, y) {
-        builder = builder.position(x, y);
-    }
-    builder
+    // Default LOGICAL size only. Any caller-supplied geometry is PHYSICAL px
+    // (frontend canonical space, `src/lib/coords.ts`) and is applied AFTER build
+    // via the physical setters below — routing it through the builder's LOGICAL
+    // `.position()`/`.inner_size()` placed/sized the window wrong on every
+    // scale != 1.0 display, which is why detach worked on the scale-1.0 Linux dev
+    // box but spawned an invisible, off-screen window on scaled Windows (#42).
+    builder = builder.inner_size(900.0, 640.0);
+    let win = builder
         .build()
         .map_err(|e| format!("build detached window: {e}"))?;
+
+    // Apply restore geometry in PHYSICAL px. Missing/zero bounds keep the logical
+    // default size and let the WM place the window. Size before position so a
+    // resize can't shift the placement. Best-effort: a failed setter still leaves
+    // a usable (default-placed) window rather than aborting the detach.
+    if let Some(size) = detached_size(width, height) {
+        let _ = win.set_size(size);
+    }
+    if let Some(pos) = detached_position(x, y) {
+        let _ = win.set_position(pos);
+    }
 
     // Resolve the native window id so the switch path can park this popout. On
     // X11 we match the unique title (bypasses the protected filter); on Windows
@@ -150,19 +189,40 @@ pub fn detach_subwindow(
     let nudge_app = app.clone();
     let nudge_label = label.clone();
     std::thread::spawn(move || {
+        // Marshal every window op onto the main (UI) thread. Tauri window methods
+        // are `Send` so they compile from a worker thread, but on Windows calling
+        // show()/set_focus()/set_size() off the thread that owns the HWND is
+        // unreliable — it can no-op the repaint or deadlock against the event loop
+        // — so dispatch through `run_on_main_thread`.
+        let kick = |app: AppHandle, label: String, reveal: bool| {
+            let app_main = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(w) = app_main.get_webview_window(&label) {
+                    #[cfg(target_os = "windows")]
+                    if reveal {
+                        // Built hidden on Windows; toggling visibility forces
+                        // WebView2's first composite (a fresh runtime-created
+                        // window otherwise shows a blank white surface until it is
+                        // shown/focused).
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                    if let Ok(sz) = w.inner_size() {
+                        // A real ±1px size change forces the compositor to allocate
+                        // and paint the surface (WebKitGTK's second webview is an
+                        // unpainted BLACK GL surface until a genuine OS resize).
+                        let delta: i32 = if reveal { 1 } else { -1 };
+                        let next = (sz.width as i32 + delta).max(1) as u32;
+                        let _ = w.set_size(PhysicalSize::new(next, sz.height));
+                    }
+                }
+            });
+        };
         std::thread::sleep(std::time::Duration::from_millis(250));
-        if let Some(w) = nudge_app.get_webview_window(&nudge_label) {
-            #[cfg(target_os = "windows")]
-            {
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
-            if let Ok(sz) = w.inner_size() {
-                let _ = w.set_size(PhysicalSize::new(sz.width + 1, sz.height));
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                let _ = w.set_size(sz);
-            }
-        }
+        kick(nudge_app.clone(), nudge_label.clone(), true);
+        // A short gap so the grow then restore aren't coalesced into a no-op.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        kick(nudge_app, nudge_label, false);
     });
 
     Ok(label)
@@ -269,5 +329,43 @@ mod tests {
     fn query_carries_the_detached_param() {
         assert_eq!(detached_query("p1", "g-3"), "index.html?detached=p1:g-3");
         assert_eq!(detached_query("root", "g-1"), "index.html?detached=root:g-1");
+    }
+
+    #[test]
+    fn restore_geometry_is_applied_as_physical_pixels() {
+        // The frontend ships PHYSICAL desktop px (`src/lib/coords.ts`); a detached
+        // window MUST apply them via the `Physical` dpi variant, NOT the builder's
+        // LOGICAL setters — otherwise it lands off-screen on any scale != 1.0
+        // display (the #42 Windows regression). Pin both the variant and value so a
+        // revert to logical (or to LogicalPosition/LogicalSize) fails the build.
+        match detached_position(Some(1500.0), Some(820.0)) {
+            Some(Position::Physical(p)) => {
+                assert_eq!(p.x, 1500);
+                assert_eq!(p.y, 820);
+            }
+            other => panic!("expected a physical position, got {other:?}"),
+        }
+        match detached_size(Some(900.0), Some(640.0)) {
+            Some(Size::Physical(s)) => {
+                assert_eq!(s.width, 900);
+                assert_eq!(s.height, 640);
+            }
+            other => panic!("expected a physical size, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_or_invalid_geometry_keeps_the_default() {
+        // A partial position is ignored (WM places the window).
+        assert!(detached_position(Some(10.0), None).is_none());
+        assert!(detached_position(None, Some(10.0)).is_none());
+        assert!(detached_position(None, None).is_none());
+        // Non-positive or partial size keeps the logical default — never a 0×0 or
+        // negative window from a stale/garbage payload.
+        assert!(detached_size(Some(0.0), Some(640.0)).is_none());
+        assert!(detached_size(Some(900.0), Some(0.0)).is_none());
+        assert!(detached_size(Some(900.0), Some(-1.0)).is_none());
+        assert!(detached_size(None, Some(640.0)).is_none());
+        assert!(detached_size(Some(900.0), None).is_none());
     }
 }

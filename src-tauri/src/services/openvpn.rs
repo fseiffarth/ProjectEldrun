@@ -16,40 +16,44 @@
 //! (no leading `-`, no control characters) and passed to the child as a separate
 //! argv item.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::collections::HashMap;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use std::process::{Child, Stdio};
 #[cfg(target_os = "linux")]
-use std::process::{Child, Command, Stdio};
-#[cfg(target_os = "linux")]
+use std::process::Command;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::sync::{Mutex, OnceLock};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::time::{Duration, Instant};
 
 use crate::services::ssh_mount::validate_arg;
 use crate::storage;
 
 /// OpenVPN prints this once the tunnel is fully up.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const READY_MARKER: &str = "Initialization Sequence Completed";
 /// Give the tunnel this long to come up before we give up and kill it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// A running tunnel: the `pkexec openvpn` child plus the pidfile OpenVPN wrote
-/// (so we can `pkexec kill` the root process on teardown).
-#[cfg(target_os = "linux")]
+/// A running tunnel: the OpenVPN child plus the pidfile OpenVPN wrote. On Linux
+/// the child is `pkexec openvpn` and the pidfile lets us `pkexec kill` the root
+/// process; on Windows the child *is* `openvpn.exe`, torn down via its handle /
+/// `taskkill` (the pidfile is still written but unused for teardown).
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 struct VpnProc {
     child: Child,
     pidfile: PathBuf,
 }
 
 /// Process-global registry of live tunnels, keyed by config path.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn registry() -> &'static Mutex<HashMap<String, VpnProc>> {
     static REG: OnceLock<Mutex<HashMap<String, VpnProc>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
@@ -101,12 +105,13 @@ pub fn openvpn_available() -> bool {
     crate::paths::binary_on_path("openvpn") && crate::paths::binary_on_path("pkexec")
 }
 
-/// True if the `openvpn` binary is present. Windows has no `pkexec`/polkit, so
-/// only the binary itself is probed; managing the tunnel is still out of scope
-/// (see [`connect`]).
+/// True if `openvpn.exe` can be located (PATH, a per-user dir, or the standard
+/// `Program Files\OpenVPN\bin` location). Windows has no `pkexec`/polkit, so
+/// only the OpenVPN binary itself is probed (see [`connect`] for how elevation
+/// is handled).
 #[cfg(target_os = "windows")]
 pub fn openvpn_available() -> bool {
-    crate::paths::binary_on_path("openvpn")
+    resolve_openvpn().is_some()
 }
 
 /// Build the `openvpn` argv (without the leading `pkexec`/`openvpn`) for a
@@ -161,7 +166,10 @@ fn safe_stem(config: &str) -> String {
 }
 
 /// Write `password` to an owner-only (0600) askpass file and return its path.
-#[cfg(target_os = "linux")]
+/// On Windows the 0600 mode is skipped (no `mode()`); the file lives under the
+/// per-user `%APPDATA%\eldrun\openvpn` dir, which is already user-scoped, and is
+/// deleted as soon as OpenVPN has read it.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn write_askpass(stem: &str, password: &str) -> Result<PathBuf, String> {
     let dir = runtime_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create openvpn dir: {e}"))?;
@@ -178,8 +186,9 @@ fn write_askpass(stem: &str, password: &str) -> Result<PathBuf, String> {
 }
 
 /// True if a tunnel for `config` is currently up (registered and its process is
-/// still alive).
-#[cfg(target_os = "linux")]
+/// still alive). Shared by Linux and Windows since both track the spawned child
+/// in [`registry`].
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn is_connected(config: &str) -> bool {
     let mut reg = registry().lock().unwrap();
     match reg.get_mut(config) {
@@ -259,8 +268,8 @@ pub fn connect(config: &str, password: &str) -> Result<(), String> {
 }
 
 /// Read the child's stdout until the ready marker appears (Ok), the stream ends
-/// (Err with the tail), or the timeout elapses (Err).
-#[cfg(target_os = "linux")]
+/// (Err with the tail), or the timeout elapses (Err). Shared by Linux/Windows.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn wait_for_ready(child: &mut Child) -> Result<(), String> {
     let stdout = child
         .stdout
@@ -328,8 +337,9 @@ fn kill_pidfile(pidfile: &Path) {
 }
 
 /// Tear down every live tunnel. Used at app exit; errors are swallowed so
-/// shutdown never blocks.
-#[cfg(target_os = "linux")]
+/// shutdown never blocks. Shared by Linux/Windows (each dispatches to its own
+/// platform [`disconnect`]).
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn disconnect_all() {
     let keys: Vec<String> = {
         let reg = registry().lock().unwrap();
@@ -340,45 +350,133 @@ pub fn disconnect_all() {
     }
 }
 
-// --- Windows: graceful, honest degradation (TODO 30f) ---------------------
+// --- Windows: best-effort tunnel management --------------------------------
 //
-// Windows has no `pkexec`/polkit and no clean non-interactive privileged-spawn
-// analogue, and a full UAC/OpenVPN-service integration is out of scope. So
-// Eldrun does not manage VPN tunnels here: availability is reported honestly
-// (the binary may be installed), but bringing the tunnel up/down is left to the
-// user via the OpenVPN GUI/service. The connect/teardown paths fail loudly with
-// an actionable message rather than silently pretending to work. Non-VPN remote
-// projects are unaffected (they never call into this module).
+// Windows has no `pkexec`/polkit, so there is no non-interactive privilege
+// escalation analogue. OpenVPN on Windows instead expects to run either elevated
+// (Administrator) or via the bundled OpenVPN interactive service. Eldrun spawns
+// `openvpn.exe` directly with the same `--askpass`-file credential flow as Linux
+// (the askpass file is cross-platform), suppressing the console window, parsing
+// stdout for the ready marker, and tracking the child so teardown can terminate
+// it via its handle / `taskkill`.
+//
+// NOTE (runtime-verify): creating the VPN adapter (TAP/Wintun) typically needs
+// Administrator rights. If Eldrun is not elevated, the spawn or the handshake
+// will fail and the error message points the user at running as Administrator.
+// A non-elevated flow would require integrating with the OpenVPN interactive
+// service (named-pipe IPC), which is out of scope and needs runtime testing.
 
-/// Message returned by the Windows connect/teardown stubs.
+/// Actionable "openvpn not found" message for Windows.
 #[cfg(target_os = "windows")]
-const WINDOWS_UNSUPPORTED: &str = "VPN-gated projects are not yet supported on Windows — connect the OpenVPN tunnel manually (OpenVPN GUI/service), or use this project on Linux.";
+const OPENVPN_MISSING: &str = "openvpn.exe not found — install OpenVPN (the community build, \
+     https://openvpn.net/community-downloads/) to use VPN-gated projects on Windows";
 
-/// Eldrun does not manage tunnels on Windows, so it cannot know the state of a
-/// manually established one — report "not connected" rather than guess.
+/// Locate `openvpn.exe`: on `PATH`, in a per-user install dir, or under the
+/// standard `Program Files\OpenVPN\bin` location a GUI app's PATH usually omits.
 #[cfg(target_os = "windows")]
-pub fn is_connected(_config: &str) -> bool {
-    false
+fn resolve_openvpn() -> Option<PathBuf> {
+    if crate::paths::binary_on_path("openvpn") {
+        return Some(PathBuf::from("openvpn"));
+    }
+    if let Some(p) = crate::paths::resolve_offpath_binary("openvpn") {
+        return Some(p);
+    }
+    for key in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+        if let Some(pf) = std::env::var_os(key) {
+            let cand = PathBuf::from(pf)
+                .join("OpenVPN")
+                .join("bin")
+                .join("openvpn.exe");
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
 }
 
-/// Bringing up an OpenVPN tunnel needs privilege Eldrun cannot acquire
-/// non-interactively on Windows; fail with an actionable message.
+/// Bring up the OpenVPN tunnel for `config`, authenticating with `password`.
+/// No-op (returns `Ok`) if already connected. Blocks until OpenVPN reports the
+/// tunnel up, the process exits, or `CONNECT_TIMEOUT` elapses.
 #[cfg(target_os = "windows")]
-pub fn connect(_config: &str, _password: &str) -> Result<(), String> {
-    Err(WINDOWS_UNSUPPORTED.to_string())
+pub fn connect(config: &str, password: &str) -> Result<(), String> {
+    let config = config.trim();
+    validate_arg("OpenVPN config", config)?;
+    if !Path::new(config).is_file() {
+        return Err(format!("OpenVPN config not found: {config}"));
+    }
+    if is_connected(config) {
+        return Ok(());
+    }
+    let exe = resolve_openvpn().ok_or_else(|| OPENVPN_MISSING.to_string())?;
+
+    let stem = safe_stem(config);
+    let askpass = write_askpass(&stem, password)?;
+    let pidfile = runtime_dir().join(format!("{stem}.pid"));
+    let args = openvpn_args(config, &askpass, &pidfile)?;
+
+    // `command_no_window` adds CREATE_NO_WINDOW so the long-lived openvpn.exe
+    // does not own a flashing console window.
+    let spawn_result = crate::paths::command_no_window(&exe.to_string_lossy())
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    let mut child = match spawn_result {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = std::fs::remove_file(&askpass);
+            return Err(format!(
+                "failed to launch openvpn.exe: {e} — creating the VPN adapter usually \
+                 requires running Eldrun as Administrator"
+            ));
+        }
+    };
+
+    // Stream stdout until the ready marker, EOF, or timeout.
+    let ready = wait_for_ready(&mut child);
+    // The passphrase has been read by now; remove it regardless of outcome.
+    let _ = std::fs::remove_file(&askpass);
+
+    match ready {
+        Ok(()) => {
+            registry()
+                .lock()
+                .unwrap()
+                .insert(config.to_string(), VpnProc { child, pidfile });
+            Ok(())
+        }
+        Err(msg) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!(
+                "{msg} — if this is a permissions/adapter error, run Eldrun as \
+                 Administrator or (re)install the OpenVPN TAP/Wintun driver"
+            ))
+        }
+    }
 }
 
-/// Eldrun never brought a tunnel up on Windows, so there is nothing it can tear
-/// down; report the same actionable message for symmetry with [`connect`].
+/// Tear down the tunnel for `config` if it is up. Best-effort: terminates the
+/// `openvpn.exe` child (and any descendants) via `taskkill /T`, then reaps it.
+/// A missing/already-dead tunnel is treated as success.
 #[cfg(target_os = "windows")]
-pub fn disconnect(_config: &str) -> Result<(), String> {
-    Err(WINDOWS_UNSUPPORTED.to_string())
+pub fn disconnect(config: &str) -> Result<(), String> {
+    let proc = registry().lock().unwrap().remove(config);
+    let Some(mut proc) = proc else {
+        return Ok(());
+    };
+    let pid = proc.child.id();
+    let _ = crate::paths::command_no_window("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output();
+    let _ = proc.child.kill();
+    let _ = proc.child.wait();
+    let _ = std::fs::remove_file(&proc.pidfile);
+    Ok(())
 }
-
-/// No Eldrun-managed tunnels exist on Windows, so there is nothing to tear down
-/// at exit.
-#[cfg(target_os = "windows")]
-pub fn disconnect_all() {}
 
 #[cfg(test)]
 mod tests {
