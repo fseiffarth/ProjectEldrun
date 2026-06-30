@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { resolveProjectDirectory, type GitHostingInfo, type ProjectEntry } from "../../types";
+import {
+  resolveProjectDirectory,
+  type GitHostingInfo,
+  type GitProvider,
+  type ProjectEntry,
+} from "../../types";
 import { useTimerStore } from "../../stores/timer";
 import { useActivityStore } from "../../stores/activity";
 import { useProjectsStore } from "../../stores/projects";
@@ -214,17 +219,32 @@ function RenameWindow({
   );
 }
 
-function gitTypeLabel(gitType: unknown): string {
+/** Display name for a hosting provider. */
+function providerName(provider: unknown): string {
+  return provider === "gitlab" ? "GitLab" : "GitHub";
+}
+
+function gitTypeLabel(gitType: unknown, provider?: unknown): string {
   switch (gitType) {
     case "remote-public":
-      return "Remote · public";
+      return `${providerName(provider)} · public`;
     case "remote-private":
-      return "Remote · private";
+      return `${providerName(provider)} · private`;
     case "none":
       return "No git (local files only)";
     default:
       return "Local repo (no remote)";
   }
+}
+
+/** Best-effort guess at the provider for a not-yet-published project: an
+ *  explicit prior provider wins, else sniff the profile URL host, else GitHub. */
+function guessProvider(project: ProjectEntry): GitProvider {
+  if (project.git_provider === "github" || project.git_provider === "gitlab") {
+    return project.git_provider;
+  }
+  if (project.git_profile_url?.toLowerCase().includes("gitlab")) return "gitlab";
+  return "github";
 }
 
 function PublishWindow({
@@ -233,9 +253,10 @@ function PublishWindow({
   onClose,
 }: {
   project: ProjectEntry;
-  onPublish: (visibility: "public" | "private") => Promise<string>;
+  onPublish: (provider: GitProvider, visibility: "public" | "private") => Promise<string>;
   onClose: () => void;
 }) {
+  const [provider, setProvider] = useState<GitProvider>(() => guessProvider(project));
   const [visibility, setVisibility] = useState<"public" | "private">(
     project.git_type === "remote-public" ? "public" : "private",
   );
@@ -243,12 +264,18 @@ function PublishWindow({
   const [error, setError] = useState("");
   const [result, setResult] = useState("");
   const isRemoteWork = Boolean(project.remote);
+  // The CLI the chosen provider drives, surfaced in the command preview/help.
+  const cli = provider === "gitlab" ? "glab" : "gh";
+  const createPreview =
+    provider === "gitlab"
+      ? `glab repo create ${project.name} --${visibility} --remoteName origin && git push`
+      : `gh repo create ${project.name} --${visibility} --source=. --push`;
 
   const publish = async () => {
     setBusy(true);
     setError("");
     try {
-      const output = await onPublish(visibility);
+      const output = await onPublish(provider, visibility);
       setResult(output || "Published.");
     } catch (err) {
       setError(String(err));
@@ -261,13 +288,24 @@ function PublishWindow({
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
-          <h2>{project.name} — Publish to GitHub</h2>
+          <h2>{project.name} — Publish to {providerName(provider)}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="project-dialog-path">
-          Current: {gitTypeLabel(project.git_type)}
+          Current: {gitTypeLabel(project.git_type, project.git_provider)}
           {isRemoteWork && " · runs on the work-remote host"}
         </div>
+        <label>
+          Hosting provider
+          <select
+            value={provider}
+            disabled={busy || Boolean(result)}
+            onChange={(e) => setProvider(e.target.value as GitProvider)}
+          >
+            <option value="github">GitHub</option>
+            <option value="gitlab">GitLab</option>
+          </select>
+        </label>
         <label>
           Repository visibility
           <select
@@ -280,8 +318,8 @@ function PublishWindow({
           </select>
         </label>
         <div className="project-dialog-path">
-          Runs <code>gh repo create {project.name} --{visibility} --source=. --push</code>.
-          Requires <code>gh</code> installed and authenticated.
+          Runs <code>{createPreview}</code>. Requires <code>{cli}</code> installed and
+          authenticated (or a token under ⚙ Settings → Git hosting).
         </div>
         {error && <div className="project-dialog-error">{error}</div>}
         {result && <div className="scaffold-empty">{result}</div>}
@@ -376,7 +414,9 @@ function GitHostingWindow({
           <input
             type="text"
             value={profileUrl}
-            placeholder={globalUrl ? `Inherits global: ${globalUrl}` : "https://github.com/username"}
+            placeholder={
+              globalUrl ? `Inherits global: ${globalUrl}` : "https://github.com/me or https://gitlab.com/me"
+            }
             onChange={(e) => setProfileUrl(e.target.value)}
           />
         </label>
@@ -648,7 +688,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
               setShowPublish(true);
             }}
           >
-            Publish to GitHub…
+            Publish to GitHub / GitLab…
           </button>
           {typeof project.git_type === "string" && project.git_type.startsWith("remote") && (
             <button
@@ -742,11 +782,11 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         />
       )}
 
-      {/* Publish-to-GitHub window */}
+      {/* Publish-to-GitHub/GitLab window */}
       {showPublish && (
         <PublishWindow
           project={project}
-          onPublish={(visibility) => publishProject(project.id, visibility)}
+          onPublish={(provider, visibility) => publishProject(project.id, provider, visibility)}
           onClose={() => setShowPublish(false)}
         />
       )}

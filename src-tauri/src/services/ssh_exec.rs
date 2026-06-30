@@ -58,8 +58,10 @@ pub(crate) const AGENT_AUTH_ENV: &[&str] = &[
 ];
 
 /// Directory holding ssh ControlMaster sockets, created on demand.
-/// `<state_dir>/ssh-control` (e.g. `~/.local/share/eldrun/ssh-control`).
-fn control_dir() -> PathBuf {
+/// `<state_dir>/ssh-control` (e.g. `~/.local/share/eldrun/ssh-control`). Shared
+/// with `ssh_mount` so the headless mount/check paths reuse the same master
+/// socket an interactive login establishes.
+pub(crate) fn control_dir() -> PathBuf {
     storage::state_dir().join("ssh-control")
 }
 
@@ -199,6 +201,55 @@ pub fn ssh_pty_args(remote: &RemoteSpec, remote_command: &str) -> Result<Vec<Str
     args.push(target);
     args.push(remote_command.to_string());
     Ok(args)
+}
+
+/// Build a ready-to-run shell command string that opens an **interactive** ssh
+/// login to `[user@]host[:port]`, sharing the same multiplexing master socket
+/// (`ControlPath`) the terminal/agent tabs use.
+///
+/// Typed into a root-scope shell tab (see the frontend `openConnectionInRoot`)
+/// when the user has turned **off** headless connections: the password is entered
+/// directly in the visible terminal — Eldrun never handles it — and because the
+/// login shares `cm-%C` with [`ssh_pty_args`], a later sshfs mount / remote browse
+/// (which now also reuse `cm-%C`, see `ssh_mount`) ride the authenticated master
+/// without a second prompt. On Unix this enables `ControlMaster=auto`; on Windows
+/// multiplexing is unavailable so the login simply opens its own connection. The
+/// control-socket dir is created here so ssh can bind the master. Each argv item
+/// is shell-quoted before being joined, so spaces/metacharacters stay inert.
+pub fn interactive_login_command(
+    user: &Option<String>,
+    host: &str,
+    port: Option<u16>,
+) -> Result<String, String> {
+    let target = ssh_target(user, host)?;
+    let mut args: Vec<String> = vec!["ssh".to_string()];
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::fs::create_dir_all(control_dir());
+        let control_path = control_dir().join("cm-%C");
+        args.push("-o".to_string());
+        args.push("ControlMaster=auto".to_string());
+        args.push("-o".to_string());
+        args.push(format!("ControlPath={}", control_path.to_string_lossy()));
+        args.push("-o".to_string());
+        args.push(format!("ControlPersist={CONTROL_PERSIST_SECS}"));
+    }
+
+    for a in SSH_KEEPALIVE {
+        args.push((*a).to_string());
+    }
+    if let Some(port) = port {
+        args.push("-p".to_string());
+        args.push(port.to_string());
+    }
+    args.push(target);
+
+    Ok(args
+        .iter()
+        .map(|a| shell_quote(a))
+        .collect::<Vec<_>>()
+        .join(" "))
 }
 
 /// If `opts.cwd` lives under the sshfs mounts root and its project is remote,
@@ -420,6 +471,40 @@ mod tests {
     fn ssh_pty_args_rejects_bad_host() {
         let s = spec(None, "-evil", None, "/p");
         assert!(ssh_pty_args(&s, "exec sh").is_err());
+    }
+
+    // ── interactive_login_command ──────────────────────────────────────────
+
+    #[test]
+    fn interactive_login_command_shape() {
+        let cmd =
+            interactive_login_command(&Some("alice".to_string()), "host.example", None).unwrap();
+        // Starts with a (quoted) ssh and ends with the (quoted) target.
+        assert!(cmd.starts_with("'ssh' "));
+        assert!(cmd.contains("'alice@host.example'"));
+        // Multiplexing master is SHARED with ssh_pty_args (same cm-%C socket), so a
+        // root-terminal login's auth is reused by the headless mount/check.
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(cmd.contains("ControlMaster=auto"));
+            assert!(cmd.contains("cm-%C"));
+            assert!(cmd.contains("ControlPersist="));
+        }
+        #[cfg(target_os = "windows")]
+        assert!(!cmd.contains("ControlMaster=auto"));
+    }
+
+    #[test]
+    fn interactive_login_command_includes_port() {
+        let cmd = interactive_login_command(&None, "h", Some(2222)).unwrap();
+        assert!(cmd.contains("'-p' '2222'"));
+        assert!(cmd.trim_end().ends_with("'h'"));
+    }
+
+    #[test]
+    fn interactive_login_command_rejects_bad_target() {
+        assert!(interactive_login_command(&None, "-evil", None).is_err());
+        assert!(interactive_login_command(&Some("-evil".to_string()), "h", None).is_err());
     }
 
     // ── project_id_from_cwd ────────────────────────────────────────────────

@@ -11,7 +11,7 @@ pub mod fs;
 pub mod fs_watch;
 pub mod git;
 pub mod git_hosting;
-pub mod github;
+pub mod git_publish;
 pub mod ollama;
 pub mod openvpn;
 pub mod project_runtime;

@@ -141,6 +141,11 @@ pub struct Project {
     /// inside the project's committed git tree).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_profile_url: Option<String>,
+    /// Hosting provider this project was published to (`"github"` / `"gitlab"`),
+    /// recorded at publish time so the UI can label the pill and pick the right
+    /// CLI. Absent until the project is published to a remote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

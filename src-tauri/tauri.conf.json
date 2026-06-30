@@ -20,7 +20,8 @@
         "dragDropEnabled": false,
         "decorations": false,
         "transparent": false,
-        "fullscreen": true
+        "fullscreen": false,
+        "maximized": true
       }
     ],
     "security": {

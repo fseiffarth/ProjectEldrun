@@ -28,6 +28,14 @@ interface GitStatus {
 interface Props {
   open: boolean;
   pinned?: boolean;
+  /** Current panel width in px (driven by the left-border resize drag). */
+  width?: number;
+  /** True while a resize drag is in progress — suppresses width/transform
+   *  transitions so the panel tracks the cursor instead of lagging behind. */
+  resizing?: boolean;
+  onResizeStart?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onResizeMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onResizeEnd?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onTogglePin?: () => void;
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
@@ -183,7 +191,18 @@ function BoxRootSection({
   );
 }
 
-export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLeave }: Props) {
+export function RightPanel({
+  open,
+  pinned,
+  width,
+  resizing,
+  onResizeStart,
+  onResizeMove,
+  onResizeEnd,
+  onTogglePin,
+  onMouseEnter,
+  onMouseLeave,
+}: Props) {
   const { projects, activeId } = useProjectsStore();
   const rightPanelFolderByProject = useProjectsStore((s) => s.rightPanelFolderByProject);
   const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
@@ -550,7 +569,8 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
 
   return (
     <div
-      className={`right-panel ${open ? "open" : ""}${dropActive ? " drop-active" : ""}${dropFlash ? " drop-flash" : ""}`}
+      className={`right-panel ${open ? "open" : ""}${dropActive ? " drop-active" : ""}${dropFlash ? " drop-flash" : ""}${resizing ? " resizing" : ""}`}
+      style={width ? { width } : undefined}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       onDragEnter={handleImportDragOver}
@@ -558,6 +578,19 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
       onDragLeave={handleImportDragLeave}
       onDrop={handleImportDrop}
     >
+      {/* Drag the left border to resize the panel; width persists in settings.
+          Pointer capture (set in onResizeStart) keeps the drag alive once the
+          cursor leaves this thin strip. */}
+      {onResizeStart && (
+        <div
+          className="right-panel-resize"
+          onPointerDown={onResizeStart}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeEnd}
+          title="Drag to resize panel"
+          aria-hidden
+        />
+      )}
       {conflict && createPortal(
         <div
           className="modal-backdrop"

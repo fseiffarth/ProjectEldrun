@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { useWindowsStore } from "../../stores/windows";
 import { useTabsStore } from "../../stores/tabs";
 import { useDragStore, type EmbedCap } from "../../stores/drag";
@@ -14,7 +15,7 @@ import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
-import { basename, toFileUri } from "../../lib/paths";
+import { basename } from "../../lib/paths";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 
 // Persist whether the collapsed "hidden" files section is expanded, so the
@@ -97,8 +98,20 @@ function GitMarker({ status }: { status: string | undefined }) {
   );
 }
 
-function pathToFileUri(path: string): string {
-  return toFileUri(path);
+// Native drag-out (tauri-plugin-drag) needs the OS drag-preview icon as a base64
+// PNG data URL (its icon field rejects a bare path), read synchronously inside
+// the `dragstart` gesture. The backend returns that data URL; cache it
+// process-wide so every file row shares one warm-up (kicked off at mount) and
+// reads it without awaiting.
+let dragIconDataUrl = "";
+let dragIconPromise: Promise<string> | null = null;
+function warmDragIcon(): Promise<string> {
+  if (!dragIconPromise) {
+    dragIconPromise = invoke<string>("drag_preview_icon")
+      .then((p) => (dragIconDataUrl = p))
+      .catch(() => "");
+  }
+  return dragIconPromise;
 }
 
 function shellQuote(value: string): string {
@@ -138,14 +151,14 @@ export function FileTree({
     }
   });
   const [scaffoldExpanded, setScaffoldExpanded] = useState(false);
-  // Whether the Alt key is currently held. While held, file rows arm NATIVE
-  // HTML5 drag-and-drop (export the file to an embedded browser / external
-  // target) instead of the pointer-based drag-to-tab. The two can't both be
-  // armed on the same drag (native DnD fires pointercancel on WebKitGTK and
-  // breaks the pointer drag — see onEntryPointerDown's R6 note), so Alt is the
-  // explicit switch. Tracked as state so `draggable` re-evaluates per row when
-  // Alt is pressed/released.
-  const [altHeld, setAltHeld] = useState(false);
+  // Whether the Ctrl key is currently held. While held, file rows arm NATIVE
+  // HTML5 drag-and-drop (export/copy the file to an embedded browser / external
+  // target like Signal) instead of the pointer-based drag-to-tab. The two can't
+  // both be armed on the same drag (native DnD fires pointercancel on WebKitGTK
+  // and breaks the pointer drag — see onEntryPointerDown's R6 note), so Ctrl is
+  // the explicit switch. Tracked as state so `draggable` re-evaluates per row
+  // when Ctrl is pressed/released.
+  const [ctrlHeld, setCtrlHeld] = useState(false);
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
@@ -251,12 +264,16 @@ export function FileTree({
     return () => { cancelled = true; };
   }, []);
 
-  // Track Alt so file rows can switch to native DnD (export to browser) while
-  // it's held. Also clear on blur/visibility loss so a release that happens
-  // while another window has focus doesn't leave rows stuck in native-drag mode.
+  // Track Ctrl so file rows can switch to native DnD (export/copy to browser or
+  // an external app) while it's held. Also clear on blur/visibility loss so a
+  // release that happens while another window has focus doesn't leave rows stuck
+  // in native-drag mode.
   useEffect(() => {
-    const sync = (e: KeyboardEvent) => setAltHeld(e.altKey);
-    const clear = () => setAltHeld(false);
+    // Warm the native drag-out preview icon so its path is ready (sync-readable)
+    // by the time the user starts a Ctrl-drag.
+    void warmDragIcon();
+    const sync = (e: KeyboardEvent) => setCtrlHeld(e.ctrlKey);
+    const clear = () => setCtrlHeld(false);
     window.addEventListener("keydown", sync);
     window.addEventListener("keyup", sync);
     window.addEventListener("blur", clear);
@@ -387,16 +404,23 @@ export function FileTree({
   }
 
   function handleEntryDragStart(e: React.DragEvent<HTMLDivElement>, entry: FileEntry) {
-    const fileUri = pathToFileUri(entry.path);
-    e.dataTransfer.effectAllowed = "copy";
-    e.dataTransfer.setData("text/uri-list", fileUri);
-    e.dataTransfer.setData("text/plain", entry.path);
-    if (!entry.is_dir) {
-      e.dataTransfer.setData(
-        "DownloadURL",
-        `${entry.mime || "application/octet-stream"}:${entry.name}:${fileUri}`,
+    // WebKitGTK's HTML5 drag-out renders no drag image outside the window and
+    // doesn't reliably export the file to other apps, so suppress it and hand
+    // off to the native OS drag (tauri-plugin-drag): real OLE/NSDragging/GTK
+    // drag, with an OS-rendered icon that crosses into Signal / a browser / a
+    // file manager / the desktop. `mode: "copy"` so the file is never MOVED out
+    // of the project. The preview icon path was warmed at mount (warmDragIcon).
+    e.preventDefault();
+    const begin = (icon: string) =>
+      startDrag({ item: [entry.path], icon, mode: "copy" }).catch((err) =>
+        // Surfaces the most common failure: the backend wasn't rebuilt, so the
+        // `plugin:drag|start_drag` command (and `drag_preview_icon`) don't exist
+        // yet — the drag silently no-ops. Log it so the cause is visible.
+        console.error("[eldrun] native file drag-out failed:", err),
       );
-    }
+    // The icon data URL is normally warm by drag time; if not, resolve first.
+    if (dragIconDataUrl) void begin(dragIconDataUrl);
+    else void warmDragIcon().then(begin);
   }
 
   // Start a pointer-based drag from a file row, mirroring TabBar.onTabPointerDown.
@@ -417,11 +441,13 @@ export function FileTree({
     viewer: InternalViewer | null,
   ) {
     if (e.button !== 0 || entry.is_dir) return;
-    // Alt held → the user wants to EXPORT this file (drag it into an embedded
-    // browser / external target) via native HTML5 DnD, which the row arms while
-    // `altHeld` (see renderEntry's `draggable`/`onDragStart`). Bail out without
-    // preventDefault so native DnD takes over instead of the pointer drag-to-tab.
-    if (e.altKey) return;
+    // Ctrl held → the user wants to EXPORT/COPY this file out to another app
+    // (Signal, a browser, a file manager). The row arms HTML5 `draggable` while
+    // `ctrlHeld` (see renderEntry); its onDragStart suppresses the broken
+    // WebKitGTK drag and hands off to the native OS drag (handleEntryDragStart).
+    // Bail out here without preventDefault so that gesture takes over instead of
+    // the pointer drag-to-tab.
+    if (e.ctrlKey) return;
     // Let the inline run (▶) button own its own clicks — don't seed a drag or
     // swallow the click when the press lands on it.
     if ((e.target as HTMLElement).closest(".file-run-btn")) return;
@@ -504,7 +530,7 @@ export function FileTree({
       }
     };
 
-    const commitRelease = async () => {
+    const commitRelease = async (shiftKey: boolean) => {
       cleanup();
       if (!dragging) {
         // Never moved → a plain click does NOT open. Opening a file is a
@@ -524,8 +550,12 @@ export function FileTree({
       // while it sits BEHIND the main window (the press raised the main window) or
       // another app. Docking into a popout the user can't see is wrong — treat an
       // occluded popout like a release into empty space so a NEW window opens.
+      // Shift forces a brand-new standalone window even when released over a
+      // front popout — the explicit "don't dock here, give me a fresh window"
+      // override the user asked for.
       const overDetached = phys ? detached.at(phys) : null;
       const overFrontDetached =
+        !shiftKey &&
         overDetached &&
         (await invoke<boolean>("detached_window_frontmost", {
           registryId: overDetached.label,
@@ -545,7 +575,12 @@ export function FileTree({
       // — or being over a popout's bounds at all — is the signal. The new window's
       // bounds feed Rust `.position(x,y)`, which is PHYSICAL → use the physical
       // cursor, not DOM screen coords.
+      //
+      // Shift forces a new window even when released INSIDE the main window: the
+      // split/dock preview was suppressed during the drag (see CenterPanel's
+      // pointer-move handler), so the only sensible commit is a fresh window.
       const outside =
+        shiftKey ||
         !!overDetached ||
         lastClient.x < 0 ||
         lastClient.y < 0 ||
@@ -572,7 +607,7 @@ export function FileTree({
     };
 
     window.addEventListener("pointermove", onMove);
-    bindDragRelease({ onCommit: () => void commitRelease(), onAbort });
+    bindDragRelease({ onCommit: (shiftKey) => void commitRelease(shiftKey), onAbort });
   }
 
   function relForEntry(entry: FileEntry): string {
@@ -960,15 +995,15 @@ export function FileTree({
               // drag-to-tab files (built-in viewer OR embeddable handler); R6 —
               // native DnD disabled then so it can't hijack the pointer. Opened
               // by double-click.
-              // Files, ALT held: arm native HTML5 DnD so any file can be dragged
-              // out into an embedded browser / external target (the pointer
-              // drag-to-tab bails on Alt, see onEntryPointerDown).
+              // Files, CTRL held: arm native HTML5 DnD so any file can be dragged
+              // out into an embedded browser / external target like Signal (the
+              // pointer drag-to-tab bails on Ctrl, see onEntryPointerDown).
               onClick={e.is_dir ? () => handleClick(e) : undefined}
               onDoubleClick={e.is_dir ? undefined : () => handleClick(e)}
               onContextMenu={(ev) => showEntryContextMenu(ev, e)}
-              draggable={e.is_dir || altHeld}
+              draggable={e.is_dir || ctrlHeld}
               onDragStart={
-                e.is_dir || altHeld
+                e.is_dir || ctrlHeld
                   ? (ev) => handleEntryDragStart(ev, e)
                   : (ev) => ev.preventDefault()
               }

@@ -193,10 +193,19 @@ pub fn spawn_pty(
 
     let pty_system = NativePtySystem::default();
 
+    // Never open a zero-size PTY. A 0-col/0-row size can slip in if the caller
+    // spawns before xterm has measured a layout box; Unix ptys tolerate it but
+    // Windows ConPTY accepts it silently and then emits no output, which shows up
+    // as a black, dead agent tab. Clamp to a sane default so the child always has
+    // a usable window — the frontend re-sends the real size via `pty_resize` as
+    // soon as the pane is fitted.
+    let cols = if opts.cols == 0 { 80 } else { opts.cols };
+    let rows = if opts.rows == 0 { 24 } else { opts.rows };
+
     let pair = pty_system
         .openpty(PtySize {
-            rows: opts.rows,
-            cols: opts.cols,
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         })

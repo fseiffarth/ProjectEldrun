@@ -32,7 +32,7 @@ describe("nextEligibleIndex", () => {
   });
 
   it("skips an ineligible step (no project ⇒ no switch-projects)", () => {
-    const from = idx("create-project") + 1;
+    const from = idx("switch-projects") + 1;
     expect(nextEligibleIndex(TOUR_STEPS, empty, from)).toBe(idx("add-tab"));
   });
 
@@ -44,7 +44,7 @@ describe("nextEligibleIndex", () => {
 describe("prevEligibleIndex", () => {
   it("walks back over an ineligible step", () => {
     const from = idx("add-tab") - 1; // sits on switch-projects
-    expect(prevEligibleIndex(TOUR_STEPS, empty, from)).toBe(idx("create-project"));
+    expect(prevEligibleIndex(TOUR_STEPS, empty, from)).toBe(idx("remote-projects"));
   });
 
   it("returns -1 before the first step", () => {

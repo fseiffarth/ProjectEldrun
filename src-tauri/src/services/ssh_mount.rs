@@ -61,6 +61,18 @@ pub fn ssh_base_args(
         "ConnectTimeout=10".to_string(),
     ];
 
+    // Reuse (never create) the multiplexing master an interactive login may have
+    // opened (see `ssh_exec::interactive_login_command`). With `ControlMaster=no`
+    // + the shared `cm-%C` socket, a non-headless connection authenticated in a
+    // root terminal lets this otherwise-`BatchMode=yes` check/list ride that
+    // master with no second password prompt; if no master exists it simply falls
+    // through to normal (key/agent) auth. Unix-only — Windows OpenSSH lacks the
+    // control socket (see `ssh_pty_args`).
+    #[cfg(not(target_os = "windows"))]
+    for opt in control_reuse_opts() {
+        args.push(opt);
+    }
+
     if let Some(port) = port {
         args.push("-p".to_string());
         args.push(port.to_string());
@@ -69,6 +81,23 @@ pub fn ssh_base_args(
     args.push(ssh_target(user, host)?);
 
     Ok(args)
+}
+
+/// `ssh` `-o` options that **reuse** (but never create) the shared multiplexing
+/// master socket `ssh_exec` and the interactive-login command establish. Returned
+/// flat (`["-o", "ControlMaster=no", "-o", "ControlPath=…"]`) for both `ssh` argv
+/// and, joined without the `-o`, the `sshfs -o` option string. `ControlMaster=no`
+/// means "use a master if one is live, otherwise connect directly" — so this is a
+/// pure opportunistic reuse and never spawns a master of its own.
+#[cfg(not(target_os = "windows"))]
+fn control_reuse_opts() -> Vec<String> {
+    let control_path = crate::services::ssh_exec::control_dir().join("cm-%C");
+    vec![
+        "-o".to_string(),
+        "ControlMaster=no".to_string(),
+        "-o".to_string(),
+        format!("ControlPath={}", control_path.to_string_lossy()),
+    ]
 }
 
 /// Render the `[user@]host` SSH target as a single, validated argv item.
@@ -89,6 +118,36 @@ pub fn ssh_target(user: &Option<String>, host: &str) -> Result<String, String> {
         }
         None => Ok(host.to_string()),
     }
+}
+
+/// Build the password-auth ssh argv: BatchMode off and only the password method
+/// enabled, so ssh never falls back to (or hangs on) keys/keyboard-interactive.
+/// The target `[user@]host` is validated and rendered as a single argv item.
+/// Shared by the browse commands (`commands::ssh`) and the SFTP session
+/// (`services::sftp`) so both authenticate identically.
+pub fn ssh_password_base_args(
+    user: &Option<String>,
+    host: &str,
+    port: Option<u16>,
+) -> Result<Vec<String>, String> {
+    let mut args: Vec<String> = vec![
+        "-o".to_string(),
+        "BatchMode=no".to_string(),
+        "-o".to_string(),
+        "ConnectTimeout=10".to_string(),
+        "-o".to_string(),
+        "PreferredAuthentications=password".to_string(),
+        "-o".to_string(),
+        "PubkeyAuthentication=no".to_string(),
+        "-o".to_string(),
+        "NumberOfPasswordPrompts=1".to_string(),
+    ];
+    if let Some(port) = port {
+        args.push("-p".to_string());
+        args.push(port.to_string());
+    }
+    args.push(ssh_target(user, host)?);
+    Ok(args)
 }
 
 /// Local mountpoint for a remote project:
@@ -288,8 +347,30 @@ pub fn sshfs_args(remote: &RemoteSpec, mountpoint: &Path) -> Result<Vec<String>,
         args.push(port.to_string());
     }
     args.push("-o".to_string());
-    args.push(SSHFS_OPTS.to_string());
+    args.push(sshfs_opts());
     Ok(args)
+}
+
+/// The `sshfs` `-o` option string. On Unix this appends opportunistic reuse of
+/// the shared ControlMaster socket (see `control_reuse_opts`): a remote project
+/// whose interactive login was authenticated in a root terminal (non-headless
+/// mode) mounts through that master with no password, while a host reachable by
+/// key/agent still mounts exactly as before (no live master → direct connect).
+/// `%C` is expanded by the `ssh` sshfs invokes, not the shell, so it is embedded
+/// literally. The reuse opts carry no commas, so the comma-joined list is safe.
+fn sshfs_opts() -> String {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let control_path = crate::services::ssh_exec::control_dir().join("cm-%C");
+        format!(
+            "{SSHFS_OPTS},ControlMaster=no,ControlPath={}",
+            control_path.to_string_lossy()
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        SSHFS_OPTS.to_string()
+    }
 }
 
 /// Ensure `remote` is mounted at its project mountpoint, returning the
@@ -536,6 +617,41 @@ mod tests {
         assert!(opts.contains("ServerAliveCountMax=3"));
         // No port flag when port is None.
         assert!(!args.iter().any(|a| a == "-p"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn sshfs_opts_reuse_master_without_creating_one() {
+        let s = spec(Some("alice"), "host.example", None, "/srv/project");
+        let args = sshfs_args(&s, Path::new("/tmp/mnt/p1")).unwrap();
+        let o = args.iter().position(|a| a == "-o").expect("-o present");
+        let opts = &args[o + 1];
+        // ControlMaster=no means "ride a live master if present, else connect
+        // directly" — opportunistic reuse that never spawns its own master.
+        assert!(opts.contains("ControlMaster=no"));
+        // The control path matches what ssh_exec / the interactive login use, so
+        // a root-terminal login's authenticated master is reused by the mount.
+        assert!(opts.contains("ControlPath="));
+        assert!(opts.contains("cm-%C"));
+        // The reuse opts carry no commas, so the comma-joined list stays parseable.
+        let control_segment = opts
+            .split(',')
+            .find(|s| s.starts_with("ControlPath="))
+            .expect("ControlPath segment present");
+        assert!(!control_segment.contains(' '));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn ssh_base_args_reuse_master_and_keep_target_last() {
+        let args = ssh_base_args(&Some("alice".to_string()), "host.example", None).unwrap();
+        assert!(args.iter().any(|a| a == "ControlMaster=no"));
+        assert!(args.iter().any(|a| a.starts_with("ControlPath=")));
+        // The validated target must remain the final argv item despite the inserted
+        // -o options, so ssh still parses it as the destination.
+        assert_eq!(args.last().unwrap(), "alice@host.example");
+        // BatchMode is still set: with no live master, auth falls back to key/agent.
+        assert!(args.iter().any(|a| a == "BatchMode=yes"));
     }
 
     #[test]

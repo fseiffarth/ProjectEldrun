@@ -33,7 +33,7 @@ export function VpnPasswordPrompt() {
           Connecting OpenVPN for <strong>{pending.projectName}</strong>.
         </p>
         <label>
-          Password
+          Password <span className="ssh-optional-hint">(not stored)</span>
           <input
             ref={inputRef}
             type="password"

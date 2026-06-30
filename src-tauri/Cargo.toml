@@ -17,6 +17,13 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# Native OS drag-OUT of files (Windows OLE / macOS NSDraggingSession / Linux GTK).
+# WebKitGTK's HTML5 drag-out won't render a drag image or reliably export files
+# to other apps, so the Ctrl-drag file export goes through this plugin instead.
+tauri-plugin-drag = "2"
+# Encode the drag-preview PNG as a base64 data URL for tauri-plugin-drag's icon
+# field (it only accepts `data:image/png;base64,…`, not a file path).
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -40,6 +47,13 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # The backend deps are target-gated inside the crate, so enabling all three
 # native backends is the standard cross-platform recipe.
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
+# Native SFTP client for the remote folder browser (TODO #80): drives the SFTP
+# subsystem over a child `ssh -s sftp` process, so browsing parses no `ls` text
+# and never feeds a remote `$SHELL -c` (replaces the injection-prone `ssh ls`
+# path). The project mount/exec paths are unchanged — still sshfs / `ssh -tt`.
+openssh-sftp-client = "0.15.7"
+# `StreamExt::next` to drive the SFTP `ReadDir` stream (already in the dep tree).
+futures-util = "0.3"
 
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]

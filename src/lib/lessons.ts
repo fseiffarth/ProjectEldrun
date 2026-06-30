@@ -12,10 +12,23 @@ import type { TourStep } from "./tour";
  * while open and which the narrated, click-blocking overlay can't keep pinned —
  * are described as centered cards (`anchor: null`). Copy matches the terse,
  * friendly onboarding voice.
+ *
+ * Order is meaningful: lessons run easiest → hardest and are grouped into tiers
+ * (`LESSON_CATEGORIES`). `LESSONS` stays sorted so each category's lessons are
+ * contiguous and the picker can render a header per tier just by walking the
+ * array. Within a tier the lessons themselves also ramp from simplest to most
+ * involved.
  */
+
+/** Difficulty tiers, in the order the picker shows them (easy → hard). */
+export const LESSON_CATEGORIES = ["Basics", "Agents & models", "Advanced"] as const;
+export type LessonCategory = (typeof LESSON_CATEGORIES)[number];
+
 export interface Lesson {
   /** Stable id (also the React key in the picker). */
   id: string;
+  /** Difficulty tier; groups the lesson under a header in the picker. */
+  category: LessonCategory;
   /** Menu label. */
   title: string;
   /** One-line description shown under the title in the picker. */
@@ -28,8 +41,10 @@ export interface Lesson {
 const revealFilePanel = () => window.dispatchEvent(new Event("eldrun:reveal-right-panel"));
 
 export const LESSONS: Lesson[] = [
+  // ── Basics ──────────────────────────────────────────────────────────────
   {
     id: "add-project",
+    category: "Basics",
     title: "Add a new project",
     blurb: "Create or import a project — each gets its own terminal, tabs, and file tree.",
     steps: [
@@ -68,10 +83,18 @@ export const LESSONS: Lesson[] = [
         title: "What you get",
         body: "Hit Create and Eldrun makes ~/eldrun/projects/<name>/, scaffolds AGENTS.md, CLAUDE.md, .gitignore, README and friends, and initializes the repo. Tick \"Skip scaffolding\" if you'd rather start empty.",
       },
+      {
+        id: "publish-remote",
+        anchor: ".project-pills-region",
+        placement: "top",
+        title: "Advanced: connect a remote",
+        body: "To put it on GitHub or GitLab, pick a Remote git mode in the dialog, then right-click the project's pill → \"Publish to GitHub / GitLab…\", choose the provider and public/private. Eldrun runs that provider's CLI (gh or glab) to create the repo and push. Needs the chosen CLI installed and signed in, or a token under ⚙ Settings → Git hosting.",
+      },
     ],
   },
   {
     id: "import-project",
+    category: "Basics",
     title: "Import a project",
     blurb: "Register an existing folder — or a remote SSH host — without touching its contents.",
     steps: [
@@ -110,59 +133,18 @@ export const LESSONS: Lesson[] = [
         title: "Remote? Flip the SSH toggle",
         body: "Tick \"Remote (SSH) project\" to import a folder living on another host. If configured, Eldrun mounts it over sshfs (with an optional OpenVPN step) and keeps it in place on the remote.",
       },
-    ],
-  },
-  {
-    id: "add-ssh-project",
-    title: "Add an SSH project",
-    blurb: "Work on a folder living on another machine — Eldrun mounts it over sshfs.",
-    steps: [
       {
-        id: "open-add-menu",
-        anchor: '[data-hint-anchor="add-project"]',
+        id: "publish-remote",
+        anchor: ".project-pills-region",
         placement: "top",
-        title: "Open the add menu",
-        body: "Click the + button beside your project pills, then pick New Project or Import Project. Both dialogs can host the project on a remote machine.",
-      },
-      {
-        id: "flip-ssh-toggle",
-        anchor: null,
-        placement: "bottom",
-        title: "Flip the SSH toggle",
-        body: "Tick \"Remote (SSH) project\" at the top of the dialog. The local folder pickers disappear and the SSH connection fields take their place.",
-      },
-      {
-        id: "optional-vpn",
-        anchor: null,
-        placement: "bottom",
-        title: "Behind a VPN? (optional)",
-        body: "If the host is only reachable over a VPN, tick \"Connect via OpenVPN\", pick a .ovpn config (copied into Eldrun) and enter its passphrase, then hit Connect VPN before connecting SSH. Needs openvpn + polkit installed.",
-      },
-      {
-        id: "connect-ssh",
-        anchor: null,
-        placement: "bottom",
-        title: "Connect to the host",
-        body: "Type the SSH address as user@host or host:2222. Leave the password blank to use your SSH key/agent, or fill it in (needs sshpass). Click Connect — Eldrun verifies it can reach the host.",
-      },
-      {
-        id: "browse-remote",
-        anchor: null,
-        placement: "bottom",
-        title: "Pick the remote folder",
-        body: "Once connected, a remote file browser appears. Step into the directory you want, then click \"Use this folder\". On New it creates a subfolder there; on Import it registers it in place.",
-      },
-      {
-        id: "create-mount",
-        anchor: null,
-        placement: "bottom",
-        title: "Create and mount",
-        body: "Finish naming and pick a Git mode, then Create/Import. Eldrun mounts the remote folder over sshfs under its mounts directory and treats it like any local project. Requires sshfs/FUSE locally.",
+        title: "Advanced: connect a remote",
+        body: "Imported a folder that isn't on a remote yet? Right-click its pill → \"Publish to GitHub / GitLab…\", choose the provider and public/private, and Eldrun runs that provider's CLI (gh or glab) to create the repo and push your code. Needs the chosen CLI installed and authenticated, or a token under ⚙ Settings → Git hosting.",
       },
     ],
   },
   {
     id: "add-tab",
+    category: "Basics",
     title: "Add a tab",
     blurb: "Open a new agent, shell, or file-browser tab in any subwindow.",
     steps: [
@@ -197,7 +179,113 @@ export const LESSONS: Lesson[] = [
     ],
   },
   {
+    id: "native-viewer",
+    category: "Basics",
+    title: "Open a file in the viewer",
+    blurb: "Reveal the file tree and open files in Eldrun's built-in viewers — no external app.",
+    steps: [
+      {
+        id: "reveal-tree",
+        anchor: '[data-hint-anchor="file-tree-edge"]',
+        placement: "left",
+        title: "Reveal the file tree",
+        body: "Push your cursor to the right edge of the window to slide out the project file tree.",
+        prepare: revealFilePanel,
+      },
+      {
+        id: "pin-panel",
+        anchor: ".right-panel-pin",
+        placement: "left",
+        title: "Pin it open",
+        body: "The panel auto-hides when your cursor leaves. Click the 📌 to keep it docked while you browse.",
+        prepare: revealFilePanel,
+      },
+      {
+        id: "open-file",
+        anchor: null,
+        placement: "bottom",
+        title: "Double-click a file",
+        body: "Double-click any file to open it; single-click a folder to step into it. You can also drag a file onto a tab bar to open it there.",
+      },
+      {
+        id: "viewer-pane",
+        anchor: null,
+        placement: "bottom",
+        title: "It opens in-app",
+        body: "PDFs, images, markdown, code, notebooks, tables, diffs, and TeX render in Eldrun's native viewer — no external app. The built-in viewer wins whenever one applies.",
+      },
+      {
+        id: "default-app",
+        anchor: '[data-hint-anchor="settings"]',
+        placement: "bottom",
+        title: "Change the handler",
+        body: "Right-click a file → \"Set default app…\" to send a type to an external app instead. Toggle native viewers per type under ⚙ Settings.",
+      },
+    ],
+  },
+  {
+    id: "arrange-tabs",
+    category: "Basics",
+    title: "Arrange tabs",
+    blurb: "Reorder tabs, split panes, drag files in from the tree, and pop tabs into their own window.",
+    steps: [
+      {
+        id: "intro",
+        anchor: null,
+        placement: "bottom",
+        title: "Make room your way",
+        body: "Drag to arrange everything: reorder tabs, split the view, pull files in from the file tree, and pop panes out into their own windows. Let's walk through it.",
+      },
+      {
+        id: "tab-bar",
+        anchor: ".tab-bar",
+        placement: "bottom",
+        title: "The tab bar",
+        body: "Each subwindow has its own tab strip. Drag a tab left or right within this bar to reorder it.",
+      },
+      {
+        id: "split",
+        anchor: null,
+        placement: "bottom",
+        title: "Split a pane",
+        body: "Drag a tab onto the edge of a pane — top, bottom, left, or right — to split the view and tile it side-by-side or stacked. Drop it in the middle instead to move it into that group.",
+      },
+      {
+        id: "drag-from-tree",
+        anchor: '[data-hint-anchor="file-tree-edge"]',
+        placement: "left",
+        title: "Drag a file in from the tree",
+        body: "Slide out the file tree on the right and drag an openable file straight into the layout — drop it on a tab bar to add it there, on a pane edge to split, or in a pane's center to merge. It opens right where you drop it.",
+        prepare: revealFilePanel,
+      },
+      {
+        id: "detach",
+        anchor: null,
+        placement: "bottom",
+        title: "Pop out a window",
+        body: "Drag a tab (or a whole tab bar) out of the app to detach it into its own floating OS window. Drag it back over Eldrun to dock it again.",
+      },
+      {
+        id: "drag-to-detached",
+        anchor: null,
+        placement: "bottom",
+        title: "Drop across windows",
+        body: "That same drag reaches popped-out windows: drag a tab — or a file from the tree — onto a detached window that's in front and it docks there. Release over empty desktop instead to open it in a brand-new window.",
+      },
+      {
+        id: "outro",
+        anchor: null,
+        placement: "bottom",
+        title: "That's it",
+        body: "Reorder within a bar, drop on an edge to split or a center to merge, pull files in from the tree, and drag tabs out to detach or onto another window. Rearrange freely — your layout is saved.",
+      },
+    ],
+  },
+
+  // ── Agents & models ─────────────────────────────────────────────────────
+  {
     id: "install-agent",
+    category: "Agents & models",
     title: "Choose an AI agent",
     blurb: "Pick an AI coding agent for a tab, and install its CLI so it shows up.",
     steps: [
@@ -240,6 +328,7 @@ export const LESSONS: Lesson[] = [
   },
   {
     id: "local-model",
+    category: "Agents & models",
     title: "Models & agents",
     blurb: "The 🧠 menu hubs your on-device Ollama models and your installed AI agents.",
     steps: [
@@ -288,95 +377,240 @@ export const LESSONS: Lesson[] = [
     ],
   },
   {
-    id: "native-viewer",
-    title: "Open a file in the viewer",
-    blurb: "Reveal the file tree and open files in Eldrun's built-in viewers — no external app.",
+    id: "add-local-model",
+    category: "Agents & models",
+    title: "Add a local model or agent",
+    blurb: "Pull an on-device Ollama model, or install an AI agent CLI so it shows up.",
     steps: [
       {
-        id: "reveal-tree",
-        anchor: '[data-hint-anchor="file-tree-edge"]',
-        placement: "left",
-        title: "Reveal the file tree",
-        body: "Push your cursor to the right edge of the window to slide out the project file tree.",
-        prepare: revealFilePanel,
+        id: "open-brain",
+        anchor: '[aria-label="Local model"]',
+        placement: "bottom",
+        title: "Open the 🧠 menu",
+        body: "This button is your model-and-agent hub. Hover it to open. Local (Ollama) models run on-device — nothing leaves your machine — and your installed agent CLIs are listed below them.",
       },
       {
-        id: "pin-panel",
-        anchor: ".right-panel-pin",
-        placement: "left",
-        title: "Pin it open",
-        body: "The panel auto-hides when your cursor leaves. Click the 📌 to keep it docked while you browse.",
-        prepare: revealFilePanel,
-      },
-      {
-        id: "open-file",
+        id: "manage-models",
         anchor: null,
         placement: "bottom",
-        title: "Double-click a file",
-        body: "Double-click any file to open it; single-click a folder to step into it. You can also drag a file onto a tab bar to open it there.",
+        title: "Manage local models…",
+        body: "Click \"Manage local models…\" at the bottom of the menu (it reads \"Install Ollama…\" instead if Ollama isn't on your system yet — install that first). It opens the Ollama panel under ⚙ Settings.",
       },
       {
-        id: "viewer-pane",
+        id: "pull-from-catalog",
         anchor: null,
         placement: "bottom",
-        title: "It opens in-app",
-        body: "PDFs, images, markdown, code, notebooks, tables, diffs, and TeX render in Eldrun's native viewer — no external app. The built-in viewer wins whenever one applies.",
+        title: "Pull a model",
+        body: "Browse the catalog, sort by size or popularity, and hit Pull on one you want. A progress bar tracks the download — you can pause and resume it, and the model loads into the 🧠 menu when it's done.",
       },
       {
-        id: "default-app",
+        id: "pull-by-name",
+        anchor: null,
+        placement: "bottom",
+        title: "Or pull any model by name",
+        body: "Not in the catalog? Type any Ollama registry ref (e.g. qwen2.5-coder:7b) into the free-text pull field and confirm. Eldrun fetches it the same way.",
+      },
+      {
+        id: "manage-agents",
         anchor: '[data-hint-anchor="settings"]',
         placement: "bottom",
-        title: "Change the handler",
-        body: "Right-click a file → \"Set default app…\" to send a type to an external app instead. Toggle native viewers per type under ⚙ Settings.",
+        title: "Add an AI agent instead",
+        body: "Back in the 🧠 menu, \"Manage agents…\" (or ⚙ → Manage Agents) one-click-installs an agent CLI — Claude, Codex, Gemini and friends — or copies its vendor command. Installed agents then appear in any tab's + menu.",
+      },
+    ],
+  },
+
+  // ── Advanced ────────────────────────────────────────────────────────────
+  {
+    id: "project-boxes",
+    category: "Advanced",
+    title: "Group projects into a box",
+    blurb: "Bundle related projects under one box pill — drag them in, switch between them, open the box scope.",
+    steps: [
+      {
+        id: "why-boxes",
+        anchor: ".project-pills-region",
+        placement: "top",
+        title: "When pills pile up",
+        body: "Once you have a lot of projects, this strip gets crowded. A box is a single pill that meta-groups related projects together so the strip stays tidy.",
+      },
+      {
+        id: "new-box",
+        anchor: '[data-hint-anchor="add-project"]',
+        placement: "bottom",
+        title: "Create a box",
+        body: "Click + beside your pills and pick New Box from the menu. Give it a name — an empty box pill (marked ▣) appears in the strip with a member count of 0.",
+      },
+      {
+        id: "assign-members",
+        anchor: ".project-pills-region",
+        placement: "top",
+        title: "Drag projects in",
+        body: "Drag any project pill onto the box pill to add it as a member; the count badge ticks up. The same drag that reorders pills assigns them — drop on the box instead of the strip.",
+      },
+      {
+        id: "box-dropdown",
+        anchor: null,
+        placement: "bottom",
+        title: "Hover to see inside",
+        body: "Hover the box pill to drop down its member list. Click a member to switch straight to it, or hit the × beside one to ungroup it (the project stays, it just leaves the box).",
+      },
+      {
+        id: "box-scope",
+        anchor: null,
+        placement: "bottom",
+        title: "Open, rename, delete",
+        body: "Click the box pill itself to open the box scope, like opening a project. Right-click it for Open, Rename, or Delete — deleting a box never deletes its projects, only the grouping.",
       },
     ],
   },
   {
-    id: "arrange-tabs",
-    title: "Arrange tabs",
-    blurb: "Reorder tabs, split panes, and pop tabs into their own window.",
+    id: "docker-sandbox",
+    category: "Advanced",
+    title: "Run agents in a Docker sandbox",
+    blurb: "Confine a project's agent tabs to an ephemeral container that mounts only that project.",
     steps: [
       {
-        id: "intro",
+        id: "why-sandbox",
+        anchor: ".project-pills-region",
+        placement: "top",
+        title: "Box the agent in",
+        body: "By default agents run on your host with your full filesystem in reach. A Docker sandbox confines a project's agent tabs to an ephemeral container that mounts only that project's directory — so a misbehaving agent can't wander outside it.",
+      },
+      {
+        id: "open-pill-menu",
+        anchor: ".project-pills-region",
+        placement: "top",
+        title: "Right-click the project pill",
+        body: "The toggle is per-project. Right-click the pill of the project you want to sandbox to open its context menu. (It's offered for local projects only — remote SSH projects run their agents on the host.)",
+      },
+      {
+        id: "flip-toggle",
         anchor: null,
         placement: "bottom",
-        title: "Make room your way",
-        body: "Every tab can be dragged. Reorder it, split the view, or pop it out into a separate window — all by dragging its tab. Let's walk through it.",
+        title: "Enable the sandbox",
+        body: "Click \"Run agents in Docker sandbox\". A ✓ appears beside it once it's on; click again to turn it back off. From now on, every new agent tab in this project launches inside a fresh container instead of on the host.",
       },
       {
-        id: "tab-bar",
-        anchor: ".tab-bar",
-        placement: "bottom",
-        title: "The tab bar",
-        body: "Each subwindow has its own tab strip. Drag a tab left or right within this bar to reorder it.",
-      },
-      {
-        id: "add-tab",
-        anchor: '[data-hint-anchor="tab-add"]',
-        placement: "bottom",
-        title: "Add a tab",
-        body: "The + button opens a new shell, agent, or files tab in this group. More tabs means more to arrange.",
-      },
-      {
-        id: "split",
+        id: "build-image",
         anchor: null,
         placement: "bottom",
-        title: "Split a pane",
-        body: "Drag a tab onto the edge of a pane — top, bottom, left, or right — to split the view and tile it side-by-side or stacked. Drop it in the middle instead to move it into that group.",
+        title: "Provide the image",
+        body: "The sandbox needs Docker installed and the image eldrun-agent-sandbox:latest present. Build it once with `docker build -t eldrun-agent-sandbox:latest docker/agent-sandbox`. If Docker or the image is missing, the agent tab opens with a clear error instead of silently running on the host.",
       },
       {
-        id: "detach",
+        id: "what-mounts",
         anchor: null,
         placement: "bottom",
-        title: "Pop out a window",
-        body: "Drag a tab (or a whole tab bar) out of the app to detach it into its own floating OS window. Drag it back over Eldrun to dock it again.",
+        title: "What the container sees",
+        body: "Each agent tab is its own `docker run --rm` container: it mounts the project folder plus the agent state it needs to resume (~/.claude, ~/.codex, Eldrun's state dir) and nothing else. Close the tab and the container is gone. Shell and Files tabs still run on the host as usual.",
+      },
+    ],
+  },
+  {
+    id: "add-ssh-project",
+    category: "Advanced",
+    title: "Add an SSH project",
+    blurb: "Work on a folder living on another machine — Eldrun mounts it over sshfs.",
+    steps: [
+      {
+        id: "open-add-menu",
+        anchor: '[data-hint-anchor="add-project"]',
+        placement: "top",
+        title: "Open the add menu",
+        body: "Click the + button beside your project pills, then pick New Project or Import Project. Both dialogs can host the project on a remote machine.",
       },
       {
-        id: "outro",
+        id: "flip-ssh-toggle",
         anchor: null,
         placement: "bottom",
-        title: "That's it",
-        body: "Reorder within a bar, drop on an edge to split, drop in the center to merge, drag out to detach. Rearrange freely — your layout is saved.",
+        title: "Flip the SSH toggle",
+        body: "Tick \"Remote (SSH) project\" at the top of the dialog. The local folder pickers disappear and the SSH connection fields take their place.",
+      },
+      {
+        id: "optional-vpn",
+        anchor: null,
+        placement: "bottom",
+        title: "Behind a VPN? (optional)",
+        body: "If the host is only reachable over a VPN, tick \"Connect via OpenVPN\", pick a .ovpn config (copied into Eldrun) and enter its passphrase, then hit Connect VPN before connecting SSH. Needs openvpn + polkit installed.",
+      },
+      {
+        id: "connect-ssh",
+        anchor: null,
+        placement: "bottom",
+        title: "Connect to the host",
+        body: "Type the SSH address as user@host or host:2222. Leave the password blank to use your SSH key/agent, or fill it in (needs sshpass). Click Connect — Eldrun verifies it can reach the host.",
+      },
+      {
+        id: "browse-remote",
+        anchor: null,
+        placement: "bottom",
+        title: "Pick the remote folder",
+        body: "Once connected, a remote file browser appears. Step into the directory you want, then click \"Use this folder\". On New it creates a subfolder there; on Import it registers it in place.",
+      },
+      {
+        id: "create-mount",
+        anchor: null,
+        placement: "bottom",
+        title: "Create and mount",
+        body: "Finish naming and pick a Git mode, then Create/Import. Eldrun mounts the remote folder over sshfs under its mounts directory and treats it like any local project. Requires sshfs/FUSE locally.",
+      },
+    ],
+  },
+  {
+    id: "ssh-via-openvpn",
+    category: "Advanced",
+    title: "SSH project via OpenVPN",
+    blurb: "Reach a host that's only available behind a VPN, then mount its folder over SSH.",
+    steps: [
+      {
+        id: "open-add-menu",
+        anchor: '[data-hint-anchor="add-project"]',
+        placement: "top",
+        title: "Open the add menu",
+        body: "Click the + button beside your project pills and pick New Project or Import Project. Either dialog can host the project on a VPN-gated remote.",
+      },
+      {
+        id: "flip-ssh-toggle",
+        anchor: null,
+        placement: "bottom",
+        title: "Flip the SSH toggle",
+        body: "Tick \"Remote (SSH) project\" at the top. The local folder pickers give way to the SSH connection fields — and an OpenVPN tunnel section above them.",
+      },
+      {
+        id: "enable-vpn",
+        anchor: null,
+        placement: "bottom",
+        title: "Enable the VPN tunnel",
+        body: "Tick \"Connect via OpenVPN\". This appears when the host isn't reachable directly — Eldrun will bring up the tunnel first, then connect SSH through it. Needs openvpn + polkit (pkexec) installed locally.",
+      },
+      {
+        id: "pick-ovpn",
+        anchor: null,
+        placement: "bottom",
+        title: "Choose your .ovpn config",
+        body: "Hit Browse… next to \"OpenVPN config\" and select your .ovpn file. Eldrun copies it into its own config store so the tunnel can be re-established later.",
+      },
+      {
+        id: "connect-vpn",
+        anchor: null,
+        placement: "bottom",
+        title: "Enter the passphrase and connect",
+        body: "Type the VPN passphrase, then click \"Connect VPN\". pkexec prompts for elevation, openvpn dials the tunnel, and the button flips to \"Connected\" once it's up.",
+      },
+      {
+        id: "connect-ssh",
+        anchor: null,
+        placement: "bottom",
+        title: "Now connect SSH",
+        body: "With the tunnel up, type the SSH address as user@host or host:2222. Leave the password blank to use your SSH key/agent, or fill it in (needs sshpass). Click Connect — Eldrun reaches the host through the VPN.",
+      },
+      {
+        id: "browse-and-create",
+        anchor: null,
+        placement: "bottom",
+        title: "Pick the folder and create",
+        body: "Step through the remote browser to your directory and click \"Use this folder\". Finish naming, pick a Git mode, then Create/Import. Eldrun mounts it over sshfs and treats it like any local project.",
       },
     ],
   },

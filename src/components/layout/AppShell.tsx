@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type MutableRefObject,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -38,10 +39,21 @@ import { useKeyboard } from "../../hooks/useKeyboard";
 // crossed on the way to the edge, so the reveal fires before the dead-zone.
 const REVEAL_EDGE_PX = 24;
 
+// Right-panel width bounds. The default matches the historical fixed 280px so
+// existing installs (no stored width) look unchanged; the max is capped against
+// the live window so the panel can never swallow the whole workspace.
+const RIGHT_PANEL_MIN = 220;
+const RIGHT_PANEL_DEFAULT = 280;
+function clampRightWidth(px: number): number {
+  const max = Math.max(RIGHT_PANEL_MIN, Math.min(900, window.innerWidth - 240));
+  return Math.round(Math.max(RIGHT_PANEL_MIN, Math.min(max, px)));
+}
+
 export function AppShell() {
   const loadSettings = useSettingsStore((s) => s.load);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const pinnedSetting = useSettingsStore((s) => s.settings?.right_panel_pinned ?? false);
+  const widthSetting = useSettingsStore((s) => s.settings?.right_panel_width ?? RIGHT_PANEL_DEFAULT);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const loadProjects = useProjectsStore((s) => s.load);
   const projectsLoaded = useProjectsStore((s) => s.loaded);
@@ -60,6 +72,9 @@ export function AppShell() {
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [rightPinned, setRightPinned] = useState(false);
+  const [rightWidth, setRightWidth] = useState(RIGHT_PANEL_DEFAULT);
+  const [resizingRight, setResizingRight] = useState(false);
+  const latestRightWidth = useRef(RIGHT_PANEL_DEFAULT);
   const [showHowToStart, setShowHowToStart] = useState(false);
   const [showLessons, setShowLessons] = useState(false);
   const rightCloseTimer = useRef<number | null>(null);
@@ -68,20 +83,29 @@ export function AppShell() {
     loadSettings();
     loadProjects();
     const win = getCurrentWindow();
+    // The window opens MAXIMIZED, not fullscreen (tauri.conf.json: `maximized: true`,
+    // `fullscreen: false`). This is deliberate on two counts:
+    //   1. Maximizing at config/map-time lets the WM record a clean restore geometry.
+    //      A JS `maximize()` fired right after load races KWin (the window may not be
+    //      mapped yet) and yields a fragile maximize-state — which both dropped the
+    //      "full at start" intent and broke KWin edge-snap after the maximize button
+    //      un-maximized (the button restore left stale tile state; a drag-restore,
+    //      which goes through KWin's own move handler, did not).
+    //   2. We must NOT enter fullscreen on Linux: a window the WM put into fullscreen
+    //      keeps `_NET_WM_STATE_FULLSCREEN`, which on KWin wins over MAXIMIZED and
+    //      makes the window UNMOVABLE — KWin refuses the `_NET_WM_MOVERESIZE` that
+    //      `startDragging` sends, so the header title-bar drag silently no-ops.
+    //      (Windows masked this because its fullscreen backend is a stub.) A maximized
+    //      window fills the monitor identically yet stays draggable and edge-snappable.
     if (PLATFORM === "macos") {
-      // macOS: real fullscreen is the platform-expected behavior (own Space) and
-      // the system traffic-light controls keep the window manageable, so keep it.
+      // macOS: real fullscreen is the platform-expected behavior (own Space) and the
+      // system traffic-light controls keep the window manageable. Enter it from the
+      // maximized start (brief flash before this resolves).
       win.setFullscreen(true).catch(() => {});
     } else {
-      // Windows AND Linux: real (borderless) fullscreen makes the window
-      // UNMOVABLE — the OS refuses to let a fullscreen window be dragged, so the
-      // header title-bar drag (startDragging) silently does nothing. On Windows it
-      // additionally strips the resizable/maximize styles Aero Snap relies on. Use
-      // a normal MAXIMIZED window instead: with decorations:false it fills the
-      // monitor identically, but keeps the standard styles so dragging the header
-      // restores-and-follows the cursor (and snaps to edges on Windows) like any
-      // other app. (Windows' fullscreen backend is a stub anyway — see the resize
-      // bridge and REVEAL_EDGE_PX notes below.)
+      // Windows AND Linux: config already maximizes at map-time; re-assert it
+      // defensively in case the WM dropped the hint, and guard against any stray
+      // fullscreen state that would strand the window (see note 2 above).
       win.setFullscreen(false).then(() => win.maximize()).catch(() => {});
     }
   }, [loadSettings, loadProjects]);
@@ -132,6 +156,16 @@ export function AppShell() {
     if (settingsLoaded) setRightPinned(pinnedSetting);
   }, [settingsLoaded, pinnedSetting]);
 
+  // Restore the stored panel width once settings load (clamped to the current
+  // window so a width saved on a wider monitor can't strand the panel off-screen).
+  useEffect(() => {
+    if (settingsLoaded) {
+      const w = clampRightWidth(widthSetting);
+      latestRightWidth.current = w;
+      setRightWidth(w);
+    }
+  }, [settingsLoaded, widthSetting]);
+
   // First-run "How to start": show once on a genuinely empty install (the
   // `projects.length === 0` guard keeps upgrading users — who already have
   // projects but no flag — from seeing it). Mark seen immediately (optimistic)
@@ -181,6 +215,42 @@ export function AppShell() {
       void updateSettings({ right_panel_pinned: next });
       return next;
     });
+  };
+
+  // Drag the panel's left border to resize. The panel is absolutely positioned
+  // at right:0, so its width is just `innerWidth - cursorX`. We update local
+  // state live (driving both the panel width and the docked body inset) and
+  // persist only on release. Pointer capture keeps the gesture alive when the
+  // cursor leaves the thin handle.
+  const onResizeStart = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture is best-effort */
+    }
+    setResizingRight(true);
+  };
+
+  const onResizeMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizingRight) return;
+    const w = clampRightWidth(window.innerWidth - e.clientX);
+    latestRightWidth.current = w;
+    setRightWidth(w);
+  };
+
+  const onResizeEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizingRight) return;
+    setResizingRight(false);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    void updateSettings({ right_panel_width: latestRightWidth.current });
+    // Terminals and other panes refit off the DOM resize event; the docked body
+    // inset just changed, so nudge them to remeasure at the new width.
+    window.dispatchEvent(new Event("resize"));
   };
 
   // Apply tab layout / right-panel restores emitted by the backend's
@@ -357,7 +427,8 @@ export function AppShell() {
         <div key={switchToast} className="project-switch-toast">{switchToast}</div>
       )}
       <div
-        className={`app-body${revealRight && rightPinned ? " right-docked" : ""}`}
+        className={`app-body${revealRight && rightPinned ? " right-docked" : ""}${resizingRight ? " resizing" : ""}`}
+        style={revealRight && rightPinned ? { paddingRight: rightWidth } : undefined}
         onMouseMove={handleBodyMouseMove}
       >
         <CenterPanel />
@@ -365,6 +436,11 @@ export function AppShell() {
           <RightPanel
             open={revealRight}
             pinned={rightPinned}
+            width={rightWidth}
+            resizing={resizingRight}
+            onResizeStart={onResizeStart}
+            onResizeMove={onResizeMove}
+            onResizeEnd={onResizeEnd}
             onTogglePin={togglePin}
             onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
             onMouseLeave={() => !rightPinned && scheduleClose(rightCloseTimer, setRightOpen)}

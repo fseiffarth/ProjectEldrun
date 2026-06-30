@@ -144,6 +144,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const unlistenExit = useRef<(() => void) | null>(null);
   const initialInputSent = useRef(false);
   const initialEnterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openWatchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firstOutputAt = useRef<number | null>(null);
   // xterm crashes if opened/written into a zero-size or display:none element
   // (its renderer never initializes, so syncScrollArea dereferences undefined).
@@ -410,6 +411,30 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // for viewport-level changes (maximize, fullscreen toggle).
     window.addEventListener("resize", doFit);
 
+    // Open watchdog (the "black agent tab" gate, esp. Windows/WebView2).
+    // tryOpen() only runs from the ResizeObserver and the `visible` effect. When
+    // a pane goes display:none → flex while `visible` was already true, the only
+    // trigger is the ResizeObserver firing on that box change — and WebView2
+    // occasionally drops that callback. The PTY has already spawned and is
+    // buffering its output into pendingOutput, but xterm never opens, so the
+    // pane stays black AND unresponsive (no open → no focus → keystrokes go
+    // nowhere). This bounded poll guarantees we keep attempting tryOpen while the
+    // pane is visible-but-unopened, so it can never get stuck closed. It costs a
+    // few cheap ticks at mount, stops the instant the terminal opens, and is
+    // capped by a wall-clock deadline so it can't spin forever (a legitimately
+    // hidden pane is opened by the `visible` effect when it is next shown).
+    const OPEN_WATCH_INTERVAL_MS = 150;
+    const OPEN_WATCH_DEADLINE_MS = 8000;
+    const watchStart = Date.now();
+    const watchOpen = () => {
+      openWatchTimer.current = null;
+      if (cancelled || openedRef.current) return;
+      if (visibleRef.current) tryOpen();
+      if (openedRef.current || Date.now() - watchStart >= OPEN_WATCH_DEADLINE_MS) return;
+      openWatchTimer.current = setTimeout(watchOpen, OPEN_WATCH_INTERVAL_MS);
+    };
+    openWatchTimer.current = setTimeout(watchOpen, OPEN_WATCH_INTERVAL_MS);
+
     // Agent-pane zoom: Ctrl+wheel scales the font; a window event keeps every
     // other open agent pane in sync with the shared level. Both are no-ops for
     // non-agent shells. The wheel listener is non-passive so it can preventDefault.
@@ -433,6 +458,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     return () => {
       cancelled = true;
       if (initialEnterTimer.current) clearTimeout(initialEnterTimer.current);
+      if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
       window.removeEventListener("resize", doFit);
       if (zoomable) {
         containerRef.current?.removeEventListener("wheel", onWheel);

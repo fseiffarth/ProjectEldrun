@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import { resolveProjectDirectory, type GitHostingInfo, type ProjectEntry } from "../types";
+import {
+  resolveProjectDirectory,
+  type GitHostingInfo,
+  type GitProvider,
+  type ProjectEntry,
+} from "../types";
 import {
   cmdToKind,
   isRestorableTab,
@@ -11,6 +16,8 @@ import {
 } from "./tabs";
 import { useTimerStore } from "./timer";
 import { useVpnPromptStore } from "./vpnPrompt";
+import { useSettingsStore } from "./settings";
+import { openConnectionInRoot } from "../lib/remoteConnect";
 
 /**
  * If `project` is VPN-gated, ensure its OpenVPN tunnel is up before any sshfs
@@ -19,9 +26,31 @@ import { useVpnPromptStore } from "./vpnPrompt";
  * VPN hiccup degrades to the same "host unreachable" path as an offline host
  * rather than blocking activation.
  */
+function connectionsHeadless(): boolean {
+  return useSettingsStore.getState().settings?.connections_headless ?? true;
+}
+
 async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<void> {
   const config = project?.remote?.openvpn?.config;
   if (!config) return;
+  // Non-headless: surface the tunnel as an interactive root-terminal tab instead
+  // of prompting Eldrun for the passphrase. The passphrase is typed directly into
+  // that terminal; Eldrun never handles it. Best-effort and non-blocking.
+  if (!connectionsHeadless()) {
+    try {
+      const up = await invoke<boolean>("openvpn_status", { config }).catch(() => false);
+      if (up) return;
+      const command = await invoke<string>("openvpn_login_command", { config });
+      openConnectionInRoot({
+        label: `OpenVPN · ${project!.name}`,
+        command,
+        dedupeKey: `vpn:${config}`,
+      });
+    } catch (error) {
+      console.warn("OpenVPN root-terminal connect skipped/failed", error);
+    }
+    return;
+  }
   try {
     const up = await invoke<boolean>("openvpn_status", { config }).catch(() => false);
     if (up) return;
@@ -29,6 +58,34 @@ async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<voi
     await invoke("openvpn_connect", { config, password });
   } catch (error) {
     console.warn("OpenVPN connect skipped/failed", error);
+  }
+}
+
+/**
+ * Non-headless SSH: open an interactive ssh login for `project`'s host as a
+ * root-terminal tab so the user authenticates there (the password is never seen
+ * by Eldrun). The login shares the multiplexing master socket with the sshfs
+ * mount, so once it is authenticated the mount rides it with no second prompt.
+ * No-op in headless mode (the backend mount handles auth via key/agent) and for
+ * local projects. Best-effort.
+ */
+async function ensureRootSshLoginIfNeeded(project: ProjectEntry | undefined): Promise<void> {
+  const remote = project?.remote;
+  if (!remote || connectionsHeadless()) return;
+  try {
+    const command = await invoke<string>("remote_login_command", {
+      user: remote.user ?? null,
+      host: remote.host,
+      port: remote.port ?? null,
+    });
+    const target = `${remote.user ? `${remote.user}@` : ""}${remote.host}`;
+    openConnectionInRoot({
+      label: `ssh · ${target}`,
+      command,
+      dedupeKey: `ssh:${target}:${remote.port ?? ""}`,
+    });
+  } catch (error) {
+    console.warn("SSH root-terminal login skipped/failed", error);
   }
 }
 
@@ -78,7 +135,11 @@ interface ProjectsStore {
   /** Disable (delete .git → git_type "none") or re-enable (git init → "local")
    * git for an existing project. Destructive when disabling. */
   setProjectGitDisabled: (id: string, disabled: boolean) => Promise<void>;
-  publishProject: (id: string, visibility: "public" | "private") => Promise<string>;
+  publishProject: (
+    id: string,
+    provider: GitProvider,
+    visibility: "public" | "private",
+  ) => Promise<string>;
   getProjectGitHosting: (id: string) => Promise<GitHostingInfo>;
   setProjectGitHosting: (
     id: string,
@@ -134,6 +195,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       if (active?.remote) {
         void (async () => {
           await ensureVpnIfNeeded(active);
+          await ensureRootSshLoginIfNeeded(active);
           await invoke("ensure_project_mounted", { projectId: activeId }).catch(
             (error) => console.warn("ensure_project_mounted (startup) failed", error),
           );
@@ -200,7 +262,9 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // its sshfs filesystem. Prompts for the password each time; non-blocking on
     // failure (the mount then degrades like an offline host).
     if (id !== null) {
-      await ensureVpnIfNeeded(nextProjects.find((p) => p.id === id));
+      const target = nextProjects.find((p) => p.id === id);
+      await ensureVpnIfNeeded(target);
+      await ensureRootSshLoginIfNeeded(target);
     }
     // Fire-and-forget: the switch runs on a backend worker thread and returns
     // immediately. The resulting tab layout / right-panel folder arrives via the
@@ -396,15 +460,22 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     }));
   },
 
-  publishProject: async (id, visibility) => {
-    // Backend runs `gh repo create … --push` (locally, or over ssh for a
-    // work-remote project) and writes the new push target into projects.json +
-    // project.json; mirror it into local state. Returns gh's stdout (repo URL).
-    const output = await invoke<string>("github_publish", { projectId: id, visibility });
+  publishProject: async (id, provider, visibility) => {
+    // Backend runs the provider CLI (`gh`/`glab` repo create … then push,
+    // locally or over ssh for a work-remote project) and writes the new push
+    // target + provider into projects.json + project.json; mirror it into local
+    // state. Returns the CLI's stdout (repo URL).
+    const output = await invoke<string>("publish_project", {
+      projectId: id,
+      provider,
+      visibility,
+    });
     const gitType = `remote-${visibility}`;
     set((state) => ({
       projects: state.projects.map((project) =>
-        project.id === id ? { ...project, git_type: gitType } : project,
+        project.id === id
+          ? { ...project, git_type: gitType, git_provider: provider }
+          : project,
       ),
     }));
     return output;

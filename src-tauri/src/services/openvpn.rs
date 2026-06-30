@@ -103,6 +103,67 @@ pub fn store_config(src: &str) -> Result<String, String> {
     Ok(dest.to_string_lossy().into_owned())
 }
 
+/// Single-quote `s` for a POSIX shell so a config path with spaces or
+/// metacharacters stays a single inert argument when the built command is typed
+/// into a terminal. Embedded single quotes become `'\''`.
+fn shell_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Build a ready-to-run shell command string that brings up the OpenVPN tunnel
+/// for `config` **interactively**, so the encrypted-key passphrase is typed
+/// directly into a visible terminal (no `--askpass` temp file, nothing for Eldrun
+/// to handle). Typed into a root-scope shell tab (see the frontend
+/// `openConnectionInRoot`) when headless connections are turned off.
+///
+/// Linux launches it elevated via `pkexec` (the tun device / routing need root);
+/// the polkit prompt comes first, then OpenVPN prompts for the passphrase on the
+/// same tty. `--auth-nocache` keeps the passphrase out of OpenVPN's memory across
+/// re-keys. Windows runs `openvpn.exe` directly (it must be started elevated).
+/// The config path is validated and shell-quoted as a single argument.
+#[cfg(target_os = "linux")]
+pub fn interactive_connect_command(config: &str) -> Result<String, String> {
+    let config = config.trim();
+    validate_arg("OpenVPN config", config)?;
+    if config.is_empty() {
+        return Err("OpenVPN config path must not be empty".to_string());
+    }
+    Ok(format!(
+        "pkexec openvpn --config {} --auth-nocache",
+        shell_quote(config)
+    ))
+}
+
+/// Windows variant: no `pkexec`; `openvpn.exe` must already be running elevated.
+#[cfg(target_os = "windows")]
+pub fn interactive_connect_command(config: &str) -> Result<String, String> {
+    let config = config.trim();
+    validate_arg("OpenVPN config", config)?;
+    if config.is_empty() {
+        return Err("OpenVPN config path must not be empty".to_string());
+    }
+    Ok(format!(
+        "openvpn --config {} --auth-nocache",
+        shell_quote(config)
+    ))
+}
+
+/// macOS has no wired OpenVPN backend yet (see [`connect`]).
+#[cfg(target_os = "macos")]
+pub fn interactive_connect_command(_config: &str) -> Result<String, String> {
+    Err("OpenVPN-gated projects are not yet supported on macOS".into())
+}
+
 /// True if `openvpn` and `pkexec` are both available on `PATH` (both are needed:
 /// OpenVPN to build the tunnel, polkit's `pkexec` to launch it elevated).
 #[cfg(target_os = "linux")]
@@ -525,6 +586,32 @@ pub fn disconnect_all() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_quote_wraps_and_escapes() {
+        assert_eq!(shell_quote("/home/u/a.ovpn"), "'/home/u/a.ovpn'");
+        assert_eq!(shell_quote("a b"), "'a b'");
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interactive_connect_command_linux_shape() {
+        let cmd = interactive_connect_command("/home/u/work.ovpn").unwrap();
+        // Elevated via pkexec; passphrase typed interactively (no --askpass file).
+        assert!(cmd.starts_with("pkexec openvpn --config "));
+        assert!(cmd.contains("'/home/u/work.ovpn'"));
+        assert!(cmd.contains("--auth-nocache"));
+        assert!(!cmd.contains("--askpass"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interactive_connect_command_rejects_bad_config() {
+        assert!(interactive_connect_command("-evil").is_err());
+        assert!(interactive_connect_command("/a\nb.ovpn").is_err());
+        assert!(interactive_connect_command("   ").is_err());
+    }
 
     #[test]
     fn openvpn_args_basic_shape() {

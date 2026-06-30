@@ -58,6 +58,14 @@ pub struct Settings {
     /// app/web. Only Claude supports the flag; other agents ignore it. Default ON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_remote_control: Option<bool>,
+    /// When true (the default), remote SSH/OpenVPN connections are made headlessly
+    /// in the background, with Eldrun handling the password transiently (sshpass /
+    /// askpass). When false, those connections are launched as interactive
+    /// terminal tabs in the Eldrun **root** scope so the password is typed directly
+    /// into the live terminal and Eldrun never handles it at all. Default ON
+    /// (headless) so existing behaviour is preserved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connections_headless: Option<bool>,
     /// Header resource-monitor row toggles. Each defaults ON when unset so the
     /// pill shows CPU/RAM/GPU by default; flip one off to hide that row. Shown in
     /// every build (independent of `debug`).
@@ -164,5 +172,12 @@ impl Settings {
     /// Defaults ON when unset so existing settings files opt in automatically.
     pub fn agent_remote_control(&self) -> bool {
         self.agent_remote_control.unwrap_or(true)
+    }
+
+    /// Whether remote SSH/OpenVPN connections are made headlessly (Eldrun handles
+    /// the password) rather than as interactive root-terminal tabs. Defaults ON
+    /// (headless) when unset so existing behaviour is preserved.
+    pub fn connections_headless(&self) -> bool {
+        self.connections_headless.unwrap_or(true)
     }
 }

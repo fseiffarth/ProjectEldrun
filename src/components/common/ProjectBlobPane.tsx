@@ -1,25 +1,42 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
-import type { ProjectBox, ProjectEntry } from "../../types";
+import { useWindowsStore } from "../../stores/windows";
+import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../../types";
 import { ActivityCalendar } from "../projects/ActivityCalendar";
+import {
+  type FileEntry,
+  fileIcon,
+  folderIcon,
+  fmtSize,
+  fmtModified,
+} from "../../lib/viewers/fileUtils";
 
 /**
- * A node in the 3D project cloud: either a project (any status — current,
- * active, or inactive) or a box (meta-grouping). Each is placed on a sphere and
- * rendered as a billboarded card that always faces the camera.
+ * A node in the 3D cloud. In the project cloud it's a project or a box; once a
+ * project is focused (the spherical file viewer) it's the centered project plus
+ * one node per file/folder in the current directory.
  */
 type BlobNode =
   | { id: string; kind: "project"; project: ProjectEntry }
-  | { id: string; kind: "box"; box: ProjectBox };
+  | { id: string; kind: "box"; box: ProjectBox }
+  | { id: string; kind: "center"; project: ProjectEntry; label: string; rel: string }
+  | { id: string; kind: "file"; entry: FileEntry };
 
-/** A unit-sphere coordinate, scaled by the cloud radius at layout time. */
+/** A 3D coordinate (already scaled by the node's cloud radius at layout time). */
 interface Vec3 {
   x: number;
   y: number;
   z: number;
+}
+
+/** The focused project + the directory currently shown around it. */
+interface FocusState {
+  project: ProjectEntry;
+  dir: string; // absolute project root
+  rel: string; // current directory relative to the root ("" = root)
 }
 
 /**
@@ -43,9 +60,27 @@ function fibonacciSphere(n: number, radius: number): Vec3[] {
 const ROT_SENSITIVITY = 0.3; // deg per px dragged
 const AUTO_SPIN = 0.06; // deg per frame when idle
 const MIN_DOLLY = -360;
-const MAX_DOLLY = 520;
 const PERSPECTIVE = 1100; // px; the perspective the CSS scene used to delegate
+// Zoom (dolly) can now push the camera all the way through the cloud rather than
+// stopping at the front shell. At dz = PERSPECTIVE the camera plane sits at the
+// cloud centre; a little beyond lets you fly out the far side. Capped so the
+// fly-through ends in mostly-empty space instead of an unbounded void.
+const MAX_DOLLY = PERSPECTIVE + 360;
+// Nodes whose projected depth falls within this of the camera are treated as
+// flown-past: hidden and click-through. NEAR_FADE is the runway over which a
+// node dissolves as it approaches that plane, so passing through one is a soft
+// fade rather than a pop (and it never blows up to an infinite scale).
+const NEAR_PLANE = 60;
+const NEAR_FADE = 240;
 const DBL_CLICK_MS = 260; // window to detect a double-click before the single fires
+
+/** Human-readable total time tracked on a project. */
+function fmtWorked(secs?: number): string {
+  if (!secs || secs <= 0) return "untracked";
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m worked` : `${m}m worked`;
+}
 
 /** Where the right-click menu is anchored, plus the project it targets. */
 interface BlobMenu {
@@ -55,22 +90,25 @@ interface BlobMenu {
 }
 
 /**
- * The "Projects" tab body: a navigable 3D cloud of every project and box. Drag
- * to orbit, scroll to zoom (dolly), click a node to jump to that project / open
- * that box. Inactive projects render dimmed so the at-a-glance status is clear.
+ * The "Projects" tab body: a navigable 3D cloud of every project and box, plus
+ * a spherical file viewer. Drag to orbit, scroll to zoom (dolly).
  *
- * Rendered without WebGL: the rAF loop rotates each node's sphere point and
- * does the perspective divide itself, then writes a plain 2D transform to the
- * DOM. It deliberately does NOT lean on CSS `perspective`/`preserve-3d` to
- * project the Z — WebKitGTK (Linux) drops nested-3D Z, which flattened the
- * sphere to a disc, while Chromium/WebView2 (Windows) honored it. Keeping the
- * state in refs means a slow spin and a 60fps drag never thrash React; the
- * static node list renders once. Each node is also depth-shaded (front bright,
- * back dim) so the cloud reads as a solid sphere.
+ * Two modes:
+ *  - **Cloud** (default): every project + box floats around the center. A
+ *    project's *distance* from the center grows with the time tracked on it, so
+ *    the most-worked projects sit furthest out. Single-click a project to focus
+ *    it (open the file viewer); double-click to open it as the current scope.
+ *  - **File viewer** (a project is focused): that project is pinned at the
+ *    center and its files/folders orbit around it. Click a folder to descend,
+ *    a file to open it, the center (or Esc) to go back up / exit.
  *
- * Project interactions: single-click an inactive project to activate it, double-
- * click any project to open it (make it current), right-click for a menu that
- * can inactivate it. Boxes open on click.
+ * Rendered without WebGL: the rAF loop rotates each node's point and does the
+ * perspective divide itself, then writes a plain 2D transform to the DOM. It
+ * deliberately does NOT lean on CSS `perspective`/`preserve-3d` to project the
+ * Z — WebKitGTK (Linux) drops nested-3D Z, which flattened the sphere to a disc,
+ * while Chromium/WebView2 (Windows) honored it. Keeping the orbit/zoom state in
+ * refs means a slow spin and a 60fps drag never thrash React. Each node is also
+ * depth-shaded (front bright, back dim) so the cloud reads as a solid sphere.
  */
 export function ProjectBlobPane() {
   const projects = useProjectsStore((s) => s.projects);
@@ -80,24 +118,86 @@ export function ProjectBlobPane() {
   const deactivateProject = useProjectsStore((s) => s.deactivateProject);
   const boxes = useBoxesStore((s) => s.boxes);
   const openBox = useBoxesStore((s) => s.openBox);
+  const openFile = useWindowsStore((s) => s.openFile);
 
   const [menu, setMenu] = useState<BlobMenu | null>(null);
   // The node currently hovered, plus where to anchor its info card. Cleared on
   // leave, on an orbit drag, and whenever the context menu opens.
   const [hover, setHover] = useState<{ x: number; y: number; node: BlobNode } | null>(null);
-  // Per-project activity history (date → seconds) for the hover card's GitHub-
-  // style heatmap, fetched lazily and cached so re-hovering doesn't refetch.
+  // Per-project activity history (date → seconds). Drives both the hover card's
+  // GitHub-style heatmap and the time-based cloud radius, so it's fetched for
+  // every project (not just on hover) and cached.
   const [activity, setActivity] = useState<Record<string, Record<string, number>>>({});
+  // The focused project + directory (null = project cloud).
+  const [focus, setFocus] = useState<FocusState | null>(null);
+  // Files/folders of the focused directory.
+  const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [entriesLoading, setEntriesLoading] = useState(false);
 
-  const hoverProjectId = hover?.node.kind === "project" ? hover.node.project.id : null;
+  // Fetch activity for any project we don't have yet (the guard makes this a
+  // one-shot per project, not a refetch loop).
   useEffect(() => {
-    if (!hoverProjectId || activity[hoverProjectId]) return;
-    invoke<Record<string, number>>("get_project_activity", { projectId: hoverProjectId })
-      .then((d) => setActivity((m) => ({ ...m, [hoverProjectId]: d })))
-      .catch(() => setActivity((m) => ({ ...m, [hoverProjectId]: {} })));
-  }, [hoverProjectId, activity]);
+    const missing = projects.filter((p) => !(p.id in activity)).map((p) => p.id);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      missing.map((id) =>
+        invoke<Record<string, number>>("get_project_activity", { projectId: id })
+          .then((d) => [id, d] as const)
+          .catch(() => [id, {}] as const),
+      ),
+    ).then((pairs) => {
+      if (!cancelled) setActivity((m) => ({ ...m, ...Object.fromEntries(pairs) }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projects, activity]);
+
+  // Total seconds tracked per project, and the busiest project, for the radius.
+  const totals = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [id, d] of Object.entries(activity)) {
+      out[id] = Object.values(d).reduce((a, b) => a + b, 0);
+    }
+    return out;
+  }, [activity]);
+  const maxTotal = useMemo(() => {
+    let m = 1;
+    for (const v of Object.values(totals)) if (v > m) m = v;
+    return m;
+  }, [totals]);
+
+  // Load the focused directory's listing whenever the focus/path changes.
+  useEffect(() => {
+    if (!focus) {
+      setEntries([]);
+      return;
+    }
+    let cancelled = false;
+    setEntriesLoading(true);
+    invoke<FileEntry[]>("list_dir", { projectDir: focus.dir, relPath: focus.rel })
+      .then((r) => {
+        if (!cancelled) setEntries(r);
+      })
+      .catch(() => {
+        if (!cancelled) setEntries([]);
+      })
+      .finally(() => {
+        if (!cancelled) setEntriesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [focus]);
 
   const nodes = useMemo<BlobNode[]>(() => {
+    if (focus) {
+      const label = focus.rel === "" ? focus.project.name : focus.rel.split("/").pop()!;
+      const center: BlobNode = { id: "center", kind: "center", project: focus.project, label, rel: focus.rel };
+      const fileNodes: BlobNode[] = entries.map((entry) => ({ id: `f:${entry.path}`, kind: "file", entry }));
+      return [center, ...fileNodes];
+    }
     const projectNodes: BlobNode[] = [...projects]
       .sort((a, b) => a.position - b.position)
       .map((project) => ({ id: `p:${project.id}`, kind: "project", project }));
@@ -105,11 +205,36 @@ export function ProjectBlobPane() {
       .sort((a, b) => a.position - b.position)
       .map((box) => ({ id: `b:${box.id}`, kind: "box", box }));
     return [...projectNodes, ...boxNodes];
-  }, [projects, boxes]);
+  }, [focus, entries, projects, boxes]);
 
-  // Sphere grows with population so dense clouds don't overlap.
-  const radius = useMemo(() => Math.min(520, 200 + nodes.length * 16), [nodes.length]);
-  const positions = useMemo(() => fibonacciSphere(nodes.length, radius), [nodes.length, radius]);
+  // Cloud radius grows with population so dense clouds don't overlap.
+  const radius = useMemo(() => Math.min(560, 220 + nodes.length * 16), [nodes.length]);
+
+  // Each ring node gets an even direction from the Fibonacci lattice, then a
+  // per-node distance: projects push out with time worked (more time → further
+  // from center), boxes sit at a neutral mid-radius, files are uniform, and the
+  // focused project is pinned at the very center.
+  const positions = useMemo(() => {
+    const ring = nodes.filter((n) => n.kind !== "center");
+    const dirs = fibonacciSphere(ring.length, 1);
+    const dirById = new Map<string, Vec3>();
+    ring.forEach((n, i) => dirById.set(n.id, dirs[i] ?? { x: 0, y: 0, z: 1 }));
+    return nodes.map((n) => {
+      if (n.kind === "center") return { x: 0, y: 0, z: 0 };
+      const d = dirById.get(n.id) ?? { x: 0, y: 0, z: 1 };
+      let s: number;
+      if (n.kind === "project") {
+        const tot = totals[n.project.id];
+        s = tot === undefined ? 0.72 : 0.5 + 0.5 * (tot / maxTotal);
+      } else if (n.kind === "box") {
+        s = 0.72;
+      } else {
+        s = 1; // files: uniform shell around the focused project
+      }
+      const r = radius * s;
+      return { x: d.x * r, y: d.y * r, z: d.z * r };
+    });
+  }, [nodes, radius, totals, maxTotal]);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
@@ -119,7 +244,7 @@ export function ProjectBlobPane() {
   // loop can't see) and writes straight to the card element.
   const hoverCardRef = useRef<HTMLDivElement>(null);
   const hoverIdRef = useRef<string | null>(null);
-  // Mirror the layout radius into a ref so the rAF loop (mounted once) can
+  // Mirror the outer radius into a ref so the rAF loop (mounted once) can
   // normalize each node's rotated depth without re-binding on population change.
   const radiusRef = useRef(radius);
   radiusRef.current = radius;
@@ -134,6 +259,27 @@ export function ProjectBlobPane() {
   const rotY = useRef(0);
   const dolly = useRef(0); // translateZ of the whole scene (zoom)
   const dragging = useRef(false);
+  // Set true once a press becomes a real orbit drag, so the click that the
+  // browser fires on pointerup is ignored by the node handlers. Reset at the
+  // start of every gesture (in onPointerDown) so it can never leak into a later,
+  // genuine click — the failure mode of the old one-shot window swallow.
+  const suppressClick = useRef(false);
+  // Bloom animation: on every layout change (enter/leave focus, change folder)
+  // the nodes fly out from the center. Progress runs 0→1 over ~380ms; the rAF
+  // loop scales each node's radius by it. lastTs carries the frame timestamp.
+  const animProgress = useRef(1);
+  const lastTs = useRef(0);
+  // Phase-1 "fly to center" when focusing a project: the chosen node id, its
+  // 0→1 progress, and the focus to commit (phase 2: the files bloom out) once it
+  // lands. Driven by the rAF loop so it can't fight React re-renders.
+  const convergeId = useRef<string | null>(null);
+  const convergeProgress = useRef(0);
+  const pendingFocus = useRef<FocusState | null>(null);
+  // Restart the bloom whenever the rendered layout (mode/project/folder) changes.
+  const layoutKey = focus ? `f:${focus.project.id}:${focus.rel}` : "cloud";
+  useEffect(() => {
+    animProgress.current = 0;
+  }, [layoutKey]);
 
   const registerNode = useCallback(
     (id: string) => (el: HTMLDivElement | null) => {
@@ -143,17 +289,29 @@ export function ProjectBlobPane() {
     [],
   );
 
-  // rAF loop: apply the scene rotation/zoom and billboard every node so cards
-  // stay upright and face the camera regardless of orbit. Auto-spins gently
-  // while the user isn't dragging.
+  // rAF loop: rotate + project every node and pin the hover card. Auto-spins
+  // gently while the user isn't dragging.
   useEffect(() => {
     let raf = 0;
-    const frame = () => {
+    const frame = (ts: number) => {
       // Panes stay mounted across scope switches; skip all work (and the spin)
       // while this one is hidden (display:none → no offsetParent).
       if (!viewportRef.current?.offsetParent) {
+        lastTs.current = ts;
         raf = requestAnimationFrame(frame);
         return;
+      }
+      // Advance the bloom: ease the radius out, fade opacity in a touch faster.
+      const dt = lastTs.current ? ts - lastTs.current : 16;
+      lastTs.current = ts;
+      if (animProgress.current < 1) animProgress.current = Math.min(1, animProgress.current + dt / 380);
+      const grow = 1 - Math.pow(1 - animProgress.current, 3); // easeOutCubic radius
+      const fadeIn = Math.min(1, animProgress.current * 1.6);
+      // Phase-1 converge: pull the chosen node to center, fade the rest out.
+      let convAmt = 0;
+      if (convergeId.current) {
+        convergeProgress.current = Math.min(1, convergeProgress.current + dt / 240);
+        convAmt = 1 - Math.pow(1 - convergeProgress.current, 2);
       }
       if (!dragging.current) rotY.current += AUTO_SPIN;
       const rx = rotX.current;
@@ -167,8 +325,8 @@ export function ProjectBlobPane() {
       // Windows looked correct).
       if (scene) scene.style.transform = "none";
       // Scene rotation Rx·Ry (matching the original CSS transform order). We
-      // rotate each sphere point here and project it with a manual perspective
-      // divide so the result is identical on every webview.
+      // rotate each point here and project it with a manual perspective divide
+      // so the result is identical on every webview.
       const rxr = (rx * Math.PI) / 180;
       const ryr = (ry * Math.PI) / 180;
       const cx = Math.cos(rxr);
@@ -179,26 +337,53 @@ export function ProjectBlobPane() {
       const dz = dolly.current; // zoom, applied as a Z offset before projection
       const hoverId = hoverIdRef.current;
       for (const [id, el] of nodeEls.current.entries()) {
-        const x = Number(el.dataset.x) || 0;
-        const y = Number(el.dataset.y) || 0;
-        const z = Number(el.dataset.z) || 0;
-        // Apply Ry then Rx to the sphere point. worldZ grows toward the viewer.
+        // Per-node radius/opacity factors. Default = the bloom intro; during a
+        // converge the chosen node is pulled to center (the rest fade + drift).
+        let nodeGrow = grow;
+        let nodeFade = fadeIn;
+        if (convergeId.current) {
+          if (id === convergeId.current) {
+            nodeGrow = 1 - convAmt;
+            nodeFade = 1;
+          } else {
+            nodeGrow = 1 + convAmt * 0.5;
+            nodeFade = 1 - convAmt;
+          }
+        }
+        // Scale by the factor so nodes fly out from / into the center; the
+        // focused project sits at the origin and so stays put while files spread.
+        const x = (Number(el.dataset.x) || 0) * nodeGrow;
+        const y = (Number(el.dataset.y) || 0) * nodeGrow;
+        const z = (Number(el.dataset.z) || 0) * nodeGrow;
+        // Apply Ry then Rx to the point. worldZ grows toward the viewer.
         const x1 = x * cy + z * sy;
         const z1 = -x * sy + z * cy;
         const screenY = y * cx - z1 * sx;
         const worldZ = y * sx + z1 * cx;
         // Perspective divide: nearer nodes (high worldZ) magnify and spread out,
         // farther ones shrink toward the center — the cue that turns a flat ring
-        // of cards into a readable sphere. Clamp the denominator so a node never
-        // crosses the camera plane and blows up.
-        const f = PERSPECTIVE / Math.max(120, PERSPECTIVE - (worldZ + dz));
+        // of cards into a readable sphere. `denom` shrinks as the camera dollies
+        // toward a node; once it reaches the near plane the node is at/behind the
+        // camera (we've flown past it), so hide it and let clicks fall through.
+        const denom = PERSPECTIVE - (worldZ + dz);
+        if (denom <= NEAR_PLANE) {
+          el.style.opacity = "0";
+          el.style.pointerEvents = "none";
+          el.style.zIndex = "-1";
+          continue;
+        }
+        const f = PERSPECTIVE / denom;
         const tx = x1 * f;
         const ty = screenY * f;
         // Depth-shade opacity (0 far … 1 near) on top of the size foreshortening;
         // zIndex keeps front cards above back ones.
         const t = Math.max(0, Math.min(1, (worldZ / radius + 1) / 2));
+        // Dissolve the node over the near runway so flying through it fades out
+        // smoothly instead of popping at full (huge) scale.
+        const nearFade = Math.min(1, (denom - NEAR_PLANE) / NEAR_FADE);
+        el.style.pointerEvents = "";
         el.style.transform = `translate(${tx.toFixed(1)}px, ${ty.toFixed(1)}px) scale(${f.toFixed(3)})`;
-        el.style.opacity = (0.28 + t * 0.72).toFixed(3);
+        el.style.opacity = ((0.28 + t * 0.72) * nodeFade * nearFade).toFixed(3);
         el.style.zIndex = String(Math.round(worldZ));
         // Pin the hover card just off the node so it tracks the spin. The scene
         // is anchored at the viewport center, so the node's screen point is that
@@ -214,6 +399,15 @@ export function ProjectBlobPane() {
           card.style.top = `${Math.min(Math.max(8, py), window.innerHeight - ch - 8)}px`;
         }
       }
+      // Converge landed: commit the focus. The layout-key effect then resets the
+      // bloom so the focused project's files fly out from the center.
+      if (convergeId.current && convergeProgress.current >= 1) {
+        const pf = pendingFocus.current;
+        convergeId.current = null;
+        pendingFocus.current = null;
+        dolly.current = 0;
+        setFocus(pf);
+      }
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
@@ -228,15 +422,31 @@ export function ProjectBlobPane() {
     const startY = e.clientY;
     const baseRotX = rotX.current;
     const baseRotY = rotY.current;
+    const target = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    // Fresh gesture: clear any stale suppression so a press that turns out to be
+    // a plain click always reaches the node handlers.
+    suppressClick.current = false;
     let moved = false;
-    dragging.current = true;
-    setHover(null);
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    let captured = false;
 
     const onMove = (ev: PointerEvent) => {
       const dx = ev.clientX - startX;
       const dy = ev.clientY - startY;
-      if (!moved && Math.hypot(dx, dy) > 4) moved = true;
+      // Only treat this as an orbit drag once the pointer clears the threshold.
+      // Capturing the pointer eagerly on press makes WebKitGTK route the
+      // pointerup to the viewport, so the node never receives its click and both
+      // single- and double-click die. Capturing lazily keeps a stationary click
+      // a normal click.
+      if (!moved) {
+        if (Math.hypot(dx, dy) <= 4) return;
+        moved = true;
+        dragging.current = true;
+        suppressClick.current = true;
+        setHover(null);
+        captured = true;
+        target.setPointerCapture?.(pointerId);
+      }
       rotY.current = baseRotY + dx * ROT_SENSITIVITY;
       // Clamp vertical orbit so the cloud never flips fully upside-down.
       rotX.current = Math.max(-85, Math.min(85, baseRotX - dy * ROT_SENSITIVITY));
@@ -245,16 +455,9 @@ export function ProjectBlobPane() {
       dragging.current = false;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      (e.currentTarget as HTMLElement).releasePointerCapture?.(ev.pointerId);
-      // Suppress the click that follows a real drag so we don't also activate a
-      // node the pointer happened to release over.
-      if (moved) {
-        const swallow = (c: MouseEvent) => {
-          c.stopPropagation();
-          c.preventDefault();
-        };
-        window.addEventListener("click", swallow, { capture: true, once: true });
-      }
+      if (captured) target.releasePointerCapture?.(ev.pointerId);
+      // suppressClick stays set for the click the browser fires on this
+      // pointerup (if any); the next pointerdown resets it, so it never leaks.
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -264,16 +467,6 @@ export function ProjectBlobPane() {
     dolly.current = Math.max(MIN_DOLLY, Math.min(MAX_DOLLY, dolly.current - e.deltaY * 0.6));
   }, []);
 
-  // Open = make this project current (switches scope). Used by double-click and
-  // the box single-click, and the menu's "Open".
-  const openNode = useCallback(
-    (node: BlobNode) => {
-      if (node.kind === "project") void setActive(node.project.id);
-      else void openBox(node.box.id);
-    },
-    [setActive, openBox],
-  );
-
   const clearClickTimer = useCallback(() => {
     if (clickTimer.current !== null) {
       window.clearTimeout(clickTimer.current);
@@ -281,12 +474,80 @@ export function ProjectBlobPane() {
     }
   }, []);
 
-  // Single click: boxes open immediately; an inactive project is activated; an
-  // already-active/current project does nothing (open is the double-click). The
-  // action is deferred briefly so a following double-click can cancel it.
+  // Focus a project: pin it at center and open the spherical file viewer at its
+  // root. Resets the zoom so the new shell is framed.
+  const enterFocus = useCallback((project: ProjectEntry) => {
+    const dir = resolveProjectDirectory(project);
+    if (!dir) return;
+    setHover(null);
+    // Phase 1: the clicked project flies to center while the rest of the cloud
+    // fades; the rAF loop commits the focus when the converge lands.
+    pendingFocus.current = { project, dir, rel: "" };
+    convergeProgress.current = 0;
+    convergeId.current = `p:${project.id}`;
+  }, []);
+
+  // Jump straight to a directory (breadcrumb click); "" is the project root.
+  const jumpTo = useCallback((rel: string) => {
+    setHover(null);
+    setFocus((f) => (f ? { ...f, rel } : f));
+  }, []);
+
+  // Leave the file viewer entirely, back to the project cloud.
+  const exitToCloud = useCallback(() => {
+    setHover(null);
+    dolly.current = 0;
+    setFocus(null);
+  }, []);
+
+  // Go up one level in the file viewer; exit to the project cloud from the root.
+  const ascend = useCallback(() => {
+    setHover(null);
+    setFocus((f) => {
+      if (!f) return null;
+      if (f.rel === "") {
+        dolly.current = 0;
+        return null;
+      }
+      const parent = f.rel.includes("/") ? f.rel.slice(0, f.rel.lastIndexOf("/")) : "";
+      return { ...f, rel: parent };
+    });
+  }, []);
+
+  // Open = make a project the current scope (switches view) / open a box.
+  const openNode = useCallback(
+    (node: BlobNode) => {
+      if (node.kind === "project" || node.kind === "center") void setActive(node.project.id);
+      else if (node.kind === "box") void openBox(node.box.id);
+    },
+    [setActive, openBox],
+  );
+
+  // Single click. In the cloud a project focuses (deferred so a double-click can
+  // promote it to "open scope"); a box opens. In the file viewer a folder
+  // descends, a file opens, and the center steps back up.
   const onNodeClick = useCallback(
     (node: BlobNode) => {
+      // Swallow the click the browser fires at the end of an orbit drag so the
+      // node the pointer happened to release over isn't activated.
+      if (suppressClick.current) {
+        suppressClick.current = false;
+        return;
+      }
       clearClickTimer();
+      if (node.kind === "center") {
+        ascend();
+        return;
+      }
+      if (node.kind === "file") {
+        if (node.entry.is_dir) {
+          setHover(null);
+          setFocus((f) => (f ? { ...f, rel: f.rel ? `${f.rel}/${node.entry.name}` : node.entry.name } : f));
+        } else {
+          void openFile(node.entry.path, undefined, focus?.project.id ?? null, "blob_file_viewer");
+        }
+        return;
+      }
       if (node.kind === "box") {
         openNode(node);
         return;
@@ -294,28 +555,29 @@ export function ProjectBlobPane() {
       const { project } = node;
       clickTimer.current = window.setTimeout(() => {
         clickTimer.current = null;
-        if (project.status === "inactive") void activateProject(project.id);
+        enterFocus(project);
       }, DBL_CLICK_MS);
     },
-    [openNode, activateProject, clearClickTimer],
+    [clearClickTimer, ascend, openFile, focus, openNode, enterFocus],
   );
 
   const onNodeDoubleClick = useCallback(
     (node: BlobNode) => {
       clearClickTimer();
-      openNode(node);
+      if (node.kind === "project" || node.kind === "box" || node.kind === "center") openNode(node);
     },
     [openNode, clearClickTimer],
   );
 
   const onNodeContextMenu = useCallback(
     (e: React.MouseEvent, node: BlobNode) => {
-      if (node.kind !== "project") return;
+      const project = node.kind === "project" || node.kind === "center" ? node.project : null;
+      if (!project) return;
       e.preventDefault();
       e.stopPropagation();
       clearClickTimer();
       setHover(null);
-      setMenu({ x: e.clientX, y: e.clientY, project: node.project });
+      setMenu({ x: e.clientX, y: e.clientY, project });
     },
     [clearClickTimer],
   );
@@ -328,10 +590,20 @@ export function ProjectBlobPane() {
     return () => window.removeEventListener("pointerdown", dismiss);
   }, [menu]);
 
+  // Esc steps back up / exits the file viewer.
+  useEffect(() => {
+    if (!focus) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") ascend();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [focus, ascend]);
+
   // Drop the pending single-click timer if the pane unmounts.
   useEffect(() => () => clearClickTimer(), [clearClickTimer]);
 
-  if (nodes.length === 0) {
+  if (nodes.length === 0 && !focus) {
     return (
       <div className="blob-viewport blob-empty">
         <div className="blob-empty-card">No projects yet — create one to populate the cloud.</div>
@@ -346,19 +618,65 @@ export function ProjectBlobPane() {
       onPointerDown={onPointerDown}
       onWheel={onWheel}
     >
+      {focus && (
+        <div className="blob-breadcrumb" onPointerDown={(e) => e.stopPropagation()}>
+          <button className="blob-crumb blob-crumb-exit" title="Back to projects" onClick={exitToCloud}>
+            ✕
+          </button>
+          <button className="blob-crumb" onClick={() => jumpTo("")}>
+            {focus.project.name}
+          </button>
+          {focus.rel
+            ? focus.rel.split("/").map((seg, idx, arr) => (
+                <Fragment key={idx}>
+                  <span className="blob-crumb-sep">/</span>
+                  <button className="blob-crumb" onClick={() => jumpTo(arr.slice(0, idx + 1).join("/"))}>
+                    {seg}
+                  </button>
+                </Fragment>
+              ))
+            : null}
+          {entriesLoading && <span className="blob-crumb-loading">loading…</span>}
+        </div>
+      )}
       <div className="blob-hint">
-        Drag to orbit · scroll to zoom · click to activate · double-click to open · right-click for menu
+        {focus
+          ? "Click a folder to enter · click a file to open · center or Esc to go back"
+          : "Drag to orbit · scroll to zoom · click to explore files · double-click to open · right-click for menu"}
       </div>
       <div className="blob-stage">
         <div ref={sceneRef} className="blob-scene">
           {nodes.map((node, i) => {
             const pos = positions[i] ?? { x: 0, y: 0, z: 0 };
             const base = `translate3d(${pos.x.toFixed(1)}px, ${pos.y.toFixed(1)}px, ${pos.z.toFixed(1)}px)`;
-            const isProject = node.kind === "project";
-            const status = isProject ? node.project.status : "box";
-            const label = isProject ? node.project.name : node.box.name;
-            const isActive = isProject && node.project.id === activeId;
-            const memberCount = node.kind === "box" ? node.box.member_ids.length : 0;
+
+            let cls = "blob-node";
+            let icon = "●";
+            let label = "";
+            let sub: number | null = null;
+            let isActive = false;
+            if (node.kind === "project") {
+              const status = node.project.status;
+              cls += ` blob-node-project blob-status-${status}`;
+              icon = status === "inactive" ? "○" : "●";
+              label = node.project.name;
+              isActive = node.project.id === activeId;
+            } else if (node.kind === "box") {
+              cls += " blob-node-box blob-status-box";
+              icon = "▦";
+              label = node.box.name;
+              sub = node.box.member_ids.length;
+            } else if (node.kind === "center") {
+              cls += " blob-node-center";
+              icon = node.rel === "" ? "◉" : "↑";
+              label = node.label;
+            } else {
+              cls += node.entry.is_dir ? " blob-node-file blob-file-dir" : " blob-node-file blob-file-doc";
+              icon = node.entry.is_dir ? folderIcon() : fileIcon(node.entry.extension ?? null);
+              label = node.entry.name;
+            }
+            if (isActive) cls += " blob-node-active";
+
             return (
               <div
                 key={node.id}
@@ -367,14 +685,9 @@ export function ProjectBlobPane() {
                 data-y={pos.y.toFixed(1)}
                 data-z={pos.z.toFixed(1)}
                 style={{ transform: base }}
-                className={
-                  `blob-node blob-node-${node.kind} blob-status-${status}` +
-                  (isActive ? " blob-node-active" : "")
-                }
+                className={cls}
                 onPointerEnter={(e) => setHover({ x: e.clientX, y: e.clientY, node })}
-                onPointerLeave={() =>
-                  setHover((h) => (h?.node.id === node.id ? null : h))
-                }
+                onPointerLeave={() => setHover((h) => (h?.node.id === node.id ? null : h))}
                 onClick={(e) => {
                   e.stopPropagation();
                   onNodeClick(node);
@@ -386,10 +699,10 @@ export function ProjectBlobPane() {
                 onContextMenu={(e) => onNodeContextMenu(e, node)}
               >
                 <span className="blob-node-icon" aria-hidden>
-                  {node.kind === "box" ? "▦" : status === "inactive" ? "○" : "●"}
+                  {icon}
                 </span>
                 <span className="blob-node-label">{label}</span>
-                {node.kind === "box" && <span className="blob-node-sub">{memberCount}</span>}
+                {sub !== null && <span className="blob-node-sub">{sub}</span>}
               </div>
             );
           })}
@@ -434,8 +747,8 @@ export function ProjectBlobPane() {
         document.body,
       )}
 
-      {/* Hover info card: the node's description (or details), anchored near the
-          pointer. Suppressed while the context menu is open. */}
+      {/* Hover info card, anchored to the node (pinned each frame by the rAF
+          loop). Suppressed while the context menu is open. */}
       {hover && !menu && createPortal(
         <div
           ref={hoverCardRef}
@@ -445,29 +758,61 @@ export function ProjectBlobPane() {
             top: Math.min(hover.y + 16, window.innerHeight - 200),
           }}
         >
-          {hover.node.kind === "project" ? (
+          {(hover.node.kind === "project" || hover.node.kind === "center") && (
             <>
               <div className="blob-hover-title">{hover.node.project.name}</div>
-              <div className="blob-hover-meta">{hover.node.project.status}</div>
-              <div className="blob-hover-desc">
-                {hover.node.project.description?.trim() || "No description yet."}
+              <div className="blob-hover-meta">
+                {hover.node.kind === "center"
+                  ? hover.node.rel
+                    ? `/${hover.node.rel}`
+                    : "project root"
+                  : `${hover.node.project.status} · ${fmtWorked(totals[hover.node.project.id])}`}
               </div>
-              {hoverProjectId && activity[hoverProjectId] && (
-                <div className="blob-hover-activity">
-                  <ActivityCalendar data={activity[hoverProjectId]} />
+              {hover.node.kind === "project" && (
+                <div className="blob-hover-desc">
+                  {hover.node.project.description?.trim() || "No description yet."}
                 </div>
               )}
+              {activity[hover.node.project.id] && (
+                <div className="blob-hover-activity">
+                  <ActivityCalendar data={activity[hover.node.project.id]} />
+                </div>
+              )}
+              <div className="blob-hover-hint">
+                {hover.node.kind === "center"
+                  ? "Click to go up · double-click to open · Esc to exit"
+                  : "Click to explore files · double-click to open"}
+              </div>
             </>
-          ) : (
+          )}
+          {hover.node.kind === "box" && (
             <>
               <div className="blob-hover-title">{hover.node.box.name}</div>
               <div className="blob-hover-meta">
                 Box · {hover.node.box.member_ids.length} project
                 {hover.node.box.member_ids.length === 1 ? "" : "s"}
               </div>
+              <div className="blob-hover-hint">Double-click to open</div>
             </>
           )}
-          <div className="blob-hover-hint">Double-click to open</div>
+          {hover.node.kind === "file" && (
+            <>
+              <div className="blob-hover-title">{hover.node.entry.name}</div>
+              <div className="blob-hover-meta">
+                {hover.node.entry.is_dir
+                  ? "Folder"
+                  : `${
+                      hover.node.entry.extension
+                        ? `${hover.node.entry.extension.replace(/^\./, "").toUpperCase()} file`
+                        : "File"
+                    } · ${fmtSize(hover.node.entry.size)}`}
+              </div>
+              <div className="blob-hover-hint">
+                {hover.node.entry.is_dir ? "Click to enter folder" : "Click to open"} ·{" "}
+                {fmtModified(hover.node.entry.modified_secs)}
+              </div>
+            </>
+          )}
         </div>,
         document.body,
       )}

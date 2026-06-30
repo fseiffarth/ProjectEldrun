@@ -98,8 +98,17 @@ export interface Settings {
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
   agent_remote_control?: boolean;
+  /** When true (the default), remote SSH/OpenVPN connections are made headlessly
+   *  in the background (Eldrun handles the password transiently). When false, they
+   *  are launched as interactive terminal tabs in the Eldrun root scope, so the
+   *  password is typed directly into the live terminal and Eldrun never handles
+   *  it. Default ON (headless) preserves existing behaviour. */
+  connections_headless?: boolean;
   /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
   right_panel_pinned?: boolean;
+  /** Width of the right (file/git) panel in px. Set by dragging the panel's left
+   *  border; unset falls back to the default 280px. */
+  right_panel_width?: number;
   /** Minimum subwindow (split pane) width in px a divider drag may shrink to.
    *  Unset falls back to DEFAULT_MIN_SUBWINDOW_PX. */
   min_subwindow_width?: number;
@@ -173,6 +182,18 @@ export interface SshTooling {
   openvpn: boolean;
 }
 
+/** Platform-tailored instructions for installing `sshfs`. */
+export interface SshfsInstallGuide {
+  /** Host OS: "linux" | "macos" | "windows" | "other". */
+  os: string;
+  /** One-line human instruction shown above the commands. */
+  instruction: string;
+  /** Shell command(s) to install sshfs; empty where install is driver-based. */
+  commands: string[];
+  /** Web page with full instructions / downloads. */
+  url: string;
+}
+
 export interface ProjectEntry {
   id: string;
   name: string;
@@ -191,8 +212,14 @@ export interface ProjectEntry {
    *  from project.json into the pill list; the matching token lives in the OS
    *  keyring, never here. See `GitHostingInfo`. */
   git_profile_url?: string;
+  /** Hosting provider this project was published to, recorded at publish time.
+   *  Absent until published to a remote. */
+  git_provider?: GitProvider;
   [key: string]: unknown;
 }
+
+/** Supported git-hosting providers for publishing a project's repo. */
+export type GitProvider = "github" | "gitlab";
 
 /**
  * Per-project git-hosting config as returned by `get_project_git_hosting`. The

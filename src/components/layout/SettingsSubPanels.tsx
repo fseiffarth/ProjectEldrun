@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { useSettingsStore } from "../../stores/settings";
+import { IS_WINDOWS } from "../../lib/platform";
 import type { GlobalAppEntry } from "../../types";
 
 interface OllamaModelInfo {
@@ -261,7 +262,10 @@ interface AgentInfo {
   id: string;
   label: string;
   bin: string;
+  /** Install command for the host OS; empty when no one-line installer exists. */
   install_cmd: string;
+  /** Shell the command runs in: "bash", "PowerShell", or "PowerShell or Command Prompt". */
+  shell: string;
   docs: string;
   installed: boolean;
 }
@@ -378,49 +382,80 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
               </div>
               {!a.installed && (
                 <>
-                  <div className="ollama-install-cmd-row">
-                    <button
-                      type="button"
-                      className="ollama-action-btn primary"
-                      disabled={installing !== null}
-                      onClick={() => void installAgent(a.id)}
-                    >
-                      {installing === a.id ? "Installing…" : `Install ${a.label}`}
-                    </button>
-                    {installing === a.id && (
-                      <span className="ollama-status-text">Running installer…</span>
-                    )}
-                  </div>
-                  {logs[a.id] && (
-                    <pre
-                      className="ollama-install-log"
-                      ref={installing === a.id ? logRef : undefined}
-                    >
-                      {logs[a.id]}
-                    </pre>
+                  {/* Auto-install runs the Unix installer via `sh`, so it only
+                      works on Linux/macOS. On Windows we show the manual
+                      PowerShell command instead. */}
+                  {!IS_WINDOWS && (
+                    <>
+                      <div className="ollama-install-cmd-row">
+                        <button
+                          type="button"
+                          className="ollama-action-btn primary"
+                          disabled={installing !== null}
+                          onClick={() => void installAgent(a.id)}
+                        >
+                          {installing === a.id ? "Installing…" : `Install ${a.label}`}
+                        </button>
+                        {installing === a.id && (
+                          <span className="ollama-status-text">Running installer…</span>
+                        )}
+                      </div>
+                      {logs[a.id] && (
+                        <pre
+                          className="ollama-install-log"
+                          ref={installing === a.id ? logRef : undefined}
+                        >
+                          {logs[a.id]}
+                        </pre>
+                      )}
+                      {errors[a.id] && (
+                        <div className="project-dialog-error">{errors[a.id]}</div>
+                      )}
+                    </>
                   )}
-                  {errors[a.id] && (
-                    <div className="project-dialog-error">{errors[a.id]}</div>
+                  {a.install_cmd ? (
+                    <>
+                      <p className="settings-help">
+                        {IS_WINDOWS ? "Run it in " : "Or run it manually in "}
+                        <strong>{a.shell}</strong>:
+                      </p>
+                      <div className="ollama-install-cmd-row">
+                        <code className="ollama-install-cmd">{a.install_cmd}</code>
+                        <button
+                          type="button"
+                          className="ollama-action-btn"
+                          onClick={() => void copyCmd(a.id, a.install_cmd)}
+                        >
+                          {copied === a.id ? "Copied!" : "Copy"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ollama-action-btn"
+                          disabled={installing !== null}
+                          onClick={() => recheck(a.id)}
+                        >
+                          Re-check
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="settings-help">
+                      No one-line Windows installer yet — see{" "}
+                      <a href={a.docs} target="_blank" rel="noreferrer">
+                        the install docs
+                      </a>
+                      , then click{" "}
+                      <button
+                        type="button"
+                        className="ollama-action-btn"
+                        disabled={installing !== null}
+                        onClick={() => recheck(a.id)}
+                      >
+                        Re-check
+                      </button>
+                      .
+                    </p>
                   )}
-                  <p className="settings-help">Or run it manually in a terminal:</p>
-                  <div className="ollama-install-cmd-row">
-                    <code className="ollama-install-cmd">{a.install_cmd}</code>
-                    <button
-                      type="button"
-                      className="ollama-action-btn"
-                      onClick={() => void copyCmd(a.id, a.install_cmd)}
-                    >
-                      {copied === a.id ? "Copied!" : "Copy"}
-                    </button>
-                    <button
-                      type="button"
-                      className="ollama-action-btn"
-                      disabled={installing !== null}
-                      onClick={() => recheck(a.id)}
-                    >
-                      Re-check
-                    </button>
-                  </div>
                 </>
               )}
             </div>

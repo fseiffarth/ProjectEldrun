@@ -2691,6 +2691,53 @@ select option {
   color: var(--text-secondary);
   font-size: 13px;
 }
+/* Clickable path bar shown while the spherical file viewer is open. */
+.blob-breadcrumb {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 80%;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  border: 1px solid var(--border-subtle);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.blob-crumb {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.blob-crumb:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text-primary);
+}
+.blob-crumb-exit {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.blob-crumb-sep {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.blob-crumb-loading {
+  flex-shrink: 0;
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
 .blob-hint {
   position: absolute;
   left: 50%;
@@ -2774,6 +2821,19 @@ select option {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
 }
+/* The focused project, pinned at the center of the spherical file viewer. */
+.blob-node-center {
+  border-color: var(--accent);
+  background: var(--bg-panel);
+  font-weight: 600;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 24px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.blob-node-center .blob-node-icon { color: var(--accent); }
+/* File/folder nodes orbiting the focused project. */
+.blob-file-dir .blob-node-icon,
+.blob-file-doc .blob-node-icon { font-size: 13px; }
+.blob-file-dir { border-color: color-mix(in srgb, var(--accent-secondary) 55%, var(--border-subtle)); }
+.blob-file-dir .blob-node-label { font-weight: 500; }
 /* Pointer-anchored info card shown while hovering a node (project description /
    box details). Rendered in a body portal so it's never clipped or scaled by
    the 3D scene. */
@@ -2868,16 +2928,30 @@ select option {
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
 }
 
-/* Hint shown under the label during a file drag: reminds the user that holding
-   Alt switches to a native drag that can be dropped into an embedded browser. */
-.tab-drag-ghost-hint {
-  padding: 2px 8px;
-  font-size: 10px;
+/* Options legend shown under the label during a file drag: lists what each
+   release / modifier does. The line matching the current modifier state gets
+   `.active` to stand out (see DragGhost). */
+.tab-drag-ghost-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px;
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle, var(--accent));
-  color: var(--text-secondary, var(--text-primary));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+
+.tab-drag-ghost-opt {
+  font-size: 10px;
   white-space: nowrap;
-  opacity: 0.85;
+  color: var(--text-secondary, var(--text-primary));
+  opacity: 0.6;
+}
+
+.tab-drag-ghost-opt.active {
+  color: var(--accent);
+  opacity: 1;
+  font-weight: 600;
 }
 
 /* Scaled clone of the dragged tab's pane. The clone inside is transform-scaled
@@ -3004,6 +3078,40 @@ select option {
 
 .right-panel.open {
   transform: translateX(0);
+}
+
+/* While dragging the resize handle, kill the open/close transition so the panel
+   tracks the cursor 1:1 instead of easing toward each intermediate width. */
+.right-panel.resizing {
+  transition: none;
+}
+
+.app-body.resizing {
+  transition: none;
+}
+
+/* Left-border resize grip. Sits just outside the panel's left edge (straddling
+   the border) so it's easy to grab; widened beyond the visible border for a
+   comfortable hit target. Only tinted on hover / during the drag. */
+.right-panel-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 7px;
+  cursor: ew-resize;
+  z-index: 30;
+  touch-action: none;
+}
+
+.right-panel-resize:hover,
+.right-panel.resizing .right-panel-resize {
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--accent, #58a6ff) 70%, transparent) 60%,
+    transparent
+  );
 }
 
 /* OS file drag hovering over the panel: pulsing accent glow + dashed inset
@@ -3278,6 +3386,11 @@ select option {
 .right-panel-header {
   display: flex;
   align-items: center;
+  /* Wrap so the git action bar drops to its own row instead of overflowing the
+     panel's right edge when the project name + Add/Commit/Push don't fit on one
+     line (common at the default/narrow widths). */
+  flex-wrap: wrap;
+  row-gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
   font-size: 11px;
@@ -3309,9 +3422,14 @@ select option {
 .right-panel-header .git-action-bar--inline {
   flex: 0 1 auto;
   min-width: 0;
+  /* Keep the actions hugging the panel's right edge whether they share the name
+     row or wrap onto their own line, and wrap the buttons among themselves
+     (right-aligned) so a single action never spills past the panel border. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 4px;
   padding: 0;
-  margin-left: 8px;
+  margin-left: auto;
   border-bottom: none;
 }
 
@@ -6620,6 +6738,57 @@ select option {
   word-break: break-word;
 }
 
+.sshfs-install {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  color: var(--text-main);
+}
+
+.sshfs-install-instruction {
+  font-size: 12px;
+}
+
+.sshfs-install-commands {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sshfs-install-cmd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+
+.sshfs-install-cmd-text {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.sshfs-install-copy,
+.sshfs-install-guide-btn {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sshfs-install-guide-btn {
+  align-self: flex-start;
+}
+
 .ssh-address-input,
 .ssh-password-input {
   flex: 1;
@@ -7919,6 +8088,19 @@ select option {
   flex-direction: column;
   gap: 8px;
   margin-top: 6px;
+}
+
+.lessons-section-title {
+  margin: 10px 0 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.lessons-section-title:first-child {
+  margin-top: 0;
 }
 
 .lesson-item {

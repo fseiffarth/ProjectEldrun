@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { RemoteEntry, SshTooling } from "../../types";
+import type { RemoteEntry, SshTooling, SshfsInstallGuide } from "../../types";
 import { joinRemotePath, parseSshAddress, type ParsedSshAddress } from "./scaffold";
+import { useSettingsStore } from "../../stores/settings";
 
 type ConnStatus = "idle" | "connecting" | "connected" | "error";
 
@@ -13,6 +14,11 @@ type ConnStatus = "idle" | "connecting" | "connected" | "error";
  * stays a single cohesive form component; behavior is unchanged.
  */
 export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
+  // When headless (the default), Eldrun makes the SSH/OpenVPN connection itself,
+  // handling the password transiently. When off, no in-dialog connection is made:
+  // the project is created from the typed address + remote path, and the live
+  // login opens in the root terminal at activation (see lib/remoteConnect).
+  const headless = useSettingsStore((s) => s.settings?.connections_headless ?? true);
   // Whether this is a remote (SSH) project. The whole SSH section — address,
   // password, connect, and the remote browser — only appears when this is on.
   const [isRemoteProject, setIsRemoteProject] = useState(false);
@@ -20,6 +26,9 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // checkbox is enabled so missing tools are flagged up front rather than only
   // after a connect/mount fails. `null` until probed.
   const [sshTooling, setSshTooling] = useState<SshTooling | null>(null);
+  // Platform-tailored sshfs install instructions, fetched alongside the tooling
+  // probe so the "sshfs not found" warning can offer the exact install command.
+  const [sshfsGuide, setSshfsGuide] = useState<SshfsInstallGuide | null>(null);
   const [sshAddress, setSshAddress] = useState("");
   const [sshPassword, setSshPassword] = useState("");
   const [sshStatus, setSshStatus] = useState<ConnStatus>("idle");
@@ -69,6 +78,9 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       // before the user fills in an address and hits Connect/Create.
       if (sshTooling === null) {
         invoke<SshTooling>("ssh_tooling_status").then(setSshTooling).catch(() => {});
+      }
+      if (sshfsGuide === null) {
+        invoke<SshfsInstallGuide>("sshfs_install_guide").then(setSshfsGuide).catch(() => {});
       }
     }
     if (!checked) {
@@ -212,25 +224,48 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setRemoteBrowsePath(idx <= 0 ? "/" : path.slice(0, idx));
   };
 
-  // Build the `remote` spec for the create/import request, or undefined when not
-  // a connected remote project. NEW: name becomes a subdir under the chosen
+  // Build the `remote` spec for the create/import request, or undefined when this
+  // isn't a usable remote project. NEW: name becomes a subdir under the chosen
   // path. IMPORT: the chosen path IS the project root.
-  const buildRemoteSpec = (safeName: string) =>
-    isRemote && remoteConn
-      ? {
-          user: remoteConn.user ?? undefined,
-          host: remoteConn.host,
-          port: remoteConn.port ?? undefined,
-          remote_path:
-            kind === "new" ? joinRemotePath(remoteChosenPath, safeName) : remoteChosenPath,
-          openvpn: vpnEnabled && vpnConfig ? { config: vpnConfig } : undefined,
-        }
-      : undefined;
+  //
+  // Headless: requires a live, browsed SSH session (`isRemote`). Non-headless:
+  // no in-dialog connection is made (the live login happens in the root terminal
+  // at activation), so the spec is built straight from the typed address + the
+  // manually-entered remote path.
+  const buildRemoteSpec = (safeName: string) => {
+    if (!isRemoteProject) return undefined;
+    const openvpn = vpnEnabled && vpnConfig ? { config: vpnConfig } : undefined;
+    if (headless) {
+      return isRemote && remoteConn
+        ? {
+            user: remoteConn.user ?? undefined,
+            host: remoteConn.host,
+            port: remoteConn.port ?? undefined,
+            remote_path:
+              kind === "new" ? joinRemotePath(remoteChosenPath, safeName) : remoteChosenPath,
+            openvpn,
+          }
+        : undefined;
+    }
+    // Non-headless: parse the typed address + use the manually-entered path.
+    const parsed = parseSshAddress(sshAddress);
+    const path = remoteChosenPath.trim();
+    if (!parsed || !path) return undefined;
+    return {
+      user: parsed.user ?? undefined,
+      host: parsed.host,
+      port: parsed.port ?? undefined,
+      remote_path: kind === "new" ? joinRemotePath(path, safeName) : path,
+      openvpn,
+    };
+  };
 
   return {
     isRemoteProject,
     isRemote,
+    headless,
     sshTooling,
+    sshfsGuide,
     sshAddress,
     sshPassword,
     sshStatus,

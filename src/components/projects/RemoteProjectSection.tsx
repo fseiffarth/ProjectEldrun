@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { joinRemotePath } from "./scaffold";
 import type { useRemoteSession } from "./useRemoteSession";
 
@@ -24,7 +25,9 @@ export function RemoteProjectSection({
   const {
     isRemoteProject,
     isRemote,
+    headless,
     sshTooling,
+    sshfsGuide,
     sshAddress,
     sshPassword,
     sshStatus,
@@ -34,6 +37,7 @@ export function RemoteProjectSection({
     remoteListBusy,
     remoteListError,
     remoteChosenPath,
+    setRemoteChosenPath,
     vpnEnabled,
     setVpnEnabled,
     vpnConfig,
@@ -55,11 +59,10 @@ export function RemoteProjectSection({
   return (
     <>
       {isRemoteProject && sshTooling && (() => {
+        const sshfsMissing = !sshTooling.sshfs;
         const warnings: string[] = [];
-        if (!sshTooling.sshfs) {
-          warnings.push(
-            "sshfs not found — remote projects can't be mounted. Install sshfs/FUSE.",
-          );
+        if (sshfsMissing) {
+          warnings.push("sshfs not found — remote projects can't be mounted.");
         }
         if (sshPassword && !sshTooling.sshpass) {
           warnings.push(
@@ -77,6 +80,37 @@ export function RemoteProjectSection({
             {warnings.map((w) => (
               <div key={w}>⚠ {w}</div>
             ))}
+            {sshfsMissing && sshfsGuide && (
+              <div className="sshfs-install">
+                <div className="sshfs-install-instruction">{sshfsGuide.instruction}</div>
+                {sshfsGuide.commands.length > 0 && (
+                  <div className="sshfs-install-commands">
+                    {sshfsGuide.commands.map((cmd) => (
+                      <code key={cmd} className="sshfs-install-cmd">
+                        <span className="sshfs-install-cmd-text">{cmd}</span>
+                        <button
+                          type="button"
+                          className="sshfs-install-copy"
+                          title="Copy command"
+                          onClick={() => void navigator.clipboard?.writeText(cmd)}
+                        >
+                          Copy
+                        </button>
+                      </code>
+                    ))}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  className="sshfs-install-guide-btn"
+                  onClick={() =>
+                    void invoke("open_external_url", { url: sshfsGuide.url }).catch(() => {})
+                  }
+                >
+                  Open install guide
+                </button>
+              </div>
+            )}
           </div>
         );
       })()}
@@ -116,35 +150,44 @@ export function RemoteProjectSection({
                   </button>
                 </div>
               </label>
-              <label>
-                VPN password{" "}
-                <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
-                <div className="folder-picker-row">
-                  <input
-                    className="ssh-password-input"
-                    type="password"
-                    value={vpnPassword}
-                    placeholder="VPN passphrase"
-                    onChange={(e) => {
-                      setVpnPassword(e.target.value);
-                      if (vpnStatus !== "idle") setVpnStatus("idle");
-                    }}
-                  />
-                  <button
-                    type="button"
-                    disabled={!vpnConfig || vpnStatus === "connecting"}
-                    onClick={() => void connectVpn()}
-                  >
-                    {vpnStatus === "connecting"
-                      ? "Connecting…"
-                      : vpnStatus === "connected"
-                        ? "Connected"
-                        : "Connect VPN"}
-                  </button>
+              {headless ? (
+                <>
+                  <label>
+                    VPN password{" "}
+                    <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
+                    <div className="folder-picker-row">
+                      <input
+                        className="ssh-password-input"
+                        type="password"
+                        value={vpnPassword}
+                        placeholder="VPN passphrase"
+                        onChange={(e) => {
+                          setVpnPassword(e.target.value);
+                          if (vpnStatus !== "idle") setVpnStatus("idle");
+                        }}
+                      />
+                      <button
+                        type="button"
+                        disabled={!vpnConfig || vpnStatus === "connecting"}
+                        onClick={() => void connectVpn()}
+                      >
+                        {vpnStatus === "connecting"
+                          ? "Connecting…"
+                          : vpnStatus === "connected"
+                            ? "Connected"
+                            : "Connect VPN"}
+                      </button>
+                    </div>
+                  </label>
+                  {vpnStatus === "error" && vpnError && (
+                    <div className="project-dialog-error">{vpnError}</div>
+                  )}
+                </>
+              ) : (
+                <div className="ssh-optional-hint">
+                  The tunnel opens in the Eldrun root terminal on activation — enter
+                  the passphrase there.
                 </div>
-              </label>
-              {vpnStatus === "error" && vpnError && (
-                <div className="project-dialog-error">{vpnError}</div>
               )}
             </>
           )}
@@ -164,38 +207,67 @@ export function RemoteProjectSection({
               }}
             />
           </label>
-          <label>
-            Password <span className="ssh-optional-hint">(blank uses SSH key)</span>
-            <div className="folder-picker-row">
+          {headless ? (
+            <>
+              <label>
+                Password{" "}
+                <span className="ssh-optional-hint">
+                  (not stored; blank uses SSH key)
+                </span>
+                <div className="folder-picker-row">
+                  <input
+                    className="ssh-password-input"
+                    type="password"
+                    value={sshPassword}
+                    placeholder="leave empty for key/agent auth"
+                    onChange={(e) => onSshPasswordChange(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
+                        e.preventDefault();
+                        void connectSsh();
+                      }
+                      if (e.key === "Escape") onClose();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={!sshAddress.trim() || sshStatus === "connecting"}
+                    onClick={() => void connectSsh()}
+                  >
+                    {sshStatus === "connecting"
+                      ? "Connecting..."
+                      : sshStatus === "connected"
+                        ? "Connected"
+                        : "Connect"}
+                  </button>
+                </div>
+              </label>
+              {sshStatus === "error" && sshError && (
+                <div className="project-dialog-error">{sshError}</div>
+              )}
+            </>
+          ) : (
+            <label>
+              Remote path{" "}
+              <span className="ssh-optional-hint">
+                {kind === "new"
+                  ? "(parent folder; the project is created inside it)"
+                  : "(absolute path of the existing project)"}
+              </span>
               <input
-                className="ssh-password-input"
-                type="password"
-                value={sshPassword}
-                placeholder="leave empty for key/agent auth"
-                onChange={(e) => onSshPasswordChange(e.target.value)}
+                className="ssh-address-input"
+                value={remoteChosenPath}
+                placeholder="/home/user/projects"
+                onChange={(e) => setRemoteChosenPath(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
-                    e.preventDefault();
-                    void connectSsh();
-                  }
                   if (e.key === "Escape") onClose();
                 }}
               />
-              <button
-                type="button"
-                disabled={!sshAddress.trim() || sshStatus === "connecting"}
-                onClick={() => void connectSsh()}
-              >
-                {sshStatus === "connecting"
-                  ? "Connecting..."
-                  : sshStatus === "connected"
-                    ? "Connected"
-                    : "Connect"}
-              </button>
-            </div>
-          </label>
-          {sshStatus === "error" && sshError && (
-            <div className="project-dialog-error">{sshError}</div>
+              <span className="ssh-optional-hint">
+                You log in (and enter any password) in the Eldrun root terminal when
+                the project is activated — Eldrun never handles it.
+              </span>
+            </label>
           )}
         </div>
       )}

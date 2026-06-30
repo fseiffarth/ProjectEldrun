@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { Fragment, useEffect } from "react";
 import { LESSONS } from "../../lib/lessons";
 import { useTourStore } from "../../stores/tour";
 
@@ -39,20 +39,29 @@ export function LessonsMenu({ onClose }: { onClose: () => void }) {
         </p>
 
         <div className="lessons-list">
-          {LESSONS.map((lesson) => (
-            <button
-              key={lesson.id}
-              type="button"
-              className="lesson-item"
-              onClick={() => {
-                onClose();
-                startLesson(lesson.steps);
-              }}
-            >
-              <span className="lesson-item-title">{lesson.title}</span>
-              <span className="lesson-item-blurb">{lesson.blurb}</span>
-            </button>
-          ))}
+          {LESSONS.map((lesson, i) => {
+            // LESSONS is sorted by category (easy → hard), so a header is shown
+            // whenever the tier changes from the previous lesson.
+            const newSection = i === 0 || LESSONS[i - 1].category !== lesson.category;
+            return (
+              <Fragment key={lesson.id}>
+                {newSection && (
+                  <h3 className="lessons-section-title">{lesson.category}</h3>
+                )}
+                <button
+                  type="button"
+                  className="lesson-item"
+                  onClick={() => {
+                    onClose();
+                    startLesson(lesson.steps);
+                  }}
+                >
+                  <span className="lesson-item-title">{lesson.title}</span>
+                  <span className="lesson-item-blurb">{lesson.blurb}</span>
+                </button>
+              </Fragment>
+            );
+          })}
         </div>
       </div>
     </div>

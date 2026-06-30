@@ -319,17 +319,21 @@ pub fn run() {
             commands::boxes::set_box_relations,
             // SSH / remote projects
             commands::ssh::ssh_connect,
+            commands::ssh::remote_login_command,
             commands::ssh::ssh_default_dir,
             commands::ssh::ssh_list_dir,
             commands::ssh::ensure_project_mounted,
             commands::ssh::ssh_tooling_status,
+            commands::ssh::sshfs_install_guide,
+            commands::ssh::open_external_url,
             // OpenVPN tunnels for VPN-gated remote projects
             commands::openvpn::openvpn_connect,
+            commands::openvpn::openvpn_login_command,
             commands::openvpn::openvpn_disconnect,
             commands::openvpn::openvpn_status,
             commands::openvpn::openvpn_store_config,
-            // GitHub publishing
-            commands::github::github_publish,
+            // Git hosting (GitHub / GitLab) publishing
+            commands::git_publish::publish_project,
             commands::git_hosting::get_project_git_hosting,
             commands::git_hosting::set_project_git_hosting,
             // Timer flush + activity
@@ -388,6 +392,7 @@ pub fn run() {
             commands::apps::check_pid_alive,
             commands::apps::restore_open_apps,
             commands::apps::run_script_detached,
+            commands::apps::drag_preview_icon,
             commands::apps::embed_capability,
             commands::apps::list_installed_apps,
             // Workspace / network
@@ -480,6 +485,7 @@ pub fn run() {
             commands::ollama::check_grammar,
         ])
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_drag::init())
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, event| {

@@ -294,6 +294,22 @@ export function SettingsDialog({
             </p>
 
             <label className="settings-switch-row">
+              <span>Headless remote connections</span>
+              <input
+                type="checkbox"
+                checked={settings?.connections_headless ?? true}
+                onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
+              />
+            </label>
+            <p className="settings-help">
+              When on (default), Eldrun makes SSH/OpenVPN connections in the
+              background, handling the password transiently. Turn it off to instead
+              open each connection as an interactive terminal in the Eldrun root —
+              you type the password directly into that terminal and Eldrun never
+              handles it.
+            </p>
+
+            <label className="settings-switch-row">
               <span>Debug mode</span>
               <input
                 type="checkbox"
@@ -420,7 +436,7 @@ export function SettingsDialog({
               Profile URL
               <input
                 value={gitProfileUrl}
-                placeholder="https://github.com/username"
+                placeholder="https://github.com/me or https://gitlab.com/me"
                 onChange={(e) => setGitProfileUrl(e.target.value)}
                 onBlur={saveGitProfileUrl}
                 onKeyDown={(e) => {

@@ -501,6 +501,21 @@ fn desktop_app_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Return the native file-drag preview icon as a PNG `data:` URL.
+///
+/// `tauri-plugin-drag`'s `startDrag` icon field is deserialized through an
+/// untagged enum whose only string form is a base64 PNG **data URL**
+/// (`data:image/png;base64,…`) — a bare file path fails to deserialize and the
+/// whole drag command rejects before it starts. So embed the app icon at compile
+/// time and hand back a data URL the frontend can pass straight to `startDrag`.
+#[tauri::command]
+pub fn drag_preview_icon() -> String {
+    use base64::Engine;
+    const ICON_PNG: &[u8] = include_bytes!("../../icons/128x128.png");
+    let b64 = base64::engine::general_purpose::STANDARD.encode(ICON_PNG);
+    format!("data:image/png;base64,{b64}")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbedCapability {
     /// OS can host an embedded frameless window (X11 backend, not XWayland).

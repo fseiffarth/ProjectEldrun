@@ -121,7 +121,7 @@ Only the load-bearing files are listed; the tree is the source of truth.
 | `fs.rs` | File-I/O commands (read/write/mtime, extracted from `projects.rs`; #1 seam). |
 | `fs_watch.rs` | Filesystem watch start/stop + change events. |
 | `git.rs` | Git status/history/commit/push. |
-| `github.rs` | GitHub repo publishing. |
+| `git_publish.rs` | Publish a project's repo to GitHub (`gh`) or GitLab (`glab`). |
 | `terminal.rs` | Terminal/PTY command surface (delegates to `terminal/mod.rs`). |
 | `apps.rs` | App launching, `run_script_detached`, `open_file`, external window tracking. |
 | `default_apps.rs` | Per-file-type default-app mapping. |

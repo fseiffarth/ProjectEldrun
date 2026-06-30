@@ -775,6 +775,72 @@ container) — as opposed to the git **push** axis (#21/#22).*
         translation; `DockerSpec.remote` round-trip
       - [ ] 🖐️ Manual test
 
+80. **Native SFTP remote browsing (drop `ssh ls` for the folder picker).**
+    Replace the shell-out browse commands in `commands/ssh.rs`
+    (`ssh_list_dir`, `ssh_default_dir`) with an in-process **SFTP** client, so
+    the new/import dialog's remote folder picker no longer parses `ls` text and
+    no longer feeds user-controlled paths to a remote `$SHELL -c`. This is the
+    JetBrains *Deployment*-style model (in-process SFTP browse), and it
+    **supersedes** the #28c "[Critical] Remote command injection in the browse
+    commands" item — SFTP is a binary protocol, so paths are never
+    shell-interpreted and `shell_quote`/`validate_arg` are no longer load-bearing
+    for browsing. **Scope is browsing only:** the project *mount* still uses
+    sshfs (kernel FUSE is unavoidable for a local mountpoint regardless of
+    language — see the install-helper work), and remote *agent/terminal* exec
+    still uses `ssh -tt` (#28b). Nothing here changes the mount or exec paths.
+    - **Library: `openssh-sftp-client`** (rides the system `ssh` ControlMaster).
+      Chosen over `russh-sftp` (pure-Rust but reimplements auth/known_hosts) and
+      `ssh2`/libssh2 (C + openssl build dep) because it reuses the user's
+      `~/.ssh/config`/agent/keys — the "source of truth" the existing `ssh.rs`
+      already commits to — and keeps a single auth story shared with mount/exec.
+    - **Prototype steps.** ✅ **Code-complete (🤖 covered; 🖐️ live QA pending)** —
+      built over `openssh-sftp-client` driving a child `ssh -s sftp` over its
+      pipes (no `openssh` ControlMaster crate needed); the password-arg builder
+      was lifted to `services::ssh_mount::ssh_password_base_args` so browse +
+      SFTP share one validated auth path.
+      - [x] **80a — Dep + thin `services/sftp.rs` session helper.** ✅ Done.
+        `open_session(user, host, port, password)` spawns `ssh`/`sshpass -e ssh`
+        with the shared base args, splices `-s <target> sftp`, and hands the
+        child's stdin/stdout to `Sftp::new`. Keeps the `validate_arg` guard on
+        `path` as defense in depth. (Drove the design: chose raw-pipe `Sftp::new`
+        over the `openssh`-feature `from_session` so no ControlMaster crate is
+        pulled in; `ReadDir` is `!Unpin` → `Box::pin` to drive the stream.)
+      - [x] **80b — `ssh_default_dir` over SFTP.** ✅ Done. `fs.canonicalize(".")`
+        (SFTP REALPATH) — no remote `pwd`.
+      - [x] **80c — `ssh_list_dir` over SFTP.** ✅ Done. `open_dir` + drain the
+        `ReadDir` stream, `is_dir` from SFTP `file_type()`; reuses the
+        dirs-first/ci sort + dot-filter via pure `finalize_entries`. Empty path →
+        SFTP home (`.`).
+      - [x] **80f — Resolve symlink targets.** ✅ Done. `readdir`'s `file_type()`
+        is lstat-style (a symlink reports as a symlink, not its target), so a
+        second pass follow-stats each **symlink** (`fs.metadata`, which follows
+        the link) to flag a symlink-to-directory `is_dir` and make it navigable;
+        only symlinks cost an extra round-trip, and a broken/denied link resolves
+        to non-dir. Pure `resolve_child_path` (join child vs `.`/home) is
+        unit-tested; the live follow-stat is a manual check.
+      - [x] **80d — Command signatures + frontend untouched.** ✅ Done. Same
+        command names/params; `RemoteEntry` mapped from `services::sftp::Entry`.
+        No `useRemoteSession`/`RemoteProjectSection` change.
+      - [x] **80e — Async wiring.** ✅ Done. Both commands are now `async`;
+        `lib.rs` registration unchanged; `cargo check --all-targets` clean.
+      - **Removed dead code:** the old `parse_ls_output`/`shell_quote` in
+        `commands/ssh.rs` (and their tests) — superseded; their sort/filter +
+        injection-inert coverage moved to `services::sftp` tests.
+    - *Test (e.g.):* a host with a dir literally named `foo; touch pwned`
+      lists as one inert entry (no remote command runs), symlinked dirs are
+      flagged `is_dir`, and the home dir resolves without a `pwd` shell-out.
+    - [x] 🤖 Automated test — `services::sftp` unit tests: `sftp_subsystem_args`
+      splices `-s` before the target; `finalize_entries` dirs-first/ci sort,
+      dot/blank filter, hidden-entry retention, and the injection-named dir is
+      one inert entry. (Pure, no live host; the network round-trip is manual.)
+    - [ ] 🖐️ Manual test — re-run #28 Phase 2 (browse) against key-auth and
+      password-only hosts; injection-named dirs are inert; mount/exec (Phases
+      3–7) still work unchanged.
+    - **Follow-on (not this pass):** once browse is SFTP, evaluate a
+      JetBrains-*Deployment*-style **edit-over-SFTP** path for the in-app viewers
+      to shrink the sshfs surface further (read/write single files over SFTP,
+      mount only when local tooling/agents need a real directory).
+
 ---
 
 ## Group H — Cross-Platform: Windows & macOS Support (new feature)
@@ -1419,6 +1485,38 @@ unchanged; the new agents are additive.
 
 ---
 
+## Group P — Git Hosting: Multi-Host Publishing (new feature)
+*Builds on Group D.10 (#22 publish flow). Files: `src-tauri/src/commands/github.rs`
+(`github_publish`, currently GitHub/`gh`-only), `git_hosting` creds, `ProjectPill.tsx`
+(the "Publish to GitHub…" menu entry + Publish window + per-project "Git hosting…"
+override), `src/stores/projects.ts` (`publishProject`), settings git-hosting
+profile (URL + token). Today publishing is hardcoded to the GitHub `gh` CLI
+(`gh repo create … --source=. --push`); there is no GitLab or generic remote path.*
+
+79. **Publish to GitLab and to a generic remote.** Generalize the GitHub-only
+    publish flow so a project can be connected to other hosts:
+    - **GitLab support.** Add a GitLab publish path (via the `glab` CLI mirroring
+      the `gh` approach, or the GitLab REST API + token from the git-hosting
+      profile) that creates the project repo and pushes. Pick the host from the
+      git-hosting profile rather than assuming GitHub.
+    - **Generic remote URL.** Add a "set remote URL" path for self-hosted /
+      arbitrary hosts: `git remote add origin <url>` + `git push -u origin
+      <branch>`, no host CLI required — for users who already created the empty
+      remote repo themselves.
+    - **UI.** Rename the pill's "Publish to GitHub…" entry to a host-agnostic
+      "Publish…"/"Connect remote…" that offers GitHub / GitLab / custom URL,
+      reusing the existing visibility picker and per-project git-hosting override.
+    - **Backend.** Decouple `github_publish` from `gh`: dispatch on a host enum,
+      keep the SSH-work-remote case (run the host CLI where the bytes live), and
+      keep recording `git_type = remote-<visibility>` on success.
+    - [ ] 🤖 Automated test — host-dispatch + argv-escaping unit tests per host
+      (mirroring `commands/github.rs` `shell_quote` tests); full publish flow stays manual.
+    - [ ] 🖐️ Manual test — publish a local project to GitLab and to a custom
+      remote URL; confirm the repo is created/pushed and `git_type` flips to
+      `remote-<visibility>`.
+
+---
+
 Sequencing is **group-wise** — tackle whole groups in this order, since items
 within a group share files and context:
 
@@ -1443,6 +1541,8 @@ within a group share files and context:
   `ollama launch` family (Claude Code, Hermes, OpenClaw, OpenCode); do the
   registry + backend argv (#72–#74) first, then the picker (#75) and per-agent
   verification (#76). Blocked at runtime until the local Ollama runner is fixed.
+- **Git hosting:** P (#79) — multi-host publishing (GitLab + generic remote URL)
+  on top of the done GitHub-only flow (D.10 #22); self-contained, pickable anytime.
 - **Cross-platform (parallel track):** H (Windows #30 / macOS #31 follow-ups) —
   validate builds & packaging per OS; can proceed alongside the above.
 - **Backend runtime (ongoing):** I (#32) — backend-owned runtime hardening
@@ -1825,6 +1925,24 @@ skip-scaffold checkbox), `ProjectPill.tsx` (Publish window + menu),
       public → `gh repo create` runs and `git_type` flips to `remote-public` in
       both json files; for an SSH project the command runs over `ssh` on the host.
     - [x] 🤖 Automated test — *partial:* `commands/github.rs` shell_quote unit tests (argv escaping only; full gh/ssh publish flow is manual)
+    - [ ] 🖐️ Manual test
+
+23. ✅ **GitLab support alongside GitHub.** `commands/github.rs` renamed to
+    `commands/git_publish.rs`; `github_publish` generalized to
+    `publish_project(project_id, provider, visibility)` with a `Provider`
+    enum (`github`→`gh`, `gitlab`→`glab`). GitHub keeps `gh repo create …
+    --source=. --remote=origin --push`; GitLab runs `glab repo create …
+    --remoteName origin` then an explicit token-authenticated `git push -u origin
+    HEAD` (glab has no `--source/--push`), reusing the inline credential-helper
+    pattern (`oauth2` username, `GITLAB_TOKEN` for the CLI). Provider recorded in a
+    new `Project.git_provider` field (mirrored into `projects.json`). Publish
+    window gained a provider picker; pill label + menu, settings/hosting
+    placeholders, lessons, README and DOCUMENTATION updated. **Runtime QA pending**
+    (needs `glab` installed + authenticated; agents can't launch Eldrun).
+    - *Test (e.g.):* on a local project, Publish → GitLab → private runs `glab repo
+      create … --private --remoteName origin` then `git push`, and `git_type` flips
+      to `remote-private` with `git_provider: "gitlab"` in both json files.
+    - [x] 🤖 Automated test — `commands/git_publish.rs` provider-parse + remote-script unit tests (argv only; full glab/ssh flow is manual)
     - [ ] 🖐️ Manual test
 
 ---

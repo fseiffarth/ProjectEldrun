@@ -13,6 +13,15 @@ pub async fn openvpn_connect(config: String, password: String) -> Result<(), Str
     openvpn::connect(&config, &password)
 }
 
+/// Build the shell command that brings the tunnel up **interactively** (the
+/// passphrase is typed into a visible terminal, no askpass file). Returned for
+/// the frontend to type into a root-scope shell tab when headless connections are
+/// off (see `services::openvpn::interactive_connect_command`).
+#[tauri::command]
+pub async fn openvpn_login_command(config: String) -> Result<String, String> {
+    openvpn::interactive_connect_command(&config)
+}
+
 /// Tear down the OpenVPN tunnel for `config` if it is up. Idempotent.
 #[tauri::command]
 pub async fn openvpn_disconnect(config: String) -> Result<(), String> {

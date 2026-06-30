@@ -5,6 +5,7 @@ pub mod project_runtime;
 pub mod remote_agents;
 pub mod restore_service;
 pub mod sandbox;
+pub mod sftp;
 pub mod ssh_exec;
 pub mod ssh_mount;
 pub mod terminal_service;

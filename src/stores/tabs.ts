@@ -287,6 +287,12 @@ interface TabsStore {
 
   // tab lifecycle
   addTab: (tab: Omit<TabEntry, "key">) => TabEntry; // into focused group
+  // Add a tab into a SPECIFIC scope's focused group, regardless of which scope is
+  // currently active. Used to surface remote SSH/OpenVPN connections in the root
+  // scope without disturbing the active project. When `scope` is the current
+  // scope this behaves exactly like `addTab`; otherwise the tab is written into
+  // that scope's maps only (the user sees it after switching to it).
+  addTabToScope: (scope: string, tab: Omit<TabEntry, "key">) => TabEntry;
   ensureTab: (
     tab: Omit<TabEntry, "key">,
     matches: (tab: TabEntry) => boolean,
@@ -1190,6 +1196,40 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         activeKey: key,
       }));
       return writeScope(s, s.scope, nextTabs, next, target.id);
+    });
+    return entry;
+  },
+
+  addTabToScope: (scope, tab) => {
+    const key = nextKey(tab.kind);
+    const entry: TabEntry = { ...tab, key, scope };
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      const layout = s.layoutByScope[scope] ?? null;
+      const focusedGroupId = s.focusedGroupByScope[scope] ?? null;
+      const nextTabs = [...tabs, entry];
+
+      // No layout yet → create a root group containing this tab.
+      if (!layout) {
+        const root: GroupNode = {
+          type: "group",
+          id: nextGroupId(),
+          tabKeys: [key],
+          activeKey: key,
+        };
+        return writeScope(s, scope, nextTabs, root, root.id);
+      }
+
+      // Add into that scope's focused group (fall back to its first group).
+      const target =
+        (focusedGroupId && findGroup(layout, focusedGroupId)) ||
+        allGroups(layout)[0];
+      const next = mapGroup(layout, target.id, (g) => ({
+        ...g,
+        tabKeys: [...g.tabKeys, key],
+        activeKey: key,
+      }));
+      return writeScope(s, scope, nextTabs, next, target.id);
     });
     return entry;
   },

@@ -50,12 +50,19 @@ export function ProjectDialog({
   const {
     isRemoteProject,
     isRemote,
+    headless,
     remoteBrowsePath,
     remoteChosenPath,
     setRemoteChosenPath,
     toggleRemoteProject,
     buildRemoteSpec,
   } = remote;
+  // A remote project is ready to create once we either have a live browsed
+  // session (headless) or, in non-headless mode where no in-dialog connection is
+  // made, the user has typed a remote path (the login happens in the root
+  // terminal at activation). Drives both submit gating and the remote-vs-local
+  // submit branches below.
+  const remoteReady = isRemoteProject && (headless ? isRemote : remoteChosenPath.trim() !== "");
   const safeName = sanitizeName(name);
   const targetDir = safeName && projectsRoot ? `${projectsRoot}/${safeName}` : "";
 
@@ -191,7 +198,7 @@ export function ProjectDialog({
       // Remote scaffold filling runs over the local mount; for v1 we skip the
       // local-disk-only scaffold-fill agent tabs on import when remote.
       const scaffoldAgentFills =
-        kind === "import" && !isRemote && !skipScaffold
+        kind === "import" && !isRemoteProject && !skipScaffold
           ? selectedScaffoldAgentFills()
           : new Map<string, string[]>();
       const descriptionAgent = selectedDescriptionAgent();
@@ -204,12 +211,12 @@ export function ProjectDialog({
           : await invoke<ProjectEntry>("import_project", {
               req: {
                 // Backend ignores sourceDir for remote but the field is required;
-                // pass the browsed remote path as a stand-in.
-                sourceDir: isRemote ? remoteChosenPath : sourceDir,
+                // pass the (browsed or typed) remote path as a stand-in.
+                sourceDir: isRemoteProject ? remoteChosenPath : sourceDir,
                 name,
                 description,
                 gitType,
-                mode: isRemote ? "keep" : mode,
+                mode: isRemoteProject ? "keep" : mode,
                 scaffoldFillModes,
                 manualValidationConfirmed,
                 skipScaffold,
@@ -228,8 +235,9 @@ export function ProjectDialog({
   };
 
   const canSubmit = isRemoteProject
-    ? // Remote mode: must be connected and have a chosen remote folder.
-      !isRemote
+    ? // Remote mode: ready (live session when headless, typed path otherwise) and
+      // has a remote folder.
+      !remoteReady
       ? false
       : kind === "new"
         ? Boolean(name.trim() && safeName && remoteChosenPath)
@@ -456,7 +464,7 @@ export function ProjectDialog({
         )}
 
         <div className="project-dialog-path">
-          {isRemote
+          {isRemoteProject
             ? remoteChosenPath
               ? kind === "new"
                 ? `Remote destination: ${joinRemotePath(remoteChosenPath, safeName || "<name>")}`

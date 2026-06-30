@@ -207,12 +207,15 @@ update-desktop-database ~/.local/share/applications/
   with the remote's own login. VPN-gated hosts bring up an OpenVPN tunnel first.
   Auth uses your existing SSH setup (keys / agent / `~/.ssh/config`,
   `BatchMode`); requires `sshfs`/FUSE on Linux or SSHFS-Win/WinFsp on Windows.
-- **Publish to GitHub**: a local (or SSH-remote) git project can be published to
-  a new GitHub repository from the project pill menu. Choose public or private;
-  Eldrun runs `gh repo create … --source=. --push` via the system `gh` CLI (over
-  `ssh` on the host where the bytes live for remote projects), then records the
-  new push target (`git_type` becomes `remote-public`/`remote-private`). Requires
-  the GitHub CLI (`gh`) installed and authenticated.
+- **Publish to GitHub / GitLab**: a local (or SSH-remote) git project can be
+  published to a new GitHub or GitLab repository from the project pill menu.
+  Choose the provider and public/private; Eldrun runs `gh repo create …
+  --source=. --push` (GitHub) or `glab repo create … --remoteName origin`
+  followed by `git push` (GitLab) via the system CLI (over `ssh` on the host
+  where the bytes live for remote projects), then records the new push target
+  (`git_type` becomes `remote-public`/`remote-private`) and provider. Requires
+  the chosen provider's CLI — `gh` or `glab` — installed and authenticated, or a
+  token set under Settings → Git hosting.
 - **Project switcher**: search, switch, and close projects; a running-task
   indicator spins on pills with live terminal output (even backgrounded
   projects); hover over a pill to see the project path, status, today's active

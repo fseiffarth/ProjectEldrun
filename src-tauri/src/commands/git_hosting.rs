@@ -5,7 +5,7 @@
 //! (mirrored into `projects.json` so the pill can read it without loading the
 //! per-project file). The secret token lives only in the OS keyring
 //! (`services::git_credentials`), keyed by project id — never on disk in our JSON
-//! state. `git_push` / `github_publish` resolve the *effective* credentials via
+//! state. `git_push` / `publish_project` resolve the *effective* credentials via
 //! [`effective_git_creds`]: the per-project value if present, else the global one.
 
 use std::path::PathBuf;
@@ -109,7 +109,7 @@ pub fn set_project_git_hosting(
 
 /// The credentials to actually use for a project's push/publish: the per-project
 /// override if present, otherwise the global `settings.json` value. Returns
-/// `(profile_url, token)`. Used by `git::git_push` and `github::github_publish`.
+/// `(profile_url, token)`. Used by `git::git_push` and `git_publish::publish_project`.
 pub fn effective_git_creds(project_id: &str) -> (Option<String>, Option<String>) {
     let settings = read_settings();
     let project = project_for(project_id).ok();
@@ -153,7 +153,7 @@ fn project_for(project_id: &str) -> Result<Project, String> {
 }
 
 /// Find a project entry by id, returning its index and the owned list so the
-/// caller can mutate + persist it. (Mirrors the helper in `commands::github`.)
+/// caller can mutate + persist it. (Mirrors the helper in `commands::git_publish`.)
 fn find_entry(project_id: &str) -> Result<(usize, ProjectsList), String> {
     let list_path = storage::state_dir().join("projects.json");
     let list: ProjectsList = if list_path.exists() {

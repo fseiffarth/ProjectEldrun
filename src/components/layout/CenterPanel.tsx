@@ -417,6 +417,29 @@ export function CenterPanel() {
     const move = useDragStore.getState().move;
 
     const onMove = (e: PointerEvent) => {
+      const d = useDragStore.getState().drag;
+      // Shift during a file drag = "force a new window on release" (see
+      // FileTree's commitRelease). Suppress the in-window split/dock preview so
+      // the animation stops and it's clear nothing will dock here. Clear once
+      // (only when a target is actually set) to avoid per-move store churn;
+      // releasing Shift falls back to resolveTarget and the preview returns.
+      if (e.shiftKey && d?.kind === "file") {
+        if (
+          d.overGroup != null ||
+          d.edge != null ||
+          d.reorderGroup != null ||
+          d.reorderIndex != null
+        ) {
+          useDragStore.getState().setTarget({
+            overGroup: null,
+            edge: null,
+            reorderGroup: null,
+            reorderIndex: null,
+          });
+        }
+        move(e.clientX, e.clientY);
+        return;
+      }
       resolveTarget(e.clientX, e.clientY);
       move(e.clientX, e.clientY);
     };
@@ -1000,13 +1023,29 @@ export function DragGhost() {
   const pointerX = useDragStore((s) => s.drag?.pointerX ?? 0);
   const pointerY = useDragStore((s) => s.drag?.pointerY ?? 0);
   const label = useDragStore((s) => s.drag?.label ?? "");
-  // During a file drag (pointer-based drag-to-tab), remind the user that holding
-  // Alt switches to a native drag that can be dropped into an embedded browser.
+  // During a file drag (pointer-based drag-to-tab) the ghost lists the available
+  // drop options so the user can see what each release will do.
   const isFileDrag = useDragStore((s) => s.drag?.kind === "file");
   const node = useDragStore((s) => s.drag?.previewNode ?? null);
   const srcW = useDragStore((s) => s.drag?.previewW ?? 0);
   const srcH = useDragStore((s) => s.drag?.previewH ?? 0);
   const thumbRef = useRef<HTMLDivElement>(null);
+
+  // Track Shift live so the options legend can highlight "force new window"
+  // while the file drag is in flight (Shift can toggle without a pointer move,
+  // which wouldn't otherwise re-render the ghost).
+  const [shiftHeld, setShiftHeld] = useState(false);
+  useEffect(() => {
+    if (!isFileDrag) return;
+    const sync = (e: KeyboardEvent) => setShiftHeld(e.shiftKey);
+    window.addEventListener("keydown", sync);
+    window.addEventListener("keyup", sync);
+    return () => {
+      window.removeEventListener("keydown", sync);
+      window.removeEventListener("keyup", sync);
+      setShiftHeld(false);
+    };
+  }, [isFileDrag]);
 
   // Mount the cloned pane once per drag and scale it to fit GHOST_THUMB_W. Done
   // in an effect (not inline) so the heavy clone isn't re-appended on every
@@ -1029,7 +1068,15 @@ export function DragGhost() {
     <div className="tab-drag-ghost" style={{ left: pointerX, top: pointerY }}>
       <div className="tab-drag-ghost-label">{label}</div>
       {isFileDrag ? (
-        <div className="tab-drag-ghost-hint">Hold ⌥ Alt to drop into browser</div>
+        <div className="tab-drag-ghost-opts">
+          <div className={`tab-drag-ghost-opt${shiftHeld ? "" : " active"}`}>
+            Drop → open in new window / dock into popout
+          </div>
+          <div className={`tab-drag-ghost-opt${shiftHeld ? " active" : ""}`}>
+            ⇧ Shift → force a new window
+          </div>
+          <div className="tab-drag-ghost-opt">⌃ Ctrl-drag → copy to Signal / browser</div>
+        </div>
       ) : null}
       {node ? (
         <div
