@@ -17,6 +17,7 @@ import {
 import { useTimerStore } from "./timer";
 import { useVpnPromptStore } from "./vpnPrompt";
 import { useSettingsStore } from "./settings";
+import { useRemoteStatusStore } from "./remoteStatus";
 import { openConnectionInRoot } from "../lib/remoteConnect";
 
 /**
@@ -33,34 +34,85 @@ function connectionsHeadless(): boolean {
 async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<void> {
   const config = project?.remote?.openvpn?.config;
   if (!config) return;
+  const projectId = project!.id;
+  const status = useRemoteStatusStore.getState();
   // Non-headless: surface the tunnel as an interactive root-terminal tab instead
   // of prompting Eldrun for the passphrase. The passphrase is typed directly into
   // that terminal; Eldrun never handles it. Best-effort and non-blocking.
   if (!connectionsHeadless()) {
     try {
       const up = await invoke<boolean>("openvpn_status", { config }).catch(() => false);
-      if (up) return;
+      if (up) {
+        status.setVpn(projectId, "connected");
+        return;
+      }
       const command = await invoke<string>("openvpn_login_command", { config });
+      status.setVpn(projectId, "connecting");
       openConnectionInRoot({
         label: `OpenVPN · ${project!.name}`,
         command,
         dedupeKey: `vpn:${config}`,
       });
+      // Eldrun never sees the passphrase (typed into the root terminal), so the
+      // only signal the tunnel came up is polling openvpn_status. Fire-and-forget
+      // and bounded so a never-authenticated tunnel doesn't poll forever.
+      pollVpnUp(projectId, config, project!.name);
     } catch (error) {
+      status.setVpn(projectId, "error");
       console.warn("OpenVPN root-terminal connect skipped/failed", error);
     }
     return;
   }
   try {
     const up = await invoke<boolean>("openvpn_status", { config }).catch(() => false);
-    if (up) return;
+    if (up) {
+      status.setVpn(projectId, "connected");
+      return;
+    }
     // The prompt store now owns the connect, so a failed tunnel is shown in the
     // modal (with a retry) rather than failing silently here. `request` resolves
     // only once the tunnel is up; a cancel rejects and we fall through.
+    status.setVpn(projectId, "connecting");
     await useVpnPromptStore.getState().request(config, project!.name);
+    useRemoteStatusStore.getState().setVpn(projectId, "connected");
+    useProjectsStore.setState({ connToast: `VPN connected · ${project!.name}` });
   } catch (error) {
+    // A cancelled prompt or a failed tunnel both leave us not-connected (red).
+    useRemoteStatusStore.getState().setVpn(projectId, "error");
     console.warn("OpenVPN connect skipped/cancelled", error);
   }
+}
+
+/**
+ * Poll `openvpn_status` until the tunnel comes up (non-headless: the user
+ * authenticates in a root terminal, so this is the only completion signal).
+ * Bounded (~60s) so a tunnel that is never authenticated stops polling and goes
+ * red rather than spinning forever. Bails if the project is switched away from.
+ */
+function pollVpnUp(projectId: string, config: string, name: string): void {
+  let attempts = 0;
+  const maxAttempts = 40; // ~60s at 1.5s cadence
+  const tick = () => {
+    if (useProjectsStore.getState().activeId !== projectId) return;
+    void invoke<boolean>("openvpn_status", { config })
+      .then((up) => {
+        if (up) {
+          useRemoteStatusStore.getState().setVpn(projectId, "connected");
+          useProjectsStore.setState({ connToast: `VPN connected · ${name}` });
+          return;
+        }
+        if (++attempts >= maxAttempts) {
+          useRemoteStatusStore.getState().setVpn(projectId, "error");
+          return;
+        }
+        setTimeout(tick, 1500);
+      })
+      .catch(() => {
+        if (++attempts >= maxAttempts) useRemoteStatusStore.getState().setVpn(projectId, "error");
+        else setTimeout(tick, 1500);
+      });
+  };
+  setTimeout(tick, 1500);
 }
 
 /**
@@ -103,13 +155,34 @@ async function ensureRootSshLoginIfNeeded(project: ProjectEntry | undefined): Pr
  * the interactive root-terminal login, which this connection then rides.
  */
 function ensureRemotePool(projectId: string): void {
-  void invoke("remote_connect", { projectId, password: null }).catch((error) =>
-    console.warn("remote_connect failed", error),
-  );
+  const status = useRemoteStatusStore.getState();
+  status.setSsh(projectId, "connecting");
+  // In non-headless mode the pooled connection can only ride the master once the
+  // user has authenticated the root-terminal login, which takes a moment; retry a
+  // few times before going red so the lamp turns green when the login completes
+  // rather than flashing an error the login then resolves. Idempotent: a second
+  // remote_connect on an already-open pool is a no-op.
+  let attempts = 0;
+  const maxAttempts = 6;
+  const tryConnect = () => {
+    if (useProjectsStore.getState().activeId !== projectId) return;
+    void invoke("remote_connect", { projectId, password: null })
+      .then(() => useRemoteStatusStore.getState().setSsh(projectId, "connected"))
+      .catch((error) => {
+        if (++attempts >= maxAttempts) {
+          console.warn("remote_connect failed", error);
+          useRemoteStatusStore.getState().setSsh(projectId, "error");
+          return;
+        }
+        setTimeout(tryConnect, 4000);
+      });
+  };
+  tryConnect();
 }
 
 /** Tear down a remote project's pooled connection on deactivation. Best-effort. */
 function dropRemotePool(projectId: string): void {
+  useRemoteStatusStore.getState().clear(projectId);
   void invoke("remote_disconnect", { projectId }).catch(() => {});
 }
 
@@ -142,6 +215,9 @@ interface ProjectsStore {
   loaded: boolean;
   rootDir: string | null;
   switchToast: string | null;
+  /** A transient connection notice (e.g. "VPN connected · proj"). Kept separate
+   *  from `switchToast` so a project switch doesn't clobber it (and vice-versa). */
+  connToast: string | null;
   rightPanelFolderByProject: Record<string, string>;
   /** Incremented only on explicit setActive calls, never by load(). */
   switchGeneration: number;
@@ -150,6 +226,7 @@ interface ProjectsStore {
   reorderProjects: (fromId: string, toId: string) => Promise<void>;
   setRightPanelFolder: (projectId: string, folder: string) => void;
   clearSwitchToast: () => void;
+  clearConnToast: () => void;
   addProject: (project: ProjectEntry) => Promise<void>;
   activateProject: (id: string) => Promise<void>;
   deactivateProject: (id: string) => Promise<void>;
@@ -180,6 +257,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   loaded: false,
   rootDir: null,
   switchToast: null,
+  connToast: null,
   rightPanelFolderByProject: {},
   switchGeneration: 0,
 
@@ -383,6 +461,8 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   },
 
   clearSwitchToast: () => set({ switchToast: null }),
+
+  clearConnToast: () => set({ connToast: null }),
 
   addProject: async (project) => {
     let nextProjects: ProjectEntry[] = [];

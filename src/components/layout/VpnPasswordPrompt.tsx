@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useVpnPromptStore } from "../../stores/vpnPrompt";
-import { ConnectionLog } from "../common/ConnectionLog";
+import { ConnectionLog, type LogLine } from "../common/ConnectionLog";
 
 /**
  * Activation-time OpenVPN password prompt. Rendered once at the app root; shows
@@ -19,7 +19,11 @@ export function VpnPasswordPrompt() {
   const [password, setPassword] = useState("");
   // Live OpenVPN handshake output streamed from the backend, shown read-only so
   // the connect isn't an opaque spinner. Reset per prompt and per attempt.
-  const [log, setLog] = useState<string[]>([]);
+  const [log, setLog] = useState<LogLine[]>([]);
+  // Monotonic id source for `log` lines: a dedicated counter (never reset on
+  // slice) gives each line a stable React key so the `.slice(-500)` cap trims
+  // only the head without re-creating the surviving line nodes.
+  const logSeq = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Reset + focus whenever a new prompt opens (keyed on config so a superseding
@@ -41,7 +45,7 @@ export function VpnPasswordPrompt() {
     let un: (() => void) | undefined;
     void listen<{ config: string; line: string }>("openvpn-progress", (ev) => {
       if (ev.payload.config !== config) return;
-      setLog((prev) => [...prev, ev.payload.line].slice(-500));
+      setLog((prev) => [...prev, { id: logSeq.current++, text: ev.payload.line }].slice(-500));
     }).then((u) => {
       if (cancelled) u();
       else un = u;

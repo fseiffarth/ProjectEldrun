@@ -1,9 +1,27 @@
 import { joinRemotePath } from "./scaffold";
+import { fileIcon, folderIcon } from "../../lib/viewers/fileUtils";
 import { TerminalView } from "../terminal/TerminalView";
 import { ConnectionLog } from "../common/ConnectionLog";
+import { ConnLamp } from "../common/ConnLamp";
+import type { ConnState } from "../../stores/remoteStatus";
 import type { useRemoteSession } from "./useRemoteSession";
 
 type RemoteSession = ReturnType<typeof useRemoteSession>;
+
+/** Extension (".py", ".md", …) of a remote listing entry, for picking its
+ *  file-type icon the same way the right-hand file tree does. A leading-dot
+ *  name (e.g. ".gitignore") has no extension, so it falls back to the generic
+ *  file icon. */
+function remoteEntryExt(name: string): string | null {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot) : null;
+}
+
+/** Map the dialog's connection status (`idle|connecting|connected|error`) to a
+ *  lamp state (`off|connecting|connected|error`). */
+function lampOf(status: RemoteSession["sshStatus"]): ConnState {
+  return status === "idle" ? "off" : status;
+}
 
 /** Human-readable status shown when hovering the "Connect VPN" button, so the
  *  current tunnel state (and any failure reason) is reported without taking up
@@ -31,6 +49,11 @@ function vpnStatusHint(
  * Presentational SSH + OpenVPN + remote-browser section of the project dialog.
  * All state and effects live in `useRemoteSession`; this component only renders
  * it and forwards events. `onClose` lets Escape in the fields dismiss the dialog.
+ *
+ * The remote flow is stepped: step "connect" (SSH + OpenVPN, each with a lamp)
+ * → step "browse" (the live remote folder picker) → step "details" (handled by
+ * the dialog body). Windows non-headless has no ControlMaster to browse over, so
+ * it skips "browse" and types the remote path in the connect step instead.
  */
 export function RemoteProjectSection({
   kind,
@@ -47,8 +70,10 @@ export function RemoteProjectSection({
 }) {
   const {
     isRemoteProject,
-    isRemote,
     headless,
+    winManual,
+    step,
+    tryBrowseNow,
     sshTooling,
     sshAddress,
     sshPassword,
@@ -60,8 +85,6 @@ export function RemoteProjectSection({
     remoteListError,
     remoteChosenPath,
     setRemoteChosenPath,
-    vpnEnabled,
-    setVpnEnabled,
     vpnConfig,
     vpnConfigs,
     selectVpnConfig,
@@ -70,7 +93,6 @@ export function RemoteProjectSection({
     vpnStatus,
     setVpnStatus,
     vpnError,
-    setVpnError,
     vpnLog,
     vpnTerm,
     startVpnTerm,
@@ -87,172 +109,331 @@ export function RemoteProjectSection({
     remoteGoUp,
   } = remote;
 
+  if (!isRemoteProject) return null;
+
+  // The non-headless login authenticates in a terminal, so its lamp tracks the
+  // readiness poll (connecting while the master comes up, green once browsable).
+  const sshLamp: ConnState = winManual ? "off" : lampOf(sshStatus);
+
   return (
     <>
-      {isRemoteProject && sshTooling && (() => {
-        // Mount-free remote: no sshfs/FUSE needed. Only password-auth (sshpass)
-        // and VPN-gated (openvpn/pkexec) hosts depend on extra tooling.
-        const warnings: string[] = [];
-        if (sshPassword && !sshTooling.sshpass) {
-          warnings.push(
-            "sshpass not found — password auth won't work. Install sshpass, or use SSH keys (leave the password blank).",
-          );
-        }
-        if (vpnEnabled && !sshTooling.openvpn) {
-          warnings.push(
-            "openvpn/pkexec not found — VPN-gated hosts can't connect. Install openvpn and polkit.",
-          );
-        }
-        if (warnings.length === 0) return null;
-        return (
-          <div className="ssh-tooling-warning" role="alert">
-            {warnings.map((w) => (
-              <div key={w}>⚠ {w}</div>
-            ))}
-          </div>
-        );
-      })()}
+      <div className="remote-steps" role="list" aria-label="Remote project steps">
+        <span className={`remote-step${step === "connect" ? " is-active" : ""}`} role="listitem">
+          1 Connect
+        </span>
+        {!winManual && (
+          <span className={`remote-step${step === "browse" ? " is-active" : ""}`} role="listitem">
+            2 Browse
+          </span>
+        )}
+        <span className={`remote-step${step === "details" ? " is-active" : ""}`} role="listitem">
+          {winManual ? "2" : "3"} Details
+        </span>
+      </div>
 
-      {isRemoteProject && (
-        <div className="ssh-connect-fields" role="group" aria-label="OpenVPN tunnel">
-          <label className="remote-project-toggle vpn-toggle">
-            <input
-              type="checkbox"
-              checked={vpnEnabled}
-              onChange={(e) => {
-                setVpnEnabled(e.target.checked);
-                if (!e.target.checked) {
-                  setVpnPassword("");
-                  setVpnStatus("idle");
-                  setVpnError("");
-                }
-              }}
-            />
-            Connect via OpenVPN
-          </label>
-          {vpnEnabled && (
-            <>
-              <label>
-                OpenVPN config{" "}
-                <span className="ssh-optional-hint">(copied into Eldrun on selection)</span>
-                {vpnConfigs.length > 0 && (
+      {step === "connect" && (
+        <>
+          {sshTooling &&
+            (() => {
+              // Mount-free remote: no sshfs/FUSE needed. Only password-auth (sshpass)
+              // and VPN-gated (openvpn/pkexec) hosts depend on extra tooling. The VPN
+              // warning fires only once a config is selected, since OpenVPN is optional.
+              const warnings: string[] = [];
+              if (sshPassword && !sshTooling.sshpass) {
+                warnings.push(
+                  "sshpass not found — password auth won't work. Install sshpass, or use SSH keys (leave the password blank).",
+                );
+              }
+              if (vpnConfig && !sshTooling.openvpn) {
+                warnings.push(
+                  "openvpn/pkexec not found — VPN-gated hosts can't connect. Install openvpn and polkit.",
+                );
+              }
+              if (warnings.length === 0) return null;
+              return (
+                <div className="ssh-tooling-warning" role="alert">
+                  {warnings.map((w) => (
+                    <div key={w}>⚠ {w}</div>
+                  ))}
+                </div>
+              );
+            })()}
+
+          <div className="ssh-connect-fields" role="group" aria-label="OpenVPN tunnel">
+            {/* OpenVPN is the only tunnel type, so there's no on/off toggle: the
+                config is shown directly and a tunnel is used only when a config is
+                selected (leave it empty for hosts that need no VPN). */}
+            <div className="vpn-section-header">
+              <span className="toggle-card-title">
+                <ConnLamp status={lampOf(vpnStatus)} label="OpenVPN" />
+                Connect via OpenVPN
+              </span>
+              <span className="toggle-card-desc">
+                Optional — pick an OpenVPN config to reach a VPN-gated host, or leave
+                it empty if the host needs no tunnel.
+              </span>
+            </div>
+            <div className="vpn-details">
+                <label>
+                  OpenVPN config{" "}
+                  <span className="ssh-optional-hint">(copied into Eldrun on selection)</span>
+                  {vpnConfigs.length > 0 && (
+                    <div className="folder-picker-row">
+                      <select
+                        className="ssh-address-input vpn-config-recent"
+                        value={vpnConfigs.some((c) => c.path === vpnConfig) ? vpnConfig : ""}
+                        title="Reuse a previously-used OpenVPN config"
+                        onChange={(e) => {
+                          if (e.target.value) selectVpnConfig(e.target.value);
+                        }}
+                      >
+                        <option value="">Recently used…</option>
+                        {vpnConfigs.map((c) => (
+                          <option key={c.path} value={c.path} title={c.path}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div className="folder-picker-row">
-                    <select
-                      className="ssh-address-input vpn-config-recent"
-                      value={vpnConfigs.some((c) => c.path === vpnConfig) ? vpnConfig : ""}
-                      title="Reuse a previously-used OpenVPN config"
-                      onChange={(e) => {
-                        if (e.target.value) selectVpnConfig(e.target.value);
-                      }}
+                    <input
+                      className="ssh-address-input"
+                      readOnly
+                      value={vpnConfig}
+                      placeholder="No .ovpn selected"
+                      title={vpnConfig}
+                    />
+                    <button type="button" onClick={() => void browseVpnConfig()}>
+                      Browse…
+                    </button>
+                  </div>
+                </label>
+                {headless ? (
+                  <>
+                    <label>
+                      VPN password{" "}
+                      <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
+                      <div className="folder-picker-row">
+                        <input
+                          className="ssh-password-input"
+                          type="password"
+                          value={vpnPassword}
+                          placeholder="VPN passphrase"
+                          onChange={(e) => {
+                            setVpnPassword(e.target.value);
+                            if (vpnStatus !== "idle") setVpnStatus("idle");
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className={`vpn-connect-btn vpn-status-${vpnStatus}`}
+                          disabled={!vpnConfig || vpnStatus === "connecting"}
+                          title={vpnStatusHint(vpnStatus, vpnError, vpnConfig)}
+                          onClick={() => void connectVpn()}
+                        >
+                          {vpnStatus === "connecting" && (
+                            <span className="vpn-spinner" aria-hidden="true" />
+                          )}
+                          {vpnStatus === "connecting"
+                            ? "Connecting…"
+                            : vpnStatus === "connected"
+                              ? "Connected"
+                              : vpnStatus === "error"
+                                ? "Retry VPN"
+                                : "Connect VPN"}
+                        </button>
+                      </div>
+                    </label>
+                    {(vpnStatus === "connecting" || vpnLog.length > 0) && (
+                      <ConnectionLog lines={vpnLog} busy={vpnStatus === "connecting"} />
+                    )}
+                    {vpnStatus === "error" && vpnError && (
+                      <div className="project-dialog-error">{vpnError}</div>
+                    )}
+                  </>
+                ) : (
+                  <div className="dialog-connect">
+                    <button
+                      type="button"
+                      className="dialog-connect-btn"
+                      disabled={!vpnConfig || !!vpnTerm}
+                      title={
+                        vpnConfig
+                          ? "Bring the OpenVPN tunnel up in a terminal below — enter the passphrase there. It stays up for the new project."
+                          : "Select an OpenVPN config first."
+                      }
+                      onClick={() => void startVpnTerm()}
                     >
-                      <option value="">Recently used…</option>
-                      {vpnConfigs.map((c) => (
-                        <option key={c.path} value={c.path} title={c.path}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
+                      <span className="dialog-connect-btn-icon" aria-hidden="true">▶_</span>
+                      {vpnTerm ? "VPN terminal open below" : "Open VPN login terminal"}
+                    </button>
+                    {!vpnTerm && (
+                      <div className="ssh-optional-hint">
+                        Click above to open a terminal here — enter the passphrase there.
+                        Eldrun never handles it; the tunnel stays up for the new project.
+                      </div>
+                    )}
+                    {vpnTerm && (
+                      <div className="dialog-connect-terminal">
+                        <div className="dialog-connect-terminal-bar">
+                          <span className="ssh-optional-hint">
+                            Authenticate the tunnel below — it keeps running for the new
+                            project after you close this dialog.
+                          </span>
+                          <button
+                            type="button"
+                            className="vpn-disconnect-btn"
+                            onClick={() => stopVpnTerm()}
+                          >
+                            Disconnect
+                          </button>
+                        </div>
+                        <div className="dialog-connect-terminal-host">
+                          <TerminalView
+                            id={vpnTerm.id}
+                            cmd=""
+                            cwd=""
+                            initialInput={vpnTerm.command}
+                            visible
+                            focused
+                            persistOnUnmount
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {vpnError && <div className="project-dialog-error">{vpnError}</div>}
                   </div>
                 )}
-                <div className="folder-picker-row">
-                  <input
-                    className="ssh-address-input"
-                    readOnly
-                    value={vpnConfig}
-                    placeholder="No .ovpn selected"
-                    title={vpnConfig}
-                  />
-                  <button type="button" onClick={() => void browseVpnConfig()}>
-                    Browse…
-                  </button>
-                </div>
-              </label>
-              {headless ? (
-                <>
+              </div>
+            <label>
+              <span className="remote-field-label">
+                <ConnLamp status={sshLamp} label="SSH" />
+                SSH address
+              </span>
+              <input
+                className="ssh-address-input"
+                value={sshAddress}
+                placeholder="user@host or host:2222"
+                onChange={(e) => onSshAddressChange(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
+                    e.preventDefault();
+                    void connectSsh();
+                  }
+                  if (e.key === "Escape") onClose();
+                }}
+              />
+            </label>
+            {headless ? (
+              <>
+                <label>
+                  Password{" "}
+                  <span className="ssh-optional-hint">
+                    (not stored; blank uses SSH key)
+                  </span>
+                  <div className="folder-picker-row">
+                    <input
+                      className="ssh-password-input"
+                      type="password"
+                      value={sshPassword}
+                      placeholder="leave empty for key/agent auth"
+                      onChange={(e) => onSshPasswordChange(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
+                          e.preventDefault();
+                          void connectSsh();
+                        }
+                        if (e.key === "Escape") onClose();
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={!sshAddress.trim() || sshStatus === "connecting"}
+                      onClick={() => void connectSsh()}
+                    >
+                      {sshStatus === "connecting"
+                        ? "Connecting..."
+                        : sshStatus === "connected"
+                          ? "Connected"
+                          : "Connect"}
+                    </button>
+                  </div>
+                </label>
+                {sshStatus === "error" && sshError && (
+                  <div className="project-dialog-error">{sshError}</div>
+                )}
+              </>
+            ) : (
+              <>
+                {winManual && (
                   <label>
-                    VPN password{" "}
-                    <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
-                    <div className="folder-picker-row">
-                      <input
-                        className="ssh-password-input"
-                        type="password"
-                        value={vpnPassword}
-                        placeholder="VPN passphrase"
-                        onChange={(e) => {
-                          setVpnPassword(e.target.value);
-                          if (vpnStatus !== "idle") setVpnStatus("idle");
-                        }}
-                      />
-                      <button
-                        type="button"
-                        className={`vpn-connect-btn vpn-status-${vpnStatus}`}
-                        disabled={!vpnConfig || vpnStatus === "connecting"}
-                        title={vpnStatusHint(vpnStatus, vpnError, vpnConfig)}
-                        onClick={() => void connectVpn()}
-                      >
-                        {vpnStatus === "connecting" && (
-                          <span className="vpn-spinner" aria-hidden="true" />
-                        )}
-                        {vpnStatus === "connecting"
-                          ? "Connecting…"
-                          : vpnStatus === "connected"
-                            ? "Connected"
-                            : vpnStatus === "error"
-                              ? "Retry VPN"
-                              : "Connect VPN"}
-                      </button>
-                    </div>
+                    Remote path{" "}
+                    <span className="ssh-optional-hint">
+                      {kind === "new"
+                        ? "(parent folder; the project is created inside it)"
+                        : "(absolute path of the existing project)"}
+                    </span>
+                    <input
+                      className="ssh-address-input"
+                      value={remoteChosenPath}
+                      placeholder="/home/user/projects"
+                      onChange={(e) => setRemoteChosenPath(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") onClose();
+                      }}
+                    />
                   </label>
-                  {(vpnStatus === "connecting" || vpnLog.length > 0) && (
-                    <ConnectionLog lines={vpnLog} busy={vpnStatus === "connecting"} />
-                  )}
-                  {vpnStatus === "error" && vpnError && (
-                    <div className="project-dialog-error">{vpnError}</div>
-                  )}
-                </>
-              ) : (
+                )}
                 <div className="dialog-connect">
                   <button
                     type="button"
                     className="dialog-connect-btn"
-                    disabled={!vpnConfig || !!vpnTerm}
-                    title={
-                      vpnConfig
-                        ? "Bring the OpenVPN tunnel up in a terminal below — enter the passphrase there. It stays up for the new project."
-                        : "Select an OpenVPN config first."
-                    }
-                    onClick={() => void startVpnTerm()}
+                    disabled={!sshAddress.trim() || !!sshTerm}
+                    title="Open the SSH login in a terminal below — enter any password there. The login stays up for the new project."
+                    onClick={() => void startSshTerm()}
                   >
                     <span className="dialog-connect-btn-icon" aria-hidden="true">▶_</span>
-                    {vpnTerm ? "VPN terminal open below" : "Open VPN login terminal"}
+                    {sshTerm ? "SSH terminal open below" : "Open SSH login terminal"}
                   </button>
-                  {!vpnTerm && (
+                  {!winManual && sshTerm && sshStatus !== "connected" && (
+                    <button
+                      type="button"
+                      className="dialog-connect-btn"
+                      title="If you've finished logging in above, browse the remote tree now."
+                      onClick={() => tryBrowseNow()}
+                    >
+                      I've logged in — browse
+                    </button>
+                  )}
+                  {!sshTerm && (
                     <div className="ssh-optional-hint">
-                      Click above to open a terminal here — enter the passphrase there.
-                      Eldrun never handles it; the tunnel stays up for the new project.
+                      Click above to open a terminal here — enter any password there.
+                      Eldrun never handles it; the login stays up for the new project.
+                      {!winManual && " Once you're logged in, the remote tree opens for browsing."}
                     </div>
                   )}
-                  {vpnTerm && (
+                  {sshTerm && (
                     <div className="dialog-connect-terminal">
                       <div className="dialog-connect-terminal-bar">
                         <span className="ssh-optional-hint">
-                          Authenticate the tunnel below — it keeps running for the new
-                          project after you close this dialog.
+                          Log in below — the session keeps running for the new project
+                          after you close this dialog.
                         </span>
                         <button
                           type="button"
                           className="vpn-disconnect-btn"
-                          onClick={() => stopVpnTerm()}
+                          onClick={() => stopSshTerm()}
                         >
                           Disconnect
                         </button>
                       </div>
                       <div className="dialog-connect-terminal-host">
                         <TerminalView
-                          id={vpnTerm.id}
+                          id={sshTerm.id}
                           cmd=""
                           cwd=""
-                          initialInput={vpnTerm.command}
+                          initialInput={sshTerm.command}
                           visible
                           focused
                           persistOnUnmount
@@ -260,140 +441,17 @@ export function RemoteProjectSection({
                       </div>
                     </div>
                   )}
-                  {vpnError && <div className="project-dialog-error">{vpnError}</div>}
+                  {sshStatus === "error" && sshError && (
+                    <div className="project-dialog-error">{sshError}</div>
+                  )}
                 </div>
-              )}
-            </>
-          )}
-          <label>
-            SSH address
-            <input
-              className="ssh-address-input"
-              value={sshAddress}
-              placeholder="user@host or host:2222"
-              onChange={(e) => onSshAddressChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
-                  e.preventDefault();
-                  void connectSsh();
-                }
-                if (e.key === "Escape") onClose();
-              }}
-            />
-          </label>
-          {headless ? (
-            <>
-              <label>
-                Password{" "}
-                <span className="ssh-optional-hint">
-                  (not stored; blank uses SSH key)
-                </span>
-                <div className="folder-picker-row">
-                  <input
-                    className="ssh-password-input"
-                    type="password"
-                    value={sshPassword}
-                    placeholder="leave empty for key/agent auth"
-                    onChange={(e) => onSshPasswordChange(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
-                        e.preventDefault();
-                        void connectSsh();
-                      }
-                      if (e.key === "Escape") onClose();
-                    }}
-                  />
-                  <button
-                    type="button"
-                    disabled={!sshAddress.trim() || sshStatus === "connecting"}
-                    onClick={() => void connectSsh()}
-                  >
-                    {sshStatus === "connecting"
-                      ? "Connecting..."
-                      : sshStatus === "connected"
-                        ? "Connected"
-                        : "Connect"}
-                  </button>
-                </div>
-              </label>
-              {sshStatus === "error" && sshError && (
-                <div className="project-dialog-error">{sshError}</div>
-              )}
-            </>
-          ) : (
-            <>
-              <label>
-                Remote path{" "}
-                <span className="ssh-optional-hint">
-                  {kind === "new"
-                    ? "(parent folder; the project is created inside it)"
-                    : "(absolute path of the existing project)"}
-                </span>
-                <input
-                  className="ssh-address-input"
-                  value={remoteChosenPath}
-                  placeholder="/home/user/projects"
-                  onChange={(e) => setRemoteChosenPath(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") onClose();
-                  }}
-                />
-              </label>
-              <div className="dialog-connect">
-                <button
-                  type="button"
-                  className="dialog-connect-btn"
-                  disabled={!sshAddress.trim() || !!sshTerm}
-                  title="Open the SSH login in a terminal below — enter any password there. The login stays up for the new project."
-                  onClick={() => void startSshTerm()}
-                >
-                  <span className="dialog-connect-btn-icon" aria-hidden="true">▶_</span>
-                  {sshTerm ? "SSH terminal open below" : "Open SSH login terminal"}
-                </button>
-                {!sshTerm && (
-                  <div className="ssh-optional-hint">
-                    Click above to open a terminal here — enter any password there.
-                    Eldrun never handles it; the login stays up for the new project.
-                  </div>
-                )}
-                {sshTerm && (
-                  <div className="dialog-connect-terminal">
-                    <div className="dialog-connect-terminal-bar">
-                      <span className="ssh-optional-hint">
-                        Log in below — the session keeps running for the new project
-                        after you close this dialog.
-                      </span>
-                      <button
-                        type="button"
-                        className="vpn-disconnect-btn"
-                        onClick={() => stopSshTerm()}
-                      >
-                        Disconnect
-                      </button>
-                    </div>
-                    <div className="dialog-connect-terminal-host">
-                      <TerminalView
-                        id={sshTerm.id}
-                        cmd=""
-                        cwd=""
-                        initialInput={sshTerm.command}
-                        visible
-                        focused
-                        persistOnUnmount
-                      />
-                    </div>
-                  </div>
-                )}
-                {sshStatus === "error" && sshError && (
-                  <div className="project-dialog-error">{sshError}</div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
+              </>
+            )}
+          </div>
+        </>
       )}
 
-      {isRemote && (
+      {step === "browse" && !winManual && (
         <div className="remote-browser" role="group" aria-label="Remote folder browser">
           <div className="remote-browser-header">
             <button type="button" className="remote-up-btn" onClick={remoteGoUp} title="Go up">
@@ -430,7 +488,9 @@ export function RemoteProjectSection({
                     }
                   }}
                 >
-                  <span className="remote-entry-icon">{entry.is_dir ? "[ ]" : "·"}</span>
+                  <span className="remote-entry-icon file-icon">
+                    {entry.is_dir ? folderIcon() : fileIcon(remoteEntryExt(entry.name))}
+                  </span>
                   <span className="remote-entry-name">{entry.name}</span>
                 </div>
               ))}

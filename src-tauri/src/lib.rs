@@ -466,6 +466,7 @@ pub fn run() {
             commands::ollama::install_vibe,
             commands::ollama::vibe_install_strategy,
             commands::agents::agent_is_installed,
+            commands::agents::npm_is_installed,
             commands::agents::list_agents,
             commands::agents::install_agent,
             commands::ollama::ollama_is_running,

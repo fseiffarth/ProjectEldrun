@@ -59,6 +59,31 @@ function fibonacciSphere(n: number, radius: number): Vec3[] {
   return out;
 }
 
+/** A point on a circle of `r` at angle `a` (radians), centered at (cx, cy). */
+function polar(cx: number, cy: number, r: number, a: number): [number, number] {
+  return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+}
+
+/**
+ * SVG path for a donut segment between angles `a0`→`a1` (radians, clockwise),
+ * with outer/inner radii `rO`/`rI`. A near-full sweep (the single-project case)
+ * is drawn as a complete ring via an even-odd circle pair, since a normal arc
+ * whose endpoints coincide renders nothing.
+ */
+function donutSlicePath(cx: number, cy: number, rO: number, rI: number, a0: number, a1: number): string {
+  if (a1 - a0 >= Math.PI * 2 - 1e-3) {
+    const ring = (r: number) =>
+      `M ${cx - r} ${cy} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`;
+    return `${ring(rO)} ${ring(rI)}`;
+  }
+  const large = a1 - a0 > Math.PI ? 1 : 0;
+  const [x0, y0] = polar(cx, cy, rO, a0);
+  const [x1, y1] = polar(cx, cy, rO, a1);
+  const [x2, y2] = polar(cx, cy, rI, a1);
+  const [x3, y3] = polar(cx, cy, rI, a0);
+  return `M ${x0} ${y0} A ${rO} ${rO} 0 ${large} 1 ${x1} ${y1} L ${x2} ${y2} A ${rI} ${rI} 0 ${large} 0 ${x3} ${y3} Z`;
+}
+
 const ROT_SENSITIVITY = 0.3; // deg per px dragged
 const AUTO_SPIN = 0.06; // deg per frame when idle
 const MIN_DOLLY = -360;
@@ -137,6 +162,10 @@ export function ProjectBlobPane() {
   // Files/folders of the focused directory.
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [entriesLoading, setEntriesLoading] = useState(false);
+  // Which visualization the project cloud renders: the 3D "sphere" (default) or
+  // a 2D "pie" donut of time tracked per project. The file viewer (focus) is
+  // sphere-only, so the toggle is hidden — and switching to pie exits focus.
+  const [viewMode, setViewMode] = useState<"sphere" | "pie">("sphere");
 
   // Fetch activity for any project we don't have yet (the guard makes this a
   // one-shot per project, not a refetch loop).
@@ -171,6 +200,29 @@ export function ProjectBlobPane() {
     for (const v of Object.values(totals)) if (v > m) m = v;
     return m;
   }, [totals]);
+
+  // Pie slices: one per project, the sweep proportional to time tracked. A flat
+  // floor is added to every weight so untracked projects still get a visible,
+  // clickable wedge (and all-untracked clouds split evenly). Slices start at the
+  // top (−90°) and run clockwise.
+  const pieSlices = useMemo(() => {
+    const items = [...projects].sort((a, b) => a.position - b.position);
+    if (items.length === 0) return [];
+    const secs = items.map((p) => totals[p.id] ?? 0);
+    const floor = maxTotal * 0.08;
+    const adj = secs.map((s) => s + floor);
+    const sum = adj.reduce((a, b) => a + b, 0) || 1;
+    let acc = -Math.PI / 2;
+    return items.map((project, i) => {
+      const frac = adj[i] / sum;
+      const a0 = acc;
+      const a1 = acc + frac * Math.PI * 2;
+      acc = a1;
+      const cat = primaryCategoryColor(projectCategories(project));
+      const color = cat ?? (project.status === "inactive" ? "var(--text-muted)" : "var(--accent)");
+      return { project, a0, a1, frac, secs: secs[i], color, single: items.length === 1 };
+    });
+  }, [projects, totals, maxTotal]);
 
   // Load the focused directory's listing whenever the focus/path changes.
   useEffect(() => {
@@ -254,6 +306,10 @@ export function ProjectBlobPane() {
   radiusRef.current = radius;
   // Mirror the hovered node id (suppressed while the menu is open) for the loop.
   hoverIdRef.current = hover && !menu ? hover.node.id : null;
+  // Mirror the view mode so the (once-bound) orbit handler can ignore drags
+  // while the flat pie is showing.
+  const viewModeRef = useRef(viewMode);
+  viewModeRef.current = viewMode;
   // Pending single-click timer, so a double-click can cancel the single action.
   const clickTimer = useRef<number | null>(null);
 
@@ -422,6 +478,8 @@ export function ProjectBlobPane() {
   // drag (so the pointerup isn't treated as a node click).
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    if (viewModeRef.current === "pie") return; // pie is a flat chart — no orbit
+
     const startX = e.clientX;
     const startY = e.clientY;
     const baseRotX = rotX.current;
@@ -502,6 +560,17 @@ export function ProjectBlobPane() {
     setHover(null);
     dolly.current = 0;
     setFocus(null);
+  }, []);
+
+  // Switch the cloud visualization. Leaving for the pie drops any open file
+  // viewer (pie is a project-only view) and clears the hover card.
+  const selectView = useCallback((mode: "sphere" | "pie") => {
+    setHover(null);
+    if (mode === "pie") {
+      dolly.current = 0;
+      setFocus(null);
+    }
+    setViewMode(mode);
   }, []);
 
   // Go up one level in the file viewer; exit to the project cloud from the root.
@@ -607,6 +676,8 @@ export function ProjectBlobPane() {
   // Drop the pending single-click timer if the pane unmounts.
   useEffect(() => () => clearClickTimer(), [clearClickTimer]);
 
+  const isPie = viewMode === "pie" && !focus;
+
   if (nodes.length === 0 && !focus) {
     return (
       <div className="blob-viewport blob-empty">
@@ -618,7 +689,7 @@ export function ProjectBlobPane() {
   return (
     <div
       ref={viewportRef}
-      className="blob-viewport"
+      className={`blob-viewport${isPie ? " blob-viewport-pie" : ""}`}
       onPointerDown={onPointerDown}
       onWheel={onWheel}
     >
@@ -643,11 +714,80 @@ export function ProjectBlobPane() {
           {entriesLoading && <span className="blob-crumb-loading">loading…</span>}
         </div>
       )}
+      {!focus && (
+        <div className="blob-view-toggle" onPointerDown={(e) => e.stopPropagation()}>
+          <button
+            className={viewMode === "sphere" ? "is-active" : ""}
+            onClick={() => selectView("sphere")}
+            title="3D project sphere"
+          >
+            Sphere
+          </button>
+          <button
+            className={viewMode === "pie" ? "is-active" : ""}
+            onClick={() => selectView("pie")}
+            title="Time-tracked pie chart"
+          >
+            Pie
+          </button>
+        </div>
+      )}
       <div className="blob-hint">
         {focus
           ? "Click a folder to enter · click a file to open · center or Esc to go back"
-          : "Drag to orbit · scroll to zoom · click to explore files · double-click to open · right-click for menu"}
+          : isPie
+            ? "Slice size = time tracked · click to open a project · right-click for menu"
+            : "Drag to orbit · scroll to zoom · click to explore files · double-click to open · right-click for menu"}
       </div>
+      {isPie ? (
+        pieSlices.length === 0 ? (
+          <div className="blob-pie-empty">No projects to chart yet.</div>
+        ) : (
+          <div className="blob-pie-stage">
+            <svg className="blob-pie-svg" viewBox="0 0 320 320" preserveAspectRatio="xMidYMid meet">
+              {pieSlices.map((sl) => {
+                const node: BlobNode = { id: `p:${sl.project.id}`, kind: "project", project: sl.project };
+                const isAct = sl.project.id === activeId;
+                const mid = (sl.a0 + sl.a1) / 2;
+                const [lx, ly] = polar(160, 160, 116, mid);
+                return (
+                  <g key={sl.project.id} className={`blob-pie-slice${isAct ? " is-active" : ""}`}>
+                    <path
+                      d={donutSlicePath(160, 160, 150, 78, sl.a0, sl.a1)}
+                      fill={sl.color}
+                      fillRule={sl.single ? "evenodd" : "nonzero"}
+                      onPointerEnter={(e) => setHover({ x: e.clientX, y: e.clientY, node })}
+                      onPointerLeave={() => setHover((h) => (h?.node.id === node.id ? null : h))}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void setActive(sl.project.id);
+                      }}
+                      onContextMenu={(e) => onNodeContextMenu(e, node)}
+                    />
+                    {sl.frac > 0.055 && (
+                      <text
+                        className="blob-pie-label"
+                        x={lx}
+                        y={ly}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                      >
+                        {sl.project.name}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+              <text className="blob-pie-center" x="160" y="153" textAnchor="middle">
+                {projects.length} {projects.length === 1 ? "project" : "projects"}
+              </text>
+              <text className="blob-pie-center-sub" x="160" y="173" textAnchor="middle">
+                {fmtWorked(pieSlices.reduce((a, s) => a + s.secs, 0))}
+              </text>
+            </svg>
+          </div>
+        )
+      ) : (
       <div className="blob-stage">
         <div ref={sceneRef} className="blob-scene">
           {nodes.map((node, i) => {
@@ -719,6 +859,7 @@ export function ProjectBlobPane() {
           })}
         </div>
       </div>
+      )}
 
       {/* Category-tag editor (opened from a project node's right-click menu). */}
       {catProject && (

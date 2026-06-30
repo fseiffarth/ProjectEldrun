@@ -18,7 +18,7 @@ import {
   sanitizeName,
   type ScaffoldPreviewItem,
 } from "./scaffold";
-import { useRemoteSession } from "./useRemoteSession";
+import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
 
 export function ProjectDialog({
@@ -55,19 +55,36 @@ export function ProjectDialog({
   const {
     isRemoteProject,
     isRemote,
-    headless,
+    winManual,
+    step,
+    setStep,
+    remoteReady,
     remoteBrowsePath,
     remoteChosenPath,
     setRemoteChosenPath,
     toggleRemoteProject,
     buildRemoteSpec,
   } = remote;
-  // A remote project is ready to create once we either have a live browsed
-  // session (headless) or, in non-headless mode where no in-dialog connection is
-  // made, the user has typed a remote path (the login happens in the root
-  // terminal at activation). Drives both submit gating and the remote-vs-local
-  // submit branches below.
-  const remoteReady = isRemoteProject && (headless ? isRemote : remoteChosenPath.trim() !== "");
+  // Remote projects walk a stepped flow (connect → browse → details); the
+  // name/git/description body only appears on the final "details" step. Local
+  // projects ignore steps and show their single form.
+  const showDetails = !isRemoteProject || step === "details";
+  // Step order for the footer's Back/Next; Windows non-headless has no browse
+  // step (it types the path in the connect step instead).
+  const remoteSteps: RemoteStep[] = winManual
+    ? ["connect", "details"]
+    : ["connect", "browse", "details"];
+  const stepIdx = remoteSteps.indexOf(step);
+  const goBack = () => setStep(remoteSteps[Math.max(0, stepIdx - 1)]);
+  const goNext = () => setStep(remoteSteps[Math.min(remoteSteps.length - 1, stepIdx + 1)]);
+  const canNext =
+    step === "connect"
+      ? winManual
+        ? remoteChosenPath.trim() !== ""
+        : isRemote
+      : step === "browse"
+        ? remoteChosenPath.trim() !== ""
+        : false;
   const safeName = sanitizeName(name);
   const targetDir = safeName && projectsRoot ? `${projectsRoot}/${safeName}` : "";
   // "Push to GitHub/GitLab" was chosen, but no Eldrun connection is set up yet.
@@ -80,15 +97,9 @@ export function ProjectDialog({
   // Send the user to Settings → Git Hosting to establish the GitHub/GitLab
   // connection. The project dialog stays open (so the half-filled form isn't
   // lost); once a token is saved the `needsGitConnection` notice clears live.
+  // Git Hosting is its own settings sub-panel, so open it directly.
   const openGitHostingSettings = () => {
-    window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "main" }));
-    // The settings dialog mounts on the next render; once it's there, bring its
-    // Git Hosting section into view rather than dropping the user at the top.
-    setTimeout(() => {
-      document
-        .getElementById("settings-git-hosting")
-        ?.scrollIntoView({ block: "start", behavior: "smooth" });
-    }, 80);
+    window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "git" }));
   };
 
   useEffect(() => {
@@ -154,6 +165,8 @@ export function ProjectDialog({
       const segs = (remoteBrowsePath || "").split("/").filter(Boolean);
       if (segs.length) setName(segs[segs.length - 1]);
     }
+    // Committing the folder is the natural end of the browse step.
+    setStep("details");
   };
 
   const selectedScaffoldAgentFills = () => {
@@ -302,13 +315,22 @@ export function ProjectDialog({
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <h2>{kind === "new" ? "New Project" : "Import Project"}</h2>
 
-        <label className="remote-project-toggle">
-          <input
-            type="checkbox"
-            checked={isRemoteProject}
-            onChange={(e) => toggleRemoteProject(e.target.checked)}
-          />
-          Remote (SSH) project
+        <label className={`toggle-card${isRemoteProject ? " is-on" : ""}`}>
+          <span className="toggle-card-body">
+            <span className="toggle-card-title">Remote (SSH) project</span>
+            <span className="toggle-card-desc">
+              Work on a project that lives on another machine — terminals, files,
+              and git all run on the host over SSH.
+            </span>
+          </span>
+          <span className="eld-switch">
+            <input
+              type="checkbox"
+              checked={isRemoteProject}
+              onChange={(e) => toggleRemoteProject(e.target.checked)}
+            />
+            <span className="eld-switch-track" aria-hidden="true" />
+          </span>
         </label>
 
         <RemoteProjectSection
@@ -319,6 +341,8 @@ export function ProjectDialog({
           remote={remote}
         />
 
+        {showDetails && (
+        <>
         {kind === "import" && !isRemoteProject && (
           <label>
             Source folder
@@ -526,12 +550,25 @@ export function ProjectDialog({
                 : ""}
         </div>
         {error && <div className="project-dialog-error">{error}</div>}
+        </>
+        )}
 
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose}>Cancel</button>
-          <button type="button" disabled={!canSubmit || busy} onClick={() => void submit()}>
-            {busy ? "Working..." : kind === "new" ? "Create" : "Import"}
-          </button>
+          {isRemoteProject && stepIdx > 0 && (
+            <button type="button" disabled={busy} onClick={goBack}>
+              Back
+            </button>
+          )}
+          {isRemoteProject && step !== "details" ? (
+            <button type="button" disabled={!canNext || busy} onClick={goNext}>
+              Next
+            </button>
+          ) : (
+            <button type="button" disabled={!canSubmit || busy} onClick={() => void submit()}>
+              {busy ? "Working..." : kind === "new" ? "Create" : "Import"}
+            </button>
+          )}
         </div>
       </div>
     </div>

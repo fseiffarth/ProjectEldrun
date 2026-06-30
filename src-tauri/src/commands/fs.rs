@@ -212,7 +212,7 @@ type RemotePoolState = crate::services::remote::RemotePoolState;
 /// `..`/absolute traversal — the remote analogue of `canonical` + relative
 /// `enforce_confinement`. Reuses `normalize_project_rel_path` (which rejects
 /// `..`/root components and strips a leading `/`), then joins onto the root.
-fn remote_join_confined(remote_root: &str, rel_path: &str) -> Result<String, String> {
+pub(crate) fn remote_join_confined(remote_root: &str, rel_path: &str) -> Result<String, String> {
     let clean = normalize_project_rel_path(rel_path)?;
     Ok(join_remote_dir(remote_root, &clean))
 }
@@ -247,7 +247,7 @@ async fn pooled(pool: &RemotePoolState, target: &RemoteTarget) -> Option<std::sy
     crate::services::remote::pooled_sftp(pool, &target.project_id).await
 }
 
-async fn remote_read(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<Vec<u8>, String> {
+pub(crate) async fn remote_read(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<Vec<u8>, String> {
     let s = &target.spec;
     match pooled(pool, target).await {
         Some(sftp) => crate::services::sftp::read_file_on(&sftp, path).await,

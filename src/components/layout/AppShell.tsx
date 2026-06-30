@@ -67,6 +67,8 @@ export function AppShell() {
   const panelTarget = activeId !== null || scope.startsWith(BOX_SCOPE_PREFIX);
   const switchToast = useProjectsStore((s) => s.switchToast);
   const clearSwitchToast = useProjectsStore((s) => s.clearSwitchToast);
+  const connToast = useProjectsStore((s) => s.connToast);
+  const clearConnToast = useProjectsStore((s) => s.clearConnToast);
   const initTimer = useTimerStore((s) => s.init);
   const flushTimer = useTimerStore((s) => s.flush);
   const [panelsHidden, setPanelsHidden] = useState(false);
@@ -380,6 +382,12 @@ export function AppShell() {
     return () => clearTimeout(t);
   }, [switchToast, clearSwitchToast]);
 
+  useEffect(() => {
+    if (!connToast) return;
+    const t = setTimeout(clearConnToast, 3200);
+    return () => clearTimeout(t);
+  }, [connToast, clearConnToast]);
+
   const reveal = (
     timer: MutableRefObject<number | null>,
     setter: (open: boolean) => void,
@@ -425,6 +433,9 @@ export function AppShell() {
       <HeaderBar />
       {switchToast != null && (
         <div key={switchToast} className="project-switch-toast">{switchToast}</div>
+      )}
+      {connToast != null && (
+        <div key={connToast} className="project-switch-toast conn-toast">{connToast}</div>
       )}
       <div
         className={`app-body${revealRight && rightPinned ? " right-docked" : ""}${resizingRight ? " resizing" : ""}`}

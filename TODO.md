@@ -881,27 +881,62 @@ container) — as opposed to the git **push** axis (#21/#22).*
       host. Docs/lessons/tour stripped of FUSE. **Follow-up (deferred):** create
       *new* remote projects scaffold only `project.json` locally + best-effort
       `mkdir -p` the remote root over SSH — the AGENTS.md/CLAUDE.md scaffold is not
-      yet written to the host over SFTP; and `git_change_stats` untracked-line
-      counts still assume a local tree. Both need a live-host QA pass.
-    - [ ] **28k — Review-team follow-ups (deferred).** From the post-merge
-      code review of the mount-free change (most findings already fixed in the
-      `fix(remote): harden SSH/SFTP pool…` commit). Two items left open:
-      - [ ] **Remote untracked-line counts read +0.** `count_added_lines`
-        (`commands/git.rs`) does a local `std::fs::read` on `project_dir.join(rel)`;
+      yet written to the host over SFTP. (The `git_change_stats` untracked-line
+      counts that assumed a local tree are now fixed in #28k.) Needs a live-host
+      QA pass.
+    - [x] **28k — Review-team follow-ups** (2026-06-30; ✅ Done · 🧪 Remote
+      half needs live-host QA). From the post-merge code review of the mount-free
+      change (most findings already fixed in the `fix(remote): harden SSH/SFTP
+      pool…` commit). Both remaining items resolved:
+      - [x] **Remote untracked-line counts read +0.** `count_added_lines`
+        (`commands/git.rs`) did a local `std::fs::read` on `project_dir.join(rel)`;
         for a remote project `project_dir` is the local state dir, so every read
-        fails and the git "Add" panel shows untracked remote files as `+0 / non-binary`.
-        Fix: skip the count for remote projects (explicit +0 with a comment) or
-        read the file over the pooled SFTP session (accepting the latency). Update
-        the now-stale "still-present mountpoint" comment either way.
-      - [ ] **`ConnectionLog` keys by array index.** `key={i}` over a `slice(-500)`
-        log forces full re-creation of every line node when the cap trims the head.
-        Fix: carry a monotonic id alongside each pushed line and key on that. Cosmetic
-        DOM churn only; low priority.
+        failed and the git "Add" panel showed untracked remote files as `+0 /
+        non-binary`. Fixed via the SFTP-read option: `git_change_stats` is now
+        `async` + takes the `RemotePoolState`; local projects keep `std::fs::read`,
+        remote projects read each untracked file's bytes over the pooled SFTP
+        session (`count_added_lines_remote` → `fs::remote_join_confined` +
+        `fs::remote_read`, both now `pub(crate)`), with the shared byte→`(lines,
+        binary)` logic factored into `count_lines_in_bytes`. The `rel` path is
+        confined under `spec.remote_path`; any confinement/read error degrades to
+        `(0, false)` as before. Stale "still-present mountpoint" comment replaced.
+        **Live-host QA:** confirm `+N`/binary/empty counts against a real SSH
+        project, cold-pool (one-shot fallback) counts, and latency on a large
+        untracked tree (each file is now an individual SFTP read).
+      - [x] **`ConnectionLog` keys by array index.** `key={i}` over a `slice(-500)`
+        log forced full re-creation of every line node when the cap trimmed the
+        head. Fixed: `ConnectionLog` now takes `LogLine[]` (`{ id; text }`) and
+        keys on the id; both push sites (`useRemoteSession.ts`,
+        `VpnPasswordPrompt.tsx`) mint a monotonic id from a dedicated `useRef`
+        counter that never resets on slice, so surviving lines keep their nodes.
+      - Gates: `npx tsc --noEmit`, `cargo test` (412 + 25, 0 failed) all green.
     - **Cross-cutting (all phases):** single auth (one ControlMaster, no 3×
       prompts), no page cache (pooled session + lazy reads), fail-fast offline,
       OpenVPN brought up before the master, git-over-ssh keeps `shell_quote`
       defenses. Per-phase `cargo test` + `npx tsc --noEmit`; runtime QA adapts
       #28 Phases 1–8 minus all mount/`/proc/mounts` steps.
+    - [x] **28l — Stepped remote dialog + connection lamps** (2026-06-30; ✅
+      Done · 🧪 Untested). New-project dialog reworked into a stepped remote flow
+      (connect → browse → details) via `step` in `useRemoteSession`; the
+      name/git/details body is gated to the final step (local projects keep the
+      single form). **Browse in both connection modes:** non-headless now rides
+      the embedded login's ControlMaster to SFTP-browse (auto-poll of a
+      credential-less `ssh_connect` after `startSshTerm`, + an "I've logged in —
+      browse" fallback), converging on the same `isRemote` browser headless uses;
+      Windows non-headless (no control socket → `winManual`) keeps the typed-path
+      input. `buildRemoteSpec` collapsed to one branch + Windows fallback. Added
+      red/orange/green `ConnLamp` for SSH + OpenVPN, shown in-dialog and
+      persistently in the header for the active remote project, driven by a new
+      `stores/remoteStatus.ts` (keyed by project id). Activation (`stores/projects.ts`)
+      drives the lamps (pooled `remote_connect` with retry; VPN from the prompt
+      result or a bounded `openvpn_status` poll) and fires a dedicated `connToast`
+      ("VPN connected · <proj>"). **Known gaps for live QA:** (a) macOS
+      `openvpn_status` is a stub (always false), so the VPN lamp never goes green
+      on macOS — wire real status when the macOS OpenVPN backend lands (Group H);
+      (b) a headless password-auth host with no live master can't open the pool
+      with a null password, so its SSH lamp goes red after the retry budget —
+      accurate, but the path itself is the unstored-password limitation, not a lamp
+      bug. Gates: `npx tsc --noEmit`, `vitest` (714), `cargo test` (25) all green.
 
 ---
 

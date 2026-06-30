@@ -9,12 +9,14 @@ import { AppTimerDisplay } from "../header/AppTimerDisplay";
 import { AppResourceDisplay } from "../header/AppResourceDisplay";
 import { Clock } from "../header/Clock";
 import { ConnTypeIcon } from "../header/ConnTypeIcon";
+import { ConnLamp } from "../common/ConnLamp";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
 import { LocalModelMenu } from "./LocalModelMenu";
 import { LogoIcon } from "./LogoIcon";
 import { useProjectsStore } from "../../stores/projects";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
 // Single source of truth for the displayed version: read package.json (kept in
 // lockstep with src-tauri/Cargo.toml + tauri.conf.json on every bump) so the
 // header never drifts behind a release.
@@ -61,6 +63,10 @@ export function HeaderBar() {
   const [connType, setConnType] = useState<string | null>(null);
   const activeId = useProjectsStore((s) => s.activeId);
   const setActive = useProjectsStore((s) => s.setActive);
+  // The active project's remote spec + its live SSH/VPN connection state, shown as
+  // header lamps so the user can see at a glance whether a remote project is up.
+  const activeProject = useProjectsStore((s) => s.projects.find((p) => p.id === s.activeId));
+  const remoteStatus = useRemoteStatusStore((s) => (activeId ? s.byProject[activeId] : undefined));
 
   useEffect(() => {
     invoke<WorkspaceInfo>("workspace_info").catch(() => {});
@@ -113,6 +119,17 @@ export function HeaderBar() {
         </div>
         {(connKind || !online) && (
           <ConnTypeIcon type={connKind ?? "wlan"} online={online} />
+        )}
+        {activeProject?.remote && (
+          <span className="header-conn-lamps" aria-label="Remote connection status">
+            <ConnLamp
+              status={remoteStatus?.ssh ?? "off"}
+              label={`SSH · ${activeProject.remote.host}`}
+            />
+            {activeProject.remote.openvpn && (
+              <ConnLamp status={remoteStatus?.vpn ?? "off"} label="OpenVPN" />
+            )}
+          </span>
         )}
       </div>
 

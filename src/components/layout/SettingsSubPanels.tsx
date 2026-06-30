@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { useSettingsStore } from "../../stores/settings";
-import { IS_WINDOWS } from "../../lib/platform";
+import { IS_WINDOWS, PLATFORM } from "../../lib/platform";
 import { runInstallInTab } from "../../lib/installCommand";
 import type { GlobalAppEntry } from "../../types";
 
@@ -272,6 +272,86 @@ interface AgentInfo {
 }
 
 /**
+ * Per-OS command that installs Node.js (and with it `npm`). Most agent CLIs
+ * install via `npm install -g …`, so when `npm` is missing the Manage Agents
+ * panel offers this first. nvm installs Node without administrator rights and
+ * works identically on Linux and macOS; Windows uses winget (present on Windows
+ * 10/11) and runs in either PowerShell or Command Prompt.
+ */
+const NODE_INSTALL: Record<
+  "windows" | "macos" | "linux",
+  { command: string; shell: string }
+> = {
+  linux: {
+    command:
+      'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
+    shell: "bash",
+  },
+  macos: {
+    command:
+      'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
+    shell: "bash",
+  },
+  windows: {
+    command: "winget install OpenJS.NodeJS.LTS",
+    shell: "PowerShell or Command Prompt",
+  },
+};
+const NODE_DOWNLOAD_URL = "https://nodejs.org/en/download";
+
+/**
+ * "Install Node/npm first" helper for the Manage Agents panel. Most agent CLIs
+ * install through `npm`, so when `npm` isn't on the host's PATH this points the
+ * user at the one-click, no-admin Node install for their OS (and stays hidden
+ * once npm is detected). Follows Eldrun's install-via-terminal-tab policy.
+ */
+function NodeRuntimeNotice() {
+  // null = still probing; true/false = npm present or not.
+  const [hasNpm, setHasNpm] = useState<boolean | null>(null);
+  const recheck = () =>
+    invoke<boolean>("npm_is_installed").then(setHasNpm).catch(() => setHasNpm(true));
+  useEffect(() => void recheck(), []);
+
+  // While probing, or once npm is present, there is nothing to nudge about.
+  if (hasNpm !== false) return null;
+
+  const { command, shell } = NODE_INSTALL[PLATFORM];
+  return (
+    <div className="ollama-vibe-section agent-list-entry">
+      <div className="settings-section-title">
+        Node.js / npm{" "}
+        <span className="ollama-status-text">not detected</span>
+      </div>
+      <p className="settings-help">
+        Most agent CLIs install with <code>npm</code>, which ships with Node.js.
+        Install it once (no administrator rights needed) in a{" "}
+        <strong>{shell}</strong> terminal tab, then install your agents below:
+      </p>
+      <div className="ollama-install-cmd-row">
+        <code className="ollama-install-cmd">{command}</code>
+        <button
+          type="button"
+          className="ollama-action-btn primary"
+          onClick={() => runInstallInTab("Install Node.js (npm)", command)}
+        >
+          Run in terminal
+        </button>
+        <button type="button" className="ollama-action-btn" onClick={() => void recheck()}>
+          Re-check
+        </button>
+      </div>
+      <p className="settings-help">
+        Prefer a manual install? See{" "}
+        <a href={NODE_DOWNLOAD_URL} target="_blank" rel="noreferrer">
+          the Node.js downloads
+        </a>
+        .
+      </p>
+    </div>
+  );
+}
+
+/**
  * "Manage Agents" panel: detect and one-click-install the AI coding-agent CLIs
  * Eldrun can launch as agent tabs (Claude, Codex, Gemini, Mistral/vibe, Aider,
  * OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw). The
@@ -349,9 +429,10 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
       <p className="settings-help">
         AI coding agents Eldrun can launch as agent tabs. Install one with a
         single click (no administrator rights needed), then add it from a tab
-        bar's <strong>+</strong> menu. Some installers need <code>npm</code> on
-        your <code>PATH</code>.
+        bar's <strong>+</strong> menu. Many installers need <code>npm</code> on
+        your <code>PATH</code> — if it's missing, install Node.js first below.
       </p>
+      <NodeRuntimeNotice />
       {agents === null ? (
         <p className="settings-help">Checking installed agents…</p>
       ) : (

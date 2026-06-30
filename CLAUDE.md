@@ -65,7 +65,6 @@ Only the load-bearing files are listed; the tree is the source of truth.
 | `header/AppTimerDisplay.tsx` | Active-project time-tracking readout. |
 | `header/AppResourceDisplay.tsx` | Per-project CPU/resource readout. |
 | `header/ConnTypeIcon.tsx` | Local/remote (SSH) connection-type icon. |
-| `header/StatusLamp.tsx` | Status indicator lamp. |
 | `header/WindowControls.tsx` | Minimize/maximize/close window buttons. |
 | `tabs/TabBar.tsx` | Per-subwindow tab strip (add/rename/close, pointer-based DnD). |
 | `tabs/Subwindow.tsx` | A single tiled subwindow (tab group). |
@@ -79,6 +78,7 @@ Only the load-bearing files are listed; the tree is the source of truth.
 | `embed/EmbedPane.tsx` | Hosts an embedded external app window. |
 | `embed/FileViewerPane.tsx` | In-app viewers (PDF, image, markdown, code, TeX/SyncTeX). |
 | `common/Dropdown.tsx`, `common/OrbitSpinner.tsx` | Shared primitives. |
+| `common/ConnLamp.tsx` | Red/orange/green SSH/OpenVPN status lamp (dialog + header). |
 
 **Stores (`src/stores/`), hooks, lib**
 
@@ -97,6 +97,7 @@ Only the load-bearing files are listed; the tree is the source of truth.
 | `pdfSync.ts` | Bidirectional PDF/SyncTeX sync state. |
 | `editorJump.ts` | Cross-pane jump-to-location requests. |
 | `vpnPrompt.ts` | State backing `VpnPasswordPrompt`. |
+| `remoteStatus.ts` | Per-project live SSH/VPN connection state for the header lamps. |
 | `hooks/useKeyboard.ts` | Global keyboard-shortcut hook. |
 | `lib/shortcuts.ts` | Shortcut definitions, chord parsing/resolution. |
 | `lib/viewers/{fileUtils,markdown,highlight,tex}.ts` | Pure viewer logic (XSS-safe markdown/highlight, TeX, file utils). |

@@ -214,6 +214,14 @@ pub async fn agent_is_installed(id: String) -> bool {
     find_spec(&id).map(spec_is_installed).unwrap_or(false)
 }
 
+/// True when Node.js' `npm` is reachable on `PATH`. Most agent CLIs install via
+/// `npm install -g …`, so the Manage Agents panel uses this to decide whether to
+/// surface its "install Node/npm first" helper.
+#[tauri::command]
+pub async fn npm_is_installed() -> bool {
+    crate::paths::binary_on_path("npm")
+}
+
 /// Sync install probe for callers outside the agent registry (e.g. the local-
 /// model drivers in `commands::ollama`). Looks `bin` up in the registry first so
 /// it reuses the known user install locations; falls back to a bare PATH lookup

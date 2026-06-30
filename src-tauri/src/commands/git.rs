@@ -302,7 +302,11 @@ pub struct FileChange {
 ///   "unpushed" – local commits ahead of upstream (the Push list)
 /// The frontend folds these flat paths into a navigable folder tree.
 #[tauri::command]
-pub fn git_change_stats(project_dir: String, scope: String) -> Result<Vec<FileChange>, String> {
+pub async fn git_change_stats(
+    project_dir: String,
+    scope: String,
+    pool: tauri::State<'_, crate::services::remote::RemotePoolState>,
+) -> Result<Vec<FileChange>, String> {
     let dir = Path::new(&project_dir);
     let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
@@ -349,11 +353,18 @@ pub fn git_change_stats(project_dir: String, scope: String) -> Result<Vec<FileCh
                         continue;
                     }
                     let rel = String::from_utf8_lossy(chunk).into_owned();
-                    // Untracked line counts read the file locally; for a remote
-                    // project that is the (still-present, Phase 1–4) mountpoint.
-                    // If the path is unreadable, `count_added_lines` degrades to
-                    // (0, false) rather than failing the listing.
-                    let (added, binary) = count_added_lines(&dir.join(&rel));
+                    // Untracked line counts read the file's bytes and apply the
+                    // same NUL/newline logic for both project kinds:
+                    //   * local  → `std::fs::read` under the project directory;
+                    //   * remote → the bytes over the pooled SFTP session, with
+                    //     the rel path confined under `spec.remote_path` (a path
+                    //     that escapes the root is treated as unreadable).
+                    // Any read/confinement error degrades to (0, false) rather
+                    // than failing the whole listing.
+                    let (added, binary) = match &target {
+                        None => count_added_lines(&dir.join(&rel)),
+                        Some(t) => count_added_lines_remote(&pool, t, &rel).await,
+                    };
                     changes.push(FileChange { path: rel, added, deleted: 0, binary });
                 }
             }
@@ -377,16 +388,42 @@ fn normalize_numstat_path(p: &str) -> String {
     p[arrow + 4..].to_string()
 }
 
-/// Line count of an untracked file, treating NUL-containing files as binary
-/// (0 lines). A final line without a trailing newline still counts.
+/// Classify an untracked file's bytes into `(added_lines, binary)`, treating
+/// NUL-containing files as binary (0 lines). A final line without a trailing
+/// newline still counts. Shared by the local and remote readers below.
+fn count_lines_in_bytes(bytes: &[u8]) -> (i64, bool) {
+    if bytes.contains(&0) {
+        return (0, true);
+    }
+    let newlines = bytes.iter().filter(|&&b| b == b'\n').count() as i64;
+    let trailing = matches!(bytes.last(), Some(&b) if b != b'\n') as i64;
+    (newlines + trailing, false)
+}
+
+/// Line count of an untracked **local** file. An unreadable path degrades to
+/// `(0, false)` rather than failing the listing.
 fn count_added_lines(path: &Path) -> (i64, bool) {
     match std::fs::read(path) {
-        Ok(bytes) if bytes.contains(&0) => (0, true),
-        Ok(bytes) => {
-            let newlines = bytes.iter().filter(|&&b| b == b'\n').count() as i64;
-            let trailing = matches!(bytes.last(), Some(&b) if b != b'\n') as i64;
-            (newlines + trailing, false)
-        }
+        Ok(bytes) => count_lines_in_bytes(&bytes),
+        Err(_) => (0, false),
+    }
+}
+
+/// Line count of an untracked **remote** file, read over the project's pooled
+/// SFTP session (mount-free remote). `rel` is the project-relative path from
+/// `git ls-files --others`; it is confined under `spec.remote_path` so a hostile
+/// path cannot escape the root. A confinement or read error degrades to
+/// `(0, false)`, mirroring the local reader.
+async fn count_added_lines_remote(
+    pool: &crate::services::remote::RemotePoolState,
+    target: &RemoteTarget,
+    rel: &str,
+) -> (i64, bool) {
+    let Ok(path) = crate::commands::fs::remote_join_confined(&target.spec.remote_path, rel) else {
+        return (0, false);
+    };
+    match crate::commands::fs::remote_read(pool, target, &path).await {
+        Ok(bytes) => count_lines_in_bytes(&bytes),
         Err(_) => (0, false),
     }
 }

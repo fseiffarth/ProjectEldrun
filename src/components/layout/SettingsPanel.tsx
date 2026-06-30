@@ -165,6 +165,68 @@ function ShortcutsSettings({ onBack }: { onBack: () => void }) {
   );
 }
 
+/**
+ * Git hosting profile + access token, broken out of the main settings panel
+ * into its own sub-menu. Manages its own draft state (mirroring the saved
+ * settings) and persists on blur / Enter, same as it did inline.
+ */
+function GitHostingSettings({ onBack }: { onBack: () => void }) {
+  const { settings, updateSettings } = useSettingsStore();
+  const [gitProfileUrl, setGitProfileUrl] = useState(settings?.git_profile_url ?? "");
+  const [gitToken, setGitToken] = useState(settings?.git_token ?? "");
+
+  useEffect(() => {
+    setGitProfileUrl(settings?.git_profile_url ?? "");
+    setGitToken(settings?.git_token ?? "");
+  }, [settings?.git_profile_url, settings?.git_token]);
+
+  const saveGitProfileUrl = () => {
+    void updateSettings({ git_profile_url: gitProfileUrl.trim() });
+  };
+
+  const saveGitToken = () => {
+    void updateSettings({ git_token: gitToken.trim() });
+  };
+
+  return (
+    <>
+      <div className="settings-title-row">
+        <h2>Git Hosting</h2>
+        <button type="button" onClick={onBack}>Back</button>
+      </div>
+      <p className="settings-help">
+        Your hosting profile and access token are used when publishing a
+        project's repo to GitHub or GitLab.
+      </p>
+      <label className="settings-field">
+        Profile URL
+        <input
+          value={gitProfileUrl}
+          placeholder="https://github.com/me or https://gitlab.com/me"
+          onChange={(e) => setGitProfileUrl(e.target.value)}
+          onBlur={saveGitProfileUrl}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") saveGitProfileUrl();
+          }}
+        />
+      </label>
+      <label className="settings-field">
+        Access token
+        <input
+          type="password"
+          value={gitToken}
+          placeholder="ghp_... / glpat-..."
+          onChange={(e) => setGitToken(e.target.value)}
+          onBlur={saveGitToken}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") saveGitToken();
+          }}
+        />
+      </label>
+    </>
+  );
+}
+
 function HelpPanel({ onBack }: { onBack: () => void }) {
   return (
     <>
@@ -195,7 +257,7 @@ function HelpPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
-export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "help";
+export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "help";
 
 export function SettingsDialog({
   onClose,
@@ -206,24 +268,9 @@ export function SettingsDialog({
 }) {
   const { settings, setTheme, updateSettings } = useSettingsStore();
   const [panel, setPanel] = useState<SettingsPanelKind>(initialPanel);
-  const [gitProfileUrl, setGitProfileUrl] = useState(settings?.git_profile_url ?? "");
-  const [gitToken, setGitToken] = useState(settings?.git_token ?? "");
-
-  useEffect(() => {
-    setGitProfileUrl(settings?.git_profile_url ?? "");
-    setGitToken(settings?.git_token ?? "");
-  }, [settings?.git_profile_url, settings?.git_token]);
 
   const terminal = settings?.terminal_command ?? "claude";
   const currentTheme = (settings?.color_scheme ?? "fancy_dark") as Theme;
-
-  const saveGitProfileUrl = () => {
-    void updateSettings({ git_profile_url: gitProfileUrl.trim() });
-  };
-
-  const saveGitToken = () => {
-    void updateSettings({ git_token: gitToken.trim() });
-  };
 
   return (
     <div className="modal-backdrop settings-backdrop" onMouseDown={onClose}>
@@ -431,34 +478,8 @@ export function SettingsDialog({
               />
             </div>
 
-            <div className="settings-section-title" id="settings-git-hosting">Git Hosting</div>
-            <label className="settings-field">
-              Profile URL
-              <input
-                value={gitProfileUrl}
-                placeholder="https://github.com/me or https://gitlab.com/me"
-                onChange={(e) => setGitProfileUrl(e.target.value)}
-                onBlur={saveGitProfileUrl}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") saveGitProfileUrl();
-                }}
-              />
-            </label>
-            <label className="settings-field">
-              Access token
-              <input
-                type="password"
-                value={gitToken}
-                placeholder="ghp_... / glpat-..."
-                onChange={(e) => setGitToken(e.target.value)}
-                onBlur={saveGitToken}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") saveGitToken();
-                }}
-              />
-            </label>
-
             <div className="settings-link-row">
+              <button type="button" onClick={() => setPanel("git")}>Git Hosting...</button>
               <button type="button" onClick={() => setPanel("global")}>Global Apps...</button>
               <button type="button" onClick={() => setPanel("filetypes")}>File Type Apps...</button>
               <button type="button" onClick={() => setPanel("agents")}>Manage Agents...</button>
@@ -472,6 +493,7 @@ export function SettingsDialog({
         {panel === "ollama" && <OllamaPanel onBack={() => setPanel("main")} />}
         {panel === "agents" && <AgentsPanel onBack={() => setPanel("main")} />}
         {panel === "shortcuts" && <ShortcutsSettings onBack={() => setPanel("main")} />}
+        {panel === "git" && <GitHostingSettings onBack={() => setPanel("main")} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} />}
       </div>
     </div>
