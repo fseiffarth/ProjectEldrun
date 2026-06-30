@@ -883,6 +883,20 @@ container) — as opposed to the git **push** axis (#21/#22).*
       `mkdir -p` the remote root over SSH — the AGENTS.md/CLAUDE.md scaffold is not
       yet written to the host over SFTP; and `git_change_stats` untracked-line
       counts still assume a local tree. Both need a live-host QA pass.
+    - [ ] **28k — Review-team follow-ups (deferred).** From the post-merge
+      code review of the mount-free change (most findings already fixed in the
+      `fix(remote): harden SSH/SFTP pool…` commit). Two items left open:
+      - [ ] **Remote untracked-line counts read +0.** `count_added_lines`
+        (`commands/git.rs`) does a local `std::fs::read` on `project_dir.join(rel)`;
+        for a remote project `project_dir` is the local state dir, so every read
+        fails and the git "Add" panel shows untracked remote files as `+0 / non-binary`.
+        Fix: skip the count for remote projects (explicit +0 with a comment) or
+        read the file over the pooled SFTP session (accepting the latency). Update
+        the now-stale "still-present mountpoint" comment either way.
+      - [ ] **`ConnectionLog` keys by array index.** `key={i}` over a `slice(-500)`
+        log forces full re-creation of every line node when the cap trims the head.
+        Fix: carry a monotonic id alongside each pushed line and key on that. Cosmetic
+        DOM churn only; low priority.
     - **Cross-cutting (all phases):** single auth (one ControlMaster, no 3×
       prompts), no page cache (pooled session + lazy reads), fail-fast offline,
       OpenVPN brought up before the master, git-over-ssh keeps `shell_quote`
