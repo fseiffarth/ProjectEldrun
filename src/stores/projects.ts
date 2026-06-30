@@ -293,7 +293,10 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       // Open the pooled SSH/SFTP connection for a remote project (mount-free
       // remote, Phase 0). Fire-and-forget so a slow handshake never delays the
       // switch; the backend resolves remoteness and no-ops for local projects.
-      if (target?.remote) ensureRemotePool(id);
+      // Re-check the active id: the awaits above (VPN prompt especially) can
+      // yield long enough for the user to switch away or deactivate this project,
+      // and we must not re-open a pool the deactivation just tore down.
+      if (target?.remote && get().activeId === id) ensureRemotePool(id);
     }
     // Fire-and-forget: the switch runs on a backend worker thread and returns
     // immediately. The resulting tab layout / right-panel folder arrives via the

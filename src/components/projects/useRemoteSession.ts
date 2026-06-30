@@ -75,8 +75,16 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // spawned with `persistOnUnmount`, so closing the dialog leaves the
   // tunnel/login up for the new project to use; we also pre-mark the activation
   // dedupe key (see `markConnectionOpened`) so the root-tab flow is skipped.
-  const [vpnTerm, setVpnTerm] = useState<{ id: string; command: string } | null>(null);
-  const [sshTerm, setSshTerm] = useState<{ id: string; command: string } | null>(null);
+  // Each holds the activation dedupe `key` it pre-marked (see `markConnectionOpened`)
+  // so the matching `stopX` forgets *that* key — not one rebuilt from current
+  // render state, which may have drifted (e.g. the config/address changed while
+  // the terminal was up), leaving a stale mark that suppresses the real connect.
+  const [vpnTerm, setVpnTerm] = useState<{ id: string; command: string; key: string } | null>(
+    null,
+  );
+  const [sshTerm, setSshTerm] = useState<{ id: string; command: string; key: string } | null>(
+    null,
+  );
 
   const isRemote = sshStatus === "connected" && remoteConn !== null;
 
@@ -158,6 +166,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setVpnConfig(path);
     setVpnStatus("idle");
     setVpnError("");
+    setVpnLog([]); // drop the previous config's handshake output
   };
 
   // Pick a `.ovpn` config and copy it into Eldrun so the project no longer
@@ -174,6 +183,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       setVpnConfig(stored);
       setVpnStatus("idle");
       setVpnError("");
+      setVpnLog([]); // drop the previous config's handshake output
       refreshVpnConfigs();
     } catch (e) {
       setVpnError(String(e));
@@ -205,8 +215,9 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     if (!vpnConfig || vpnTerm) return;
     try {
       const command = await invoke<string>("openvpn_login_command", { config: vpnConfig });
-      markConnectionOpened(`vpn:${vpnConfig}`);
-      setVpnTerm({ id: nextDialogTermId("vpn"), command });
+      const key = `vpn:${vpnConfig}`;
+      markConnectionOpened(key);
+      setVpnTerm({ id: nextDialogTermId("vpn"), command, key });
       setVpnError("");
     } catch (e) {
       setVpnError(String(e));
@@ -219,7 +230,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   const stopVpnTerm = () => {
     if (!vpnTerm) return;
     void invoke("pty_kill", { id: vpnTerm.id }).catch(() => {});
-    forgetConnection(`vpn:${vpnConfig}`);
+    forgetConnection(vpnTerm.key);
     setVpnTerm(null);
   };
 
@@ -242,8 +253,9 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
         port: parsed.port ?? null,
       });
       const target = `${parsed.user ? `${parsed.user}@` : ""}${parsed.host}`;
-      markConnectionOpened(`ssh:${target}:${parsed.port ?? ""}`);
-      setSshTerm({ id: nextDialogTermId("ssh"), command });
+      const key = `ssh:${target}:${parsed.port ?? ""}`;
+      markConnectionOpened(key);
+      setSshTerm({ id: nextDialogTermId("ssh"), command, key });
       setSshError("");
     } catch (e) {
       setSshStatus("error");
@@ -254,6 +266,10 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   const stopSshTerm = () => {
     if (!sshTerm) return;
     void invoke("pty_kill", { id: sshTerm.id }).catch(() => {});
+    // Drop the dedupe mark (symmetric with stopVpnTerm) so a later activation can
+    // re-open the SSH login; otherwise the key lingers in openedConnections and
+    // ensureRootSshLoginIfNeeded silently skips the real login.
+    forgetConnection(sshTerm.key);
     setSshTerm(null);
   };
 

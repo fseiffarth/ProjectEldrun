@@ -97,6 +97,14 @@ pub fn ssh_target(user: &Option<String>, host: &str) -> Result<String, String> {
         return Err("host must not be empty".to_string());
     }
     validate_arg("host", host)?;
+    // A bare `host` must be only a hostname: `ssh` splits the target on the LAST
+    // `@`, so an `@` smuggled into `host` (e.g. "real.host@evil.com") would
+    // silently redirect the connection to a different server. Whitespace would
+    // likewise split into extra argv-ish tokens. Reject both here, the single
+    // choke point every base-args builder funnels the target through.
+    if host.contains('@') || host.chars().any(|c| c.is_whitespace()) {
+        return Err("host must not contain '@' or whitespace".to_string());
+    }
     match user {
         Some(user) => {
             let user = user.trim();
@@ -132,6 +140,18 @@ pub fn ssh_password_base_args(
         "-o".to_string(),
         "NumberOfPasswordPrompts=1".to_string(),
     ];
+
+    // Ride an existing master if one is live (key-auth `ssh_base_args` does the
+    // same). Without this, a one-shot SFTP/browse for a password-auth host whose
+    // pooled session has dropped could not reuse the master and would need the
+    // password again — which we never store, so it would simply fail. With
+    // `ControlMaster=no` + the shared `cm-%C` socket it transparently rides the
+    // still-live master; if none exists it falls through to the password prompt.
+    #[cfg(not(target_os = "windows"))]
+    for opt in control_reuse_opts() {
+        args.push(opt);
+    }
+
     if let Some(port) = port {
         args.push("-p".to_string());
         args.push(port.to_string());
@@ -348,5 +368,25 @@ mod tests {
         assert!(ssh_target(&Some("  ".to_string()), "host").is_err());
         assert!(ssh_target(&None, "   ").is_err());
         assert_eq!(ssh_target(&None, "host.example").unwrap(), "host.example");
+    }
+
+    #[test]
+    fn target_rejects_host_with_at_or_whitespace() {
+        // `@` would make ssh split the target and redirect to a different host.
+        assert!(ssh_target(&None, "real.host@evil.com").is_err());
+        assert!(ssh_target(&Some("alice".to_string()), "real.host@evil.com").is_err());
+        // Internal whitespace would split into extra tokens.
+        assert!(ssh_target(&None, "host name").is_err());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn password_base_args_reuse_existing_master() {
+        // A password-auth one-shot must be able to ride a live master (so a
+        // dropped pooled session can recover without the unstored password).
+        let args = ssh_password_base_args(&Some("me".to_string()), "host.example", None).unwrap();
+        assert!(args.iter().any(|a| a == "ControlMaster=no"));
+        assert!(args.iter().any(|a| a.starts_with("ControlPath=")));
+        assert_eq!(args.last().unwrap(), "me@host.example");
     }
 }

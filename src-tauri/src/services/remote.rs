@@ -201,19 +201,35 @@ pub async fn disconnect_all(pool: &RemotePoolState) {
 /// "disconnected" state rather than hanging.
 #[allow(dead_code)] // consumed by Phase 2/3 (remote file browse + I/O)
 pub async fn pooled_sftp(pool: &RemotePoolState, project_id: &str) -> Option<Arc<Sftp>> {
-    pool.lock()
-        .await
-        .conns
-        .get(project_id)
-        .map(|c| Arc::clone(&c.sftp))
+    let mut guard = pool.lock().await;
+    let conn = guard.conns.get_mut(project_id)?;
+    // If the ssh child has already exited — the keepalive killed it after a
+    // network drop (ServerAliveInterval/CountMax), or the remote closed the
+    // connection — the pooled session is dead and every SFTP op on it would fail
+    // against a closed pipe. Evict the corpse so the caller falls back to a
+    // one-shot session (which can ride a still-live master, or surface a clean
+    // disconnected state) instead of looping on the dead entry forever.
+    if matches!(conn.child.try_wait(), Ok(Some(_))) {
+        guard.conns.remove(project_id);
+        return None;
+    }
+    Some(Arc::clone(&conn.sftp))
 }
 
-/// Drop the pooled `Arc<Sftp>` (its `Drop` closes the local side once any
-/// in-flight borrow finishes) and kill the `ssh` child, which collapses the
-/// channel and the ControlMaster it owned.
+/// Tear down a pooled connection: gracefully close the SFTP session (sends
+/// `SSH_FXP_CLOSE`, matching [`teardown_session`]) when we hold its only
+/// reference, then kill the `ssh` child, which collapses the channel and the
+/// ControlMaster it owned. If a file op is still borrowing the `Arc<Sftp>`, we
+/// can't take ownership to `close()` it, so we drop our reference and let its own
+/// `Drop` close the local side once that borrow finishes.
 async fn teardown_pooled(conn: PooledRemote) {
     let PooledRemote { sftp, mut child } = conn;
-    drop(sftp);
+    match Arc::try_unwrap(sftp) {
+        Ok(sftp) => {
+            let _ = sftp.close().await;
+        }
+        Err(arc) => drop(arc),
+    }
     let _ = child.kill().await;
 }
 

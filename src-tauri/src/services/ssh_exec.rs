@@ -86,6 +86,21 @@ fn shell_quote(s: &str) -> String {
     out
 }
 
+/// A POSIX-portable environment variable name (`[A-Za-z_][A-Za-z0-9_]*`). Used to
+/// gate which keys may be `export`ed into the remote `$SHELL -c` string: the
+/// value is `shell_quote`d, but the key is not (it sits left of `=`), so a key
+/// containing shell metacharacters (e.g. `A; rm -rf ~ #`) would break out of the
+/// assignment and run as a separate statement. Every key Eldrun sets today is a
+/// valid identifier; this enforces that property rather than trusting it.
+fn is_valid_env_key(k: &str) -> bool {
+    let mut chars = k.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Build the remote command string that `ssh` hands to the remote `$SHELL -c`.
 ///
 /// Shape: `cd <dir> && export K=<v> … && exec <CMD>`. For a shell tab
@@ -116,7 +131,8 @@ pub fn remote_command(
         .keys()
         .filter(|k| {
             let k = k.as_str();
-            k != "TERM" && k != "COLORTERM" && !AGENT_AUTH_ENV.contains(&k)
+            // is_valid_env_key gates injection via a metacharacter-bearing key.
+            is_valid_env_key(k) && k != "TERM" && k != "COLORTERM" && !AGENT_AUTH_ENV.contains(&k)
         })
         .collect();
     keys.sort();
@@ -447,6 +463,30 @@ mod tests {
         assert!(!cmd.contains("sk-oai"));
         // … but ordinary env still is.
         assert!(cmd.contains("export KEEP_ME='1'"));
+    }
+
+    #[test]
+    fn remote_command_drops_env_key_with_shell_metachars() {
+        // A key carrying shell metacharacters can't be made safe by quoting the
+        // value (the key sits left of `=`), so it must be dropped entirely rather
+        // than emitted as `export <metachars>=…`.
+        let mut env = HashMap::new();
+        env.insert("A; touch /tmp/pwned #".to_string(), "v".to_string());
+        env.insert("GOOD_VAR".to_string(), "1".to_string());
+        let cmd = remote_command("sh", &[], &env, "/srv/p");
+        assert!(!cmd.contains("touch /tmp/pwned"));
+        assert!(!cmd.contains("export A;"));
+        assert!(cmd.contains("export GOOD_VAR='1'"));
+    }
+
+    #[test]
+    fn is_valid_env_key_matches_posix_identifiers() {
+        assert!(is_valid_env_key("ELDRUN_TAB_UID"));
+        assert!(is_valid_env_key("_x9"));
+        assert!(!is_valid_env_key("9leading"));
+        assert!(!is_valid_env_key("has space"));
+        assert!(!is_valid_env_key("a;b"));
+        assert!(!is_valid_env_key(""));
     }
 
     // ── ssh_pty_args ───────────────────────────────────────────────────────
