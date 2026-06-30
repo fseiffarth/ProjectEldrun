@@ -6,6 +6,8 @@ import { useBoxesStore } from "../../stores/boxes";
 import { useWindowsStore } from "../../stores/windows";
 import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../../types";
 import { ActivityCalendar } from "../projects/ActivityCalendar";
+import { CategoryEditor } from "../projects/CategoryEditor";
+import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
 import {
   type FileEntry,
   fileIcon,
@@ -121,6 +123,8 @@ export function ProjectBlobPane() {
   const openFile = useWindowsStore((s) => s.openFile);
 
   const [menu, setMenu] = useState<BlobMenu | null>(null);
+  // The project whose category editor is open (null = closed).
+  const [catProject, setCatProject] = useState<ProjectEntry | null>(null);
   // The node currently hovered, plus where to anchor its info card. Cleared on
   // leave, on an orbit drag, and whenever the context menu opens.
   const [hover, setHover] = useState<{ x: number; y: number; node: BlobNode } | null>(null);
@@ -655,12 +659,15 @@ export function ProjectBlobPane() {
             let label = "";
             let sub: number | null = null;
             let isActive = false;
+            let catColor: string | null = null;
             if (node.kind === "project") {
               const status = node.project.status;
               cls += ` blob-node-project blob-status-${status}`;
               icon = status === "inactive" ? "○" : "●";
               label = node.project.name;
               isActive = node.project.id === activeId;
+              catColor = primaryCategoryColor(projectCategories(node.project));
+              if (catColor) cls += " blob-node-categorized";
             } else if (node.kind === "box") {
               cls += " blob-node-box blob-status-box";
               icon = "▦";
@@ -684,7 +691,11 @@ export function ProjectBlobPane() {
                 data-x={pos.x.toFixed(1)}
                 data-y={pos.y.toFixed(1)}
                 data-z={pos.z.toFixed(1)}
-                style={{ transform: base }}
+                style={
+                  catColor
+                    ? ({ transform: base, "--cat-color": catColor } as React.CSSProperties)
+                    : { transform: base }
+                }
                 className={cls}
                 onPointerEnter={(e) => setHover({ x: e.clientX, y: e.clientY, node })}
                 onPointerLeave={() => setHover((h) => (h?.node.id === node.id ? null : h))}
@@ -709,6 +720,11 @@ export function ProjectBlobPane() {
         </div>
       </div>
 
+      {/* Category-tag editor (opened from a project node's right-click menu). */}
+      {catProject && (
+        <CategoryEditor project={catProject} onClose={() => setCatProject(null)} />
+      )}
+
       {/* Right-click menu for a project node. */}
       {menu && createPortal(
         <div
@@ -723,6 +739,15 @@ export function ProjectBlobPane() {
             }}
           >
             Open
+          </button>
+          <button
+            onClick={() => {
+              const p = menu.project;
+              setMenu(null);
+              setCatProject(p);
+            }}
+          >
+            Categories…
           </button>
           {menu.project.status === "inactive" ? (
             <button
@@ -771,6 +796,20 @@ export function ProjectBlobPane() {
               {hover.node.kind === "project" && (
                 <div className="blob-hover-desc">
                   {hover.node.project.description?.trim() || "No description yet."}
+                </div>
+              )}
+              {hover.node.kind === "project" && projectCategories(hover.node.project).length > 0 && (
+                <div className="blob-hover-categories">
+                  {projectCategories(hover.node.project).map((cat) => (
+                    <span
+                      key={cat.toLowerCase()}
+                      className="blob-hover-category"
+                      style={{ "--cat-color": categoryColor(cat) } as React.CSSProperties}
+                    >
+                      <span className="blob-hover-category-dot" />
+                      {cat}
+                    </span>
+                  ))}
                 </div>
               )}
               {activity[hover.node.project.id] && (

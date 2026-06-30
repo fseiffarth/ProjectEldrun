@@ -228,12 +228,16 @@ pub fn run() {
     let win_registry: WindowRegistryState = Arc::new(Mutex::new(WindowRegistry::default()));
     let workspace: WorkspaceStateArc = Arc::new(Mutex::new(WorkspaceState::new()));
     let fs_watch = commands::fs_watch::new_state();
+    // Pooled SSH/SFTP connections, one per active remote project (Phase 0 of the
+    // mount-free remote model). Opened on activation, torn down at exit below.
+    let remote_pool = services::remote::new_pool();
 
     tauri::Builder::default()
         .manage(pty_registry)
         .manage(win_registry)
         .manage(workspace)
         .manage(fs_watch)
+        .manage(remote_pool)
         .setup(|_app| {
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
@@ -298,6 +302,7 @@ pub fn run() {
             commands::projects::set_project_description,
             commands::projects::set_project_name,
             commands::projects::set_project_sandbox,
+            commands::projects::set_project_categories,
             commands::projects::set_project_git_disabled,
             commands::projects::save_tab_layout,
             commands::projects::root_work_dir,
@@ -322,9 +327,10 @@ pub fn run() {
             commands::ssh::remote_login_command,
             commands::ssh::ssh_default_dir,
             commands::ssh::ssh_list_dir,
-            commands::ssh::ensure_project_mounted,
+            // Pooled SSH/SFTP connection lifecycle (mount-free remote, Phase 0)
+            commands::remote::remote_connect,
+            commands::remote::remote_disconnect,
             commands::ssh::ssh_tooling_status,
-            commands::ssh::sshfs_install_guide,
             commands::ssh::open_external_url,
             // OpenVPN tunnels for VPN-gated remote projects
             commands::openvpn::openvpn_connect,
@@ -332,6 +338,7 @@ pub fn run() {
             commands::openvpn::openvpn_disconnect,
             commands::openvpn::openvpn_status,
             commands::openvpn::openvpn_store_config,
+            commands::openvpn::openvpn_list_configs,
             // Git hosting (GitHub / GitLab) publishing
             commands::git_publish::publish_project,
             commands::git_hosting::get_project_git_hosting,
@@ -444,8 +451,6 @@ pub fn run() {
             commands::crash::report_frontend_error,
             // Debug diagnostics
             commands::debug::debug_app_resource_usage,
-            // Downloads
-            commands::downloads::configure_browser_downloads,
             // Ollama local models
             commands::ollama::list_ollama_models,
             commands::ollama::ensure_vibe_ollama_model,
@@ -489,13 +494,18 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, event| {
-            // Tear down any sshfs mounts for remote projects when the app exits
-            // so the user isn't left with stale FUSE mounts after shutdown.
             if let tauri::RunEvent::Exit = event {
-                services::ssh_mount::unmount_all();
                 // Tear down any OpenVPN tunnels brought up for VPN-gated
                 // remote projects so no privileged tunnel outlives the app.
                 services::openvpn::disconnect_all();
+                // Tear down pooled SSH/SFTP connections so no ssh ControlMaster
+                // child (and the master socket it owns) outlives Eldrun.
+                use tauri::Manager;
+                let pool = _app
+                    .state::<services::remote::RemotePoolState>()
+                    .inner()
+                    .clone();
+                tauri::async_runtime::block_on(services::remote::disconnect_all(&pool));
             }
         });
 }

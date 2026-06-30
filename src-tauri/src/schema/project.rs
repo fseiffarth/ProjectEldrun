@@ -68,9 +68,16 @@ pub struct TabEntry {
     pub extra: HashMap<String, Value>,
 }
 
-/// Remote (SSH) location metadata. A project is "remote" iff this is present.
-/// The project's `directory` then points at the local sshfs mountpoint while
-/// the bytes live on `host:remote_path`.
+/// Remote (SSH) location metadata. A project is "remote" iff this is present;
+/// the explicit "is this project remote?" resolver is
+/// `services::remote::remote_target_for` (replacing the old infer-from-mountpoint
+/// signal). The bytes live on `host:remote_path`.
+///
+/// In the mount-free remote model (`docs/mountfree_remote_plan.md`) the project's
+/// `directory` is **not** a real local path for a remote project — file, git, and
+/// terminal commands resolve `host:remote_path` directly over SSH/SFTP, never the
+/// local fs. (During the sshfs→SFTP transition `directory` may still hold a legacy
+/// mountpoint; it is ignored for fs purposes once a phase routes that op remote.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteSpec {
     /// SSH user, e.g. "alice"

@@ -11,6 +11,7 @@ import { startDetachedDropSession } from "../tabs/detachedDropTargets";
 import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
+import { useProjectsStore } from "../../stores/projects";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
@@ -182,6 +183,12 @@ export function FileTree({
   const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
   const runningScripts = useActivityStore((s) => s.runningScripts);
   const runScript = useActivityStore((s) => s.runScript);
+  // Mount-free remote (Phase 2): a remote project lists over SFTP and has no
+  // local inotify watcher, so we skip the fs-watch wiring and offer a manual
+  // refresh control instead. Local projects keep live watch-driven updates.
+  const isRemote = useProjectsStore(
+    (s) => !!s.projects.find((p) => p.id === projectId)?.remote,
+  );
 
   const entries = useMemo(
     () => visibleEntries(rawEntries, {
@@ -294,7 +301,9 @@ export function FileTree({
   // other processes appear without manual navigation. Re-points to the new
   // directory whenever relPath changes; tears down on unmount/panel close.
   useEffect(() => {
-    if (!projectDir) return;
+    // Remote projects have no local fs watcher (inotify can't see the SFTP tree);
+    // they refresh manually via the toolbar button. Skip the watch wiring.
+    if (!projectDir || isRemote) return;
     const absDir = relPath ? `${projectDir}/${relPath}` : projectDir;
     let unlisten: (() => void) | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -317,7 +326,7 @@ export function FileTree({
       invoke("unwatch_dir").catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectDir, relPath]);
+  }, [projectDir, relPath, isRemote]);
 
   async function load(rel: string) {
     setLoading(true);
@@ -943,6 +952,20 @@ export function FileTree({
       onMouseDown={() => setContextMenu(null)}
       onContextMenu={showRootContextMenu}
     >
+      {isRemote && (
+        <div className="file-tree-remote-bar" title="Remote project — live updates are off; refresh to re-list">
+          <button
+            className="file-tree-up file-tree-refresh"
+            onClick={() => load(relPath)}
+            disabled={loading}
+            title="Refresh (re-list over SFTP)"
+            aria-label="Refresh"
+          >
+            ↻
+          </button>
+          <span className="file-tree-remote-label">remote</span>
+        </div>
+      )}
       {relPath && (
         <div className="file-tree-breadcrumb">
           <button className="file-tree-up" onClick={goUp} title="Go up">↑</button>

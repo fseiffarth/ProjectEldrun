@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { useSettingsStore } from "../../stores/settings";
 import { IS_WINDOWS } from "../../lib/platform";
+import { runInstallInTab } from "../../lib/installCommand";
 import type { GlobalAppEntry } from "../../types";
 
 interface OllamaModelInfo {
@@ -284,7 +285,6 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
   // Per-agent live install log, keyed by agent id.
   const [logs, setLogs] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [copied, setCopied] = useState<string | null>(null);
   const logRef = useRef<HTMLPreElement>(null);
 
   const refresh = () => {
@@ -321,16 +321,6 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
     } finally {
       unlisten();
       setInstalling(null);
-    }
-  };
-
-  const copyCmd = async (id: string, cmd: string) => {
-    try {
-      await navigator.clipboard.writeText(cmd);
-      setCopied(id);
-      window.setTimeout(() => setCopied((c) => (c === id ? null : c)), 1500);
-    } catch {
-      /* clipboard unavailable — the command is shown for manual copy */
     }
   };
 
@@ -416,17 +406,17 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                   {a.install_cmd ? (
                     <>
                       <p className="settings-help">
-                        {IS_WINDOWS ? "Run it in " : "Or run it manually in "}
-                        <strong>{a.shell}</strong>:
+                        {IS_WINDOWS ? "Install it in a " : "Or install it in a "}
+                        <strong>{a.shell}</strong> terminal tab:
                       </p>
                       <div className="ollama-install-cmd-row">
                         <code className="ollama-install-cmd">{a.install_cmd}</code>
                         <button
                           type="button"
-                          className="ollama-action-btn"
-                          onClick={() => void copyCmd(a.id, a.install_cmd)}
+                          className="ollama-action-btn primary"
+                          onClick={() => runInstallInTab(`Install ${a.label}`, a.install_cmd)}
                         >
-                          {copied === a.id ? "Copied!" : "Copy"}
+                          Run in terminal
                         </button>
                         <button
                           type="button"
@@ -496,7 +486,6 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   const [installed, setInstalled] = useState<boolean | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installLog, setInstallLog] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   // OS-dependent install strategy (command + whether one-click install works).
   const [strategy, setStrategy] = useState<OllamaInstallStrategy | null>(null);
   const installLogRef = useRef<HTMLPreElement>(null);
@@ -506,7 +495,6 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   const [vibeStrategy, setVibeStrategy] = useState<VibeInstallStrategy | null>(null);
   const [vibeInstalling, setVibeInstalling] = useState(false);
   const [vibeInstallLog, setVibeInstallLog] = useState<string | null>(null);
-  const [vibeCopied, setVibeCopied] = useState(false);
   const vibeInstallLogRef = useRef<HTMLPreElement>(null);
   const [models, setModels] = useState<OllamaModelInfo[]>([]);
   const [serverRunning, setServerRunning] = useState<boolean | null>(null);
@@ -754,16 +742,6 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     }
   };
 
-  const copyVibeCmd = async () => {
-    try {
-      await navigator.clipboard.writeText(vibeStrategy?.command ?? VIBE_INSTALL_CMD);
-      setVibeCopied(true);
-      window.setTimeout(() => setVibeCopied(false), 1500);
-    } catch {
-      /* clipboard unavailable — the command is shown for manual copy */
-    }
-  };
-
   // Keep the live Vibe install log pinned to the latest line.
   useEffect(() => {
     const el = vibeInstallLogRef.current;
@@ -798,16 +776,6 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     const el = installLogRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [installLog]);
-
-  const copyInstallCmd = async () => {
-    try {
-      await navigator.clipboard.writeText(strategy?.command ?? OLLAMA_INSTALL_CMD_FALLBACK);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* clipboard unavailable — the command is shown for manual copy */
-    }
-  };
 
   const startServer = async () => {
     setError(null);
@@ -1002,12 +970,18 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
             </pre>
           )}
           <p className="settings-help">
-            Or run it manually in {vibeStrategy?.os === "windows" ? "PowerShell" : "a terminal"}:
+            Or install it in a {vibeStrategy?.os === "windows" ? "PowerShell" : "terminal"} tab:
           </p>
           <div className="ollama-install-cmd-row">
             <code className="ollama-install-cmd">{vibeStrategy?.command ?? VIBE_INSTALL_CMD}</code>
-            <button type="button" className="ollama-action-btn" onClick={() => void copyVibeCmd()}>
-              {vibeCopied ? "Copied!" : "Copy"}
+            <button
+              type="button"
+              className="ollama-action-btn primary"
+              onClick={() =>
+                runInstallInTab("Install Vibe", vibeStrategy?.command ?? VIBE_INSTALL_CMD)
+              }
+            >
+              Run in terminal
             </button>
             <button
               type="button"
@@ -1091,19 +1065,19 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
           </pre>
         )}
 
-        <div className="settings-section-title">Manual install</div>
+        <div className="settings-section-title">Install in a terminal</div>
         <ol className="ollama-install-steps">
           <li>
-            Open a {isWindows ? "terminal (PowerShell)" : "terminal"} and run the
-            installer for your system:
+            Run the installer for your system in a new{" "}
+            {isWindows ? "PowerShell" : "terminal"} tab:
             <div className="ollama-install-cmd-row">
               <code className="ollama-install-cmd">{installCmd}</code>
               <button
                 type="button"
-                className="ollama-action-btn"
-                onClick={() => void copyInstallCmd()}
+                className="ollama-action-btn primary"
+                onClick={() => runInstallInTab("Install Ollama", installCmd)}
               >
-                {copied ? "Copied!" : "Copy"}
+                Run in terminal
               </button>
             </div>
             <span className="settings-help">

@@ -37,7 +37,9 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::time::{Duration, Instant};
 
-use crate::services::ssh_mount::validate_arg;
+use serde::Serialize;
+
+use crate::services::ssh_common::validate_arg;
 use crate::storage;
 
 /// OpenVPN prints this once the tunnel is fully up.
@@ -101,6 +103,61 @@ pub fn store_config(src: &str) -> Result<String, String> {
     #[cfg(unix)]
     let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600));
     Ok(dest.to_string_lossy().into_owned())
+}
+
+/// A previously-used `.ovpn` config copied into Eldrun's store, offered for
+/// reuse so a config need only be browsed for once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoredConfig {
+    /// Absolute path to the stored copy (what callers pass to `connect`).
+    pub path: String,
+    /// Friendly display name (the original `.ovpn` file name).
+    pub name: String,
+}
+
+/// List the `.ovpn` configs Eldrun has previously stored, newest first (by file
+/// mtime). Every config passed through [`store_config`] lands here, so the dir
+/// doubles as the "recently used" history. Returns empty if nothing is stored.
+pub fn list_configs() -> Vec<StoredConfig> {
+    let dir = configs_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut items: Vec<(std::time::SystemTime, StoredConfig)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let name = display_name(file_name);
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        items.push((
+            mtime,
+            StoredConfig {
+                path: path.to_string_lossy().into_owned(),
+                name,
+            },
+        ));
+    }
+    items.sort_by(|a, b| b.0.cmp(&a.0));
+    items.into_iter().map(|(_, c)| c).collect()
+}
+
+/// Recover an `.ovpn` config's display name from its stored file name. Stored
+/// as `{stem}__{original_name}`; `rsplit_once` keeps the last segment as the
+/// name (the stem can itself contain `__` since non-alnums collapse to `_`,
+/// while the original file name rarely does). Falls back to the whole name.
+fn display_name(file_name: &str) -> String {
+    file_name
+        .rsplit_once("__")
+        .map(|(_, n)| n.to_string())
+        .unwrap_or_else(|| file_name.to_string())
 }
 
 /// Single-quote `s` for a POSIX shell so a config path with spaces or
@@ -288,8 +345,21 @@ pub fn is_connected(_config: &str) -> bool {
 /// Bring up the OpenVPN tunnel for `config`, authenticating with `password`.
 /// No-op (returns `Ok`) if already connected. Blocks until OpenVPN reports the
 /// tunnel up, the process exits, or `CONNECT_TIMEOUT` elapses.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub fn connect(config: &str, password: &str) -> Result<(), String> {
+    connect_streaming(config, password, |_| {})
+}
+
+/// Like [`connect`], but invokes `on_line` for every line OpenVPN emits while the
+/// tunnel comes up (stdout + stderr), so the caller can stream the live handshake
+/// into a read-only log. The callback runs on the calling thread, before the
+/// ready-marker check, so the marker line is reported too.
+#[cfg(target_os = "linux")]
+pub fn connect_streaming(
+    config: &str,
+    password: &str,
+    on_line: impl Fn(&str),
+) -> Result<(), String> {
     let config = config.trim();
     validate_arg("OpenVPN config", config)?;
     if !Path::new(config).is_file() {
@@ -326,8 +396,8 @@ pub fn connect(config: &str, password: &str) -> Result<(), String> {
         }
     };
 
-    // Stream stdout until the ready marker, EOF, or timeout.
-    let ready = wait_for_ready(&mut child);
+    // Stream stdout/stderr until the ready marker, EOF, or timeout.
+    let ready = wait_for_ready(&mut child, &on_line);
     // The passphrase has been read by now; remove it regardless of outcome.
     let _ = std::fs::remove_file(&askpass);
 
@@ -347,39 +417,95 @@ pub fn connect(config: &str, password: &str) -> Result<(), String> {
     }
 }
 
-/// Read the child's stdout until the ready marker appears (Ok), the stream ends
-/// (Err with the tail), or the timeout elapses (Err). Shared by Linux/Windows.
+/// Wait until OpenVPN reports the tunnel up (Ok), the process ends without the
+/// marker (Err with the tail), or [`CONNECT_TIMEOUT`] elapses (Err). Shared by
+/// Linux/Windows.
+///
+/// Both stdout *and* stderr are drained on background threads feeding a channel,
+/// and the wait loop blocks on `recv_timeout` rather than directly on a read.
+/// This is deliberate: a plain `for line in reader.lines()` only re-checks the
+/// deadline once a line arrives, so a child that emits *nothing* — e.g. `pkexec`
+/// blocked on a polkit prompt that is never answered (or has no agent), or a
+/// stalled handshake — would hang indefinitely instead of timing out. Reading
+/// stderr too means `pkexec`/driver errors (which never touch stdout) surface in
+/// the failure message instead of being lost.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn wait_for_ready(child: &mut Child) -> Result<(), String> {
+fn wait_for_ready(child: &mut Child, on_line: &dyn Fn(&str)) -> Result<(), String> {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "openvpn produced no stdout".to_string())?;
+    let stderr = child.stderr.take();
+
+    let (tx, rx) = mpsc::channel::<String>();
+    let tx_err = tx.clone();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            match line {
+                Ok(l) => {
+                    if tx.send(l).is_err() {
+                        break; // receiver gone (timed out / found marker)
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    match stderr {
+        Some(stderr) => {
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines() {
+                    match line {
+                        Ok(l) => {
+                            if tx_err.send(l).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        // No stderr pipe: drop the spare sender so the channel can disconnect
+        // once the stdout reader finishes (otherwise `Disconnected` never fires).
+        None => drop(tx_err),
+    }
+
     let start = Instant::now();
     let mut tail: Vec<String> = Vec::new();
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        if start.elapsed() > CONNECT_TIMEOUT {
-            return Err("OpenVPN connection timed out".to_string());
-        }
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
+    loop {
+        let remaining = match CONNECT_TIMEOUT.checked_sub(start.elapsed()) {
+            Some(r) if !r.is_zero() => r,
+            _ => return Err("OpenVPN connection timed out".to_string()),
         };
-        if line.contains(READY_MARKER) {
-            return Ok(());
+        match rx.recv_timeout(remaining) {
+            Ok(line) => {
+                // Surface every line (stdout + stderr) to the caller so the UI can
+                // render the live handshake, then keep the marker/tail bookkeeping.
+                on_line(&line);
+                if line.contains(READY_MARKER) {
+                    return Ok(());
+                }
+                tail.push(line);
+                if tail.len() > 8 {
+                    tail.remove(0);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                return Err("OpenVPN connection timed out".to_string());
+            }
+            // Both readers ended → the process exited without the marker.
+            Err(RecvTimeoutError::Disconnected) => {
+                let detail = tail.join("; ");
+                return if detail.is_empty() {
+                    Err("OpenVPN exited before the tunnel came up".to_string())
+                } else {
+                    Err(format!("OpenVPN failed: {detail}"))
+                };
+            }
         }
-        tail.push(line);
-        if tail.len() > 8 {
-            tail.remove(0);
-        }
-    }
-    // Stream ended without the marker → connection failed.
-    let detail = tail.join("; ");
-    if detail.is_empty() {
-        Err("OpenVPN exited before the tunnel came up".to_string())
-    } else {
-        Err(format!("OpenVPN failed: {detail}"))
     }
 }
 
@@ -475,11 +601,15 @@ fn resolve_openvpn() -> Option<PathBuf> {
     None
 }
 
-/// Bring up the OpenVPN tunnel for `config`, authenticating with `password`.
-/// No-op (returns `Ok`) if already connected. Blocks until OpenVPN reports the
-/// tunnel up, the process exits, or `CONNECT_TIMEOUT` elapses.
+/// Like [`connect`], but invokes `on_line` for every line OpenVPN emits while the
+/// tunnel comes up (stdout + stderr), so the caller can stream the live handshake
+/// into a read-only log.
 #[cfg(target_os = "windows")]
-pub fn connect(config: &str, password: &str) -> Result<(), String> {
+pub fn connect_streaming(
+    config: &str,
+    password: &str,
+    on_line: impl Fn(&str),
+) -> Result<(), String> {
     let config = config.trim();
     validate_arg("OpenVPN config", config)?;
     if !Path::new(config).is_file() {
@@ -515,8 +645,8 @@ pub fn connect(config: &str, password: &str) -> Result<(), String> {
         }
     };
 
-    // Stream stdout until the ready marker, EOF, or timeout.
-    let ready = wait_for_ready(&mut child);
+    // Stream stdout/stderr until the ready marker, EOF, or timeout.
+    let ready = wait_for_ready(&mut child, &on_line);
     // The passphrase has been read by now; remove it regardless of outcome.
     let _ = std::fs::remove_file(&askpass);
 
@@ -567,9 +697,14 @@ pub fn disconnect(config: &str) -> Result<(), String> {
 // false above, so VPN-gated projects degrade gracefully rather than failing to
 // build.
 
-/// macOS stub: bringing up a tunnel is not implemented yet.
+/// macOS stub: bringing up a tunnel is not implemented yet. (Shared `connect`
+/// wrapper above forwards here with a no-op callback.)
 #[cfg(target_os = "macos")]
-pub fn connect(_config: &str, _password: &str) -> Result<(), String> {
+pub fn connect_streaming(
+    _config: &str,
+    _password: &str,
+    _on_line: impl Fn(&str),
+) -> Result<(), String> {
     Err("OpenVPN-gated projects are not yet supported on macOS".into())
 }
 
@@ -664,6 +799,15 @@ mod tests {
         assert!(stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
         // 40-char tail + '_' + 16 hex digits.
         assert!(stem.len() <= 40 + 1 + 16);
+    }
+
+    #[test]
+    fn display_name_recovers_original_from_stored() {
+        // `{stem}__{original}` → original; stem may contain `__`.
+        assert_eq!(display_name("_home_u_work_ovpn_abcd1234__work.ovpn"), "work.ovpn");
+        assert_eq!(display_name("a__b__client.conf"), "client.conf");
+        // No separator → whole name (defensive; shouldn't happen for stored copies).
+        assert_eq!(display_name("loose.ovpn"), "loose.ovpn");
     }
 
     #[test]

@@ -45,7 +45,8 @@ import {
 } from "../../lib/viewers/markdownEdit";
 import { internalViewerFor, disabledViewers, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
 import { basename, dirname, resolvePath, toFileUri } from "../../lib/paths";
-import { IS_MAC } from "../../lib/platform";
+import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
+import { runInstallInTab } from "../../lib/installCommand";
 import {
   resolveProjectDirectory,
   type AutocompleteMode,
@@ -4941,6 +4942,18 @@ function PdfView({
  *   - The engine selector only appears when more than one engine is on PATH;
  *     otherwise the backend default is used (`engine: null`).
  */
+
+/** OS-appropriate command to install a LaTeX/TeX distribution, used by the
+ *  one-click "Install LaTeX" prompt shown when no TeX engine is on PATH. These
+ *  are best-effort defaults the user can edit in the spawned terminal: MiKTeX on
+ *  Windows, MacTeX on macOS (Homebrew), TeX Live on Linux (Debian/Ubuntu apt). */
+const TEX_INSTALL_CMD = IS_WINDOWS
+  ? "winget install --id MiKTeX.MiKTeX -e"
+  : IS_MAC
+    ? "brew install --cask mactex-no-gui"
+    : "sudo apt-get install -y texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended latexmk";
+const TEX_INSTALL_LABEL = IS_WINDOWS ? "Install MiKTeX" : "Install LaTeX";
+
 function TexView({
   path,
   onOpenExternally,
@@ -5211,6 +5224,22 @@ function TexView({
         </ViewerHeader>
         {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
         {saveError && <div className="file-viewer-error">{saveError}</div>}
+        {cap && !cap.available && (
+          <div className="tex-install-banner" role="note">
+            <span className="tex-install-banner-text">
+              No LaTeX engine found — install one to compile this document to a PDF.
+            </span>
+            <code className="ollama-install-cmd">{TEX_INSTALL_CMD}</code>
+            <button
+              type="button"
+              className="ollama-action-btn primary"
+              title="Run this command in a new terminal tab"
+              onClick={() => runInstallInTab(TEX_INSTALL_LABEL, TEX_INSTALL_CMD)}
+            >
+              Run in terminal
+            </button>
+          </div>
+        )}
         <div className="file-viewer-body file-viewer-code-body">
           <CodeEditor
             path={path}

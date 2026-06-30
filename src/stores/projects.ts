@@ -54,10 +54,12 @@ async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<voi
   try {
     const up = await invoke<boolean>("openvpn_status", { config }).catch(() => false);
     if (up) return;
-    const password = await useVpnPromptStore.getState().request(config, project!.name);
-    await invoke("openvpn_connect", { config, password });
+    // The prompt store now owns the connect, so a failed tunnel is shown in the
+    // modal (with a retry) rather than failing silently here. `request` resolves
+    // only once the tunnel is up; a cancel rejects and we fall through.
+    await useVpnPromptStore.getState().request(config, project!.name);
   } catch (error) {
-    console.warn("OpenVPN connect skipped/failed", error);
+    console.warn("OpenVPN connect skipped/cancelled", error);
   }
 }
 
@@ -87,6 +89,28 @@ async function ensureRootSshLoginIfNeeded(project: ProjectEntry | undefined): Pr
   } catch (error) {
     console.warn("SSH root-terminal login skipped/failed", error);
   }
+}
+
+/**
+ * Phase 0 (mount-free remote): open the pooled SSH/SFTP connection for a remote
+ * project so authentication happens once on activation and every later channel
+ * (file browse / I-O, agent tabs, git) rides the shared ControlMaster. Best-
+ * effort and fire-and-forget: a failure (offline host, or password-only auth
+ * with no live master) is logged and never blocks activation — later access
+ * falls back to a one-shot session exactly as before. No-op for local projects
+ * (the backend resolves remoteness and returns early). Passes no password (the
+ * no-stored-password rule); password-auth hosts authenticate their master via
+ * the interactive root-terminal login, which this connection then rides.
+ */
+function ensureRemotePool(projectId: string): void {
+  void invoke("remote_connect", { projectId, password: null }).catch((error) =>
+    console.warn("remote_connect failed", error),
+  );
+}
+
+/** Tear down a remote project's pooled connection on deactivation. Best-effort. */
+function dropRemotePool(projectId: string): void {
+  void invoke("remote_disconnect", { projectId }).catch(() => {});
 }
 
 interface ProjectRuntimeSwitchedPayload {
@@ -132,6 +156,9 @@ interface ProjectsStore {
   updateProjectDescription: (id: string, description: string) => Promise<void>;
   renameProject: (id: string, name: string) => Promise<void>;
   setProjectSandbox: (id: string, enabled: boolean) => Promise<void>;
+  /** Replace a project's category tags (color/group it in the cloud + pills).
+   * Backend cleans + dedupes; mirrors the cleaned list into local state. */
+  setProjectCategories: (id: string, categories: string[]) => Promise<void>;
   /** Disable (delete .git → git_type "none") or re-enable (git init → "local")
    * git for an existing project. Destructive when disabling. */
   setProjectGitDisabled: (id: string, disabled: boolean) => Promise<void>;
@@ -185,20 +212,18 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       activeId,
       rightPanelFolderByProject,
     });
-    // The initially-active project never fires a switch (which is what mounts
-    // remote projects on activation). If it is remote, ensure its sshfs mount
-    // is up so the file tree / terminal see its bytes. Best-effort and
-    // non-fatal: a remote host may be offline at boot, which must not block or
-    // crash app start — re-switching to the project later will retry the mount.
+    // The initially-active project never fires a switch (which is what opens the
+    // pooled connection on activation). If it is remote, bring up its VPN/login
+    // and open the pooled SSH/SFTP connection so file browse / I-O / git ride the
+    // shared master (mount-free remote — no sshfs). Best-effort and non-fatal: a
+    // remote host may be offline at boot, which must not block or crash app start.
     if (activeId) {
       const active = projects.find((p) => p.id === activeId);
       if (active?.remote) {
         void (async () => {
           await ensureVpnIfNeeded(active);
           await ensureRootSshLoginIfNeeded(active);
-          await invoke("ensure_project_mounted", { projectId: activeId }).catch(
-            (error) => console.warn("ensure_project_mounted (startup) failed", error),
-          );
+          ensureRemotePool(activeId);
         })();
       }
     }
@@ -265,6 +290,10 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       const target = nextProjects.find((p) => p.id === id);
       await ensureVpnIfNeeded(target);
       await ensureRootSshLoginIfNeeded(target);
+      // Open the pooled SSH/SFTP connection for a remote project (mount-free
+      // remote, Phase 0). Fire-and-forget so a slow handshake never delays the
+      // switch; the backend resolves remoteness and no-ops for local projects.
+      if (target?.remote) ensureRemotePool(id);
     }
     // Fire-and-forget: the switch runs on a backend worker thread and returns
     // immediately. The resulting tab layout / right-panel folder arrives via the
@@ -398,6 +427,9 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       return { projects: nextProjects };
     });
     await invoke<void>("save_projects", { projects: nextProjects });
+    // Close the pooled SSH/SFTP connection for a deactivated remote project so no
+    // ssh ControlMaster child lingers for a project no longer in use (Phase 0).
+    if (nextProjects.find((p) => p.id === id)?.remote) dropRemotePool(id);
     if (useProjectsStore.getState().activeId !== nextActiveId) {
       await useProjectsStore.getState().setActive(nextActiveId);
     }
@@ -440,6 +472,23 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projects: state.projects.map((project) =>
         project.id === id
           ? { ...project, sandbox: result ? { enabled: true } : undefined }
+          : project,
+      ),
+    }));
+  },
+
+  setProjectCategories: async (id, categories) => {
+    // Backend trims/dedupes and writes projects.json + project.json, returning
+    // the cleaned list; mirror it so the pill bar and project cloud recolor
+    // immediately.
+    const cleaned = await invoke<string[]>("set_project_categories", {
+      projectId: id,
+      categories,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id
+          ? { ...project, categories: cleaned.length > 0 ? cleaned : undefined }
           : project,
       ),
     }));

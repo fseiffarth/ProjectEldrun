@@ -126,7 +126,8 @@ Only the load-bearing files are listed; the tree is the source of truth.
 | `apps.rs` | App launching, `run_script_detached`, `open_file`, external window tracking. |
 | `default_apps.rs` | Per-file-type default-app mapping. |
 | `downloads.rs` | Per-project download routing. |
-| `ssh.rs` | SSH commands for remote projects (`ssh_connect`, `ssh_default_dir`, `ssh_list_dir`, `ensure_project_mounted`). |
+| `ssh.rs` | SSH commands for remote projects (`ssh_connect`, `ssh_default_dir`, `ssh_list_dir`, `ssh_tooling_status`). |
+| `remote.rs` | Pooled SSH/SFTP connection lifecycle (`remote_connect`/`remote_disconnect`) for the active remote project. |
 | `openvpn.rs` | OpenVPN tunnel connect/store-config commands. |
 | `ollama.rs` | Ollama model list/pull/delete + local autocomplete. |
 | `tex.rs` | TeX compile + SyncTeX (shell-escape defense). |
@@ -143,8 +144,10 @@ Only the load-bearing files are listed; the tree is the source of truth.
 
 | File | Purpose |
 |------|---------|
-| `ssh_mount.rs` | sshfs mount lifecycle (mount/unmount, mountpoint derivation, arg validation). |
-| `ssh_exec.rs` | Remote command execution over SSH (ControlMaster). |
+| `ssh_common.rs` | Shared SSH argv + validation helpers (`validate_arg`, `ssh_*_base_args`, `ssh_target`, `sshpass_available`). |
+| `remote.rs` | Explicit remoteness resolver (`remote_target_for`/`_for_dir`) + pooled `Sftp`/ControlMaster registry (mount-free remote). |
+| `sftp.rs` | Native SFTP session: list + read/write/create/delete/rename/mkdir/download (pooled `*_on` + one-shot). |
+| `ssh_exec.rs` | Remote command execution over SSH (PTY tabs, git-over-ssh, remote `mkdir`; ControlMaster). |
 | `remote_agents.rs` | Remote agent bootstrap/resume for SSH projects. |
 | `openvpn.rs` | OpenVPN process lifecycle (askpass file, teardown). |
 | `agent_session.rs` | SessionStart hook installer + live-session recording for agent resume. |
@@ -187,11 +190,18 @@ Only the load-bearing files are listed; the tree is the source of truth.
 - Global Eldrun state lives in `~/.local/share/eldrun/`:
   `projects.json`, `settings.json`, `default_apps.json`, `time_log.json`, and
   `active_session.json`.
-- Remote (SSH) projects are sshfs-mounted under
-  `~/.local/share/eldrun/mounts/<project-id>/`; that mountpoint becomes the
-  project's `directory`. Such projects carry a `remote` spec (`user?`, `host`,
-  `port?`, `remote_path`) in their `project.json` and mirrored into the
-  `projects.json` entry's `extra`. Requires `sshfs`/FUSE locally.
+- Remote (SSH) projects are **mount-free** (no sshfs/FUSE): they are SSH/SFTP-
+  native. Agent/terminal tabs run on the host over `ssh -tt`, file browsing and
+  file I/O go over SFTP, and git runs on the host over SSH — all riding one
+  pooled ControlMaster + `Sftp` session per active remote project (opened on
+  activation via `remote_connect`, see `services::remote`). Such projects carry a
+  `remote` spec (`user?`, `host`, `port?`, `remote_path`) in their `project.json`
+  and mirrored into the `projects.json` entry's `extra` (the always-local source
+  of truth `remote_target_for` reads). Their `directory` is a **local** per-
+  project state dir (`~/.local/share/eldrun/remote-projects/<id>/`) that holds
+  `project.json`; the actual tree lives on `host:remote_path`. Remoteness is
+  resolved explicitly by `services::remote::remote_target_for{,_dir}`, never by a
+  path convention. Plan/history: `docs/mountfree_remote_plan.md`.
 - Project-local state lives in each project's `project.json`. This includes the
   per-project tab layout (`tab_layout`/`tab_groups`). Shell/files tabs are always
   restored on relaunch; agent tabs are normally dropped, **except resumable agent

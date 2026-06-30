@@ -1,12 +1,58 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-// All git invocations go through `crate::paths::command_no_window("git")` rather
-// than a bare `Command::new`: Eldrun is a windowed app with no console, so on
-// Windows every `git` subprocess would otherwise flash a transient console
-// window — and `git_status`/`git_file_statuses` are polled continuously for the
-// file tree. `command_no_window` sets CREATE_NO_WINDOW on Windows and is a no-op
-// elsewhere.
+use crate::services::remote::{remote_target_for_dir, RemoteTarget};
+
+// Every git invocation goes through the single `run_git` helper, which dispatches
+// on whether the project is local or remote:
+//
+//   * **local** → `crate::paths::command_no_window("git")` in `project_dir`
+//     rather than a bare `Command::new`: Eldrun is a windowed app with no
+//     console, so on Windows every `git` subprocess would otherwise flash a
+//     transient console window — and `git_status`/`git_file_statuses` are polled
+//     continuously for the file tree. `command_no_window` sets CREATE_NO_WINDOW
+//     on Windows and is a no-op elsewhere.
+//   * **remote** (project carries a `RemoteSpec`) → the same `git <args>` run on
+//     the host over SSH, riding the shared ControlMaster (`ssh_exec::
+//     run_git_remote`). git's output is plain text, so the captured stdout/
+//     stderr/exit are parsed byte-for-byte identically to the local case and
+//     every parser below is reused unchanged. `push` then authenticates with the
+//     *host's* own git credentials/SSH keys, since git runs there.
+//
+// Each command resolves remoteness once via `remote_target_for_dir(&project_dir)`
+// (a reverse-lookup from the absolute `project_dir` the frontend passes to the
+// owning project's `RemoteSpec`) and threads the resulting `Option<&RemoteTarget>`
+// into `run_git` and the `local_non_repo` guard.
+
+/// Run `git <args>` for a project, dispatching local-vs-remote on `target`.
+/// Returns the captured `Output` (stdout/stderr/exit) for both, so callers parse
+/// it identically. `target` is the resolved remoteness for `project_dir`.
+fn run_git(
+    target: Option<&RemoteTarget>,
+    project_dir: &str,
+    args: &[&str],
+) -> Result<std::process::Output, String> {
+    match target {
+        Some(t) => {
+            let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            crate::services::ssh_exec::run_git_remote(&t.spec, &owned)
+        }
+        None => crate::paths::command_no_window("git")
+            .args(args)
+            .current_dir(project_dir)
+            .output()
+            .map_err(|e| e.to_string()),
+    }
+}
+
+/// Cheap "not a git repo" short-circuit for the read commands. Applies only to
+/// **local** projects, where a missing `.git` means "no repo" without spawning
+/// git. A remote project's `.git` lives on the host, so it is never short-
+/// circuited here — its command runs over SSH and the usual lenient
+/// empty-on-failure handling covers a non-repo host dir.
+fn local_non_repo(target: Option<&RemoteTarget>, project_dir: &str) -> bool {
+    target.is_none() && !Path::new(project_dir).join(".git").exists()
+}
 
 #[derive(serde::Serialize)]
 pub struct GitStatus {
@@ -19,16 +65,12 @@ pub struct GitStatus {
 
 #[tauri::command]
 pub fn git_status(project_dir: String) -> Result<GitStatus, String> {
-    let dir = Path::new(&project_dir);
-    if !dir.join(".git").exists() {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(GitStatus { staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
     }
 
-    let out = crate::paths::command_no_window("git")
-        .args(["status", "--porcelain"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run_git(target.as_ref(), &project_dir, &["status", "--porcelain"])?;
 
     let text = String::from_utf8_lossy(&out.stdout);
     let mut staged = 0usize;
@@ -46,10 +88,7 @@ pub fn git_status(project_dir: String) -> Result<GitStatus, String> {
         }
     }
 
-    let has_remote = crate::paths::command_no_window("git")
-        .args(["remote"])
-        .current_dir(&project_dir)
-        .output()
+    let has_remote = run_git(target.as_ref(), &project_dir, &["remote"])
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false);
 
@@ -58,11 +97,8 @@ pub fn git_status(project_dir: String) -> Result<GitStatus, String> {
 
 #[tauri::command]
 pub fn git_add_all(project_dir: String) -> Result<(), String> {
-    let out = crate::paths::command_no_window("git")
-        .args(["add", "-A"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["add", "-A"])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -71,20 +107,14 @@ pub fn git_add_all(project_dir: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn git_generate_commit_message(project_dir: String) -> Result<String, String> {
-    let files_out = crate::paths::command_no_window("git")
-        .args(["diff", "--staged", "--name-only"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let files_out = run_git(target.as_ref(), &project_dir, &["diff", "--staged", "--name-only"])?;
     let staged_text = String::from_utf8_lossy(&files_out.stdout).to_string();
     let staged: Vec<&str> = staged_text.lines().collect();
 
     // Also check untracked / unstaged if nothing staged
     let files: Vec<String> = if staged.is_empty() {
-        let all = crate::paths::command_no_window("git")
-            .args(["diff", "--name-only"])
-            .current_dir(&project_dir)
-            .output()
+        let all = run_git(target.as_ref(), &project_dir, &["diff", "--name-only"])
             .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_owned).collect())
             .unwrap_or_default();
         all
@@ -137,11 +167,8 @@ fn format_commit_message(kind: &str, files: &[String]) -> String {
 
 #[tauri::command]
 pub fn git_commit(project_dir: String, message: String) -> Result<(), String> {
-    let out = crate::paths::command_no_window("git")
-        .args(["commit", "-m", &message])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["commit", "-m", &message])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -161,16 +188,12 @@ pub fn git_file_statuses(
     project_dir: String,
     rel_path: String,
 ) -> Result<HashMap<String, String>, String> {
-    let dir = Path::new(&project_dir);
-    if !dir.join(".git").exists() {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(HashMap::new());
     }
 
-    let out = crate::paths::command_no_window("git")
-        .args(["status", "--porcelain", "--ignored"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run_git(target.as_ref(), &project_dir, &["status", "--porcelain", "--ignored"])?;
     let porcelain = String::from_utf8_lossy(&out.stdout).into_owned();
 
     // prefix used to filter entries under rel_path
@@ -236,10 +259,7 @@ pub fn git_file_statuses(
     }
 
     // Files in commits that exist locally but are not on the upstream branch.
-    if let Ok(out) = crate::paths::command_no_window("git")
-        .args(["log", "@{u}..", "--name-only", "--pretty=format:"])
-        .current_dir(&project_dir)
-        .output()
+    if let Ok(out) = run_git(target.as_ref(), &project_dir, &["log", "@{u}..", "--name-only", "--pretty=format:"])
     {
         if out.status.success() {
             let committed = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -258,11 +278,8 @@ pub fn git_file_statuses(
 /// Stages a specific path (file or directory) via `git add`.
 #[tauri::command]
 pub fn git_add_path(project_dir: String, rel_path: String) -> Result<(), String> {
-    let out = crate::paths::command_no_window("git")
-        .args(["add", "--", &rel_path])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["add", "--", &rel_path])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -287,7 +304,8 @@ pub struct FileChange {
 #[tauri::command]
 pub fn git_change_stats(project_dir: String, scope: String) -> Result<Vec<FileChange>, String> {
     let dir = Path::new(&project_dir);
-    if !dir.join(".git").exists() {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
 
@@ -298,10 +316,7 @@ pub fn git_change_stats(project_dir: String, scope: String) -> Result<Vec<FileCh
     };
 
     let mut changes: Vec<FileChange> = Vec::new();
-    if let Ok(out) = crate::paths::command_no_window("git")
-        .args(numstat_args)
-        .current_dir(&project_dir)
-        .output()
+    if let Ok(out) = run_git(target.as_ref(), &project_dir, numstat_args)
     {
         if out.status.success() {
             let text = String::from_utf8_lossy(&out.stdout);
@@ -326,10 +341,7 @@ pub fn git_change_stats(project_dir: String, scope: String) -> Result<Vec<FileCh
     // Untracked files never appear in `git diff`; list them separately and count
     // their lines as additions (the Add list shows them alongside modified files).
     if scope == "unstaged" {
-        if let Ok(out) = crate::paths::command_no_window("git")
-            .args(["ls-files", "--others", "--exclude-standard", "-z"])
-            .current_dir(&project_dir)
-            .output()
+        if let Ok(out) = run_git(target.as_ref(), &project_dir, &["ls-files", "--others", "--exclude-standard", "-z"])
         {
             if out.status.success() {
                 for chunk in out.stdout.split(|&b| b == 0) {
@@ -337,6 +349,10 @@ pub fn git_change_stats(project_dir: String, scope: String) -> Result<Vec<FileCh
                         continue;
                     }
                     let rel = String::from_utf8_lossy(chunk).into_owned();
+                    // Untracked line counts read the file locally; for a remote
+                    // project that is the (still-present, Phase 1–4) mountpoint.
+                    // If the path is unreadable, `count_added_lines` degrades to
+                    // (0, false) rather than failing the listing.
                     let (added, binary) = count_added_lines(&dir.join(&rel));
                     changes.push(FileChange { path: rel, added, deleted: 0, binary });
                 }
@@ -379,15 +395,11 @@ fn count_added_lines(path: &Path) -> (i64, bool) {
 /// Returns an empty vec when there is no upstream or the repo is not git.
 #[tauri::command]
 pub fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> {
-    let dir = Path::new(&project_dir);
-    if !dir.join(".git").exists() {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
-    let out = crate::paths::command_no_window("git")
-        .args(["log", "@{u}..", "--oneline"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run_git(target.as_ref(), &project_dir, &["log", "@{u}..", "--oneline"])?;
     if !out.status.success() {
         return Ok(vec![]);
     }
@@ -397,32 +409,39 @@ pub fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> 
 
 #[tauri::command]
 pub fn git_push(project_dir: String, project_id: Option<String>) -> Result<String, String> {
-    // Effective per-project → global token (if any) for the project being pushed.
-    let token = project_id
-        .as_deref()
-        .and_then(|id| crate::commands::git_hosting::effective_git_creds(id).1);
-
-    let mut cmd = crate::paths::command_no_window("git");
-    cmd.current_dir(&project_dir);
-    if let Some(tok) = token.as_deref() {
-        // Authenticate an https push with the effective token via an ephemeral
-        // inline credential helper. The token is read from the child's env INSIDE
-        // the helper snippet, so it never lands in argv or on disk. The leading
-        // empty `credential.helper=` clears any system helper (e.g. GCM) so only
-        // ours runs. Harmless for SSH remotes — git won't call an http helper.
-        cmd.args([
-            "-c",
-            "credential.helper=",
-            "-c",
-            "credential.helper=!f() { test \"$1\" = get && echo username=x-access-token && echo \"password=$ELDRUN_GIT_TOKEN\"; }; f",
-            "push",
-        ]);
-        cmd.env("ELDRUN_GIT_TOKEN", tok);
-        cmd.env("GIT_TERMINAL_PROMPT", "0");
+    let out = if let Some(target) = remote_target_for_dir(&project_dir) {
+        // Remote project: the push runs on the host and authenticates with the
+        // host's own git credentials/SSH keys. The local effective token does not
+        // apply (it would be the wrong machine's secret), so it is not forwarded.
+        crate::services::ssh_exec::run_git_remote(&target.spec, &["push".to_string()])?
     } else {
-        cmd.args(["push"]);
-    }
-    let out = cmd.output().map_err(|e| e.to_string())?;
+        // Local project: effective per-project → global token (if any).
+        let token = project_id
+            .as_deref()
+            .and_then(|id| crate::commands::git_hosting::effective_git_creds(id).1);
+
+        let mut cmd = crate::paths::command_no_window("git");
+        cmd.current_dir(&project_dir);
+        if let Some(tok) = token.as_deref() {
+            // Authenticate an https push with the effective token via an ephemeral
+            // inline credential helper. The token is read from the child's env INSIDE
+            // the helper snippet, so it never lands in argv or on disk. The leading
+            // empty `credential.helper=` clears any system helper (e.g. GCM) so only
+            // ours runs. Harmless for SSH remotes — git won't call an http helper.
+            cmd.args([
+                "-c",
+                "credential.helper=",
+                "-c",
+                "credential.helper=!f() { test \"$1\" = get && echo username=x-access-token && echo \"password=$ELDRUN_GIT_TOKEN\"; }; f",
+                "push",
+            ]);
+            cmd.env("ELDRUN_GIT_TOKEN", tok);
+            cmd.env("GIT_TERMINAL_PROMPT", "0");
+        } else {
+            cmd.args(["push"]);
+        }
+        cmd.output().map_err(|e| e.to_string())?
+    };
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
@@ -447,11 +466,8 @@ pub struct GitCommit {
     pub parents: Vec<String>,
 }
 
-fn git_head_hash(project_dir: &str) -> Option<String> {
-    crate::paths::command_no_window("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(project_dir)
-        .output()
+fn git_head_hash(target: Option<&RemoteTarget>, project_dir: &str) -> Option<String> {
+    run_git(target, project_dir, &["rev-parse", "HEAD"])
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -461,24 +477,21 @@ fn git_head_hash(project_dir: &str) -> Option<String> {
 /// Returns an empty vec for a non-git directory or a repo with no commits yet.
 #[tauri::command]
 pub fn git_log(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>, String> {
-    let dir = Path::new(&project_dir);
-    if !dir.join(".git").exists() {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
     let max = limit.unwrap_or(100);
     // Fields separated by US (0x1f) so subjects can contain anything but a newline.
     let fmt = "--pretty=format:%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ar\u{1f}%D\u{1f}%P";
-    let out = crate::paths::command_no_window("git")
-        .args(["log", &format!("--max-count={max}"), fmt])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let max_count = format!("--max-count={max}");
+    let out = run_git(target.as_ref(), &project_dir, &["log", &max_count, fmt])?;
     if !out.status.success() {
         // Empty repository (no commits) — not an error for our purposes.
         return Ok(vec![]);
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let head = git_head_hash(&project_dir);
+    let head = git_head_hash(target.as_ref(), &project_dir);
     let mut commits = Vec::new();
     for line in text.lines() {
         let parts: Vec<&str> = line.split('\u{1f}').collect();
@@ -515,16 +528,12 @@ pub struct GitBranch {
 /// Lists local and remote-tracking branches.
 #[tauri::command]
 pub fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
-    let dir = Path::new(&project_dir);
-    if !dir.join(".git").exists() {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
     let fmt = "--format=%(if)%(HEAD)%(then)*%(else) %(end)\u{1f}%(refname:short)\u{1f}%(refname)";
-    let out = crate::paths::command_no_window("git")
-        .args(["branch", "-a", fmt])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run_git(target.as_ref(), &project_dir, &["branch", "-a", fmt])?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut branches = Vec::new();
     for line in text.lines() {
@@ -550,11 +559,8 @@ pub fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
 /// (e.g. when the working tree has conflicting uncommitted changes).
 #[tauri::command]
 pub fn git_checkout(project_dir: String, target: String) -> Result<String, String> {
-    let out = crate::paths::command_no_window("git")
-        .args(["checkout", &target])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let rt = remote_target_for_dir(&project_dir);
+    let out = run_git(rt.as_ref(), &project_dir, &["checkout", &target])?;
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
@@ -566,11 +572,8 @@ pub fn git_checkout(project_dir: String, target: String) -> Result<String, Strin
 /// Returns the full commit message (subject + body) for a single commit.
 #[tauri::command]
 pub fn git_commit_message(project_dir: String, hash: String) -> Result<String, String> {
-    let out = crate::paths::command_no_window("git")
-        .args(["log", "-1", "--pretty=format:%B", &hash])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["log", "-1", "--pretty=format:%B", &hash])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -584,11 +587,8 @@ pub fn git_reword_head(project_dir: String, message: String) -> Result<(), Strin
     if message.trim().is_empty() {
         return Err("Commit message cannot be empty".to_string());
     }
-    let out = crate::paths::command_no_window("git")
-        .args(["commit", "--amend", "-m", &message])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["commit", "--amend", "-m", &message])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -605,11 +605,8 @@ pub fn git_reword_head(project_dir: String, message: String) -> Result<(), Strin
 /// non-empty stdout as success regardless of exit status.
 #[tauri::command]
 pub fn git_diff_file(project_dir: String, rel_path: String) -> Result<String, String> {
-    let out = crate::paths::command_no_window("git")
-        .args(["diff", "--", &rel_path])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["diff", "--", &rel_path])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -621,11 +618,7 @@ pub fn git_diff_file(project_dir: String, rel_path: String) -> Result<String, St
     // Tracked diff is empty (e.g. untracked file). Show the whole file as added.
     // `--no-index` exits non-zero when differences exist, which is the normal
     // case here, so treat any non-empty stdout as success.
-    let fallback = crate::paths::command_no_window("git")
-        .args(["diff", "--no-index", "--", "/dev/null", &rel_path])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let fallback = run_git(target.as_ref(), &project_dir, &["diff", "--no-index", "--", "/dev/null", &rel_path])?;
     let fb_stdout = String::from_utf8_lossy(&fallback.stdout).to_string();
     if !fb_stdout.is_empty() {
         return Ok(fb_stdout);
@@ -712,14 +705,11 @@ fn parse_worktree_porcelain(text: &str) -> Vec<Worktree> {
 #[tauri::command]
 pub fn git_worktree_list(project_dir: String) -> Result<Vec<Worktree>, String> {
     // `.git` exists as a dir for the main repo and as a file in linked worktrees.
-    if !Path::new(&project_dir).join(".git").exists() {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
-    let out = crate::paths::command_no_window("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run_git(target.as_ref(), &project_dir, &["worktree", "list", "--porcelain"])?;
     if !out.status.success() {
         // Lenient, like git_log (e.g. empty repo).
         return Ok(vec![]);
@@ -752,11 +742,8 @@ pub fn git_worktree_add(
         args.push(&path);
         args.push(&branch);
     }
-    let out = crate::paths::command_no_window("git")
-        .args(&args)
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &args)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -775,11 +762,8 @@ pub fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Re
         args.push("--force");
     }
     args.push(&path);
-    let out = crate::paths::command_no_window("git")
-        .args(&args)
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &args)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -792,11 +776,8 @@ pub fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Re
 /// out-of-band (`git worktree prune`).
 #[tauri::command]
 pub fn git_worktree_prune(project_dir: String) -> Result<(), String> {
-    let out = crate::paths::command_no_window("git")
-        .args(["worktree", "prune"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["worktree", "prune"])?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();

@@ -28,7 +28,7 @@ use serde_json::Value;
 use crate::commands::projects::{normalize_git_type, sanitize_name};
 use crate::schema::project::Project;
 use crate::schema::projects::ProjectsList;
-use crate::services::ssh_mount::{ssh_base_args, validate_arg};
+use crate::services::ssh_common::{ssh_base_args, validate_arg};
 use crate::storage;
 
 /// A supported git-hosting provider.

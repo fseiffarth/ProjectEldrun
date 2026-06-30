@@ -43,14 +43,39 @@ fn mime_for_ext(ext: &str) -> String {
         .to_string()
 }
 
-/// List directory contents — validates the path stays inside the project root.
+/// List directory contents — project-aware (mount-free remote, Phase 2):
+///
+/// - **Remote project** → list the directory over SFTP, riding the pooled
+///   session opened on activation (`services::remote`), or a one-shot session if
+///   the pool is cold. Detected FIRST, before any local-fs touch, via
+///   [`remote_target_for_dir`] (the `project_dir` the frontend passes is the
+///   project's stored `directory`).
+/// - **Local project** → `fs::read_dir`, validating the path stays inside the
+///   project root. Byte-identical to the pre-Phase-2 behavior.
+///
+/// `pool` is Tauri-injected managed state; the frontend does not pass it.
 #[tauri::command]
-pub fn list_dir(project_dir: String, rel_path: String) -> Result<Vec<FileEntry>, String> {
-    let root = canonical(&project_dir)?;
+pub async fn list_dir(
+    project_dir: String,
+    rel_path: String,
+    pool: tauri::State<'_, crate::services::remote::RemotePoolState>,
+) -> Result<Vec<FileEntry>, String> {
+    // Detect remote BEFORE any local-fs access (`canonical` would touch the fs).
+    if let Some(target) = crate::services::remote::remote_target_for_dir(&project_dir) {
+        return list_dir_remote(&target, &rel_path, pool.inner()).await;
+    }
+    list_dir_local(&project_dir, &rel_path)
+}
+
+/// Local-fs directory listing — the pre-Phase-2 behavior, byte-identical.
+/// Split out of the `list_dir` command so it stays sync (no Tauri `State`) and
+/// is directly unit/integration-testable.
+pub fn list_dir_local(project_dir: &str, rel_path: &str) -> Result<Vec<FileEntry>, String> {
+    let root = canonical(project_dir)?;
     let target = if rel_path.is_empty() {
         root.clone()
     } else {
-        canonical(&root.join(&rel_path).to_string_lossy().to_string())?
+        canonical(&root.join(rel_path).to_string_lossy().to_string())?
     };
 
     enforce_confinement(&root, &target)?;
@@ -100,6 +125,192 @@ pub fn list_dir(project_dir: String, rel_path: String) -> Result<Vec<FileEntry>,
     Ok(result)
 }
 
+// ── Remote (SFTP) directory listing (mount-free remote, Phase 2) ────────────
+
+/// List a remote project's directory over SFTP and map the entries into the same
+/// `FileEntry` shape the local lister returns. Prefers the pooled session opened
+/// on activation; if the project is not connected (cold pool / dropped link) it
+/// falls back to a one-shot session so browsing still works. An unreachable host
+/// surfaces as the `Err` from the SFTP layer (ConnectTimeout) rather than hanging.
+async fn list_dir_remote(
+    target: &crate::services::remote::RemoteTarget,
+    rel_path: &str,
+    pool: &crate::services::remote::RemotePoolState,
+) -> Result<Vec<FileEntry>, String> {
+    let spec = &target.spec;
+    let remote_dir = join_remote_dir(&spec.remote_path, rel_path);
+
+    let entries = match crate::services::remote::pooled_sftp(pool, &target.project_id).await {
+        Some(sftp) => crate::services::sftp::list_dir_on(&sftp, &remote_dir).await?,
+        // Cold pool: one-shot session (key/agent auth — no stored password). The
+        // one-shot path uses ConnectTimeout so an unreachable host fails fast.
+        None => {
+            crate::services::sftp::list_dir(&spec.user, &spec.host, spec.port, None, &remote_dir)
+                .await?
+        }
+    };
+
+    Ok(entries
+        .into_iter()
+        // Always hide .eldrun/ — mirrors the local lister (internal runtime dir).
+        .filter(|e| e.name != ".eldrun")
+        .map(|e| remote_file_entry(&remote_dir, e))
+        .collect())
+}
+
+/// Join a remote project root (`remote_path`) with a project-relative path,
+/// mirroring `ssh_exec::remote_subdir`-style joining: trim a trailing '/', then
+/// append the non-empty rel. Pure, so it is unit-tested without a live host.
+fn join_remote_dir(remote_path: &str, rel: &str) -> String {
+    let base = remote_path.trim_end_matches('/');
+    let rel = rel.trim_start_matches('/');
+    if rel.is_empty() {
+        if base.is_empty() { "/".to_string() } else { base.to_string() }
+    } else if base.is_empty() {
+        format!("/{rel}")
+    } else {
+        format!("{base}/{rel}")
+    }
+}
+
+/// Map one SFTP [`Entry`](crate::services::sftp::Entry) into a `FileEntry`. The
+/// `path` is the **absolute remote path** (`remote_dir`/name) so the frontend's
+/// existing absolute-path model keeps working during the sshfs→SFTP transition.
+/// `extension`/`mime` come from the file name (as the local lister does);
+/// `created_secs` is unavailable over SFTP.
+fn remote_file_entry(remote_dir: &str, e: crate::services::sftp::Entry) -> FileEntry {
+    let path = format!("{}/{}", remote_dir.trim_end_matches('/'), e.name);
+    let ext = Path::new(&e.name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| format!(".{s}"));
+    let mime = ext.as_deref().map(mime_for_ext);
+    FileEntry {
+        name: e.name,
+        path,
+        is_dir: e.is_dir,
+        size: e.size,
+        modified_secs: e.modified_secs,
+        created_secs: None,
+        extension: ext,
+        mime,
+    }
+}
+
+// ── Remote (SFTP) file I/O dispatch (mount-free remote, Phase 3) ────────────
+//
+// Each remote operation is pooled-session-first with a one-shot fallback — the
+// I/O analogue of `list_dir_remote`. Confinement is the remote counterpart of
+// the local `confine_abs`/`enforce_confinement`: a project-relative path is
+// validated to stay under the project root (no `..`/absolute escape), and an
+// absolute remote path must resolve at or under `spec.remote_path`.
+
+type RemoteTarget = crate::services::remote::RemoteTarget;
+type RemotePoolState = crate::services::remote::RemotePoolState;
+
+/// Resolve a project-relative path under a remote project root, rejecting
+/// `..`/absolute traversal — the remote analogue of `canonical` + relative
+/// `enforce_confinement`. Reuses `normalize_project_rel_path` (which rejects
+/// `..`/root components and strips a leading `/`), then joins onto the root.
+fn remote_join_confined(remote_root: &str, rel_path: &str) -> Result<String, String> {
+    let clean = normalize_project_rel_path(rel_path)?;
+    Ok(join_remote_dir(remote_root, &clean))
+}
+
+/// Confine an **absolute** remote path to the project's remote root: reject any
+/// parent-directory component and require the path to sit at or under
+/// `remote_root` on a path boundary (so `/srv/proj-evil` is NOT inside
+/// `/srv/proj`). The remote analogue of `confine_abs_within`. Pure, unit-tested.
+fn confine_remote_abs(remote_root: &str, path: &str) -> Result<(), String> {
+    if Path::new(path)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!("remote path '{path}' contains a parent-directory component"));
+    }
+    let root = remote_root.trim_end_matches('/');
+    let p = path.trim_end_matches('/');
+    let inside = root.is_empty() // remote_path "/" → the whole remote fs is the root
+        || p == root
+        || p.strip_prefix(root).is_some_and(|rest| rest.starts_with('/'));
+    if inside {
+        Ok(())
+    } else {
+        Err(format!(
+            "remote path '{path}' is outside the project root '{remote_root}'"
+        ))
+    }
+}
+
+/// Clone the pooled SFTP session for the target's project, or `None` (cold pool).
+async fn pooled(pool: &RemotePoolState, target: &RemoteTarget) -> Option<std::sync::Arc<openssh_sftp_client::Sftp>> {
+    crate::services::remote::pooled_sftp(pool, &target.project_id).await
+}
+
+async fn remote_read(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<Vec<u8>, String> {
+    let s = &target.spec;
+    match pooled(pool, target).await {
+        Some(sftp) => crate::services::sftp::read_file_on(&sftp, path).await,
+        None => crate::services::sftp::read_file(&s.user, &s.host, s.port, None, path).await,
+    }
+}
+
+async fn remote_write(pool: &RemotePoolState, target: &RemoteTarget, path: &str, bytes: &[u8]) -> Result<(), String> {
+    let s = &target.spec;
+    match pooled(pool, target).await {
+        Some(sftp) => crate::services::sftp::write_file_on(&sftp, path, bytes).await,
+        None => crate::services::sftp::write_file(&s.user, &s.host, s.port, None, path, bytes).await,
+    }
+}
+
+async fn remote_create_file(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<(), String> {
+    let s = &target.spec;
+    match pooled(pool, target).await {
+        Some(sftp) => crate::services::sftp::create_file_on(&sftp, path).await,
+        None => crate::services::sftp::create_file(&s.user, &s.host, s.port, None, path).await,
+    }
+}
+
+async fn remote_mkdir(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<(), String> {
+    let s = &target.spec;
+    match pooled(pool, target).await {
+        Some(sftp) => crate::services::sftp::mkdir_on(&sftp, path).await,
+        None => crate::services::sftp::mkdir(&s.user, &s.host, s.port, None, path).await,
+    }
+}
+
+async fn remote_remove_file(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<(), String> {
+    let s = &target.spec;
+    match pooled(pool, target).await {
+        Some(sftp) => crate::services::sftp::remove_file_on(&sftp, path).await,
+        None => crate::services::sftp::remove_file(&s.user, &s.host, s.port, None, path).await,
+    }
+}
+
+async fn remote_remove_dir(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<(), String> {
+    let s = &target.spec;
+    match pooled(pool, target).await {
+        Some(sftp) => crate::services::sftp::remove_dir_on(&sftp, path).await,
+        None => crate::services::sftp::remove_dir(&s.user, &s.host, s.port, None, path).await,
+    }
+}
+
+async fn remote_rename(pool: &RemotePoolState, target: &RemoteTarget, from: &str, to: &str) -> Result<(), String> {
+    let s = &target.spec;
+    match pooled(pool, target).await {
+        Some(sftp) => crate::services::sftp::rename_on(&sftp, from, to).await,
+        None => crate::services::sftp::rename(&s.user, &s.host, s.port, None, from, to).await,
+    }
+}
+
+async fn remote_metadata(pool: &RemotePoolState, target: &RemoteTarget, path: &str) -> Result<(u64, Option<u64>), String> {
+    let s = &target.spec;
+    match pooled(pool, target).await {
+        Some(sftp) => crate::services::sftp::metadata_on(&sftp, path).await,
+        None => crate::services::sftp::metadata(&s.user, &s.host, s.port, None, path).await,
+    }
+}
+
 #[tauri::command]
 pub fn list_project_endings(project_dir: String) -> Result<Vec<String>, String> {
     let root = canonical(&project_dir)?;
@@ -117,27 +328,56 @@ pub fn list_project_paths(project_dir: String) -> Result<Vec<ProjectPathEntry>, 
     Ok(paths)
 }
 
+/// Validate that `new_name` is a bare file name (no separators, not `.`/`..`),
+/// returning the trimmed name. Shared by the local and remote rename paths.
+fn validate_bare_name(new_name: &str) -> Result<String, String> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains('\0')
+    {
+        return Err(format!("invalid file name '{trimmed}'"));
+    }
+    Ok(trimmed.to_string())
+}
+
 /// Rename a file or directory — path must stay inside the project root.
 /// `new_name` must be a bare file name; renames never move entries between
-/// directories.
+/// directories. Remote projects (mount-free, Phase 3) rename over SFTP; local
+/// projects keep the byte-identical local behavior.
 #[tauri::command]
-pub fn rename_path(project_dir: String, old_rel: String, new_name: String) -> Result<(), String> {
-    let new_name = new_name.trim();
-    if new_name.is_empty()
-        || new_name == "."
-        || new_name == ".."
-        || new_name.contains('/')
-        || new_name.contains('\\')
-        || new_name.contains('\0')
-    {
-        return Err(format!("invalid file name '{new_name}'"));
+pub async fn rename_path(
+    project_dir: String,
+    old_rel: String,
+    new_name: String,
+    pool: tauri::State<'_, RemotePoolState>,
+) -> Result<(), String> {
+    let name = validate_bare_name(&new_name)?;
+    if let Some(target) = crate::services::remote::remote_target_for_dir(&project_dir) {
+        let from = remote_join_confined(&target.spec.remote_path, &old_rel)?;
+        // Rename in place: keep `from`'s directory, swap the final component.
+        let to = match from.rfind('/') {
+            Some(i) => format!("{}/{}", &from[..i], name),
+            None => name.clone(),
+        };
+        return remote_rename(pool.inner(), &target, &from, &to).await;
     }
+    rename_path_local(&project_dir, &old_rel, &new_name)
+}
 
-    let root = canonical(&project_dir)?;
-    let old = canonical(&root.join(&old_rel).to_string_lossy().to_string())?;
+/// Local-fs rename — the pre-Phase-3 body, byte-identical. Re-validates so it is
+/// directly callable in tests.
+pub fn rename_path_local(project_dir: &str, old_rel: &str, new_name: &str) -> Result<(), String> {
+    let new_name = validate_bare_name(new_name)?;
+
+    let root = canonical(project_dir)?;
+    let old = canonical(&root.join(old_rel).to_string_lossy().to_string())?;
     enforce_confinement(&root, &old)?;
 
-    let new = old.parent().ok_or("no parent")?.join(new_name);
+    let new = old.parent().ok_or("no parent")?.join(&new_name);
     // New path must also stay inside root.
     let new_c = canonical_or_new(&new);
     enforce_confinement(&root, &new_c)?;
@@ -147,9 +387,22 @@ pub fn rename_path(project_dir: String, old_rel: String, new_name: String) -> Re
 
 /// Delete a file — never a directory (safety: use trash or explicit confirm for dirs).
 #[tauri::command]
-pub fn delete_file(project_dir: String, rel_path: String) -> Result<(), String> {
-    let root = canonical(&project_dir)?;
-    let target = canonical(&root.join(&rel_path).to_string_lossy().to_string())?;
+pub async fn delete_file(
+    project_dir: String,
+    rel_path: String,
+    pool: tauri::State<'_, RemotePoolState>,
+) -> Result<(), String> {
+    if let Some(target) = crate::services::remote::remote_target_for_dir(&project_dir) {
+        let full = remote_join_confined(&target.spec.remote_path, &rel_path)?;
+        return remote_remove_file(pool.inner(), &target, &full).await;
+    }
+    delete_file_local(&project_dir, &rel_path)
+}
+
+/// Local-fs file delete — byte-identical pre-Phase-3 body.
+pub fn delete_file_local(project_dir: &str, rel_path: &str) -> Result<(), String> {
+    let root = canonical(project_dir)?;
+    let target = canonical(&root.join(rel_path).to_string_lossy().to_string())?;
     enforce_confinement(&root, &target)?;
 
     if target.is_dir() {
@@ -160,9 +413,26 @@ pub fn delete_file(project_dir: String, rel_path: String) -> Result<(), String> 
 
 /// Delete a directory tree inside the project root.
 #[tauri::command]
-pub fn delete_dir(project_dir: String, rel_path: String) -> Result<(), String> {
-    let root = canonical(&project_dir)?;
-    let target = canonical(&root.join(&rel_path).to_string_lossy().to_string())?;
+pub async fn delete_dir(
+    project_dir: String,
+    rel_path: String,
+    pool: tauri::State<'_, RemotePoolState>,
+) -> Result<(), String> {
+    if let Some(target) = crate::services::remote::remote_target_for_dir(&project_dir) {
+        let clean = normalize_project_rel_path(&rel_path)?;
+        if clean.is_empty() {
+            return Err("refusing to delete project root".to_string());
+        }
+        let full = join_remote_dir(&target.spec.remote_path, &clean);
+        return remote_remove_dir(pool.inner(), &target, &full).await;
+    }
+    delete_dir_local(&project_dir, &rel_path)
+}
+
+/// Local-fs directory-tree delete — byte-identical pre-Phase-3 body.
+pub fn delete_dir_local(project_dir: &str, rel_path: &str) -> Result<(), String> {
+    let root = canonical(project_dir)?;
+    let target = canonical(&root.join(rel_path).to_string_lossy().to_string())?;
     enforce_confinement(&root, &target)?;
 
     if target == root {
@@ -176,9 +446,22 @@ pub fn delete_dir(project_dir: String, rel_path: String) -> Result<(), String> {
 
 /// Create a new empty file inside the project.
 #[tauri::command]
-pub fn create_file(project_dir: String, rel_path: String) -> Result<(), String> {
-    let root = canonical(&project_dir)?;
-    let target = root.join(&rel_path);
+pub async fn create_file(
+    project_dir: String,
+    rel_path: String,
+    pool: tauri::State<'_, RemotePoolState>,
+) -> Result<(), String> {
+    if let Some(target) = crate::services::remote::remote_target_for_dir(&project_dir) {
+        let full = remote_join_confined(&target.spec.remote_path, &rel_path)?;
+        return remote_create_file(pool.inner(), &target, &full).await;
+    }
+    create_file_local(&project_dir, &rel_path)
+}
+
+/// Local-fs empty-file create — byte-identical pre-Phase-3 body.
+pub fn create_file_local(project_dir: &str, rel_path: &str) -> Result<(), String> {
+    let root = canonical(project_dir)?;
+    let target = root.join(rel_path);
     let target_c = canonical_or_new(&target);
     enforce_confinement(&root, &target_c)?;
 
@@ -192,13 +475,23 @@ pub fn create_file(project_dir: String, rel_path: String) -> Result<(), String> 
 
 /// Write a text file inside the project.
 #[tauri::command]
-pub fn write_project_file(
+pub async fn write_project_file(
     project_dir: String,
     rel_path: String,
     content: String,
+    pool: tauri::State<'_, RemotePoolState>,
 ) -> Result<(), String> {
-    let root = canonical(&project_dir)?;
-    let target = root.join(&rel_path);
+    if let Some(target) = crate::services::remote::remote_target_for_dir(&project_dir) {
+        let full = remote_join_confined(&target.spec.remote_path, &rel_path)?;
+        return remote_write(pool.inner(), &target, &full, content.as_bytes()).await;
+    }
+    write_project_file_local(&project_dir, &rel_path, &content)
+}
+
+/// Local-fs text write — byte-identical pre-Phase-3 body.
+pub fn write_project_file_local(project_dir: &str, rel_path: &str, content: &str) -> Result<(), String> {
+    let root = canonical(project_dir)?;
+    let target = root.join(rel_path);
     let target_c = canonical_or_new(&target);
     enforce_confinement(&root, &target_c)?;
 
@@ -210,20 +503,30 @@ pub fn write_project_file(
 
 /// Write raw bytes to a file inside the project (used for drag-and-drop uploads).
 #[tauri::command]
-pub fn write_project_file_bytes(
+pub async fn write_project_file_bytes(
     project_dir: String,
     rel_path: String,
     content: Vec<u8>,
+    pool: tauri::State<'_, RemotePoolState>,
 ) -> Result<(), String> {
-    let root = canonical(&project_dir)?;
-    let target = root.join(&rel_path);
+    if let Some(target) = crate::services::remote::remote_target_for_dir(&project_dir) {
+        let full = remote_join_confined(&target.spec.remote_path, &rel_path)?;
+        return remote_write(pool.inner(), &target, &full, &content).await;
+    }
+    write_project_file_bytes_local(&project_dir, &rel_path, &content)
+}
+
+/// Local-fs byte write — byte-identical pre-Phase-3 body.
+pub fn write_project_file_bytes_local(project_dir: &str, rel_path: &str, content: &[u8]) -> Result<(), String> {
+    let root = canonical(project_dir)?;
+    let target = root.join(rel_path);
     let target_c = canonical_or_new(&target);
     enforce_confinement(&root, &target_c)?;
 
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::write(&target, &content).map_err(|e| e.to_string())
+    fs::write(&target, content).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -270,9 +573,22 @@ pub fn update_gitignore_rule(
 
 /// Create a new directory inside the project.
 #[tauri::command]
-pub fn create_dir(project_dir: String, rel_path: String) -> Result<(), String> {
-    let root = canonical(&project_dir)?;
-    let target = root.join(&rel_path);
+pub async fn create_dir(
+    project_dir: String,
+    rel_path: String,
+    pool: tauri::State<'_, RemotePoolState>,
+) -> Result<(), String> {
+    if let Some(target) = crate::services::remote::remote_target_for_dir(&project_dir) {
+        let full = remote_join_confined(&target.spec.remote_path, &rel_path)?;
+        return remote_mkdir(pool.inner(), &target, &full).await;
+    }
+    create_dir_local(&project_dir, &rel_path)
+}
+
+/// Local-fs directory create — byte-identical pre-Phase-3 body.
+pub fn create_dir_local(project_dir: &str, rel_path: &str) -> Result<(), String> {
+    let root = canonical(project_dir)?;
+    let target = root.join(rel_path);
     let target_c = canonical_or_new(&target);
     enforce_confinement(&root, &target_c)?;
     fs::create_dir_all(&target).map_err(|e| e.to_string())
@@ -539,10 +855,38 @@ fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
 
 // ── MIME detection (magic bytes) ──────────────────────────────────────────
 
+/// Detect a file's MIME type. Local projects sniff magic bytes (then fall back to
+/// the extension); remote projects (mount-free, Phase 3) use the **extension**
+/// only — avoiding a network fetch just to classify — after confining the path to
+/// the remote project root.
 #[tauri::command]
-pub fn detect_mime(path: String, project_id: Option<String>) -> Result<String, String> {
-    let p = PathBuf::from(&path);
-    confine_abs_read(&p, project_id.as_deref())?;
+pub async fn detect_mime(
+    path: String,
+    project_id: Option<String>,
+    _pool: tauri::State<'_, RemotePoolState>,
+) -> Result<String, String> {
+    if let Some(pid) = project_id.as_deref() {
+        if let Some(target) = crate::services::remote::remote_target_for(pid) {
+            confine_remote_abs(&target.spec.remote_path, &path)?;
+            return Ok(ext_mime_or_octet(&path));
+        }
+    }
+    detect_mime_local(&path, project_id.as_deref())
+}
+
+/// Extension-based MIME for `path`, defaulting to `application/octet-stream`.
+fn ext_mime_or_octet(path: &str) -> String {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(mime_for_ext)
+        .unwrap_or_else(|| "application/octet-stream".to_string())
+}
+
+/// Local-fs MIME detection — byte-identical pre-Phase-3 body.
+pub fn detect_mime_local(path: &str, scope_id: Option<&str>) -> Result<String, String> {
+    let p = PathBuf::from(path);
+    confine_abs_read(&p, scope_id)?;
     // 1. Try magic bytes via infer.
     if let Ok(mut f) = fs::File::open(&p) {
         let mut buf = [0u8; 8192];
@@ -554,10 +898,7 @@ pub fn detect_mime(path: String, project_id: Option<String>) -> Result<String, S
         }
     }
     // 2. Fall back to extension.
-    Ok(p.extension()
-        .and_then(|e| e.to_str())
-        .map(mime_for_ext)
-        .unwrap_or_else(|| "application/octet-stream".to_string()))
+    Ok(ext_mime_or_octet(path))
 }
 
 // ── Read file contents for in-app viewers (Group K #40) ───────────────────
@@ -577,9 +918,31 @@ const MAX_BINARY_VIEW_BYTES: u64 = 64 * 1024 * 1024;
 /// `~/.ssh/id_rsa`. Refuses files over `MAX_TEXT_VIEW_BYTES` and non-UTF-8
 /// (binary) files.
 #[tauri::command]
-pub fn read_file_text(path: String, project_id: Option<String>) -> Result<String, String> {
-    let p = PathBuf::from(&path);
-    confine_abs_read(&p, project_id.as_deref())?;
+pub async fn read_file_text(
+    path: String,
+    project_id: Option<String>,
+    pool: tauri::State<'_, RemotePoolState>,
+) -> Result<String, String> {
+    if let Some(pid) = project_id.as_deref() {
+        if let Some(target) = crate::services::remote::remote_target_for(pid) {
+            confine_remote_abs(&target.spec.remote_path, &path)?;
+            let (size, _) = remote_metadata(pool.inner(), &target, &path).await?;
+            if size > MAX_TEXT_VIEW_BYTES {
+                return Err(format!(
+                    "file too large to view ({size} bytes; limit {MAX_TEXT_VIEW_BYTES})"
+                ));
+            }
+            let bytes = remote_read(pool.inner(), &target, &path).await?;
+            return String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8 text".to_string());
+        }
+    }
+    read_file_text_local(&path, project_id.as_deref())
+}
+
+/// Local-fs text read — byte-identical pre-Phase-3 body.
+pub fn read_file_text_local(path: &str, scope_id: Option<&str>) -> Result<String, String> {
+    let p = PathBuf::from(path);
+    confine_abs_read(&p, scope_id)?;
     let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a file".to_string());
@@ -603,13 +966,32 @@ pub fn read_file_text(path: String, project_id: Option<String>) -> Result<String
 /// `MAX_TEXT_VIEW_BYTES`, and only writes to an existing regular file (the
 /// editor edits files opened from the tree; it never creates new paths).
 #[tauri::command]
-pub fn write_file_text(
+pub async fn write_file_text(
     path: String,
     content: String,
     project_id: Option<String>,
+    pool: tauri::State<'_, RemotePoolState>,
 ) -> Result<(), String> {
-    let p = PathBuf::from(&path);
-    confine_abs_write(&p, project_id.as_deref())?;
+    if let Some(pid) = project_id.as_deref() {
+        if let Some(target) = crate::services::remote::remote_target_for(pid) {
+            confine_remote_abs(&target.spec.remote_path, &path)?;
+            if content.len() as u64 > MAX_TEXT_VIEW_BYTES {
+                return Err(format!(
+                    "content too large to save ({} bytes; limit {})",
+                    content.len(),
+                    MAX_TEXT_VIEW_BYTES
+                ));
+            }
+            return remote_write(pool.inner(), &target, &path, content.as_bytes()).await;
+        }
+    }
+    write_file_text_local(&path, &content, project_id.as_deref())
+}
+
+/// Local-fs text write (existing regular file only) — byte-identical pre-Phase-3 body.
+pub fn write_file_text_local(path: &str, content: &str, scope_id: Option<&str>) -> Result<(), String> {
+    let p = PathBuf::from(path);
+    confine_abs_write(&p, scope_id)?;
     let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a file".to_string());
@@ -629,13 +1011,32 @@ pub fn write_file_text(
 /// image annotator can "Save as…" a sibling PNG), but still refuses paths
 /// outside the allowed roots and oversized payloads.
 #[tauri::command]
-pub fn write_file_bytes(
+pub async fn write_file_bytes(
     path: String,
     content: Vec<u8>,
     project_id: Option<String>,
+    pool: tauri::State<'_, RemotePoolState>,
 ) -> Result<(), String> {
-    let p = PathBuf::from(&path);
-    confine_abs_write(&p, project_id.as_deref())?;
+    if let Some(pid) = project_id.as_deref() {
+        if let Some(target) = crate::services::remote::remote_target_for(pid) {
+            confine_remote_abs(&target.spec.remote_path, &path)?;
+            if content.len() as u64 > MAX_BINARY_VIEW_BYTES {
+                return Err(format!(
+                    "content too large to save ({} bytes; limit {})",
+                    content.len(),
+                    MAX_BINARY_VIEW_BYTES
+                ));
+            }
+            return remote_write(pool.inner(), &target, &path, &content).await;
+        }
+    }
+    write_file_bytes_local(&path, &content, project_id.as_deref())
+}
+
+/// Local-fs byte write (may create a new file) — byte-identical pre-Phase-3 body.
+pub fn write_file_bytes_local(path: &str, content: &[u8], scope_id: Option<&str>) -> Result<(), String> {
+    let p = PathBuf::from(path);
+    confine_abs_write(&p, scope_id)?;
     if content.len() as u64 > MAX_BINARY_VIEW_BYTES {
         return Err(format!(
             "content too large to save ({} bytes; limit {})",
@@ -652,9 +1053,30 @@ pub fn write_file_bytes(
 /// `MAX_BINARY_VIEW_BYTES`. The frontend wraps the returned bytes in a Blob URL
 /// so the PDF renders in-tab without an external viewer.
 #[tauri::command]
-pub fn read_file_bytes(path: String, project_id: Option<String>) -> Result<Vec<u8>, String> {
-    let p = PathBuf::from(&path);
-    confine_abs_read(&p, project_id.as_deref())?;
+pub async fn read_file_bytes(
+    path: String,
+    project_id: Option<String>,
+    pool: tauri::State<'_, RemotePoolState>,
+) -> Result<Vec<u8>, String> {
+    if let Some(pid) = project_id.as_deref() {
+        if let Some(target) = crate::services::remote::remote_target_for(pid) {
+            confine_remote_abs(&target.spec.remote_path, &path)?;
+            let (size, _) = remote_metadata(pool.inner(), &target, &path).await?;
+            if size > MAX_BINARY_VIEW_BYTES {
+                return Err(format!(
+                    "file too large to view ({size} bytes; limit {MAX_BINARY_VIEW_BYTES})"
+                ));
+            }
+            return remote_read(pool.inner(), &target, &path).await;
+        }
+    }
+    read_file_bytes_local(&path, project_id.as_deref())
+}
+
+/// Local-fs byte read — byte-identical pre-Phase-3 body.
+pub fn read_file_bytes_local(path: &str, scope_id: Option<&str>) -> Result<Vec<u8>, String> {
+    let p = PathBuf::from(path);
+    confine_abs_read(&p, scope_id)?;
     let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a file".to_string());
@@ -675,9 +1097,25 @@ pub fn read_file_bytes(path: String, project_id: Option<String>) -> Result<Vec<u
 /// (#43 diff-aware auto-reload). Confined to Eldrun's known roots (Security #1).
 /// Mirrors the `FileEntry.modified_secs` machinery in `list_dir`.
 #[tauri::command]
-pub fn file_mtime(path: String, project_id: Option<String>) -> Result<u64, String> {
-    let p = PathBuf::from(&path);
-    confine_abs_read(&p, project_id.as_deref())?;
+pub async fn file_mtime(
+    path: String,
+    project_id: Option<String>,
+    pool: tauri::State<'_, RemotePoolState>,
+) -> Result<u64, String> {
+    if let Some(pid) = project_id.as_deref() {
+        if let Some(target) = crate::services::remote::remote_target_for(pid) {
+            confine_remote_abs(&target.spec.remote_path, &path)?;
+            let (_, modified) = remote_metadata(pool.inner(), &target, &path).await?;
+            return Ok(modified.unwrap_or(0));
+        }
+    }
+    file_mtime_local(&path, project_id.as_deref())
+}
+
+/// Local-fs mtime — byte-identical pre-Phase-3 body.
+pub fn file_mtime_local(path: &str, scope_id: Option<&str>) -> Result<u64, String> {
+    let p = PathBuf::from(path);
+    confine_abs_read(&p, scope_id)?;
     let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
     let secs = meta
         .modified()
@@ -1002,6 +1440,63 @@ pub(crate) fn enforce_confinement(root: &Path, target: &Path) -> Result<(), Stri
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // ── join_remote_dir / remote_file_entry ────────────────────────────────
+
+    #[test]
+    fn join_remote_dir_root_is_remote_path() {
+        assert_eq!(join_remote_dir("/srv/project", ""), "/srv/project");
+        // Trailing slash on the root is trimmed.
+        assert_eq!(join_remote_dir("/srv/project/", ""), "/srv/project");
+    }
+
+    #[test]
+    fn join_remote_dir_appends_relative() {
+        assert_eq!(join_remote_dir("/srv/project", "sub/dir"), "/srv/project/sub/dir");
+        // A leading slash on the rel is normalized away (no doubled slash).
+        assert_eq!(join_remote_dir("/srv/project", "/sub"), "/srv/project/sub");
+        assert_eq!(join_remote_dir("/srv/project/", "sub"), "/srv/project/sub");
+    }
+
+    #[test]
+    fn join_remote_dir_handles_filesystem_root() {
+        // remote_path "/" trims to empty; results stay single-leading-slash.
+        assert_eq!(join_remote_dir("/", ""), "/");
+        assert_eq!(join_remote_dir("/", "etc"), "/etc");
+    }
+
+    #[test]
+    fn remote_file_entry_maps_path_and_mime() {
+        let entry = crate::services::sftp::Entry {
+            name: "notes.txt".to_string(),
+            is_dir: false,
+            size: 42,
+            modified_secs: Some(1000),
+        };
+        let fe = remote_file_entry("/srv/project/src", entry);
+        assert_eq!(fe.path, "/srv/project/src/notes.txt");
+        assert_eq!(fe.extension.as_deref(), Some(".txt"));
+        assert_eq!(fe.mime.as_deref(), Some("text/plain"));
+        assert_eq!(fe.size, 42);
+        assert_eq!(fe.modified_secs, Some(1000));
+        assert_eq!(fe.created_secs, None);
+        assert!(!fe.is_dir);
+    }
+
+    #[test]
+    fn remote_file_entry_dir_has_no_extension() {
+        let entry = crate::services::sftp::Entry {
+            name: "src".to_string(),
+            is_dir: true,
+            size: 0,
+            modified_secs: None,
+        };
+        let fe = remote_file_entry("/srv/project", entry);
+        assert_eq!(fe.path, "/srv/project/src");
+        assert_eq!(fe.extension, None);
+        assert_eq!(fe.mime, None);
+        assert!(fe.is_dir);
+    }
 
     // ── enforce_confinement ────────────────────────────────────────────────
 
@@ -1330,10 +1825,10 @@ mod tests {
     #[test]
     fn write_project_file_creates_nested_file_inside_project() {
         let tmp = tempfile::tempdir().unwrap();
-        write_project_file(
-            tmp.path().to_string_lossy().to_string(),
-            ".eldrun/scaffold-fill-claude.md".to_string(),
-            "fill AGENTS.md".to_string(),
+        write_project_file_local(
+            &tmp.path().to_string_lossy(),
+            ".eldrun/scaffold-fill-claude.md",
+            "fill AGENTS.md",
         )
         .unwrap();
 
@@ -1347,12 +1842,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("old.txt"), "content").unwrap();
 
-        rename_path(
-            tmp.path().to_string_lossy().to_string(),
-            "old.txt".to_string(),
-            "new.txt".to_string(),
-        )
-        .unwrap();
+        rename_path_local(&tmp.path().to_string_lossy(), "old.txt", "new.txt").unwrap();
 
         assert!(!tmp.path().join("old.txt").exists());
         assert_eq!(
@@ -1368,7 +1858,7 @@ mod tests {
         let dir = tmp.path().to_string_lossy().to_string();
 
         for bad in ["", " ", ".", "..", "sub/name", "..\\name", "a\0b"] {
-            let err = rename_path(dir.clone(), "a.txt".to_string(), bad.to_string());
+            let err = rename_path_local(&dir, "a.txt", bad);
             assert!(err.is_err(), "name {bad:?} must be rejected");
         }
         assert!(tmp.path().join("a.txt").exists(), "file must be untouched");
@@ -1377,14 +1867,53 @@ mod tests {
     #[test]
     fn write_project_file_blocks_parent_escape() {
         let tmp = tempfile::tempdir().unwrap();
-        let err = write_project_file(
-            tmp.path().to_string_lossy().to_string(),
-            "../outside.md".to_string(),
-            "escape".to_string(),
+        let err = write_project_file_local(
+            &tmp.path().to_string_lossy(),
+            "../outside.md",
+            "escape",
         )
         .unwrap_err();
 
         assert!(err.contains("escapes project root"), "unexpected error: {err}");
+    }
+
+    // ── Remote path join / confinement (mount-free remote, Phase 3) ─────────
+
+    #[test]
+    fn remote_join_confined_joins_clean_rel() {
+        assert_eq!(
+            remote_join_confined("/srv/project", "src/main.rs").unwrap(),
+            "/srv/project/src/main.rs"
+        );
+        // Empty rel resolves to the project root itself.
+        assert_eq!(remote_join_confined("/srv/project", "").unwrap(), "/srv/project");
+    }
+
+    #[test]
+    fn remote_join_confined_rejects_traversal() {
+        assert!(remote_join_confined("/srv/project", "../escape").is_err());
+        assert!(remote_join_confined("/srv/project", "a/../../b").is_err());
+        // A leading slash (absolute rel) is a RootDir component → rejected, so a
+        // caller can never pivot the join off the project root.
+        assert!(remote_join_confined("/srv/project", "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn confine_remote_abs_allows_paths_under_root() {
+        assert!(confine_remote_abs("/srv/project", "/srv/project").is_ok());
+        assert!(confine_remote_abs("/srv/project", "/srv/project/src/main.rs").is_ok());
+        // Trailing slash on the root is tolerated.
+        assert!(confine_remote_abs("/srv/project/", "/srv/project/a").is_ok());
+    }
+
+    #[test]
+    fn confine_remote_abs_blocks_outside_and_prefix_sibling() {
+        // A sibling that merely shares a string prefix must NOT be inside.
+        assert!(confine_remote_abs("/srv/project", "/srv/project-evil/loot").is_err());
+        // Unrelated absolute path.
+        assert!(confine_remote_abs("/srv/project", "/etc/passwd").is_err());
+        // Parent-dir traversal is refused even if it would resolve back inside.
+        assert!(confine_remote_abs("/srv/project", "/srv/project/../secret").is_err());
     }
 
     // ── Absolute-path confinement (Security #1) ─────────────────────────────

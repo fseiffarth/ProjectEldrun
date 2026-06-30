@@ -53,6 +53,15 @@ pub struct PtyOptions {
     /// of a project whose sandbox toggle is enabled. See `services::sandbox`.
     #[serde(default)]
     pub sandbox: bool,
+    /// The owning project's id, set by the frontend for tabs that belong to a
+    /// project scope (not the root scope). It makes remoteness **explicit**: the
+    /// ssh-wrap spawn path resolves the project's `RemoteSpec` from this id (via
+    /// `services::remote::remote_target_for`) instead of sniffing whether `cwd`
+    /// lives under the sshfs mounts root. `None` for root/connection terminals
+    /// (and any spawn path not yet updated), where the cwd-sniffing fallback
+    /// still applies. Harmless for local projects — they resolve to no remote.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

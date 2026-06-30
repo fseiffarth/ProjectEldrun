@@ -131,7 +131,7 @@ export const LESSONS: Lesson[] = [
         anchor: null,
         placement: "bottom",
         title: "Remote? Flip the SSH toggle",
-        body: "Tick \"Remote (SSH) project\" to import a folder living on another host. If configured, Eldrun mounts it over sshfs (with an optional OpenVPN step) and keeps it in place on the remote.",
+        body: "Tick \"Remote (SSH) project\" to import a folder living on another host. Eldrun works it over SSH/SFTP — agent tabs, file browsing, and git all run on the remote (with an optional OpenVPN step). No local mount needed.",
       },
       {
         id: "publish-remote",
@@ -511,7 +511,7 @@ export const LESSONS: Lesson[] = [
     id: "add-ssh-project",
     category: "Advanced",
     title: "Add an SSH project",
-    blurb: "Work on a folder living on another machine — Eldrun mounts it over sshfs.",
+    blurb: "Work on a folder living on another machine — Eldrun runs it over SSH/SFTP (no mount).",
     steps: [
       {
         id: "open-add-menu",
@@ -552,8 +552,8 @@ export const LESSONS: Lesson[] = [
         id: "create-mount",
         anchor: null,
         placement: "bottom",
-        title: "Create and mount",
-        body: "Finish naming and pick a Git mode, then Create/Import. Eldrun mounts the remote folder over sshfs under its mounts directory and treats it like any local project. Requires sshfs/FUSE locally.",
+        title: "Create and connect",
+        body: "Finish naming and pick a Git mode, then Create/Import. Eldrun opens an SSH/SFTP connection to the host and treats the remote folder like any project — agent tabs, file browsing, and git run on the remote. No sshfs/FUSE needed.",
       },
     ],
   },
@@ -610,7 +610,7 @@ export const LESSONS: Lesson[] = [
         anchor: null,
         placement: "bottom",
         title: "Pick the folder and create",
-        body: "Step through the remote browser to your directory and click \"Use this folder\". Finish naming, pick a Git mode, then Create/Import. Eldrun mounts it over sshfs and treats it like any local project.",
+        body: "Step through the remote browser to your directory and click \"Use this folder\". Finish naming, pick a Git mode, then Create/Import. Eldrun connects over SSH/SFTP and treats it like any project — no local mount.",
       },
     ],
   },

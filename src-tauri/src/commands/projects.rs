@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,8 +9,17 @@ use serde_json::Value;
 use crate::paths;
 use crate::schema::project::{Project, RemoteSpec, SandboxSpec};
 use crate::schema::projects::{ProjectEntry, ProjectsList};
-use crate::services::ssh_mount;
 use crate::storage;
+
+/// Local per-project state directory for a **remote** project:
+/// `<state_dir>/remote-projects/<id>`. Mount-free remote projects keep their
+/// `project.json` (tabs/time/etc.) here — a real local dir, unlike the old sshfs
+/// mountpoint — while the project's tree lives on the host and is reached over
+/// SFTP/SSH. This path becomes the project's `directory` (a stable local key the
+/// fs/git/terminal commands resolve to a `RemoteTarget`).
+fn remote_project_state_dir(id: &str) -> std::path::PathBuf {
+    storage::state_dir().join("remote-projects").join(id)
+}
 
 // ── Project list ──────────────────────────────────────────────────────────
 
@@ -191,6 +200,72 @@ pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<bool, St
     }
 
     Ok(enabled)
+}
+
+/// Normalize a list of category tags: trim each, drop blanks, and de-duplicate
+/// case-insensitively (first spelling wins), preserving order. Mirrors the
+/// frontend `cleanCategories` so storage stays canonical regardless of caller.
+fn clean_categories(raw: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for r in raw {
+        let c = r.split_whitespace().collect::<Vec<_>>().join(" ");
+        if c.is_empty() {
+            continue;
+        }
+        if seen.insert(c.to_lowercase()) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Set a project's category tags in both `projects.json` (the pill list) and the
+/// project's own `project.json`, keeping the two in sync. Categories color/group
+/// the project in the cloud and the pill bar. An empty list clears the field
+/// entirely. Returns the cleaned, de-duplicated list that was stored.
+#[tauri::command]
+pub fn set_project_categories(
+    project_id: String,
+    categories: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let cleaned = clean_categories(categories);
+
+    // projects.json — mirror into the entry's flattened `categories`.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    if cleaned.is_empty() {
+        entry.extra.remove("categories");
+    } else {
+        let value = serde_json::to_value(&cleaned).map_err(|e| e.to_string())?;
+        entry.extra.insert("categories".to_string(), value);
+    }
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project file consistent (best effort).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            if cleaned.is_empty() {
+                project.extra.remove("categories");
+            } else {
+                let value = serde_json::to_value(&cleaned).map_err(|e| e.to_string())?;
+                project.extra.insert("categories".to_string(), value);
+            }
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(cleaned)
 }
 
 /// Enable or disable git version control for an existing project.
@@ -438,18 +513,34 @@ pub struct CreateProjectRequest {
 pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String> {
     let id = uuid_v4();
 
-    // For remote projects the working directory is the sshfs mountpoint; for
-    // local projects it is the chosen directory. Establish the mount first so
-    // scaffolding writes onto the remote filesystem.
+    // Mount-free remote: a remote project's `directory` is a LOCAL per-project
+    // state dir that holds its `project.json` (tabs/time/etc.); the project's
+    // actual tree lives on the host at `remote.remote_path` and is reached over
+    // SFTP/SSH. Best-effort create that remote root so agent tabs / git can `cd`
+    // into it (key/agent auth — a password-auth host may need it to pre-exist).
+    // Local projects use the chosen directory unchanged.
     let dir = match req.remote.as_ref() {
-        Some(remote) => ssh_mount::mount(remote, &id)?,
+        Some(remote) => {
+            if let Err(e) = crate::services::ssh_exec::remote_mkdir_p(remote) {
+                eprintln!(
+                    "create_project: remote mkdir '{}' failed (create it on the host if needed): {e}",
+                    remote.remote_path
+                );
+            }
+            remote_project_state_dir(&id)
+        }
         None => PathBuf::from(&req.directory),
     };
     let directory = dir.to_string_lossy().to_string();
 
     let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
 
-    if !req.skip_scaffold {
+    // Scaffold only LOCAL projects onto the (local) project dir. A remote
+    // project's scaffold belongs on the host (deferred — see #28j follow-up); its
+    // local `directory` only holds project.json, created below.
+    if req.remote.is_some() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    } else if !req.skip_scaffold {
         scaffold_project(&dir, git_type != "none").map_err(|e| e.to_string())?;
     } else {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -523,17 +614,19 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
         return Err("Project name is invalid".to_string());
     }
 
-    // Generate the id up front: remote imports mount under it before we touch
-    // the filesystem.
     let id = uuid_v4();
 
     if let Some(remote) = req.remote.clone() {
         if req.mode != "keep" {
             return Err("Remote imports must use 'keep' mode (copy/move are not supported)".to_string());
         }
-        // Establish (or reuse) the sshfs mount; the mountpoint is the project root.
-        let mountpoint = ssh_mount::mount(&remote, &id)?;
-        return finish_import(req, id, mountpoint, Some(remote));
+        // Mount-free: the user browsed to an existing remote directory, so there
+        // is nothing to create on the host. The project's `directory` is a LOCAL
+        // per-project state dir that holds its project.json; the tree stays on the
+        // host (`remote.remote_path`) and is reached over SFTP/SSH.
+        let local = remote_project_state_dir(&id);
+        std::fs::create_dir_all(&local).map_err(|e| e.to_string())?;
+        return finish_import(req, id, local, Some(remote));
     }
 
     let source = PathBuf::from(&req.source_dir);
@@ -607,7 +700,10 @@ fn finish_import(
 
     let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
 
-    if !req.skip_scaffold {
+    // Scaffold only LOCAL imports onto their (local) tree. A remote import's
+    // `target` is the local per-project state dir (project.json only); its tree
+    // already exists on the host, so no local scaffold is written there.
+    if remote.is_none() && !req.skip_scaffold {
         scaffold_project(&target, git_type != "none").map_err(|e| e.to_string())?;
     }
 

@@ -37,6 +37,11 @@ interface Props {
   // When true, run this (agent) tab inside a Docker sandbox that mounts only the
   // project dir. Set only for agent tabs of a sandbox-enabled local project.
   sandbox?: boolean;
+  // The owning project's id for a project-scope tab (null/undefined for the root
+  // scope and connection terminals). Forwarded to the backend spawn so it can
+  // detect remoteness explicitly (resolve the project's RemoteSpec) instead of
+  // sniffing the cwd. Harmless for local projects — they resolve to no remote.
+  projectId?: string | null;
   // Whether this pane is laid out on screen (single-mode active tab, or any
   // pane in grid mode). Drives display + xterm fit.
   visible: boolean;
@@ -52,6 +57,13 @@ interface Props {
   // When true (agent tabs), the pane is font-zoomable: Ctrl+wheel and
   // Ctrl +/-/0 scale the font, with the level shared across all agent panes.
   zoomable?: boolean;
+  // When true, do NOT kill the PTY when this view unmounts. Used by the
+  // non-headless connection terminals embedded in the project dialog: the
+  // OpenVPN/SSH login they run must outlive the dialog (the new project relies
+  // on the tunnel/master being up), so closing the dialog leaves the PTY
+  // running rather than tearing the connection down. This view owns the PTY
+  // (it spawns it, unlike `attachOnly`), it just declines to reap it on unmount.
+  persistOnUnmount?: boolean;
 }
 
 function terminalTheme(scheme: string | undefined) {
@@ -134,7 +146,7 @@ function readAgentFontSize(): number {
   return DEFAULT_FONT_SIZE;
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, visible, focused, attachOnly = false, zoomable = false }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -374,7 +386,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
 
       try {
         await invoke("pty_spawn", {
-          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox },
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, project_id: projectId ?? null },
         });
       } catch (e) {
         if (!cancelled) {
@@ -477,13 +489,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // unmounting *because its tab was just detached* into a popped-out window
       // (the detached attach-only viewer is now reading this PTY; killing it
       // would leave that window a dead black pane). Only a real close tears it
-      // down.
-      if (!attachOnly && !isDetachedPtyId(id)) {
+      // down. (c) `persistOnUnmount` — a dialog-embedded connection terminal
+      // whose tunnel/login must outlive the dialog.
+      if (!attachOnly && !isDetachedPtyId(id) && !persistOnUnmount) {
         invoke("pty_kill", { id }).catch(() => {});
       }
       term.dispose();
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, attachOnly, zoomable]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, attachOnly, zoomable, persistOnUnmount]);
 
   useEffect(() => {
     if (termRef.current) {

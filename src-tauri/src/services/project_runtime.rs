@@ -84,13 +84,9 @@ pub fn switch(
         save_previous_sessions(local_file, previous_project_id, snapshot);
     }
 
-    // 2b. If the next project is remote, ensure its sshfs mount is up before we
-    //     read any of its files. Best-effort + non-panicking: a mount failure is
-    //     logged and the switch proceeds (the file tree / PTY will simply see an
-    //     empty mountpoint rather than crashing the switch).
-    if let (Some(next_id), Some(local_file)) = (project_id, next_local_file) {
-        ensure_remote_mounted(next_id, local_file);
-    }
+    // 2b. Remote projects are SSH/SFTP-native (no mount): the pooled connection
+    //     is opened by the frontend on activation (`remote_connect`), and file
+    //     browse / I-O / git dispatch over SFTP/SSH. Nothing to mount here.
 
     // 3. Load the next project's session data (terminal, apps, file tabs).
     //    This is the only part the frontend waits on, so it runs before the
@@ -218,24 +214,6 @@ pub fn switch(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-
-/// Best-effort sshfs mount for a remote project on switch. Loads the project's
-/// `project.json` from `local_file`; if it carries a `remote` spec, mount it (a
-/// no-op when already mounted). Local projects and load/mount failures are
-/// silently tolerated — this must never panic or abort the switch.
-fn ensure_remote_mounted(project_id: &str, local_file: &str) {
-    let project: crate::schema::project::Project =
-        match storage::read_json(std::path::Path::new(local_file)) {
-            Ok(p) => p,
-            Err(_) => return, // unreadable project.json → nothing to mount
-        };
-    let Some(remote) = project.remote.as_ref() else {
-        return; // local project
-    };
-    if let Err(e) = crate::services::ssh_mount::mount(remote, project_id) {
-        eprintln!("ProjectRuntime: mount remote project '{project_id}': {e}");
-    }
-}
 
 /// Persist file-tab, layout, and state snapshots for the project being left.
 fn save_previous_sessions(

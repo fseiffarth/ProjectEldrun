@@ -431,7 +431,7 @@ export function SettingsDialog({
               />
             </div>
 
-            <div className="settings-section-title">Git Hosting</div>
+            <div className="settings-section-title" id="settings-git-hosting">Git Hosting</div>
             <label className="settings-field">
               Profile URL
               <input

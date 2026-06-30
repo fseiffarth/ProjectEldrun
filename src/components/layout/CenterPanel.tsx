@@ -905,6 +905,10 @@ export function CenterPanel() {
                   initialInput={tab.initialInput}
                   cwd={tab.cwd}
                   localOnly={tab.kind === "local_agent"}
+                  // The owning project's id (null for the root scope), so the
+                  // backend spawn detects remoteness explicitly instead of
+                  // sniffing the cwd. Harmless for local projects.
+                  projectId={scopeKey === "root" ? null : scopeKey}
                   // Run agent tabs in a Docker sandbox when this tab's project
                   // has the sandbox toggle on. Local projects only (a remote
                   // project is ssh-wrapped instead). Derived here, not at tab

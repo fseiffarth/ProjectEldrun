@@ -13,7 +13,9 @@ import { useProjectsStore } from "../../stores/projects";
 import { useTabsStore } from "../../stores/tabs";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
 import { ActivityCalendar } from "./ActivityCalendar";
+import { CategoryEditor } from "./CategoryEditor";
 import { OrbitSpinner } from "../common/OrbitSpinner";
+import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
 
 interface Props {
   project: ProjectEntry;
@@ -231,9 +233,9 @@ function gitTypeLabel(gitType: unknown, provider?: unknown): string {
     case "remote-private":
       return `${providerName(provider)} · private`;
     case "none":
-      return "No git (local files only)";
+      return "No git (no repo)";
     default:
-      return "Local repo (no remote)";
+      return "Local repo (not pushed)";
   }
 }
 
@@ -496,7 +498,7 @@ function DisableGitWindow({
         <div className="project-dialog-error">
           This permanently deletes this project's <code>.git</code> directory —
           every commit, branch, stash, and remote. <strong>It cannot be undone.</strong>
-          {" "}The project becomes a “No git (local files only)” project; your working
+          {" "}The project becomes a “No git (no repo)” project; your working
           files are left untouched.
         </div>
         <label>
@@ -542,6 +544,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const [showPublish, setShowPublish] = useState(false);
   const [showGitHosting, setShowGitHosting] = useState(false);
   const [showDisableGit, setShowDisableGit] = useState(false);
+  const [editCategories, setEditCategories] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   // True while an Alt-drag hovers this pill: the drop will box the two
   // projects together rather than reorder. Drives the distinct hover affordance.
@@ -550,6 +553,8 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
   const description = projectDescription(project);
+  const categories = projectCategories(project);
+  const catColor = primaryCategoryColor(categories);
 
   const timerPaused = useTimerStore((s) => s.paused);
   const timerActiveId = useTimerStore((s) => s.activeProjectId);
@@ -685,6 +690,15 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           <button
             onClick={() => {
               setContextMenu(null);
+              setEditCategories(true);
+            }}
+            title="Tag this project to color and group it in the cloud and the pill bar"
+          >
+            Categories…
+          </button>
+          <button
+            onClick={() => {
+              setContextMenu(null);
               setShowPublish(true);
             }}
           >
@@ -796,6 +810,11 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         <GitHostingWindow project={project} onClose={() => setShowGitHosting(false)} />
       )}
 
+      {/* Category-tag editor */}
+      {editCategories && (
+        <CategoryEditor project={project} onClose={() => setEditCategories(false)} />
+      )}
+
       {/* Destructive: delete .git + history (typed-confirm) */}
       {showDisableGit && (
         <DisableGitWindow
@@ -807,7 +826,8 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
 
       <div
         ref={pillRef}
-        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${dragOver ? " drag-over" : ""}${groupHint ? " drag-group" : ""}${dragging ? " dragging" : ""}`}
+        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${dragOver ? " drag-over" : ""}${groupHint ? " drag-group" : ""}${dragging ? " dragging" : ""}${catColor ? " has-category" : ""}`}
+        style={catColor ? ({ "--cat-color": catColor } as React.CSSProperties) : undefined}
         draggable
         onMouseEnter={handleMouseEnter}
         onMouseLeave={() => { setPopupPos(null); setTimeToday(null); setCpu(null); }}
@@ -863,6 +883,17 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           <span className="project-pill-label">{project.name}</span>
           {busy && <OrbitSpinner className="pill-running-spinner" />}
         </button>
+        {categories.length > 0 && (
+          <span className="pill-category-dots" title={`Categories: ${categories.join(", ")}`}>
+            {categories.map((cat) => (
+              <span
+                key={cat.toLowerCase()}
+                className="pill-category-dot"
+                style={{ background: categoryColor(cat) }}
+              />
+            ))}
+          </span>
+        )}
         {gitDirty && gitDirty !== "clean" && (
           <span
             className={`pill-git-dot ${gitDirty}`}

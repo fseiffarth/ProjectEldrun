@@ -151,6 +151,15 @@ export interface OpenVpnSpec {
   config: string;
 }
 
+/** A previously-used `.ovpn` config copied into Eldrun's store, offered for
+ *  reuse so a config need only be browsed for once. */
+export interface StoredVpnConfig {
+  /** Absolute path to the stored copy (passed to `openvpn_connect`). */
+  path: string;
+  /** Friendly display name (the original `.ovpn` file name). */
+  name: string;
+}
+
 export interface RemoteSpec {
   user?: string;
   host: string;
@@ -172,26 +181,14 @@ export interface RemoteEntry {
   is_dir: boolean;
 }
 
-/** Availability of the external binaries remote (SSH) projects rely on. */
+/** Availability of the external binaries remote (SSH) projects rely on.
+ * Remote projects are SSH/SFTP-native (no FUSE mount), so only password-auth
+ * (`sshpass`) and VPN-gated (`openvpn`) tooling is relevant. */
 export interface SshTooling {
-  /** `sshfs` — required to mount a remote project locally. */
-  sshfs: boolean;
   /** `sshpass` — required only for password auth. */
   sshpass: boolean;
   /** `openvpn` + `pkexec` — required only for VPN-gated hosts. */
   openvpn: boolean;
-}
-
-/** Platform-tailored instructions for installing `sshfs`. */
-export interface SshfsInstallGuide {
-  /** Host OS: "linux" | "macos" | "windows" | "other". */
-  os: string;
-  /** One-line human instruction shown above the commands. */
-  instruction: string;
-  /** Shell command(s) to install sshfs; empty where install is driver-based. */
-  commands: string[];
-  /** Web page with full instructions / downloads. */
-  url: string;
 }
 
 export interface ProjectEntry {
@@ -215,6 +212,10 @@ export interface ProjectEntry {
   /** Hosting provider this project was published to, recorded at publish time.
    *  Absent until published to a remote. */
   git_provider?: GitProvider;
+  /** User-assigned category tags. Group/color the project in the cloud + pills;
+   *  set via the pill / blob-node right-click menu. Stored in the entry's
+   *  flattened `extra` (mirrored into project.json). */
+  categories?: string[];
   [key: string]: unknown;
 }
 

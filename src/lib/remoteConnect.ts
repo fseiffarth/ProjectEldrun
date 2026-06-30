@@ -24,6 +24,18 @@ export function forgetConnection(dedupeKey: string): void {
 }
 
 /**
+ * Mark a connection as already opened WITHOUT spawning a root tab. The
+ * non-headless project dialog uses this when it brings a VPN tunnel / SSH login
+ * up in its own embedded terminal: pre-marking the same `dedupeKey` that
+ * activation would use makes the later `openConnectionInRoot` call a no-op, so
+ * the connection the user already authenticated in the dialog isn't duplicated
+ * as a root-terminal tab.
+ */
+export function markConnectionOpened(dedupeKey: string): void {
+  openedConnections.add(dedupeKey);
+}
+
+/**
  * Open `command` as an interactive shell tab in the **root** scope. `command` is
  * typed into the freshly-spawned shell via the tab's `initialInput` (see
  * TerminalView), so a password prompt it raises is answered in that visible

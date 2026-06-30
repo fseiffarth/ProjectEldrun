@@ -1,16 +1,18 @@
 //! Remote (SSH) command execution for terminal/agent tabs.
 //!
-//! A remote project's bytes are sshfs-mounted locally (see `ssh_mount`), but the
-//! user needs scripts and agents to run **on the remote host**, not locally
-//! against the mounted bytes. This module rewrites a tab's `PtyOptions` so that
-//! instead of spawning the requested command directly, the PTY spawns the local
-//! `ssh` client with a forced TTY (`-tt`). The ssh client allocates a remote
-//! PTY, so resize/kill/exit keep working through the local PTY unchanged.
+//! Remote projects are SSH/SFTP-native (no local FUSE mount): the user's scripts
+//! and agents run **on the remote host**. This module rewrites a tab's
+//! `PtyOptions` so that instead of spawning the requested command directly, the
+//! PTY spawns the local `ssh` client with a forced TTY (`-tt`). The ssh client
+//! allocates a remote PTY, so resize/kill/exit keep working through the local PTY
+//! unchanged.
 //!
-//! Detection is by the mountpoint-path convention: if a spawn's `cwd` lives
-//! under `ssh_mount::mounts_root()`, the first path component after it is the
-//! project id, from which we load the `RemoteSpec`. Local projects (and tabs
-//! flagged `local_only`, e.g. local Ollama agents) are left untouched.
+//! Remoteness is **explicit**: the frontend tags a project-scope spawn with the
+//! owning `project_id` in `PtyOptions`, and `wrap_pty_options` resolves its
+//! `RemoteSpec` via `services::remote::remote_target_for` (a `RemoteTarget`).
+//! The remote working dir is the project root (`spec.remote_path`). Local
+//! projects (and tabs flagged `local_only`, e.g. local Ollama agents, and
+//! untagged root/connection terminals) are left untouched.
 //!
 //! As elsewhere, `host`/`user`/`remote_path` are validated (no leading `-`, no
 //! control characters) and passed to `ssh` as separate argv items. The one
@@ -19,11 +21,12 @@
 //! single-quoted via `shell_quote` before it is embedded.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::schema::project::RemoteSpec;
+use crate::services::remote::remote_target_for;
 use crate::services::remote_agents;
-use crate::services::ssh_mount::{self, ssh_target, validate_arg};
+use crate::services::ssh_common::{ssh_base_args, ssh_target, validate_arg};
 use crate::storage;
 use crate::terminal::PtyOptions;
 
@@ -58,9 +61,10 @@ pub(crate) const AGENT_AUTH_ENV: &[&str] = &[
 ];
 
 /// Directory holding ssh ControlMaster sockets, created on demand.
-/// `<state_dir>/ssh-control` (e.g. `~/.local/share/eldrun/ssh-control`). Shared
-/// with `ssh_mount` so the headless mount/check paths reuse the same master
-/// socket an interactive login establishes.
+/// `<state_dir>/ssh-control` (e.g. `~/.local/share/eldrun/ssh-control`). The
+/// single shared `cm-%C` master socket here is reused by every remote path —
+/// agent tabs, the pooled SFTP session (`services::remote`/`services::sftp`),
+/// git-over-ssh, and an interactive login — so authentication happens once.
 pub(crate) fn control_dir() -> PathBuf {
     storage::state_dir().join("ssh-control")
 }
@@ -80,21 +84,6 @@ fn shell_quote(s: &str) -> String {
     }
     out.push('\'');
     out
-}
-
-/// Translate a local cwd under the sshfs mount to the matching remote path.
-/// Strips the `mountpoint` prefix from `local_cwd` and joins the remainder onto
-/// `remote.remote_path`. Falls back to `remote.remote_path` when `local_cwd` is
-/// the mount root itself or is not under the mountpoint.
-pub fn remote_subdir(remote: &RemoteSpec, mountpoint: &Path, local_cwd: &str) -> String {
-    let base = remote.remote_path.trim_end_matches('/');
-    let cwd = Path::new(local_cwd);
-    match cwd.strip_prefix(mountpoint) {
-        Ok(rel) if !rel.as_os_str().is_empty() => {
-            format!("{base}/{}", rel.to_string_lossy())
-        }
-        _ => remote.remote_path.clone(),
-    }
 }
 
 /// Build the remote command string that `ssh` hands to the remote `$SHELL -c`.
@@ -203,6 +192,74 @@ pub fn ssh_pty_args(remote: &RemoteSpec, remote_command: &str) -> Result<Vec<Str
     Ok(args)
 }
 
+/// Build the remote command string `cd <remote_path> && git <args…>` for a
+/// git-over-ssh invocation. This is the one unavoidable shell string: ssh
+/// concatenates its trailing argv and hands it to the remote `$SHELL -c`, so
+/// every token — `remote_path` and each git arg — is single-quoted via
+/// [`shell_quote`] before it is embedded (the injection-safety requirement from
+/// the mount-free plan's Security bullet). Pure + unit-testable.
+pub fn remote_git_command(remote_path: &str, git_args: &[String]) -> String {
+    let mut s = format!("cd {} && git", shell_quote(remote_path));
+    for a in git_args {
+        s.push(' ');
+        s.push_str(&shell_quote(a));
+    }
+    s
+}
+
+/// Build the full `ssh` argv for running `git <git_args>` on `spec`'s host. The
+/// shared-master base args (`ssh_base_args`: `BatchMode=yes`, `ConnectTimeout`,
+/// and — on Unix — opportunistic reuse of the `cm-%C` ControlMaster the Phase-0
+/// pooled connection / agent tabs establish) are followed by the single remote
+/// `$SHELL -c` string from [`remote_git_command`]. `remote_path`/`host`/`user`
+/// are validated (no leading `-`, no control chars) via `validate_arg`/
+/// `ssh_target` inside `ssh_base_args` and here. Returned as `Vec<String>` so it
+/// is unit-testable without connecting.
+pub fn git_ssh_args(spec: &RemoteSpec, git_args: &[String]) -> Result<Vec<String>, String> {
+    validate_arg("remote path", &spec.remote_path)?;
+    let mut args = ssh_base_args(&spec.user, &spec.host, spec.port)?;
+    args.push(remote_git_command(&spec.remote_path, git_args));
+    Ok(args)
+}
+
+/// Run `git <git_args>` on `spec`'s host over SSH (riding the shared
+/// ControlMaster) and capture its `Output`. Because git's output is plain text,
+/// the caller parses it byte-for-byte identically to a local `git` invocation —
+/// that is what lets `commands::git` reuse every existing parser unchanged for
+/// remote projects. The remote `git`'s credentials/SSH keys are the host's own
+/// (the process runs there), so e.g. `push` authenticates with the host login.
+pub fn run_git_remote(
+    spec: &RemoteSpec,
+    git_args: &[String],
+) -> Result<std::process::Output, String> {
+    let args = git_ssh_args(spec, git_args)?;
+    crate::paths::command_no_window("ssh")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("failed to run git over ssh: {e}"))
+}
+
+/// Best-effort create `spec.remote_path` (and parents) on the host over SSH,
+/// riding the shared ControlMaster. Used when a new remote project is created so
+/// agent tabs / git can `cd` into the project root. `mkdir -p <path>` is handed
+/// to the remote `$SHELL -c`, so the path is single-quoted via `shell_quote` and
+/// validated (no leading `-`, no control chars). Returns the trimmed stderr on
+/// failure; callers treat it as best-effort.
+pub fn remote_mkdir_p(spec: &RemoteSpec) -> Result<(), String> {
+    validate_arg("remote path", &spec.remote_path)?;
+    let mut args = ssh_base_args(&spec.user, &spec.host, spec.port)?;
+    args.push(format!("mkdir -p {}", shell_quote(&spec.remote_path)));
+    let out = crate::paths::command_no_window("ssh")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("failed to run mkdir over ssh: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 /// Build a ready-to-run shell command string that opens an **interactive** ssh
 /// login to `[user@]host[:port]`, sharing the same multiplexing master socket
 /// (`ControlPath`) the terminal/agent tabs use.
@@ -210,9 +267,9 @@ pub fn ssh_pty_args(remote: &RemoteSpec, remote_command: &str) -> Result<Vec<Str
 /// Typed into a root-scope shell tab (see the frontend `openConnectionInRoot`)
 /// when the user has turned **off** headless connections: the password is entered
 /// directly in the visible terminal — Eldrun never handles it — and because the
-/// login shares `cm-%C` with [`ssh_pty_args`], a later sshfs mount / remote browse
-/// (which now also reuse `cm-%C`, see `ssh_mount`) ride the authenticated master
-/// without a second prompt. On Unix this enables `ControlMaster=auto`; on Windows
+/// login shares `cm-%C` with [`ssh_pty_args`], the pooled SFTP session, file
+/// browse, and git-over-ssh all ride the authenticated master without a second
+/// prompt. On Unix this enables `ControlMaster=auto`; on Windows
 /// multiplexing is unavailable so the login simply opens its own connection. The
 /// control-socket dir is created here so ssh can bind the master. Each argv item
 /// is shell-quoted before being joined, so spaces/metacharacters stay inert.
@@ -252,34 +309,37 @@ pub fn interactive_login_command(
         .join(" "))
 }
 
-/// If `opts.cwd` lives under the sshfs mounts root and its project is remote,
-/// rewrite `opts` in place to run the requested command on the remote host via
-/// `ssh -tt`. No-op for local projects or cwds outside the mounts root.
+/// If `opts` belongs to a remote project, rewrite it in place to run the
+/// requested command on the remote host via `ssh -tt`. No-op for local projects.
+///
+/// Remoteness is detected from `opts.project_id` (the explicit signal the
+/// frontend sets for project-scope tabs): `remote_target_for` resolves it to a
+/// `RemoteTarget`, or returns `None` for a local project. A spawn with no
+/// `project_id` (root/connection terminals, `local_only` tabs) is always local.
+/// The remote working dir is the project root (`spec.remote_path`).
 ///
 /// On success, `opts.cmd` becomes `"ssh"`, `opts.args` the ssh argv, and
 /// `opts.cwd` a stable local directory (the ssh client's local cwd is
 /// irrelevant). Validation/connection failures surface as `Err`.
 pub fn wrap_pty_options(opts: &mut PtyOptions) -> Result<(), String> {
-    let project_id = match project_id_from_cwd(&opts.cwd) {
-        Some(id) => id,
-        None => return Ok(()), // not under the mounts root → local project
+    let target = match &opts.project_id {
+        Some(id) => match remote_target_for(id) {
+            Some(t) => t,
+            None => return Ok(()), // local project → leave as-is
+        },
+        None => return Ok(()), // untagged spawn (root/connection/local_only) → local
     };
 
-    let project = crate::commands::ssh::load_project_by_id(&project_id)?;
-    let remote = match project.remote.as_ref() {
-        Some(r) => r,
-        None => return Ok(()), // mounts-root path but no remote spec → leave as-is
-    };
-
-    let mountpoint = ssh_mount::mountpoint_for(&project_id);
-    let remote_dir = remote_subdir(remote, &mountpoint, &opts.cwd);
+    // Remote working dir is the project root on the host. There is no local
+    // mountpoint to strip a subdir against (mount-free remote model).
+    let remote_dir = target.spec.remote_path.trim_end_matches('/').to_string();
     validate_arg("remote dir", &remote_dir)?;
 
     // Ensure the control-socket directory exists before ssh tries to bind it.
     let _ = std::fs::create_dir_all(control_dir());
 
     let cmd_string = remote_command(&opts.cmd, &opts.args, &opts.env, &remote_dir);
-    let args = ssh_pty_args(remote, &cmd_string)?;
+    let args = ssh_pty_args(&target.spec, &cmd_string)?;
 
     opts.cmd = "ssh".to_string();
     opts.args = args;
@@ -289,16 +349,6 @@ pub fn wrap_pty_options(opts: &mut PtyOptions) -> Result<(), String> {
     opts.env.retain(|k, _| k == "TERM" || k == "COLORTERM");
     opts.cwd = storage::root_work_dir().to_string_lossy().into_owned();
     Ok(())
-}
-
-/// Extract `<project-id>` from a cwd of the form
-/// `<mounts_root>/<project-id>[/subdir…]`, or `None` if `cwd` is not under the
-/// mounts root.
-fn project_id_from_cwd(cwd: &str) -> Option<String> {
-    let root = ssh_mount::mounts_root();
-    let rel = Path::new(cwd).strip_prefix(&root).ok()?;
-    let first = rel.components().next()?;
-    Some(first.as_os_str().to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -325,39 +375,6 @@ mod tests {
         assert_eq!(shell_quote("$HOME"), "'$HOME'");
         // embedded single quote → '\''
         assert_eq!(shell_quote("a'b"), "'a'\\''b'");
-    }
-
-    // ── remote_subdir ──────────────────────────────────────────────────────
-
-    #[test]
-    fn remote_subdir_root_is_remote_path() {
-        let s = spec(None, "h", None, "/srv/project");
-        let mp = Path::new("/mounts/p1");
-        assert_eq!(remote_subdir(&s, mp, "/mounts/p1"), "/srv/project");
-    }
-
-    #[test]
-    fn remote_subdir_nested_appends_relative() {
-        let s = spec(None, "h", None, "/srv/project");
-        let mp = Path::new("/mounts/p1");
-        assert_eq!(
-            remote_subdir(&s, mp, "/mounts/p1/sub/dir"),
-            "/srv/project/sub/dir"
-        );
-    }
-
-    #[test]
-    fn remote_subdir_trailing_slash_remote_path() {
-        let s = spec(None, "h", None, "/srv/project/");
-        let mp = Path::new("/mounts/p1");
-        assert_eq!(remote_subdir(&s, mp, "/mounts/p1/x"), "/srv/project/x");
-    }
-
-    #[test]
-    fn remote_subdir_outside_mount_falls_back() {
-        let s = spec(None, "h", None, "/srv/project");
-        let mp = Path::new("/mounts/p1");
-        assert_eq!(remote_subdir(&s, mp, "/somewhere/else"), "/srv/project");
     }
 
     // ── remote_command ─────────────────────────────────────────────────────
@@ -507,20 +524,83 @@ mod tests {
         assert!(interactive_login_command(&Some("-evil".to_string()), "h", None).is_err());
     }
 
-    // ── project_id_from_cwd ────────────────────────────────────────────────
+    // ── wrap_pty_options detection ─────────────────────────────────────────
 
-    #[test]
-    fn project_id_from_cwd_outside_mounts_is_none() {
-        assert_eq!(project_id_from_cwd("/home/user/proj"), None);
+    fn local_opts(cwd: &str, project_id: Option<&str>) -> PtyOptions {
+        PtyOptions {
+            id: "t".to_string(),
+            cmd: "bash".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: cwd.to_string(),
+            cols: 80,
+            rows: 24,
+            local_only: false,
+            sandbox: false,
+            project_id: project_id.map(str::to_string),
+        }
     }
 
     #[test]
-    fn project_id_from_cwd_extracts_id() {
-        let root = ssh_mount::mounts_root();
-        let cwd = root.join("abc-123").join("sub");
-        assert_eq!(
-            project_id_from_cwd(&cwd.to_string_lossy()),
-            Some("abc-123".to_string())
+    fn wrap_pty_options_none_id_is_local_noop() {
+        // No explicit project_id (root/connection/local_only spawn) → always
+        // local, so the spawn is left untouched (mount-free: there is no cwd
+        // mountpoint to sniff).
+        let mut opts = local_opts("/home/user/proj", None);
+        wrap_pty_options(&mut opts).unwrap();
+        assert_eq!(opts.cmd, "bash");
+        assert!(opts.args.is_empty());
+    }
+
+    // ── git over ssh ───────────────────────────────────────────────────────
+
+    #[test]
+    fn remote_git_command_quotes_path_and_each_arg() {
+        let cmd = remote_git_command(
+            "/srv/my project",
+            &["status".to_string(), "--porcelain".to_string()],
         );
+        assert_eq!(cmd, "cd '/srv/my project' && git 'status' '--porcelain'");
+    }
+
+    #[test]
+    fn remote_git_command_no_args_is_bare_git() {
+        assert_eq!(remote_git_command("/srv/p", &[]), "cd '/srv/p' && git");
+    }
+
+    #[test]
+    fn git_ssh_args_shape_target_then_remote_command_last() {
+        let s = spec(Some("alice"), "host.example", None, "/srv/p");
+        let args = git_ssh_args(&s, &["status".to_string(), "--porcelain".to_string()]).unwrap();
+        // BatchMode (rides/falls-back to key auth), target present as one item.
+        assert!(args.iter().any(|a| a == "BatchMode=yes"));
+        assert!(args.iter().any(|a| a == "alice@host.example"));
+        // The remote $SHELL -c string is the final argv item.
+        assert_eq!(
+            args.last().unwrap(),
+            "cd '/srv/p' && git 'status' '--porcelain'"
+        );
+        // Opportunistic ControlMaster reuse on Unix (shared cm-%C socket).
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(args.iter().any(|a| a == "ControlMaster=no"));
+            assert!(args.iter().any(|a| a.contains("cm-%C")));
+        }
+    }
+
+    #[test]
+    fn git_ssh_args_includes_port() {
+        let s = spec(None, "h", Some(2222), "/p");
+        let args = git_ssh_args(&s, &["log".to_string()]).unwrap();
+        let pos = args.iter().position(|a| a == "-p").expect("-p present");
+        assert_eq!(args[pos + 1], "2222");
+    }
+
+    #[test]
+    fn git_ssh_args_rejects_bad_remote_path_and_host() {
+        // A remote path that could be read as an option is rejected before any
+        // ssh runs (it would otherwise be embedded in the remote shell string).
+        assert!(git_ssh_args(&spec(None, "h", None, "-rf"), &["status".to_string()]).is_err());
+        assert!(git_ssh_args(&spec(None, "-evil", None, "/p"), &["status".to_string()]).is_err());
     }
 }

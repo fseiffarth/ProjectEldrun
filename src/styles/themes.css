@@ -1053,6 +1053,28 @@ select option {
   word-break: break-word;
 }
 
+/* "No LaTeX engine — install one" prompt in the TeX viewer's no-engine state.
+   Mirrors the install-cmd rows used in the Ollama/Agents settings panels. */
+.tex-install-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+}
+
+.tex-install-banner-text {
+  color: var(--text-muted);
+}
+
+.tex-install-banner .ollama-install-cmd {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
 /* OpenDocument Text viewer (#51): a scrolling, theme-coloured reading surface for
    the HTML subset rendered from content.xml. A centred max-width column keeps
    prose readable; tables and images stay within it. */
@@ -2834,6 +2856,42 @@ select option {
 .blob-file-doc .blob-node-icon { font-size: 13px; }
 .blob-file-dir { border-color: color-mix(in srgb, var(--accent-secondary) 55%, var(--border-subtle)); }
 .blob-file-dir .blob-node-label { font-weight: 500; }
+/* A project node tinted by its primary category color (grouping in the cloud).
+   The leading dot + a left accent stripe take the category hue. */
+.blob-node-categorized {
+  border-color: color-mix(in srgb, var(--cat-color) 60%, var(--border-subtle));
+  box-shadow: inset 3px 0 0 var(--cat-color);
+}
+.blob-node-categorized .blob-node-icon { color: var(--cat-color); }
+.blob-node-categorized:hover {
+  border-color: var(--cat-color);
+  box-shadow: inset 3px 0 0 var(--cat-color),
+    0 0 0 2px color-mix(in srgb, var(--cat-color) 35%, transparent);
+}
+/* Category chips inside the hover info card. */
+.blob-hover-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.blob-hover-category {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--cat-color) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cat-color) 45%, transparent);
+}
+.blob-hover-category-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--cat-color);
+}
 /* Pointer-anchored info card shown while hovering a node (project description /
    box details). Rendered in a body portal so it's never clipped or scaled by
    the 3D scene. */
@@ -4016,6 +4074,78 @@ select option {
   box-shadow: inset 0 3px 0 var(--accent);
 }
 
+/* Category-tinted top bar: the project's primary category color replaces the
+   default status stripe so projects sharing a category read as a group. The
+   active pill keeps the accent stripe (its current-scope signal wins). */
+.project-pill.has-category:not(.active):not(.timer-paused) {
+  box-shadow: inset 0 3px 0 var(--cat-color);
+}
+/* Small per-category swatches inside the pill (one dot per category). */
+.pill-category-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0 4px 0 -2px;
+  flex-shrink: 0;
+}
+.pill-category-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-main) 50%, transparent);
+}
+
+/* Category editor modal: toggle chips for known tags + an add field. */
+.category-editor .category-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+.category-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+.category-chip:hover {
+  border-color: var(--cat-color);
+  color: var(--text-primary);
+}
+.category-chip.on {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--cat-color) 22%, transparent);
+  border-color: var(--cat-color);
+}
+.category-chip-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--cat-color);
+  flex-shrink: 0;
+}
+.category-chip-x {
+  margin-left: 1px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+.category-add-row {
+  display: flex;
+  gap: 6px;
+}
+.category-add-row input {
+  flex: 1;
+  min-width: 0;
+}
+
 .pill-main {
   display: flex;
   align-items: center;
@@ -5073,6 +5203,24 @@ select option {
 }
 
 .file-tree-up:hover { background-color: var(--pill-hover-bg); }
+
+.file-tree-remote-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 4px;
+}
+
+.file-tree-refresh:disabled { opacity: 0.5; cursor: default; }
+
+.file-tree-remote-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
 
 .file-tree-crumb {
   padding: 2px 4px;
@@ -6736,6 +6884,189 @@ select option {
   border: 1px solid var(--danger);
   border-radius: 4px;
   word-break: break-word;
+}
+
+/* "Recently used…" picker reuses the address-input look but is a real select. */
+.vpn-config-recent {
+  cursor: pointer;
+}
+
+/* OpenVPN connect button: animate the in-flight handshake and tint the button
+   by tunnel state so its status reads at a glance (the exact state/error is in
+   the hover title). */
+.vpn-connect-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.vpn-connect-btn.vpn-status-connecting {
+  /* Disabled while connecting, but keep it visibly "alive" with a soft pulse. */
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: vpn-connecting-pulse 1.1s ease-in-out infinite;
+}
+
+.vpn-connect-btn.vpn-status-connected {
+  border-color: var(--success, #3fb950);
+  color: var(--success, #3fb950);
+  background: color-mix(in srgb, var(--success, #3fb950) 14%, transparent);
+}
+
+.vpn-connect-btn.vpn-status-error {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* Small spinning ring shown inside the button while the tunnel comes up. */
+.vpn-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: file-viewer-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes vpn-connecting-pulse {
+  0%,
+  100% {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  50% {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+
+/* Non-headless connect block: the "Connect VPN…/Log in over SSH…" button and,
+   once clicked, the live terminal embedded in the project dialog where the user
+   authenticates the tunnel/login. The PTY outlives the dialog (persistOnUnmount)
+   so the new project rides the connection it set up. */
+.dialog-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+/* Prominent call-to-action so it's obvious THIS is where you open the login
+   terminal — full-width, accent-filled, with a blinking-prompt glyph. */
+.dialog-connect-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.dialog-connect-btn:hover:not(:disabled) {
+  background: var(--accent-hover, var(--accent));
+  border-color: var(--accent-hover, var(--accent));
+}
+
+.dialog-connect-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.dialog-connect-btn-icon {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Menlo, monospace;
+  font-weight: 700;
+  letter-spacing: -1px;
+}
+
+.dialog-connect-terminal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  background: var(--panel-bg, rgba(0, 0, 0, 0.2));
+}
+
+.dialog-connect-terminal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Fixed-height host so the embedded xterm has a stable layout box to open into
+   (xterm refuses to render in a zero-height element). */
+.dialog-connect-terminal-host {
+  height: 180px;
+  min-height: 180px;
+  display: flex;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.vpn-disconnect-btn {
+  border-color: var(--danger);
+  color: var(--danger);
+  flex: 0 0 auto;
+}
+
+/* "Push to GitHub/GitLab" picked but no Eldrun connection yet: a nudge to set
+   the access token up in Settings → Git Hosting, with a one-click redirect. */
+.git-connect-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-size: 0.85em;
+}
+
+.git-connect-notice button {
+  flex: 0 0 auto;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Read-only live OpenVPN handshake log (headless connect). Terminal-styled so a
+   streamed connect reads as live work; capped + scrollable so a chatty handshake
+   stays inside the dialog. */
+.connection-log {
+  max-height: 150px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color, var(--border));
+  border-radius: 4px;
+  background: var(--panel-bg, rgba(0, 0, 0, 0.28));
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.connection-log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary, var(--text));
+}
+
+.connection-log-waiting {
+  opacity: 0.7;
+  font-style: italic;
 }
 
 .sshfs-install {

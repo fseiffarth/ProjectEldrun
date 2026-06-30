@@ -69,7 +69,7 @@ export const TOUR_STEPS: TourStep[] = [
     anchor: null,
     placement: "bottom",
     title: "Work on remote machines",
-    body: "In the New/Import dialog, flip \"Remote (SSH) project\" to host a project on another machine — Eldrun mounts its folder over sshfs. If the host sits behind a VPN, enable \"Connect via OpenVPN\" to bring up the tunnel first, then connect SSH through it. The Lessons menu has a step-by-step \"SSH project via OpenVPN\" walkthrough.",
+    body: "In the New/Import dialog, flip \"Remote (SSH) project\" to host a project on another machine — Eldrun runs it over SSH/SFTP (agent tabs, files, and git on the remote; no local mount). If the host sits behind a VPN, enable \"Connect via OpenVPN\" to bring up the tunnel first, then connect SSH through it. The Lessons menu has a step-by-step \"SSH project via OpenVPN\" walkthrough.",
   },
   {
     id: "switch-projects",

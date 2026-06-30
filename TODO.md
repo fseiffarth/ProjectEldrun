@@ -840,6 +840,54 @@ container) — as opposed to the git **push** axis (#21/#22).*
       JetBrains-*Deployment*-style **edit-over-SFTP** path for the in-app viewers
       to shrink the sshfs surface further (read/write single files over SFTP,
       mount only when local tooling/agents need a real directory).
+      → Pursued in full by **#28e–#28j** below (mount-free remote projects).
+
+81. **Mount-free remote projects — replace sshfs with SSH/SFTP-native.**
+    📋 **Planned, not started.** Full plan + file:line map + exit criteria per
+    phase in **`docs/mountfree_remote_plan.md`** (read it first). Remote projects
+    drop the FUSE mount entirely: agent tabs over `ssh -tt`, file browsing/I-O
+    over SFTP, git on the host over SSH. **Decisions (locked):** fully *replace*
+    sshfs (no coexistence); git *runs over SSH* for remote projects. The keystone
+    is making remoteness **explicit** (a backend `remote_target_for(project_id)`
+    resolver) instead of inferring it from a cwd under `ssh_mount::mounts_root()`
+    (`services/ssh_exec.rs:297`). Phases are ordered so each is independently
+    shippable; Phase 1 alone delivers the main goal (remote agent tabs). Built to
+    be picked up by an agent team after a context `/clear` — the plan doc is the
+    source of truth.
+    - [x] **28e — Explicit remoteness + pooled SSH/SFTP** (Phase 0; do first).
+      `services/remote.rs` resolver + one ControlMaster & persistent `Sftp`
+      session per active remote project (auth once, reused by tabs/browse/git);
+      shift commands from `project_dir` path to `project_id` + `rel_path`.
+    - [x] **28f — Mount-free remote agent tabs** (Phase 1; main goal). Replace
+      `project_id_from_cwd` detection in `ssh_exec::wrap_pty_options` with the
+      explicit `RemoteTarget`; remote cwd = `spec.remote_path`.
+    - [x] **28g — Live remote file browsing over SFTP** (Phase 2). Project-aware
+      `list_dir`; wire `FileTree.tsx`/`FileBrowser.tsx`; drop inotify for remote
+      (manual refresh).
+    - [x] **28h — Remote file I/O over SFTP** (Phase 3). Add write half to
+      `services/sftp.rs` (read/create/write/mkdir/remove/rename/download);
+      route `commands/fs.rs` + viewers for remote projects.
+    - [x] **28i — Git over SSH for remote projects** (Phase 4). One
+      `run_git(target, args)` dispatcher in `commands/git.rs`; remote →
+      `ssh_exec::remote_command("cd <path> && git …")`; parsers unchanged.
+    - [x] **28j — Remove sshfs** (Phase 5). Deleted `services/ssh_mount.rs`
+      (shared `validate_arg`/`ssh_*_base_args`/`ssh_target`/`sshpass_available`
+      relocated to `services/ssh_common.rs`), `ensure_*_mounted`, the exit-unmount
+      hook, the sshfs tooling probe + install-guide UI, and the frontend mount
+      calls. `remote_target_for` now resolves from the always-local `projects.json`
+      `extra["remote"]` (so existing remote projects keep working with no mount);
+      a remote project's `directory` is a local per-project state dir
+      (`remote-projects/<id>`) holding `project.json`, while its tree lives on the
+      host. Docs/lessons/tour stripped of FUSE. **Follow-up (deferred):** create
+      *new* remote projects scaffold only `project.json` locally + best-effort
+      `mkdir -p` the remote root over SSH — the AGENTS.md/CLAUDE.md scaffold is not
+      yet written to the host over SFTP; and `git_change_stats` untracked-line
+      counts still assume a local tree. Both need a live-host QA pass.
+    - **Cross-cutting (all phases):** single auth (one ControlMaster, no 3×
+      prompts), no page cache (pooled session + lazy reads), fail-fast offline,
+      OpenVPN brought up before the master, git-over-ssh keeps `shell_quote`
+      defenses. Per-phase `cargo test` + `npx tsc --noEmit`; runtime QA adapts
+      #28 Phases 1–8 minus all mount/`/proc/mounts` steps.
 
 ---
 
@@ -859,10 +907,9 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     liveness check with a native Windows API; add native window tracking
     (`EnumWindows` + `GetWindowThreadProcessId`) if project-owned standalone
     windows need reliable show/hide; decide on a Windows unhandled-exception
-    crash hook (current crash logging is Unix-oriented); document/improve
-    download routing where directory symlinks need Developer Mode or elevation;
-    and QA browser download-preference editing across Firefox/Chrome/Chromium/
-    Chrome Beta profile layouts.
+    crash hook (current crash logging is Unix-oriented). (Browser
+    download-preference editing was removed — Eldrun no longer touches any
+    browser's download path; see #60.)
 
     **Cross-platform detection audit (2026-06-27).** A sweep for Linux-only code
     paths that broke on Windows, fixing the directly-portable ones and tracking
@@ -1117,6 +1164,44 @@ correctness/UX work atop the same layout model #42 detaches.*
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
+82. **Native keyboard file-tree navigation (no mouse).** Make the right-panel
+    file tree (`FileTree.tsx`) fully steerable from the keyboard — arrow/`j`/`k`
+    to move the selection cursor, `←`/`→` (or `h`/`l`) to collapse/expand a
+    directory, `Enter` to open the selected file in a tab, plus wheel-style fast
+    scrolling so a long tree can be traversed without reaching for the mouse.
+    Builds on #62 (keyboard nav) and the Group D.1 file tree.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+83. **One key shows the radial "pie" project view (as in the root project).**
+    A single keypress brings up the same radial/pie project-blob view used by the
+    root project (the 3D project blob default root tab, see `ProjectBlobPane.tsx`)
+    as a fast project switcher overlay — invoked purely from the keyboard.
+    Builds on #62.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+84. **Keyboard navigation within the pie view.** Once the radial/pie view (#83)
+    is open, additional keys step the selection around the pie (e.g. arrows /
+    rotate keys to move between wedges, `Enter` to activate the highlighted
+    project, `Esc` to dismiss) so a project can be picked entirely by keyboard.
+    Builds on #83.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+85. **Keyboard tab/subwindow management (split, detach, move).** Drive the whole
+    Group D.11 tiling layout from the keyboard with no mouse: split the focused
+    subwindow horizontally/vertically into a new tab group, move the focused tab
+    into an adjacent subwindow (or a fresh split), detach the focused subwindow
+    into its own OS window (the #42 pop-out gesture, keyboard-triggered), and
+    re-dock it — all via shortcuts. Builds on #62 and #42 (detached subwindows).
+    *Files: `src/stores/tabs.ts` (split/move on `layoutByScope`),
+    `src/components/tabs/Subwindow.tsx`/`TabBar.tsx`,
+    `src/stores/detached.ts` + `src/components/layout/DetachedApp.tsx`,
+    `src/App.tsx` (global key handlers).*
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
 ---
 
 ## Group M — In-App Viewers: Text / TeX / Image Enhancements (Phase 2+)
@@ -1329,12 +1414,13 @@ auth) and the local/remote git push axis (#21).*
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
-60. **Reset browser download path to `~/Downloads`.** Stop redirecting browser
-    downloads into the active project for now — keep the standard browser download
-    path at the user's `~/Downloads`. Routing a download into a project is a
-    security risk if the file is then pushed with the project's git.
-    - [ ] 🤖 Automated test
-    - [ ] 🖐️ Manual test
+60. **Never manipulate the browser download path. (DONE — removed.)** Eldrun must
+    not touch any browser's download directory. The `commands/downloads.rs` module
+    that edited Firefox `prefs.js` / Chromium `Preferences` was removed entirely
+    (file, `mod` decl, and handler registration). Routing a download into a project
+    is a security risk if the file is then pushed with the project's git, and even
+    the "reset to `~/Downloads`" path still wrote into browser config — so we leave
+    browser download settings fully alone.
 
 ---
 

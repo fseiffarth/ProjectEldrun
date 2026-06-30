@@ -31,6 +31,11 @@ export function ProjectDialog({
   onProject: (project: ProjectEntry) => void | Promise<void>;
 }) {
   const defaultAgentCmd = useSettingsStore((s) => s.settings?.default_agent_cmd ?? "claude");
+  // A GitHub/GitLab "connection through Eldrun" = a global access token saved in
+  // Settings → Git Hosting (the credential publishing actually uses). Used to
+  // decide whether picking a "Push to GitHub/GitLab" git type can proceed or
+  // should first send the user to set the connection up.
+  const gitToken = useSettingsStore((s) => s.settings?.git_token ?? "");
   const [projectsRoot, setProjectsRoot] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -65,6 +70,26 @@ export function ProjectDialog({
   const remoteReady = isRemoteProject && (headless ? isRemote : remoteChosenPath.trim() !== "");
   const safeName = sanitizeName(name);
   const targetDir = safeName && projectsRoot ? `${projectsRoot}/${safeName}` : "";
+  // "Push to GitHub/GitLab" was chosen, but no Eldrun connection is set up yet.
+  // Here "remote" is the git push target (a hosting service), distinct from the
+  // SSH host the files may live on — see the git-hosting hint below.
+  const wantsRemoteGit = gitType === "remote-private" || gitType === "remote-public";
+  const gitConnected = gitToken.trim() !== "";
+  const needsGitConnection = wantsRemoteGit && !gitConnected;
+
+  // Send the user to Settings → Git Hosting to establish the GitHub/GitLab
+  // connection. The project dialog stays open (so the half-filled form isn't
+  // lost); once a token is saved the `needsGitConnection` notice clears live.
+  const openGitHostingSettings = () => {
+    window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "main" }));
+    // The settings dialog mounts on the next render; once it's there, bring its
+    // Git Hosting section into view rather than dropping the user at the top.
+    setTimeout(() => {
+      document
+        .getElementById("settings-git-hosting")
+        ?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }, 80);
+  };
 
   useEffect(() => {
     invoke<string>("projects_root_dir").then(setProjectsRoot).catch(() => {});
@@ -234,22 +259,26 @@ export function ProjectDialog({
     }
   };
 
-  const canSubmit = isRemoteProject
-    ? // Remote mode: ready (live session when headless, typed path otherwise) and
-      // has a remote folder.
-      !remoteReady
-      ? false
+  const canSubmit =
+    // "Push to GitHub/GitLab" requires an Eldrun connection first — block submit
+    // until a token is saved (the notice above links to Settings → Git Hosting).
+    !needsGitConnection &&
+    (isRemoteProject
+      ? // Remote mode: ready (live session when headless, typed path otherwise)
+        // and has a remote folder.
+        !remoteReady
+        ? false
+        : kind === "new"
+          ? Boolean(name.trim() && safeName && remoteChosenPath)
+          : Boolean(name.trim() && remoteChosenPath)
       : kind === "new"
-        ? Boolean(name.trim() && safeName && remoteChosenPath)
-        : Boolean(name.trim() && remoteChosenPath)
-    : kind === "new"
-      ? Boolean(name.trim() && targetDir && safeName)
-      : Boolean(
-          name.trim() &&
-          sourceDir &&
-          (mode === "keep" || safeName) &&
-          (mode === "keep" || manualValidationConfirmed),
-        );
+        ? Boolean(name.trim() && targetDir && safeName)
+        : Boolean(
+            name.trim() &&
+            sourceDir &&
+            (mode === "keep" || safeName) &&
+            (mode === "keep" || manualValidationConfirmed),
+          ));
 
   const missingFillableScaffoldCount = scaffoldPreview.filter((item) => !item.exists && item.kind === "file").length;
 
@@ -352,14 +381,32 @@ export function ProjectDialog({
         </label>
 
         <label>
-          Git
+          Git hosting
           <select value={gitType} onChange={(e) => setGitType(e.target.value)}>
-            <option value="none">No git (local files only)</option>
-            <option value="local">Local repo (no remote)</option>
-            <option value="remote-private">Remote · private</option>
-            <option value="remote-public">Remote · public</option>
+            <option value="none">No git (plain files, no repo)</option>
+            <option value="local">Local repo only (not pushed anywhere)</option>
+            <option value="remote-private">Push to GitHub/GitLab · private</option>
+            <option value="remote-public">Push to GitHub/GitLab · public</option>
           </select>
+          <span className="ssh-optional-hint">
+            “Push to GitHub/GitLab” publishes the repo to a hosting service
+            {isRemoteProject
+              ? " — unrelated to the SSH host above, which is just where the project files live."
+              : "."}
+          </span>
         </label>
+
+        {needsGitConnection && (
+          <div className="git-connect-notice" role="status">
+            <span>
+              No GitHub/GitLab connection set up in Eldrun yet. Add an access
+              token in Settings → Git Hosting so the repo can be published.
+            </span>
+            <button type="button" onClick={openGitHostingSettings}>
+              Set up GitHub/GitLab…
+            </button>
+          </div>
+        )}
 
         {kind === "import" && !isRemoteProject && (
           <label>

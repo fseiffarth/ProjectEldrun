@@ -460,6 +460,7 @@ mod tests {
             rows: 24,
             local_only: false,
             sandbox: false,
+            project_id: None,
         }
     }
 
