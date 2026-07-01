@@ -87,6 +87,8 @@ export function RemoteProjectSection({
     remoteListError,
     remoteChosenPath,
     setRemoteChosenPath,
+    remotePaths,
+    jumpToRemotePath,
     vpnConfig,
     vpnConfigs,
     selectVpnConfig,
@@ -405,6 +407,25 @@ export function RemoteProjectSection({
                         ? "(parent folder; the project is created inside it)"
                         : "(absolute path of the existing project)"}
                     </span>
+                    {remotePaths.length > 0 && (
+                      <div className="folder-picker-row">
+                        <select
+                          className="ssh-address-input vpn-config-recent"
+                          value={remotePaths.includes(remoteChosenPath) ? remoteChosenPath : ""}
+                          title="Reuse a previously-used remote path for this host"
+                          onChange={(e) => {
+                            if (e.target.value) setRemoteChosenPath(e.target.value);
+                          }}
+                        >
+                          <option value="">Recently used…</option>
+                          {remotePaths.map((p) => (
+                            <option key={p} value={p} title={p}>
+                              {p}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     <input
                       className="ssh-address-input"
                       value={remoteChosenPath}
@@ -491,6 +512,23 @@ export function RemoteProjectSection({
             <span className="remote-breadcrumb" title={remoteBrowsePath}>
               {remoteBrowsePath || "/"}
             </span>
+            {remotePaths.length > 0 && (
+              <select
+                className="ssh-address-input vpn-config-recent"
+                value=""
+                title="Jump to a previously-used remote path for this host"
+                onChange={(e) => {
+                  if (e.target.value) jumpToRemotePath(e.target.value);
+                }}
+              >
+                <option value="">Recently used…</option>
+                {remotePaths.map((p) => (
+                  <option key={p} value={p} title={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            )}
             <button type="button" onClick={onUseThisFolder}>
               Use this folder
             </button>

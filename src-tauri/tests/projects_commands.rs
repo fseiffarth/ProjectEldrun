@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use eldrun_lib::commands::projects::{
-    create_project, get_projects, import_project, load_project, set_project_description,
+    archive_project, create_project, delete_archived_project, get_projects, import_project,
+    list_archived_projects, load_project, restore_archived_project, set_project_description,
     CreateProjectRequest, ImportProjectRequest,
 };
+use eldrun_lib::schema::project::RemoteSpec;
 use tempfile::{Builder, TempDir};
 
 const SCAFFOLDS: &[(&str, &str)] = &[
@@ -149,6 +151,7 @@ fn create_project_preserves_existing_scaffolds() {
             git_type: None,
             skip_scaffold: false,
             remote: None,
+            mirror_parent: None,
         };
 
         let entry = create_project(req).expect("create project");
@@ -172,6 +175,63 @@ fn create_project_preserves_existing_scaffolds() {
 }
 
 #[test]
+fn create_remote_project_scaffolds_the_local_mirror() {
+    with_isolated_home("remote-home", |_| {
+        // Where the local mirror twin (working copy) should land. The host is a
+        // reserved `.invalid` name so the best-effort remote `mkdir -p` fails fast
+        // (NXDOMAIN) without touching the network — scaffolding the mirror must
+        // happen regardless, since bytes only reach the host on a manual push.
+        let mirror_parent = tempdir_in_test_projects("remote-mirror");
+
+        let req = CreateProjectRequest {
+            name: "remote-project".to_string(),
+            directory: String::new(),
+            description: Some("Remote description".to_string()),
+            git_type: Some("none".to_string()),
+            skip_scaffold: false,
+            remote: Some(RemoteSpec {
+                user: Some("alice".to_string()),
+                host: "nonexistent.invalid".to_string(),
+                port: None,
+                remote_path: "/home/alice/work".to_string(),
+                openvpn: None,
+                extra: Default::default(),
+            }),
+            mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+        };
+
+        let entry = create_project(req).expect("create remote project");
+        assert!(
+            entry.extra.contains_key("remote"),
+            "entry should carry a remote spec"
+        );
+
+        // The scaffold lives in the local mirror, not the (project.json-only)
+        // state directory the entry's local_file points at.
+        let mirror = entry
+            .extra
+            .get("mirror")
+            .and_then(|v| v.as_str())
+            .expect("remote entry carries a mirror path");
+        let mirror_dir = Path::new(mirror);
+        for (name, default_content) in SCAFFOLDS {
+            let path = mirror_dir.join(name);
+            assert!(path.exists(), "missing mirror scaffold: {name}");
+            let actual = fs::read_to_string(&path).expect("read mirror scaffold");
+            assert_eq!(&actual, default_content, "unexpected contents for {name}");
+        }
+
+        // git_type "none" means no repo was initialized in the mirror.
+        assert!(
+            !mirror_dir.join(".git").exists(),
+            "git_type none must not init a mirror repo"
+        );
+
+        assert_project_registered(&PathBuf::from(&entry.local_file), "remote-project");
+    });
+}
+
+#[test]
 fn import_project_copy_creates_missing_scaffolds_without_overwriting_existing_ones() {
     with_isolated_home("copy-home", |_| {
         let source = tempdir_in_test_projects("copy-source");
@@ -187,6 +247,7 @@ fn import_project_copy_creates_missing_scaffolds_without_overwriting_existing_on
             manual_validation_confirmed: Some(true),
             skip_scaffold: false,
             remote: None,
+            mirror_parent: None,
         };
 
         let entry = import_project(req).expect("import copy");
@@ -228,6 +289,7 @@ fn import_project_move_creates_missing_scaffolds_without_overwriting_existing_on
             manual_validation_confirmed: Some(true),
             skip_scaffold: false,
             remote: None,
+            mirror_parent: None,
         };
 
         let entry = import_project(req).expect("import move");
@@ -264,6 +326,7 @@ fn import_project_keep_creates_missing_scaffolds_in_place_without_overwriting_ex
             manual_validation_confirmed: None,
             skip_scaffold: false,
             remote: None,
+            mirror_parent: None,
         };
 
         let entry = import_project(req).expect("import keep");
@@ -302,6 +365,7 @@ fn import_project_skip_scaffold_does_not_add_missing_scaffold_files() {
             manual_validation_confirmed: None,
             skip_scaffold: true,
             remote: None,
+            mirror_parent: None,
         };
 
         let entry = import_project(req).expect("import skip-scaffold");
@@ -338,6 +402,7 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
             git_type: None,
             skip_scaffold: false,
             remote: None,
+            mirror_parent: None,
         })
         .expect("create project");
 
@@ -366,5 +431,89 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
         assert!(found.extra.get("description").is_none());
         let project = load_project(entry.local_file.clone()).expect("load project");
         assert!(project.description.is_none());
+    });
+}
+
+// ── Archive (delete → restorable) ──────────────────────────────────────────
+
+fn new_local_project(name: &str, target: &Path) -> eldrun_lib::schema::projects::ProjectEntry {
+    seed_project(target, name);
+    create_project(CreateProjectRequest {
+        name: name.to_string(),
+        directory: target.to_string_lossy().to_string(),
+        description: None,
+        git_type: None,
+        skip_scaffold: false,
+        remote: None,
+        mirror_parent: None,
+    })
+    .expect("create project")
+}
+
+#[test]
+fn archive_and_restore_local_project_roundtrip() {
+    with_isolated_home("archive-home", |_| {
+        let target = tempdir_in_test_projects("archive-target");
+        let entry = new_local_project("arch-project", target.path());
+        let id = entry.id.clone();
+        let dir = target.path().to_path_buf();
+        assert!(dir.join("project.json").exists());
+
+        // Archive: the on-disk dir moves out and the pill drops from the list.
+        archive_project(id.clone(), "2026-07-01T00:00:00+00:00".to_string()).expect("archive");
+        assert!(
+            !dir.join("project.json").exists(),
+            "original project dir should have moved into the archive"
+        );
+        assert!(
+            get_projects().unwrap().iter().all(|p| p.id != id),
+            "archived project must be gone from projects.json"
+        );
+        let archived = list_archived_projects().expect("list archived");
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].id, id);
+        assert_eq!(archived[0].name, "arch-project");
+        assert!(!archived[0].remote);
+
+        // Restore: comes back inactive, the folder + files return, archive empties.
+        let restored = restore_archived_project(id.clone()).expect("restore");
+        assert_eq!(restored.status, "inactive");
+        assert_eq!(restored.id, id);
+        assert!(get_projects().unwrap().iter().any(|p| p.id == id));
+        assert!(list_archived_projects().unwrap().is_empty());
+        let restored_dir = PathBuf::from(&restored.local_file)
+            .parent()
+            .expect("restored project file parent")
+            .to_path_buf();
+        assert!(restored_dir.join("notes.txt").exists());
+        assert!(restored_dir.join("nested/info.txt").exists());
+    });
+}
+
+#[test]
+fn permanent_delete_removes_archived_project() {
+    with_isolated_home("archive-del-home", |_| {
+        let target = tempdir_in_test_projects("archive-del-target");
+        let entry = new_local_project("del-project", target.path());
+        let id = entry.id.clone();
+
+        archive_project(id.clone(), "2026-07-01T00:00:00+00:00".to_string()).expect("archive");
+        assert_eq!(list_archived_projects().unwrap().len(), 1);
+
+        delete_archived_project(id.clone()).expect("delete forever");
+        assert!(
+            list_archived_projects().unwrap().is_empty(),
+            "archive must be empty after permanent delete"
+        );
+        // Restoring a permanently-deleted project is an error (nothing to read).
+        assert!(restore_archived_project(id).is_err());
+    });
+}
+
+#[test]
+fn archive_rejects_traversal_ids_and_missing_projects() {
+    with_isolated_home("archive-guard-home", |_| {
+        assert!(archive_project("../evil".to_string(), "x".to_string()).is_err());
+        assert!(archive_project("no-such-id".to_string(), "x".to_string()).is_err());
     });
 }

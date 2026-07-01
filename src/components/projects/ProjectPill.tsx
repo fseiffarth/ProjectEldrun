@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   resolveProjectDirectory,
+  resolveLocalMirror,
+  formatRemoteTarget,
   type GitHostingInfo,
   type GitProvider,
   type ProjectEntry,
@@ -15,7 +17,10 @@ import { useTabsStore } from "../../stores/tabs";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
+import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
 import { OrbitSpinner } from "../common/OrbitSpinner";
+import { FolderPickerDialog } from "../common/FolderPickerDialog";
+import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
 
 interface Props {
@@ -52,7 +57,10 @@ function projectDescription(project: ProjectEntry): string {
   return typeof project.description === "string" ? project.description.trim() : "";
 }
 
-const GIT_DOT_TITLE: Record<Exclude<GitDirtyState, "clean">, string> = {
+/** Folder-icon title/color per git state — mirrors the file-tree markers'
+ *  priority (red ▸ orange ▸ green), plus a neutral "clean" default. */
+const GIT_ICON_TITLE: Record<GitDirtyState, string> = {
+  clean: "No pending changes",
   dirty: "Uncommitted changes — not yet added",
   staged: "Staged changes — not yet committed",
   unpushed: "Committed — not yet pushed",
@@ -534,6 +542,67 @@ function DisableGitWindow({
   );
 }
 
+/** Simple (reversible) confirm for deleting a project to the archive. Permanent
+ *  deletion lives behind a typed-confirm in Settings → Archived projects. */
+function ArchiveConfirmWindow({
+  project,
+  onConfirm,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onConfirm();
+      onClose();
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>Delete {project.name}</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <p className="settings-help">
+          This disconnects <strong>{project.name}</strong> and moves it to the
+          Eldrun archive. You can restore it — or permanently delete it — later
+          from <em>Settings → Archived projects</em>.
+          {project.remote && (
+            <> The files on the remote host are <strong>not</strong> touched.</>
+          )}
+        </p>
+        {error && <div className="project-dialog-error">{error}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button
+            type="button"
+            className="danger"
+            autoFocus
+            onClick={() => void run()}
+            disabled={busy}
+          >
+            {busy ? "Deleting…" : "Delete to archive"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export function ProjectPill({ project, active, onClick, onClose, onReorder, onGroup, boxId, onLeaveBox }: Props) {
   const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
   const [timeToday, setTimeToday] = useState<number | null>(null);
@@ -545,7 +614,12 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const [showPublish, setShowPublish] = useState(false);
   const [showGitHosting, setShowGitHosting] = useState(false);
   const [showDisableGit, setShowDisableGit] = useState(false);
+  const [showArchive, setShowArchive] = useState(false);
   const [editCategories, setEditCategories] = useState(false);
+  const [extendRemote, setExtendRemote] = useState(false);
+  // When set, the in-app "Move project…" folder browser is open, seeded at this
+  // parent directory. `null` = closed.
+  const [movePickerInitial, setMovePickerInitial] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   // True while an Alt-drag hovers this pill: the drop will box the two
   // projects together rather than reorder. Drives the distinct hover affordance.
@@ -553,6 +627,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const [dragging, setDragging] = useState(false);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
+  const localMirror = resolveLocalMirror(project);
   const description = projectDescription(project);
   const categories = projectCategories(project);
   const catColor = primaryCategoryColor(categories);
@@ -565,9 +640,11 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
   const renameProject = useProjectsStore((s) => s.renameProject);
+  const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const setProjectGitDisabled = useProjectsStore((s) => s.setProjectGitDisabled);
   const publishProject = useProjectsStore((s) => s.publishProject);
+  const archiveProject = useProjectsStore((s) => s.archiveProject);
 
   // Live per-project CPU%: polled only while the hover popup is open. Keyed on
   // the project's PTY ids (the backend resolves them to child PIDs + descendants).
@@ -618,6 +695,47 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
       console.error("show on disk", e);
     }
   }, [project.remote, project.id, project.name, dir]);
+
+  // Relocate a remote project's local mirror folder. Opens the in-app folder
+  // browser (not the OS chooser) seeded at the current mirror's parent; the user
+  // browses to a *parent* directory and the backend moves the mirror (and its
+  // bytes) to `<parent>/<name>`, re-pointing the pointer. The confirm handler
+  // (below, on the dialog) runs the move.
+  const moveMirror = useCallback(async () => {
+    if (!project.remote) return;
+    try {
+      const status = await invoke<{ path: string; exists: boolean; suggested: string }>(
+        "remote_mirror_status",
+        { projectId: project.id, name: project.name },
+      );
+      const parentOf = (p: string): string => {
+        const trimmed = p.replace(/[/\\]+$/, "");
+        const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+        return idx > 0 ? trimmed.slice(0, idx) : trimmed;
+      };
+      setMovePickerInitial(parentOf(status.exists ? status.path : status.suggested));
+    } catch (e) {
+      console.error("move mirror", e);
+      // Fall back to opening the picker at the home default (empty path).
+      setMovePickerInitial("");
+    }
+  }, [project.remote, project.id, project.name]);
+
+  // Confirm handler for the in-app move picker: relocate the mirror into the
+  // chosen parent, patch in-memory state (moveRemoteMirror), and close.
+  const confirmMove = useCallback(
+    async (parent: string, name?: string) => {
+      setMovePickerInitial(null);
+      try {
+        // The chosen name defines the new local mirror folder (backend
+        // sanitizes it); fall back to the display name when left blank.
+        await moveRemoteMirror(project.id, name?.trim() || project.name, parent);
+      } catch (e) {
+        console.error("move mirror", e);
+      }
+    },
+    [project.id, project.name, moveRemoteMirror],
+  );
 
   useEffect(() => {
     if (!popupPos) return;
@@ -673,7 +791,22 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           style={{ left: popupPos.x, top: popupPos.y }}
         >
           {description && <span className="pill-popup-description">{description}</span>}
-          {dir && <span className="pill-popup-path">{dir}</span>}
+          {project.remote ? (
+            <>
+              <span className="pill-popup-path-row">
+                <span className="pill-popup-path-label">remote</span>
+                <span className="pill-popup-path">{formatRemoteTarget(project.remote)}</span>
+              </span>
+              {localMirror && (
+                <span className="pill-popup-path-row">
+                  <span className="pill-popup-path-label">local</span>
+                  <span className="pill-popup-path">{localMirror}</span>
+                </span>
+              )}
+            </>
+          ) : (
+            dir && <span className="pill-popup-path">{dir}</span>
+          )}
           <span className={`pill-popup-status ${project.status === "inactive" ? "inactive" : "active"}`}>
             {statusLabel(project.status)}
           </span>
@@ -698,73 +831,107 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <button
-            onClick={() => {
-              setContextMenu(null);
-              setShowActivity(true);
-            }}
-          >
-            Show Activity
-          </button>
-          <button
-            onClick={() => {
-              setContextMenu(null);
-              void revealOnDisk();
-            }}
-            title={
-              project.remote
-                ? "Open the local mirror (the connected working copy) in the file manager"
-                : "Open the project directory in the file manager"
-            }
-          >
-            Show on disk
-          </button>
-          <button
-            onClick={() => {
-              setContextMenu(null);
-              setRenaming(true);
-            }}
-          >
-            Rename…
-          </button>
-          <button
-            onClick={() => {
-              setContextMenu(null);
-              setEditDescription(true);
-            }}
-          >
-            Edit description
-          </button>
-          <button
-            onClick={() => {
-              setContextMenu(null);
-              setEditCategories(true);
-            }}
-            title="Tag this project to color and group it in the cloud and the pill bar"
-          >
-            Categories…
-          </button>
-          <button
-            onClick={() => {
-              setContextMenu(null);
-              setShowPublish(true);
-            }}
-          >
-            Publish to GitHub / GitLab…
-          </button>
-          {typeof project.git_type === "string" && project.git_type.startsWith("remote") && (
+          {/* View / inspect */}
+          <div className="context-menu-group">
+            <div className="context-menu-group-label">View</div>
             <button
               onClick={() => {
                 setContextMenu(null);
-                setShowGitHosting(true);
+                setShowActivity(true);
               }}
-              title="Override the global git hosting (profile URL + token) for this project only"
             >
-              Git hosting…
+              Show Activity
             </button>
-          )}
-          {!project.remote && (
-            project.git_type === "none" ? (
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                void revealOnDisk();
+              }}
+              title={
+                project.remote
+                  ? "Open the local mirror (the connected working copy) in the file manager"
+                  : "Open the project directory in the file manager"
+              }
+            >
+              Show on disk
+            </button>
+          </div>
+
+          {/* Edit metadata */}
+          <div className="context-menu-group">
+            <div className="context-menu-group-label">Edit</div>
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                setRenaming(true);
+              }}
+            >
+              Rename…
+            </button>
+            {project.remote && (
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  void moveMirror();
+                }}
+                title="Move this project's local mirror (the connected working copy) to a new folder"
+              >
+                Move project…
+              </button>
+            )}
+            {!project.remote && (
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  setExtendRemote(true);
+                }}
+                title="Attach a remote SSH host to this local project — files stay put; push them up manually"
+              >
+                Extend to remote…
+              </button>
+            )}
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                setEditDescription(true);
+              }}
+            >
+              Edit description
+            </button>
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                setEditCategories(true);
+              }}
+              title="Tag this project to color and group it in the cloud and the pill bar"
+            >
+              Categories…
+            </button>
+          </div>
+
+          {/* Git */}
+          <div className="context-menu-group">
+            <div className="context-menu-group-label">Git</div>
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                setShowPublish(true);
+              }}
+            >
+              Publish to GitHub / GitLab…
+            </button>
+            {typeof project.git_type === "string" && project.git_type.startsWith("remote") && (
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  setShowGitHosting(true);
+                }}
+                title="Override the global git hosting (profile URL + token) for this project only"
+              >
+                Git hosting…
+              </button>
+            )}
+            {!project.remote && project.git_type === "none" && (
               <button
                 onClick={() => {
                   setContextMenu(null);
@@ -774,7 +941,48 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
               >
                 Enable git (git init)
               </button>
-            ) : (
+            )}
+          </div>
+
+          {/* Runtime */}
+          <div className="context-menu-group">
+            <div className="context-menu-group-label">Runtime</div>
+            {!project.remote && (
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  void setProjectSandbox(project.id, !project.sandbox?.enabled);
+                }}
+                title="Run this project's agent tabs inside a Docker container that mounts only the project directory"
+              >
+                {project.sandbox?.enabled ? "✓ " : ""}Run agents in Docker sandbox
+              </button>
+            )}
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                // Clear this project's tabs in memory. For the ACTIVE project the
+                // debounced saveLayout effect persists the empty layout; for a
+                // non-active project nothing else writes it, so persist explicitly.
+                useTabsStore.getState().closeAllTabs(project.id);
+                if (project.local_file) {
+                  void invoke("save_tab_layout", {
+                    localFile: project.local_file,
+                    tabs: [],
+                    groups: null,
+                    sessions: [],
+                  }).catch(() => {});
+                }
+              }}
+            >
+              Close all tabs
+            </button>
+          </div>
+
+          {/* Danger zone — irreversible / destructive actions, fenced off */}
+          <div className="context-menu-danger-zone">
+            <div className="context-menu-group-label">Danger zone</div>
+            {!project.remote && project.git_type !== "none" && (
               <button
                 className="danger"
                 onClick={() => {
@@ -785,38 +993,18 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
               >
                 Remove git &amp; history…
               </button>
-            )
-          )}
-          {!project.remote && (
+            )}
             <button
+              className="danger"
               onClick={() => {
                 setContextMenu(null);
-                void setProjectSandbox(project.id, !project.sandbox?.enabled);
+                setShowArchive(true);
               }}
-              title="Run this project's agent tabs inside a Docker container that mounts only the project directory"
+              title="Disconnect this project and move it to the Eldrun archive. Restore or permanently delete it later from Settings. A remote host's files are never touched."
             >
-              {project.sandbox?.enabled ? "✓ " : ""}Run agents in Docker sandbox
+              Delete project…
             </button>
-          )}
-          <button
-            onClick={() => {
-              setContextMenu(null);
-              // Clear this project's tabs in memory. For the ACTIVE project the
-              // debounced saveLayout effect persists the empty layout; for a
-              // non-active project nothing else writes it, so persist explicitly.
-              useTabsStore.getState().closeAllTabs(project.id);
-              if (project.local_file) {
-                void invoke("save_tab_layout", {
-                  localFile: project.local_file,
-                  tabs: [],
-                  groups: null,
-                  sessions: [],
-                }).catch(() => {});
-              }
-            }}
-          >
-            Close all tabs
-          </button>
+          </div>
         </div>,
         document.body,
       )}
@@ -863,12 +1051,39 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         <CategoryEditor project={project} onClose={() => setEditCategories(false)} />
       )}
 
+      {/* Extend a local project to remote (attach an SSH host) */}
+      {extendRemote && (
+        <ExtendToRemoteDialog project={project} onClose={() => setExtendRemote(false)} />
+      )}
+
+      {/* In-app folder browser for "Move project…" (replaces the OS chooser) */}
+      {movePickerInitial !== null && (
+        <FolderPickerDialog
+          initialPath={movePickerInitial}
+          title={`${project.name} — move mirror folder to…`}
+          confirmLabel="Move here"
+          nameLabel="Local folder name"
+          nameInitial={project.name}
+          onConfirm={confirmMove}
+          onClose={() => setMovePickerInitial(null)}
+        />
+      )}
+
       {/* Destructive: delete .git + history (typed-confirm) */}
       {showDisableGit && (
         <DisableGitWindow
           project={project}
           onConfirm={() => setProjectGitDisabled(project.id, true)}
           onClose={() => setShowDisableGit(false)}
+        />
+      )}
+
+      {/* Delete → archive (reversible; simple confirm) */}
+      {showArchive && (
+        <ArchiveConfirmWindow
+          project={project}
+          onConfirm={() => archiveProject(project.id)}
+          onClose={() => setShowArchive(false)}
         />
       )}
 
@@ -927,7 +1142,19 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         }}
       >
         <button className="pill-main" onClick={onClick}>
-          <span className="pill-folder-icon" aria-hidden>{timerPaused ? "⏸" : "📁"}</span>
+          <span
+            className={`pill-folder-icon${timerPaused ? "" : ` git-${gitDirty ?? "clean"}`}`}
+            title={timerPaused ? undefined : GIT_ICON_TITLE[gitDirty ?? "clean"]}
+            aria-hidden
+          >
+            {timerPaused ? (
+              "⏸"
+            ) : (
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+                <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+              </svg>
+            )}
+          </span>
           <span className="project-pill-label">{project.name}</span>
           {busy && <OrbitSpinner className="pill-running-spinner" />}
         </button>
@@ -942,13 +1169,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
             ))}
           </span>
         )}
-        {gitDirty && gitDirty !== "clean" && (
-          <span
-            className={`pill-git-dot ${gitDirty}`}
-            title={GIT_DOT_TITLE[gitDirty]}
-            aria-label={GIT_DOT_TITLE[gitDirty]}
-          />
-        )}
+        {project.remote && <RemoteConnMenu project={project} compact />}
         <button
           className="pill-close-btn"
           title="Close project"

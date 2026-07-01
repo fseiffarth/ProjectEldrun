@@ -37,6 +37,11 @@ export function ProjectDialog({
   // should first send the user to set the connection up.
   const gitToken = useSettingsStore((s) => s.settings?.git_token ?? "");
   const [projectsRoot, setProjectsRoot] = useState("");
+  // Remote (SSH) projects only: the chosen parent dir for the LOCAL mirror (the
+  // synced working copy). The mirror lands at `<mirrorParent>/<name>`. Seeded
+  // from the backend default (`projects-ssh` root) so it matches
+  // `default_remote_mirror`; editable via the "Local location" picker.
+  const [mirrorParent, setMirrorParent] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [descriptionFillMode, setDescriptionFillMode] = useState("manual");
@@ -62,6 +67,7 @@ export function ProjectDialog({
     remoteBrowsePath,
     remoteChosenPath,
     setRemoteChosenPath,
+    rememberChosenPath,
     toggleRemoteProject,
     buildRemoteSpec,
   } = remote;
@@ -104,6 +110,15 @@ export function ProjectDialog({
 
   useEffect(() => {
     invoke<string>("projects_root_dir").then(setProjectsRoot).catch(() => {});
+  }, []);
+
+  // Seed the remote local-mirror parent from the backend default (the
+  // `projects-ssh` root) so the picker's default agrees with the backend
+  // fallback. Only fills an empty value, so a user edit isn't clobbered.
+  useEffect(() => {
+    invoke<string>("remote_mirror_root_dir")
+      .then((dir) => setMirrorParent((cur) => cur || dir.replace(/\/+$/, "")))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -154,6 +169,19 @@ export function ProjectDialog({
     const picked = await open({ directory: true, multiple: false, defaultPath: projectsRoot || undefined });
     if (typeof picked === "string") {
       setProjectsRoot(picked.replace(/\/+$/, ""));
+    }
+  };
+
+  // Pick the LOCAL mirror parent for a remote (SSH) project (mirror of
+  // `chooseLocation`, but for the synced working copy rather than a local project).
+  const chooseLocalMirrorLocation = async () => {
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: mirrorParent || projectsRoot || undefined,
+    });
+    if (typeof picked === "string") {
+      setMirrorParent(picked.replace(/\/+$/, ""));
     }
   };
 
@@ -244,7 +272,16 @@ export function ProjectDialog({
       const project =
         kind === "new"
           ? await invoke<ProjectEntry>("create_project", {
-              req: { name, directory: targetDir, description, gitType, skipScaffold, remote: remoteSpec },
+              req: {
+                name,
+                directory: targetDir,
+                description,
+                gitType,
+                skipScaffold,
+                remote: remoteSpec,
+                // Remote only: chosen local mirror parent (ignored for local).
+                mirrorParent: isRemoteProject ? mirrorParent : undefined,
+              },
             })
           : await invoke<ProjectEntry>("import_project", {
               req: {
@@ -259,8 +296,11 @@ export function ProjectDialog({
                 manualValidationConfirmed,
                 skipScaffold,
                 remote: remoteSpec,
+                // Remote only: chosen local mirror parent (ignored for local).
+                mirrorParent: isRemoteProject ? mirrorParent : undefined,
               },
             });
+      if (isRemoteProject) rememberChosenPath();
       await onProject(project);
       await openScaffoldAgentTabs(project, scaffoldAgentFills);
       await openDescriptionAgentTab(project, descriptionAgent);
@@ -282,8 +322,8 @@ export function ProjectDialog({
         !remoteReady
         ? false
         : kind === "new"
-          ? Boolean(name.trim() && safeName && remoteChosenPath)
-          : Boolean(name.trim() && remoteChosenPath)
+          ? Boolean(name.trim() && safeName && remoteChosenPath && mirrorParent.trim())
+          : Boolean(name.trim() && remoteChosenPath && mirrorParent.trim())
       : kind === "new"
         ? Boolean(name.trim() && targetDir && safeName)
         : Boolean(
@@ -310,6 +350,55 @@ export function ProjectDialog({
     return item.exists ? "Already there, will be kept" : "Missing, will be added";
   };
 
+  // The shared project name + description fields. They live in the always-visible
+  // remote-basics block for a remote project (so name/description are editable
+  // from the moment SSH is toggled on), and inside the details section for a local
+  // project. Extracted so the markup isn't duplicated between the two placements.
+  const nameField = (
+    <label>
+      Project name
+      <input
+        autoFocus
+        value={name}
+        placeholder="my-project"
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && canSubmit && !busy) void submit();
+          if (e.key === "Escape") onClose();
+        }}
+      />
+    </label>
+  );
+
+  const descriptionField = (
+    <label className="project-description-field">
+      <div className="project-description-header">
+        <span>Project description</span>
+        <select
+          aria-label="Project description fill mode"
+          value={descriptionFillMode}
+          onChange={(e) => setDescriptionFillMode(e.target.value)}
+        >
+          <option value="manual">Manual</option>
+          <option value="agent_choice">Agent choice</option>
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+          <option value="gemini">Gemini</option>
+          <option value="vibe">Mistral</option>
+        </select>
+      </div>
+      <textarea
+        value={description}
+        placeholder="What this project is for"
+        rows={3}
+        onChange={(e) => setDescription(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onClose();
+        }}
+      />
+    </label>
+  );
+
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
@@ -332,6 +421,28 @@ export function ProjectDialog({
             <span className="eld-switch-track" aria-hidden="true" />
           </span>
         </label>
+
+        {/* Remote basics: a remote (SSH) project also needs a LOCAL location (its
+            synced mirror). Show it plus the shared name/description up front — from
+            the moment SSH is toggled on — while the remote location is chosen later
+            in the connect → browse flow below. The project name is shared: it's the
+            leaf of both `<local location>/<name>` and `<remote path>/<name>`. */}
+        {isRemoteProject && (
+          <>
+            <label>
+              Local location
+              <div className="folder-picker-row">
+                <span title={mirrorParent}>{mirrorParent || "No folder selected"}</span>
+                <button type="button" onClick={chooseLocalMirrorLocation}>Browse...</button>
+              </div>
+              <span className="ssh-optional-hint">
+                The synced local working copy lives here as {safeName || "<name>"}.
+              </span>
+            </label>
+            {nameField}
+            {descriptionField}
+          </>
+        )}
 
         <RemoteProjectSection
           kind={kind}
@@ -363,46 +474,10 @@ export function ProjectDialog({
           </label>
         )}
 
-        <label>
-          Project name
-          <input
-            autoFocus
-            value={name}
-            placeholder="my-project"
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && canSubmit && !busy) void submit();
-              if (e.key === "Escape") onClose();
-            }}
-          />
-        </label>
-
-        <label className="project-description-field">
-          <div className="project-description-header">
-            <span>Project description</span>
-            <select
-              aria-label="Project description fill mode"
-              value={descriptionFillMode}
-              onChange={(e) => setDescriptionFillMode(e.target.value)}
-            >
-              <option value="manual">Manual</option>
-              <option value="agent_choice">Agent choice</option>
-              <option value="claude">Claude</option>
-              <option value="codex">Codex</option>
-              <option value="gemini">Gemini</option>
-              <option value="vibe">Mistral</option>
-            </select>
-          </div>
-          <textarea
-            value={description}
-            placeholder="What this project is for"
-            rows={3}
-            onChange={(e) => setDescription(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
-            }}
-          />
-        </label>
+        {/* For a remote project these live in the always-visible remote-basics
+            block above; here they render only for a local project. */}
+        {!isRemoteProject && nameField}
+        {!isRemoteProject && descriptionField}
 
         <label>
           Git hosting

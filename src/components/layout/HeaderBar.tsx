@@ -9,7 +9,6 @@ import { AppTimerDisplay } from "../header/AppTimerDisplay";
 import { AppResourceDisplay } from "../header/AppResourceDisplay";
 import { Clock } from "../header/Clock";
 import { ConnTypeIcon } from "../header/ConnTypeIcon";
-import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
@@ -62,9 +61,6 @@ export function HeaderBar() {
   const [connType, setConnType] = useState<string | null>(null);
   const activeId = useProjectsStore((s) => s.activeId);
   const setActive = useProjectsStore((s) => s.setActive);
-  // The active project's remote spec + its live SSH/VPN connection state, shown as
-  // header lamps so the user can see at a glance whether a remote project is up.
-  const activeProject = useProjectsStore((s) => s.projects.find((p) => p.id === s.activeId));
 
   useEffect(() => {
     invoke<WorkspaceInfo>("workspace_info").catch(() => {});
@@ -118,7 +114,6 @@ export function HeaderBar() {
         {(connKind || !online) && (
           <ConnTypeIcon type={connKind ?? "wlan"} online={online} />
         )}
-        {activeProject?.remote && <RemoteConnMenu project={activeProject} />}
       </div>
 
       <div className="header-center no-drag">

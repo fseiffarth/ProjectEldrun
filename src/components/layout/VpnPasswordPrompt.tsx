@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useVpnPromptStore } from "../../stores/vpnPrompt";
 import { ConnectionLog, type LogLine } from "../common/ConnectionLog";
@@ -17,6 +18,9 @@ export function VpnPasswordPrompt() {
   const submit = useVpnPromptStore((s) => s.submit);
   const cancel = useVpnPromptStore((s) => s.cancel);
   const [password, setPassword] = useState("");
+  // Opt-in "Save passphrase" (default off). Pre-checked when a credential is
+  // already saved for this config, so the box mirrors the true keychain state.
+  const [remember, setRemember] = useState(false);
   // Live OpenVPN handshake output streamed from the backend, shown read-only so
   // the connect isn't an opaque spinner. Reset per prompt and per attempt.
   const [log, setLog] = useState<LogLine[]>([]);
@@ -34,6 +38,14 @@ export function VpnPasswordPrompt() {
       setPassword("");
       setLog([]);
       inputRef.current?.focus();
+      const config = pending.config;
+      let cancelled = false;
+      void invoke<boolean>("vpn_has_saved_password", { config })
+        .then((v) => !cancelled && setRemember(v))
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+      };
     }
   }, [pending?.config]);
 
@@ -62,7 +74,7 @@ export function VpnPasswordPrompt() {
   const onSubmit = () => {
     if (!connecting) {
       setLog([]);
-      void submit(password);
+      void submit(password, remember);
     }
   };
 
@@ -74,7 +86,10 @@ export function VpnPasswordPrompt() {
           Connecting OpenVPN for <strong>{pending.projectName}</strong>.
         </p>
         <label>
-          Password <span className="ssh-optional-hint">(not stored)</span>
+          Password{" "}
+          <span className="ssh-optional-hint">
+            {remember ? "(saved in OS keychain)" : "(not stored)"}
+          </span>
           <input
             ref={inputRef}
             type="password"
@@ -93,6 +108,16 @@ export function VpnPasswordPrompt() {
               }
             }}
           />
+        </label>
+        <label className="remote-connect-remember">
+          <input
+            type="checkbox"
+            checked={remember}
+            disabled={connecting}
+            onChange={(e) => setRemember(e.target.checked)}
+          />
+          Save passphrase
+          <span className="ssh-optional-hint">stored securely in your OS keychain</span>
         </label>
         {(connecting || log.length > 0) && <ConnectionLog lines={log} busy={connecting} />}
         {status === "error" && error && (

@@ -18,9 +18,10 @@
 //!    with no re-auth and fast channel setup. Held in Tauri-managed state
 //!    ([`RemotePoolState`]); torn down by [`disconnect`] / [`disconnect_all`].
 //!
-//! No password is ever persisted (existing rule): password-auth hosts feed the
-//! one-time password to the master via `SSHPASS` (`sshpass -e`), never on argv,
-//! never stored.
+//! Password-auth hosts feed the password to the master via `SSHPASS`
+//! (`sshpass -e`), never on argv. By default it is never stored; when the user
+//! opts into "Save password", it is kept in the OS keychain (never our JSON) and
+//! reused here for silent reconnect (see `services::remote_credentials`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -157,6 +158,18 @@ pub async fn connect(
     }
 
     let spec = &target.spec;
+    // Silent reconnect: the activation path calls this with `None`. Before falling
+    // back to key/agent auth, use a saved password for this host target if the user
+    // opted to remember one (see `services::remote_credentials`).
+    let saved_pw;
+    let password = if password.is_some() {
+        password
+    } else {
+        saved_pw = crate::services::remote_credentials::get(
+            &crate::services::remote_credentials::ssh_account(&spec.user, &spec.host, spec.port),
+        );
+        saved_pw.as_deref()
+    };
     let (sftp, child) =
         crate::services::sftp::open_pooled_session(&spec.user, &spec.host, spec.port, password)
             .await?;

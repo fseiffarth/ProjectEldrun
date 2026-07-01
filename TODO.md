@@ -938,6 +938,72 @@ container) — as opposed to the git **push** axis (#21/#22).*
       accurate, but the path itself is the unstored-password limitation, not a lamp
       bug. Gates: `npx tsc --noEmit`, `vitest` (714), `cargo test` (25) all green.
 
+    - [x] **28m — Auto-sync for files/folders** (2026-07-01; ✅ Done · 🧪
+      Untested). Per-path auto-sync layered on the selective-sync manifest: a new
+      `SyncEntry::auto_sync` flag (`#[serde(default)]`, implies `selected`; folder
+      markers cover their subtree, resolved by `remote_sync::is_auto`) + the
+      `sync_set_auto` command; `SyncStatusEntry.auto_sync` surfaces the effective
+      flag. New `services::sync_auto` reconcile engine: one per-project task
+      (`AutoSyncState` registry) started on `remote_connect`, stopped on
+      `remote_disconnect`/exit, triggered by a recursive mirror `notify` watcher
+      (debounced ~1.5s) + a ~25s interval. Each pass judges every auto path with a
+      new pure `remote_sync::divergence` split and acts on the SAFE direction only
+      (host-moved → pull, local-moved → guarded push, **both-moved/amber → skip**),
+      reusing `walk_host_files`/`walk_mirror_files`/`pull_file`/`push_file_atomic`/
+      `record_*`; emits an `auto-sync` event to refresh the frontend. UI:
+      file-tree right-click "Auto-sync this folder/file" (both source trees), a ⟳
+      row glyph, a viewer-header ⟳ toggle (remote projects, via a
+      `ViewerHeaderInfoContext`), and a right-panel "orange" list view + count
+      badge that lists all diverged files with Take-host / Keep-local resolve
+      actions. **Deferred:** deletion propagation is intentionally out of scope
+      (a one-sided delete is skipped, never mirrored) — needs a tombstone design;
+      the mirror watcher fires on Eldrun's own pull writes (harmless: the next
+      pass finds those files green) — add a post-write suppression window only if
+      it proves chatty. Gates: `npx tsc --noEmit`, `cargo test` (448 lib) green;
+      needs live-host QA (auto pull/push timing, orange skip, lifecycle).
+
+    - [ ] **28n — Git-aware local↔remote lockstep sync.** For an SSH project's
+      paired local mirror and remote working tree, keep Git state synchronized
+      **semantically** rather than copying `.git/` bytes. Transfer commits and
+      refs through Git over the existing SSH ControlMaster; synchronize local
+      branches, tags, HEAD branch/detached commit, and all Git-tracked working-tree
+      files (including safe tracked deletions). Existing selective sync remains
+      authoritative for untracked/ignored files. Never copy machine-specific or
+      unsafe Git internals (`config`, hooks, reflogs, index/lock files, remotes,
+      stashes, or worktree metadata).
+      - **Checkout lockstep.** A branch switch on either side checks out the same
+        branch at the same commit on its peer; checking out a commit synchronizes
+        the same detached HEAD. Eldrun-triggered checkouts reconcile immediately;
+        a local `.git` watcher plus connected-host polling detects CLI-driven
+        changes. Pause ordinary file auto-sync during checkout, then refresh its
+        tracked-file bases so checkout writes do not become false conflicts.
+      - **Safe ref/history reconciliation.** Missing objects/refs transfer in
+        either direction and branch updates auto-apply only when fast-forward.
+        Diverged histories, simultaneous incompatible checkouts, or a dirty peer
+        that blocks checkout enter a visible **desynchronized** state; never
+        force-checkout or discard work. Offer Retry after cleanup and an explicit
+        Use local / Use remote resolution, creating timestamped `refs/eldrun/backup/*`
+        safety refs before resetting the losing side.
+      - **Initial pairing.** Remote import initializes the mirror from the remote;
+        extending a local project initializes the remote from local. If both
+        repositories already exist and diverge, require the same explicit
+        authority choice instead of guessing. The paired main working trees are
+        covered; extra worktrees and checked-out submodule contents are deferred.
+      - **Backend/UI.** Add a per-project Git-peer sync service and persisted
+        observed local/remote HEAD/ref/status state; commands for status, retry,
+        and authority resolution; and a project-scoped status event. Extend
+        coordinated checkout with project id + initiating side while preserving
+        camelCase payload compatibility. Show synchronized/syncing/desynchronized
+        state and actionable errors in the Git UI.
+      - [ ] 🤖 Automated test — ref/HEAD parsing, fast-forward vs divergence,
+        transfer argv, tracked-file/deletion discovery, safety refs, both commit
+        directions, branch + detached checkouts, dirty-peer refusal,
+        disconnect/reconnect, and import/extend initialization; assert `.git`
+        internals and untracked/ignored files are never implicitly copied.
+      - [ ] 🖐️ Manual test — live SSH host: edit/commit/checkout from Eldrun and
+        from local/remote shells, verify both trees remain on the same branch or
+        detached commit, then exercise dirty-peer and divergent-history recovery.
+
 ---
 
 ## Group H — Cross-Platform: Windows & macOS Support (new feature)
@@ -1617,6 +1683,34 @@ unchanged; the new agents are additive.
     no separate "Install …" button is required). Link the picker to it.
     - [ ] 🤖 Automated test — n/a (static copy) or a render smoke test.
     - [ ] 🖐️ Manual test
+
+---
+
+## Group T — Smart / Native Shell Terminal (new feature, research done)
+
+*Files (future): `src/components/terminal/TerminalView.tsx`,
+`src-tauri/src/terminal/mod.rs`, `src-tauri/src/commands/ollama.rs`
+(new shell-completion command, distinct from existing `complete_text`).*
+
+- [ ] **Live incremental history-search overlay.** Auto-triggered
+  type-to-filter dropdown over the terminal (reuse the `createPortal`
+  overlay pattern from `FileTree.tsx`) instead of manual Ctrl+R; replays
+  shell history and injects the chosen line via the existing `pty_write`
+  path. No shell integration required.
+- [ ] **Local-model shell-command autocomplete overlay.** New Ollama-backed
+  completion command scoped to shell commands/history (separate from the
+  existing code-file `complete_text`), surfaced as an overlay a user can
+  accept into the PTY.
+- [ ] **Terminal font settings.** Font family/size is currently hardcoded
+  (`TerminalView.tsx`); only color scheme is configurable today. Add a
+  settings UI control.
+- [ ] ⛔ **Ghost-text autosuggestion + de-duplicated path display —
+  blocked pending design.** Requires the shell to emit OSC 133/7 semantic
+  prompt marks, which bash/zsh don't do by default; would need an
+  **opt-in, user-installed** shell-integration snippet (never an automatic
+  rc edit — violates the "no foreign app paths" policy). Needs a decision
+  on the opt-in install UX before scoping further (see prior art: Warp,
+  iTerm2, VS Code shell integration installers).
 
 ---
 

@@ -1,9 +1,37 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { create } from "zustand";
 import type { Settings, Theme } from "../types";
 
 function applyTheme(scheme: string) {
   document.documentElement.setAttribute("data-theme", scheme);
+}
+
+/** Global UI zoom (4K-monitor scaling). `1` is 100% (the current/default look);
+ *  higher enlarges the whole interface, lower shrinks it. Applied via the
+ *  webview's native zoom so every layer scales — including `position: fixed` /
+ *  portaled overlays (menus, dropdowns, hover popovers) that a CSS `zoom` misses
+ *  on WebKitGTK. */
+export const MIN_UI_ZOOM = 0.5;
+export const MAX_UI_ZOOM = 3;
+
+export function clampZoom(z: number | undefined | null): number {
+  if (typeof z !== "number" || !Number.isFinite(z)) return 1;
+  return Math.min(MAX_UI_ZOOM, Math.max(MIN_UI_ZOOM, z));
+}
+
+function applyZoom(zoom: number | undefined) {
+  const z = clampZoom(zoom);
+  // Use the webview's native zoom (WebKitGTK `zoom_level` / WebView2 ZoomFactor)
+  // rather than a CSS `zoom` on the root: CSS zoom does not scale
+  // `position: fixed` / portaled overlays (menus, dropdowns, hover popovers) in
+  // WebKitGTK, so those stayed at 100%. Native zoom scales the entire webview
+  // uniformly, overlays included.
+  void getCurrentWebview()
+    .setZoom(z)
+    .catch((err) => {
+      console.warn("failed to apply UI zoom", err);
+    });
 }
 
 interface SettingsStore {
@@ -21,6 +49,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   load: async () => {
     const settings = await invoke<Settings>("get_settings");
     applyTheme(settings.color_scheme ?? "fancy_dark");
+    applyZoom(settings.ui_zoom);
     set({ settings, loaded: true });
   },
 
@@ -38,6 +67,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     await invoke<void>("save_settings", { settings: updated });
     if (typeof updated.color_scheme === "string") {
       applyTheme(updated.color_scheme);
+    }
+    if ("ui_zoom" in patch) {
+      applyZoom(updated.ui_zoom);
     }
     set({ settings: updated as Settings });
   },

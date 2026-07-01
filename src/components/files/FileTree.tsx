@@ -13,7 +13,7 @@ import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useSyncStore, type SyncFileState } from "../../stores/sync";
+import { useSyncStore, type SyncFileMeta } from "../../stores/sync";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
@@ -106,45 +106,6 @@ function GitMarker({ status }: { status: string | undefined }) {
   );
 }
 
-const SYNC_COLOR: Record<SyncFileState, string> = {
-  green: "#3fb950", // synced; manifest base still matches the host
-  amber: "#d29922", // host moved since the last fetch (refresh-observed)
-  none: "transparent",
-};
-
-const SYNC_TITLE: Record<SyncFileState, string> = {
-  green: "Synced to local mirror",
-  amber: "Host changed since last sync — re-sync to update",
-  none: "Not synced",
-};
-
-/** SSH-sync Phase 1: marker right of the git dot in the REMOTE source view,
- *  showing whether a path is mirrored locally (green), stale (amber), or not
- *  synced (empty slot). Only rendered for remote-source trees. */
-function SyncMarker({ state }: { state: SyncFileState | undefined }) {
-  const slot: React.CSSProperties = {
-    width: 10,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-    marginRight: 2,
-  };
-  const s = state ?? "none";
-  return (
-    <span style={slot} title={SYNC_TITLE[s]}>
-      <span
-        style={{
-          width: 6,
-          height: 6,
-          borderRadius: 2,
-          background: SYNC_COLOR[s],
-          boxShadow: s === "none" ? "inset 0 0 0 1px var(--border-color)" : undefined,
-        }}
-      />
-    </span>
-  );
-}
 
 // Native drag-out (tauri-plugin-drag) needs the OS drag-preview icon as a base64
 // PNG data URL (its icon field rejects a bare path), read synchronously inside
@@ -226,6 +187,18 @@ export function FileTree({
   // first is shown in the conflict modal; resolving advances the queue.
   const [pushConflicts, setPushConflicts] = useState<string[]>([]);
   const [pushBusy, setPushBusy] = useState(false);
+  // SSH-sync: the amber "resolve" popup for a diverged file — its local+host
+  // metadata, the git diff when one is available (null until loaded, "" = none),
+  // and the take-local/take-remote busy flag.
+  const [syncResolve, setSyncResolve] = useState<{
+    entry: FileEntry;
+    rel: string;
+    meta: SyncFileMeta | null;
+    diff: string | null;
+    loading: boolean;
+    busy: boolean;
+    error: string | null;
+  } | null>(null);
   // Whether the system clipboard holds an image when the context menu opened
   // (probed async on right-click), gating the "Paste screenshot" option.
   const [clipboardImage, setClipboardImage] = useState(false);
@@ -263,7 +236,9 @@ export function FileTree({
   const refreshSyncStatus = useSyncStore((s) => s.refreshStatus);
   const syncPull = useSyncStore((s) => s.pull);
   const syncPush = useSyncStore((s) => s.push);
+  const syncFileMeta = useSyncStore((s) => s.fileMeta);
   const syncMarkSelected = useSyncStore((s) => s.markSelected);
+  const syncSetAuto = useSyncStore((s) => s.setAuto);
   // A remote project's `list_dir`/`git_file_statuses` dispatch over SSH/SFTP on
   // the backend. Those are SYNCHRONOUS Tauri commands (they run on the main
   // thread), so calling them while the pooled connection is down blocks on the
@@ -387,14 +362,43 @@ export function FileTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectDir, remoteBlocked]);
 
-  // SSH-sync Phase 1: keep the remote-source overlay fresh — re-stat selected
-  // files whenever the remote tree (re)lists. Skipped for local/​mirror trees.
+  // SSH-sync Phase 1: keep the sync overlay fresh — re-stat selected files
+  // whenever the tree (re)lists. Runs for both the remote-source tree and the
+  // local-mirror tree (the marker is symmetric); `remoteBlocked` only ever gates
+  // the remote-source case; the mirror tree keeps working offline off the last-
+  // known manifest state (the backend falls back gracefully when the pool is
+  // down — see `sync_status`).
   useEffect(() => {
-    if (remoteListing && projectId && !remoteBlocked) {
+    if (isRemote && projectId && !remoteBlocked) {
       void refreshSyncStatus(projectId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [remoteListing, projectId, remoteBlocked, relPath]);
+  }, [isRemote, projectId, remoteBlocked, relPath]);
+
+  // SSH-sync: the host tree has no change watcher (inotify can't see the SFTP
+  // tree), so a remote-side edit wouldn't flip a file to amber until the user
+  // re-lists — and the local-mirror view has no re-list button at all. Re-stat
+  // the SELECTED files (cheap metadata over the pooled ControlMaster — NOT a
+  // tree re-list) whenever Eldrun regains focus and on a light interval, so a
+  // remote-only divergence surfaces on its own shortly after it happens instead
+  // of silently going stale. Gated on a live pool so a cold connection never
+  // re-stats (which would report stale green); runs for both the remote-source
+  // and local-mirror views (the amber marker is symmetric).
+  useEffect(() => {
+    if (!isRemote || !projectId || remoteSshState !== "connected") return;
+    const refresh = () => { void refreshSyncStatus(projectId); };
+    window.addEventListener("focus", refresh);
+    // Only tick while Eldrun is focused: a backgrounded window doesn't need to
+    // keep re-stat'ing the host every 15 s (the `focus` listener re-stats on
+    // return anyway), which keeps an idle remote project off the wire.
+    const id = window.setInterval(() => {
+      if (document.hasFocus()) refresh();
+    }, 15000);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.clearInterval(id);
+    };
+  }, [isRemote, projectId, remoteSshState, refreshSyncStatus]);
 
   // Live updates: watch the currently-displayed directory on the backend and
   // re-fetch when it changes, so files created/removed by terminals, agents, or
@@ -843,6 +847,55 @@ export function FileTree({
     });
   }
 
+  /** SSH-sync: open the amber "resolve" popup for a diverged file. Shows the
+   *  local vs host metadata (size/mtime) and, when the host copy yields a text
+   *  diff, the git diff itself; otherwise (binary / one side missing / no diff)
+   *  it just offers take-local / take-remote. Uses `relForEntry` for the correct
+   *  project-relative key — the old diff *tab* recomputed the rel from an
+   *  absolute path via the DiffView, which came out empty on the remote view
+   *  (the host path isn't under the local project dir) and made `sync_diff`
+   *  point at the mirror ROOT ("git could not access …/.tmpXXX"). */
+  function openSyncResolve(entry: FileEntry) {
+    setContextMenu(null);
+    if (!projectId) return;
+    const rel = relForEntry(entry);
+    setSyncResolve({ entry, rel, meta: null, diff: null, loading: true, busy: false, error: null });
+    // Fetch metadata and the git diff together; either may fail independently
+    // (a cold pool fails both; a binary/identical file just yields no diff).
+    void Promise.allSettled([
+      syncFileMeta(projectId, rel),
+      invoke<string>("sync_diff", { projectId, relPath: rel }),
+    ]).then(([metaR, diffR]) => {
+      setSyncResolve((s) => {
+        if (!s || s.rel !== rel) return s; // superseded by another open
+        return {
+          ...s,
+          loading: false,
+          meta: metaR.status === "fulfilled" ? metaR.value : null,
+          diff: diffR.status === "fulfilled" ? diffR.value : "",
+          error: metaR.status === "rejected" ? String(metaR.reason) : null,
+        };
+      });
+    });
+  }
+
+  /** Resolve the amber divergence: "remote" pulls the host copy over the mirror,
+   *  "local" force-pushes the mirror over the host. Both clear amber → green. */
+  async function resolveSyncDivergence(action: "local" | "remote") {
+    if (!syncResolve || !projectId) return;
+    const rel = syncResolve.rel;
+    setSyncResolve((s) => (s ? { ...s, busy: true, error: null } : s));
+    try {
+      if (action === "remote") await syncPull(projectId, rel);
+      else await syncPush(projectId, rel, true);
+      await refreshSyncStatus(projectId);
+      await load(relPath);
+      setSyncResolve(null);
+    } catch (err) {
+      setSyncResolve((s) => (s ? { ...s, busy: false, error: String(err) } : s));
+    }
+  }
+
   // SSH-sync Phase 1: pull this file/folder into the local mirror (and mark it
   // selected), or stop tracking it. Remote source view only.
   async function syncEntryToLocal(entry: FileEntry) {
@@ -860,6 +913,19 @@ export function FileTree({
     if (!projectId) return;
     try {
       await syncMarkSelected(projectId, [relForEntry(entry)], false, entry.is_dir);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  // Auto-sync: toggle background bidirectional sync for a file or (recursively) a
+  // folder. Turning it on implies tracking; the backend engine reconciles it on
+  // its next pass, skipping anything diverged (orange).
+  async function toggleAutoSyncEntry(entry: FileEntry, on: boolean) {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      await syncSetAuto(projectId, [relForEntry(entry)], on, entry.is_dir);
     } catch (err) {
       setError(String(err));
     }
@@ -1292,6 +1358,20 @@ export function FileTree({
           const isCompiling = compiling.has(e.path);
           const dragTarget = draggableToTab(e);
           const isMoveTarget = e.is_dir && moveTargetRel === relForEntry(e);
+          // SSH-sync Phase 1: per-path mirror state, symmetric across the
+          // remote-source and local-mirror trees. Each non-resting state gets a
+          // colored action button left of the icon: red for `none` (not synced)
+          // — pull/push it; orange for `amber` (host diverged from our mirror) —
+          // view the diff. `green` (in sync) is the resting state and shows
+          // nothing.
+          const syncTracked = remoteListing || treatLocal;
+          const rel = syncTracked ? relForEntry(e) : "";
+          const syncState = syncTracked ? syncStatus?.[rel]?.state ?? "none" : "none";
+          // Auto-sync glyph: shown on both the remote and local trees when this
+          // path (or an ancestor auto folder) is set to auto-sync. Coexists with
+          // the amber ± button — an auto path that went orange is exactly what the
+          // user must resolve manually.
+          const autoSync = syncTracked ? !!syncStatus?.[rel]?.auto : false;
           return (
             <div
               key={e.path}
@@ -1324,9 +1404,60 @@ export function FileTree({
               onMouseLeave={() => setTooltip(null)}
             >
               <GitMarker status={status} />
-              {/* SSH-sync Phase 1: per-path mirror state, remote source only. */}
-              {remoteListing && (
-                <SyncMarker state={syncStatus?.[relForEntry(e)]?.state} />
+              {/* Fixed-width sync slot: always reserved on a sync-tracked tree so
+                  file/folder names stay left-aligned whether or not the row has an
+                  action button. `none` → red sync/push button; `amber` → orange
+                  diff button; `green` → empty (in sync). */}
+              {syncTracked && (
+                <span className="file-sync-slot">
+                  {syncState === "none" && (() => {
+                    const anyBusy = !!syncProgress;
+                    const thisBusy = syncProgress?.rel === rel;
+                    return (
+                      <button
+                        type="button"
+                        className={`file-sync-btn${thisBusy ? " busy" : ""}`}
+                        title={remoteListing ? "Sync to local" : "Push to host"}
+                        aria-label={remoteListing ? "Sync to local" : "Push to host"}
+                        disabled={anyBusy}
+                        onClick={(ev) => {
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                          void (remoteListing ? syncEntryToLocal(e) : pushEntryToHost(e));
+                        }}
+                      >
+                        {thisBusy ? <span className="file-run-spinner" /> : "⇄"}
+                      </button>
+                    );
+                  })()}
+                  {syncState === "amber" && !e.is_dir && (
+                    <button
+                      type="button"
+                      className="file-diff-btn"
+                      title="Host and local differ — compare and resolve"
+                      aria-label="Compare host vs local and resolve"
+                      onClick={(ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        openSyncResolve(e);
+                      }}
+                    >
+                      ±
+                    </button>
+                  )}
+                  {/* Auto-sync indicator (non-interactive): only when the slot has
+                      no action button, so it never crowds out the red/orange
+                      controls. Amber auto paths still show ± (needs resolving). */}
+                  {autoSync && syncState === "green" && (
+                    <span
+                      className="file-autosync-icon"
+                      title="Auto-syncing"
+                      aria-label="Auto-syncing"
+                    >
+                      ⟳
+                    </span>
+                  )}
+                </span>
               )}
               {canRun && (
                 <button
@@ -1438,7 +1569,12 @@ export function FileTree({
             const status = gitStatuses[entry.name];
             const isTex = !entry.is_dir && entry.extension === ".tex";
             const isZip = !entry.is_dir && entry.extension === ".zip";
-            const syncSel = remoteListing ? syncStatus?.[relForEntry(entry)]?.selected : false;
+            const entryRel = relForEntry(entry);
+            const syncSel = remoteListing ? syncStatus?.[entryRel]?.selected : false;
+            // Auto-sync is symmetric across the remote/local trees (both are
+            // sync-tracked); read the effective flag either way.
+            const syncTracked = remoteListing || treatLocal;
+            const autoOn = syncTracked ? !!syncStatus?.[entryRel]?.auto : false;
             return (
               <>
                 {remoteListing && (
@@ -1458,6 +1594,20 @@ export function FileTree({
                   <>
                     <button onClick={() => pushEntryToHost(entry)}>
                       {entry.is_dir ? "Push folder to host" : "Push to host"}
+                    </button>
+                    <hr />
+                  </>
+                )}
+                {syncTracked && (
+                  <>
+                    <button onClick={() => toggleAutoSyncEntry(entry, !autoOn)}>
+                      {autoOn
+                        ? entry.is_dir
+                          ? "Stop auto-syncing folder"
+                          : "Stop auto-syncing"
+                        : entry.is_dir
+                          ? "Auto-sync this folder"
+                          : "Auto-sync this file"}
                     </button>
                     <hr />
                   </>
@@ -1582,6 +1732,111 @@ export function FileTree({
               </button>
               <button type="button" className="danger" disabled={pushBusy} onClick={() => resolvePushConflict("keep")}>
                 Keep local
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+      {syncResolve && createPortal(
+        <div className="modal-backdrop" onMouseDown={() => !syncResolve.busy && setSyncResolve(null)}>
+          <div
+            className="file-delete-dialog"
+            style={{ maxWidth: 560, width: "min(560px, 92vw)" }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h2>Local and host differ</h2>
+            <div className="file-delete-path">{syncResolve.rel}</div>
+            {syncResolve.loading ? (
+              <p style={{ color: "var(--text-muted)" }}>Comparing local mirror and host…</p>
+            ) : syncResolve.meta ? (
+              (() => {
+                const { local, host } = syncResolve.meta!;
+                const sizeDiff = local.size !== host.size;
+                const timeDiff = (local.mtime ?? null) !== (host.mtime ?? null);
+                const cell = (present: boolean, text: string, diff: boolean) => (
+                  <td style={{ padding: "3px 10px", color: !present ? "var(--text-muted)" : diff ? "var(--warning, #d29922)" : "var(--text-primary)" }}>
+                    {present ? text : "—"}
+                  </td>
+                );
+                return (
+                  <table style={{ borderCollapse: "collapse", margin: "6px 0", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ color: "var(--text-muted)" }}>
+                        <th style={{ textAlign: "left", padding: "3px 10px", fontWeight: 500 }} />
+                        <th style={{ textAlign: "left", padding: "3px 10px", fontWeight: 600 }}>Local</th>
+                        <th style={{ textAlign: "left", padding: "3px 10px", fontWeight: 600 }}>Host (remote)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td style={{ padding: "3px 10px", color: "var(--text-muted)" }}>Present</td>
+                        {cell(true, local.exists ? "yes" : "no", local.exists !== host.exists)}
+                        {cell(true, host.exists ? "yes" : "no", local.exists !== host.exists)}
+                      </tr>
+                      <tr>
+                        <td style={{ padding: "3px 10px", color: "var(--text-muted)" }}>Size</td>
+                        {cell(local.exists, fmtSize(local.size), sizeDiff)}
+                        {cell(host.exists, fmtSize(host.size), sizeDiff)}
+                      </tr>
+                      <tr>
+                        <td style={{ padding: "3px 10px", color: "var(--text-muted)" }}>Modified</td>
+                        {cell(local.exists, fmtModified(local.mtime) || "—", timeDiff)}
+                        {cell(host.exists, fmtModified(host.mtime) || "—", timeDiff)}
+                      </tr>
+                    </tbody>
+                  </table>
+                );
+              })()
+            ) : (
+              <p style={{ color: "var(--danger, #f85149)" }}>
+                {syncResolve.error ?? "Could not read file metadata."}
+              </p>
+            )}
+            {/* Git diff when one is available; otherwise a note pointing at the
+                take-local / take-remote choice below. */}
+            {!syncResolve.loading && (syncResolve.diff ? (
+              <pre
+                style={{
+                  maxHeight: 240, overflow: "auto", margin: "4px 0 0",
+                  padding: 8, fontSize: 11, lineHeight: 1.4,
+                  background: "var(--bg-inset, rgba(0,0,0,0.25))", borderRadius: 4,
+                  whiteSpace: "pre", fontFamily: "var(--font-mono, monospace)",
+                }}
+              >
+                {syncResolve.diff}
+              </pre>
+            ) : syncResolve.meta ? (
+              <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "4px 0 0" }}>
+                No line diff available (binary, identical text, or one side missing).
+                Choose which copy to keep.
+              </p>
+            ) : null)}
+            {syncResolve.meta && syncResolve.error && (
+              <p style={{ fontSize: 11, color: "var(--danger, #f85149)", margin: "4px 0 0" }}>
+                {syncResolve.error}
+              </p>
+            )}
+            <div className="file-delete-actions">
+              <button type="button" disabled={syncResolve.busy} onClick={() => setSyncResolve(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={syncResolve.busy || syncResolve.loading}
+                title="Pull the host copy over your local mirror"
+                onClick={() => void resolveSyncDivergence("remote")}
+              >
+                Take remote
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={syncResolve.busy || syncResolve.loading}
+                title="Force-push your local copy over the host"
+                onClick={() => void resolveSyncDivergence("local")}
+              >
+                Take local
               </button>
             </div>
           </div>

@@ -23,6 +23,31 @@ export function useFileScope(): string | null {
   return useContext(FileScopeContext);
 }
 
+/**
+ * Where a viewer's bytes come from, for its remote/local source notice:
+ *  - `"remote"` — a remote (SSH) project file served straight from the host over
+ *                 SFTP (remote-native, no local copy).
+ *  - `"local"`  — a remote project file under the local mirror, read on the local
+ *                 fs (the paired working copy synced from the host).
+ *  - `"none"`   — a local project: no remote/local distinction, so no badge.
+ * Resolved by the `file_source` backend command, which mirrors the exact routing
+ * the read commands use so the badge can never disagree with the bytes shown.
+ */
+export type FileSource = "remote" | "local" | "none";
+
+/** The resolved source of the surrounding viewer's file (`"none"` = no badge). */
+export const FileSourceContext = createContext<FileSource>("none");
+
+/** The remote/local source classification published by the enclosing viewer. */
+export function useFileSource(): FileSource {
+  return useContext(FileSourceContext);
+}
+
+/** Classify a path's bytes as remote-native / local-mirror / not-applicable. */
+export function fileSource(path: string, projectId: string | null): Promise<FileSource> {
+  return invoke<FileSource>("file_source", { path, projectId });
+}
+
 // Thin wrappers over the confined file commands. They exist so the `project_id`
 // scope argument is attached uniformly and can't be forgotten at a call site.
 

@@ -234,6 +234,9 @@ pub fn run() {
     // Single-writer cache of per-project sync manifests (SSH-sync Phase 1). Guards
     // every `sync.json` mutation so concurrent syncs/saves can't clobber it (G7).
     let sync_manifest = services::remote_sync::new_manifest_state();
+    // Registry of per-project auto-sync tasks (started on remote_connect, stopped
+    // on remote_disconnect / app exit). See `services::sync_auto`.
+    let auto_sync = services::sync_auto::new_state();
 
     tauri::Builder::default()
         .manage(pty_registry)
@@ -242,6 +245,7 @@ pub fn run() {
         .manage(fs_watch)
         .manage(remote_pool)
         .manage(sync_manifest)
+        .manage(auto_sync)
         .setup(|_app| {
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
@@ -311,13 +315,21 @@ pub fn run() {
             commands::projects::save_tab_layout,
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
+            commands::projects::remote_mirror_root_dir,
             commands::projects::open_in_file_manager,
             commands::projects::remote_mirror_status,
             commands::projects::set_remote_mirror_dir,
+            commands::projects::move_remote_mirror,
             commands::projects::create_project,
             commands::projects::preview_project_scaffold,
             commands::projects::import_project,
+            commands::projects::extend_project_to_remote,
             commands::projects::get_time_today,
+            commands::projects::archive_project,
+            commands::projects::list_archived_projects,
+            commands::projects::restore_archived_project,
+            commands::projects::delete_archived_project,
+            commands::projects::clear_archive,
             // Project boxes (meta-project grouping)
             commands::boxes::get_boxes,
             commands::boxes::save_boxes,
@@ -330,6 +342,8 @@ pub fn run() {
             commands::boxes::set_box_relations,
             // SSH / remote projects
             commands::ssh::ssh_connect,
+            commands::ssh::remote_has_saved_password,
+            commands::ssh::remote_forget_password,
             commands::ssh::remote_login_command,
             commands::ssh::ssh_default_dir,
             commands::ssh::ssh_list_dir,
@@ -343,13 +357,19 @@ pub fn run() {
             commands::sync::sync_now,
             commands::sync::sync_push,
             commands::sync::sync_mark_selected,
+            commands::sync::sync_set_auto,
             commands::sync::sync_status,
+            commands::sync::sync_file_meta,
+            commands::sync::sync_diff,
             commands::ssh::ssh_tooling_status,
             commands::ssh::ssh_list_addresses,
             commands::ssh::ssh_remember_address,
+            commands::ssh::remote_list_paths,
+            commands::ssh::remote_remember_path,
             commands::ssh::open_external_url,
             // OpenVPN tunnels for VPN-gated remote projects
             commands::openvpn::openvpn_connect,
+            commands::openvpn::vpn_has_saved_password,
             commands::openvpn::openvpn_login_command,
             commands::openvpn::openvpn_disconnect,
             commands::openvpn::openvpn_status,
@@ -365,6 +385,7 @@ pub fn run() {
             commands::timer::get_project_activity,
             // File tree + file I/O (commands::fs)
             commands::fs::list_dir,
+            commands::fs::list_dirs,
             commands::fs::list_project_endings,
             commands::fs::list_project_paths,
             commands::fs::rename_path,
@@ -384,6 +405,7 @@ pub fn run() {
             commands::fs::update_gitignore_rule,
             commands::fs::create_dir,
             commands::fs::detect_mime,
+            commands::fs::file_source,
             commands::fs::read_file_text,
             commands::fs::write_file_text,
             commands::fs::read_file_bytes,
@@ -518,6 +540,13 @@ pub fn run() {
                 // Tear down pooled SSH/SFTP connections so no ssh ControlMaster
                 // child (and the master socket it owns) outlives Eldrun.
                 use tauri::Manager;
+                // Stop every auto-sync task first (cancel loops + drop watchers)
+                // so none races the pool teardown below.
+                let auto = _app
+                    .state::<services::sync_auto::AutoSyncState>()
+                    .inner()
+                    .clone();
+                tauri::async_runtime::block_on(services::sync_auto::stop_all(&auto));
                 let pool = _app
                     .state::<services::remote::RemotePoolState>()
                     .inner()

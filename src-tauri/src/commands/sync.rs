@@ -14,15 +14,22 @@
 
 use std::sync::Arc;
 
+use futures_util::{stream, StreamExt};
 use openssh_sftp_client::Sftp;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::services::remote::{remote_target_for, pooled_sftp, RemotePoolState, RemoteTarget};
 use crate::services::remote_sync::{
-    self, join_remote, mirror_local_path, Manifest, PushDecision, SyncManifestState, SyncState,
+    self, ensure_loaded, join_remote, local_meta, local_size_mtime, mirror_local_path, Manifest,
+    PushDecision, SyncManifestState, SyncState,
 };
 use crate::services::sftp;
+
+/// Max concurrent host re-stats during a `sync_status` refresh. The SFTP client
+/// pipelines these over the one pooled channel; this bounds the in-flight count
+/// so a large selection can't flood it.
+const STAT_CONCURRENCY: usize = 16;
 
 /// One row of sync status for the file-tree overlay.
 #[derive(Debug, Clone, Serialize)]
@@ -33,6 +40,9 @@ pub struct SyncStatusEntry {
     pub selected: bool,
     /// `green` | `amber` | `none`.
     pub state: SyncState,
+    /// Effective auto-sync: this path's own entry or an ancestor auto folder
+    /// marker (`remote_sync::is_auto`). Drives the file-tree/viewer auto glyph.
+    pub auto_sync: bool,
 }
 
 /// Progress payload for the `sync-progress` event (one per transferred file plus
@@ -158,6 +168,35 @@ pub async fn sync_mark_selected(
     remote_sync::save_manifest(&project_id, m)
 }
 
+/// Toggle auto-sync for one or more project-relative paths. Turning it ON implies
+/// `selected = true` (auto-sync tracks the path). On a directory the marker covers
+/// the whole subtree (resolved by `remote_sync::is_auto`); no bytes transfer here
+/// — the background reconcile engine (`services::sync_auto`) picks it up on its
+/// next pass. Turning it OFF leaves `selected` as-is (manual tracking continues),
+/// matching the deselect-leaves-bytes convention.
+#[tauri::command]
+pub async fn sync_set_auto(
+    project_id: String,
+    rel_paths: Vec<String>,
+    auto: bool,
+    is_dir: bool,
+    manifest: State<'_, SyncManifestState>,
+) -> Result<(), String> {
+    let mut guard = manifest.lock().await;
+    let m = ensure_loaded(&mut guard, &project_id);
+    for rel in &rel_paths {
+        let entry = m.entry(rel.clone()).or_default();
+        entry.auto_sync = auto;
+        if auto {
+            entry.selected = true;
+        }
+        if is_dir {
+            entry.is_dir = true;
+        }
+    }
+    remote_sync::save_manifest(&project_id, m)
+}
+
 /// Return the sync status of every tracked path, re-stat'ing each selected FILE
 /// on the host so the green/amber state is fresh (amber = host moved since the
 /// last fetch). Directories report their stored selection (no re-stat). This is
@@ -173,37 +212,155 @@ pub async fn sync_status(
     let Some(target) = remote_target_for(&project_id) else {
         return Ok(Vec::new());
     };
-    // Snapshot the manifest under the lock; re-stat outside it.
-    let entries: Vec<(String, crate::services::remote_sync::SyncEntry)> = {
+    // Snapshot the whole manifest under the lock; re-stat outside it. The full
+    // snapshot (not just the (k,v) list) lets `is_auto` walk ancestor folder
+    // markers to resolve each row's effective auto-sync flag.
+    let snapshot: Manifest = {
         let mut guard = manifest.lock().await;
-        let m = ensure_loaded(&mut guard, &project_id);
-        m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        ensure_loaded(&mut guard, &project_id).clone()
     };
+    let entries: Vec<(String, crate::services::remote_sync::SyncEntry)> =
+        snapshot.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     // Re-stat selected files when the pool is live; if cold, fall back to the
     // stored base (green for selected) rather than erroring out the whole panel.
     let sftp = pooled_sftp(pool.inner(), &project_id).await;
     let mut out = Vec::with_capacity(entries.len());
+    // Partition without any network first: only selected FILES against a live
+    // pool need a host re-stat. Everything else (unselected → none, directories →
+    // green, cold pool → last-known-good green) resolves immediately.
+    let mut to_stat: Vec<(String, crate::services::remote_sync::SyncEntry, bool)> = Vec::new();
     for (rel, entry) in entries {
-        let state = if !entry.selected {
-            SyncState::None
+        // Effective auto-sync resolves against the whole manifest (ancestor folder
+        // markers), so compute it before `rel` is moved into the row.
+        let auto = remote_sync::is_auto(&snapshot, &rel);
+        if !entry.selected {
+            out.push(SyncStatusEntry {
+                rel_path: rel,
+                is_dir: entry.is_dir,
+                selected: false,
+                state: SyncState::None,
+                auto_sync: false, // auto implies selected, so unselected is never auto
+            });
         } else if entry.is_dir {
-            SyncState::Green
-        } else if let Some(sftp) = &sftp {
-            let host_abs = join_remote(&target.spec.remote_path, &rel);
-            let (size, mtime) = remote_sync::stat_or_zero(sftp, &host_abs).await;
-            remote_sync::compute_state(&entry, size, mtime)
+            out.push(SyncStatusEntry {
+                rel_path: rel,
+                is_dir: true,
+                selected: true,
+                state: SyncState::Green,
+                auto_sync: auto,
+            });
+        } else if sftp.is_some() {
+            to_stat.push((rel, entry, auto));
         } else {
-            // Cold pool: report the last-known good state.
-            SyncState::Green
-        };
-        out.push(SyncStatusEntry {
-            rel_path: rel,
-            is_dir: entry.is_dir,
-            selected: entry.selected,
-            state,
-        });
+            // Cold pool: the host can't be re-stat'd, but the local mirror still
+            // can (no network) — so a local-only edit made while disconnected
+            // still surfaces as amber instead of a stale green.
+            let local = std::fs::metadata(mirror_local_path(&project_id, &rel))
+                .ok()
+                .map(|m| local_meta(&m));
+            let state = remote_sync::compute_state(&entry, None, local);
+            out.push(SyncStatusEntry {
+                rel_path: rel,
+                is_dir: false,
+                selected: true,
+                state,
+                auto_sync: auto,
+            });
+        }
+    }
+    // Re-stat the selected files concurrently over the pooled SFTP session. The
+    // client multiplexes many in-flight requests over the one channel, so a large
+    // selection is latency-bound (~one round-trip worth) instead of N sequential
+    // round-trips. `buffer_unordered` caps the in-flight count so a huge selection
+    // can't flood the channel; order is irrelevant (the frontend keys status by
+    // `rel_path`). The stat/compare rule itself is unchanged.
+    if let Some(sftp) = &sftp {
+        let statted = stream::iter(to_stat.into_iter().map(|(rel, entry, auto)| {
+            let sftp = Arc::clone(sftp);
+            let root = target.spec.remote_path.clone();
+            let project_id = project_id.clone();
+            async move {
+                let host_abs = join_remote(&root, &rel);
+                let (size, mtime) = remote_sync::stat_or_zero(&sftp, &host_abs).await;
+                // Also re-stat the local mirror so a local-only edit flips to amber
+                // (symmetric divergence — the host may be unchanged).
+                let local = std::fs::metadata(mirror_local_path(&project_id, &rel))
+                    .ok()
+                    .map(|m| local_meta(&m));
+                let state = remote_sync::compute_state(&entry, Some((size, mtime)), local);
+                SyncStatusEntry {
+                    rel_path: rel,
+                    is_dir: false,
+                    selected: true,
+                    state,
+                    auto_sync: auto,
+                }
+            }
+        }))
+        .buffer_unordered(STAT_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+        out.extend(statted);
     }
     Ok(out)
+}
+
+/// One side (local mirror OR host) of a tracked file, for the amber "resolve"
+/// popup. `exists` is false when that side has no such file (deleted/never
+/// created); `size`/`mtime` are then zero/None.
+#[derive(Debug, Clone, Serialize)]
+pub struct SideMeta {
+    pub exists: bool,
+    pub size: u64,
+    /// Unix seconds, when the side reports one.
+    pub mtime: Option<u64>,
+}
+
+/// Local + host metadata for one tracked file, plus the recorded base — backs
+/// the amber divergence popup (size/mtime on each side so the user can see what
+/// changed before choosing "take local" or "take remote").
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncFileMeta {
+    pub rel_path: String,
+    pub local: SideMeta,
+    pub host: SideMeta,
+    /// Host base (size + mtime) captured at the last pull/push — what the
+    /// green/amber state is judged against.
+    pub base_size: u64,
+    pub base_mtime: Option<u64>,
+}
+
+/// Return the local-mirror and current-host metadata for one file so the amber
+/// popup can show the concrete divergence (size + mtime, per side) alongside the
+/// recorded base. Requires a live pooled connection to stat the host; a cold
+/// pool errors via `resolve` (the popup only opens for a connected project).
+#[tauri::command]
+pub async fn sync_file_meta(
+    project_id: String,
+    rel_path: String,
+    pool: State<'_, RemotePoolState>,
+    manifest: State<'_, SyncManifestState>,
+) -> Result<SyncFileMeta, String> {
+    let (target, sftp) = resolve(&project_id, pool.inner()).await?;
+    let host_abs = join_remote(&target.spec.remote_path, &rel_path);
+    let host = match sftp::metadata_on(&sftp, &host_abs).await {
+        Ok((size, mtime)) => SideMeta { exists: true, size, mtime },
+        Err(_) => SideMeta { exists: false, size: 0, mtime: None },
+    };
+    let local_path = mirror_local_path(&project_id, &rel_path);
+    let local = match std::fs::metadata(&local_path) {
+        Ok(m) => {
+            let (size, mtime) = local_size_mtime(Some(m));
+            SideMeta { exists: true, size, mtime }
+        }
+        Err(_) => SideMeta { exists: false, size: 0, mtime: None },
+    };
+    let (base_size, base_mtime) = {
+        let mut guard = manifest.lock().await;
+        let m = ensure_loaded(&mut guard, &project_id);
+        m.get(&rel_path).map(|e| (e.host_size, e.host_mtime)).unwrap_or((0, None))
+    };
+    Ok(SyncFileMeta { rel_path, local, host, base_size, base_mtime })
 }
 
 /// Result of a local→remote push: how many files were written, and which
@@ -270,6 +427,32 @@ pub async fn sync_push(
     }
     emit(&app, &project_id, "done", &rel_path, done, total);
     Ok(SyncPushResult { pushed, conflicts })
+}
+
+/// Unified diff of the local mirror copy (old / "local") against the current host
+/// copy (new / "host") for one file. Backs the file-tree's diverged (amber) diff
+/// button: the host moved past our mirrored base, so this shows exactly what
+/// changed on the host before the user re-syncs. Requires a live pooled
+/// connection (reads the host over SFTP); a cold pool errors via `resolve`.
+#[tauri::command]
+pub async fn sync_diff(
+    project_id: String,
+    rel_path: String,
+    pool: State<'_, RemotePoolState>,
+) -> Result<String, String> {
+    let (target, sftp) = resolve(&project_id, pool.inner()).await?;
+    let host_abs = join_remote(&target.spec.remote_path, &rel_path);
+    // Host bytes now (empty if the host no longer has the file → shown as a full
+    // deletion by the diff).
+    let host_bytes = sftp::read_file_on(&sftp, &host_abs).await.unwrap_or_default();
+    let mirror_path = mirror_local_path(&project_id, &rel_path);
+    // Compute the diff LOCALLY (never over SSH — the mirror is on disk and the
+    // host bytes are already in memory). Off the async thread: git spawns a
+    // subprocess.
+    let rel = rel_path.clone();
+    tokio::task::spawn_blocking(move || diff_mirror_vs_host(&mirror_path, &host_bytes, &rel))
+        .await
+        .map_err(|e| format!("sync_diff task failed: {e}"))?
 }
 
 // ── Internals ──────────────────────────────────────────────────────────────
@@ -367,40 +550,79 @@ async fn try_rsync_pull(target: &RemoteTarget, rel: &str) -> bool {
     .unwrap_or(false)
 }
 
-/// `(size, mtime)` from a local file's metadata (mtime as unix secs).
-fn local_meta(m: &std::fs::Metadata) -> (u64, Option<u64>) {
-    let mtime = m
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs());
-    (m.len(), mtime)
-}
+/// Produce a unified diff of `mirror_path` (old / "local") vs `host_bytes`
+/// (new / "host") using local `git diff --no-index`. `git` is a hard dependency
+/// and `--no-index` works outside any repo, exiting non-zero when the files
+/// differ (the normal case) — so non-empty stdout is treated as success,
+/// mirroring `git_diff_file_blocking`. The host bytes are staged in a temp file;
+/// an absent mirror (never pulled) diffs against an empty temp file so it shows
+/// as all-additions. The temp/abs paths in the header lines are rewritten to
+/// friendly `local/<rel>` / `host/<rel>` labels. Returns "" when identical.
+fn diff_mirror_vs_host(
+    mirror_path: &std::path::Path,
+    host_bytes: &[u8],
+    rel: &str,
+) -> Result<String, String> {
+    use std::io::Write;
+    let mut host_tmp = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+    host_tmp.write_all(host_bytes).map_err(|e| e.to_string())?;
+    host_tmp.flush().map_err(|e| e.to_string())?;
+    let host_tmp_path = host_tmp.path().to_string_lossy().into_owned();
 
-/// Borrow (loading from disk on first touch) the project's manifest from the
-/// single-writer cache.
-fn ensure_loaded<'a>(
-    cache: &'a mut std::collections::HashMap<String, Manifest>,
-    project_id: &str,
-) -> &'a mut Manifest {
-    cache
-        .entry(project_id.to_string())
-        .or_insert_with(|| remote_sync::load_manifest(project_id))
-}
+    // Old side: the mirror file if present, else an empty temp stand-in for
+    // /dev/null (portable across platforms). Both temps stay alive until the git
+    // call returns below.
+    let empty_tmp = if mirror_path.exists() {
+        None
+    } else {
+        Some(tempfile::NamedTempFile::new().map_err(|e| e.to_string())?)
+    };
+    let mirror_arg = match &empty_tmp {
+        Some(t) => t.path().to_string_lossy().into_owned(),
+        None => mirror_path.to_string_lossy().into_owned(),
+    };
 
-/// `(size, mtime)` of a local file's metadata, defaulting to `(0, None)`.
-fn local_size_mtime(meta: Option<std::fs::Metadata>) -> (u64, Option<u64>) {
-    match meta {
-        Some(m) => {
-            let mtime = m
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs());
-            (m.len(), mtime)
+    let out = crate::paths::command_no_window("git")
+        .args(["diff", "--no-index", "--", &mirror_arg, &host_tmp_path])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    if stdout.is_empty() {
+        // Zero exit + no output = identical. Non-zero + no output = a real error.
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).to_string());
         }
-        None => (0, None),
+        return Ok(String::new());
     }
+    Ok(rewrite_diff_labels(&stdout, rel))
+}
+
+/// Rewrite the temp/abs paths in a `git diff --no-index` output to friendly
+/// `a/local/<rel>` and `b/host/<rel>` header labels. Operates on the header LINES
+/// (not raw substrings): git formats an absolute path as `a/tmp/…` — the leading
+/// `/` folds into the `a/` prefix, so a naive path replacement would eat the
+/// prefix. The frontend's diff parser strips the `a/`/`b/` prefixes, leaving a
+/// clean `local/<rel>` / `host/<rel>` shown in the diff header.
+fn rewrite_diff_labels(diff: &str, rel: &str) -> String {
+    let local = format!("local/{rel}");
+    let host = format!("host/{rel}");
+    let mut out = String::with_capacity(diff.len());
+    for line in diff.split_inclusive('\n') {
+        let trimmed = line.strip_suffix('\n').unwrap_or(line);
+        let nl = if line.ends_with('\n') { "\n" } else { "" };
+        if trimmed.starts_with("diff --git ") {
+            out.push_str(&format!("diff --git a/{local} b/{host}{nl}"));
+        } else if trimmed.starts_with("--- ") {
+            out.push_str(&format!("--- a/{local}{nl}"));
+        } else if trimmed.starts_with("+++ ") {
+            out.push_str(&format!("+++ b/{host}{nl}"));
+        } else if trimmed.starts_with("Binary files ") {
+            out.push_str(&format!("Binary files a/{local} and b/{host} differ{nl}"));
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// Emit one `sync-progress` event (best-effort).
@@ -415,4 +637,41 @@ fn emit(app: &AppHandle, project_id: &str, phase: &str, rel_path: &str, done: us
             total,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rewrite_diff_labels;
+
+    #[test]
+    fn rewrite_diff_labels_relabels_both_sides() {
+        // Real `git diff --no-index` output for two absolute temp paths: git folds
+        // the leading `/` into the `a/`/`b/` prefix (`a/tmp/.mirrorAAA`).
+        let raw = "\
+diff --git a/tmp/.mirrorAAA b/tmp/.hostBBB
+index 3367afd..3e75765 100644
+--- a/tmp/.mirrorAAA
++++ b/tmp/.hostBBB
+@@ -1 +1 @@
+-old
++new
+";
+        let out = rewrite_diff_labels(raw, "src/main.rs");
+        // Header lines carry friendly labels; the parser strips git's a/ b/
+        // prefixes, leaving `local/…` / `host/…`. Body/hunk lines are untouched.
+        assert!(out.contains("diff --git a/local/src/main.rs b/host/src/main.rs"), "got: {out}");
+        assert!(out.contains("--- a/local/src/main.rs"), "got: {out}");
+        assert!(out.contains("+++ b/host/src/main.rs"), "got: {out}");
+        assert!(out.contains("-old"), "got: {out}");
+        assert!(out.contains("+new"), "got: {out}");
+        assert!(!out.contains(".mirrorAAA"));
+        assert!(!out.contains(".hostBBB"));
+    }
+
+    #[test]
+    fn rewrite_diff_labels_handles_binary() {
+        let raw = "diff --git a/tmp/x b/tmp/y\nBinary files a/tmp/x and b/tmp/y differ\n";
+        let out = rewrite_diff_labels(raw, "data/img.png");
+        assert!(out.contains("Binary files a/local/data/img.png and b/host/data/img.png differ"), "got: {out}");
+    }
 }

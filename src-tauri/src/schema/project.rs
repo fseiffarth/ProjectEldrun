@@ -193,8 +193,8 @@ pub struct Project {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteSpec>,
     /// For a remote (SSH) project, the local mirror root — the paired local
-    /// working copy synced from the host. Chosen at import (defaults to an
-    /// `ssh/<name>` subfolder of the projects root) and relocatable via the
+    /// working copy synced from the host. Chosen at import (defaults to a
+    /// `<name>` subfolder of the top-level `eldrun/projects-ssh/` root) and relocatable via the
     /// pill's "Show on disk" when the mirror has been deleted. Absent for local
     /// projects and for remote projects predating configurable mirrors, which
     /// fall back to the default under the state dir. Mirrored into the

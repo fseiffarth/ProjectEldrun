@@ -1,7 +1,8 @@
 //! Local mirror + selective bidirectional sync for remote (SSH) projects.
 //!
 //! SSH-sync Phase 1 (`docs/ssh_sync_plan.md`). Every remote project has a local
-//! paired **mirror** — by default an `ssh/<name>` subfolder of the projects root
+//! paired **mirror** — by default a `<name>` subfolder of the top-level
+//! `eldrun/projects-ssh/` root
 //! (legacy/fallback: `<state_dir>/remote-projects/<id>/mirror/`), relocatable per
 //! project via `extra["mirror"]` (see [`mirror_dir`]) — that starts empty and is
 //! populated only by **explicit, user-chosen** sync. This module is
@@ -66,6 +67,14 @@ pub struct SyncEntry {
     /// When this path was last pushed local→host (unix secs; Phase 2).
     #[serde(default)]
     pub last_push_ts: Option<u64>,
+    /// Whether this path auto-syncs (bidirectional, safe-direction-only — the
+    /// background reconcile engine keeps it in sync without a click). Implies
+    /// `selected`. On a **directory** marker it applies to the whole subtree; the
+    /// per-file entries the engine creates on transfer are NOT stamped (auto-ness
+    /// is derived from the nearest marker by `is_auto`), so a file synced under a
+    /// manually-selected folder stays non-auto.
+    #[serde(default)]
+    pub auto_sync: bool,
 }
 
 /// A project's manifest: project-relative path → record.
@@ -113,7 +122,7 @@ fn default_mirror_dir(project_id: &str) -> PathBuf {
 
 /// A remote project's explicitly-chosen mirror root, read from the always-local
 /// `projects.json` entry's flattened `extra["mirror"]` (written at import — where
-/// it defaults to an `ssh/<name>` subfolder of the projects root — and rewritten
+/// it defaults to a `<name>` subfolder of the top-level `eldrun/projects-ssh/` root — and rewritten
 /// when the user relocates a deleted mirror). `None` when unset. Read from the
 /// global list rather than the per-project `project.json` for the same reason as
 /// `remote::remote_target_for`: the global list is always on the local disk.
@@ -188,17 +197,101 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// The green/amber state for a SELECTED file given a fresh host re-stat. Green
-/// when the host base still matches what we pulled; amber when the host moved
-/// since (size or mtime differs from the recorded base). Pure, unit-tested.
-pub fn compute_state(entry: &SyncEntry, host_size: u64, host_mtime: Option<u64>) -> SyncState {
+/// The green/amber state for a SELECTED file, judged SYMMETRICALLY against both
+/// bases: amber when the host moved from its recorded base (`host` re-stat differs
+/// from `entry.host_*`) OR the local mirror moved from its recorded base (`local`
+/// re-stat differs from `entry.local_*`); green only when neither side diverged.
+/// `host` is `None` when the host wasn't stat'd (cold pool) — then only the local
+/// side is judged (no network needed). `local` is `None` when the mirror file is
+/// gone; a missing mirror we had previously synced counts as diverged (deleted
+/// locally). Pure, unit-tested.
+pub fn compute_state(
+    entry: &SyncEntry,
+    host: Option<(u64, Option<u64>)>,
+    local: Option<(u64, Option<u64>)>,
+) -> SyncState {
     if !entry.selected {
         return SyncState::None;
     }
-    if entry.host_size == host_size && entry.host_mtime == host_mtime {
-        SyncState::Green
-    } else {
+    let (host_diverged, local_diverged) = divergence(entry, host, local);
+    if host_diverged || local_diverged {
         SyncState::Amber
+    } else {
+        SyncState::Green
+    }
+}
+
+/// `(host_diverged, local_diverged)` vs the recorded bases — the same rule
+/// `compute_state` collapses into green/amber, but kept as two distinct booleans
+/// so the auto-sync engine can pick the SAFE direction (pull when only the host
+/// moved, push when only the local moved, skip when both = amber/conflict).
+/// `host` is `None` when the host wasn't stat'd (cold pool) → host side not
+/// flagged. `local` is `None` when the mirror file is gone; a missing mirror we
+/// had previously synced counts as diverged (deleted locally). Pure, unit-tested.
+pub fn divergence(
+    entry: &SyncEntry,
+    host: Option<(u64, Option<u64>)>,
+    local: Option<(u64, Option<u64>)>,
+) -> (bool, bool) {
+    let host_diverged = match host {
+        Some((size, mtime)) => entry.host_size != size || entry.host_mtime != mtime,
+        None => false, // couldn't check the host → don't flag host divergence
+    };
+    let local_diverged = match local {
+        Some((size, mtime)) => entry.local_size != size || entry.local_mtime != mtime,
+        // Mirror gone but we had synced it before → deleted locally = diverged.
+        None => entry.last_pull_ts.is_some() || entry.last_push_ts.is_some(),
+    };
+    (host_diverged, local_diverged)
+}
+
+/// Whether `rel` auto-syncs: its own entry, or any ancestor **directory** entry,
+/// carries `auto_sync`. Folder markers imply their whole subtree, so a file with
+/// no entry of its own is auto when it lives under an auto folder. Pure.
+pub fn is_auto(manifest: &Manifest, rel: &str) -> bool {
+    if manifest.get(rel).map(|e| e.auto_sync).unwrap_or(false) {
+        return true;
+    }
+    let mut cur = rel;
+    while let Some(idx) = cur.rfind('/') {
+        cur = &cur[..idx];
+        if manifest
+            .get(cur)
+            .map(|e| e.auto_sync && e.is_dir)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Borrow (loading from disk on first touch) the project's manifest from the
+/// single-writer cache. Shared by the command layer and the auto-sync engine.
+pub fn ensure_loaded<'a>(
+    cache: &'a mut HashMap<String, Manifest>,
+    project_id: &str,
+) -> &'a mut Manifest {
+    cache
+        .entry(project_id.to_string())
+        .or_insert_with(|| load_manifest(project_id))
+}
+
+/// `(size, mtime)` from a local file's metadata (mtime as unix secs).
+pub fn local_meta(m: &std::fs::Metadata) -> (u64, Option<u64>) {
+    let mtime = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    (m.len(), mtime)
+}
+
+/// `(size, mtime)` of a local file's metadata, defaulting to `(0, None)`.
+pub fn local_size_mtime(meta: Option<std::fs::Metadata>) -> (u64, Option<u64>) {
+    match meta {
+        Some(m) => local_meta(&m),
+        None => (0, None),
     }
 }
 
@@ -756,9 +849,15 @@ mod tests {
             selected: true,
             host_size: 10,
             host_mtime: Some(100),
+            local_size: 10,
+            local_mtime: Some(50),
             ..Default::default()
         };
-        assert_eq!(compute_state(&e, 10, Some(100)), SyncState::Green);
+        // Both host and local match their recorded bases → green.
+        assert_eq!(
+            compute_state(&e, Some((10, Some(100))), Some((10, Some(50)))),
+            SyncState::Green,
+        );
     }
 
     #[test]
@@ -767,18 +866,48 @@ mod tests {
             selected: true,
             host_size: 10,
             host_mtime: Some(100),
+            local_size: 10,
+            local_mtime: Some(50),
             ..Default::default()
         };
-        // Size changed.
-        assert_eq!(compute_state(&e, 12, Some(100)), SyncState::Amber);
-        // Mtime changed.
-        assert_eq!(compute_state(&e, 10, Some(200)), SyncState::Amber);
+        // Host size changed (local unchanged).
+        assert_eq!(
+            compute_state(&e, Some((12, Some(100))), Some((10, Some(50)))),
+            SyncState::Amber,
+        );
+        // Host mtime changed (local unchanged).
+        assert_eq!(
+            compute_state(&e, Some((10, Some(200))), Some((10, Some(50)))),
+            SyncState::Amber,
+        );
+    }
+
+    #[test]
+    fn compute_state_amber_when_local_moved() {
+        let e = SyncEntry {
+            selected: true,
+            host_size: 10,
+            host_mtime: Some(100),
+            local_size: 10,
+            local_mtime: Some(50),
+            last_pull_ts: Some(1),
+            ..Default::default()
+        };
+        // Host still matches its base, but the local mirror mtime moved → amber.
+        assert_eq!(
+            compute_state(&e, Some((10, Some(100))), Some((10, Some(80)))),
+            SyncState::Amber,
+        );
+        // Also amber offline (host not stat'd) when the local size moved.
+        assert_eq!(compute_state(&e, None, Some((12, Some(50)))), SyncState::Amber);
+        // Mirror deleted after a prior sync → diverged.
+        assert_eq!(compute_state(&e, Some((10, Some(100))), None), SyncState::Amber);
     }
 
     #[test]
     fn compute_state_none_when_unselected() {
         let e = SyncEntry { selected: false, ..Default::default() };
-        assert_eq!(compute_state(&e, 0, None), SyncState::None);
+        assert_eq!(compute_state(&e, Some((0, None)), None), SyncState::None);
     }
 
     #[test]
@@ -798,5 +927,73 @@ mod tests {
     fn mirror_path_joins_under_mirror() {
         let p = mirror_local_path("pid", "a/b.txt");
         assert!(p.ends_with("remote-projects/pid/mirror/a/b.txt"));
+    }
+
+    #[test]
+    fn divergence_splits_the_two_sides() {
+        let e = SyncEntry {
+            selected: true,
+            host_size: 10,
+            host_mtime: Some(100),
+            local_size: 10,
+            local_mtime: Some(50),
+            last_pull_ts: Some(1),
+            ..Default::default()
+        };
+        // Neither side moved → (false, false).
+        assert_eq!(
+            divergence(&e, Some((10, Some(100))), Some((10, Some(50)))),
+            (false, false)
+        );
+        // Host moved only → (true, false): the auto engine pulls.
+        assert_eq!(
+            divergence(&e, Some((12, Some(100))), Some((10, Some(50)))),
+            (true, false)
+        );
+        // Local moved only → (false, true): the auto engine pushes.
+        assert_eq!(
+            divergence(&e, Some((10, Some(100))), Some((10, Some(80)))),
+            (false, true)
+        );
+        // Both moved → (true, true): amber, skipped by the auto engine.
+        assert_eq!(
+            divergence(&e, Some((12, Some(100))), Some((10, Some(80)))),
+            (true, true)
+        );
+        // Host not stat'd (cold) → host side never flagged.
+        assert_eq!(divergence(&e, None, Some((10, Some(50)))), (false, false));
+    }
+
+    #[test]
+    fn is_auto_follows_own_entry_and_ancestor_folder_markers() {
+        let mut m = Manifest::new();
+        // A file with its own auto flag.
+        m.insert(
+            "solo.txt".to_string(),
+            SyncEntry { selected: true, auto_sync: true, ..Default::default() },
+        );
+        // An auto folder marker; its descendants inherit auto even with no entry.
+        m.insert(
+            "src".to_string(),
+            SyncEntry { selected: true, is_dir: true, auto_sync: true, ..Default::default() },
+        );
+        // A NON-auto folder marker; its descendants are not auto.
+        m.insert(
+            "vendor".to_string(),
+            SyncEntry { selected: true, is_dir: true, ..Default::default() },
+        );
+
+        assert!(is_auto(&m, "solo.txt"));
+        assert!(is_auto(&m, "src/main.rs")); // inherits from src/
+        assert!(is_auto(&m, "src/a/b/deep.rs")); // any depth under an auto folder
+        assert!(!is_auto(&m, "vendor/lib.rs")); // ancestor folder not auto
+        assert!(!is_auto(&m, "other.txt")); // no entry, no auto ancestor
+
+        // A plain FILE entry named like a dir must not act as a folder marker.
+        m.insert(
+            "notadir".to_string(),
+            SyncEntry { selected: true, auto_sync: true, is_dir: false, ..Default::default() },
+        );
+        assert!(!is_auto(&m, "notadir/child.rs"));
     }
 }

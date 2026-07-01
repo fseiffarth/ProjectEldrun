@@ -14,6 +14,7 @@ import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
+import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { QuickOpen } from "../files/QuickOpen";
 import { HintHost } from "./HintHost";
 import { TourHost } from "./TourHost";
@@ -38,7 +39,7 @@ import { useKeyboard } from "../../hooks/useKeyboard";
 // the OS resize border swallows mousemove events for the last few edge pixels —
 // a 2px strip there is unreachable, so the panel never opened. A wider band is
 // crossed on the way to the edge, so the reveal fires before the dead-zone.
-const REVEAL_EDGE_PX = 24;
+const REVEAL_EDGE_PX = 8;
 
 // Right-panel width bounds. The default matches the historical fixed 280px so
 // existing installs (no stored width) look unchanged; the max is capped against
@@ -443,7 +444,10 @@ export function AppShell() {
     <div className="app-shell">
       <HeaderBar />
       {switchToast != null && (
-        <div key={switchToast} className="project-switch-toast">{switchToast}</div>
+        <div
+          key={switchToast}
+          className={`project-switch-toast${switchToast.includes("\n") ? " multiline" : ""}`}
+        >{switchToast}</div>
       )}
       {connToast != null && (
         <div key={connToast} className="project-switch-toast conn-toast">{connToast}</div>
@@ -475,6 +479,7 @@ export function AppShell() {
         )}
       </div>
       <VpnPasswordPrompt />
+      <RemoteConnectDialog />
       <QuickOpen />
       <HintHost />
       <TourHost />

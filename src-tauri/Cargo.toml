@@ -1,6 +1,6 @@
 [package]
 name = "eldrun"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 
 [lib]
@@ -39,6 +39,9 @@ arboard = "3"
 png = "0.17"
 calamine = "0.35.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
+# Stage host file bytes on disk so `git diff --no-index` can diff the local mirror
+# against the current host copy (SSH-sync host-vs-mirror diff button).
+tempfile = "3"
 # Extract dropped/double-clicked .zip archives in place (deflate covers the vast
 # majority of real-world zips; "stored" entries need no feature).
 zip = { version = "2", default-features = false, features = ["deflate"] }

@@ -2,10 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import {
+  formatRemoteTarget,
+  resolveLocalMirror,
   resolveProjectDirectory,
   type GitHostingInfo,
   type GitProvider,
   type ProjectEntry,
+  type RemoteSpec,
 } from "../types";
 import {
   cmdToKind,
@@ -18,6 +21,7 @@ import { useTimerStore } from "./timer";
 import { useVpnPromptStore } from "./vpnPrompt";
 import { useSettingsStore } from "./settings";
 import { useRemoteStatusStore } from "./remoteStatus";
+import { useConnectDialogStore } from "./connectDialog";
 import { openConnectionInRoot } from "../lib/remoteConnect";
 
 /**
@@ -69,10 +73,22 @@ async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<voi
       status.setVpn(projectId, "connected");
       return;
     }
+    status.setVpn(projectId, "connecting");
+    // Silent auto-connect: if the user opted to save this VPN's passphrase, the
+    // backend brings the tunnel up from the OS keychain with no prompt. A missing
+    // (or no-longer-valid) saved passphrase errors out cheaply, so we fall through
+    // to the modal below.
+    try {
+      await invoke("openvpn_connect", { config, password: null, remember: false });
+      useRemoteStatusStore.getState().setVpn(projectId, "connected");
+      useProjectsStore.setState({ connToast: `VPN connected · ${project!.name}` });
+      return;
+    } catch {
+      // No saved passphrase (or it failed) — prompt for it.
+    }
     // The prompt store now owns the connect, so a failed tunnel is shown in the
     // modal (with a retry) rather than failing silently here. `request` resolves
     // only once the tunnel is up; a cancel rejects and we fall through.
-    status.setVpn(projectId, "connecting");
     await useVpnPromptStore.getState().request(config, project!.name);
     useRemoteStatusStore.getState().setVpn(projectId, "connected");
     useProjectsStore.setState({ connToast: `VPN connected · ${project!.name}` });
@@ -187,18 +203,13 @@ function dropRemotePool(projectId: string): void {
 }
 
 /**
- * Manually (re)establish a remote project's connection: bring its OpenVPN tunnel
- * up (if any), open the interactive SSH login (non-headless), then open the
- * pooled SSH/SFTP connection. Invoked by the header connection-lamp menu and the
- * center "Disconnected" placeholder.
- *
- * Remote projects deliberately start DISCONNECTED — they are no longer
- * auto-connected on launch or switch. Auto-connecting raced the tab restore: the
- * restored `ssh -tt` PTYs and SFTP file listings fired against a not-yet-
- * authenticated pool and blocked (the "hang on restore"). The CenterPanel
- * restore effect is now gated on the pooled SSH status reaching "connected", so
- * the saved tabs are restored only once this reconnect succeeds. No-op for local
- * projects or if the user switched away mid-connect.
+ * Programmatic one-shot (re)connect for a remote project: bring its OpenVPN
+ * tunnel up (if any), open the interactive SSH login (non-headless), then open
+ * the pooled SSH/SFTP connection. The interactive Connect UI is now the
+ * `RemoteConnectDialog` modal (opened from the pill's connection lamp), which
+ * drives the same building blocks with visible progress; this remains as a
+ * headless programmatic entry point. No-op for local projects or if the user
+ * switched away mid-connect.
  */
 export async function reconnectRemote(projectId: string): Promise<void> {
   const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
@@ -262,8 +273,20 @@ interface ProjectsStore {
   addProject: (project: ProjectEntry) => Promise<void>;
   activateProject: (id: string) => Promise<void>;
   deactivateProject: (id: string) => Promise<void>;
+  /** Delete a project: tear down all its Eldrun-side connections/state and move
+   * it into the archive (`~/eldrun/archive/<id>/`). Reversible from Settings; the
+   * remote host tree of an SSH project is never touched. */
+  archiveProject: (id: string) => Promise<void>;
   updateProjectDescription: (id: string, description: string) => Promise<void>;
   renameProject: (id: string, name: string) => Promise<void>;
+  /** Relocate a remote (SSH) project's local mirror folder into `parentDir`
+   * (the folder is moved to `<parentDir>/<name>`). Returns the new mirror path. */
+  moveRemoteMirror: (id: string, name: string, parentDir: string) => Promise<string>;
+  /** Attach a remote (SSH) spec to an existing local project. The project's
+   * current local directory becomes its local mirror in place (no data upload);
+   * the empty remote root is created on the host. Returns the updated entry,
+   * which is a disconnected remote project (user reconnects via the pill lamp). */
+  extendProjectToRemote: (id: string, remote: RemoteSpec) => Promise<void>;
   setProjectSandbox: (id: string, enabled: boolean) => Promise<void>;
   /** Replace a project's category tags (color/group it in the cloud + pills).
    * Backend cleans + dedupes; mirrors the cleaned list into local state. */
@@ -323,13 +346,10 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       rightPanelFolderByProject,
     });
     // The initially-active remote project is intentionally NOT auto-connected on
-    // launch. Doing so raced the tab restore — the restored `ssh -tt` PTYs and
-    // SFTP file listings fired against a not-yet-authenticated pool and blocked
-    // (the "hang on restore"). It starts DISCONNECTED (no status entry → "off"
-    // lamp), and the CenterPanel restore effect is gated on the pool reaching
-    // "connected": the header lamp's Reconnect (or the center "Disconnected"
-    // placeholder) brings the pool up via `reconnectRemote`, and only then are
-    // the saved tabs restored.
+    // launch. Its saved tabs DO restore (local tabs run on the mirror offline),
+    // but any REMOTE pane is held until the pool is up — the user brings it up
+    // from the pill's connection lamp (the `RemoteConnectDialog` modal). It
+    // starts DISCONNECTED (no status entry → "off" lamp).
   },
 
   setActive: async (id) => {
@@ -374,7 +394,17 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       } else {
         const proj = state.projects.find((p) => p.id === id);
         if (proj) {
-          toastPath = resolveProjectDirectory(proj) || proj.name;
+          if (proj.remote) {
+            // A remote (SSH) project lives in two places — show both: the
+            // paired local working copy ("mirror", ~/eldrun/projects/ssh/…) and
+            // the remote target (user@host:remote_path). Rendered as two lines
+            // (AppShell adds a `multiline` class when it sees the newline).
+            const local =
+              resolveLocalMirror(proj) || resolveProjectDirectory(proj) || proj.name;
+            toastPath = `local   ${local}\nremote  ${formatRemoteTarget(proj.remote)}`;
+          } else {
+            toastPath = resolveProjectDirectory(proj) || proj.name;
+          }
         }
       }
       return {
@@ -387,9 +417,9 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     await invoke<void>("save_projects", { projects: nextProjects });
     void useTimerStore.getState().setProject(id);
     // Switching TO a remote project does NOT auto-connect it (same reason as the
-    // initial-load path): the restore would race a not-yet-authenticated pool and
-    // hang. The project surfaces disconnected; the user brings the pool up via the
-    // header lamp's Reconnect (`reconnectRemote`), which then un-gates the restore.
+    // initial-load path). It surfaces disconnected: local tabs restore and work
+    // on the mirror, while remote panes are held until the user brings the pool
+    // up from the pill's connection lamp (the `RemoteConnectDialog` modal).
     // Fire-and-forget: the switch runs on a backend worker thread and returns
     // immediately. The resulting tab layout / right-panel folder arrives via the
     // `project-runtime-switched` event, handled by listenProjectRuntimeSwitched.
@@ -533,6 +563,52 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     }
   },
 
+  archiveProject: async (id) => {
+    const entry = get().projects.find((p) => p.id === id);
+    if (!entry) return;
+
+    // ── Tear down all Eldrun-side connections/state for this project ──────────
+    // Drop the pooled SSH/SFTP ControlMaster + reset its lamps (remote only).
+    if (entry.remote) dropRemotePool(id);
+    // Close its Connect modal if it happens to be targeting this project.
+    if (useConnectDialogStore.getState().projectId === id) {
+      useConnectDialogStore.getState().close();
+    }
+    // Tear down its OpenVPN tunnel, but only if no OTHER live project shares the
+    // same config (tunnels are keyed by config path and can be shared).
+    const ovpn = entry.remote?.openvpn?.config;
+    if (ovpn) {
+      const stillUsed = get().projects.some(
+        (p) => p.id !== id && p.remote?.openvpn?.config === ovpn,
+      );
+      if (!stillUsed) void invoke("openvpn_disconnect", { config: ovpn }).catch(() => {});
+    }
+    // Drop its tabs/PTYs/sessions (in memory; the folder move discards the file).
+    useTabsStore.getState().closeAllTabs(id);
+    // Remove it from any box (clears box_id on it + dissolves a now-singleton box).
+    if (entry.box_id) {
+      const { useBoxesStore } = await import("./boxes");
+      await useBoxesStore.getState().assignToBox(id, null);
+    }
+
+    // ── Move it into the archive + drop it from projects.json ────────────────
+    await invoke("archive_project", { projectId: id, archivedAt: new Date().toISOString() });
+
+    // ── Update the store: remove the pill, re-focus if it was active ──────────
+    let nextActiveId: string | null = null;
+    set((state) => {
+      const projects = state.projects.filter((p) => p.id !== id);
+      nextActiveId =
+        state.activeId === id
+          ? (projects.find((p) => p.status === "active") ?? projects[0])?.id ?? null
+          : state.activeId;
+      return { projects };
+    });
+    if (get().activeId !== nextActiveId) {
+      await get().setActive(nextActiveId);
+    }
+  },
+
   updateProjectDescription: async (id, description) => {
     // Backend cleans (trims, empties → null) and writes projects.json +
     // project.json; mirror the cleaned value into local state.
@@ -558,6 +634,35 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projects: state.projects.map((project) =>
         project.id === id ? { ...project, name: cleaned } : project,
       ),
+    }));
+  },
+
+  moveRemoteMirror: async (id, name, parentDir) => {
+    // Backend moves the mirror folder + its bytes to `<parentDir>/<name>` and
+    // persists the new pointer (projects.json `extra["mirror"]`). The mirror IS
+    // held on the entry (flattened `mirror`, read by resolveLocalMirror), so patch
+    // it in memory too — otherwise the switch toast, the disconnected file-browser
+    // pane, and local tab titles keep the old path until the next reload.
+    const newPath = await invoke<string>("move_remote_mirror", { projectId: id, name, parentDir });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id ? { ...project, mirror: newPath } : project,
+      ),
+    }));
+    return newPath;
+  },
+
+  extendProjectToRemote: async (id, remote) => {
+    // Backend attaches the remote spec, creates the empty host root, and moves
+    // the project into the mount-free remote layout (its old local dir becomes
+    // the mirror). No data is uploaded — the returned entry is a disconnected
+    // remote project. Replace the whole entry so `remote`/`mirror`/`directory`
+    // (and thus the pill lamp + file tree) update immediately.
+    const updated = await invoke<ProjectEntry>("extend_project_to_remote", {
+      req: { projectId: id, remote },
+    });
+    set((state) => ({
+      projects: state.projects.map((project) => (project.id === id ? updated : project)),
     }));
   },
 

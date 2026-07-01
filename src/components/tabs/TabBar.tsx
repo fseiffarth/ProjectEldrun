@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -24,6 +24,7 @@ import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
+import { useFileSourcesStore } from "../../stores/fileSources";
 import { OrbitSpinner } from "../common/OrbitSpinner";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
@@ -141,6 +142,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // remote (SSH) project's agent/shell tabs. Subscribe to a single boolean so a
   // project edit elsewhere doesn't re-render every bar.
   const isRemoteScope = useProjectsStore((s) => !!s.projects.find((p) => p.id === scope)?.remote);
+  // Per-tab file source (remote-native vs local mirror), published by the file
+  // viewers. Lets the Remote/Local badge ride on the viewer tab itself rather
+  // than costing a whole viewer header row. Only meaningful on remote projects.
+  const fileSources = useFileSourcesStore((s) => s.byTab);
   const closeAllTabs = useTabsStore((s) => s.closeAllTabs);
   const detachGroup = useTabsStore((s) => s.detachGroup);
   const detachTab = useTabsStore((s) => s.detachTab);
@@ -281,6 +286,28 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       document.removeEventListener("keydown", onKey);
     };
   }, [menuOpen]);
+
+  // Keep the add menu inside the viewport. It's positioned at the +'s left/bottom
+  // and grows rightward/downward, so a + near the right (or bottom) edge would push
+  // the menu past the window border and clip it off-screen. Once it's mounted we can
+  // measure its real size and shift it back in. Guarded so the corrective setMenuPos
+  // doesn't loop (it re-runs, finds nothing to fix, stops).
+  useLayoutEffect(() => {
+    if (!menuOpen || !menuPos) return;
+    const el = addMenuRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
+    let nx = menuPos.x;
+    let ny = menuPos.y;
+    if (rect.right > window.innerWidth - margin) {
+      nx = Math.max(margin, window.innerWidth - margin - rect.width);
+    }
+    if (rect.bottom > window.innerHeight - margin) {
+      ny = Math.max(margin, window.innerHeight - margin - rect.height);
+    }
+    if (nx !== menuPos.x || ny !== menuPos.y) setMenuPos({ x: nx, y: ny });
+  }, [menuOpen, menuPos]);
 
   // Drop inline-rename mode if the edited tab disappears (closed / moved away).
   useEffect(() => {
@@ -755,9 +782,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         const showMarkerBefore = isDropTarget && reorderIndex === index;
         // Files tabs have no PTY, so they never register output activity.
         const working = tab.kind !== "files" && !!busyByTab[tab.key];
-        const style: React.CSSProperties = isActive
-          ? { boxShadow: `inset 0 3px 0 ${TAB_ACCENT[tab.kind]}` }
-          : {};
+        // Expose the kind colour to CSS instead of setting box-shadow inline:
+        // plain themes draw the active rail above, while fancy themes move it
+        // below without losing the per-kind colour.
+        const style = isActive
+          ? ({ "--tab-accent": TAB_ACCENT[tab.kind] } as React.CSSProperties)
+          : undefined;
         // Agent tabs launched with a deterministic session id show it on hover.
         // This is the launch id (`--session-id <uuid>`): stable and unique per
         // tab. It does NOT follow a `/clear` (which rolls onto a new id) — that
@@ -824,6 +854,25 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             ) : (
               <span className="tab-label">{tab.label}</span>
             )}
+            {/* Viewer file-source badge — remote-native (host SFTP) vs local
+                mirror — published by FileViewerPane. Rides on the tab so it
+                costs no viewer header row; absent for local projects/tabs. */}
+            {(() => {
+              const src = fileSources[tab.key];
+              if (src !== "remote" && src !== "local") return null;
+              return (
+                <span
+                  className={`tab-source ${src}`}
+                  title={
+                    src === "remote"
+                      ? "Remote-native: read directly from the host over SFTP (no local copy)."
+                      : "Local mirror: read from this project's local synced copy of the host file."
+                  }
+                >
+                  {src === "remote" ? "☁" : "⌂"}
+                </span>
+              );
+            })()}
             {/* SSH-sync Phase 0: local/remote locality badge — click to toggle
                 whether this agent/shell tab runs in the local mirror or on the
                 host. Only shown for a remote project's locatable tabs. */}
@@ -862,6 +911,19 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       {isDropTarget && reorderIndex === tabs.length && tabs.length > 0 && (
         <Fragment key="drop-marker-end">{dropPlaceholder}</Fragment>
       )}
+      <div className="tab-new-wrap">
+        <button
+          ref={addBtnRef}
+          // When this group has no tabs, the + is the only way to get started —
+          // pulse it to draw the eye to it.
+          className={`tab-new-btn${tabs.length === 0 ? " empty-hint" : ""}`}
+          data-hint-anchor="tab-add"
+          title="New tab"
+          onClick={openAddMenu}
+        >
+          +
+        </button>
+      </div>
       </div>
       {canScrollRight && (
         <button
@@ -873,17 +935,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           ›
         </button>
       )}
-      <div className="tab-new-wrap">
-        <button
-          ref={addBtnRef}
-          className="tab-new-btn"
-          data-hint-anchor="tab-add"
-          title="New tab"
-          onClick={openAddMenu}
-        >
-          +
-        </button>
-      </div>
       {showGroupClose && (
         <button
           className="subwindow-close"

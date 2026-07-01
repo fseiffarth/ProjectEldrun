@@ -237,12 +237,28 @@ pub fn projects_root() -> PathBuf {
     home_dir().join("eldrun").join("projects")
 }
 
+/// The default parent for remote (SSH) projects' local mirrors: a top-level
+/// `eldrun/projects-ssh/` sibling of [`projects_root`], rather than a nested
+/// `projects/ssh/` subfolder. Keeps synced remote working copies out of the
+/// managed-local-projects tree.
+pub fn projects_ssh_root() -> PathBuf {
+    home_dir().join("eldrun").join("projects-ssh")
+}
+
 pub fn root_work_dir() -> PathBuf {
     home_dir().join("eldrun").join("root")
 }
 
 pub fn boxes_root() -> PathBuf {
     home_dir().join("eldrun").join("boxes")
+}
+
+/// Holding area for deleted projects: `~/eldrun/archive/<id>/`. A deleted
+/// project's local folders (and a restore manifest) move here rather than being
+/// erased, so it can be restored or permanently cleared from Settings. Only ever
+/// emptied manually from the Settings "Archived projects" panel.
+pub fn archive_root() -> PathBuf {
+    home_dir().join("eldrun").join("archive")
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
@@ -351,5 +367,18 @@ mod tests {
             .and_then(|n| n.to_str())
             .unwrap_or("");
         assert_eq!(parent, "eldrun", "boxes_root parent must be 'eldrun'");
+    }
+
+    #[test]
+    fn archive_root_ends_with_archive_under_eldrun() {
+        let dir = archive_root();
+        let last = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        assert_eq!(last, "archive", "archive_root must end in 'archive': {dir:?}");
+        let parent = dir
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        assert_eq!(parent, "eldrun", "archive_root parent must be 'eldrun'");
     }
 }

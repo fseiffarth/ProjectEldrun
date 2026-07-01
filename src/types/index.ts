@@ -78,6 +78,10 @@ export interface Settings {
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
+  /** Global UI zoom factor for the whole interface (helps on high-DPI/4K
+   *  monitors). `1` (or unset) is 100% — the default look; applied as a CSS
+   *  `zoom` on the document root. Clamped to [0.5, 3]. */
+  ui_zoom?: number;
   default_agent_cmd?: string;
   /** The default local (Ollama) model. Used by any task without its own
    *  per-task assignment in `ollama_roles`, and as the legacy "active model".
@@ -221,6 +225,18 @@ export interface ProjectEntry {
   [key: string]: unknown;
 }
 
+/** A row in the Settings "Archived projects" list (from `list_archived_projects`).
+ *  Archived projects live under `~/eldrun/archive/<id>/` until restored or
+ *  permanently cleared. */
+export interface ArchivedProject {
+  id: string;
+  name: string;
+  /** ISO timestamp the project was archived (stamped at delete time). */
+  archived_at: string;
+  /** True for remote (SSH) projects — their host tree was never touched. */
+  remote: boolean;
+}
+
 /** Supported git-hosting providers for publishing a project's repo. */
 export type GitProvider = "github" | "gitlab";
 
@@ -286,6 +302,25 @@ export function resolveProjectDirectory(project: ProjectEntry | null | undefined
   return project.local_file.endsWith("/project.json")
     ? project.local_file.slice(0, -"/project.json".length)
     : "";
+}
+
+/**
+ * Format a remote project's location as `user@host:remote_path` (the `user@`
+ * prefix is dropped when no user is set). Port is intentionally omitted — this
+ * is an at-a-glance display string, and `host:port:path` would be ambiguous.
+ */
+export function formatRemoteTarget(remote: RemoteSpec): string {
+  return `${remote.user ? `${remote.user}@` : ""}${remote.host}:${remote.remote_path}`;
+}
+
+/**
+ * The paired local working-copy ("mirror") path for a remote project, read from
+ * the flattened `extra["mirror"]` field mirrored onto the entry. Returns null
+ * when unset (legacy remote projects created before the mirror was persisted).
+ */
+export function resolveLocalMirror(project: ProjectEntry | null | undefined): string | null {
+  const mirror = project?.mirror;
+  return typeof mirror === "string" && mirror.trim() ? mirror : null;
 }
 
 export type Theme = "fancy_dark" | "dark" | "light" | "fancy_light";

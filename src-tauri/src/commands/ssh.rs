@@ -95,6 +95,61 @@ pub fn ssh_remember_address(address: String) -> Result<(), String> {
     crate::storage::write_json(&ssh_addresses_path(), &merged).map_err(|e| e.to_string())
 }
 
+/// Most-recently-used remote paths to keep, per host. Old entries past this
+/// fall off.
+const REMOTE_PATH_CAP: usize = 20;
+
+/// File backing the recently-used remote-path lists, keyed by host
+/// (case-insensitive) so a path picked on one host isn't suggested for another.
+fn remote_paths_path() -> std::path::PathBuf {
+    crate::storage::state_dir().join("remote_paths.json")
+}
+
+/// Merge `path` into `existing` as a most-recently-used list: drop any prior
+/// exact-match duplicate (paths are case-sensitive, unlike hostnames), prepend
+/// the new value, and cap the length. Pure so the dedupe/cap policy is
+/// unit-tested without touching disk.
+fn merge_recent_path(existing: Vec<String>, path: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(existing.len() + 1);
+    out.push(path.to_string());
+    for e in existing {
+        if e != path {
+            out.push(e);
+        }
+    }
+    out.truncate(REMOTE_PATH_CAP);
+    out
+}
+
+/// Previously-used remote paths for `host` (most-recent first), so the project
+/// dialog can offer them for reuse instead of re-browsing. Best-effort: a
+/// missing or corrupt store, or a host with no history, yields an empty list.
+#[tauri::command]
+pub fn remote_list_paths(host: String) -> Vec<String> {
+    let store: std::collections::HashMap<String, Vec<String>> =
+        crate::storage::read_json(&remote_paths_path()).unwrap_or_default();
+    store.get(&host.to_lowercase()).cloned().unwrap_or_default()
+}
+
+/// Remember `path` as the most-recently-used remote path for `host`. Trims and
+/// validates it (rejecting blanks, option-looking values, and control chars) so
+/// we never persist something the browse/connect path couldn't use, then moves
+/// it to the front of that host's recents list.
+#[tauri::command]
+pub fn remote_remember_path(host: String, path: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("empty remote path".to_string());
+    }
+    crate::services::ssh_common::validate_arg("remote path", trimmed)?;
+    let key = host.to_lowercase();
+    let mut store: std::collections::HashMap<String, Vec<String>> =
+        crate::storage::read_json(&remote_paths_path()).unwrap_or_default();
+    let existing = store.remove(&key).unwrap_or_default();
+    store.insert(key, merge_recent_path(existing, trimmed));
+    crate::storage::write_json(&remote_paths_path(), &store).map_err(|e| e.to_string())
+}
+
 /// Open a web URL in the user's default browser. Refuses anything that is not an
 /// `http(s)` URL so it cannot be turned into a launcher for arbitrary local files
 /// or schemes.
@@ -192,18 +247,58 @@ pub fn remote_login_command(
 /// few seconds against a still-authenticating master. Running it on a blocking
 /// worker keeps the UI responsive (e.g. the SSH-login button stays clickable while
 /// the OpenVPN tunnel is coming up).
+///
+/// `remember` opts into saving the working password in the OS keychain (keyed by
+/// the host target) for no-prompt reconnects; it is written **only after auth
+/// succeeds**. A `None`/empty `password` first falls back to any saved credential
+/// (silent reconnect) before dropping to key/agent auth. Unticking (`remember =
+/// false`) clears any previously-saved password.
 #[tauri::command]
 pub async fn ssh_connect(
     user: Option<String>,
     host: String,
     port: Option<u16>,
     password: Option<String>,
+    remember: Option<bool>,
 ) -> Result<(), String> {
+    let remember = remember.unwrap_or(false);
     tokio::task::spawn_blocking(move || {
-        run_ssh_auth(&user, &host, port, password.as_deref(), &["true"]).map(|_| ())
+        use crate::services::remote_credentials as creds;
+        let account = creds::ssh_account(&user, &host, port);
+        // A typed password wins; otherwise fall back to a saved one so an
+        // activation-time reconnect authenticates without a prompt.
+        let effective = password
+            .filter(|p| !p.is_empty())
+            .or_else(|| creds::get(&account));
+        run_ssh_auth(&user, &host, port, effective.as_deref(), &["true"])?;
+        // Auth succeeded — persist (opt-in) or clear per the checkbox. Best-effort:
+        // a keychain write failure must not fail an already-successful connect.
+        let to_store = if remember { effective.as_deref() } else { None };
+        let _ = creds::set(&account, to_store);
+        Ok(())
     })
     .await
     .map_err(|e| format!("ssh probe task failed: {e}"))?
+}
+
+/// Whether a saved SSH password exists for this host target, so the UI can
+/// pre-check the "Save password" box and show "saved" without ever receiving the
+/// secret itself.
+#[tauri::command]
+pub fn remote_has_saved_password(user: Option<String>, host: String, port: Option<u16>) -> bool {
+    let account = crate::services::remote_credentials::ssh_account(&user, &host, port);
+    crate::services::remote_credentials::has(&account)
+}
+
+/// Forget any saved SSH password for this host target (explicit "clear" action).
+#[tauri::command]
+pub fn remote_forget_password(
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+) -> Result<(), String> {
+    let account = crate::services::remote_credentials::ssh_account(&user, &host, port);
+    crate::services::remote_credentials::set(&account, None)
 }
 
 /// Return the remote default (home) directory as the browser's start location.
@@ -374,5 +469,36 @@ mod tests {
         assert_eq!(out[0], "newest");
         // The oldest entry ("h19") is dropped to make room.
         assert!(!out.iter().any(|a| a == &format!("h{}", SSH_ADDRESS_CAP - 1)));
+    }
+
+    // ── merge_recent_path (recently-used remote paths, per host) ───────────
+
+    #[test]
+    fn merge_recent_path_prepends_new_path() {
+        let out = merge_recent_path(vec!["/a".to_string(), "/b".to_string()], "/c");
+        assert_eq!(out, vec!["/c", "/a", "/b"]);
+    }
+
+    #[test]
+    fn merge_recent_path_moves_existing_to_front_without_duplicating() {
+        let out = merge_recent_path(vec!["/a".to_string(), "/b".to_string()], "/b");
+        assert_eq!(out, vec!["/b", "/a"]);
+    }
+
+    #[test]
+    fn merge_recent_path_dedup_is_case_sensitive() {
+        // Unlike hostnames, remote filesystem paths are case-sensitive — "/Foo"
+        // and "/foo" are different directories on Linux, so both must survive.
+        let out = merge_recent_path(vec!["/Foo".to_string()], "/foo");
+        assert_eq!(out, vec!["/foo", "/Foo"]);
+    }
+
+    #[test]
+    fn merge_recent_path_caps_length_keeping_newest() {
+        let existing: Vec<String> = (0..REMOTE_PATH_CAP).map(|i| format!("/p{i}")).collect();
+        let out = merge_recent_path(existing, "/newest");
+        assert_eq!(out.len(), REMOTE_PATH_CAP);
+        assert_eq!(out[0], "/newest");
+        assert!(!out.iter().any(|a| a == &format!("/p{}", REMOTE_PATH_CAP - 1)));
     }
 }

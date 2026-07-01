@@ -45,6 +45,10 @@ export type InternalViewer =
   | "table"
   | "notebook"
   | "diff"
+  // SSH-sync host-vs-mirror diff. Never auto-selected by extension — only opened
+  // explicitly from a diverged (amber) file's diff button; routed to `DiffView`
+  // in sync mode (backend `sync_diff`).
+  | "syncdiff"
   | "odt"
   | "media"
   | "html"

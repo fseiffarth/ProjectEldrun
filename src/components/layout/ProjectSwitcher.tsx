@@ -40,6 +40,8 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanelKind>("main");
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [dialog, setDialog] = useState<"new" | "import" | null>(null);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
+  const addMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) {
@@ -49,6 +51,32 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
       setDialog(null);
     }
   }, [open]);
+
+  // Dismiss the ⚙/+ dropdowns on any pointer press outside their wrap (the
+  // wraps stopPropagation, so the in-bar onClick alone never catches a click
+  // elsewhere in the app) or on Escape. Mirrors common/Dropdown.tsx.
+  useEffect(() => {
+    if (!showSettingsMenu && !showAddMenu) return;
+    const onDocPointer = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (settingsMenuRef.current?.contains(target)) return;
+      if (addMenuRef.current?.contains(target)) return;
+      setShowSettingsMenu(false);
+      setShowAddMenu(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setShowSettingsMenu(false);
+        setShowAddMenu(false);
+      }
+    };
+    document.addEventListener("pointerdown", onDocPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDocPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [showSettingsMenu, showAddMenu]);
   const pillsScrollRef = useRef<HTMLDivElement>(null);
   const [pillOverflow, setPillOverflow] = useState({ left: false, right: false });
 
@@ -383,7 +411,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         </div>
         <div className="project-switcher-separator" />
 
-        <div className="project-switcher-add-wrap" onClick={(e) => e.stopPropagation()}>
+        <div className="project-switcher-add-wrap" ref={settingsMenuRef} onClick={(e) => e.stopPropagation()}>
           <button
             className="project-switcher-action-btn"
             data-hint-anchor="settings"
@@ -417,13 +445,14 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         </div>
 
 
-        <div className="project-switcher-add-wrap" onClick={(e) => e.stopPropagation()}>
+        <div className="project-switcher-add-wrap" ref={addMenuRef} onClick={(e) => e.stopPropagation()}>
           <button
             className="project-switcher-add-btn"
             data-hint-anchor="add-project"
             title="Add or import project"
             onClick={() => {
               setShowSettings(false);
+              setShowSettingsMenu(false);
               setShowAddMenu((v) => !v);
             }}
           >

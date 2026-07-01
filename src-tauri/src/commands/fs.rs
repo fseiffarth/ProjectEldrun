@@ -905,6 +905,33 @@ pub fn detect_mime_local(path: &str, scope_id: Option<&str>) -> Result<String, S
     Ok(ext_mime_or_octet(path))
 }
 
+// ── Viewer source classification (remote-native vs local mirror) ──────────
+
+/// Classify where an in-app viewer's bytes come from, for the viewer's source
+/// notice. Returns exactly one of:
+///   - `"remote"` — a remote (SSH) project path served straight from the host
+///                  over SFTP (remote-native, no local copy).
+///   - `"local"`  — a remote project path under the local **mirror**, read on the
+///                  LOCAL fs (the paired working copy synced from the host).
+///   - `"none"`   — a local project (or root scope): there is no remote/local
+///                  distinction, so the frontend shows no badge.
+/// This mirrors the *exact* routing `read_file_text`/`read_file_bytes` apply
+/// (`remote_target_for` gates remoteness, `is_under_mirror` picks the side), so
+/// the badge can never disagree with where the bytes were actually read from.
+#[tauri::command]
+pub fn file_source(path: String, project_id: Option<String>) -> String {
+    match project_id.as_deref() {
+        Some(pid) if crate::services::remote::remote_target_for(pid).is_some() => {
+            if crate::services::remote_sync::is_under_mirror(pid, &path) {
+                "local".to_string()
+            } else {
+                "remote".to_string()
+            }
+        }
+        _ => "none".to_string(),
+    }
+}
+
 // ── Read file contents for in-app viewers (Group K #40) ───────────────────
 
 /// Largest text file we will load into an in-app viewer (8 MiB). Larger files
@@ -1206,11 +1233,17 @@ fn compute_allowed_roots(
         }
     }
 
-    let mut roots: Vec<PathBuf> = projects
-        .iter()
-        .filter(|e| ids.contains(e.id.as_str()))
-        .filter_map(project_dir)
-        .collect();
+    let in_scope = || projects.iter().filter(|e| ids.contains(e.id.as_str()));
+    let mut roots: Vec<PathBuf> = in_scope().filter_map(project_dir).collect();
+    // For a remote (SSH) project the tree the user actually browses is the local
+    // *mirror*, not the state dir that `project_dir` returns. The default mirror
+    // lives under the state dir (already covered above), but an explicit
+    // `extra["mirror"]` relocation — including the top-level default minted at
+    // import — sits outside it, so add each in-scope project's mirror override as
+    // its own root. Otherwise opening a mirrored local file fails confinement
+    // with a spurious "not in the current project" error. Pure: read straight
+    // from the entry, no state-dir touch.
+    roots.extend(in_scope().filter_map(mirror_override_dir));
     // Canonicalize where possible so symlinked roots compare correctly; fall
     // back to the literal path when the dir does not exist (yet).
     roots
@@ -1230,6 +1263,15 @@ fn project_dir(entry: &ProjectEntry) -> Option<PathBuf> {
     Path::new(&entry.local_file)
         .parent()
         .map(|p| p.to_path_buf())
+}
+
+/// A remote project's explicit local-mirror override (`extra["mirror"]`), or
+/// `None` when unset/empty or for a local project. Mirrors the resolution in
+/// `services::remote_sync::mirror_override` but stays pure (reads the passed
+/// entry, not the state dir) so `compute_allowed_roots` remains testable.
+fn mirror_override_dir(entry: &ProjectEntry) -> Option<PathBuf> {
+    let raw = entry.extra.get("mirror").and_then(Value::as_str)?.trim();
+    (!raw.is_empty()).then(|| PathBuf::from(raw))
 }
 
 /// Read a JSON state file under `state_dir()`, defaulting to `T::default()` when
@@ -1455,6 +1497,60 @@ pub(crate) fn enforce_confinement(root: &Path, target: &Path) -> Result<(), Stri
         ));
     }
     Ok(())
+}
+
+/// One subdirectory in a [`DirListing`]: its display name and absolute path.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+}
+
+/// The directory listing backing the in-app folder-browser popup: the current
+/// absolute directory, its parent (for up-navigation; `None` at a filesystem
+/// root), and the immediate subdirectories.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirListing {
+    pub path: String,
+    pub parent: Option<String>,
+    pub entries: Vec<DirEntry>,
+}
+
+/// List the immediate subdirectories of a LOCAL directory for the in-app folder
+/// picker. Unlike [`list_dir`], this is deliberately NOT project-confined — the
+/// picker browses the whole local filesystem to choose a destination folder.
+/// Empty `path` starts at the user's home directory. Files are omitted (only
+/// folders); unreadable entries are skipped rather than failing the whole call.
+#[tauri::command]
+pub fn list_dirs(path: String) -> Result<DirListing, String> {
+    let trimmed = path.trim();
+    let base = if trimmed.is_empty() {
+        crate::paths::home_dir()
+    } else {
+        PathBuf::from(trimmed)
+    };
+    // Best-effort canonicalize so `..`/symlinks resolve to a stable absolute
+    // path; fall back to the raw path if it can't be canonicalized.
+    let base = fs::canonicalize(&base).unwrap_or(base);
+
+    let read = fs::read_dir(&base).map_err(|e| format!("cannot read '{}': {e}", base.display()))?;
+    let mut entries: Vec<DirEntry> = read
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| DirEntry {
+            name: e.file_name().to_string_lossy().into_owned(),
+            path: display_path(&e.path()),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    Ok(DirListing {
+        path: display_path(&base),
+        parent: base.parent().map(display_path),
+        entries,
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -2006,6 +2102,23 @@ mod tests {
         assert!(
             !roots.iter().any(|r| r.ends_with("projectx")),
             "a project outside the scope's box must not be reachable"
+        );
+    }
+
+    #[test]
+    fn allowed_roots_includes_remote_mirror_override() {
+        // A remote (SSH) project's browsable tree is its local mirror, relocated
+        // outside the state dir via extra["mirror"]. That mirror must be reachable
+        // or opening a mirrored local file fails confinement (#28k regression).
+        let mut r = entry("r", "current", "/home/u/.local/share/eldrun/remote-projects/r");
+        r.extra.insert(
+            "mirror".to_string(),
+            Value::String("/home/u/eldrun/projects-ssh/myproj".to_string()),
+        );
+        let roots = compute_allowed_roots(&vec![r], &Vec::new(), Some("r"));
+        assert!(
+            roots.iter().any(|p| p.ends_with("projects-ssh/myproj")),
+            "the relocated local mirror must be an allowed root"
         );
     }
 

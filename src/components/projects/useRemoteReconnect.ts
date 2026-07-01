@@ -1,10 +1,11 @@
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ProjectEntry } from "../../types";
 import { IS_WINDOWS } from "../../lib/platform";
 import { forgetConnection, markConnectionOpened } from "../../lib/remoteConnect";
 import { useRemoteStatusStore, type ConnState } from "../../stores/remoteStatus";
+import type { LogLine } from "../common/ConnectionLog";
 
 // OpenVPN prints this once the tunnel is fully up (mirrors the backend's
 // READY_MARKER in services/openvpn.rs). The embedded VPN login terminal is
@@ -61,6 +62,42 @@ export function useRemoteReconnect(project: ProjectEntry) {
   // ridden for the pooled connection — fall back to the headline (key-auth)
   // Reconnect there rather than offering the SSH login terminal.
   const winManual = IS_WINDOWS;
+
+  // Headless-path error strings (surfaced under the password fields in the
+  // Connect modal). The lamps carry the coarse state; these carry the reason.
+  const [sshError, setSshError] = useState("");
+  const [vpnError, setVpnError] = useState("");
+  // Live OpenVPN handshake log for the headless connect (fed by the backend's
+  // `openvpn-progress` event, same as the new-project dialog). Capped so a
+  // chatty handshake can't grow unbounded.
+  const [vpnLog, setVpnLog] = useState<LogLine[]>([]);
+  const vpnLogSeq = useRef(0);
+
+  // Whether a password is already saved in the OS keychain for this project's
+  // SSH host / VPN config, so the Connect modal can pre-check the "Save password"
+  // box and show "saved". Queried once on mount (the secret itself never leaves
+  // the backend).
+  const [sshSaved, setSshSaved] = useState(false);
+  const [vpnSaved, setVpnSaved] = useState(false);
+  useEffect(() => {
+    if (!remote) return;
+    let cancelled = false;
+    void invoke<boolean>("remote_has_saved_password", {
+      user: remote.user ?? null,
+      host: remote.host,
+      port: remote.port ?? null,
+    })
+      .then((v) => !cancelled && setSshSaved(v))
+      .catch(() => {});
+    if (vpnConfig) {
+      void invoke<boolean>("vpn_has_saved_password", { config: vpnConfig })
+        .then((v) => !cancelled && setVpnSaved(v))
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, remote, vpnConfig]);
 
   const vpnTermRef = useRef<LoginTerm | null>(null);
   const sshTermRef = useRef<LoginTerm | null>(null);
@@ -212,6 +249,72 @@ export function useRemoteReconnect(project: ProjectEntry) {
     pollSshReady();
   };
 
+  // ── Headless connect path (Connect modal, `connections_headless` ON) ─────────
+  // Eldrun feeds the password to the backend itself (no visible login terminal);
+  // the OpenVPN handshake streams into `vpnLog` as a read-only progress view.
+
+  // Stream the live OpenVPN handshake into `vpnLog` (only lines for this
+  // project's config; the backend tags each line with its config path).
+  useEffect(() => {
+    if (!vpnConfig) return;
+    let cancelled = false;
+    let un: (() => void) | undefined;
+    void listen<{ config: string; line: string }>("openvpn-progress", (ev) => {
+      if (ev.payload.config !== vpnConfig) return;
+      setVpnLog((prev) => [...prev, { id: vpnLogSeq.current++, text: ev.payload.line }].slice(-500));
+    }).then((u) => {
+      if (cancelled) u();
+      else un = u;
+    });
+    return () => {
+      cancelled = true;
+      un?.();
+    };
+  }, [vpnConfig]);
+
+  // Bring the OpenVPN tunnel up with the supplied passphrase. Blocks until the
+  // backend reports the tunnel ready (or fails). Mirrors `useRemoteSession`'s
+  // headless `connectVpn`.
+  const connectVpnHeadless = async (password: string, remember = false) => {
+    if (!vpnConfig) return;
+    setVpn(projectId, "connecting");
+    setVpnError("");
+    setVpnLog([]);
+    try {
+      await invoke("openvpn_connect", { config: vpnConfig, password, remember });
+      setVpnSaved(remember);
+      setVpn(projectId, "connected");
+    } catch (e) {
+      setVpn(projectId, "error");
+      setVpnError(String(e));
+    }
+  };
+
+  // Open the pooled SSH/SFTP connection with the supplied password. On success
+  // the pool is up and the SSH lamp goes green — which lets the CenterPanel's
+  // held remote panes mount and spawn. Mirrors `pollSshReady`'s success branch
+  // but with a user-typed password rather than riding an existing ControlMaster.
+  const connectSshHeadless = async (password: string, remember = false) => {
+    if (!remote) return;
+    setSsh(projectId, "connecting");
+    setSshError("");
+    try {
+      await invoke("ssh_connect", {
+        user: remote.user ?? null,
+        host: remote.host,
+        port: remote.port ?? null,
+        password,
+        remember,
+      });
+      await invoke("remote_connect", { projectId, password: null });
+      setSshSaved(remember);
+      setSsh(projectId, "connected");
+    } catch (e) {
+      setSsh(projectId, "error");
+      setSshError(String(e));
+    }
+  };
+
   const stopSshTerm = () => {
     const term = sshTermRef.current;
     if (!term) return;
@@ -235,5 +338,13 @@ export function useRemoteReconnect(project: ProjectEntry) {
     startSshTerm,
     stopSshTerm,
     tryConnectNow,
+    // Headless connect path
+    sshError,
+    vpnError,
+    vpnLog,
+    sshSaved,
+    vpnSaved,
+    connectVpnHeadless,
+    connectSshHeadless,
   };
 }

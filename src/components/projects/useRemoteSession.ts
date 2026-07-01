@@ -6,6 +6,7 @@ import type { RemoteEntry, SshTooling, StoredVpnConfig } from "../../types";
 import { joinRemotePath, parseSshAddress, type ParsedSshAddress } from "./scaffold";
 import { IS_WINDOWS } from "../../lib/platform";
 import { forgetConnection, markConnectionOpened } from "../../lib/remoteConnect";
+import { useSettingsStore } from "../../stores/settings";
 import type { LogLine } from "../common/ConnectionLog";
 
 type ConnStatus = "idle" | "connecting" | "connected" | "error";
@@ -39,13 +40,13 @@ const nextDialogTermId = (kind: string) => `dialog-${kind}-${++dialogTermSeq}`;
  * stays a single cohesive form component; behavior is unchanged.
  */
 export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
-  // For now the new/import dialog *always* uses the integrated login terminal for
-  // SSH and OpenVPN — the user types the password/passphrase into a visible
-  // terminal embedded right here, and Eldrun never handles the secret. This used
-  // to be gated on the `connections_headless` setting (headless → Eldrun made the
-  // connection itself via an askpass file); that distinction is flattened so both
-  // settings behave identically in the dialog until the headless path is revisited.
-  const headless = false;
+  // Mirrors the global `connections_headless` setting (default ON): headless →
+  // the password/passphrase is typed into Eldrun's own fields and the backend
+  // connects directly (`connectSsh`/`connectVpn`), same as activation's
+  // `ensureVpnIfNeeded`. Off → the integrated login terminal is used instead, so
+  // the user types the secret into a visible terminal embedded right here and
+  // Eldrun never handles it.
+  const headless = useSettingsStore((s) => s.settings?.connections_headless ?? true);
   // Whether this is a remote (SSH) project. The whole SSH section — address,
   // password, connect, and the remote browser — only appears when this is on.
   const [isRemoteProject, setIsRemoteProject] = useState(false);
@@ -73,6 +74,10 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   const [remoteListError, setRemoteListError] = useState("");
   // The remote folder the user committed to via "Use this folder".
   const [remoteChosenPath, setRemoteChosenPath] = useState("");
+  // Previously-used remote paths for the current host (newest first), offered
+  // for reuse so a project location need only be browsed/typed once per host.
+  // Refreshed whenever the resolved host changes; see the effect below.
+  const [remotePaths, setRemotePaths] = useState<string[]>([]);
   // --- Optional OpenVPN tunnel for VPN-gated remote hosts ---
   // `vpnConfig` holds the Eldrun-stored `.ovpn` path (the picked file is copied
   // into Eldrun on selection). The password is transient — never persisted.
@@ -215,6 +220,48 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       refreshSshAddresses();
     }
   }, [isRemoteProject]);
+
+  // Load the recently-used remote paths for `host` (newest first). Best-effort;
+  // an empty/unresolved host just clears the list.
+  const refreshRemotePaths = (host: string) => {
+    if (!host) {
+      setRemotePaths([]);
+      return;
+    }
+    invoke<string[]>("remote_list_paths", { host })
+      .then(setRemotePaths)
+      .catch(() => setRemotePaths([]));
+  };
+
+  // Persist `path` as the most-recently-used remote path for `host` and refresh
+  // the local list. Best-effort — a store failure must never block project
+  // creation, which already succeeded by the time this is called.
+  const rememberRemotePath = (host: string, path: string) => {
+    const trimmed = path.trim();
+    if (!host || !trimmed) return;
+    invoke("remote_remember_path", { host, path: trimmed })
+      .then(() => refreshRemotePaths(host))
+      .catch(() => {});
+  };
+
+  // The host path suggestions are scoped to: the live-connected host (browse
+  // mode), or the address as currently typed (Windows manual-path mode, which
+  // never opens a live session before submit).
+  const suggestionHost = remoteConn?.host ?? (winManual ? parseSshAddress(sshAddress)?.host : undefined);
+
+  // Refresh the path suggestions whenever the resolved host changes.
+  useEffect(() => {
+    refreshRemotePaths(suggestionHost ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestionHost]);
+
+  // Remember the currently-chosen remote path against the resolved host. Called
+  // right before a remote project is actually created/imported (see
+  // `buildRemoteSpec`'s call site), so only paths a user committed to persist.
+  const rememberChosenPath = () => {
+    if (!suggestionHost || !remoteChosenPath.trim()) return;
+    rememberRemotePath(suggestionHost, remoteChosenPath);
+  };
 
   // Stream the live OpenVPN handshake into `vpnLog` while the VPN section is
   // open. The backend tags each line with the config it belongs to, so we keep
@@ -537,6 +584,12 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setRemoteBrowsePath(joinRemotePath(remoteBrowsePath, entry.name));
   };
 
+  // Jump the browser straight to a previously-used remote path (picked from the
+  // recents dropdown) instead of navigating there entry by entry.
+  const jumpToRemotePath = (path: string) => {
+    setRemoteBrowsePath(path);
+  };
+
   const remoteGoUp = () => {
     const path = remoteBrowsePath.replace(/\/+$/, "");
     if (!path || path === "/") {
@@ -646,6 +699,8 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     remoteListError,
     remoteChosenPath,
     setRemoteChosenPath,
+    remotePaths,
+    rememberChosenPath,
     vpnConfig,
     vpnConfigs,
     selectVpnConfig,
@@ -669,6 +724,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     onSshPasswordChange,
     connectSsh,
     enterRemoteFolder,
+    jumpToRemotePath,
     remoteGoUp,
     createRemoteFolder,
     buildRemoteSpec,

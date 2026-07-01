@@ -8,15 +8,17 @@ import { GitChangeTree, type ChangeScope } from "../files/GitChangeTree";
 import { SearchPanel } from "../files/SearchPanel";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useSyncStore } from "../../stores/sync";
+import { useSyncStore, amberPaths } from "../../stores/sync";
+import { openLinkedFile } from "../embed/FileViewerPane";
+import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useWindowsStore } from "../../stores/windows";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore } from "../../stores/tabs";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
-import { resolveProjectDirectory } from "../../types";
+import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
 import { type SortKey, VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
-import { basename, fromFileUri } from "../../lib/paths";
+import { basename, dirname, fromFileUri } from "../../lib/paths";
 import type { ViewerPref } from "../../types";
 
 interface GitStatus {
@@ -43,7 +45,7 @@ interface Props {
   onMouseLeave?: () => void;
 }
 
-type View = "files" | "windows" | "git" | "search";
+type View = "files" | "windows" | "git" | "search" | "orange";
 type ProjectJson = Record<string, unknown>;
 
 const PANEL_HIDDEN_ENDINGS_KEY = "panel_hidden_endings";
@@ -313,6 +315,29 @@ export function RightPanel({
   );
   const remoteBlocked = !!activeProject?.remote && remoteSshState !== "connected";
   const rightPanelFolder = activeId ? rightPanelFolderByProject[activeId] ?? "" : "";
+
+  // Diverged (amber/orange) files for the active remote project, from the cached
+  // sync status — backs the toolbar count badge and the "Orange" list view. These
+  // are exactly the files auto-sync refuses to touch (both sides changed), so they
+  // need a human to pick a side.
+  const syncMap = useSyncStore((s) => (activeId ? s.byProject[activeId] : undefined));
+  const orangeFiles = useMemo(() => amberPaths(syncMap), [syncMap]);
+  // The local mirror root, to open an amber file's mirror copy for inspection.
+  const mirrorRoot =
+    resolveLocalMirror(activeProject) ?? (projectDir ? `${projectDir}/mirror` : null);
+
+  // Default the file source to whichever side is actually usable when a remote
+  // project becomes active: connected → Remote (the host tree), disconnected →
+  // Local (the mirror, so the panel doesn't open on a Connect prompt). Only
+  // resets on a project switch — it never fights a mid-session manual toggle
+  // (e.g. the user flips to Remote, then the connection drops: the Connect
+  // placeholder below takes over, but the toggle stays put).
+  useEffect(() => {
+    if (activeId && activeProject?.remote) {
+      setFileSource(remoteSshState === "connected" ? "remote" : "local");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   // When a box scope is open, the panel shows a multi-root file view: the box
   // folder plus every member project's root. Detected from the current tab scope
@@ -663,7 +688,7 @@ export function RightPanel({
         )}
         <span
           style={{
-            flex: 1,
+            flexShrink: 1,
             minWidth: 0,
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -672,6 +697,25 @@ export function RightPanel({
         >
           {activeBox ? `▣ ${activeBox.name}` : activeProject ? activeProject.name : "Files"}
         </span>
+        {/* Remote/Local source toggle sits right of the project name (remote SSH
+            projects only). It shows the side the files view is currently on —
+            "Remote" = the host tree over SFTP, "Local" = the synced mirror — and
+            one click flips to the other. */}
+        {!activeBox && activeProject?.remote && activeId && (
+          <button
+            type="button"
+            className={`right-panel-source-toggle source-${fileSource}`}
+            aria-label={`File source: ${fileSource === "remote" ? "Remote" : "Local"} — click to switch`}
+            onClick={() => setFileSource((s) => (s === "remote" ? "local" : "remote"))}
+            title={
+              fileSource === "remote"
+                ? "Showing the host tree over SFTP. Click to switch to the local mirror."
+                : "Showing the local mirror copy. Click to switch to the host (remote) tree."
+            }
+          >
+            {fileSource === "remote" ? "Remote" : "Local"}
+          </button>
+        )}
         {/* Git status/action buttons sit right of the project name in the header
             row. Only rendered when there's something to do (or we're mid-commit)
             — an empty strip with no actions just wastes space. */}
@@ -680,7 +724,7 @@ export function RightPanel({
             gitStatus.unstaged + gitStatus.untracked > 0 ||
             gitStatus.staged > 0 ||
             (gitStatus.has_remote && unpushedCommits.length > 0)) && (
-          <div ref={actionBarRef} className="git-action-bar git-action-bar--inline" style={{ position: "relative" }}>
+          <div ref={actionBarRef} className="git-action-bar git-action-bar--inline" style={{ position: "relative", marginLeft: "auto" }}>
             {commitMsg !== null ? (
               <>
                 <button
@@ -804,6 +848,20 @@ export function RightPanel({
             {v === "files" ? "Files" : v === "git" ? "Git" : v === "search" ? "Search" : "Apps"}
           </button>
         ))}
+        {/* Orange (diverged) files: a dedicated toggle for remote projects,
+            badged with the count so conflicts are visible at a glance. Auto-sync
+            never touches these, so this is where they get resolved. */}
+        {!activeBox && activeProject?.remote && activeId && (
+          <button
+            className={`tab-add-btn right-panel-orange-btn${view === "orange" ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            aria-pressed={view === "orange"}
+            onClick={() => setView((v) => (v === "orange" ? "files" : "orange"))}
+            title={`Diverged (orange) files: ${orangeFiles.length}`}
+          >
+            ± {orangeFiles.length > 0 && <span className="right-panel-orange-count">{orangeFiles.length}</span>}
+          </button>
+        )}
         {canImportDrop && (
           <button
             className="tab-add-btn"
@@ -878,34 +936,83 @@ export function RightPanel({
         <SearchPanel projectDir={projectDir} linkingTabKey={undefined} />
       )}
 
+      {view === "orange" && (
+        <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
+          {orangeFiles.length === 0 ? (
+            <div className="right-panel-orange-empty">No diverged files</div>
+          ) : (
+            orangeFiles.map((rel) => (
+              <div key={rel} className="orange-file-row" title={rel}>
+                <button
+                  type="button"
+                  className="orange-file-name"
+                  disabled={!mirrorRoot}
+                  title={mirrorRoot ? `Open ${rel}` : rel}
+                  onClick={() => {
+                    if (!mirrorRoot) return;
+                    const abs = `${mirrorRoot}/${rel}`;
+                    // Open the diverged file as a host-vs-mirror sync diff so the
+                    // user sees exactly what differs before picking a side.
+                    openLinkedFile(undefined, dirname(abs), {
+                      path: abs,
+                      viewer: "syncdiff",
+                      label: basename(abs),
+                    });
+                  }}
+                >
+                  <span className="orange-file-dot" aria-hidden="true">±</span>
+                  {rel}
+                </button>
+                <div className="orange-file-actions">
+                  <button
+                    type="button"
+                    className="orange-file-act"
+                    title="Take the host copy (overwrite the local mirror)"
+                    disabled={remoteBlocked}
+                    onClick={() => activeId && void useSyncStore.getState().pull(activeId, rel)}
+                  >
+                    Take host
+                  </button>
+                  <button
+                    type="button"
+                    className="orange-file-act"
+                    title="Keep the local copy (force-push over the host)"
+                    disabled={remoteBlocked}
+                    onClick={() => activeId && void useSyncStore.getState().push(activeId, rel, true)}
+                  >
+                    Keep local
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
       {view === "files" && (
         <>
+          {/* The Remote/Local toggle now lives in the header (right of the project
+              name); this row carries the whole-tree sync action for the active
+              source: Remote → pull the host tree into the mirror; Local → push the
+              mirror back to the host (skipping host-diverged/orange files). Both
+              need a live connection, so the row is gated on !remoteBlocked. */}
           {!activeBox && activeProject?.remote && activeId && !remoteBlocked && (
             <div className="right-panel-source">
-              <button
-                className={`tab-add-btn${fileSource === "remote" ? " active" : ""}`}
-                style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
-                aria-pressed={fileSource === "remote"}
-                onClick={() => setFileSource("remote")}
-                title="Browse the host (remote) tree — green = synced to local"
-              >
-                Remote
-              </button>
-              <button
-                className={`tab-add-btn${fileSource === "local" ? " active" : ""}`}
-                style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
-                aria-pressed={fileSource === "local"}
-                onClick={() => setFileSource("local")}
-                title="Browse the local mirror (only synced files)"
-              >
-                Local
-              </button>
-              {fileSource === "remote" && (
+              {fileSource === "remote" ? (
                 <button
                   className="tab-add-btn"
                   style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
                   onClick={() => void useSyncStore.getState().syncWholeProject(activeId)}
-                  title="Sync the whole project tree into the local mirror"
+                  title="Sync the whole project tree into the local mirror (remote → local)"
+                >
+                  Sync all
+                </button>
+              ) : (
+                <button
+                  className="tab-add-btn"
+                  style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
+                  onClick={() => void useSyncStore.getState().pushWholeProject(activeId)}
+                  title="Push the whole local mirror to the host (local → remote). Files that diverged on the host (orange) are skipped, never overwritten."
                 >
                   Sync all
                 </button>
@@ -950,9 +1057,42 @@ export function RightPanel({
                 // "Remote" keeps the host (SFTP) tree with the sync overlay. A
                 // local project ignores the toggle entirely.
                 const isRemoteProject = !!activeProject?.remote;
-                const mirrorDir = projectDir
-                  ? `${projectDir.replace(/[/\\]+$/, "")}/mirror`
-                  : projectDir;
+                // Disconnected remote source: don't mount the SFTP-backed tree
+                // (its main-thread list_dir would freeze the window). Keep the
+                // panel looking the same — the Remote/Local toggle stays up — but
+                // show a Connect prompt in the tree area. Selecting "Local" still
+                // browses the offline mirror. The whole-window freeze rationale
+                // lives on `remoteBlocked` above.
+                if (isRemoteProject && fileSource === "remote" && remoteBlocked) {
+                  return (
+                    <div className="file-tree-empty" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                      <div>
+                        {remoteSshState === "connecting"
+                          ? "Connecting to the remote host…"
+                          : "Disconnected — connect to browse the remote tree."}
+                      </div>
+                      {remoteSshState !== "connecting" && activeId && (
+                        <button
+                          type="button"
+                          className="dialog-connect-btn"
+                          onClick={() => useConnectDialogStore.getState().open(activeId)}
+                        >
+                          Connect
+                        </button>
+                      )}
+                    </div>
+                  );
+                }
+                // The relocatable mirror override (projects.json `extra["mirror"]`,
+                // updated by `move_remote_mirror`) is authoritative; fall back to the
+                // default `<state_dir>/mirror` only for legacy projects that never
+                // persisted one. Computing `${projectDir}/mirror` unconditionally
+                // pointed the Local tree at the pre-move location after a relocate.
+                const mirrorDir =
+                  resolveLocalMirror(activeProject) ??
+                  (projectDir
+                    ? `${projectDir.replace(/[/\\]+$/, "")}/mirror`
+                    : projectDir);
                 const treeDir =
                   isRemoteProject && fileSource === "local" ? mirrorDir : projectDir;
                 return (

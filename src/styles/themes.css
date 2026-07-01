@@ -164,10 +164,14 @@ html, body, #root {
   background: var(--scrollbar-track);
 }
 
-/* xterm's viewport has a pure-black background and `overflow-y: scroll`; it
-   inherits the same standard scrollbar-color as everything else so its bar
+/* xterm's viewport has a pure-black background and hardcodes `overflow-y: scroll`,
+   which paints an always-present scrollbar — with no scrollback the thumb fills
+   the whole track and reads as a solid accent bar down the right edge. Force
+   `auto` so the bar only appears when there's actually something to scroll. The
+   thumb inherits the same standard scrollbar-color as everything else so its bar
    matches (a themed bluish thumb on a themed track). */
 .xterm-viewport {
+  overflow-y: auto !important;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
@@ -722,6 +726,40 @@ select option {
 .file-viewer-open-external:hover {
   color: var(--text-primary);
   border-color: var(--text-muted);
+}
+
+/* Auto-sync toggle in the viewer header (remote projects only). Off = muted
+   outline; on = accent-tinted so it reads as active. */
+.file-viewer-autosync {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 0;
+  width: 20px;
+  height: 18px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-viewer-autosync:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.file-viewer-autosync.on {
+  color: var(--accent, #3fb950);
+  border-color: color-mix(in srgb, var(--accent, #3fb950) 60%, transparent);
+  background: color-mix(in srgb, var(--accent, #3fb950) 14%, transparent);
+}
+
+.file-viewer-autosync:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 /* Edit/Preview segmented toggle for the markdown viewer. */
@@ -2692,8 +2730,9 @@ select option {
   background-color: var(--bg-main);
 }
 .subwindow.focused {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
+  /* Accent focus edge on top/bottom only — left/right stay borderless. An
+     outline can't be applied per-side, so use inset box-shadows instead. */
+  box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent);
 }
 
 .subwindow-body {
@@ -3555,6 +3594,143 @@ select option {
   margin-top: 12px;
 }
 
+/* In-app folder-browser popup (FolderPickerDialog) */
+.folder-picker-dialog {
+  width: 520px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+}
+.folder-picker-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+.folder-picker-nav button {
+  flex-shrink: 0;
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 4px 10px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+}
+.folder-picker-nav button:not(:disabled):hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+.folder-picker-nav button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.folder-picker-cur {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.folder-picker-list {
+  min-height: 180px;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+}
+.folder-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.folder-picker-item:hover {
+  background: var(--bg-panel);
+}
+.folder-picker-icon {
+  flex-shrink: 0;
+}
+.folder-picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-picker-error {
+  color: var(--danger);
+}
+.folder-picker-name-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+.folder-picker-name-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.folder-picker-name-label input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 4px 8px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.folder-picker-name-label input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.folder-picker-name-preview {
+  margin: 0;
+  font-size: 11px;
+}
+.folder-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.folder-picker-actions button {
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 5px 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.folder-picker-actions button:not(:disabled):hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+.folder-picker-actions button.primary {
+  background: var(--accent);
+  color: var(--bg-main);
+  border-color: var(--accent);
+}
+.folder-picker-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .right-panel-scroll::-webkit-scrollbar,
 .file-browser-main::-webkit-scrollbar,
 .file-browser-sidebar::-webkit-scrollbar,
@@ -4346,30 +4522,6 @@ select option {
   color: var(--text-primary);
 }
 
-/* Git "dirty" dot on a project pill: signals pending git state at a glance.
-   Colors mirror the file-tree markers — red (uncommitted/not added), orange
-   (staged, not committed), green (committed, not pushed). */
-.pill-git-dot {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  margin-right: 2px;
-  border-radius: 50%;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--control-bg) 70%, transparent);
-}
-
-.pill-git-dot.dirty {
-  background-color: #f85149;
-}
-
-.pill-git-dot.staged {
-  background-color: #d29922;
-}
-
-.pill-git-dot.unpushed {
-  background-color: #3fb950;
-}
-
 /* ── Project box chip ───────────────────────────────────────────────── */
 /* A box groups member pills behind a labelled chip, visually distinct from a
    plain project pill (accent-tinted frame + ▣ badge + member count). */
@@ -4675,6 +4827,29 @@ select option {
   text-align: left;
 }
 
+.pill-popup-path-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 320px;
+  overflow: hidden;
+}
+
+.pill-popup-path-row .pill-popup-path {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pill-popup-path-label {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
 .pill-popup-description {
   color: var(--text-primary);
   font-size: 12px;
@@ -4774,11 +4949,11 @@ select option {
 .tab-bar {
   display: flex;
   align-items: flex-end;
-  padding: 0 4px;
+  padding: 0;
   gap: 2px;
   /* The bar itself no longer scrolls; only the inner `.tab-strip` does. The bar
-     stays a fixed row holding the scroll chevrons, the strip, the + button and
-     the close/detach controls. */
+     stays a fixed row holding the scroll chevrons, the strip (including the +
+     button after its final tab), and the close/detach controls. */
   overflow: hidden;
   /* A fixed-height strip at the top of its subwindow. NOT flex:1 — the tab bar
      lives inside the column-flex `.subwindow`, so growing would let it eat the
@@ -4800,8 +4975,8 @@ select option {
 .tab-bar .tab-new-wrap { cursor: default; }
 
 /* The horizontally-scrolling tab container. Grows to fill the bar between the
-   chevrons and the +/close controls; its scrollbar is hidden (chevrons + wheel
-   drive the scroll instead). */
+   chevrons and close controls and carries the + directly after the final tab;
+   its scrollbar is hidden (chevrons + wheel drive the scroll instead). */
 .tab-strip {
   display: flex;
   align-items: flex-end;
@@ -4872,10 +5047,11 @@ select option {
 .tab.active {
   background: linear-gradient(180deg, var(--control-hover-bg) 0%, var(--bg-main) 100%);
   color: var(--text-primary);
-  border-top: 2px solid var(--accent);
+  border-top: 2px solid var(--tab-accent, var(--accent));
   border-left-color: var(--border-color);
   border-right-color: var(--border-color);
   border-bottom-color: var(--bg-main);
+  box-shadow: inset 0 3px 0 var(--tab-accent, var(--accent));
   position: relative;
   z-index: 11;
   /* Overlap the bar's bottom border so the active tab merges into the pane
@@ -4963,8 +5139,15 @@ select option {
 /* SSH-sync Phase 0: per-tab local/remote locality badge (remote projects only).
    Always visible (unlike the close button) so the tab's locality is legible at a
    glance; click toggles it. Local = mirror (warning hue), remote = host (info). */
-.tab-locality {
-  display: flex;
+/* Unified local/remote tab marking. One visual language across both meanings —
+   ⌂ + green = local, ☁ + amber = remote — since the two never coexist on a tab:
+     - .tab-locality: agent/shell tabs, a clickable toggle for WHERE the process
+       runs (local mirror vs the host over SSH).
+     - .tab-source: viewer/file tabs, a non-interactive badge for WHERE the bytes
+       are read (local synced copy vs host-native over SFTP). */
+.tab-locality,
+.tab-source {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 16px;
@@ -4972,14 +5155,17 @@ select option {
   border-radius: 3px;
   border: none;
   background: transparent;
-  cursor: pointer;
   font-size: 11px;
   line-height: 1;
   flex-shrink: 0;
   transition: background-color 0.1s, color 0.1s;
 }
-.tab-locality.local { color: var(--warning); }
-.tab-locality.remote { color: var(--info, #4aa3df); }
+.tab-locality { cursor: pointer; }
+.tab-source { cursor: default; }
+.tab-locality.local,
+.tab-source.local { color: var(--success); }
+.tab-locality.remote,
+.tab-source.remote { color: var(--warning); }
 .tab-locality:hover { background-color: var(--pill-hover-bg); }
 
 /* Per-subwindow close (×), shown in the tab bar when >1 subwindow exists.
@@ -5179,6 +5365,19 @@ select option {
   border-right-color: var(--control-border);
 }
 
+/* No tabs in this group yet: the + is the sole entry point, so breathe it in
+   the accent colour to invite a first tab. Reuses the working-tab pulse so the
+   cue matches the rest of the tab bar. Hovering cancels the pulse so it settles
+   into the normal affordance once the user reaches for it. */
+.tab-new-btn.empty-hint {
+  color: var(--accent);
+  animation: tab-working-pulse 1.6s ease-in-out infinite;
+}
+
+.tab-new-btn.empty-hint:hover {
+  animation: none;
+}
+
 .tab-new-menu {
   position: absolute;
   top: calc(100% + 4px);
@@ -5290,6 +5489,45 @@ select option {
   margin: 4px 0;
   border: 0;
   background: var(--border-subtle);
+}
+
+/* Grouped context menu: a small caption above each cluster of related items. */
+.context-menu-group + .context-menu-group,
+.context-menu-group + .context-menu-danger-zone {
+  margin-top: 6px;
+}
+
+.context-menu-group-label {
+  padding: 4px 9px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted, var(--text-secondary));
+  user-select: none;
+}
+
+/* Danger zone: destructive actions fenced off in a red-tinted box. */
+.context-menu-danger-zone {
+  margin-top: 8px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.context-menu-danger-zone .context-menu-group-label {
+  color: var(--danger);
+}
+
+.context-menu-danger-zone button {
+  color: var(--danger);
+  background: transparent;
+}
+
+.context-menu-danger-zone button:hover {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  border-color: var(--danger);
 }
 
 /* ── Dropdown (the one custom themed dropdown; native <select> popups can't
@@ -5427,6 +5665,34 @@ select option {
   padding: 2px 6px;
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
+}
+
+/* Remote/Local file-source toggle in the panel header (right of the project
+   name, remote SSH projects only). Colour matches the viewer's source badge:
+   amber = the host tree over SFTP, green = the local synced mirror. */
+.right-panel-source-toggle {
+  flex-shrink: 0;
+  margin-left: 6px;
+  padding: 0 6px;
+  height: 18px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  line-height: 1;
+  cursor: pointer;
+}
+.right-panel-source-toggle.source-remote {
+  color: var(--warning);
+}
+.right-panel-source-toggle.source-local {
+  color: var(--success);
+}
+.right-panel-source-toggle:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.18));
 }
 
 .file-tree-crumb {
@@ -5573,6 +5839,172 @@ select option {
   to { transform: rotate(360deg); }
 }
 
+/* SSH-sync: actionable buttons shown left of the icon per sync state — red on an
+   unsynced row (pull from host / push from the mirror), orange on a diverged row
+   (view the host-vs-mirror diff). Shared box geometry; the accent color differs.
+   `--danger` = not synced, `#d29922` (amber) = diverged. */
+/* Fixed-width gutter reserving space for the sync/diff button so file & folder
+   names stay left-aligned across a sync-tracked tree even on rows with no button
+   (in-sync/green). Sits between the git-status marker and the file icon. */
+.file-sync-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  flex-shrink: 0;
+}
+
+.file-sync-btn,
+.file-diff-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-sync-btn {
+  border: 1px solid color-mix(in srgb, var(--danger) 70%, transparent);
+  color: var(--danger);
+}
+
+.file-sync-btn:hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border-color: var(--danger);
+}
+
+.file-diff-btn {
+  border: 1px solid color-mix(in srgb, #d29922 70%, transparent);
+  color: #d29922;
+}
+
+.file-diff-btn:hover {
+  background: color-mix(in srgb, #d29922 14%, transparent);
+  border-color: #d29922;
+}
+
+.file-sync-btn:disabled,
+.file-diff-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Auto-sync row indicator (non-interactive): a subtle accent glyph shown in the
+   sync slot when a file/folder auto-syncs and is in its resting (green) state. */
+.file-autosync-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--accent, #3fb950);
+  opacity: 0.85;
+}
+
+/* Right-panel "orange" (diverged) toolbar button + its count badge. */
+.right-panel-orange-btn.active {
+  color: #d29922;
+  border-color: color-mix(in srgb, #d29922 60%, transparent);
+}
+
+.right-panel-orange-count {
+  display: inline-block;
+  min-width: 12px;
+  padding: 0 3px;
+  margin-left: 2px;
+  border-radius: 8px;
+  background: #d29922;
+  color: #1a1a1a;
+  font-size: 9px;
+  line-height: 13px;
+  text-align: center;
+}
+
+/* Right-panel "orange" list view. */
+.right-panel-orange {
+  padding: 4px 6px;
+}
+
+.right-panel-orange-empty {
+  padding: 12px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.orange-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
+}
+
+.orange-file-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.orange-file-name:disabled {
+  cursor: default;
+}
+
+.orange-file-name:hover:not(:disabled) {
+  color: var(--accent, #3fb950);
+}
+
+.orange-file-dot {
+  color: #d29922;
+  flex-shrink: 0;
+}
+
+.orange-file-actions {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.orange-file-act {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: 9px;
+  padding: 1px 5px;
+  cursor: pointer;
+}
+
+.orange-file-act:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.orange-file-act:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .file-tree-section-divider {
   display: flex;
   align-items: center;
@@ -5665,12 +6097,22 @@ select option {
   padding: 18px;
   background: var(--bg-panel);
   border: 1px solid var(--border-color);
+  /* Portaled into <body>, which sets no text color (defaults to black); set it
+     here so bare descendants (h2 title, the diff <pre>, tables) stay readable in
+     dark themes instead of inheriting black. */
+  color: var(--text-primary);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.42);
 }
 
 .file-delete-dialog h2 {
   margin: 0;
+  /* Match the canonical dialog header (.settings-title-row h2): accent-colored,
+     heavier weight, and a divider under it, so every menu shares one look. */
   font-size: 16px;
+  font-weight: 650;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 10px;
 }
 
 .file-delete-dialog p {
@@ -6304,12 +6746,30 @@ select option {
 }
 
 .pill-folder-icon {
+  display: inline-flex;
   flex-shrink: 0;
   font-size: 15px;
 }
 
-.project-pill.active .pill-folder-icon {
-  color: var(--accent-hover);
+/* Folder icon color signals the project's pending git state at a glance —
+   distinct from the round SSH connection lamp (RemoteConnMenu) so the two
+   indicators are never visually confused. Priority mirrors the file-tree
+   markers: dirty (red) > staged (orange) > unpushed (green) > clean (folder
+   yellow, its normal resting color). */
+.pill-folder-icon.git-clean {
+  color: #e3b341;
+}
+
+.pill-folder-icon.git-dirty {
+  color: #f85149;
+}
+
+.pill-folder-icon.git-staged {
+  color: #d29922;
+}
+
+.pill-folder-icon.git-unpushed {
+  color: #3fb950;
 }
 
 .project-search-wrap {
@@ -6629,6 +7089,69 @@ select option {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.35;
+}
+
+/* Archived-projects (Settings) list */
+.archived-projects-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.archived-project-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+}
+
+.archived-project-info {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.archived-project-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archived-project-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.15));
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.archived-project-date {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.archived-project-actions,
+.archived-project-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.archived-project-confirm input {
+  min-width: 160px;
 }
 
 .help-section {
@@ -8418,6 +8941,15 @@ select option {
   animation: toast-fade 2.2s ease forwards;
 }
 
+/* Remote (SSH) projects show two lines — a local mirror path and the remote
+   user@host:remote_path target. Preserve the newline + label spacing and left-
+   align; single-line local/conn toasts keep their nowrap + ellipsis above. */
+.project-switch-toast.multiline {
+  white-space: pre;
+  text-align: left;
+  line-height: 1.5;
+}
+
 /* The connection toast ("VPN connected · proj") sits just below the switch toast
    so the two never overlap, and lingers a touch longer (matches its 3.2s clear). */
 .conn-toast {
@@ -8448,9 +8980,9 @@ select option {
   align-items: center;
   gap: 6px;
 }
-/* Live SSH/VPN lamps for the active remote project, next to the network icon.
-   Rendered as a button (clicking opens the reconnect menu), so reset the native
-   button chrome and keep just the lamp row. */
+/* A remote project's live SSH/VPN lamps, rendered as a button (clicking opens
+   the Connect modal), so reset the native button chrome and keep just the lamp
+   row. */
 .header-conn-menu {
   position: relative;
   display: inline-flex;
@@ -8469,65 +9001,105 @@ select option {
 .header-conn-lamps:hover {
   background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
 }
+/* Collapsed (resting) = single aggregate lamp; hover splits into labeled
+   per-channel lamps. */
+.header-conn-lamps .conn-collapsed {
+  display: inline-flex;
+  align-items: center;
+}
+.header-conn-lamps .conn-expanded {
+  display: none;
+  align-items: center;
+  gap: 9px;
+}
+.header-conn-lamps:hover .conn-collapsed {
+  display: none;
+}
+.header-conn-lamps:hover .conn-expanded {
+  display: inline-flex;
+}
+.conn-chan {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.conn-chan-label {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 
-/* Reconnect/Disconnect popover anchored under the header lamps. */
-.header-conn-popover {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 60;
-  min-width: 160px;
+/* Compact variant: the lamp embedded on a project pill instead of the header,
+   so every remote project's connection state is visible in the project bar at a
+   glance (not just the active one). */
+.header-conn-menu-compact {
+  margin-left: 0;
+  margin-right: 2px;
+}
+.header-conn-menu-compact .header-conn-lamps {
+  padding: 2px;
+}
+
+/* ── Connect modal (RemoteConnectDialog) ────────────────────────────────────
+   Connect-only sibling of the new-project SSH section; reuses the shared
+   .remote-reconnect-section / .dialog-connect* / .connection-log styles. */
+.remote-connect-dialog {
+  width: min(560px, 92vw);
+}
+.remote-connect-target {
+  margin: 2px 0 10px;
+  font-family: var(--mono-font, monospace);
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-all;
   display: flex;
   flex-direction: column;
-  padding: 4px;
-  border: 1px solid var(--border-color);
-  border-radius: 7px;
-  background: var(--bg-panel);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  gap: 3px;
 }
-.header-conn-popover-state {
-  padding: 4px 8px 6px;
-  font-size: 11px;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-color);
-  margin-bottom: 4px;
+/* One row per location (Remote / Local): fixed-width label + path. */
+.remote-connect-location {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
 }
-.header-conn-popover-item {
-  text-align: left;
-  padding: 6px 8px;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-primary);
+.remote-connect-location-label {
+  flex: 0 0 auto;
+  min-width: 44px;
+  font-family: var(--body-font, sans-serif);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+.remote-connect-location-path {
+  flex: 1 1 auto;
+  word-break: break-all;
+}
+/* Headless password row: label + input + Connect button stacked in the section. */
+.remote-connect-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   font-size: 12px;
+  color: var(--text-secondary);
+}
+.remote-connect-field input {
+  width: 100%;
+}
+/* Opt-in "Save password" row under a Connect-modal password field. */
+.remote-connect-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
   cursor: pointer;
 }
-.header-conn-popover-item:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-}
-.header-conn-popover-item:disabled {
-  color: var(--text-muted);
-  cursor: default;
-}
-
-/* "Reconnect" button on the center "Disconnected" placeholder. */
-.center-reconnect-btn {
-  margin-top: 6px;
-  padding: 6px 16px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--accent);
-  color: var(--accent-contrast, #fff);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.center-reconnect-btn:hover:not(:disabled) {
-  filter: brightness(1.08);
-}
-.center-reconnect-btn:disabled {
-  opacity: 0.6;
-  cursor: default;
+.remote-connect-remember input {
+  width: auto;
+  margin: 0;
 }
 
 /* ── Onboarding: empty-state card, "How to start" dialog, contextual hints ── */
@@ -8542,26 +9114,7 @@ select option {
   padding: 0 16px;
 }
 
-/* Remote reconnect placeholder: wider than the plain card so the embedded
-   SSH/OpenVPN login terminals fit, and scrollable when both are open. */
-.remote-reconnect-card {
-  max-width: 560px;
-  width: 100%;
-  max-height: 100%;
-  overflow-y: auto;
-  align-items: stretch;
-  text-align: left;
-}
-
-.remote-reconnect-card .center-placeholder-title,
-.remote-reconnect-card .center-placeholder-hint {
-  text-align: center;
-}
-
-.remote-reconnect-card .center-reconnect-btn {
-  align-self: center;
-}
-
+/* Section divider inside the Connect modal (SSH / OpenVPN groups). */
 .remote-reconnect-section {
   display: flex;
   flex-direction: column;
@@ -9086,15 +9639,34 @@ select option {
     linear-gradient(160deg,
       color-mix(in srgb, var(--accent) 24%, var(--bg-panel)) 0%,
       var(--pill-active-bg) 85%);
-  border-color: var(--pill-active-border);
+  border-color: transparent;
   box-shadow:
-    inset 0 3px 0 var(--accent),
+    inset 0 -3px 0 var(--accent),
     0 0 14px -4px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+[data-theme="fancy_dark"] .project-pill,
+[data-theme="fancy_light"] .project-pill {
+  border-color: transparent;
+  box-shadow: inset 0 -3px 0 var(--warning);
+}
+
+[data-theme="fancy_dark"] .project-pill.has-category:not(.active):not(.timer-paused),
+[data-theme="fancy_light"] .project-pill.has-category:not(.active):not(.timer-paused) {
+  box-shadow: inset 0 -3px 0 var(--cat-color);
 }
 
 [data-theme="fancy_dark"] .project-pill:not(.active):hover,
 [data-theme="fancy_light"] .project-pill:not(.active):hover {
   box-shadow:
+    inset 0 -3px 0 var(--warning),
+    0 0 10px -4px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+[data-theme="fancy_dark"] .project-pill.has-category:not(.active):not(.timer-paused):hover,
+[data-theme="fancy_light"] .project-pill.has-category:not(.active):not(.timer-paused):hover {
+  box-shadow:
+    inset 0 -3px 0 var(--cat-color),
     0 0 10px -4px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
@@ -9119,7 +9691,7 @@ select option {
       var(--bg-main) 100%);
   box-shadow:
     0 2px 12px -4px color-mix(in srgb, var(--accent) 75%, transparent),
-    inset 0 -3px 0 var(--accent);
+    inset 0 -3px 0 var(--tab-accent, var(--accent));
 }
 
 /* Gradient-text label on the active tab — matches the fancy dialog headings. */
@@ -9139,6 +9711,13 @@ select option {
   color: #fff;
 }
 
+[data-theme="fancy_dark"] .project-pill-label,
+[data-theme="fancy_dark"] .tab-label,
+[data-theme="fancy_light"] .project-pill-label,
+[data-theme="fancy_light"] .tab-label {
+  font-weight: 700;
+}
+
 [data-theme="fancy_dark"] .project-pill:not(.active):not(:hover) .project-pill-label,
 [data-theme="fancy_dark"] .tab:not(.active):not(:hover) .tab-label {
   opacity: 1;
@@ -9155,6 +9734,7 @@ select option {
    weight rather than a top rail. */
 [data-theme="fancy_dark"] .project-pill.active {
   box-shadow:
+    inset 0 -3px 0 var(--accent),
     0 0 14px -4px color-mix(in srgb, var(--accent) 70%, transparent);
 }
 
@@ -9165,7 +9745,7 @@ select option {
 [data-theme="fancy_dark"] .tab.active {
   box-shadow:
     0 2px 12px -4px color-mix(in srgb, var(--accent) 45%, transparent),
-    inset 0 -3px 0 var(--accent);
+    inset 0 -3px 0 var(--tab-accent, var(--accent));
 }
 
 [data-theme="fancy_dark"] .tab:not(.active):hover,

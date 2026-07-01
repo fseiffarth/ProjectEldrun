@@ -31,6 +31,11 @@ pub struct Settings {
     pub git_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_scheme: Option<String>,
+    /// Global UI zoom factor for the whole interface (helps on high-DPI/4K
+    /// monitors). `1.0` (or unset) is 100% — the current default look. Applied
+    /// frontend-side as a CSS `zoom`; the backend only round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_zoom: Option<f32>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_host: Option<String>,

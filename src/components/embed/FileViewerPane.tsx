@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import * as pdfjs from "pdfjs-dist";
@@ -13,6 +13,9 @@ import {
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useConnectDialogStore } from "../../stores/connectDialog";
+import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
 import {
   useEditorJumpStore,
@@ -43,19 +46,24 @@ import {
   generateToc,
   type EditResult,
 } from "../../lib/viewers/markdownEdit";
-import { internalViewerFor, disabledViewers, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
+import { internalViewerFor, disabledViewers, relFromAbs, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
 import { basename, dirname, resolvePath, toFileUri } from "../../lib/paths";
 import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab } from "../../lib/installCommand";
 import {
   resolveProjectDirectory,
+  resolveLocalMirror,
   type AutocompleteMode,
   type GrammarIssue,
 } from "../../types";
+import { useSyncStore } from "../../stores/sync";
 import { ContextFilePicker } from "./ContextFilePicker";
+import { useFileSourcesStore } from "../../stores/fileSources";
 import {
   FileScopeContext,
   useFileScope,
+  fileSource,
+  type FileSource,
   readFileText,
   readFileBytes,
   writeFileText,
@@ -245,6 +253,53 @@ interface Props {
 export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
   const fileName = basename(path) || path;
 
+  // Resolve whether these bytes are remote-native (host SFTP) or the local
+  // mirror, and publish it to the tab strip so the Remote/Local badge rides on
+  // this tab itself instead of costing a whole viewer header row (see the
+  // fileSources store). Only remote (SSH) projects yield anything but "none";
+  // the query is cheap (no file read) and re-runs when the path/scope changes.
+  // The published entry is dropped when the viewer unmounts (tab closed).
+  // `null` = not resolved yet; used by the disconnected-gate below to hold
+  // rather than flash a red read error before we know the source.
+  const [source, setSource] = useState<FileSource | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fileSource(path, projectId)
+      .then((s) => {
+        if (cancelled) return;
+        setSource(s);
+        if (tabKey) useFileSourcesStore.getState().setSource(tabKey, s);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSource("none");
+        if (tabKey) useFileSourcesStore.getState().setSource(tabKey, "none");
+      });
+    return () => {
+      cancelled = true;
+      if (tabKey) useFileSourcesStore.getState().clearSource(tabKey);
+    };
+  }, [path, projectId, tabKey]);
+
+  // Disconnected remote project: reading a remote-native (SFTP) file would block
+  // on the dead pool and each nested viewer would flash its own red read error.
+  // Instead show the SAME "Not connected" placeholder the remote shell uses, so
+  // the message is unified across terminal and file tabs. Local-mirror files
+  // (source "local") and local projects ("none") work offline and render as
+  // usual; while the source is still unknown on a disconnected remote we hold.
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const sshState = useRemoteStatusStore((s) => (projectId ? s.byProject[projectId]?.ssh : undefined));
+  const openConnectDialog = useConnectDialogStore((s) => s.open);
+  const remoteDisconnected = !!project?.remote && sshState !== "connected";
+  if (remoteDisconnected && source !== "local" && source !== "none") {
+    return (
+      <RemotePaneHold
+        host={project?.remote?.host ?? ""}
+        onConnect={() => { if (projectId) openConnectDialog(projectId); }}
+      />
+    );
+  }
+
   const openExternally = () => {
     useWindowsStore
       .getState()
@@ -270,6 +325,8 @@ export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
     view = <NotebookView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "diff") {
     view = <DiffView path={path} projectId={projectId} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "syncdiff") {
+    view = <DiffView path={path} projectId={projectId} mode="sync" onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "odt") {
     view = <OdtView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "media") {
@@ -283,7 +340,79 @@ export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
   } else {
     view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
   }
-  return <FileScopeContext.Provider value={projectId}>{view}</FileScopeContext.Provider>;
+  return (
+    <FileScopeContext.Provider value={projectId}>
+      <ViewerHeaderInfoContext.Provider value={{ path, projectId }}>
+        {view}
+      </ViewerHeaderInfoContext.Provider>
+    </FileScopeContext.Provider>
+  );
+}
+
+/** The file identity a `ViewerHeader` needs to offer file-scoped actions (the
+ *  auto-sync toggle) without every sub-viewer threading these props through. Set
+ *  by `FileViewerPane`; `null` outside a viewer pane. */
+const ViewerHeaderInfoContext = createContext<{ path: string; projectId: string | null } | null>(
+  null,
+);
+
+/**
+ * Resolve `absPath` to the project-relative path the sync backend keys on, for a
+ * REMOTE project only (auto-sync doesn't apply to local projects). Handles both a
+ * local-mirror file (under the mirror root) and a remote-native file (under the
+ * host `remote_path`). Returns `null` when the project isn't remote or the path
+ * lies outside both roots (so the toggle simply hides).
+ */
+function autoSyncRel(
+  project: ReturnType<typeof useProjectsStore.getState>["projects"][number] | undefined,
+  absPath: string,
+): string | null {
+  if (!project?.remote) return null;
+  const projectDir = resolveProjectDirectory(project);
+  const mirrorRoot = resolveLocalMirror(project) ?? (projectDir ? `${projectDir}/mirror` : null);
+  if (mirrorRoot) {
+    const r = relFromAbs(mirrorRoot, absPath);
+    if (r) return r;
+  }
+  const r2 = relFromAbs(project.remote.remote_path, absPath);
+  return r2 || null;
+}
+
+/**
+ * Auto-sync indicator + toggle for the viewer header. Shown only for a file that
+ * belongs to a remote project (either its mirror copy or its host copy). Reflects
+ * and flips `SyncEntry::auto_sync` via the sync store; disabled while the remote is
+ * disconnected (the backend engine can't act until reconnected).
+ */
+function AutoSyncHeaderToggle({ path, projectId }: { path: string; projectId: string | null }) {
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const rel = useMemo(() => autoSyncRel(project, path), [project, path]);
+  const auto = useSyncStore((s) =>
+    projectId && rel ? !!s.byProject[projectId]?.[rel]?.auto : false,
+  );
+  const setAuto = useSyncStore((s) => s.setAuto);
+  const sshState = useRemoteStatusStore((s) => (projectId ? s.byProject[projectId]?.ssh : undefined));
+  if (!project?.remote || !rel || !projectId) return null;
+  const connected = sshState === "connected";
+  return (
+    <button
+      type="button"
+      className={`file-viewer-autosync${auto ? " on" : ""}`}
+      title={
+        !connected
+          ? "Auto-sync (connect the remote to change)"
+          : auto
+            ? "Auto-syncing — click to stop"
+            : "Auto-sync this file"
+      }
+      aria-label={auto ? "Stop auto-syncing this file" : "Auto-sync this file"}
+      aria-pressed={auto}
+      disabled={!connected}
+      onClick={() => void setAuto(projectId, [rel], !auto, false)}
+    >
+      ⟳
+    </button>
+  );
 }
 
 /**
@@ -491,11 +620,16 @@ export function ViewerHeader({
   children?: React.ReactNode;
 }) {
   // No filename label: the tab already shows it. The spacer keeps the controls
-  // and the open-externally icon pushed to the trailing edge as before.
+  // and the open-externally icon pushed to the trailing edge. The remote/local
+  // source badge no longer lives here — it rides on the tab itself (see
+  // TabBar's tab-source badge), so it costs no header row. The auto-sync toggle
+  // (remote projects only) rides in from context so no sub-viewer has to pass it.
+  const info = useContext(ViewerHeaderInfoContext);
   return (
     <div className="file-viewer-header">
       <div className="file-viewer-header-spacer" aria-hidden="true" />
       {children}
+      {info && <AutoSyncHeaderToggle path={info.path} projectId={info.projectId} />}
       <button
         className="file-viewer-open-external"
         onClick={onOpenExternally}

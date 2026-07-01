@@ -45,9 +45,10 @@ import { commitDrop } from "../tabs/commitDrop";
 import { snapshotFrame, physToClient, type WindowFrame } from "../../lib/coords";
 import { dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
-import { RemoteReconnectPanel } from "../projects/RemoteReconnectPanel";
+import { useConnectDialogStore } from "../../stores/connectDialog";
+import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { resolveProjectDirectory } from "../../types";
+import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 
 /** Pixel coordinates of a group's pane region, relative to the center panel. */
 interface Rect {
@@ -55,47 +56,6 @@ interface Rect {
   top: number;
   width: number;
   height: number;
-}
-
-/**
- * #57: open `README.md` in an in-app markdown viewer tab as the default for a
- * freshly-visited project that has no tabs to restore. Checks existence via the
- * existing `list_dir` command (no new backend command), then seeds a single
- * `viewer: "markdown"` embed tab — a restorable embed, so it persists and
- * re-restores naturally. No-ops if the file is absent or the scope was populated
- * (by a concurrent switch_project_runtime) while we were checking.
- */
-export async function openReadmeDefaultTab(projectCwd: string, scope: string): Promise<void> {
-  if (!projectCwd) return;
-  let entries: { name: string; is_dir: boolean }[];
-  try {
-    entries = await invoke<{ name: string; is_dir: boolean }[]>("list_dir", {
-      projectDir: projectCwd,
-      relPath: "",
-    });
-  } catch {
-    return;
-  }
-  const hasReadme = entries.some((e) => !e.is_dir && e.name === "README.md");
-  if (!hasReadme) return;
-  // Re-check the guard: a concurrent switch may have populated the scope while
-  // list_dir was in flight. Never clobber existing tabs.
-  if (scope in useTabsStore.getState().tabsByScope) return;
-  useTabsStore.getState().loadFromLayout(
-    [
-      {
-        key: "readme-default",
-        label: "README.md",
-        cmd: "",
-        cwd: projectCwd,
-        kind: "embed",
-        embedPath: `${projectCwd}/README.md`,
-        viewer: "markdown",
-      },
-    ],
-    projectCwd,
-    scope,
-  );
 }
 
 export function CenterPanel() {
@@ -153,15 +113,17 @@ export function CenterPanel() {
   const localFile = activeProject?.local_file as string | undefined;
   const projectCwd = resolveProjectDirectory(activeProject);
 
-  // Mount-free remote: a remote project starts DISCONNECTED and its tabs are NOT
-  // restored until its pooled SSH/SFTP connection is up (restoring them while
-  // disconnected spawns ssh/sftp work that blocks on the dead pool — the "hang").
-  // The restore effect below is gated on `remoteGateClosed`; while it's closed we
-  // render the "Disconnected" reconnect placeholder instead of the saved tabs.
-  const activeSshState = useRemoteStatusStore((s) =>
-    activeId ? s.byProject[activeId]?.ssh : undefined,
-  );
-  const remoteGateClosed = !!activeProject?.remote && activeSshState !== "connected";
+  // Mount-free remote: a remote project starts DISCONNECTED but its LOCAL tabs
+  // (local agents / local_agent / local-toggled shells — all running in the
+  // mirror via a local PTY) and the file browser (which falls back to the mirror
+  // while disconnected) work offline, so the saved tabs are ALWAYS restored. Only
+  // genuinely-remote panes (`ssh -tt` shells, remote-toggled agents, the SFTP
+  // file tree) would block on the dead pool, so those are held per-pane below
+  // until that pane's project reaches "connected" (see the pane render). Keyed
+  // by the PANE's own scope — panes stay mounted across scope switches, so
+  // holding must not track only the active project's state.
+  const remoteSshByProject = useRemoteStatusStore((s) => s.byProject);
+  const openConnectDialog = useConnectDialogStore((s) => s.open);
 
   // The layout to RENDER: normally the store layout, but while dragging a
   // subwindow's lone tab it's that layout with the (about-to-empty) source
@@ -207,13 +169,6 @@ export function CenterPanel() {
     // stale project.json before switch_project_runtime has written the empty layout.
     if (nextScope in useTabsStore.getState().tabsByScope) return;
 
-    // Mount-free remote: defer the disk restore until the pooled SSH/SFTP
-    // connection is up. Restoring now would spawn `ssh -tt` PTYs and SFTP listings
-    // that block on the not-yet-authenticated pool (the "hang on restore"). The
-    // user reconnects via the header lamp / placeholder; this effect re-runs when
-    // `remoteGateClosed` flips (it's in the deps) and then restores the tabs.
-    if (remoteGateClosed) return;
-
     // Project context: restore saved tab layout from disk (first visit this session).
     const scopeForLoad = nextScope;
     type LayoutEntry = { key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string; env?: Record<string, string>; sessionId?: string; embedPath?: string; embedExec?: string; viewer?: "pdf" | "image" | "markdown" | "text" };
@@ -235,21 +190,15 @@ export function CenterPanel() {
         );
         // Guard: don't overwrite tabs that switch_project_runtime already loaded.
         if (scopeForLoad in useTabsStore.getState().tabsByScope) return;
-        if (restorable.length === 0) {
-          // #57: a freshly-visited project with NO restorable tabs opens its
-          // README.md in an in-app markdown viewer tab by default (never the root
-          // scope; only on first visit, so an intentionally-emptied scope — which
-          // is already "initialized" in tabsByScope, caught by the guard above —
-          // is never re-seeded).
-          void openReadmeDefaultTab(projectCwd, scopeForLoad);
-          return;
-        }
+        // A freshly-visited project with NO restorable tabs stays empty (shows the
+        // empty Subwindow with a "+"); we no longer seed a default README.md tab.
+        if (restorable.length === 0) return;
         // `tab_groups` carries the saved split/group tree (absent → single group).
         const groups = proj.tab_groups as SavedLayoutTree | undefined;
         loadFromLayout(restorable, projectCwd, scopeForLoad, groups ?? undefined);
       })
       .catch(() => {});
-  }, [activeId, projectCwd, localFile, setScope, loadFromLayout, remoteGateClosed]);
+  }, [activeId, projectCwd, localFile, setScope, loadFromLayout]);
 
   // Re-hydrate vibe local_agent tabs that were saved without VIBE_HOME/
   // VIBE_ACTIVE_MODEL. Only vibe needs this: `ollama launch`/fallback driver tabs
@@ -822,23 +771,6 @@ export function CenterPanel() {
           registerGroupBody={registerGroupBody}
           onResized={measure}
         />
-      ) : remoteGateClosed ? (
-        // Mount-free remote: the project is disconnected, so its saved tabs are
-        // NOT restored yet (restoring them would block on the dead SSH pool). Show
-        // a Reconnect placeholder; the same flow runs from the header lamp menu.
-        // Once the pool reaches "connected", the gated restore effect re-runs and
-        // this is replaced by the restored LayoutTree.
-        <Subwindow groupId={EMPTY_GROUP_ID} projectCwd={projectCwd}>
-          <div
-            ref={registerGroupBody(EMPTY_GROUP_ID)}
-            className="center-placeholder"
-            style={{ height: "100%" }}
-          >
-            {activeProject && (
-              <RemoteReconnectPanel project={activeProject} sshState={activeSshState} />
-            )}
-          </div>
-        </Subwindow>
       ) : (
         // No tabs yet: render an empty subwindow so its tab bar's "+" is always
         // available to create the first tab. EMPTY_GROUP_ID isn't a real group
@@ -896,6 +828,23 @@ export function CenterPanel() {
                 ...(fsActive && groupId === fullscreenGroupId ? { zIndex: 5 } : {}),
               }
             : { display: "none" };
+          // Mount-free remote, per-pane gating. A remote project's LOCAL panes
+          // run on the mirror and work offline; only remote-I/O panes must wait
+          // for the pool. Keyed by THIS pane's scope (not the active project) so
+          // a disconnected remote project switched away from never un-holds.
+          const paneProject = projects.find((p) => p.id === scopeKey);
+          const paneRemoteProj = !!paneProject?.remote;
+          const paneDisconnected =
+            paneRemoteProj && remoteSshByProject[scopeKey]?.ssh !== "connected";
+          // A terminal pane is "remote" when its effective locality is remote
+          // (default shells; agents/shells toggled remote). Held while the pool
+          // is down: spawning `ssh -tt` now would block on the dead pool.
+          const holdRemoteTerminal =
+            paneDisconnected &&
+            tab.kind !== "files" &&
+            tab.kind !== "embed" &&
+            tab.kind !== "projects3d" &&
+            effectiveTabLocation(tab) === "remote";
           return (
             <div
               key={`${scopeKey}/${tab.key}`}
@@ -910,7 +859,25 @@ export function CenterPanel() {
                 <ProjectBlobPane />
               ) : tab.kind === "files" ? (
                 <FileBrowser
-                  projectDir={tab.cwd}
+                  // While a remote project is disconnected the SFTP tree can't be
+                  // listed (it would freeze the main thread), so browse the local
+                  // mirror instead — the same synced working copy the local tabs
+                  // use. `list_dir` routes the mirror path locally; FileBrowser
+                  // re-lists when `projectDir` changes, so it swaps back to the
+                  // remote tree automatically once the pool is connected.
+                  projectDir={
+                    paneDisconnected
+                      ? localTabCwd(
+                          { kind: "files" },
+                          {
+                            isRemoteProject: true,
+                            projectDirectory: resolveProjectDirectory(paneProject),
+                            mirror: resolveLocalMirror(paneProject),
+                            fallback: tab.cwd,
+                          },
+                        )
+                      : tab.cwd
+                  }
                   projectId={scopeKey === "root" ? null : scopeKey}
                   active={visible}
                 />
@@ -931,6 +898,16 @@ export function CenterPanel() {
                     visible={visible}
                   />
                 )
+              ) : holdRemoteTerminal ? (
+                // Remote terminal pane while the pool is down: don't mount
+                // TerminalView (it would spawn `ssh -tt` and block on the dead
+                // pool). Show a Connect placeholder; when the project connects
+                // this pane re-renders, mounts TerminalView, and spawns — a
+                // resumable agent resumes via its saved args.
+                <RemotePaneHold
+                  host={paneProject?.remote?.host ?? ""}
+                  onConnect={() => openConnectDialog(scopeKey)}
+                />
               ) : (
                 <TerminalView
                   // PTY ids must include the scope: tab keys alone can collide
@@ -946,6 +923,9 @@ export function CenterPanel() {
                   cwd={localTabCwd(tab, {
                     isRemoteProject: !!projects.find((p) => p.id === scopeKey)?.remote,
                     projectDirectory: resolveProjectDirectory(
+                      projects.find((p) => p.id === scopeKey),
+                    ),
+                    mirror: resolveLocalMirror(
                       projects.find((p) => p.id === scopeKey),
                     ),
                     fallback: tab.cwd,

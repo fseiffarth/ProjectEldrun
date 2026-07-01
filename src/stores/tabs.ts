@@ -2577,19 +2577,26 @@ export function effectiveTabLocation(
 /**
  * SSH-sync Phase 1: the local working directory a PTY tab should run in when it
  * runs LOCALLY on a REMOTE project. A local-on-remote tab can't cwd into the
- * remote tree, so it runs in the project's local **mirror** (`<state dir>/mirror`)
- * — the synced twin. This is the value shown in the tab title; the backend
- * resolves the same path authoritatively at spawn (and guarantees it exists).
+ * remote tree, so it runs in the project's local **mirror** — the synced twin.
+ * This is the value shown in the tab title (and the path the disconnected file
+ * browser lists); the backend resolves the same path authoritatively at spawn
+ * (and guarantees it exists).
+ *
+ * The mirror can be relocated to a custom folder ("Move project…"), so prefer the
+ * project's persisted override (`opts.mirror`, from resolveLocalMirror) when set;
+ * fall back to the default `<state dir>/mirror` for legacy projects with none.
  * Returns `fallback` (the tab's own cwd) unchanged for a local project or a tab
  * that runs on the host (remote locality).
  */
 export function localTabCwd(
   tab: { kind: TabKind; location?: TabLocation },
-  opts: { isRemoteProject: boolean; projectDirectory: string; fallback: string },
+  opts: { isRemoteProject: boolean; projectDirectory: string; fallback: string; mirror?: string | null },
 ): string {
   if (!opts.isRemoteProject || effectiveTabLocation(tab) !== "local") {
     return opts.fallback;
   }
+  const override = opts.mirror?.trim();
+  if (override) return override.replace(/[/\\]+$/, "");
   if (!opts.projectDirectory) return opts.fallback;
   return `${opts.projectDirectory.replace(/[/\\]+$/, "")}/mirror`;
 }
