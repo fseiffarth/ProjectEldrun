@@ -255,6 +255,19 @@ pub fn run_git_remote(
         .map_err(|e| format!("failed to run git over ssh: {e}"))
 }
 
+/// Run a single shell command on `spec`'s host over SSH (riding the shared
+/// ControlMaster) and capture its `Output`. The command string is handed to the
+/// remote `$SHELL -c`, so the caller MUST `shell_quote` any path/argument it
+/// embeds. Used for cheap host capability probes (e.g. `command -v rsync`).
+pub fn run_remote_shell(spec: &RemoteSpec, command: &str) -> Result<std::process::Output, String> {
+    let mut args = ssh_base_args(&spec.user, &spec.host, spec.port)?;
+    args.push(command.to_string());
+    crate::paths::command_no_window("ssh")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("failed to run command over ssh: {e}"))
+}
+
 /// Best-effort create `spec.remote_path` (and parents) on the host over SSH,
 /// riding the shared ControlMaster. Used when a new remote project is created so
 /// agent tabs / git can `cd` into the project root. `mkdir -p <path>` is handed

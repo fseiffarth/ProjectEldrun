@@ -5,6 +5,8 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   BLOB_TAB_CMD,
   FILES_TAB_CMD,
+  effectiveTabLocation,
+  isLocatableKind,
   useTabsStore,
   useGroup,
   useGroupTabs,
@@ -133,7 +135,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const addTab = useTabsStore((s) => s.addTab);
   const ensureTab = useTabsStore((s) => s.ensureTab);
   const removeTab = useTabsStore((s) => s.removeTab);
+  const setTabLocation = useTabsStore((s) => s.setTabLocation);
   const closeGroup = useTabsStore((s) => s.closeGroup);
+  // SSH-sync Phase 0: the local/remote locality toggle is only meaningful for a
+  // remote (SSH) project's agent/shell tabs. Subscribe to a single boolean so a
+  // project edit elsewhere doesn't re-render every bar.
+  const isRemoteScope = useProjectsStore((s) => !!s.projects.find((p) => p.id === scope)?.remote);
   const closeAllTabs = useTabsStore((s) => s.closeAllTabs);
   const detachGroup = useTabsStore((s) => s.detachGroup);
   const detachTab = useTabsStore((s) => s.detachTab);
@@ -817,6 +824,29 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             ) : (
               <span className="tab-label">{tab.label}</span>
             )}
+            {/* SSH-sync Phase 0: local/remote locality badge — click to toggle
+                whether this agent/shell tab runs in the local mirror or on the
+                host. Only shown for a remote project's locatable tabs. */}
+            {isRemoteScope && isLocatableKind(tab.kind) && (() => {
+              const loc = effectiveTabLocation(tab);
+              return (
+                <button
+                  className={`tab-locality ${loc}`}
+                  title={
+                    loc === "local"
+                      ? "Runs locally in the project mirror — click to run on the host"
+                      : "Runs on the host over SSH — click to run locally in the mirror"
+                  }
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTabLocation(tab.key, loc === "local" ? "remote" : "local");
+                  }}
+                >
+                  {loc === "local" ? "⌂" : "☁"}
+                </button>
+              );
+            })()}
             <button
               className="tab-close"
               onClick={(e) => { e.stopPropagation(); removeTab(tab.key); }}

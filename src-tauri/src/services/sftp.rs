@@ -271,6 +271,73 @@ enum RawKind {
     Other,
 }
 
+/// Lstat-typed kind of a directory entry for the sync walker — the entry's OWN
+/// type, never a symlink's target (G3: the recursive sync must NOT follow host
+/// symlinks, or a `link -> /etc` would exfiltrate host files into the mirror).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncKind {
+    Dir,
+    File,
+    Symlink,
+    Other,
+}
+
+/// One raw (lstat-typed) directory entry for the sync walker.
+#[derive(Debug, Clone)]
+pub struct RawEntry {
+    pub name: String,
+    pub kind: SyncKind,
+    /// Size in bytes from the listing attrs (`0` when absent).
+    pub size: u64,
+    /// Last-modified time as whole seconds since the Unix epoch, when reported.
+    pub modified_secs: Option<u64>,
+}
+
+/// List one remote directory on an open session WITHOUT following symlinks — the
+/// listing the recursive sync walker uses. Unlike [`list_dir_on`] (which follows
+/// symlinks so a symlink-to-dir is navigable in the picker), every entry reports
+/// its own lstat-style type, so the walker can skip symlinks/special files (G3)
+/// and recurse only into real directories. `.`/`..`/blank names are dropped; no
+/// sorting (the walker doesn't need it).
+pub async fn list_dir_raw_on(sftp: &Sftp, path: &str) -> Result<Vec<RawEntry>, String> {
+    let path = path.trim();
+    if !path.is_empty() {
+        validate_arg("path", path)?;
+    }
+    let target = if path.is_empty() { "." } else { path };
+
+    let mut fs = sftp.fs();
+    let dir = fs
+        .open_dir(target)
+        .await
+        .map_err(|e| format!("sftp open_dir failed: {e}"))?;
+    let mut rd = Box::pin(dir.read_dir());
+    let mut out: Vec<RawEntry> = Vec::new();
+    while let Some(item) = rd.next().await {
+        let entry = item.map_err(|e| format!("sftp read_dir failed: {e}"))?;
+        let name = entry.filename().to_string_lossy().into_owned();
+        if name.is_empty() || name == "." || name == ".." {
+            continue;
+        }
+        let meta = entry.metadata();
+        let size = meta.len().unwrap_or(0);
+        let modified_secs = meta.modified().map(|t| t.as_duration().as_secs());
+        let kind = match entry.file_type() {
+            Some(t) if t.is_dir() => SyncKind::Dir,
+            Some(t) if t.is_symlink() => SyncKind::Symlink,
+            Some(t) if t.is_file() => SyncKind::File,
+            _ => SyncKind::Other,
+        };
+        out.push(RawEntry {
+            name,
+            kind,
+            size,
+            modified_secs,
+        });
+    }
+    Ok(out)
+}
+
 /// Build the path to a directory child for a follow-up stat. `target` is the
 /// listed directory (`"."` for the SFTP home, otherwise an absolute path); the
 /// child is resolved relative to it. Pure, so it is unit-tested.

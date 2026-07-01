@@ -192,6 +192,16 @@ pub struct Project {
     pub open_tab_sessions: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteSpec>,
+    /// For a remote (SSH) project, the local mirror root — the paired local
+    /// working copy synced from the host. Chosen at import (defaults to an
+    /// `ssh/<name>` subfolder of the projects root) and relocatable via the
+    /// pill's "Show on disk" when the mirror has been deleted. Absent for local
+    /// projects and for remote projects predating configurable mirrors, which
+    /// fall back to the default under the state dir. Mirrored into the
+    /// `projects.json` entry's `extra["mirror"]`, which `remote_sync::mirror_dir`
+    /// reads as the always-local source of truth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<String>,
     /// Docker sandbox config for agent tabs. Absent = run agents on the host.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxSpec>,

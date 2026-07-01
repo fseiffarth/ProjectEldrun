@@ -73,9 +73,19 @@ describe("file tree navigation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setupInvoke();
-    mockUseProjectsStore.mockReturnValue(
-      { projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>,
-    );
+    // Apply the selector like real zustand: FileTree subscribes with selectors
+    // (e.g. `(s) => !!s.projects.find(...)?.remote`), so the mock must run the
+    // selector against the state — returning the whole state object would make
+    // those boolean selectors truthy (a non-empty object) and mis-flag the local
+    // test project as remote.
+    const state = {
+      projects: [ACTIVE_PROJECT],
+      activeId: "proj-1",
+      rightPanelFolderByProject: {},
+      setRightPanelFolder: vi.fn(),
+    } as unknown as ReturnType<typeof useProjectsStore>;
+    mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
+      selector ? selector(state) : state) as typeof useProjectsStore);
   });
 
   it("#2 shows the full file name in a title attribute", async () => {

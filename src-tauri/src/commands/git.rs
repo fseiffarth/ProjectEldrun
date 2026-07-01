@@ -54,6 +54,26 @@ fn local_non_repo(target: Option<&RemoteTarget>, project_dir: &str) -> bool {
     target.is_none() && !Path::new(project_dir).join(".git").exists()
 }
 
+/// Run a blocking git command body on a worker thread.
+///
+/// Every git command here is genuinely blocking — `run_git` either spawns a local
+/// `git` subprocess (`.output()`) or runs `git` over SSH (`run_git_remote`, which
+/// can stall up to the SSH `ConnectTimeout`/`ServerAlive` window on an unreachable
+/// or unauthenticated host). Tauri runs a synchronous `#[command]` on the MAIN
+/// thread, so doing that work inline froze the whole window whenever a remote
+/// project's host was down (the remote-disconnect freeze). Each command is an
+/// `async` wrapper that offloads its sync body here via `spawn_blocking`, so the
+/// blocking work runs on tokio's blocking pool and the UI thread stays free. The
+/// bodies live in sibling `*_blocking` fns (kept sync, so they remain directly
+/// unit-testable without a tokio runtime).
+async fn run_off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("git task failed: {e}"))?
+}
+
 #[derive(serde::Serialize)]
 pub struct GitStatus {
     pub staged: usize,
@@ -64,7 +84,11 @@ pub struct GitStatus {
 }
 
 #[tauri::command]
-pub fn git_status(project_dir: String) -> Result<GitStatus, String> {
+pub async fn git_status(project_dir: String) -> Result<GitStatus, String> {
+    run_off_thread(move || git_status_blocking(project_dir)).await
+}
+
+fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
     let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(GitStatus { staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
@@ -96,7 +120,11 @@ pub fn git_status(project_dir: String) -> Result<GitStatus, String> {
 }
 
 #[tauri::command]
-pub fn git_add_all(project_dir: String) -> Result<(), String> {
+pub async fn git_add_all(project_dir: String) -> Result<(), String> {
+    run_off_thread(move || git_add_all_blocking(project_dir)).await
+}
+
+fn git_add_all_blocking(project_dir: String) -> Result<(), String> {
     let target = remote_target_for_dir(&project_dir);
     let out = run_git(target.as_ref(), &project_dir, &["add", "-A"])?;
     if !out.status.success() {
@@ -106,7 +134,11 @@ pub fn git_add_all(project_dir: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_generate_commit_message(project_dir: String) -> Result<String, String> {
+pub async fn git_generate_commit_message(project_dir: String) -> Result<String, String> {
+    run_off_thread(move || git_generate_commit_message_blocking(project_dir)).await
+}
+
+fn git_generate_commit_message_blocking(project_dir: String) -> Result<String, String> {
     let target = remote_target_for_dir(&project_dir);
     let files_out = run_git(target.as_ref(), &project_dir, &["diff", "--staged", "--name-only"])?;
     let staged_text = String::from_utf8_lossy(&files_out.stdout).to_string();
@@ -166,7 +198,11 @@ fn format_commit_message(kind: &str, files: &[String]) -> String {
 }
 
 #[tauri::command]
-pub fn git_commit(project_dir: String, message: String) -> Result<(), String> {
+pub async fn git_commit(project_dir: String, message: String) -> Result<(), String> {
+    run_off_thread(move || git_commit_blocking(project_dir, message)).await
+}
+
+fn git_commit_blocking(project_dir: String, message: String) -> Result<(), String> {
     let target = remote_target_for_dir(&project_dir);
     let out = run_git(target.as_ref(), &project_dir, &["commit", "-m", &message])?;
     if !out.status.success() {
@@ -184,7 +220,14 @@ pub fn git_commit(project_dir: String, message: String) -> Result<(), String> {
 ///   "ignored"   – ignored by git (gray ✕)
 /// For directories the highest-priority child status bubbles up.
 #[tauri::command]
-pub fn git_file_statuses(
+pub async fn git_file_statuses(
+    project_dir: String,
+    rel_path: String,
+) -> Result<HashMap<String, String>, String> {
+    run_off_thread(move || git_file_statuses_blocking(project_dir, rel_path)).await
+}
+
+fn git_file_statuses_blocking(
     project_dir: String,
     rel_path: String,
 ) -> Result<HashMap<String, String>, String> {
@@ -277,7 +320,11 @@ pub fn git_file_statuses(
 
 /// Stages a specific path (file or directory) via `git add`.
 #[tauri::command]
-pub fn git_add_path(project_dir: String, rel_path: String) -> Result<(), String> {
+pub async fn git_add_path(project_dir: String, rel_path: String) -> Result<(), String> {
+    run_off_thread(move || git_add_path_blocking(project_dir, rel_path)).await
+}
+
+fn git_add_path_blocking(project_dir: String, rel_path: String) -> Result<(), String> {
     let target = remote_target_for_dir(&project_dir);
     let out = run_git(target.as_ref(), &project_dir, &["add", "--", &rel_path])?;
     if !out.status.success() {
@@ -431,7 +478,11 @@ async fn count_added_lines_remote(
 /// Returns one-line summaries of commits ahead of the upstream (not yet pushed).
 /// Returns an empty vec when there is no upstream or the repo is not git.
 #[tauri::command]
-pub fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> {
+pub async fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> {
+    run_off_thread(move || git_unpushed_commits_blocking(project_dir)).await
+}
+
+fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, String> {
     let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
@@ -445,7 +496,11 @@ pub fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> 
 }
 
 #[tauri::command]
-pub fn git_push(project_dir: String, project_id: Option<String>) -> Result<String, String> {
+pub async fn git_push(project_dir: String, project_id: Option<String>) -> Result<String, String> {
+    run_off_thread(move || git_push_blocking(project_dir, project_id)).await
+}
+
+fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<String, String> {
     let out = if let Some(target) = remote_target_for_dir(&project_dir) {
         // Remote project: the push runs on the host and authenticates with the
         // host's own git credentials/SSH keys. The local effective token does not
@@ -513,7 +568,11 @@ fn git_head_hash(target: Option<&RemoteTarget>, project_dir: &str) -> Option<Str
 /// Returns the most recent commits (default 100) as one-line summaries.
 /// Returns an empty vec for a non-git directory or a repo with no commits yet.
 #[tauri::command]
-pub fn git_log(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>, String> {
+pub async fn git_log(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>, String> {
+    run_off_thread(move || git_log_blocking(project_dir, limit)).await
+}
+
+fn git_log_blocking(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>, String> {
     let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
@@ -564,7 +623,11 @@ pub struct GitBranch {
 
 /// Lists local and remote-tracking branches.
 #[tauri::command]
-pub fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
+pub async fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
+    run_off_thread(move || git_branches_blocking(project_dir)).await
+}
+
+fn git_branches_blocking(project_dir: String) -> Result<Vec<GitBranch>, String> {
     let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
@@ -595,7 +658,11 @@ pub fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
 /// Checks out a branch name or commit hash. Surfaces git's stderr on failure
 /// (e.g. when the working tree has conflicting uncommitted changes).
 #[tauri::command]
-pub fn git_checkout(project_dir: String, target: String) -> Result<String, String> {
+pub async fn git_checkout(project_dir: String, target: String) -> Result<String, String> {
+    run_off_thread(move || git_checkout_blocking(project_dir, target)).await
+}
+
+fn git_checkout_blocking(project_dir: String, target: String) -> Result<String, String> {
     let rt = remote_target_for_dir(&project_dir);
     let out = run_git(rt.as_ref(), &project_dir, &["checkout", &target])?;
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -608,7 +675,11 @@ pub fn git_checkout(project_dir: String, target: String) -> Result<String, Strin
 
 /// Returns the full commit message (subject + body) for a single commit.
 #[tauri::command]
-pub fn git_commit_message(project_dir: String, hash: String) -> Result<String, String> {
+pub async fn git_commit_message(project_dir: String, hash: String) -> Result<String, String> {
+    run_off_thread(move || git_commit_message_blocking(project_dir, hash)).await
+}
+
+fn git_commit_message_blocking(project_dir: String, hash: String) -> Result<String, String> {
     let target = remote_target_for_dir(&project_dir);
     let out = run_git(target.as_ref(), &project_dir, &["log", "-1", "--pretty=format:%B", &hash])?;
     if !out.status.success() {
@@ -620,7 +691,11 @@ pub fn git_commit_message(project_dir: String, hash: String) -> Result<String, S
 /// Rewords the most recent commit (HEAD) via `git commit --amend`. Only valid
 /// for the latest commit; rewording older commits would require a rebase.
 #[tauri::command]
-pub fn git_reword_head(project_dir: String, message: String) -> Result<(), String> {
+pub async fn git_reword_head(project_dir: String, message: String) -> Result<(), String> {
+    run_off_thread(move || git_reword_head_blocking(project_dir, message)).await
+}
+
+fn git_reword_head_blocking(project_dir: String, message: String) -> Result<(), String> {
     if message.trim().is_empty() {
         return Err("Commit message cannot be empty".to_string());
     }
@@ -641,7 +716,11 @@ pub fn git_reword_head(project_dir: String, message: String) -> Result<(), Strin
 /// non-zero whenever there are differences, so for the fallback we treat any
 /// non-empty stdout as success regardless of exit status.
 #[tauri::command]
-pub fn git_diff_file(project_dir: String, rel_path: String) -> Result<String, String> {
+pub async fn git_diff_file(project_dir: String, rel_path: String) -> Result<String, String> {
+    run_off_thread(move || git_diff_file_blocking(project_dir, rel_path)).await
+}
+
+fn git_diff_file_blocking(project_dir: String, rel_path: String) -> Result<String, String> {
     let target = remote_target_for_dir(&project_dir);
     let out = run_git(target.as_ref(), &project_dir, &["diff", "--", &rel_path])?;
     if !out.status.success() {
@@ -740,7 +819,11 @@ fn parse_worktree_porcelain(text: &str) -> Vec<Worktree> {
 
 /// Lists worktrees attached to the repository at `project_dir`.
 #[tauri::command]
-pub fn git_worktree_list(project_dir: String) -> Result<Vec<Worktree>, String> {
+pub async fn git_worktree_list(project_dir: String) -> Result<Vec<Worktree>, String> {
+    run_off_thread(move || git_worktree_list_blocking(project_dir)).await
+}
+
+fn git_worktree_list_blocking(project_dir: String) -> Result<Vec<Worktree>, String> {
     // `.git` exists as a dir for the main repo and as a file in linked worktrees.
     let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
@@ -758,7 +841,16 @@ pub fn git_worktree_list(project_dir: String) -> Result<Vec<Worktree>, String> {
 /// `branch` at `path` (`git worktree add -b <branch> <path>`); otherwise checks
 /// out the existing `branch` (`git worktree add <path> <branch>`).
 #[tauri::command]
-pub fn git_worktree_add(
+pub async fn git_worktree_add(
+    project_dir: String,
+    path: String,
+    branch: String,
+    new_branch: bool,
+) -> Result<(), String> {
+    run_off_thread(move || git_worktree_add_blocking(project_dir, path, branch, new_branch)).await
+}
+
+fn git_worktree_add_blocking(
     project_dir: String,
     path: String,
     branch: String,
@@ -793,7 +885,11 @@ pub fn git_worktree_add(
 /// git refuses to remove the main worktree or a dirty one without it, and that
 /// error is surfaced to the caller as-is.
 #[tauri::command]
-pub fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Result<(), String> {
+pub async fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Result<(), String> {
+    run_off_thread(move || git_worktree_remove_blocking(project_dir, path, force)).await
+}
+
+fn git_worktree_remove_blocking(project_dir: String, path: String, force: bool) -> Result<(), String> {
     let mut args: Vec<&str> = vec!["worktree", "remove"];
     if force {
         args.push("--force");
@@ -812,7 +908,11 @@ pub fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Re
 /// Prunes administrative entries for worktrees whose directories were removed
 /// out-of-band (`git worktree prune`).
 #[tauri::command]
-pub fn git_worktree_prune(project_dir: String) -> Result<(), String> {
+pub async fn git_worktree_prune(project_dir: String) -> Result<(), String> {
+    run_off_thread(move || git_worktree_prune_blocking(project_dir)).await
+}
+
+fn git_worktree_prune_blocking(project_dir: String) -> Result<(), String> {
     let target = remote_target_for_dir(&project_dir);
     let out = run_git(target.as_ref(), &project_dir, &["worktree", "prune"])?;
     if !out.status.success() {
@@ -885,7 +985,7 @@ mod tests {
         // Modify the file so a tracked diff exists.
         fs::write(&file, "first line\nCHANGED line\n").expect("rewrite");
 
-        let diff = git_diff_file(
+        let diff = git_diff_file_blocking(
             dir.to_string_lossy().to_string(),
             "note.txt".to_string(),
         )
@@ -909,7 +1009,7 @@ mod tests {
         let file = dir.join("fresh.txt");
         fs::write(&file, "brand new content\nanother line\n").expect("write");
 
-        let diff = git_diff_file(
+        let diff = git_diff_file_blocking(
             dir.to_string_lossy().to_string(),
             "fresh.txt".to_string(),
         )
@@ -1006,22 +1106,22 @@ mod tests {
         assert!(run(&["commit", "-m", "init"]).status.success());
 
         // Initially a single (main) worktree.
-        let listed = git_worktree_list(root_str.clone()).unwrap();
+        let listed = git_worktree_list_blocking(root_str.clone()).unwrap();
         assert_eq!(listed.len(), 1);
         assert!(listed[0].is_main);
 
         // Add a new worktree on a new branch.
         let wt_path = tmp.path().join("wt-feature").to_string_lossy().to_string();
-        git_worktree_add(root_str.clone(), wt_path.clone(), "feature".to_string(), true).unwrap();
+        git_worktree_add_blocking(root_str.clone(), wt_path.clone(), "feature".to_string(), true).unwrap();
 
-        let listed = git_worktree_list(root_str.clone()).unwrap();
+        let listed = git_worktree_list_blocking(root_str.clone()).unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed.iter().filter(|w| w.is_main).count(), 1);
         assert!(listed.iter().any(|w| w.branch == "feature"));
 
         // Remove it and confirm we are back to one.
-        git_worktree_remove(root_str.clone(), wt_path, true).unwrap();
-        let listed = git_worktree_list(root_str).unwrap();
+        git_worktree_remove_blocking(root_str.clone(), wt_path, true).unwrap();
+        let listed = git_worktree_list_blocking(root_str).unwrap();
         assert_eq!(listed.len(), 1);
     }
 }

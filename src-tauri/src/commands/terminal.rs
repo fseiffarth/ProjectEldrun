@@ -38,6 +38,20 @@ pub async fn pty_spawn(
         opts.cwd = root_dir.to_string_lossy().into_owned();
     }
 
+    // SSH-sync Phase 1: a LOCAL-running tab on a REMOTE project runs in the
+    // project's local mirror — it can't reach the remote tree. Resolve the cwd to
+    // the mirror here (authoritative, OS-correct path) and ensure it exists, so a
+    // local agent/shell tab spawns in the synced twin rather than a stale cwd.
+    if opts.local_only {
+        if let Some(pid) = opts.project_id.clone() {
+            if crate::services::remote::remote_target_for(&pid).is_some() {
+                let mirror = crate::services::remote_sync::mirror_dir(&pid);
+                let _ = std::fs::create_dir_all(&mirror);
+                opts.cwd = mirror.to_string_lossy().into_owned();
+            }
+        }
+    }
+
     // Resolve agent-session resume args (Claude `--resume`, Codex `resume …`)
     // BEFORE any ssh wrapping. `wrap_pty_options` rewrites `opts.cmd` to "ssh",
     // after which the resolver (which dispatches on `cmd == "claude"|"codex"`)

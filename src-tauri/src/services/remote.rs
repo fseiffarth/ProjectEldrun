@@ -147,6 +147,11 @@ pub async fn connect(
     let Some(target) = remote_target_for(project_id) else {
         return Ok(()); // local project — nothing to pool
     };
+    // SSH-sync Phase 1: ensure the local mirror twin exists for any connected
+    // remote project (covers projects created before the mirror was minted at
+    // create time), so the "Local" source view and local-on-remote tabs have a
+    // real, empty directory to read/cwd into rather than erroring.
+    let _ = std::fs::create_dir_all(crate::services::remote_sync::mirror_dir(project_id));
     if pool.lock().await.conns.contains_key(project_id) {
         return Ok(()); // already connected
     }

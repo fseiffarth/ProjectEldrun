@@ -7,6 +7,8 @@ import { GitHistory } from "../files/GitHistory";
 import { GitChangeTree, type ChangeScope } from "../files/GitChangeTree";
 import { SearchPanel } from "../files/SearchPanel";
 import { useProjectsStore } from "../../stores/projects";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useSyncStore } from "../../stores/sync";
 import { useWindowsStore } from "../../stores/windows";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore } from "../../stores/tabs";
@@ -210,6 +212,9 @@ export function RightPanel({
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [view, setView] = useState<View>("files");
+  // SSH-sync Phase 1: which side of a remote project the files view shows — the
+  // host (remote, SFTP-listed, with the sync overlay) or the local mirror.
+  const [fileSource, setFileSource] = useState<"remote" | "local">("remote");
   const [dropActive, setDropActive] = useState(false);
   const [dropFlash, setDropFlash] = useState(false);
   const [conflict, setConflict] = useState<
@@ -299,6 +304,14 @@ export function RightPanel({
   const activeProject = projects.find((p) => p.id === activeId);
   const projectDir = resolveProjectDirectory(activeProject);
   const localFile = activeProject?.local_file;
+  // Remote git/endings probes dispatch over SSH/SFTP via SYNCHRONOUS Tauri
+  // commands (run on the main thread). Calling them while the pool is down blocks
+  // on the dead session and freezes the window, so suppress them until the remote
+  // project is connected. Local projects are never blocked.
+  const remoteSshState = useRemoteStatusStore((s) =>
+    activeId ? s.byProject[activeId]?.ssh : undefined,
+  );
+  const remoteBlocked = !!activeProject?.remote && remoteSshState !== "connected";
   const rightPanelFolder = activeId ? rightPanelFolderByProject[activeId] ?? "" : "";
 
   // When a box scope is open, the panel shows a multi-root file view: the box
@@ -438,12 +451,12 @@ export function RightPanel({
   }, [open, activeId]);
 
   useEffect(() => {
-    if (open && projectDir) {
+    if (open && projectDir && !remoteBlocked) {
       refreshGit(projectDir);
     } else {
       setGitStatus(null);
     }
-  }, [open, projectDir]);
+  }, [open, projectDir, remoteBlocked]);
 
   useEffect(() => {
     setShowSettings(false);
@@ -456,9 +469,14 @@ export function RightPanel({
       setShownPaths([]);
       return;
     }
+    // `list_project_endings` scans the project dir over SFTP for a remote project —
+    // skip it while disconnected (would freeze the main thread). `load_project`
+    // reads the LOCAL project.json, so it's always safe to run.
     Promise.all([
       invoke<ProjectJson>("load_project", { localFile }),
-      invoke<string[]>("list_project_endings", { projectDir }).catch(() => []),
+      remoteBlocked
+        ? Promise.resolve<string[]>([])
+        : invoke<string[]>("list_project_endings", { projectDir }).catch(() => []),
     ])
       .then(([project, endings]) => {
         const savedHiddenEndings = readHiddenEndings(project);
@@ -479,7 +497,7 @@ export function RightPanel({
         setShownPaths([]);
         setSettingsError(String(error));
       });
-  }, [localFile, projectDir]);
+  }, [localFile, projectDir, remoteBlocked]);
 
   const handleAdd = async () => {
     if (!projectDir) return;
@@ -862,6 +880,38 @@ export function RightPanel({
 
       {view === "files" && (
         <>
+          {!activeBox && activeProject?.remote && activeId && !remoteBlocked && (
+            <div className="right-panel-source">
+              <button
+                className={`tab-add-btn${fileSource === "remote" ? " active" : ""}`}
+                style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+                aria-pressed={fileSource === "remote"}
+                onClick={() => setFileSource("remote")}
+                title="Browse the host (remote) tree — green = synced to local"
+              >
+                Remote
+              </button>
+              <button
+                className={`tab-add-btn${fileSource === "local" ? " active" : ""}`}
+                style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+                aria-pressed={fileSource === "local"}
+                onClick={() => setFileSource("local")}
+                title="Browse the local mirror (only synced files)"
+              >
+                Local
+              </button>
+              {fileSource === "remote" && (
+                <button
+                  className="tab-add-btn"
+                  style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
+                  onClick={() => void useSyncStore.getState().syncWholeProject(activeId)}
+                  title="Sync the whole project tree into the local mirror"
+                >
+                  Sync all
+                </button>
+              )}
+            </div>
+          )}
           <div className="right-panel-sort">
             {(["name", "size", "type", "created", "modified"] as SortKey[]).map((key) => (
               <button
@@ -894,22 +944,35 @@ export function RightPanel({
                 ))
               )
             ) : (
-              open && (
-                <FileTree
-                  projectDir={projectDir}
-                  projectId={activeId}
-                  localFile={localFile}
-                  sortKey={sortKey}
-                  descending={descending}
-                  hiddenEndings={hiddenEndings}
-                  hiddenPaths={hiddenPaths}
-                  shownPaths={shownPaths}
-                  initialRelPath={rightPanelFolder}
-                  onRelPathChange={(folder) => {
-                    if (activeId) setRightPanelFolder(activeId, folder);
-                  }}
-                />
-              )
+              open && (() => {
+                // SSH-sync Phase 1: a remote project's "Local" source points the
+                // tree at the local mirror dir (browsed as a plain local tree);
+                // "Remote" keeps the host (SFTP) tree with the sync overlay. A
+                // local project ignores the toggle entirely.
+                const isRemoteProject = !!activeProject?.remote;
+                const mirrorDir = projectDir
+                  ? `${projectDir.replace(/[/\\]+$/, "")}/mirror`
+                  : projectDir;
+                const treeDir =
+                  isRemoteProject && fileSource === "local" ? mirrorDir : projectDir;
+                return (
+                  <FileTree
+                    projectDir={treeDir}
+                    projectId={activeId}
+                    localFile={localFile}
+                    sortKey={sortKey}
+                    descending={descending}
+                    hiddenEndings={hiddenEndings}
+                    hiddenPaths={hiddenPaths}
+                    shownPaths={shownPaths}
+                    initialRelPath={rightPanelFolder}
+                    onRelPathChange={(folder) => {
+                      if (activeId) setRightPanelFolder(activeId, folder);
+                    }}
+                    syncSource={isRemoteProject ? fileSource : undefined}
+                  />
+                );
+              })()
             )}
           </div>
         </>

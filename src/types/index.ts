@@ -189,6 +189,8 @@ export interface SshTooling {
   sshpass: boolean;
   /** `openvpn` + `pkexec` — required only for VPN-gated hosts. */
   openvpn: boolean;
+  /** `rsync` on the local machine — enables the SSH-sync bulk fast-path. */
+  rsync: boolean;
 }
 
 export interface ProjectEntry {

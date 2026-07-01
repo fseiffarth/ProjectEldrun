@@ -186,6 +186,37 @@ function dropRemotePool(projectId: string): void {
   void invoke("remote_disconnect", { projectId }).catch(() => {});
 }
 
+/**
+ * Manually (re)establish a remote project's connection: bring its OpenVPN tunnel
+ * up (if any), open the interactive SSH login (non-headless), then open the
+ * pooled SSH/SFTP connection. Invoked by the header connection-lamp menu and the
+ * center "Disconnected" placeholder.
+ *
+ * Remote projects deliberately start DISCONNECTED — they are no longer
+ * auto-connected on launch or switch. Auto-connecting raced the tab restore: the
+ * restored `ssh -tt` PTYs and SFTP file listings fired against a not-yet-
+ * authenticated pool and blocked (the "hang on restore"). The CenterPanel
+ * restore effect is now gated on the pooled SSH status reaching "connected", so
+ * the saved tabs are restored only once this reconnect succeeds. No-op for local
+ * projects or if the user switched away mid-connect.
+ */
+export async function reconnectRemote(projectId: string): Promise<void> {
+  const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
+  if (!project?.remote) return;
+  await ensureVpnIfNeeded(project);
+  if (useProjectsStore.getState().activeId !== projectId) return;
+  await ensureRootSshLoginIfNeeded(project);
+  if (useProjectsStore.getState().activeId !== projectId) return;
+  ensureRemotePool(projectId);
+}
+
+/** Tear a remote project's connection down on demand (header lamp menu): drop the
+ *  pooled SSH/SFTP connection and reset its lamps to disconnected. The restored
+ *  tabs stay open (their sessions just go dead) until the user reconnects. */
+export function disconnectRemote(projectId: string): void {
+  dropRemotePool(projectId);
+}
+
 interface ProjectRuntimeSwitchedPayload {
   projectId: string | null;
   tabLayout: Array<{
@@ -199,6 +230,7 @@ interface ProjectRuntimeSwitchedPayload {
     embedPath?: string;
     embedExec?: string;
     viewer?: "pdf" | "image" | "markdown" | "text";
+    location?: "local" | "remote";
   }>;
   // Opaque split/group layout tree (camelCased by the backend's serde rename);
   // absent → restored as a single group.
@@ -290,21 +322,14 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       activeId,
       rightPanelFolderByProject,
     });
-    // The initially-active project never fires a switch (which is what opens the
-    // pooled connection on activation). If it is remote, bring up its VPN/login
-    // and open the pooled SSH/SFTP connection so file browse / I-O / git ride the
-    // shared master (mount-free remote — no sshfs). Best-effort and non-fatal: a
-    // remote host may be offline at boot, which must not block or crash app start.
-    if (activeId) {
-      const active = projects.find((p) => p.id === activeId);
-      if (active?.remote) {
-        void (async () => {
-          await ensureVpnIfNeeded(active);
-          await ensureRootSshLoginIfNeeded(active);
-          ensureRemotePool(activeId);
-        })();
-      }
-    }
+    // The initially-active remote project is intentionally NOT auto-connected on
+    // launch. Doing so raced the tab restore — the restored `ssh -tt` PTYs and
+    // SFTP file listings fired against a not-yet-authenticated pool and blocked
+    // (the "hang on restore"). It starts DISCONNECTED (no status entry → "off"
+    // lamp), and the CenterPanel restore effect is gated on the pool reaching
+    // "connected": the header lamp's Reconnect (or the center "Disconnected"
+    // placeholder) brings the pool up via `reconnectRemote`, and only then are
+    // the saved tabs restored.
   },
 
   setActive: async (id) => {
@@ -361,21 +386,10 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     });
     await invoke<void>("save_projects", { projects: nextProjects });
     void useTimerStore.getState().setProject(id);
-    // Bring up the VPN (if this project is VPN-gated) before the switch mounts
-    // its sshfs filesystem. Prompts for the password each time; non-blocking on
-    // failure (the mount then degrades like an offline host).
-    if (id !== null) {
-      const target = nextProjects.find((p) => p.id === id);
-      await ensureVpnIfNeeded(target);
-      await ensureRootSshLoginIfNeeded(target);
-      // Open the pooled SSH/SFTP connection for a remote project (mount-free
-      // remote, Phase 0). Fire-and-forget so a slow handshake never delays the
-      // switch; the backend resolves remoteness and no-ops for local projects.
-      // Re-check the active id: the awaits above (VPN prompt especially) can
-      // yield long enough for the user to switch away or deactivate this project,
-      // and we must not re-open a pool the deactivation just tore down.
-      if (target?.remote && get().activeId === id) ensureRemotePool(id);
-    }
+    // Switching TO a remote project does NOT auto-connect it (same reason as the
+    // initial-load path): the restore would race a not-yet-authenticated pool and
+    // hang. The project surfaces disconnected; the user brings the pool up via the
+    // header lamp's Reconnect (`reconnectRemote`), which then un-gates the restore.
     // Fire-and-forget: the switch runs on a backend worker thread and returns
     // immediately. The resulting tab layout / right-panel folder arrives via the
     // `project-runtime-switched` event, handled by listenProjectRuntimeSwitched.
@@ -394,6 +408,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
           embedPath: t.embedPath,
           embedExec: t.embedExec,
           viewer: t.viewer,
+          location: t.location,
         })),
         tabGroups,
         activeTabIndex,
@@ -662,12 +677,24 @@ export function listenProjectRuntimeSwitched(): Promise<() => void> {
         viewer: t.viewer,
       }),
     );
+    // Mount-free remote: defer restoring a remote project's tabs until its pooled
+    // SSH/SFTP connection is up. Restoring them while disconnected spawns `ssh -tt`
+    // PTYs and SFTP listings that block on the dead pool (the "hang"). The
+    // CenterPanel restore effect — gated on the SSH status reaching "connected" —
+    // performs the restore once the user reconnects via the header lamp.
+    const switchedProject = payload.projectId
+      ? useProjectsStore.getState().projects.find((p) => p.id === payload.projectId) ?? null
+      : null;
+    if (
+      switchedProject?.remote &&
+      useRemoteStatusStore.getState().byProject[payload.projectId ?? ""]?.ssh !== "connected"
+    ) {
+      return;
+    }
     // Only restore from disk if this scope was never initialized this session.
     // An existing (possibly empty) entry means the user's in-memory tabs win.
     if (restorable.length > 0 && !(scopeKey in tabsStore.tabsByScope)) {
-      const project = payload.projectId
-        ? useProjectsStore.getState().projects.find((p) => p.id === payload.projectId) ?? null
-        : null;
+      const project = switchedProject;
       tabsStore.loadFromLayout(
         restorable,
         resolveProjectDirectory(project),

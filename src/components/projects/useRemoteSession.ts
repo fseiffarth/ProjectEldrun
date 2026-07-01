@@ -54,6 +54,10 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // after a connect fails. `null` until probed.
   const [sshTooling, setSshTooling] = useState<SshTooling | null>(null);
   const [sshAddress, setSshAddress] = useState("");
+  // Previously-used SSH addresses (newest first), offered for reuse so a host
+  // need only be typed once. Loaded when the remote section opens and refreshed
+  // after a successful connect remembers the address (see rememberSshAddress).
+  const [sshAddresses, setSshAddresses] = useState<string[]>([]);
   const [sshPassword, setSshPassword] = useState("");
   const [sshStatus, setSshStatus] = useState<ConnStatus>("idle");
   const [sshError, setSshError] = useState("");
@@ -185,10 +189,31 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       .catch(() => setVpnConfigs([]));
   };
 
-  // Fetch the recent-configs list when the remote section opens so a
-  // previously-used config can be picked without re-browsing.
+  // Load the recently-used SSH addresses (newest first). Best-effort.
+  const refreshSshAddresses = () => {
+    invoke<string[]>("ssh_list_addresses")
+      .then(setSshAddresses)
+      .catch(() => setSshAddresses([]));
+  };
+
+  // Persist `addr` as the most-recently-used SSH address and refresh the local
+  // list so it surfaces immediately in the dropdown. Best-effort — a store
+  // failure must never block the connection that just succeeded.
+  const rememberSshAddress = (addr: string) => {
+    const trimmed = addr.trim();
+    if (!trimmed) return;
+    invoke("ssh_remember_address", { address: trimmed })
+      .then(refreshSshAddresses)
+      .catch(() => {});
+  };
+
+  // Fetch the recent-configs and recent-addresses lists when the remote section
+  // opens so a previously-used config/host can be picked without re-entering it.
   useEffect(() => {
-    if (isRemoteProject) refreshVpnConfigs();
+    if (isRemoteProject) {
+      refreshVpnConfigs();
+      refreshSshAddresses();
+    }
   }, [isRemoteProject]);
 
   // Stream the live OpenVPN handshake into `vpnLog` while the VPN section is
@@ -389,6 +414,9 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       markConnectionOpened(key);
       setSshTerm({ id: nextDialogTermId("ssh"), command, key });
       setSshError("");
+      // The user committed to this host by opening its login — remember it so it
+      // shows up in the recents dropdown next time (covers non-headless + winManual).
+      rememberSshAddress(sshAddress);
       // Outside Windows, ride the login's ControlMaster to SFTP-browse — no stored
       // password. (Windows has no control socket, so it keeps the manual path input.)
       if (!winManual) {
@@ -462,6 +490,8 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       setRemotePassword(sshPassword);
       setSshStatus("connected");
       setRemoteBrowsePath(startDir || "");
+      // Connection succeeded — remember the address for the recents dropdown.
+      rememberSshAddress(sshAddress);
     } catch (err) {
       setSshStatus("error");
       setSshError(String(err));
@@ -515,6 +545,37 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     }
     const idx = path.lastIndexOf("/");
     setRemoteBrowsePath(idx <= 0 ? "/" : path.slice(0, idx));
+  };
+
+  // Create a new folder under the current browse path, then descend into it so
+  // it becomes the selectable target. Reuses the frozen connect credential, like
+  // the listing. No-op without a live session (the SFTP browser only renders then).
+  const createRemoteFolder = async (rawName: string) => {
+    const name = rawName.trim();
+    if (!name || !remoteConn) return;
+    // Reject path separators — this creates a single child of the current dir,
+    // not an arbitrary deep path. The backend's mkdir -p still joins safely.
+    if (name.includes("/")) {
+      setRemoteListError("Folder name can't contain '/'.");
+      return;
+    }
+    const target = joinRemotePath(remoteBrowsePath || "/", name);
+    setRemoteListBusy(true);
+    setRemoteListError("");
+    try {
+      await invoke("ssh_mkdir", {
+        user: remoteConn.user,
+        host: remoteConn.host,
+        port: remoteConn.port,
+        password: remotePassword ? remotePassword : null,
+        path: target,
+      });
+      // Descend into the new folder; the listing effect refreshes off the path.
+      setRemoteBrowsePath(target);
+    } catch (err) {
+      setRemoteListError(String(err));
+      setRemoteListBusy(false);
+    }
   };
 
   // Build the `remote` spec for the create/import request, or undefined when this
@@ -575,6 +636,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     tryBrowseNow,
     sshTooling,
     sshAddress,
+    sshAddresses,
     sshPassword,
     sshStatus,
     sshError,
@@ -608,6 +670,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     connectSsh,
     enterRemoteFolder,
     remoteGoUp,
+    createRemoteFolder,
     buildRemoteSpec,
   };
 }

@@ -32,6 +32,9 @@ pub struct SshTooling {
     pub sshpass: bool,
     /// `openvpn` + `pkexec` — required only for VPN-gated hosts.
     pub openvpn: bool,
+    /// `rsync` on the LOCAL machine — enables the SSH-sync bulk fast-path (the
+    /// SFTP-native floor is always used when it (or the host's rsync) is missing).
+    pub rsync: bool,
 }
 
 /// Report which remote-project tools are present on `PATH`. Called when the
@@ -41,7 +44,55 @@ pub fn ssh_tooling_status() -> SshTooling {
     SshTooling {
         sshpass: sshpass_available(),
         openvpn: crate::services::openvpn::openvpn_available(),
+        rsync: crate::services::remote_sync::rsync_available_local(),
     }
+}
+
+/// Most-recently-used SSH addresses to keep. Old entries past this fall off.
+const SSH_ADDRESS_CAP: usize = 20;
+
+/// File backing the recently-used SSH address list (a plain `Vec<String>`).
+fn ssh_addresses_path() -> std::path::PathBuf {
+    crate::storage::state_dir().join("ssh_addresses.json")
+}
+
+/// Merge `addr` into `existing` as a most-recently-used list: drop any prior
+/// case-insensitive duplicate, prepend the new value, and cap the length. Pure
+/// so the dedupe/cap policy is unit-tested without touching disk.
+fn merge_recent_address(existing: Vec<String>, addr: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(existing.len() + 1);
+    out.push(addr.to_string());
+    for e in existing {
+        if !e.eq_ignore_ascii_case(addr) {
+            out.push(e);
+        }
+    }
+    out.truncate(SSH_ADDRESS_CAP);
+    out
+}
+
+/// Previously-used SSH addresses (most-recent first) so the project dialog can
+/// offer them for reuse instead of retyping. Best-effort: a missing or corrupt
+/// store yields an empty list.
+#[tauri::command]
+pub fn ssh_list_addresses() -> Vec<String> {
+    crate::storage::read_json(&ssh_addresses_path()).unwrap_or_default()
+}
+
+/// Remember `address` as the most-recently-used SSH address. Trims and validates
+/// it (rejecting blanks, option-looking values, and control chars) so we never
+/// persist something the connect path couldn't use, then moves it to the front
+/// of the recents list.
+#[tauri::command]
+pub fn ssh_remember_address(address: String) -> Result<(), String> {
+    let trimmed = address.trim();
+    if trimmed.is_empty() {
+        return Err("empty SSH address".to_string());
+    }
+    crate::services::ssh_common::validate_arg("SSH address", trimmed)?;
+    let existing: Vec<String> = crate::storage::read_json(&ssh_addresses_path()).unwrap_or_default();
+    let merged = merge_recent_address(existing, trimmed);
+    crate::storage::write_json(&ssh_addresses_path(), &merged).map_err(|e| e.to_string())
 }
 
 /// Open a web URL in the user's default browser. Refuses anything that is not an
@@ -132,14 +183,27 @@ pub fn remote_login_command(
 /// Verify the remote host is reachable over SSH (non-interactive). With a
 /// non-empty `password`, authenticates via `sshpass`; otherwise uses key/agent
 /// auth. Returns the trimmed ssh stderr as the error on failure.
+///
+/// Async + `spawn_blocking`: the ssh probe spawns a subprocess that can block for
+/// up to `ConnectTimeout=10s` (BatchMode key/agent auth against an unreachable or
+/// not-yet-tunnelled host, or while a password login's master comes up). As a
+/// *synchronous* Tauri command this ran on the main/UI thread and froze the whole
+/// window — most visibly during reconnect, where `pollSshReady` polls it every
+/// few seconds against a still-authenticating master. Running it on a blocking
+/// worker keeps the UI responsive (e.g. the SSH-login button stays clickable while
+/// the OpenVPN tunnel is coming up).
 #[tauri::command]
-pub fn ssh_connect(
+pub async fn ssh_connect(
     user: Option<String>,
     host: String,
     port: Option<u16>,
     password: Option<String>,
 ) -> Result<(), String> {
-    run_ssh_auth(&user, &host, port, password.as_deref(), &["true"]).map(|_| ())
+    tokio::task::spawn_blocking(move || {
+        run_ssh_auth(&user, &host, port, password.as_deref(), &["true"]).map(|_| ())
+    })
+    .await
+    .map_err(|e| format!("ssh probe task failed: {e}"))?
 }
 
 /// Return the remote default (home) directory as the browser's start location.
@@ -174,6 +238,21 @@ pub async fn ssh_list_dir(
             is_dir: e.is_dir,
         })
         .collect())
+}
+
+/// Create a remote directory (mkdir -p) over SFTP. Like `ssh_list_dir`, `path`
+/// is a binary SFTP field, never re-interpreted by a remote shell — so a folder
+/// name with shell metacharacters is created verbatim, not executed. Used by the
+/// new/import dialog's remote browser to add a target folder while browsing.
+#[tauri::command]
+pub async fn ssh_mkdir(
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+    password: Option<String>,
+    path: String,
+) -> Result<(), String> {
+    sftp::mkdir(&user, &host, port, password.as_deref(), &path).await
 }
 
 #[cfg(test)]
@@ -265,5 +344,35 @@ mod tests {
         assert_eq!(args[pos + 1], "2222");
         assert!(ssh_password_base_args(&None, "-evil", None).is_err());
         assert!(ssh_password_base_args(&Some("-evil".to_string()), "host", None).is_err());
+    }
+
+    // ── merge_recent_address (recently-used SSH addresses) ─────────────────
+
+    #[test]
+    fn merge_recent_prepends_new_address() {
+        let out = merge_recent_address(vec!["a@h".to_string(), "b@h".to_string()], "c@h");
+        assert_eq!(out, vec!["c@h", "a@h", "b@h"]);
+    }
+
+    #[test]
+    fn merge_recent_moves_existing_to_front_without_duplicating() {
+        let out = merge_recent_address(vec!["a@h".to_string(), "b@h".to_string()], "b@h");
+        assert_eq!(out, vec!["b@h", "a@h"]);
+    }
+
+    #[test]
+    fn merge_recent_dedup_is_case_insensitive() {
+        let out = merge_recent_address(vec!["User@Host".to_string()], "user@host");
+        assert_eq!(out, vec!["user@host"]);
+    }
+
+    #[test]
+    fn merge_recent_caps_length_keeping_newest() {
+        let existing: Vec<String> = (0..SSH_ADDRESS_CAP).map(|i| format!("h{i}")).collect();
+        let out = merge_recent_address(existing, "newest");
+        assert_eq!(out.len(), SSH_ADDRESS_CAP);
+        assert_eq!(out[0], "newest");
+        // The oldest entry ("h19") is dropped to make room.
+        assert!(!out.iter().any(|a| a == &format!("h{}", SSH_ADDRESS_CAP - 1)));
     }
 }

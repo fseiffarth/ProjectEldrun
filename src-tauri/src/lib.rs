@@ -231,6 +231,9 @@ pub fn run() {
     // Pooled SSH/SFTP connections, one per active remote project (Phase 0 of the
     // mount-free remote model). Opened on activation, torn down at exit below.
     let remote_pool = services::remote::new_pool();
+    // Single-writer cache of per-project sync manifests (SSH-sync Phase 1). Guards
+    // every `sync.json` mutation so concurrent syncs/saves can't clobber it (G7).
+    let sync_manifest = services::remote_sync::new_manifest_state();
 
     tauri::Builder::default()
         .manage(pty_registry)
@@ -238,6 +241,7 @@ pub fn run() {
         .manage(workspace)
         .manage(fs_watch)
         .manage(remote_pool)
+        .manage(sync_manifest)
         .setup(|_app| {
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
@@ -308,6 +312,8 @@ pub fn run() {
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
             commands::projects::open_in_file_manager,
+            commands::projects::remote_mirror_status,
+            commands::projects::set_remote_mirror_dir,
             commands::projects::create_project,
             commands::projects::preview_project_scaffold,
             commands::projects::import_project,
@@ -327,10 +333,20 @@ pub fn run() {
             commands::ssh::remote_login_command,
             commands::ssh::ssh_default_dir,
             commands::ssh::ssh_list_dir,
+            commands::ssh::ssh_mkdir,
             // Pooled SSH/SFTP connection lifecycle (mount-free remote, Phase 0)
             commands::remote::remote_connect,
             commands::remote::remote_disconnect,
+            // SSH-sync (Phase 1): selective local↔remote mirror sync.
+            commands::sync::sync_pull,
+            commands::sync::sync_whole_project,
+            commands::sync::sync_now,
+            commands::sync::sync_push,
+            commands::sync::sync_mark_selected,
+            commands::sync::sync_status,
             commands::ssh::ssh_tooling_status,
+            commands::ssh::ssh_list_addresses,
+            commands::ssh::ssh_remember_address,
             commands::ssh::open_external_url,
             // OpenVPN tunnels for VPN-gated remote projects
             commands::openvpn::openvpn_connect,

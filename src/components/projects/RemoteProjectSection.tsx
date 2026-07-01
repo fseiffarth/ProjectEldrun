@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { joinRemotePath } from "./scaffold";
 import { fileIcon, folderIcon } from "../../lib/viewers/fileUtils";
 import { TerminalView } from "../terminal/TerminalView";
@@ -76,6 +77,7 @@ export function RemoteProjectSection({
     tryBrowseNow,
     sshTooling,
     sshAddress,
+    sshAddresses,
     sshPassword,
     sshStatus,
     sshError,
@@ -107,7 +109,17 @@ export function RemoteProjectSection({
     connectSsh,
     enterRemoteFolder,
     remoteGoUp,
+    createRemoteFolder,
   } = remote;
+
+  // Inline "new folder" entry within the remote browser (local to this view).
+  const [newFolderName, setNewFolderName] = useState("");
+  const submitNewFolder = () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    void createRemoteFolder(name);
+    setNewFolderName("");
+  };
 
   if (!isRemoteProject) return null;
 
@@ -311,6 +323,25 @@ export function RemoteProjectSection({
                 <ConnLamp status={sshLamp} label="SSH" />
                 SSH address
               </span>
+              {sshAddresses.length > 0 && (
+                <div className="folder-picker-row">
+                  <select
+                    className="ssh-address-input vpn-config-recent"
+                    value={sshAddresses.includes(sshAddress) ? sshAddress : ""}
+                    title="Reuse a previously-used SSH address"
+                    onChange={(e) => {
+                      if (e.target.value) onSshAddressChange(e.target.value);
+                    }}
+                  >
+                    <option value="">Recently used…</option>
+                    {sshAddresses.map((addr) => (
+                      <option key={addr} value={addr} title={addr}>
+                        {addr}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <input
                 className="ssh-address-input"
                 value={sshAddress}
@@ -462,6 +493,30 @@ export function RemoteProjectSection({
             </span>
             <button type="button" onClick={onUseThisFolder}>
               Use this folder
+            </button>
+          </div>
+          <div className="remote-newfolder">
+            <input
+              type="text"
+              className="remote-newfolder-input"
+              placeholder="New folder name…"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitNewFolder();
+                }
+              }}
+              disabled={remoteListBusy}
+            />
+            <button
+              type="button"
+              onClick={submitNewFolder}
+              disabled={remoteListBusy || !newFolderName.trim()}
+              title="Create a new folder here"
+            >
+              + Add folder
             </button>
           </div>
           <div className="remote-list">

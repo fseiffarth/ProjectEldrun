@@ -7,6 +7,16 @@ import { useLinkRoutingStore } from "./linkRouting";
 
 export type TabKind = "agent" | "local_agent" | "shell" | "files" | "embed" | "projects3d";
 
+/**
+ * SSH-sync Phase 0 — a PTY tab's locality on a REMOTE (SSH) project: does it run
+ * locally (in the project's local mirror) or on the host over `ssh -tt`? Only
+ * meaningful for `agent`/`shell` tabs (see {@link isLocatableKind}); `local_agent`
+ * is always local and non-PTY kinds have no locality. On a LOCAL project the axis
+ * is inert (everything is local — the backend gates the ssh-wrap on remoteness).
+ * Plan: docs/ssh_sync_plan.md.
+ */
+export type TabLocation = "local" | "remote";
+
 export const FILES_TAB_CMD = "__eldrun_files__";
 
 /**
@@ -110,6 +120,11 @@ export interface TabEntry {
   // the file (or restarting) restores the position instead of jumping to the top
   // (see ViewerState). Written by the viewer panes, persisted in project.json.
   viewerState?: ViewerState;
+  // SSH-sync Phase 0: for `agent`/`shell` tabs on a remote project, whether this
+  // tab runs locally (in the mirror) or on the host. Absent → the per-kind
+  // default (agents local, shells remote — see effectiveTabLocation). Inert on a
+  // local project. Persisted so the choice survives a restart.
+  location?: TabLocation;
 }
 
 export type SplitDir = "row" | "column";
@@ -208,6 +223,8 @@ export interface SavedTabEntry {
   viewer?: InternalViewer;
   // Persisted reader position (scroll/zoom/pan) for in-app viewer embeds.
   viewerState?: ViewerState;
+  // SSH-sync Phase 0: persisted per-tab local/remote locality (see TabEntry).
+  location?: TabLocation;
 }
 
 /** Serialized layout tree as persisted in project.json's `tab_groups`. */
@@ -306,6 +323,10 @@ interface TabsStore {
   // explicitly at the call site if the scope isn't the active project.
   closeAllTabs: (scope?: string) => void;
   updateTabEnv: (key: string, env: Record<string, string>) => void;
+  // SSH-sync Phase 0: set a tab's local/remote locality (agent/shell tabs on a
+  // remote project). No-op when unchanged. The CenterPanel's localOnly/cwd
+  // computation reads the result so the next mount spawns on the chosen side.
+  setTabLocation: (key: string, location: TabLocation) => void;
   // Merge a patch into an embed tab's persisted viewer position (scroll/zoom/
   // pan). The viewer panes call this as the reader scrolls/zooms; the debounced
   // saveLayout effect then flushes it to project.json (see ViewerState).
@@ -1328,6 +1349,22 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  setTabLocation: (key, location) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      let changed = false;
+      const nextTabs = tabs.map((t) => {
+        if (t.key !== key || t.location === location) return t;
+        changed = true;
+        return { ...t, location };
+      });
+      // No-op (stable array) when the value is unchanged, so an idle re-toggle
+      // doesn't churn the tabs array / wake the saveLayout debounce.
+      if (!changed) return {};
+      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
   setViewerState: (key, patch) => {
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
@@ -2178,6 +2215,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         embedExec: t.embedExec,
         viewer: t.viewer,
         viewerState: t.viewerState,
+        // SSH-sync Phase 0: restore the persisted per-tab locality.
+        location: t.location,
       };
     });
 
@@ -2284,6 +2323,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         embedExec: t.embedExec,
         viewer: t.viewer,
         viewerState: t.viewerState,
+        // SSH-sync Phase 0: persist the per-tab locality.
+        location: t.location,
       }));
       // #42: re-dock detached groups into the persisted tree so disk reflects a
       // restart-as-docked layout (their tabs are already in the flat list above
@@ -2498,6 +2539,59 @@ export function pruneSavedTree(
 
 export function isLocalAgentKind(kind: TabKind): kind is "local_agent" {
   return kind === "local_agent";
+}
+
+/**
+ * SSH-sync Phase 0: whether a tab kind has a user-toggleable local/remote
+ * locality. Only `agent` and `shell` tabs run a PTY that can sit on either side;
+ * `local_agent` is fixed-local and the non-PTY kinds (files/embed/projects3d)
+ * have no locality.
+ */
+export function isLocatableKind(kind: TabKind): boolean {
+  return kind === "agent" || kind === "shell";
+}
+
+/**
+ * SSH-sync Phase 0: the default locality for a kind on a remote project (product
+ * decision 1): **agents default LOCAL** (cwd = the local mirror), **shells
+ * default REMOTE** (run remote scripts on the host). `local_agent` and the
+ * non-PTY kinds resolve local. See docs/ssh_sync_plan.md.
+ */
+export function defaultLocationForKind(kind: TabKind): TabLocation {
+  return kind === "shell" ? "remote" : "local";
+}
+
+/**
+ * SSH-sync Phase 0: a tab's effective locality — its explicit `location`, or the
+ * per-kind default when unset. `local_agent` is always local regardless of any
+ * stored value. Consumed by CenterPanel/DetachedCenterPanel to decide `localOnly`
+ * and resolve the local `cwd` (mirror root) for a local-on-remote tab.
+ */
+export function effectiveTabLocation(
+  tab: { kind: TabKind; location?: TabLocation },
+): TabLocation {
+  if (isLocalAgentKind(tab.kind)) return "local";
+  return tab.location ?? defaultLocationForKind(tab.kind);
+}
+
+/**
+ * SSH-sync Phase 1: the local working directory a PTY tab should run in when it
+ * runs LOCALLY on a REMOTE project. A local-on-remote tab can't cwd into the
+ * remote tree, so it runs in the project's local **mirror** (`<state dir>/mirror`)
+ * — the synced twin. This is the value shown in the tab title; the backend
+ * resolves the same path authoritatively at spawn (and guarantees it exists).
+ * Returns `fallback` (the tab's own cwd) unchanged for a local project or a tab
+ * that runs on the host (remote locality).
+ */
+export function localTabCwd(
+  tab: { kind: TabKind; location?: TabLocation },
+  opts: { isRemoteProject: boolean; projectDirectory: string; fallback: string },
+): string {
+  if (!opts.isRemoteProject || effectiveTabLocation(tab) !== "local") {
+    return opts.fallback;
+  }
+  if (!opts.projectDirectory) return opts.fallback;
+  return `${opts.projectDirectory.replace(/[/\\]+$/, "")}/mirror`;
 }
 
 /**

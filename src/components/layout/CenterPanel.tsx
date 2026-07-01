@@ -28,7 +28,9 @@ import {
   FILES_TAB_CMD,
   allGroups,
   cmdToKind,
+  effectiveTabLocation,
   isRestorableTab,
+  localTabCwd,
   useTabsStore,
   type LayoutNode,
   type SavedLayoutTree,
@@ -43,6 +45,8 @@ import { commitDrop } from "../tabs/commitDrop";
 import { snapshotFrame, physToClient, type WindowFrame } from "../../lib/coords";
 import { dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
+import { RemoteReconnectPanel } from "../projects/RemoteReconnectPanel";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { resolveProjectDirectory } from "../../types";
 
 /** Pixel coordinates of a group's pane region, relative to the center panel. */
@@ -149,6 +153,16 @@ export function CenterPanel() {
   const localFile = activeProject?.local_file as string | undefined;
   const projectCwd = resolveProjectDirectory(activeProject);
 
+  // Mount-free remote: a remote project starts DISCONNECTED and its tabs are NOT
+  // restored until its pooled SSH/SFTP connection is up (restoring them while
+  // disconnected spawns ssh/sftp work that blocks on the dead pool — the "hang").
+  // The restore effect below is gated on `remoteGateClosed`; while it's closed we
+  // render the "Disconnected" reconnect placeholder instead of the saved tabs.
+  const activeSshState = useRemoteStatusStore((s) =>
+    activeId ? s.byProject[activeId]?.ssh : undefined,
+  );
+  const remoteGateClosed = !!activeProject?.remote && activeSshState !== "connected";
+
   // The layout to RENDER: normally the store layout, but while dragging a
   // subwindow's lone tab it's that layout with the (about-to-empty) source
   // subwindow pruned — so it collapses live and the siblings reflow to fill,
@@ -193,6 +207,13 @@ export function CenterPanel() {
     // stale project.json before switch_project_runtime has written the empty layout.
     if (nextScope in useTabsStore.getState().tabsByScope) return;
 
+    // Mount-free remote: defer the disk restore until the pooled SSH/SFTP
+    // connection is up. Restoring now would spawn `ssh -tt` PTYs and SFTP listings
+    // that block on the not-yet-authenticated pool (the "hang on restore"). The
+    // user reconnects via the header lamp / placeholder; this effect re-runs when
+    // `remoteGateClosed` flips (it's in the deps) and then restores the tabs.
+    if (remoteGateClosed) return;
+
     // Project context: restore saved tab layout from disk (first visit this session).
     const scopeForLoad = nextScope;
     type LayoutEntry = { key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string; env?: Record<string, string>; sessionId?: string; embedPath?: string; embedExec?: string; viewer?: "pdf" | "image" | "markdown" | "text" };
@@ -228,7 +249,7 @@ export function CenterPanel() {
         loadFromLayout(restorable, projectCwd, scopeForLoad, groups ?? undefined);
       })
       .catch(() => {});
-  }, [activeId, projectCwd, localFile, setScope, loadFromLayout]);
+  }, [activeId, projectCwd, localFile, setScope, loadFromLayout, remoteGateClosed]);
 
   // Re-hydrate vibe local_agent tabs that were saved without VIBE_HOME/
   // VIBE_ACTIVE_MODEL. Only vibe needs this: `ollama launch`/fallback driver tabs
@@ -801,6 +822,23 @@ export function CenterPanel() {
           registerGroupBody={registerGroupBody}
           onResized={measure}
         />
+      ) : remoteGateClosed ? (
+        // Mount-free remote: the project is disconnected, so its saved tabs are
+        // NOT restored yet (restoring them would block on the dead SSH pool). Show
+        // a Reconnect placeholder; the same flow runs from the header lamp menu.
+        // Once the pool reaches "connected", the gated restore effect re-runs and
+        // this is replaced by the restored LayoutTree.
+        <Subwindow groupId={EMPTY_GROUP_ID} projectCwd={projectCwd}>
+          <div
+            ref={registerGroupBody(EMPTY_GROUP_ID)}
+            className="center-placeholder"
+            style={{ height: "100%" }}
+          >
+            {activeProject && (
+              <RemoteReconnectPanel project={activeProject} sshState={activeSshState} />
+            )}
+          </div>
+        </Subwindow>
       ) : (
         // No tabs yet: render an empty subwindow so its tab bar's "+" is always
         // available to create the first tab. EMPTY_GROUP_ID isn't a real group
@@ -903,8 +941,19 @@ export function CenterPanel() {
                   args={tab.args ?? []}
                   env={tab.env ?? {}}
                   initialInput={tab.initialInput}
-                  cwd={tab.cwd}
-                  localOnly={tab.kind === "local_agent"}
+                  // SSH-sync Phase 0: a local-on-remote tab runs in the project's
+                  // local mirror (state dir), not the remote tree it can't reach.
+                  cwd={localTabCwd(tab, {
+                    isRemoteProject: !!projects.find((p) => p.id === scopeKey)?.remote,
+                    projectDirectory: resolveProjectDirectory(
+                      projects.find((p) => p.id === scopeKey),
+                    ),
+                    fallback: tab.cwd,
+                  })}
+                  // SSH-sync Phase 0: agents default LOCAL on a remote project,
+                  // shells default REMOTE; the per-tab toggle overrides. local_agent
+                  // stays fixed-local (effectiveTabLocation handles it).
+                  localOnly={effectiveTabLocation(tab) === "local"}
                   // The owning project's id (null for the root scope), so the
                   // backend spawn detects remoteness explicitly instead of
                   // sniffing the cwd. Harmless for local projects.
@@ -1073,6 +1122,7 @@ export function DragGhost() {
       <div className="tab-drag-ghost-label">{label}</div>
       {isFileDrag ? (
         <div className="tab-drag-ghost-opts">
+          <div className="tab-drag-ghost-opt">Drop on a folder → move file there</div>
           <div className={`tab-drag-ghost-opt${shiftHeld ? "" : " active"}`}>
             Drop → open in new window / dock into popout
           </div>

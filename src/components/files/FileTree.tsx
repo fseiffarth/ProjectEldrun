@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -12,6 +12,8 @@ import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useSyncStore, type SyncFileState } from "../../stores/sync";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
@@ -44,6 +46,11 @@ interface Props {
   shownPaths?: string[];
   initialRelPath?: string | null;
   onRelPathChange?: (relPath: string) => void;
+  /** SSH-sync Phase 1: which side of a remote project this tree shows. `"remote"`
+   *  = the host source with the sync overlay + select-to-sync affordance; `"local"`
+   *  = the local mirror (browsed/watched as a plain local tree). Absent = a normal
+   *  local/remote project tree (no sync UI). */
+  syncSource?: "remote" | "local";
 }
 
 type GitStatusMap = Record<string, string>;
@@ -99,6 +106,46 @@ function GitMarker({ status }: { status: string | undefined }) {
   );
 }
 
+const SYNC_COLOR: Record<SyncFileState, string> = {
+  green: "#3fb950", // synced; manifest base still matches the host
+  amber: "#d29922", // host moved since the last fetch (refresh-observed)
+  none: "transparent",
+};
+
+const SYNC_TITLE: Record<SyncFileState, string> = {
+  green: "Synced to local mirror",
+  amber: "Host changed since last sync — re-sync to update",
+  none: "Not synced",
+};
+
+/** SSH-sync Phase 1: marker right of the git dot in the REMOTE source view,
+ *  showing whether a path is mirrored locally (green), stale (amber), or not
+ *  synced (empty slot). Only rendered for remote-source trees. */
+function SyncMarker({ state }: { state: SyncFileState | undefined }) {
+  const slot: React.CSSProperties = {
+    width: 10,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    marginRight: 2,
+  };
+  const s = state ?? "none";
+  return (
+    <span style={slot} title={SYNC_TITLE[s]}>
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: 2,
+          background: SYNC_COLOR[s],
+          boxShadow: s === "none" ? "inset 0 0 0 1px var(--border-color)" : undefined,
+        }}
+      />
+    </span>
+  );
+}
+
 // Native drag-out (tauri-plugin-drag) needs the OS drag-preview icon as a base64
 // PNG data URL (its icon field rejects a bare path), read synchronously inside
 // the `dragstart` gesture. The backend returns that data URL; cache it
@@ -131,6 +178,7 @@ export function FileTree({
   shownPaths = [],
   initialRelPath = "",
   onRelPathChange,
+  syncSource,
 }: Props) {
   const [rawEntries, setRawEntries] = useState<FileEntry[]>([]);
   // Which files can be embedded as a frameless in-tab app (Group K #40). Keyed
@@ -161,11 +209,23 @@ export function FileTree({
   // when Ctrl is pressed/released.
   const [ctrlHeld, setCtrlHeld] = useState(false);
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
+  // Drag-to-move: the rel path of the folder / breadcrumb under the cursor while
+  // a file is being dragged (null = none). The ref carries the live value into
+  // the drag's window-bound release handler (which captured an earlier closure);
+  // the state drives the drop-target highlight and only changes when the hovered
+  // target changes (not every pointermove), so the tree re-renders rarely.
+  const moveTargetRef = useRef<string | null>(null);
+  const [moveTargetRel, setMoveTargetRel] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
   const [defaultAppFor, setDefaultAppFor] = useState<FileEntry | null>(null);
   const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
   const [pasteBusy, setPasteBusy] = useState(false);
+  // SSH-sync Phase 2: project-relative paths whose push was blocked by a stale
+  // host base, awaiting the user's keep-local / take-host / skip choice. The
+  // first is shown in the conflict modal; resolving advances the queue.
+  const [pushConflicts, setPushConflicts] = useState<string[]>([]);
+  const [pushBusy, setPushBusy] = useState(false);
   // Whether the system clipboard holds an image when the context menu opened
   // (probed async on right-click), gating the "Paste screenshot" option.
   const [clipboardImage, setClipboardImage] = useState(false);
@@ -189,6 +249,32 @@ export function FileTree({
   const isRemote = useProjectsStore(
     (s) => !!s.projects.find((p) => p.id === projectId)?.remote,
   );
+  // SSH-sync Phase 1: the local mirror source (`syncSource === "local"`) is a
+  // plain LOCAL tree even though its project is remote — it lists/​watches the
+  // local mirror dir and is never gated on the SSH pool. Only a remote-SOURCE
+  // tree dispatches its listing over SFTP. `remoteListing` is the flag the
+  // watch/refresh-bar/pool-gate logic below keys on.
+  const treatLocal = syncSource === "local";
+  const remoteListing = isRemote && !treatLocal;
+  // SSH-sync overlay state for the remote source: per-path green/amber/none + the
+  // in-flight transfer progress. Only consulted in the remote-source view.
+  const syncStatus = useSyncStore((s) => (projectId ? s.byProject[projectId] : undefined));
+  const syncProgress = useSyncStore((s) => (projectId ? s.progressByProject[projectId] : undefined));
+  const refreshSyncStatus = useSyncStore((s) => s.refreshStatus);
+  const syncPull = useSyncStore((s) => s.pull);
+  const syncPush = useSyncStore((s) => s.push);
+  const syncMarkSelected = useSyncStore((s) => s.markSelected);
+  // A remote project's `list_dir`/`git_file_statuses` dispatch over SSH/SFTP on
+  // the backend. Those are SYNCHRONOUS Tauri commands (they run on the main
+  // thread), so calling them while the pooled connection is down blocks on the
+  // dead SSH session and FREEZES the whole window. Gate every listing on the pool
+  // being "connected": until then the tree shows a disconnected note instead of
+  // issuing any remote call. Reconnect (header lamp / center placeholder) brings
+  // the pool up, flips this true, and the load effect re-runs.
+  const remoteSshState = useRemoteStatusStore((s) =>
+    projectId ? s.byProject[projectId]?.ssh : undefined,
+  );
+  const remoteBlocked = remoteListing && remoteSshState !== "connected";
 
   const entries = useMemo(
     () => visibleEntries(rawEntries, {
@@ -293,8 +379,22 @@ export function FileTree({
 
   useEffect(() => {
     if (!projectDir) return;
+    // Don't list a disconnected remote project's tree — the sync list_dir/
+    // git_file_statuses commands would block the main thread on the dead SSH pool
+    // and freeze the app. Re-runs once the pool connects (remoteBlocked flips).
+    if (remoteBlocked) return;
     load(initialRelPath ?? "");
-  }, [projectDir]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectDir, remoteBlocked]);
+
+  // SSH-sync Phase 1: keep the remote-source overlay fresh — re-stat selected
+  // files whenever the remote tree (re)lists. Skipped for local/​mirror trees.
+  useEffect(() => {
+    if (remoteListing && projectId && !remoteBlocked) {
+      void refreshSyncStatus(projectId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteListing, projectId, remoteBlocked, relPath]);
 
   // Live updates: watch the currently-displayed directory on the backend and
   // re-fetch when it changes, so files created/removed by terminals, agents, or
@@ -302,8 +402,9 @@ export function FileTree({
   // directory whenever relPath changes; tears down on unmount/panel close.
   useEffect(() => {
     // Remote projects have no local fs watcher (inotify can't see the SFTP tree);
-    // they refresh manually via the toolbar button. Skip the watch wiring.
-    if (!projectDir || isRemote) return;
+    // they refresh manually via the toolbar button. Skip the watch wiring. The
+    // local mirror source IS a real local dir, so it keeps live watch updates.
+    if (!projectDir || remoteListing) return;
     const absDir = relPath ? `${projectDir}/${relPath}` : projectDir;
     let unlisten: (() => void) | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -326,9 +427,12 @@ export function FileTree({
       invoke("unwatch_dir").catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectDir, relPath, isRemote]);
+  }, [projectDir, relPath, remoteListing]);
 
   async function load(rel: string) {
+    // Never issue the (synchronous, main-thread) remote listing commands while the
+    // pool is down — they would freeze the window. See `remoteBlocked`.
+    if (remoteBlocked) return;
     setLoading(true);
     setError(null);
     try {
@@ -356,6 +460,7 @@ export function FileTree({
   // Replacing rawEntries/gitStatuses on every event (a single write emits a
   // burst) is what caused the tree to flicker, so we diff before committing.
   async function refresh(rel: string) {
+    if (remoteBlocked) return;
     let result: FileEntry[];
     try {
       result = await invoke<FileEntry[]>("list_dir", { projectDir, relPath: rel });
@@ -447,9 +552,17 @@ export function FileTree({
   function onEntryPointerDown(
     e: React.PointerEvent,
     entry: FileEntry,
-    viewer: InternalViewer | null,
+    dragTarget: InternalViewer | "embed" | null,
   ) {
     if (e.button !== 0 || entry.is_dir) return;
+    // A built-in viewer drives the in-app drop; "embed" means an external
+    // handler, so no viewer. `canTab` is whether this file can land on a tab bar
+    // / new window at all — only such files take the commitFileDrop path on
+    // release. Files without a tab target are still draggable, but ONLY to move
+    // them into a folder (drag-to-move); released anywhere else they do nothing.
+    const viewer = dragTarget === "embed" ? null : dragTarget;
+    const canTab = dragTarget != null;
+    const sourceRel = relForEntry(entry);
     // Ctrl held → the user wants to EXPORT/COPY this file out to another app
     // (Signal, a browser, a file manager). The row arms HTML5 `draggable` while
     // `ctrlHeld` (see renderEntry); its onDragStart suppresses the broken
@@ -520,12 +633,21 @@ export function FileTree({
       }
       lastClient = { x: ev.clientX, y: ev.clientY };
       useDragStore.getState().move(ev.clientX, ev.clientY);
+      // Drag-to-move: highlight the folder row / breadcrumb / up button under the
+      // cursor as the destination. The drag ghost is pointer-events:none, so
+      // elementFromPoint reaches the rows beneath it. A target whose rel matches
+      // the file's current folder is a no-op and is ignored.
+      const overEl = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+      const moveEl = overEl?.closest<HTMLElement>("[data-move-rel]") ?? null;
+      const moveRel = moveEl?.getAttribute("data-move-rel") ?? null;
+      setMoveTarget(moveRel != null && moveRel !== relPath ? moveRel : null);
     };
 
     // Tear down the move listener, poll, popout highlight, and pointer capture —
     // however the gesture resolves.
     const cleanup = () => {
       window.removeEventListener("pointermove", onMove);
+      setMoveTarget(null);
       stopPoll?.();
       // Clear the popout highlight + tear down the panes listener. `targetAt`
       // still hit-tests the cached pane geometry for the commit below.
@@ -547,8 +669,24 @@ export function FileTree({
         // is the other gesture. So a single click is a no-op here.
         return;
       }
+      // Drag-to-move takes precedence: released over a folder / breadcrumb in the
+      // tree → relocate the file there. This is the one gesture available to ALL
+      // files (even those with no tab/viewer target).
+      const moveRel = moveTargetRef.current;
+      if (moveRel != null) {
+        useDragStore.getState().end();
+        await moveEntryToFolder(sourceRel, entry.name, moveRel);
+        return;
+      }
       const d = useDragStore.getState().drag;
       if (d == null) return;
+      // A file with no tab/viewer/embed target can only be moved (handled above);
+      // released anywhere else it does nothing — never leak it out as an external
+      // open or an empty embed tab.
+      if (!canTab) {
+        useDragStore.getState().end();
+        return;
+      }
       // Final physical cursor at release (a fresh read; falls back to the last
       // poll reading if the IPC fails). This is the canonical cross-window space.
       const phys = (await desktopCursor().catch(() => null)) ?? lastPhys;
@@ -623,6 +761,46 @@ export function FileTree({
     return relPath ? `${relPath}/${entry.name}` : entry.name;
   }
 
+  // Set the current drag-to-move drop target (a folder rel path, "" = project
+  // root, null = none). Keeps the ref (read by the release handler) and the
+  // highlight state in sync; the setter is a no-op when unchanged so dragging
+  // over the same folder doesn't churn renders.
+  function setMoveTarget(rel: string | null) {
+    moveTargetRef.current = rel;
+    setMoveTargetRel((prev) => (prev === rel ? prev : rel));
+  }
+
+  // Relocate a dragged file into a folder shown in the tree (drag-to-move). The
+  // backend `move_path` works the same for local and remote (SFTP) projects. A
+  // name collision in the destination aborts with an error rather than silently
+  // clobbering — moving is meant to be safe.
+  async function moveEntryToFolder(sourceRel: string, name: string, destFolderRel: string) {
+    const destRel = destFolderRel ? `${destFolderRel}/${name}` : name;
+    setLoading(true);
+    setError(null);
+    try {
+      const exists = await invoke<boolean>("project_path_exists", {
+        projectDir,
+        relPath: destRel,
+      }).catch(() => false);
+      if (exists) {
+        setError(`"${name}" already exists in ${destFolderRel || "the project root"}`);
+        setLoading(false);
+        return;
+      }
+      await invoke("move_path", {
+        srcProjectDir: projectDir,
+        srcRel: sourceRel,
+        destProjectDir: projectDir,
+        destRel,
+      });
+      await load(relPath);
+    } catch (err) {
+      setError(String(err));
+      setLoading(false);
+    }
+  }
+
   function showEntryContextMenu(e: React.MouseEvent<HTMLDivElement>, entry: FileEntry) {
     e.preventDefault();
     e.stopPropagation();
@@ -663,6 +841,72 @@ export function FileTree({
       embedPath: entry.path,
       viewer: "diff",
     });
+  }
+
+  // SSH-sync Phase 1: pull this file/folder into the local mirror (and mark it
+  // selected), or stop tracking it. Remote source view only.
+  async function syncEntryToLocal(entry: FileEntry) {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      await syncPull(projectId, relForEntry(entry));
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function stopSyncingEntry(entry: FileEntry) {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      await syncMarkSelected(projectId, [relForEntry(entry)], false, entry.is_dir);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  // SSH-sync Phase 2: push a local mirror file/folder up to the host. A push that
+  // a host change would clobber is blocked and queued for per-file resolution.
+  async function pushEntryToHost(entry: FileEntry) {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      const { conflicts } = await syncPush(projectId, relForEntry(entry), false);
+      if (conflicts.length > 0) setPushConflicts(conflicts);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  // Push the whole local mirror up to the host (root context menu, local source).
+  async function pushAllToHost() {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      const { conflicts } = await syncPush(projectId, "", false);
+      if (conflicts.length > 0) setPushConflicts(conflicts);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  // Resolve the first queued push conflict: keep-local force-pushes, take-host
+  // pulls the host copy back, skip drops it. Each advances the queue.
+  async function resolvePushConflict(action: "keep" | "host" | "skip") {
+    const rel = pushConflicts[0];
+    if (!rel || !projectId) return;
+    setPushBusy(true);
+    try {
+      if (action === "keep") await syncPush(projectId, rel, true);
+      else if (action === "host") await syncPull(projectId, rel);
+      // "skip" leaves both sides as-is.
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setPushBusy(false);
+      setPushConflicts((q) => q.slice(1));
+      await load(relPath);
+    }
   }
 
   async function updateGitignore(entry: FileEntry, action: "ignore" | "unignore") {
@@ -943,6 +1187,19 @@ export function FileTree({
     );
   }
 
+  // Disconnected remote project: the tree can't be listed without freezing the
+  // app (sync remote commands on the main thread). Show a note and let the user
+  // reconnect from the header lamp; the tree re-lists once the pool is up.
+  if (remoteBlocked) {
+    return (
+      <div className="file-tree-empty">
+        {remoteSshState === "connecting"
+          ? "Connecting to the remote host…"
+          : "Disconnected — reconnect (header lamp) to browse files."}
+      </div>
+    );
+  }
+
   return (
     <div
       className={`file-tree${isDragOver ? " drag-over" : ""}`}
@@ -952,11 +1209,11 @@ export function FileTree({
       onMouseDown={() => setContextMenu(null)}
       onContextMenu={showRootContextMenu}
     >
-      {isRemote && (
+      {remoteListing && (
         <div className="file-tree-remote-bar" title="Remote project — live updates are off; refresh to re-list">
           <button
             className="file-tree-up file-tree-refresh"
-            onClick={() => load(relPath)}
+            onClick={() => { load(relPath); if (projectId) void refreshSyncStatus(projectId); }}
             disabled={loading}
             title="Refresh (re-list over SFTP)"
             aria-label="Refresh"
@@ -964,12 +1221,36 @@ export function FileTree({
             ↻
           </button>
           <span className="file-tree-remote-label">remote</span>
+          {syncProgress && (
+            <span className="file-tree-sync-progress" title={`Syncing ${syncProgress.rel || "…"}`}>
+              ⟳ {syncProgress.done}/{syncProgress.total}
+            </span>
+          )}
         </div>
       )}
-      {relPath && (
+      {relPath && (() => {
+        // Parent of the current folder — the up button doubles as a drag-to-move
+        // target ("move into the parent dir"). The breadcrumb crumbs cover the
+        // other ancestors (and ⌂ the project root).
+        const parentRel = relPath.split("/").filter(Boolean).slice(0, -1).join("/");
+        return (
         <div className="file-tree-breadcrumb">
-          <button className="file-tree-up" onClick={goUp} title="Go up">↑</button>
-          <button className="file-tree-crumb" onClick={() => load("")} title="Project root">⌂</button>
+          <button
+            className={`file-tree-up${moveTargetRel === parentRel ? " move-drop-target" : ""}`}
+            data-move-rel={parentRel}
+            onClick={goUp}
+            title="Go up"
+          >
+            ↑
+          </button>
+          <button
+            className={`file-tree-crumb${moveTargetRel === "" ? " move-drop-target" : ""}`}
+            data-move-rel=""
+            onClick={() => load("")}
+            title="Project root"
+          >
+            ⌂
+          </button>
           {relPath.split("/").filter(Boolean).map((seg, i, arr) => {
             const target = arr.slice(0, i + 1).join("/");
             const isLast = i === arr.length - 1;
@@ -977,7 +1258,8 @@ export function FileTree({
               <React.Fragment key={target}>
                 <span className="file-tree-crumb-sep">/</span>
                 <button
-                  className={`file-tree-crumb${isLast ? " current" : ""}`}
+                  className={`file-tree-crumb${isLast ? " current" : ""}${moveTargetRel === target ? " move-drop-target" : ""}`}
+                  data-move-rel={target}
                   onClick={() => { if (!isLast) load(target); }}
                   title={target}
                 >
@@ -987,7 +1269,8 @@ export function FileTree({
             );
           })}
         </div>
-      )}
+        );
+      })()}
       {loading && <div className="file-tree-loading">Loading…</div>}
       {error && <div className="file-tree-error">{error}</div>}
       {!relPath && (
@@ -1008,11 +1291,14 @@ export function FileTree({
           const isRunning = runningScripts.has(e.path);
           const isCompiling = compiling.has(e.path);
           const dragTarget = draggableToTab(e);
-          const viewer = dragTarget === "embed" ? null : dragTarget;
+          const isMoveTarget = e.is_dir && moveTargetRel === relForEntry(e);
           return (
             <div
               key={e.path}
-              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold ? " scaffold" : ""}`}
+              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold ? " scaffold" : ""}${isMoveTarget ? " move-drop-target" : ""}`}
+              // Folders are drag-to-move destinations: dropping a dragged file
+              // here relocates it (hit-tested by data-move-rel in the drag).
+              data-move-rel={e.is_dir ? relForEntry(e) : undefined}
               // Dirs: single-click navigates + native DnD (file export).
               // Files, plain drag: pointer-based drag onto a tab bar for
               // drag-to-tab files (built-in viewer OR embeddable handler); R6 —
@@ -1030,11 +1316,18 @@ export function FileTree({
                   ? (ev) => handleEntryDragStart(ev, e)
                   : (ev) => ev.preventDefault()
               }
-              onPointerDown={dragTarget ? (ev) => onEntryPointerDown(ev, e, viewer) : undefined}
+              // Every file arms the pointer drag — files with a tab/viewer target
+              // can drop onto a tab bar, and ALL files can be dragged into a
+              // folder to move them. Folders aren't dragged (they navigate).
+              onPointerDown={!e.is_dir ? (ev) => onEntryPointerDown(ev, e, dragTarget) : undefined}
               onMouseEnter={(ev) => handleEntryMouseEnter(ev, e)}
               onMouseLeave={() => setTooltip(null)}
             >
               <GitMarker status={status} />
+              {/* SSH-sync Phase 1: per-path mirror state, remote source only. */}
+              {remoteListing && (
+                <SyncMarker state={syncStatus?.[relForEntry(e)]?.state} />
+              )}
               {canRun && (
                 <button
                   type="button"
@@ -1119,6 +1412,14 @@ export function FileTree({
               <button onClick={() => createEntry("dir")}>
                 New Folder
               </button>
+              {treatLocal && (
+                <>
+                  <hr />
+                  <button onClick={() => pushAllToHost()}>
+                    Push all to host
+                  </button>
+                </>
+              )}
               {(clipboard || clipboardImage) && <hr />}
               {clipboard && (
                 <button onClick={openPastePrompt}>
@@ -1137,8 +1438,30 @@ export function FileTree({
             const status = gitStatuses[entry.name];
             const isTex = !entry.is_dir && entry.extension === ".tex";
             const isZip = !entry.is_dir && entry.extension === ".zip";
+            const syncSel = remoteListing ? syncStatus?.[relForEntry(entry)]?.selected : false;
             return (
               <>
+                {remoteListing && (
+                  <>
+                    <button onClick={() => syncEntryToLocal(entry)}>
+                      {entry.is_dir ? "Sync folder to local" : "Sync to local"}
+                    </button>
+                    {syncSel && (
+                      <button onClick={() => stopSyncingEntry(entry)}>
+                        Stop syncing
+                      </button>
+                    )}
+                    <hr />
+                  </>
+                )}
+                {treatLocal && (
+                  <>
+                    <button onClick={() => pushEntryToHost(entry)}>
+                      {entry.is_dir ? "Push folder to host" : "Push to host"}
+                    </button>
+                    <hr />
+                  </>
+                )}
                 {isZip && (
                   <>
                     <button onClick={() => extractArchive(entry)}>
@@ -1230,6 +1553,36 @@ export function FileTree({
             <div className="file-delete-actions">
               <button type="button" onClick={() => setDeleteConfirm(null)}>Cancel</button>
               <button type="button" className="danger" onClick={confirmDelete}>Delete</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+      {pushConflicts.length > 0 && createPortal(
+        <div className="modal-backdrop" onMouseDown={() => !pushBusy && resolvePushConflict("skip")}>
+          <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
+            <h2>Host changed since last sync</h2>
+            <p>
+              <strong>{basename(pushConflicts[0]) || pushConflicts[0]}</strong> was
+              modified on the host since you last synced it. Pushing your local copy
+              would overwrite that change.
+            </p>
+            <div className="file-delete-path">{pushConflicts[0]}</div>
+            {pushConflicts.length > 1 && (
+              <p style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {pushConflicts.length - 1} more conflict{pushConflicts.length - 1 > 1 ? "s" : ""} after this.
+              </p>
+            )}
+            <div className="file-delete-actions">
+              <button type="button" disabled={pushBusy} onClick={() => resolvePushConflict("skip")}>
+                Skip
+              </button>
+              <button type="button" disabled={pushBusy} onClick={() => resolvePushConflict("host")}>
+                Take host
+              </button>
+              <button type="button" className="danger" disabled={pushBusy} onClick={() => resolvePushConflict("keep")}>
+                Keep local
+              </button>
             </div>
           </div>
         </div>,

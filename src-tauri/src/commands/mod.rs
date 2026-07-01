@@ -23,6 +23,7 @@ pub mod sheets;
 pub mod sqlite;
 pub mod ssh;
 pub mod subwindow;
+pub mod sync;
 pub mod terminal;
 pub mod tex;
 pub mod timer;

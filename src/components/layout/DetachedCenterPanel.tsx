@@ -40,6 +40,7 @@ import { useSettingsStore } from "../../stores/settings";
 import {
   DEFAULT_MIN_SUBWINDOW_PX,
   allGroups,
+  effectiveTabLocation,
   findGroup,
   type DropEdge,
   type GroupNode,
@@ -936,7 +937,9 @@ export function DetachedCenterPanel({
                       args={tab.args ?? []}
                       env={tab.env ?? {}}
                       cwd={tab.cwd}
-                      localOnly={tab.kind === "local_agent"}
+                      // attachOnly: the main window owns the spawn, so localOnly is
+                      // cosmetic here — kept aligned with CenterPanel's locality.
+                      localOnly={effectiveTabLocation(tab) === "local"}
                       zoomable={tab.kind === "agent" || tab.kind === "local_agent"}
                       visible={visible}
                       focused={visible}

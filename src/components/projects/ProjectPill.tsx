@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   resolveProjectDirectory,
   type GitHostingInfo,
@@ -584,6 +585,40 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
     }
   }, [project.id]);
 
+  // Reveal the project on disk. Local projects open their working directory; a
+  // remote (SSH) project has no local tree, so we open its local mirror — the
+  // paired connected working copy. If that mirror folder was deleted, let the
+  // user freely pick a new location (defaulting to an ssh/<name> subfolder of the
+  // projects root), which the backend re-creates and persists.
+  const revealOnDisk = useCallback(async () => {
+    try {
+      let path: string | undefined = dir;
+      if (project.remote) {
+        const status = await invoke<{ path: string; exists: boolean; suggested: string }>(
+          "remote_mirror_status",
+          { projectId: project.id, name: project.name },
+        );
+        path = status.path;
+        if (!status.exists) {
+          const chosen = await open({
+            directory: true,
+            defaultPath: status.suggested,
+            title: `${project.name} — choose a local mirror folder`,
+          });
+          if (typeof chosen !== "string") return; // cancelled
+          path = await invoke<string>("set_remote_mirror_dir", {
+            projectId: project.id,
+            path: chosen,
+          });
+        }
+      }
+      if (!path) return;
+      await invoke("open_in_file_manager", { path });
+    } catch (e) {
+      console.error("show on disk", e);
+    }
+  }, [project.remote, project.id, project.name, dir]);
+
   useEffect(() => {
     if (!popupPos) return;
     let cancelled = false;
@@ -670,6 +705,19 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
             }}
           >
             Show Activity
+          </button>
+          <button
+            onClick={() => {
+              setContextMenu(null);
+              void revealOnDisk();
+            }}
+            title={
+              project.remote
+                ? "Open the local mirror (the connected working copy) in the file manager"
+                : "Open the project directory in the file manager"
+            }
+          >
+            Show on disk
           </button>
           <button
             onClick={() => {

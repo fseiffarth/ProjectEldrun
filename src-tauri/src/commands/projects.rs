@@ -21,6 +21,22 @@ fn remote_project_state_dir(id: &str) -> std::path::PathBuf {
     storage::state_dir().join("remote-projects").join(id)
 }
 
+/// The default local mirror location for a new remote (SSH) project: a readable
+/// `ssh/<name>` subfolder of the Eldrun projects root (rather than a hidden state
+/// dir). The `id` disambiguates a name-based path already taken by another remote
+/// project, so two hosts' `~/work` never collide on the same local mirror.
+fn default_remote_mirror(name: &str, id: &str) -> PathBuf {
+    let base = projects_root().join("ssh");
+    let safe = sanitize_name(name);
+    let leaf = if safe.is_empty() { id.to_string() } else { safe };
+    let candidate = base.join(&leaf);
+    if candidate.exists() {
+        base.join(format!("{leaf}-{}", &id[..id.len().min(8)]))
+    } else {
+        candidate
+    }
+}
+
 // ── Project list ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -399,6 +415,79 @@ pub fn open_in_file_manager(path: String) -> Result<(), String> {
     opener::open(&dir).map_err(|e| e.to_string())
 }
 
+/// The local mirror status for a remote (SSH) project — backs the pill's "Show on
+/// disk". Returns the current mirror root (its stored override or the default),
+/// whether that directory still exists on disk (a user may have deleted it), and
+/// a suggested fresh location (`ssh/<name>` under the projects root) to default a
+/// relocation picker to. Errors for a local project.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MirrorStatus {
+    pub path: String,
+    pub exists: bool,
+    pub suggested: String,
+}
+
+#[tauri::command]
+pub fn remote_mirror_status(project_id: String, name: String) -> Result<MirrorStatus, String> {
+    if crate::services::remote::remote_target_for(&project_id).is_none() {
+        return Err("not a remote project".to_string());
+    }
+    let dir = crate::services::remote_sync::mirror_dir(&project_id);
+    let suggested = default_remote_mirror(&name, &project_id);
+    Ok(MirrorStatus {
+        exists: dir.is_dir(),
+        path: dir.to_string_lossy().to_string(),
+        suggested: suggested.to_string_lossy().to_string(),
+    })
+}
+
+/// Point a remote (SSH) project's local mirror at `path`, creating the directory,
+/// and persist the choice in both `projects.json` (`extra["mirror"]`, the source
+/// of truth `remote_sync::mirror_dir` reads) and the project's `project.json`.
+/// Used when the user relocates a mirror whose folder was deleted. Returns the
+/// resolved absolute path.
+#[tauri::command]
+pub fn set_remote_mirror_dir(project_id: String, path: String) -> Result<String, String> {
+    if crate::services::remote::remote_target_for(&project_id).is_none() {
+        return Err("not a remote project".to_string());
+    }
+    let dir = PathBuf::from(path.trim());
+    if dir.as_os_str().is_empty() {
+        return Err("Mirror path is empty".to_string());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let resolved = dir.to_string_lossy().to_string();
+
+    // projects.json — the always-local source of truth.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    entry
+        .extra
+        .insert("mirror".to_string(), Value::String(resolved.clone()));
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project file consistent (best effort).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            project.mirror = Some(resolved.clone());
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(resolved)
+}
+
 // ── Scaffold new project ───────────────────────────────────────────────────
 
 const SCAFFOLD_FILES: &[(&str, &str)] = &[
@@ -535,11 +624,25 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
 
     let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
 
+    // Remote projects mirror into a readable `ssh/<name>` subfolder of the
+    // projects root (chosen here as the default; relocatable later). None for
+    // local projects.
+    let mirror = req
+        .remote
+        .as_ref()
+        .map(|_| default_remote_mirror(&req.name, &id).to_string_lossy().to_string());
+
     // Scaffold only LOCAL projects onto the (local) project dir. A remote
     // project's scaffold belongs on the host (deferred — see #28j follow-up); its
     // local `directory` only holds project.json, created below.
     if req.remote.is_some() {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // SSH-sync Phase 1: every remote project has an always-present (empty)
+        // local mirror twin; bytes only land here on explicit sync. Created up
+        // front so a local-on-remote tab can cwd into it immediately.
+        if let Some(mirror) = &mirror {
+            let _ = std::fs::create_dir_all(mirror);
+        }
     } else if !req.skip_scaffold {
         scaffold_project(&dir, git_type != "none").map_err(|e| e.to_string())?;
     } else {
@@ -557,6 +660,7 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
         git_type: Some(git_type.clone()),
         created_at: Some(now),
         remote: req.remote.clone(),
+        mirror: mirror.clone(),
         ..Default::default()
     };
 
@@ -571,7 +675,7 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
         vec![]
     };
     let position = next_position(&list);
-    let extra = project_extra(directory, git_type, description, req.remote.as_ref());
+    let extra = project_extra(directory, git_type, description, req.remote.as_ref(), mirror.as_deref());
 
     let entry = ProjectEntry {
         id: id.clone(),
@@ -710,6 +814,16 @@ fn finish_import(
     let now = chrono_now();
     let requested_description = clean_description(req.description);
 
+    // Remote imports mirror into a readable `ssh/<name>` subfolder of the projects
+    // root (the default; relocatable later), created up front so a local-on-remote
+    // tab can cwd into it immediately. None for local imports.
+    let mirror = remote
+        .as_ref()
+        .map(|_| default_remote_mirror(&req.name, &id).to_string_lossy().to_string());
+    if let Some(mirror) = &mirror {
+        let _ = std::fs::create_dir_all(mirror);
+    }
+
     let project = if project_file.exists() {
         let mut existing: Project = storage::read_json(&project_file).unwrap_or_default();
         existing.id = id.clone();
@@ -720,6 +834,7 @@ fn finish_import(
         }
         existing.git_type = Some(git_type.clone());
         existing.remote = remote.clone();
+        existing.mirror = mirror.clone();
         existing
     } else {
         Project {
@@ -730,6 +845,7 @@ fn finish_import(
             git_type: Some(git_type.clone()),
             created_at: Some(now),
             remote: remote.clone(),
+            mirror: mirror.clone(),
             ..Default::default()
         }
     };
@@ -737,7 +853,7 @@ fn finish_import(
 
     let position = next_position(&list);
     let description = project.description.clone();
-    let extra = project_extra(directory, git_type, description, remote.as_ref());
+    let extra = project_extra(directory, git_type, description, remote.as_ref(), mirror.as_deref());
     let entry = ProjectEntry {
         id,
         name: req.name,
@@ -771,6 +887,7 @@ fn project_extra(
     git_type: String,
     description: Option<String>,
     remote: Option<&RemoteSpec>,
+    mirror: Option<&str>,
 ) -> HashMap<String, Value> {
     let mut extra = HashMap::from([
         ("directory".to_string(), Value::String(directory)),
@@ -786,6 +903,11 @@ fn project_extra(
         if let Ok(value) = serde_json::to_value(remote) {
             extra.insert("remote".to_string(), value);
         }
+    }
+    // The chosen local mirror root (remote projects only) — the always-local
+    // source of truth `remote_sync::mirror_dir` reads.
+    if let Some(mirror) = mirror {
+        extra.insert("mirror".to_string(), Value::String(mirror.to_string()));
     }
     extra
 }

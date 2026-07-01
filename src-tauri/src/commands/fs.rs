@@ -867,8 +867,12 @@ pub async fn detect_mime(
 ) -> Result<String, String> {
     if let Some(pid) = project_id.as_deref() {
         if let Some(target) = crate::services::remote::remote_target_for(pid) {
-            confine_remote_abs(&target.spec.remote_path, &path)?;
-            return Ok(ext_mime_or_octet(&path));
+            // SSH-sync G2: a mirror-local path is classified on the LOCAL fs
+            // (magic bytes); a host path uses the extension only (no fetch).
+            if !crate::services::remote_sync::is_under_mirror(pid, &path) {
+                confine_remote_abs(&target.spec.remote_path, &path)?;
+                return Ok(ext_mime_or_octet(&path));
+            }
         }
     }
     detect_mime_local(&path, project_id.as_deref())
@@ -925,15 +929,21 @@ pub async fn read_file_text(
 ) -> Result<String, String> {
     if let Some(pid) = project_id.as_deref() {
         if let Some(target) = crate::services::remote::remote_target_for(pid) {
-            confine_remote_abs(&target.spec.remote_path, &path)?;
-            let (size, _) = remote_metadata(pool.inner(), &target, &path).await?;
-            if size > MAX_TEXT_VIEW_BYTES {
-                return Err(format!(
-                    "file too large to view ({size} bytes; limit {MAX_TEXT_VIEW_BYTES})"
-                ));
+            // SSH-sync G2: a path under the local mirror is read on the LOCAL fs
+            // even for a remote project, so the local source view / local-on-remote
+            // tabs see mirrored bytes instead of round-tripping SFTP.
+            if !crate::services::remote_sync::is_under_mirror(pid, &path) {
+                confine_remote_abs(&target.spec.remote_path, &path)?;
+                let (size, _) = remote_metadata(pool.inner(), &target, &path).await?;
+                if size > MAX_TEXT_VIEW_BYTES {
+                    return Err(format!(
+                        "file too large to view ({size} bytes; limit {MAX_TEXT_VIEW_BYTES})"
+                    ));
+                }
+                let bytes = remote_read(pool.inner(), &target, &path).await?;
+                return String::from_utf8(bytes)
+                    .map_err(|_| "file is not valid UTF-8 text".to_string());
             }
-            let bytes = remote_read(pool.inner(), &target, &path).await?;
-            return String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8 text".to_string());
         }
     }
     read_file_text_local(&path, project_id.as_deref())
@@ -974,15 +984,19 @@ pub async fn write_file_text(
 ) -> Result<(), String> {
     if let Some(pid) = project_id.as_deref() {
         if let Some(target) = crate::services::remote::remote_target_for(pid) {
-            confine_remote_abs(&target.spec.remote_path, &path)?;
-            if content.len() as u64 > MAX_TEXT_VIEW_BYTES {
-                return Err(format!(
-                    "content too large to save ({} bytes; limit {})",
-                    content.len(),
-                    MAX_TEXT_VIEW_BYTES
-                ));
+            // SSH-sync G2: a mirror-local path saves to the LOCAL mirror (Phase 2
+            // optionally pushes it on to the host through sync_push).
+            if !crate::services::remote_sync::is_under_mirror(pid, &path) {
+                confine_remote_abs(&target.spec.remote_path, &path)?;
+                if content.len() as u64 > MAX_TEXT_VIEW_BYTES {
+                    return Err(format!(
+                        "content too large to save ({} bytes; limit {})",
+                        content.len(),
+                        MAX_TEXT_VIEW_BYTES
+                    ));
+                }
+                return remote_write(pool.inner(), &target, &path, content.as_bytes()).await;
             }
-            return remote_write(pool.inner(), &target, &path, content.as_bytes()).await;
         }
     }
     write_file_text_local(&path, &content, project_id.as_deref())
@@ -1019,15 +1033,18 @@ pub async fn write_file_bytes(
 ) -> Result<(), String> {
     if let Some(pid) = project_id.as_deref() {
         if let Some(target) = crate::services::remote::remote_target_for(pid) {
-            confine_remote_abs(&target.spec.remote_path, &path)?;
-            if content.len() as u64 > MAX_BINARY_VIEW_BYTES {
-                return Err(format!(
-                    "content too large to save ({} bytes; limit {})",
-                    content.len(),
-                    MAX_BINARY_VIEW_BYTES
-                ));
+            // SSH-sync G2: a mirror-local path writes to the LOCAL mirror.
+            if !crate::services::remote_sync::is_under_mirror(pid, &path) {
+                confine_remote_abs(&target.spec.remote_path, &path)?;
+                if content.len() as u64 > MAX_BINARY_VIEW_BYTES {
+                    return Err(format!(
+                        "content too large to save ({} bytes; limit {})",
+                        content.len(),
+                        MAX_BINARY_VIEW_BYTES
+                    ));
+                }
+                return remote_write(pool.inner(), &target, &path, &content).await;
             }
-            return remote_write(pool.inner(), &target, &path, &content).await;
         }
     }
     write_file_bytes_local(&path, &content, project_id.as_deref())
@@ -1060,14 +1077,17 @@ pub async fn read_file_bytes(
 ) -> Result<Vec<u8>, String> {
     if let Some(pid) = project_id.as_deref() {
         if let Some(target) = crate::services::remote::remote_target_for(pid) {
-            confine_remote_abs(&target.spec.remote_path, &path)?;
-            let (size, _) = remote_metadata(pool.inner(), &target, &path).await?;
-            if size > MAX_BINARY_VIEW_BYTES {
-                return Err(format!(
-                    "file too large to view ({size} bytes; limit {MAX_BINARY_VIEW_BYTES})"
-                ));
+            // SSH-sync G2: a mirror-local path reads from the LOCAL mirror.
+            if !crate::services::remote_sync::is_under_mirror(pid, &path) {
+                confine_remote_abs(&target.spec.remote_path, &path)?;
+                let (size, _) = remote_metadata(pool.inner(), &target, &path).await?;
+                if size > MAX_BINARY_VIEW_BYTES {
+                    return Err(format!(
+                        "file too large to view ({size} bytes; limit {MAX_BINARY_VIEW_BYTES})"
+                    ));
+                }
+                return remote_read(pool.inner(), &target, &path).await;
             }
-            return remote_read(pool.inner(), &target, &path).await;
         }
     }
     read_file_bytes_local(&path, project_id.as_deref())
@@ -1104,9 +1124,12 @@ pub async fn file_mtime(
 ) -> Result<u64, String> {
     if let Some(pid) = project_id.as_deref() {
         if let Some(target) = crate::services::remote::remote_target_for(pid) {
-            confine_remote_abs(&target.spec.remote_path, &path)?;
-            let (_, modified) = remote_metadata(pool.inner(), &target, &path).await?;
-            return Ok(modified.unwrap_or(0));
+            // SSH-sync G2: a mirror-local path is stat'd on the LOCAL fs.
+            if !crate::services::remote_sync::is_under_mirror(pid, &path) {
+                confine_remote_abs(&target.spec.remote_path, &path)?;
+                let (_, modified) = remote_metadata(pool.inner(), &target, &path).await?;
+                return Ok(modified.unwrap_or(0));
+            }
         }
     }
     file_mtime_local(&path, project_id.as_deref())

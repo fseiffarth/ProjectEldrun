@@ -4,6 +4,7 @@ pub mod openvpn;
 pub mod project_runtime;
 pub mod remote;
 pub mod remote_agents;
+pub mod remote_sync;
 pub mod restore_service;
 pub mod sandbox;
 pub mod sftp;

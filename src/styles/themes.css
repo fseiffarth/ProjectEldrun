@@ -4960,6 +4960,28 @@ select option {
 .tab.active .tab-close { opacity: 1; }
 .tab-close:hover { background-color: var(--pill-hover-bg); color: var(--text-primary); }
 
+/* SSH-sync Phase 0: per-tab local/remote locality badge (remote projects only).
+   Always visible (unlike the close button) so the tab's locality is legible at a
+   glance; click toggles it. Local = mirror (warning hue), remote = host (info). */
+.tab-locality {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: background-color 0.1s, color 0.1s;
+}
+.tab-locality.local { color: var(--warning); }
+.tab-locality.remote { color: var(--info, #4aa3df); }
+.tab-locality:hover { background-color: var(--pill-hover-bg); }
+
 /* Per-subwindow close (×), shown in the tab bar when >1 subwindow exists.
    The bar scrolls horizontally when tabs overflow; pin this button to the right
    edge (sticky + flex-shrink:0) so it never scrolls out of reach and stays
@@ -5389,6 +5411,24 @@ select option {
   opacity: 0.7;
 }
 
+/* SSH-sync Phase 1: in-flight transfer counter in the remote bar. */
+.file-tree-sync-progress {
+  font-size: 10px;
+  color: var(--success, #3fb950);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* SSH-sync Phase 1: local/remote source toggle row in the files view. */
+.right-panel-source {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
 .file-tree-crumb {
   padding: 2px 4px;
   background: transparent;
@@ -5446,12 +5486,24 @@ select option {
 .file-entry:hover { background-color: var(--pill-hover-bg); }
 
 /* Files never start a native (browser) drag — embeddable ones use a pointer
-   drag to a tab bar, non-embeddable ones aren't draggable at all. Suppress the
-   webview's built-in drag of the row text/icon. Dirs keep native DnD (export). */
+   drag to a tab bar, and every file can be pointer-dragged into a folder to move
+   it. Suppress the webview's built-in drag of the row text/icon. Dirs keep
+   native DnD (export). */
 .file-entry.file,
 .file-entry.file * {
   -webkit-user-drag: none;
   user-drag: none;
+}
+
+/* Drag-to-move highlight: the folder row / breadcrumb / up button currently
+   under the cursor while a file is being dragged. Releasing moves the file in. */
+.file-entry.move-drop-target,
+.file-tree-up.move-drop-target,
+.file-tree-crumb.move-drop-target {
+  background-color: var(--accent-soft, rgba(88, 166, 255, 0.22));
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: 4px;
 }
 
 /* Only EMBEDDABLE files can be dragged onto a subwindow's tab bar (Group K).
@@ -7461,6 +7513,44 @@ select option {
   border-color: var(--accent);
 }
 
+.remote-newfolder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.remote-newfolder-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  padding: 5px 8px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.remote-newfolder button {
+  flex: 0 0 auto;
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  padding: 5px 9px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.remote-newfolder button:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.remote-newfolder button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .remote-list {
   display: flex;
   flex-direction: column;
@@ -8358,12 +8448,86 @@ select option {
   align-items: center;
   gap: 6px;
 }
-/* Live SSH/VPN lamps for the active remote project, next to the network icon. */
+/* Live SSH/VPN lamps for the active remote project, next to the network icon.
+   Rendered as a button (clicking opens the reconnect menu), so reset the native
+   button chrome and keep just the lamp row. */
+.header-conn-menu {
+  position: relative;
+  display: inline-flex;
+  margin-left: 6px;
+}
 .header-conn-lamps {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin-left: 6px;
+  padding: 3px 5px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.header-conn-lamps:hover {
+  background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
+}
+
+/* Reconnect/Disconnect popover anchored under the header lamps. */
+.header-conn-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.header-conn-popover-state {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 4px;
+}
+.header-conn-popover-item {
+  text-align: left;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.header-conn-popover-item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.header-conn-popover-item:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+/* "Reconnect" button on the center "Disconnected" placeholder. */
+.center-reconnect-btn {
+  margin-top: 6px;
+  padding: 6px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.center-reconnect-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.center-reconnect-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* ── Onboarding: empty-state card, "How to start" dialog, contextual hints ── */
@@ -8376,6 +8540,35 @@ select option {
   text-align: center;
   max-width: 360px;
   padding: 0 16px;
+}
+
+/* Remote reconnect placeholder: wider than the plain card so the embedded
+   SSH/OpenVPN login terminals fit, and scrollable when both are open. */
+.remote-reconnect-card {
+  max-width: 560px;
+  width: 100%;
+  max-height: 100%;
+  overflow-y: auto;
+  align-items: stretch;
+  text-align: left;
+}
+
+.remote-reconnect-card .center-placeholder-title,
+.remote-reconnect-card .center-placeholder-hint {
+  text-align: center;
+}
+
+.remote-reconnect-card .center-reconnect-btn {
+  align-self: center;
+}
+
+.remote-reconnect-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
 }
 
 .center-placeholder-title {
@@ -8905,21 +9098,28 @@ select option {
     0 0 10px -4px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
-/* Tabs: the active tab gets a brighter accent rail, an accent-tinted gradient
-   body, a gradient-text label, and a soft glow lifting it out of the strip;
-   hovered tabs warm into an accent wash; the + button glows like the chrome
-   buttons above. Plain themes keep the flat tab look from the base rules. */
+/* Tabs: fancy themes use borderless tabs with a bottom accent rail, keeping the
+   indicator beside the pane rather than above the label. The active tab also
+   gets an accent-tinted body, a bold label, and a soft glow; hovered tabs warm
+   into an accent wash. Plain themes keep the base tab treatment. */
+[data-theme="fancy_dark"] .tab,
+[data-theme="fancy_dark"] .tab:hover,
+[data-theme="fancy_dark"] .tab.active,
+[data-theme="fancy_light"] .tab,
+[data-theme="fancy_light"] .tab:hover,
+[data-theme="fancy_light"] .tab.active {
+  border-color: transparent;
+}
+
 [data-theme="fancy_dark"] .tab.active,
 [data-theme="fancy_light"] .tab.active {
   background:
     linear-gradient(180deg,
       color-mix(in srgb, var(--accent) 22%, var(--control-hover-bg)) 0%,
       var(--bg-main) 100%);
-  border-top-width: 2px;
-  border-top-color: var(--accent);
   box-shadow:
-    0 -1px 12px -4px color-mix(in srgb, var(--accent) 75%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--accent) 30%, transparent);
+    0 2px 12px -4px color-mix(in srgb, var(--accent) 75%, transparent),
+    inset 0 -3px 0 var(--accent);
 }
 
 /* Gradient-text label on the active tab — matches the fancy dialog headings. */
@@ -8930,7 +9130,7 @@ select option {
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
-  font-weight: 650;
+  font-weight: 700;
 }
 
 /* Keep project and tab names plain white in fancy dark mode. */
@@ -8948,6 +9148,24 @@ select option {
   background: none;
   -webkit-text-fill-color: #fff;
   color: #fff;
+  font-weight: 700;
+}
+
+/* Fancy dark keeps project names plain white and marks the current one by
+   weight rather than a top rail. */
+[data-theme="fancy_dark"] .project-pill.active {
+  box-shadow:
+    0 0 14px -4px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+[data-theme="fancy_dark"] .project-pill.active .project-pill-label {
+  font-weight: 700;
+}
+
+[data-theme="fancy_dark"] .tab.active {
+  box-shadow:
+    0 2px 12px -4px color-mix(in srgb, var(--accent) 45%, transparent),
+    inset 0 -3px 0 var(--accent);
 }
 
 [data-theme="fancy_dark"] .tab:not(.active):hover,
@@ -8956,7 +9174,6 @@ select option {
     linear-gradient(180deg,
       color-mix(in srgb, var(--accent) 12%, transparent) 0%,
       var(--pill-hover-bg) 100%);
-  border-top-color: var(--accent);
   box-shadow: inset 0 0 10px -6px color-mix(in srgb, var(--accent) 60%, transparent);
 }
 

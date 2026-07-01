@@ -23,6 +23,7 @@ import { useHintsStore } from "../../stores/hints";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
 import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
 import { listenPdfReveal } from "../../stores/pdfSync";
+import { listenSyncProgress } from "../../stores/sync";
 import { listenEditorJump } from "../../stores/editorJump";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
@@ -260,6 +261,16 @@ export function AppShell() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listenProjectRuntimeSwitched()
+      .then((fn) => { unlisten = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); };
+  }, []);
+
+  // SSH-sync Phase 1: subscribe to the backend's mirror-sync progress stream so
+  // the remote file view reflects transfers + refreshes status on completion.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listenSyncProgress()
       .then((fn) => { unlisten = fn; })
       .catch(() => {});
     return () => { unlisten?.(); };
