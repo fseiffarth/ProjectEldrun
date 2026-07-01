@@ -1741,22 +1741,16 @@ mod tests {
     }
 
     #[test]
-    fn base64_roundtrip_via_stdlib() {
-        use std::process::Command;
-        // Cross-check against system base64 on Linux.
+    fn base64_roundtrip_via_reference_crate() {
+        use base64::Engine;
+
         let input = b"Eldrun workspace manager";
         let encoded = base64_encode(input);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("custom encoder should produce valid base64");
 
-        // Use base64 --decode via shell to verify correctness.
-        if let Ok(out) = Command::new("sh")
-            .arg("-c")
-            .arg(format!("echo -n '{encoded}' | base64 -d"))
-            .output()
-        {
-            if out.status.success() {
-                assert_eq!(out.stdout, input.as_ref());
-            }
-        }
+        assert_eq!(decoded, input.as_ref());
     }
 
     #[test]
