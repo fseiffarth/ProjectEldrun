@@ -878,12 +878,10 @@ container) — as opposed to the git **push** axis (#21/#22).*
       `extra["remote"]` (so existing remote projects keep working with no mount);
       a remote project's `directory` is a local per-project state dir
       (`remote-projects/<id>`) holding `project.json`, while its tree lives on the
-      host. Docs/lessons/tour stripped of FUSE. **Follow-up (deferred):** create
-      *new* remote projects scaffold only `project.json` locally + best-effort
-      `mkdir -p` the remote root over SSH — the AGENTS.md/CLAUDE.md scaffold is not
-      yet written to the host over SFTP. (The `git_change_stats` untracked-line
-      counts that assumed a local tree are now fixed in #28k.) Needs a live-host
-      QA pass.
+      host. Docs/lessons/tour stripped of FUSE. **Follow-up:** writing the
+      canonical scaffold to both the local mirror and remote host is tracked as
+      **#28o** below. (The `git_change_stats` untracked-line counts that assumed a
+      local tree are now fixed in #28k.) Needs a live-host QA pass.
     - [x] **28k — Review-team follow-ups** (2026-06-30; ✅ Done · 🧪 Remote
       half needs live-host QA). From the post-merge code review of the mount-free
       change (most findings already fixed in the `fix(remote): harden SSH/SFTP
@@ -1003,6 +1001,45 @@ container) — as opposed to the git **push** axis (#21/#22).*
       - [ ] 🖐️ Manual test — live SSH host: edit/commit/checkout from Eldrun and
         from local/remote shells, verify both trees remain on the same branch or
         detached commit, then exercise dirty-peer and divergent-history recovery.
+
+    - [ ] **28o — Scaffold both sides of SSH projects.** New and imported SSH
+      projects must receive the canonical Eldrun scaffold in both their local
+      mirror and remote project root. Create only missing files: existing content
+      on either side is authoritative and must never be truncated or replaced.
+      The existing **Skip scaffolding** option suppresses generation on both
+      sides. Remote scaffold failure is blocking: surface the error in the
+      project dialog and do not register the project as successfully
+      created/imported.
+      - **Remote path.** Add an async
+        `scaffold_remote_project(user, host, port, password, remotePath)` Tauri
+        command. Open one SFTP session, create the remote root and required
+        parent directories, then atomically create each absent canonical file.
+        If writing a newly-created file fails, remove that partial file before
+        returning the error. A submitted password is ephemeral and must never be
+        persisted or logged; when it is absent, resolve any saved SSH credential
+        through the existing credential service.
+      - **Dialog ordering.** For both remote create and import, invoke remote
+        scaffolding before `create_project` / `import_project`. Reuse the
+        dialog's existing error state for failures, leaving registration
+        untouched. A retry is safe because remote creation is idempotent and
+        non-overwriting.
+      - **Local mirror.** Keep the existing new-remote mirror scaffolding and
+        extend remote import to call the same local `scaffold_project` helper.
+        The canonical set remains the existing `SCAFFOLD_FILES`,
+        `.gitignore`, and `.claude/settings.json` definitions so both sides start
+        with identical defaults.
+      - **Compatibility.** No persisted project-schema change. Keep Git
+        initialization and agent-assisted scaffold filling behavior unchanged.
+      - [ ] 🤖 Automated test — remote imports create the complete local-mirror
+        scaffold without overwriting existing content; frontend create/import
+        call remote scaffolding before registration; Skip bypasses both paths;
+        and a rejected remote-scaffold call prevents registration and surfaces
+        its error.
+      - [ ] 🖐️ Manual test — create and import projects against key-auth and
+        password-auth SSH hosts; verify both trees contain all missing scaffold
+        files, pre-existing files remain byte-identical, Skip touches neither
+        side, and an unwritable remote root blocks registration with an
+        actionable error.
 
 ---
 
