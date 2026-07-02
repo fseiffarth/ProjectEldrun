@@ -4,7 +4,6 @@ pub mod platform;
 pub mod schema;
 pub mod services;
 pub mod storage;
-#[cfg(target_os = "linux")]
 pub mod sysstat;
 pub mod terminal;
 
@@ -229,12 +228,29 @@ pub fn run() {
     let win_registry: WindowRegistryState = Arc::new(Mutex::new(WindowRegistry::default()));
     let workspace: WorkspaceStateArc = Arc::new(Mutex::new(WorkspaceState::new()));
     let fs_watch = commands::fs_watch::new_state();
+    // Pooled SSH/SFTP connections, one per active remote project (Phase 0 of the
+    // mount-free remote model). Opened on activation, torn down at exit below.
+    let remote_pool = services::remote::new_pool();
+    // Single-writer cache of per-project sync manifests (SSH-sync Phase 1). Guards
+    // every `sync.json` mutation so concurrent syncs/saves can't clobber it (G7).
+    let sync_manifest = services::remote_sync::new_manifest_state();
+    // Registry of per-project auto-sync tasks (started on remote_connect, stopped
+    // on remote_disconnect / app exit). See `services::sync_auto`.
+    let auto_sync = services::sync_auto::new_state();
+    // Registry of per-project git lockstep tasks (.git watcher + host poll; started
+    // on remote_connect when enabled, stopped on disconnect / exit). See
+    // `services::git_peer` (TODO #28n).
+    let git_peer = services::git_peer::new_registry();
 
     tauri::Builder::default()
         .manage(pty_registry)
         .manage(win_registry)
         .manage(workspace)
         .manage(fs_watch)
+        .manage(remote_pool)
+        .manage(sync_manifest)
+        .manage(auto_sync)
+        .manage(git_peer)
         .setup(|_app| {
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
@@ -258,6 +274,26 @@ pub fn run() {
                     }
                 });
             }
+            // Windows: the HWND is known synchronously from Tauri, so no off-thread
+            // title scan is needed. Binding the main-window id arms the structural
+            // guard so the override can never park the main window (defense-in-depth
+            // on top of the self_pid protection that already shields it).
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::Manager;
+                let workspace = _app.state::<WorkspaceStateArc>().inner().clone();
+                if let Some(hwnd) = _app
+                    .get_webview_window("main")
+                    .and_then(|w| w.hwnd().ok())
+                {
+                    let id = hwnd.0 as usize as u64;
+                    workspace.lock().unwrap().backend.set_main_window_id(id);
+                    // Add the WS_MAXIMIZEBOX/WS_THICKFRAME styles a borderless wry
+                    // window lacks, so dragging the header against a screen edge
+                    // triggers the native Aero Snap (top → maximize, sides → half).
+                    platform::windows::enable_aero_snap(id);
+                }
+            }
             // Install the global Claude SessionStart hook so Eldrun can follow a
             // tab's live session id across `/clear` (see services::agent_session).
             if let Err(e) = services::agent_session::install_session_start_hook() {
@@ -277,15 +313,28 @@ pub fn run() {
             commands::projects::load_project,
             commands::projects::save_project,
             commands::projects::set_project_description,
+            commands::projects::set_project_name,
             commands::projects::set_project_sandbox,
+            commands::projects::set_project_categories,
+            commands::projects::set_project_git_disabled,
             commands::projects::save_tab_layout,
             commands::projects::root_work_dir,
             commands::projects::projects_root_dir,
+            commands::projects::remote_mirror_root_dir,
             commands::projects::open_in_file_manager,
+            commands::projects::remote_mirror_status,
+            commands::projects::set_remote_mirror_dir,
+            commands::projects::move_remote_mirror,
             commands::projects::create_project,
             commands::projects::preview_project_scaffold,
             commands::projects::import_project,
+            commands::projects::extend_project_to_remote,
             commands::projects::get_time_today,
+            commands::projects::archive_project,
+            commands::projects::list_archived_projects,
+            commands::projects::restore_archived_project,
+            commands::projects::delete_archived_project,
+            commands::projects::clear_archive,
             // Project boxes (meta-project grouping)
             commands::boxes::get_boxes,
             commands::boxes::save_boxes,
@@ -298,23 +347,53 @@ pub fn run() {
             commands::boxes::set_box_relations,
             // SSH / remote projects
             commands::ssh::ssh_connect,
+            commands::ssh::remote_has_saved_password,
+            commands::ssh::remote_forget_password,
+            commands::ssh::remote_login_command,
             commands::ssh::ssh_default_dir,
             commands::ssh::ssh_list_dir,
-            commands::ssh::ensure_project_mounted,
+            commands::ssh::ssh_mkdir,
+            // Pooled SSH/SFTP connection lifecycle (mount-free remote, Phase 0)
+            commands::remote::remote_connect,
+            commands::remote::remote_disconnect,
+            // Read-only local/remote host + SSH transport monitoring.
+            commands::network::network_host_snapshot,
+            commands::network::network_ssh_link_snapshot,
+            // SSH-sync (Phase 1): selective local↔remote mirror sync.
+            commands::sync::sync_pull,
+            commands::sync::sync_whole_project,
+            commands::sync::sync_now,
+            commands::sync::sync_push,
+            commands::sync::sync_mark_selected,
+            commands::sync::sync_set_auto,
+            commands::sync::sync_status,
+            commands::sync::sync_file_meta,
+            commands::sync::sync_diff,
             commands::ssh::ssh_tooling_status,
+            commands::ssh::ssh_list_addresses,
+            commands::ssh::ssh_remember_address,
+            commands::ssh::remote_list_paths,
+            commands::ssh::remote_remember_path,
+            commands::ssh::open_external_url,
             // OpenVPN tunnels for VPN-gated remote projects
             commands::openvpn::openvpn_connect,
+            commands::openvpn::vpn_has_saved_password,
+            commands::openvpn::openvpn_login_command,
             commands::openvpn::openvpn_disconnect,
             commands::openvpn::openvpn_status,
             commands::openvpn::openvpn_store_config,
-            // GitHub publishing
-            commands::github::github_publish,
+            commands::openvpn::openvpn_list_configs,
+            // Git hosting (GitHub / GitLab) publishing
+            commands::git_publish::publish_project,
+            commands::git_hosting::get_project_git_hosting,
+            commands::git_hosting::set_project_git_hosting,
             // Timer flush + activity
             commands::timer::timer_flush_app,
             commands::timer::timer_flush_project,
             commands::timer::get_project_activity,
             // File tree + file I/O (commands::fs)
             commands::fs::list_dir,
+            commands::fs::list_dirs,
             commands::fs::list_project_endings,
             commands::fs::list_project_paths,
             commands::fs::rename_path,
@@ -334,6 +413,7 @@ pub fn run() {
             commands::fs::update_gitignore_rule,
             commands::fs::create_dir,
             commands::fs::detect_mime,
+            commands::fs::file_source,
             commands::fs::read_file_text,
             commands::fs::write_file_text,
             commands::fs::read_file_bytes,
@@ -365,6 +445,7 @@ pub fn run() {
             commands::apps::check_pid_alive,
             commands::apps::restore_open_apps,
             commands::apps::run_script_detached,
+            commands::apps::drag_preview_icon,
             commands::apps::embed_capability,
             commands::apps::list_installed_apps,
             // Workspace / network
@@ -392,12 +473,18 @@ pub fn run() {
             commands::git::git_push,
             commands::git::git_file_statuses,
             commands::git::git_unpushed_commits,
+            commands::git::git_change_stats,
             commands::git::git_add_path,
             commands::git::git_log,
             commands::git::git_branches,
             commands::git::git_checkout,
             commands::git::git_commit_message,
             commands::git::git_reword_head,
+            commands::git_peer::git_peer_status,
+            commands::git_peer::git_peer_set_enabled,
+            commands::git_peer::git_peer_sync_now,
+            commands::git_peer::git_peer_checkout,
+            commands::git_peer::git_peer_resolve,
             commands::git::git_diff_file,
             // Project-wide content search
             commands::search::project_search,
@@ -415,8 +502,6 @@ pub fn run() {
             commands::crash::report_frontend_error,
             // Debug diagnostics
             commands::debug::debug_app_resource_usage,
-            // Downloads
-            commands::downloads::configure_browser_downloads,
             // Ollama local models
             commands::ollama::list_ollama_models,
             commands::ollama::ensure_vibe_ollama_model,
@@ -427,9 +512,12 @@ pub fn run() {
             // Ollama model management
             commands::ollama::ollama_is_installed,
             commands::ollama::install_ollama,
+            commands::ollama::ollama_install_strategy,
             commands::ollama::vibe_is_installed,
             commands::ollama::install_vibe,
+            commands::ollama::vibe_install_strategy,
             commands::agents::agent_is_installed,
+            commands::agents::npm_is_installed,
             commands::agents::list_agents,
             commands::agents::install_agent,
             commands::ollama::ollama_is_running,
@@ -443,6 +531,8 @@ pub fn run() {
             commands::ollama::list_orphan_partial_blobs,
             commands::ollama::delete_partial_blob,
             commands::ollama::pull_ollama_model,
+            commands::ollama::pause_ollama_pull,
+            commands::ollama::delete_ollama_pull,
             commands::ollama::delete_ollama_model,
             commands::ollama::list_installable_models,
             commands::ollama::search_ollama_registry,
@@ -452,16 +542,36 @@ pub fn run() {
             commands::ollama::check_grammar,
         ])
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_drag::init())
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, event| {
-            // Tear down any sshfs mounts for remote projects when the app exits
-            // so the user isn't left with stale FUSE mounts after shutdown.
             if let tauri::RunEvent::Exit = event {
-                services::ssh_mount::unmount_all();
                 // Tear down any OpenVPN tunnels brought up for VPN-gated
                 // remote projects so no privileged tunnel outlives the app.
                 services::openvpn::disconnect_all();
+                // Tear down pooled SSH/SFTP connections so no ssh ControlMaster
+                // child (and the master socket it owns) outlives Eldrun.
+                use tauri::Manager;
+                // Stop every auto-sync task first (cancel loops + drop watchers)
+                // so none races the pool teardown below.
+                let auto = _app
+                    .state::<services::sync_auto::AutoSyncState>()
+                    .inner()
+                    .clone();
+                tauri::async_runtime::block_on(services::sync_auto::stop_all(&auto));
+                // Stop every git-peer lockstep task (cancel poll loops + drop .git
+                // watchers) before the pool teardown.
+                let git_peer = _app
+                    .state::<services::git_peer::GitPeerRegistry>()
+                    .inner()
+                    .clone();
+                tauri::async_runtime::block_on(services::git_peer::stop_all(&git_peer));
+                let pool = _app
+                    .state::<services::remote::RemotePoolState>()
+                    .inner()
+                    .clone();
+                tauri::async_runtime::block_on(services::remote::disconnect_all(&pool));
             }
         });
 }

@@ -4,6 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { useSettingsStore } from "../../stores/settings";
+import { IS_WINDOWS, PLATFORM } from "../../lib/platform";
+import { runInstallInTab, type InstallShellKind } from "../../lib/installCommand";
 import type { GlobalAppEntry } from "../../types";
 
 interface OllamaModelInfo {
@@ -261,9 +263,97 @@ interface AgentInfo {
   id: string;
   label: string;
   bin: string;
+  /** Install command for the host OS; empty when no one-line installer exists. */
   install_cmd: string;
+  /** Shell the command runs in: "bash", "PowerShell", or "PowerShell or Command Prompt". */
+  shell: string;
+  /** Machine-readable shell selection; display labels are not executable policy. */
+  shell_kind: InstallShellKind;
   docs: string;
   installed: boolean;
+}
+
+/**
+ * Per-OS command that installs Node.js (and with it `npm`). Most agent CLIs
+ * install via `npm install -g …`, so when `npm` is missing the Manage Agents
+ * panel offers this first. nvm installs Node without administrator rights and
+ * works identically on Linux and macOS; Windows uses winget (present on Windows
+ * 10/11) and runs in either PowerShell or Command Prompt.
+ */
+const NODE_INSTALL: Record<
+  "windows" | "macos" | "linux",
+  { command: string; shell: string; shellKind: InstallShellKind }
+> = {
+  linux: {
+    command:
+      'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
+    shell: "bash",
+    shellKind: "bash",
+  },
+  macos: {
+    command:
+      'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
+    shell: "bash",
+    shellKind: "bash",
+  },
+  windows: {
+    command: "winget install OpenJS.NodeJS.LTS",
+    shell: "PowerShell or Command Prompt",
+    shellKind: "default",
+  },
+};
+const NODE_DOWNLOAD_URL = "https://nodejs.org/en/download";
+
+/**
+ * "Install Node/npm first" helper for the Manage Agents panel. Most agent CLIs
+ * install through `npm`, so when `npm` isn't on the host's PATH this points the
+ * user at the one-click, no-admin Node install for their OS (and stays hidden
+ * once npm is detected). Follows Eldrun's install-via-terminal-tab policy.
+ */
+function NodeRuntimeNotice() {
+  // null = still probing; true/false = npm present or not.
+  const [hasNpm, setHasNpm] = useState<boolean | null>(null);
+  const recheck = () =>
+    invoke<boolean>("npm_is_installed").then(setHasNpm).catch(() => setHasNpm(true));
+  useEffect(() => void recheck(), []);
+
+  // While probing, or once npm is present, there is nothing to nudge about.
+  if (hasNpm !== false) return null;
+
+  const { command, shell, shellKind } = NODE_INSTALL[PLATFORM];
+  return (
+    <div className="ollama-vibe-section agent-list-entry">
+      <div className="settings-section-title">
+        Node.js / npm{" "}
+        <span className="ollama-status-text">not detected</span>
+      </div>
+      <p className="settings-help">
+        Most agent CLIs install with <code>npm</code>, which ships with Node.js.
+        Install it once (no administrator rights needed) in a{" "}
+        <strong>{shell}</strong> terminal tab, then install your agents below:
+      </p>
+      <div className="ollama-install-cmd-row">
+        <code className="ollama-install-cmd">{command}</code>
+        <button
+          type="button"
+          className="ollama-action-btn primary"
+          onClick={() => runInstallInTab("Install Node.js (npm)", command, shellKind)}
+        >
+          Run in terminal
+        </button>
+        <button type="button" className="ollama-action-btn" onClick={() => void recheck()}>
+          Re-check
+        </button>
+      </div>
+      <p className="settings-help">
+        Prefer a manual install? See{" "}
+        <a href={NODE_DOWNLOAD_URL} target="_blank" rel="noreferrer">
+          the Node.js downloads
+        </a>
+        .
+      </p>
+    </div>
+  );
 }
 
 /**
@@ -280,7 +370,6 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
   // Per-agent live install log, keyed by agent id.
   const [logs, setLogs] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [copied, setCopied] = useState<string | null>(null);
   const logRef = useRef<HTMLPreElement>(null);
 
   const refresh = () => {
@@ -320,16 +409,6 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
     }
   };
 
-  const copyCmd = async (id: string, cmd: string) => {
-    try {
-      await navigator.clipboard.writeText(cmd);
-      setCopied(id);
-      window.setTimeout(() => setCopied((c) => (c === id ? null : c)), 1500);
-    } catch {
-      /* clipboard unavailable — the command is shown for manual copy */
-    }
-  };
-
   const recheck = (id: string) => {
     void invoke<boolean>("agent_is_installed", { id })
       .then((ok) => {
@@ -355,15 +434,18 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
       <p className="settings-help">
         AI coding agents Eldrun can launch as agent tabs. Install one with a
         single click (no administrator rights needed), then add it from a tab
-        bar's <strong>+</strong> menu. Some installers need <code>npm</code> on
-        your <code>PATH</code>.
+        bar's <strong>+</strong> menu. Many installers need <code>npm</code> on
+        your <code>PATH</code> — if it's missing, install Node.js first below.
       </p>
+      <NodeRuntimeNotice />
       {agents === null ? (
         <p className="settings-help">Checking installed agents…</p>
       ) : (
         <div className="settings-list">
-          {agents.map((a) => (
-            <div key={a.id} className="ollama-vibe-section">
+          {[...agents]
+            .sort((a, b) => Number(b.installed) - Number(a.installed))
+            .map((a) => (
+            <div key={a.id} className="ollama-vibe-section agent-list-entry">
               <div className="settings-section-title">
                 {a.label}{" "}
                 {a.installed ? (
@@ -376,49 +458,82 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
               </div>
               {!a.installed && (
                 <>
-                  <div className="ollama-install-cmd-row">
-                    <button
-                      type="button"
-                      className="ollama-action-btn"
-                      disabled={installing !== null}
-                      onClick={() => void installAgent(a.id)}
-                    >
-                      {installing === a.id ? "Installing…" : `Install ${a.label}`}
-                    </button>
-                    {installing === a.id && (
-                      <span className="ollama-status-text">Running installer…</span>
-                    )}
-                  </div>
-                  {logs[a.id] && (
-                    <pre
-                      className="ollama-install-log"
-                      ref={installing === a.id ? logRef : undefined}
-                    >
-                      {logs[a.id]}
-                    </pre>
+                  {/* Auto-install runs the Unix installer via `sh`, so it only
+                      works on Linux/macOS. On Windows we show the manual
+                      PowerShell command instead. */}
+                  {!IS_WINDOWS && (
+                    <>
+                      <div className="ollama-install-cmd-row">
+                        <button
+                          type="button"
+                          className="ollama-action-btn primary"
+                          disabled={installing !== null}
+                          onClick={() => void installAgent(a.id)}
+                        >
+                          {installing === a.id ? "Installing…" : `Install ${a.label}`}
+                        </button>
+                        {installing === a.id && (
+                          <span className="ollama-status-text">Running installer…</span>
+                        )}
+                      </div>
+                      {logs[a.id] && (
+                        <pre
+                          className="ollama-install-log"
+                          ref={installing === a.id ? logRef : undefined}
+                        >
+                          {logs[a.id]}
+                        </pre>
+                      )}
+                      {errors[a.id] && (
+                        <div className="project-dialog-error">{errors[a.id]}</div>
+                      )}
+                    </>
                   )}
-                  {errors[a.id] && (
-                    <div className="project-dialog-error">{errors[a.id]}</div>
+                  {a.install_cmd ? (
+                    <>
+                      <p className="settings-help">
+                        {IS_WINDOWS ? "Install it in a " : "Or install it in a "}
+                        <strong>{a.shell}</strong> terminal tab:
+                      </p>
+                      <div className="ollama-install-cmd-row">
+                        <code className="ollama-install-cmd">{a.install_cmd}</code>
+                        <button
+                          type="button"
+                          className="ollama-action-btn primary"
+                          onClick={() =>
+                            runInstallInTab(`Install ${a.label}`, a.install_cmd, a.shell_kind)
+                          }
+                        >
+                          Run in terminal
+                        </button>
+                        <button
+                          type="button"
+                          className="ollama-action-btn"
+                          disabled={installing !== null}
+                          onClick={() => recheck(a.id)}
+                        >
+                          Re-check
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="settings-help">
+                      No one-line Windows installer yet — see{" "}
+                      <a href={a.docs} target="_blank" rel="noreferrer">
+                        the install docs
+                      </a>
+                      , then click{" "}
+                      <button
+                        type="button"
+                        className="ollama-action-btn"
+                        disabled={installing !== null}
+                        onClick={() => recheck(a.id)}
+                      >
+                        Re-check
+                      </button>
+                      .
+                    </p>
                   )}
-                  <p className="settings-help">Or run it manually in a terminal:</p>
-                  <div className="ollama-install-cmd-row">
-                    <code className="ollama-install-cmd">{a.install_cmd}</code>
-                    <button
-                      type="button"
-                      className="ollama-action-btn"
-                      onClick={() => void copyCmd(a.id, a.install_cmd)}
-                    >
-                      {copied === a.id ? "Copied!" : "Copy"}
-                    </button>
-                    <button
-                      type="button"
-                      className="ollama-action-btn"
-                      disabled={installing !== null}
-                      onClick={() => recheck(a.id)}
-                    >
-                      Re-check
-                    </button>
-                  </div>
                 </>
               )}
             </div>
@@ -429,27 +544,55 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
-const OLLAMA_INSTALL_CMD = "curl -fsSL https://ollama.com/install.sh | sh";
-// Local Ollama models run through Mistral's `vibe` CLI (see backend VIBE_INSTALL_CMD).
+// Fallback install command shown before the OS-specific strategy loads from the
+// backend. The real command comes from `ollama_install_strategy` (winget on
+// Windows, the install script on Linux/macOS).
+const OLLAMA_INSTALL_CMD_FALLBACK = "curl -fsSL https://ollama.com/install.sh | sh";
+const OLLAMA_DOWNLOAD_URL = "https://ollama.com/download";
+// Fallback Vibe install command shown before the OS-specific strategy loads from
+// the backend. The real command comes from `vibe_install_strategy` (a uv-based
+// PowerShell command on Windows, the install script on Linux/macOS).
 const VIBE_INSTALL_CMD = "curl -LsSf https://mistral.ai/vibe/install.sh | bash";
+
+/** OS-dependent Vibe install guidance (mirrors backend `VibeInstallStrategy`). */
+interface VibeInstallStrategy {
+  os: string; // "windows" | "macos" | "linux" | "unknown"
+  command: string;
+  auto: boolean;
+  docs: string;
+}
+
+/** OS-dependent Ollama install guidance (mirrors backend `OllamaInstallStrategy`). */
+interface OllamaInstallStrategy {
+  os: string; // "windows" | "macos" | "linux" | "unknown"
+  command: string;
+  auto: boolean;
+  download_url: string;
+}
 
 export function OllamaPanel({ onBack }: { onBack: () => void }) {
   const [installed, setInstalled] = useState<boolean | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installLog, setInstallLog] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  // OS-dependent install strategy (command + whether one-click install works).
+  const [strategy, setStrategy] = useState<OllamaInstallStrategy | null>(null);
   const installLogRef = useRef<HTMLPreElement>(null);
   // Vibe (local-model agent runtime) — required to launch Local Model tabs.
   const [vibeInstalled, setVibeInstalled] = useState<boolean | null>(null);
+  // OS-dependent Vibe install command (uv/PowerShell on Windows, script elsewhere).
+  const [vibeStrategy, setVibeStrategy] = useState<VibeInstallStrategy | null>(null);
   const [vibeInstalling, setVibeInstalling] = useState(false);
   const [vibeInstallLog, setVibeInstallLog] = useState<string | null>(null);
-  const [vibeCopied, setVibeCopied] = useState(false);
   const vibeInstallLogRef = useRef<HTMLPreElement>(null);
   const [models, setModels] = useState<OllamaModelInfo[]>([]);
   const [serverRunning, setServerRunning] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
+  // Models currently being loaded into memory, keyed by name. Driven by the
+  // global `ollama-load-progress` events so a load started from the brain menu
+  // shows here too; Ollama streams no load percentage, so it's indeterminate.
+  const [loadingMem, setLoadingMem] = useState<Record<string, boolean>>({});
   // Per-tag download size from the registry, fetched lazily on hover and cached.
   const [tagSizes, setTagSizes] = useState<Record<string, number | "loading" | "error">>({});
   // Free-text "pull any model" field — accepts any registry ref the catalog omits.
@@ -464,6 +607,9 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   // persisted by the backend. Each can be resumed ("Continue") since Ollama
   // picks up a partially-fetched model where it left off.
   const [interrupted, setInterrupted] = useState<string[]>([]);
+  // Model refs the user paused mid-download this session. A paused pull keeps its
+  // partial blobs (so it can be resumed) and offers Resume / Delete.
+  const [paused, setPaused] = useState<Set<string>>(new Set());
   // Orphaned partial layers in Ollama's blob cache with no recoverable model
   // name — surfaced only so the user can delete them to reclaim space.
   const [orphans, setOrphans] = useState<{ digest: string; size: number; path: string }[]>([]);
@@ -523,9 +669,12 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
       if (ok) loadAfterInstall();
       else setLoading(false);
     })();
+    // OS-dependent install command/wording for the install panel below.
+    invoke<OllamaInstallStrategy>("ollama_install_strategy").then(setStrategy).catch(() => {});
     // Vibe is independent of Ollama; check it regardless so its status shows in
     // both the install-Ollama and main panels.
     invoke<boolean>("vibe_is_installed").then(setVibeInstalled).catch(() => setVibeInstalled(false));
+    invoke<VibeInstallStrategy>("vibe_install_strategy").then(setVibeStrategy).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -535,6 +684,16 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
       "ollama-pull-progress",
       (e) => {
         const { model, status, completed, total } = e.payload;
+        // A paused pull stops streaming here — move it out of the live-progress
+        // map and into the paused set so its row offers Resume / Delete.
+        if (status === "paused") {
+          setPullProgress((p) => {
+            const { [model]: _drop, ...rest } = p;
+            return rest;
+          });
+          setPaused((p) => new Set(p).add(model));
+          return;
+        }
         setPullProgress((p) => ({
           ...p,
           [model]: {
@@ -547,6 +706,24 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     return () => {
       void un.then((f) => f());
     };
+  }, []);
+
+  // Track in-flight loads-into-memory (from any surface). On success, re-read the
+  // model list so the row flips to its resident state.
+  useEffect(() => {
+    const un = listen<{ model: string; status: string }>("ollama-load-progress", (e) => {
+      const { model, status } = e.payload;
+      setLoadingMem((p) => {
+        if (status === "loading") return { ...p, [model]: true };
+        const { [model]: _drop, ...rest } = p;
+        return rest;
+      });
+      if (status === "success") void refresh();
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Drop a model's progress once its pull settles (success or error).
@@ -606,6 +783,36 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     void invoke("clear_pending_ollama_pull", { model });
   };
 
+  // Pause an in-flight download. The backend stops the stream at the next chunk,
+  // keeps the partial blobs, and emits a "paused" progress event that flips the
+  // row into the paused state (Resume / Delete).
+  const pausePull = (model: string) => {
+    void invoke("pause_ollama_pull", { model });
+  };
+
+  // Resume a paused download — re-pull, which Ollama continues from the partials.
+  const resumePull = (model: string) => {
+    setPaused((p) => {
+      const n = new Set(p);
+      n.delete(model);
+      return n;
+    });
+    void withBusy(`${model}:pull`, () => invoke("pull_ollama_model", { model }));
+  };
+
+  // Delete a paused download: drop its partial blobs and clear its pending record.
+  const deletePausedPull = (model: string) => {
+    setPaused((p) => {
+      const n = new Set(p);
+      n.delete(model);
+      return n;
+    });
+    setInterrupted((p) => p.filter((m) => m !== model));
+    void invoke("delete_ollama_pull", { model })
+      .then(() => refresh())
+      .catch((e) => setError(String(e)));
+  };
+
   const installVibe = async () => {
     setVibeInstalling(true);
     setVibeInstallLog("");
@@ -620,16 +827,6 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     } finally {
       unlisten();
       setVibeInstalling(false);
-    }
-  };
-
-  const copyVibeCmd = async () => {
-    try {
-      await navigator.clipboard.writeText(VIBE_INSTALL_CMD);
-      setVibeCopied(true);
-      window.setTimeout(() => setVibeCopied(false), 1500);
-    } catch {
-      /* clipboard unavailable — the command is shown for manual copy */
     }
   };
 
@@ -667,16 +864,6 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     const el = installLogRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [installLog]);
-
-  const copyInstallCmd = async () => {
-    try {
-      await navigator.clipboard.writeText(OLLAMA_INSTALL_CMD);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* clipboard unavailable — the command is shown for manual copy */
-    }
-  };
 
   const startServer = async () => {
     setError(null);
@@ -857,7 +1044,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
           <div className="ollama-install-cmd-row">
             <button
               type="button"
-              className="ollama-action-btn"
+              className="ollama-action-btn primary"
               disabled={vibeInstalling}
               onClick={() => void installVibe()}
             >
@@ -871,12 +1058,22 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
             </pre>
           )}
           <p className="settings-help">
-            Or run it manually in a terminal:
+            Or install it in a {vibeStrategy?.os === "windows" ? "PowerShell" : "terminal"} tab:
           </p>
           <div className="ollama-install-cmd-row">
-            <code className="ollama-install-cmd">{VIBE_INSTALL_CMD}</code>
-            <button type="button" className="ollama-action-btn" onClick={() => void copyVibeCmd()}>
-              {vibeCopied ? "Copied!" : "Copy"}
+            <code className="ollama-install-cmd">{vibeStrategy?.command ?? VIBE_INSTALL_CMD}</code>
+            <button
+              type="button"
+              className="ollama-action-btn primary"
+              onClick={() =>
+                runInstallInTab(
+                  "Install Vibe",
+                  vibeStrategy?.command ?? VIBE_INSTALL_CMD,
+                  vibeStrategy?.os === "windows" ? "powershell" : "bash",
+                )
+              }
+            >
+              Run in terminal
             </button>
             <button
               type="button"
@@ -886,7 +1083,12 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                 void invoke<boolean>("vibe_is_installed")
                   .then((ok) => {
                     setVibeInstalled(ok);
-                    if (!ok) setError("Vibe is still not detected (try a fresh terminal so ~/.local/bin is on PATH).");
+                    if (!ok)
+                      setError(
+                        vibeStrategy?.os === "windows"
+                          ? "Vibe is still not detected (open a fresh terminal so the install location is on PATH)."
+                          : "Vibe is still not detected (try a fresh terminal so ~/.local/bin is on PATH).",
+                      );
                   })
                   .catch(() => {})
               }
@@ -901,6 +1103,11 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
 
   // ── Not installed: show the (semi-)automated installer + manual steps ──────
   if (installed === false) {
+    // OS-dependent install guidance from the backend (winget on Windows, the
+    // install script on Linux/macOS); fall back to the script until it loads.
+    const installCmd = strategy?.command ?? OLLAMA_INSTALL_CMD_FALLBACK;
+    const downloadUrl = strategy?.download_url ?? OLLAMA_DOWNLOAD_URL;
+    const isWindows = strategy?.os === "windows";
     return (
       <>
         <div className="settings-title-row">
@@ -916,15 +1123,25 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
 
         <div className="settings-section-title">Automatic install</div>
         <p className="settings-help">
-          Runs the official install script. It needs administrator rights to add
-          the <code>ollama</code> service, so this works without prompting only
-          when your account has passwordless <code>sudo</code>. If it fails,
-          follow the manual steps below.
+          {isWindows ? (
+            <>
+              Installs Ollama with <code>winget</code> (silent, per-user). winget
+              ships with Windows 10/11; if it's missing or the install fails,
+              follow the manual steps below.
+            </>
+          ) : (
+            <>
+              Runs the official install script. It needs administrator rights to
+              add the <code>ollama</code> service, so this works without prompting
+              only when your account has passwordless <code>sudo</code>. If it
+              fails, follow the manual steps below.
+            </>
+          )}
         </p>
         <div className="ollama-install-cmd-row">
           <button
             type="button"
-            className="ollama-action-btn"
+            className="ollama-action-btn primary"
             disabled={installing}
             onClick={() => void installOllama()}
           >
@@ -940,26 +1157,33 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
           </pre>
         )}
 
-        <div className="settings-section-title">Manual install</div>
+        <div className="settings-section-title">Install in a terminal</div>
         <ol className="ollama-install-steps">
           <li>
-            Open a terminal and run the official installer:
+            Run the installer for your system in a new{" "}
+            {isWindows ? "PowerShell" : "terminal"} tab:
             <div className="ollama-install-cmd-row">
-              <code className="ollama-install-cmd">{OLLAMA_INSTALL_CMD}</code>
+              <code className="ollama-install-cmd">{installCmd}</code>
               <button
                 type="button"
-                className="ollama-action-btn"
-                onClick={() => void copyInstallCmd()}
+                className="ollama-action-btn primary"
+                onClick={() =>
+                  runInstallInTab("Install Ollama", installCmd, isWindows ? "default" : "bash")
+                }
               >
-                {copied ? "Copied!" : "Copy"}
+                Run in terminal
               </button>
             </div>
             <span className="settings-help">
-              On macOS or Windows you can instead download the installer from{" "}
-              <code>https://ollama.com/download</code>.
+              You can also download the installer directly from{" "}
+              <code>{downloadUrl}</code>.
             </span>
           </li>
-          <li>Enter your password if the installer asks for <code>sudo</code>.</li>
+          <li>
+            {isWindows
+              ? "Approve the User Account Control prompt if Windows asks."
+              : "Enter your password if the installer asks for sudo."}
+          </li>
           <li>
             Once it finishes, click <strong>Re-check</strong> below — the
             installable models will appear automatically.
@@ -977,7 +1201,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                 loadAfterInstall();
                 await startServer();
               } else {
-                setError("Ollama is still not detected on PATH.");
+                setError("Ollama is still not detected.");
               }
             })()
           }
@@ -1030,10 +1254,11 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
       {(() => {
         // Interrupted entries not currently being (re)pulled — these get a
         // "Continue" action; live pulls show their streaming progress bar.
-        const resumable = interrupted.filter((m) => !(m in pullProgress));
+        const resumable = interrupted.filter((m) => !(m in pullProgress) && !paused.has(m));
         if (
           Object.keys(pullProgress).length === 0 &&
           resumable.length === 0 &&
+          paused.size === 0 &&
           orphans.length === 0
         )
           return null;
@@ -1056,6 +1281,44 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                     />
                   </div>
                   {pr.status && <div className="ollama-download-status">{pr.status}</div>}
+                  <div className="ollama-model-actions">
+                    <button
+                      type="button"
+                      className="ollama-action-btn"
+                      title="Pause this download (resume later)"
+                      onClick={() => pausePull(model)}
+                    >
+                      Pause
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {[...paused].map((model) => (
+                <div className="ollama-model-row" key={`paused:${model}`}>
+                  <div className="ollama-model-header">
+                    <span className="ollama-model-name">{model}</span>
+                    <span className="ollama-model-size">paused</span>
+                  </div>
+                  <div className="ollama-download-status">
+                    Download paused — resume to finish it, or delete the partial data.
+                  </div>
+                  <div className="ollama-model-actions">
+                    <button
+                      type="button"
+                      className="ollama-action-btn"
+                      onClick={() => resumePull(model)}
+                    >
+                      Resume
+                    </button>
+                    <button
+                      type="button"
+                      className="ollama-action-btn danger"
+                      title="Delete the partial download to reclaim disk space"
+                      onClick={() => deletePausedPull(model)}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
               ))}
               {resumable.map((model) => (
@@ -1159,7 +1422,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                   <button
                     type="button"
                     className="ollama-action-btn"
-                    disabled={busy[`${m.name}:load`]}
+                    disabled={busy[`${m.name}:load`] || loadingMem[m.name]}
                     title="Load into memory now and keep it resident"
                     onClick={() =>
                       void withBusy(`${m.name}:load`, () =>
@@ -1167,7 +1430,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                       )
                     }
                   >
-                    {busy[`${m.name}:load`] ? "..." : "Load"}
+                    {busy[`${m.name}:load`] || loadingMem[m.name] ? "Loading…" : "Load"}
                   </button>
                 )}
                 <button
@@ -1197,6 +1460,14 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
                   {busy[`${m.name}:del`] ? "..." : "Delete"}
                 </button>
               </div>
+              {(busy[`${m.name}:load`] || loadingMem[m.name]) && (
+                <div className="ollama-load-progress" title="Loading into memory…">
+                  <div className="ollama-download-bar">
+                    <div className="ollama-download-bar-fill indeterminate" />
+                  </div>
+                  <span className="ollama-download-status">Loading into memory…</span>
+                </div>
+              )}
             </div>
           ))}
         </div>

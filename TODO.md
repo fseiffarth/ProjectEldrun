@@ -775,6 +775,316 @@ container) — as opposed to the git **push** axis (#21/#22).*
         translation; `DockerSpec.remote` round-trip
       - [ ] 🖐️ Manual test
 
+80. **Native SFTP remote browsing (drop `ssh ls` for the folder picker).**
+    Replace the shell-out browse commands in `commands/ssh.rs`
+    (`ssh_list_dir`, `ssh_default_dir`) with an in-process **SFTP** client, so
+    the new/import dialog's remote folder picker no longer parses `ls` text and
+    no longer feeds user-controlled paths to a remote `$SHELL -c`. This is the
+    JetBrains *Deployment*-style model (in-process SFTP browse), and it
+    **supersedes** the #28c "[Critical] Remote command injection in the browse
+    commands" item — SFTP is a binary protocol, so paths are never
+    shell-interpreted and `shell_quote`/`validate_arg` are no longer load-bearing
+    for browsing. **Scope is browsing only:** the project *mount* still uses
+    sshfs (kernel FUSE is unavoidable for a local mountpoint regardless of
+    language — see the install-helper work), and remote *agent/terminal* exec
+    still uses `ssh -tt` (#28b). Nothing here changes the mount or exec paths.
+    - **Library: `openssh-sftp-client`** (rides the system `ssh` ControlMaster).
+      Chosen over `russh-sftp` (pure-Rust but reimplements auth/known_hosts) and
+      `ssh2`/libssh2 (C + openssl build dep) because it reuses the user's
+      `~/.ssh/config`/agent/keys — the "source of truth" the existing `ssh.rs`
+      already commits to — and keeps a single auth story shared with mount/exec.
+    - **Prototype steps.** ✅ **Code-complete (🤖 covered; 🖐️ live QA pending)** —
+      built over `openssh-sftp-client` driving a child `ssh -s sftp` over its
+      pipes (no `openssh` ControlMaster crate needed); the password-arg builder
+      was lifted to `services::ssh_mount::ssh_password_base_args` so browse +
+      SFTP share one validated auth path.
+      - [x] **80a — Dep + thin `services/sftp.rs` session helper.** ✅ Done.
+        `open_session(user, host, port, password)` spawns `ssh`/`sshpass -e ssh`
+        with the shared base args, splices `-s <target> sftp`, and hands the
+        child's stdin/stdout to `Sftp::new`. Keeps the `validate_arg` guard on
+        `path` as defense in depth. (Drove the design: chose raw-pipe `Sftp::new`
+        over the `openssh`-feature `from_session` so no ControlMaster crate is
+        pulled in; `ReadDir` is `!Unpin` → `Box::pin` to drive the stream.)
+      - [x] **80b — `ssh_default_dir` over SFTP.** ✅ Done. `fs.canonicalize(".")`
+        (SFTP REALPATH) — no remote `pwd`.
+      - [x] **80c — `ssh_list_dir` over SFTP.** ✅ Done. `open_dir` + drain the
+        `ReadDir` stream, `is_dir` from SFTP `file_type()`; reuses the
+        dirs-first/ci sort + dot-filter via pure `finalize_entries`. Empty path →
+        SFTP home (`.`).
+      - [x] **80f — Resolve symlink targets.** ✅ Done. `readdir`'s `file_type()`
+        is lstat-style (a symlink reports as a symlink, not its target), so a
+        second pass follow-stats each **symlink** (`fs.metadata`, which follows
+        the link) to flag a symlink-to-directory `is_dir` and make it navigable;
+        only symlinks cost an extra round-trip, and a broken/denied link resolves
+        to non-dir. Pure `resolve_child_path` (join child vs `.`/home) is
+        unit-tested; the live follow-stat is a manual check.
+      - [x] **80d — Command signatures + frontend untouched.** ✅ Done. Same
+        command names/params; `RemoteEntry` mapped from `services::sftp::Entry`.
+        No `useRemoteSession`/`RemoteProjectSection` change.
+      - [x] **80e — Async wiring.** ✅ Done. Both commands are now `async`;
+        `lib.rs` registration unchanged; `cargo check --all-targets` clean.
+      - **Removed dead code:** the old `parse_ls_output`/`shell_quote` in
+        `commands/ssh.rs` (and their tests) — superseded; their sort/filter +
+        injection-inert coverage moved to `services::sftp` tests.
+    - *Test (e.g.):* a host with a dir literally named `foo; touch pwned`
+      lists as one inert entry (no remote command runs), symlinked dirs are
+      flagged `is_dir`, and the home dir resolves without a `pwd` shell-out.
+    - [x] 🤖 Automated test — `services::sftp` unit tests: `sftp_subsystem_args`
+      splices `-s` before the target; `finalize_entries` dirs-first/ci sort,
+      dot/blank filter, hidden-entry retention, and the injection-named dir is
+      one inert entry. (Pure, no live host; the network round-trip is manual.)
+    - [ ] 🖐️ Manual test — re-run #28 Phase 2 (browse) against key-auth and
+      password-only hosts; injection-named dirs are inert; mount/exec (Phases
+      3–7) still work unchanged.
+    - **Follow-on (not this pass):** once browse is SFTP, evaluate a
+      JetBrains-*Deployment*-style **edit-over-SFTP** path for the in-app viewers
+      to shrink the sshfs surface further (read/write single files over SFTP,
+      mount only when local tooling/agents need a real directory).
+      → Pursued in full by **#28e–#28j** below (mount-free remote projects).
+
+81. **Mount-free remote projects — replace sshfs with SSH/SFTP-native.**
+    📋 **Planned, not started.** Full plan + file:line map + exit criteria per
+    phase in **`docs/mountfree_remote_plan.md`** (read it first). Remote projects
+    drop the FUSE mount entirely: agent tabs over `ssh -tt`, file browsing/I-O
+    over SFTP, git on the host over SSH. **Decisions (locked):** fully *replace*
+    sshfs (no coexistence); git *runs over SSH* for remote projects. The keystone
+    is making remoteness **explicit** (a backend `remote_target_for(project_id)`
+    resolver) instead of inferring it from a cwd under `ssh_mount::mounts_root()`
+    (`services/ssh_exec.rs:297`). Phases are ordered so each is independently
+    shippable; Phase 1 alone delivers the main goal (remote agent tabs). Built to
+    be picked up by an agent team after a context `/clear` — the plan doc is the
+    source of truth.
+    - [x] **28e — Explicit remoteness + pooled SSH/SFTP** (Phase 0; do first).
+      `services/remote.rs` resolver + one ControlMaster & persistent `Sftp`
+      session per active remote project (auth once, reused by tabs/browse/git);
+      shift commands from `project_dir` path to `project_id` + `rel_path`.
+    - [x] **28f — Mount-free remote agent tabs** (Phase 1; main goal). Replace
+      `project_id_from_cwd` detection in `ssh_exec::wrap_pty_options` with the
+      explicit `RemoteTarget`; remote cwd = `spec.remote_path`.
+    - [x] **28g — Live remote file browsing over SFTP** (Phase 2). Project-aware
+      `list_dir`; wire `FileTree.tsx`/`FileBrowser.tsx`; drop inotify for remote
+      (manual refresh).
+    - [x] **28h — Remote file I/O over SFTP** (Phase 3). Add write half to
+      `services/sftp.rs` (read/create/write/mkdir/remove/rename/download);
+      route `commands/fs.rs` + viewers for remote projects.
+    - [x] **28i — Git over SSH for remote projects** (Phase 4). One
+      `run_git(target, args)` dispatcher in `commands/git.rs`; remote →
+      `ssh_exec::remote_command("cd <path> && git …")`; parsers unchanged.
+    - [x] **28j — Remove sshfs** (Phase 5). Deleted `services/ssh_mount.rs`
+      (shared `validate_arg`/`ssh_*_base_args`/`ssh_target`/`sshpass_available`
+      relocated to `services/ssh_common.rs`), `ensure_*_mounted`, the exit-unmount
+      hook, the sshfs tooling probe + install-guide UI, and the frontend mount
+      calls. `remote_target_for` now resolves from the always-local `projects.json`
+      `extra["remote"]` (so existing remote projects keep working with no mount);
+      a remote project's `directory` is a local per-project state dir
+      (`remote-projects/<id>`) holding `project.json`, while its tree lives on the
+      host. Docs/lessons/tour stripped of FUSE. **Follow-up:** writing the
+      canonical scaffold to both the local mirror and remote host is tracked as
+      **#28o** below. (The `git_change_stats` untracked-line counts that assumed a
+      local tree are now fixed in #28k.) Needs a live-host QA pass.
+    - [x] **28k — Review-team follow-ups** (2026-06-30; ✅ Done · 🧪 Remote
+      half needs live-host QA). From the post-merge code review of the mount-free
+      change (most findings already fixed in the `fix(remote): harden SSH/SFTP
+      pool…` commit). Both remaining items resolved:
+      - [x] **Remote untracked-line counts read +0.** `count_added_lines`
+        (`commands/git.rs`) did a local `std::fs::read` on `project_dir.join(rel)`;
+        for a remote project `project_dir` is the local state dir, so every read
+        failed and the git "Add" panel showed untracked remote files as `+0 /
+        non-binary`. Fixed via the SFTP-read option: `git_change_stats` is now
+        `async` + takes the `RemotePoolState`; local projects keep `std::fs::read`,
+        remote projects read each untracked file's bytes over the pooled SFTP
+        session (`count_added_lines_remote` → `fs::remote_join_confined` +
+        `fs::remote_read`, both now `pub(crate)`), with the shared byte→`(lines,
+        binary)` logic factored into `count_lines_in_bytes`. The `rel` path is
+        confined under `spec.remote_path`; any confinement/read error degrades to
+        `(0, false)` as before. Stale "still-present mountpoint" comment replaced.
+        **Live-host QA:** confirm `+N`/binary/empty counts against a real SSH
+        project, cold-pool (one-shot fallback) counts, and latency on a large
+        untracked tree (each file is now an individual SFTP read).
+      - [x] **`ConnectionLog` keys by array index.** `key={i}` over a `slice(-500)`
+        log forced full re-creation of every line node when the cap trimmed the
+        head. Fixed: `ConnectionLog` now takes `LogLine[]` (`{ id; text }`) and
+        keys on the id; both push sites (`useRemoteSession.ts`,
+        `VpnPasswordPrompt.tsx`) mint a monotonic id from a dedicated `useRef`
+        counter that never resets on slice, so surviving lines keep their nodes.
+      - Gates: `npx tsc --noEmit`, `cargo test` (412 + 25, 0 failed) all green.
+    - **Cross-cutting (all phases):** single auth (one ControlMaster, no 3×
+      prompts), no page cache (pooled session + lazy reads), fail-fast offline,
+      OpenVPN brought up before the master, git-over-ssh keeps `shell_quote`
+      defenses. Per-phase `cargo test` + `npx tsc --noEmit`; runtime QA adapts
+      #28 Phases 1–8 minus all mount/`/proc/mounts` steps.
+    - [x] **28l — Stepped remote dialog + connection lamps** (2026-06-30; ✅
+      Done · 🧪 Untested). New-project dialog reworked into a stepped remote flow
+      (connect → browse → details) via `step` in `useRemoteSession`; the
+      name/git/details body is gated to the final step (local projects keep the
+      single form). **Browse in both connection modes:** non-headless now rides
+      the embedded login's ControlMaster to SFTP-browse (auto-poll of a
+      credential-less `ssh_connect` after `startSshTerm`, + an "I've logged in —
+      browse" fallback), converging on the same `isRemote` browser headless uses;
+      Windows non-headless (no control socket → `winManual`) keeps the typed-path
+      input. `buildRemoteSpec` collapsed to one branch + Windows fallback. Added
+      red/orange/green `ConnLamp` for SSH + OpenVPN, shown in-dialog and
+      persistently in the header for the active remote project, driven by a new
+      `stores/remoteStatus.ts` (keyed by project id). Activation (`stores/projects.ts`)
+      drives the lamps (pooled `remote_connect` with retry; VPN from the prompt
+      result or a bounded `openvpn_status` poll) and fires a dedicated `connToast`
+      ("VPN connected · <proj>"). **Known gaps for live QA:** (a) macOS
+      `openvpn_status` is a stub (always false), so the VPN lamp never goes green
+      on macOS — wire real status when the macOS OpenVPN backend lands (Group H);
+      (b) a headless password-auth host with no live master can't open the pool
+      with a null password, so its SSH lamp goes red after the retry budget —
+      accurate, but the path itself is the unstored-password limitation, not a lamp
+      bug. Gates: `npx tsc --noEmit`, `vitest` (714), `cargo test` (25) all green.
+
+    - [x] **28m — Auto-sync for files/folders** (2026-07-01; ✅ Done · 🧪
+      Untested). Per-path auto-sync layered on the selective-sync manifest: a new
+      `SyncEntry::auto_sync` flag (`#[serde(default)]`, implies `selected`; folder
+      markers cover their subtree, resolved by `remote_sync::is_auto`) + the
+      `sync_set_auto` command; `SyncStatusEntry.auto_sync` surfaces the effective
+      flag. New `services::sync_auto` reconcile engine: one per-project task
+      (`AutoSyncState` registry) started on `remote_connect`, stopped on
+      `remote_disconnect`/exit, triggered by a recursive mirror `notify` watcher
+      (debounced ~1.5s) + a ~25s interval. Each pass judges every auto path with a
+      new pure `remote_sync::divergence` split and acts on the SAFE direction only
+      (host-moved → pull, local-moved → guarded push, **both-moved/amber → skip**),
+      reusing `walk_host_files`/`walk_mirror_files`/`pull_file`/`push_file_atomic`/
+      `record_*`; emits an `auto-sync` event to refresh the frontend. UI:
+      file-tree right-click "Auto-sync this folder/file" (both source trees), a ⟳
+      row glyph, a viewer-header ⟳ toggle (remote projects, via a
+      `ViewerHeaderInfoContext`), and a right-panel "orange" list view + count
+      badge that lists all diverged files with Take-host / Keep-local resolve
+      actions. **Deferred:** deletion propagation is intentionally out of scope
+      (a one-sided delete is skipped, never mirrored) — needs a tombstone design;
+      the mirror watcher fires on Eldrun's own pull writes (harmless: the next
+      pass finds those files green) — add a post-write suppression window only if
+      it proves chatty. Gates: `npx tsc --noEmit`, `cargo test` (448 lib) green;
+      needs live-host QA (auto pull/push timing, orange skip, lifecycle).
+
+    - [ ] **28n — Git-aware local↔remote lockstep sync.** **Phases 1–3 ✅ Done
+      (2026-07-02; opt-in per project; checkout lockstep + fast-forward-only ref
+      transfer + desync detection/display · 🧪 live-host QA pending).** Phase 2
+      (Use-local/Use-remote resolution + `refs/eldrun/backup/*` reset) and Phase 3
+      (initial-pairing authority + streaming transport for large bundles) landed
+      2026-07-02: `transfer_and_apply` gained a `force` path that, for diverged /
+      dest-ahead branches and conflicting tags, saves the overwritten tip to a
+      timestamped `refs/eldrun/backup/*` ref then resets to the authority (a
+      checked-out loser branch via `reset --hard`, moving ref + tree); `resolve`/
+      `resolve_inner` (pause auto-sync → force winner→loser → restamp bases →
+      reconcile) back the `git_peer_resolve(authority)` command + Use local / Use
+      remote buttons (confirm-gated) in the desync bar. `init_pairing` (`git init`
+      the empty side, full-bundle transfer, `symbolic-ref`+`reset --hard` / detached
+      checkout to populate) runs from `reconcile` when exactly one side is a repo
+      (remote-import → mirror-from-remote, extend-local → remote-from-local; both-
+      exist-and-diverge still routes to the explicit authority choice). `move_bundle`
+      now streams via new `sftp::{upload,download}_file_streaming_on` (256 KiB
+      chunks, `bytes` dep) so the 64 MiB whole-file cap is gone and initial-pairing
+      bundles carrying whole histories transfer without buffering. New unit tests:
+      `winner_is_local` default, tag backup-ref naming, force-targets-diverged/
+      dest-ahead truth pins; frontend `GitLockstep.test.tsx` +2 (resolve routes to
+      `git_peer_resolve`, confirm-dismiss no-ops). Gates: `cargo test` (603),
+      `npx tsc`, `vitest` (745) green.
+      New `services/git_peer.rs` (AppHandle-free: `Peer` enum runner, pure parsers/
+      `decide`/`bundle_create_args`, `probe`, `reconcile` via delta `git bundle` over
+      the pooled SFTP into `refs/eldrun/incoming/*` + ff-apply, `checkout_lockstep`,
+      `.git`-watcher + host-poll detection loop, `GitPeerRegistry`) + `commands/
+      git_peer.rs` (`git_peer_{status,set_enabled,sync_now,checkout}`, `git-peer-status`
+      event). `services/sync_auto.rs` gained a per-project `paused` `AtomicBool` (checked
+      in `reconcile_pass`) so a checkout's mirror writes aren't pushed, with base
+      re-stamping via `record_pull` before resume; `remote_sync` walkers now skip
+      `.git`. Lifecycle wired into `remote_connect`/`disconnect` + app-exit `stop_all`;
+      `GitHistory.tsx` gained a lockstep toggle + status pill + Sync/Retry and routes
+      checkout through `git_peer_checkout` when enabled. Gates: `cargo test` (473),
+      `npx tsc`, `vitest` (743) green. Original spec (still governs Phase 2/3):
+      For an SSH project's
+      paired local mirror and remote working tree, keep Git state synchronized
+      **semantically** rather than copying `.git/` bytes. Transfer commits and
+      refs through Git over the existing SSH ControlMaster; synchronize local
+      branches, tags, HEAD branch/detached commit, and all Git-tracked working-tree
+      files (including safe tracked deletions). Existing selective sync remains
+      authoritative for untracked/ignored files. Never copy machine-specific or
+      unsafe Git internals (`config`, hooks, reflogs, index/lock files, remotes,
+      stashes, or worktree metadata).
+      - **Checkout lockstep.** A branch switch on either side checks out the same
+        branch at the same commit on its peer; checking out a commit synchronizes
+        the same detached HEAD. Eldrun-triggered checkouts reconcile immediately;
+        a local `.git` watcher plus connected-host polling detects CLI-driven
+        changes. Pause ordinary file auto-sync during checkout, then refresh its
+        tracked-file bases so checkout writes do not become false conflicts.
+      - **Safe ref/history reconciliation.** Missing objects/refs transfer in
+        either direction and branch updates auto-apply only when fast-forward.
+        Diverged histories, simultaneous incompatible checkouts, or a dirty peer
+        that blocks checkout enter a visible **desynchronized** state; never
+        force-checkout or discard work. Offer Retry after cleanup and an explicit
+        Use local / Use remote resolution, creating timestamped `refs/eldrun/backup/*`
+        safety refs before resetting the losing side.
+      - **Initial pairing.** Remote import initializes the mirror from the remote;
+        extending a local project initializes the remote from local. If both
+        repositories already exist and diverge, require the same explicit
+        authority choice instead of guessing. The paired main working trees are
+        covered; extra worktrees and checked-out submodule contents are deferred.
+      - **Backend/UI.** Add a per-project Git-peer sync service and persisted
+        observed local/remote HEAD/ref/status state; commands for status, retry,
+        and authority resolution; and a project-scoped status event. Extend
+        coordinated checkout with project id + initiating side while preserving
+        camelCase payload compatibility. Show synchronized/syncing/desynchronized
+        state and actionable errors in the Git UI.
+      - [x] 🤖 Automated test (Phases 1–3) — `git_peer` unit tests: ref/HEAD parsing,
+        `decide` fast-forward-vs-divergence truth table, `bundle_create_args`/
+        incoming-refspec shape guardrails (never `--all`/`refs/remotes` → `.git`
+        internals never copied), tracked-file/deletion discovery, safety-ref naming,
+        camelCase state round-trip; frontend `GitLockstep.test.tsx` (checkout routes
+        through `git_peer_checkout` when enabled, falls back otherwise, pill renders,
+        local project shows no bar; Phase 2: resolve routes to `git_peer_resolve`,
+        confirm-dismiss no-ops). Phase 2/3 pure-logic tests: `winner_is_local`,
+        tag backup-ref naming, force-targets-diverged/dest-ahead pins.
+      - [ ] 🖐️ Manual test — live SSH host: edit/commit/checkout from Eldrun and
+        from local/remote shells, verify both trees remain on the same branch or
+        detached commit, then exercise dirty-peer recovery and Use-local/Use-remote
+        resolution (confirm the loser's overwritten tip lands under
+        `refs/eldrun/backup/*` and both trees converge). Also verify initial pairing:
+        import a remote repo → mirror initializes from it; extend a local repo onto a
+        host → remote initializes from local; and a large-history bundle streams
+        through without the old 64 MiB rejection.
+
+    - [ ] **28o — Scaffold both sides of SSH projects.** New and imported SSH
+      projects must receive the canonical Eldrun scaffold in both their local
+      mirror and remote project root. Create only missing files: existing content
+      on either side is authoritative and must never be truncated or replaced.
+      The existing **Skip scaffolding** option suppresses generation on both
+      sides. Remote scaffold failure is blocking: surface the error in the
+      project dialog and do not register the project as successfully
+      created/imported.
+      - **Remote path.** Add an async
+        `scaffold_remote_project(user, host, port, password, remotePath)` Tauri
+        command. Open one SFTP session, create the remote root and required
+        parent directories, then atomically create each absent canonical file.
+        If writing a newly-created file fails, remove that partial file before
+        returning the error. A submitted password is ephemeral and must never be
+        persisted or logged; when it is absent, resolve any saved SSH credential
+        through the existing credential service.
+      - **Dialog ordering.** For both remote create and import, invoke remote
+        scaffolding before `create_project` / `import_project`. Reuse the
+        dialog's existing error state for failures, leaving registration
+        untouched. A retry is safe because remote creation is idempotent and
+        non-overwriting.
+      - **Local mirror.** Keep the existing new-remote mirror scaffolding and
+        extend remote import to call the same local `scaffold_project` helper.
+        The canonical set remains the existing `SCAFFOLD_FILES`,
+        `.gitignore`, and `.claude/settings.json` definitions so both sides start
+        with identical defaults.
+      - **Compatibility.** No persisted project-schema change. Keep Git
+        initialization and agent-assisted scaffold filling behavior unchanged.
+      - [ ] 🤖 Automated test — remote imports create the complete local-mirror
+        scaffold without overwriting existing content; frontend create/import
+        call remote scaffolding before registration; Skip bypasses both paths;
+        and a rejected remote-scaffold call prevents registration and surfaces
+        its error.
+      - [ ] 🖐️ Manual test — create and import projects against key-auth and
+        password-auth SSH hosts; verify both trees contain all missing scaffold
+        files, pre-existing files remain byte-identical, Skip touches neither
+        side, and an unwritable remote root blocks registration with an
+        actionable error.
+
 ---
 
 ## Group H — Cross-Platform: Windows & macOS Support (new feature)
@@ -793,10 +1103,78 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     liveness check with a native Windows API; add native window tracking
     (`EnumWindows` + `GetWindowThreadProcessId`) if project-owned standalone
     windows need reliable show/hide; decide on a Windows unhandled-exception
-    crash hook (current crash logging is Unix-oriented); document/improve
-    download routing where directory symlinks need Developer Mode or elevation;
-    and QA browser download-preference editing across Firefox/Chrome/Chromium/
-    Chrome Beta profile layouts.
+    crash hook (current crash logging is Unix-oriented). (Browser
+    download-preference editing was removed — Eldrun no longer touches any
+    browser's download path; see #60.)
+
+    **Cross-platform detection audit (2026-06-27).** A sweep for Linux-only code
+    paths that broke on Windows, fixing the directly-portable ones and tracking
+    the rest as the sub-items below.
+    - [x] **30a — Cross-platform binary detection.** ✅ Done. Every "is this CLI
+      installed?" probe hardcoded `Command::new("which")`, which does not exist on
+      Windows, so all agents (Claude included), the TeX toolchain, `sshfs`,
+      `sshpass`, and `openvpn`/`pkexec` reported as missing. Centralized one
+      `crate::paths::binary_on_path` (`where` on Windows, `which` elsewhere, via
+      `paths::path_finder(OsKind)`); `commands/agents.rs`, `commands/tex.rs`,
+      `commands/ollama.rs`, `services/ssh_mount.rs`, `services/openvpn.rs` all
+      route through it. Agent extra-path fallback also matches Windows exe
+      extensions (`.exe`/`.cmd`/`.bat`/`.ps1`).
+      - [x] 🤖 Automated test — `paths::path_finder_is_where_on_windows_which_elsewhere`
+      - [ ] 🖐️ Manual test — "Manage agents" lists installed agents on Windows
+    - [x] **30b — Cross-platform per-process CPU/RSS sampling.** ✅ Done. `sysstat`
+      was entirely `#![cfg(target_os = "linux")]`, so `project_cpu_percent` and
+      `debug_app_resource_usage` returned 0 on Windows. Refactored into a shared
+      cache/BFS layer over a per-OS backend: Linux `/proc`, **Windows** ToolHelp
+      snapshot (`CreateToolhelp32Snapshot`) for the process tree +
+      `GetProcessTimes` (kernel+user, 100-ns units) + `GetProcessMemoryInfo`
+      (working set), and a zero fallback for other OSes. CPU "ticks"/`clk_tck()`
+      abstraction keeps the caller's `busy_secs = ticks / clk_tck()` formula valid
+      on every backend. Added `Win32_System_{Diagnostics_ToolHelp,ProcessStatus,
+      Threading}` to the `windows` crate features. `terminal.rs`/`debug.rs` no
+      longer gate on Linux.
+      - [x] 🤖 Automated test — `sysstat` tests now run on Windows too
+        (`sum_jiffies`/`sum_rss_kib` against the live process, tree walk, cache)
+      - [ ] 🖐️ Manual test — pill popup shows live CPU/RSS on Windows
+    - [x] **30c — Native PID liveness.** ✅ Done. `check_pid_alive`
+      (`commands/apps.rs`) no longer shells out to `tasklist` on Windows; it uses
+      `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess`,
+      treating `STILL_ACTIVE` (259) as alive (a handle to an exited process still
+      opens, so the exit code must be inspected — not just OpenProcess success).
+      Linux `/proc` and macOS/Unix `kill(pid,0)` branches unchanged.
+      - [x] 🤖 Automated test — covered by `cargo build --lib` compile + existing
+        callers; no behavioral unit test (needs a live pid)
+      - [ ] 🖐️ Manual test
+    - [x] **30d — App discovery + launching on Windows.** ✅ Done. Linux XDG
+      `.desktop` discovery is gated behind `cfg(not(windows))`; Windows now enumerates
+      Start-Menu `.lnk` shortcuts (`%ProgramData%` + `%APPDATA%`, recursive, deduped
+      by resolved target) for `list_installed_apps`, resolves targets/icons via the
+      existing `IShellLinkW` scaffold, and `run_script_detached` runs `.ps1` via
+      `powershell -NoProfile -ExecutionPolicy Bypass -File` and `.bat`/`.cmd`/assoc
+      via `cmd /C` instead of `bash`. Launch/open/embed commands keep their
+      signatures. Degrades gracefully: `xdg-mime` handler resolution no-ops (falls
+      back to configured/explicit handlers), icon rasterization is best-effort, and
+      `os_embeddable` is false (no Windows embedding backend yet).
+      - [x] 🤖 Automated test — `cargo test --lib apps` (incl. a Windows-gated
+        interpreter-selection test) passes
+      - [ ] 🖐️ Manual test
+    - [x] **30e — Screenshot capture on Windows.** ✅ Done. `commands/screenshot.rs`
+      refactored to a cfg-selected `platform` submodule (Linux tool-spawn unchanged).
+      Windows uses native Win32 GDI — `GetSystemMetrics(SM_*VIRTUALSCREEN)` for the
+      full multi-monitor virtual screen, `GetDC`/`CreateCompatibleDC`/`BitBlt`/
+      `GetDIBits`, BGRA→RGBA, then PNG-encoded via the existing `png` crate to a
+      timestamped file (same public command + output dir as Linux). All GDI handles
+      freed on success and error paths. Added `Win32_Graphics_Gdi`.
+      - [x] 🤖 Automated test — shared filename/date tests retained; build verified
+      - [ ] 🖐️ Manual test
+    - [x] **30f — VPN-gated projects on Windows.** ✅ Done (graceful degradation —
+      the explicitly-allowed deliverable). `services/openvpn.rs` is cfg-split:
+      Windows `openvpn_available()` probes only the `openvpn` binary (no `pkexec`),
+      and `connect`/`disconnect`/`is_connected`/`disconnect_all` are no-ops/clear
+      errors ("VPN-gated projects are not yet supported on Windows — connect the
+      OpenVPN tunnel manually …"). No UAC/elevation system built. Linux pkexec path
+      byte-for-byte unchanged (only cfg-gated); non-VPN remote projects unaffected.
+      - [x] 🤖 Automated test — `cargo test --lib openvpn` passes on Windows
+      - [ ] 🖐️ Manual test
 
 31. **macOS support follow-ups.** macOS has initial cross-platform code (state
     paths, default shell, browser profiles, network detection, Unix symlinks,
@@ -810,6 +1188,19 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     `CGWindowList`) only if project-owned standalone windows need reliable
     show/hide; and keep the null workspace backend as the default unless a clear
     need justifies Accessibility permissions or private APIs.
+    - [~] **31a — Native CPU/RSS sampling backend.** ✅ Code-complete, ⚠️
+      **unverified** (compiles only on macOS; written/reviewed on a Windows host).
+      Added a `#[cfg(target_os = "macos")] mod platform` in `sysstat.rs` using
+      libproc: `proc_pidinfo(PROC_PIDTASKINFO)` → `pti_total_user + pti_total_system`
+      (nanoseconds; `clk_tck()` = 1e9) and `pti_resident_size` for RSS;
+      `proc_pidinfo(PROC_PIDTBSDINFO)` → `pbi_ppid`; `proc_listallpids` for the tree.
+      Fallback cfg narrowed to `not(any(linux, windows, macos))`. Callers
+      (`terminal.rs`/`debug.rs`/`terminal/mod.rs`) are already cross-platform.
+      - [ ] 🤖 Automated test — `sysstat` tests run on macOS (currently only
+        compile-verifiable on a mac); no macOS CI yet
+      - [ ] 🖐️ Manual test — needs a real macOS build to confirm the libc bindings
+        (`proc_taskinfo`/`proc_bsdinfo`/`proc_listallpids`) resolve in pinned
+        `libc 0.2`; if any is absent, add a minimal `extern "C"`/`#[repr(C)]` decl.
 
 ---
 
@@ -967,6 +1358,44 @@ correctness/UX work atop the same layout model #42 detaches.*
     between projects (e.g. `Shift`+`Ctrl`+`Tab`), plus closing tabs/subwindows —
     all keyboard-driven.
     - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+82. **Native keyboard file-tree navigation (no mouse).** Make the right-panel
+    file tree (`FileTree.tsx`) fully steerable from the keyboard — arrow/`j`/`k`
+    to move the selection cursor, `←`/`→` (or `h`/`l`) to collapse/expand a
+    directory, `Enter` to open the selected file in a tab, plus wheel-style fast
+    scrolling so a long tree can be traversed without reaching for the mouse.
+    Builds on #62 (keyboard nav) and the Group D.1 file tree.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+83. **One key shows the radial "pie" project view (as in the root project).**
+    A single keypress brings up the same radial/pie project-blob view used by the
+    root project (the 3D project blob default root tab, see `ProjectBlobPane.tsx`)
+    as a fast project switcher overlay — invoked purely from the keyboard.
+    Builds on #62.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+84. **Keyboard navigation within the pie view.** Once the radial/pie view (#83)
+    is open, additional keys step the selection around the pie (e.g. arrows /
+    rotate keys to move between wedges, `Enter` to activate the highlighted
+    project, `Esc` to dismiss) so a project can be picked entirely by keyboard.
+    Builds on #83.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
+85. **Keyboard tab/subwindow management (split, detach, move).** Drive the whole
+    Group D.11 tiling layout from the keyboard with no mouse: split the focused
+    subwindow horizontally/vertically into a new tab group, move the focused tab
+    into an adjacent subwindow (or a fresh split), detach the focused subwindow
+    into its own OS window (the #42 pop-out gesture, keyboard-triggered), and
+    re-dock it — all via shortcuts. Builds on #62 and #42 (detached subwindows).
+    *Files: `src/stores/tabs.ts` (split/move on `layoutByScope`),
+    `src/components/tabs/Subwindow.tsx`/`TabBar.tsx`,
+    `src/stores/detached.ts` + `src/components/layout/DetachedApp.tsx`,
+    `src/App.tsx` (global key handlers).*
+    - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
 ---
@@ -1181,12 +1610,13 @@ auth) and the local/remote git push axis (#21).*
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
-60. **Reset browser download path to `~/Downloads`.** Stop redirecting browser
-    downloads into the active project for now — keep the standard browser download
-    path at the user's `~/Downloads`. Routing a download into a project is a
-    security risk if the file is then pushed with the project's git.
-    - [ ] 🤖 Automated test
-    - [ ] 🖐️ Manual test
+60. **Never manipulate the browser download path. (DONE — removed.)** Eldrun must
+    not touch any browser's download directory. The `commands/downloads.rs` module
+    that edited Firefox `prefs.js` / Chromium `Preferences` was removed entirely
+    (file, `mod` decl, and handler registration). Routing a download into a project
+    is a security risk if the file is then pushed with the project's git, and even
+    the "reset to `~/Downloads`" path still wrote into browser config — so we leave
+    browser download settings fully alone.
 
 ---
 
@@ -1337,6 +1767,66 @@ unchanged; the new agents are additive.
 
 ---
 
+## Group T — Smart / Native Shell Terminal (new feature, research done)
+
+*Files (future): `src/components/terminal/TerminalView.tsx`,
+`src-tauri/src/terminal/mod.rs`, `src-tauri/src/commands/ollama.rs`
+(new shell-completion command, distinct from existing `complete_text`).*
+
+- [ ] **Live incremental history-search overlay.** Auto-triggered
+  type-to-filter dropdown over the terminal (reuse the `createPortal`
+  overlay pattern from `FileTree.tsx`) instead of manual Ctrl+R; replays
+  shell history and injects the chosen line via the existing `pty_write`
+  path. No shell integration required.
+- [ ] **Local-model shell-command autocomplete overlay.** New Ollama-backed
+  completion command scoped to shell commands/history (separate from the
+  existing code-file `complete_text`), surfaced as an overlay a user can
+  accept into the PTY.
+- [ ] **Terminal font settings.** Font family/size is currently hardcoded
+  (`TerminalView.tsx`); only color scheme is configurable today. Add a
+  settings UI control.
+- [ ] ⛔ **Ghost-text autosuggestion + de-duplicated path display —
+  blocked pending design.** Requires the shell to emit OSC 133/7 semantic
+  prompt marks, which bash/zsh don't do by default; would need an
+  **opt-in, user-installed** shell-integration snippet (never an automatic
+  rc edit — violates the "no foreign app paths" policy). Needs a decision
+  on the opt-in install UX before scoping further (see prior art: Warp,
+  iTerm2, VS Code shell integration installers).
+
+---
+
+## Group P — Git Hosting: Multi-Host Publishing (new feature)
+*Builds on Group D.10 (#22 publish flow). Files: `src-tauri/src/commands/github.rs`
+(`github_publish`, currently GitHub/`gh`-only), `git_hosting` creds, `ProjectPill.tsx`
+(the "Publish to GitHub…" menu entry + Publish window + per-project "Git hosting…"
+override), `src/stores/projects.ts` (`publishProject`), settings git-hosting
+profile (URL + token). Today publishing is hardcoded to the GitHub `gh` CLI
+(`gh repo create … --source=. --push`); there is no GitLab or generic remote path.*
+
+79. **Publish to GitLab and to a generic remote.** Generalize the GitHub-only
+    publish flow so a project can be connected to other hosts:
+    - **GitLab support.** Add a GitLab publish path (via the `glab` CLI mirroring
+      the `gh` approach, or the GitLab REST API + token from the git-hosting
+      profile) that creates the project repo and pushes. Pick the host from the
+      git-hosting profile rather than assuming GitHub.
+    - **Generic remote URL.** Add a "set remote URL" path for self-hosted /
+      arbitrary hosts: `git remote add origin <url>` + `git push -u origin
+      <branch>`, no host CLI required — for users who already created the empty
+      remote repo themselves.
+    - **UI.** Rename the pill's "Publish to GitHub…" entry to a host-agnostic
+      "Publish…"/"Connect remote…" that offers GitHub / GitLab / custom URL,
+      reusing the existing visibility picker and per-project git-hosting override.
+    - **Backend.** Decouple `github_publish` from `gh`: dispatch on a host enum,
+      keep the SSH-work-remote case (run the host CLI where the bytes live), and
+      keep recording `git_type = remote-<visibility>` on success.
+    - [ ] 🤖 Automated test — host-dispatch + argv-escaping unit tests per host
+      (mirroring `commands/github.rs` `shell_quote` tests); full publish flow stays manual.
+    - [ ] 🖐️ Manual test — publish a local project to GitLab and to a custom
+      remote URL; confirm the repo is created/pushed and `git_type` flips to
+      `remote-<visibility>`.
+
+---
+
 Sequencing is **group-wise** — tackle whole groups in this order, since items
 within a group share files and context:
 
@@ -1361,6 +1851,8 @@ within a group share files and context:
   `ollama launch` family (Claude Code, Hermes, OpenClaw, OpenCode); do the
   registry + backend argv (#72–#74) first, then the picker (#75) and per-agent
   verification (#76). Blocked at runtime until the local Ollama runner is fixed.
+- **Git hosting:** P (#79) — multi-host publishing (GitLab + generic remote URL)
+  on top of the done GitHub-only flow (D.10 #22); self-contained, pickable anytime.
 - **Cross-platform (parallel track):** H (Windows #30 / macOS #31 follow-ups) —
   validate builds & packaging per OS; can proceed alongside the above.
 - **Backend runtime (ongoing):** I (#32) — backend-owned runtime hardening
@@ -1743,6 +2235,24 @@ skip-scaffold checkbox), `ProjectPill.tsx` (Publish window + menu),
       public → `gh repo create` runs and `git_type` flips to `remote-public` in
       both json files; for an SSH project the command runs over `ssh` on the host.
     - [x] 🤖 Automated test — *partial:* `commands/github.rs` shell_quote unit tests (argv escaping only; full gh/ssh publish flow is manual)
+    - [ ] 🖐️ Manual test
+
+23. ✅ **GitLab support alongside GitHub.** `commands/github.rs` renamed to
+    `commands/git_publish.rs`; `github_publish` generalized to
+    `publish_project(project_id, provider, visibility)` with a `Provider`
+    enum (`github`→`gh`, `gitlab`→`glab`). GitHub keeps `gh repo create …
+    --source=. --remote=origin --push`; GitLab runs `glab repo create …
+    --remoteName origin` then an explicit token-authenticated `git push -u origin
+    HEAD` (glab has no `--source/--push`), reusing the inline credential-helper
+    pattern (`oauth2` username, `GITLAB_TOKEN` for the CLI). Provider recorded in a
+    new `Project.git_provider` field (mirrored into `projects.json`). Publish
+    window gained a provider picker; pill label + menu, settings/hosting
+    placeholders, lessons, README and DOCUMENTATION updated. **Runtime QA pending**
+    (needs `glab` installed + authenticated; agents can't launch Eldrun).
+    - *Test (e.g.):* on a local project, Publish → GitLab → private runs `glab repo
+      create … --private --remoteName origin` then `git push`, and `git_type` flips
+      to `remote-private` with `git_provider: "gitlab"` in both json files.
+    - [x] 🤖 Automated test — `commands/git_publish.rs` provider-parse + remote-script unit tests (argv only; full glab/ssh flow is manual)
     - [ ] 🖐️ Manual test
 
 ---

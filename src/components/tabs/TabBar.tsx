@@ -1,9 +1,14 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
+  BLOB_TAB_CMD,
   FILES_TAB_CMD,
+  NETWORK_TAB_CMD,
+  effectiveTabLocation,
+  isLocatableKind,
+  isPtyTabKind,
   useTabsStore,
   useGroup,
   useGroupTabs,
@@ -16,9 +21,12 @@ import { useDetachAnimStore, flyVector } from "../../stores/detachAnim";
 import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
+import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
+import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
+import { useFileSourcesStore } from "../../stores/fileSources";
 import { OrbitSpinner } from "../common/OrbitSpinner";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
@@ -55,6 +63,8 @@ const TAB_ACCENT: Record<TabKind, string> = {
   shell: "var(--success)",
   files: "#888",
   embed: "var(--info, #4aa3df)",
+  projects3d: "var(--accent-secondary)",
+  network: "var(--info, #4aa3df)",
 };
 
 interface StaticMenuItem {
@@ -93,7 +103,10 @@ const AGENT_ITEMS: StaticMenuItem[] = [
 ];
 
 const SHELL_ITEMS: StaticMenuItem[] = [
-  { label: "Shell", cmd: "bash",          kind: "shell" },
+  // Empty cmd → backend `default_shell()` picks the OS-appropriate shell
+  // (cmd.exe on Windows, zsh on macOS, bash on Linux). Hardcoding "bash" here
+  // fails to spawn on Windows where bash isn't on PATH.
+  { label: "Shell", cmd: "",              kind: "shell" },
   { label: "Files", cmd: FILES_TAB_CMD,   kind: "files" },
 ];
 
@@ -115,13 +128,27 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // a single boolean rather than the full tab array so it doesn't widen the bar's
   // subscription back out to every tab.
   const hasAnyTabs = useTabsStore((s) => s.tabs.length > 0);
+  // The 3D project-blob tab is a root-scope feature, offered only once at least
+  // one project exists (it has nothing to show otherwise).
+  const scope = useTabsStore((s) => s.scope);
+  const hasProjects = useProjectsStore((s) => s.projects.length > 0);
+  const showBlobItem = scope === "root" && hasProjects;
   const focusGroup = useTabsStore((s) => s.focusGroup);
   const setGroupActive = useTabsStore((s) => s.setGroupActive);
   const renameTab = useTabsStore((s) => s.renameTab);
   const addTab = useTabsStore((s) => s.addTab);
   const ensureTab = useTabsStore((s) => s.ensureTab);
   const removeTab = useTabsStore((s) => s.removeTab);
+  const setTabLocation = useTabsStore((s) => s.setTabLocation);
   const closeGroup = useTabsStore((s) => s.closeGroup);
+  // SSH-sync Phase 0: the local/remote locality toggle is only meaningful for a
+  // remote (SSH) project's agent/shell tabs. Subscribe to a single boolean so a
+  // project edit elsewhere doesn't re-render every bar.
+  const isRemoteScope = useProjectsStore((s) => !!s.projects.find((p) => p.id === scope)?.remote);
+  // Per-tab file source (remote-native vs local mirror), published by the file
+  // viewers. Lets the Remote/Local badge ride on the viewer tab itself rather
+  // than costing a whole viewer header row. Only meaningful on remote projects.
+  const fileSources = useFileSourcesStore((s) => s.byTab);
   const closeAllTabs = useTabsStore((s) => s.closeAllTabs);
   const detachGroup = useTabsStore((s) => s.detachGroup);
   const detachTab = useTabsStore((s) => s.detachTab);
@@ -157,10 +184,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // #56: a right-click on a tab enters inline rename mode for that key (no menu,
   // no prompt dialog). The label becomes a focused, text-selected <input>.
   const [editingKey, setEditingKey] = useState<string | null>(null);
-  // The single active local (Ollama) model, set in the global app bar's Local
-  // Model picker. The add menu offers ONE "Local Model" entry that launches it,
-  // rather than listing every installed model.
-  const localModel = useSettingsStore((s) => s.settings?.ollama_model);
+  // The local (Ollama) model a "Local Model" tab launches: the model tagged for
+  // the "tabs" task in the 🧠 menu, falling back to the default `ollama_model`.
+  // The add menu offers ONE "Local Model" entry that launches it, rather than
+  // listing every installed model.
+  const localModel = useSettingsStore(
+    (s) => s.settings?.ollama_roles?.tabs ?? s.settings?.ollama_model,
+  );
   // Coding agents that can drive the active local model besides Mistral/vibe —
   // Claude Code, Codex, OpenCode, Droid via `ollama launch` (or a direct
   // fallback). Loaded once; only the currently-available ones are offered.
@@ -171,6 +201,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     invoke<{ id: string; label: string; available: boolean }[]>("list_local_drivers")
       .then(setLocalDrivers)
       .catch(() => {});
+  }, []);
+  // Installed agent CLIs (by id == cmd). The add menu only offers agents whose
+  // binary is actually present, so it never lists ones the user can't launch.
+  // `null` until the probe resolves; render nothing until then to avoid a flash
+  // of the full list. Loaded once.
+  const [installedAgents, setInstalledAgents] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    invoke<{ id: string; installed: boolean }[]>("list_agents")
+      .then((list) =>
+        setInstalledAgents(new Set(list.filter((a) => a.installed).map((a) => a.id))),
+      )
+      .catch(() => setInstalledAgents(new Set()));
   }, []);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
@@ -248,6 +290,28 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     };
   }, [menuOpen]);
 
+  // Keep the add menu inside the viewport. It's positioned at the +'s left/bottom
+  // and grows rightward/downward, so a + near the right (or bottom) edge would push
+  // the menu past the window border and clip it off-screen. Once it's mounted we can
+  // measure its real size and shift it back in. Guarded so the corrective setMenuPos
+  // doesn't loop (it re-runs, finds nothing to fix, stops).
+  useLayoutEffect(() => {
+    if (!menuOpen || !menuPos) return;
+    const el = addMenuRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
+    let nx = menuPos.x;
+    let ny = menuPos.y;
+    if (rect.right > window.innerWidth - margin) {
+      nx = Math.max(margin, window.innerWidth - margin - rect.width);
+    }
+    if (rect.bottom > window.innerHeight - margin) {
+      ny = Math.max(margin, window.innerHeight - margin - rect.height);
+    }
+    if (nx !== menuPos.x || ny !== menuPos.y) setMenuPos({ x: nx, y: ny });
+  }, [menuOpen, menuPos]);
+
   // Drop inline-rename mode if the edited tab disappears (closed / moved away).
   useEffect(() => {
     if (editingKey && !tabs.some((t) => t.key === editingKey)) {
@@ -302,6 +366,27 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       ...(tracked && sessionId ? { ELDRUN_TAB_UID: sessionId } : {}),
     };
     addTab({ label: item.label, cmd: item.cmd, args, env, cwd: projectCwd, kind: item.kind, initialInput, sessionId });
+    setMenuPos(null);
+  }
+
+  function handleAddNetwork() {
+    focusGroup(groupId);
+    addTab({
+      label: "Network Traffic",
+      cmd: NETWORK_TAB_CMD,
+      cwd: projectCwd,
+      kind: "network",
+    });
+    setMenuPos(null);
+  }
+
+  // Open (or focus, if already open) the 3D project-blob tab in this group.
+  function handleAddBlob() {
+    focusGroup(groupId);
+    ensureTab(
+      { label: "Projects", cmd: BLOB_TAB_CMD, cwd: projectCwd, kind: "projects3d" },
+      (tab) => tab.kind === "projects3d",
+    );
     setMenuPos(null);
   }
 
@@ -373,6 +458,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // HTML5 native DnD is unreliable on WebKitGTK, so we drive the whole drag from
   // plain window listeners. CenterPanel owns the drop authority (its pointerup
   // commits + ends); this handler only seeds the drag and handles the click case.
+  //
+  // Cross-window position is POLL-DRIVEN: `startCursorPoll` reports the OS cursor
+  // in physical desktop px (the only DPI-correct, cross-engine source — DOM
+  // `screenX/Y` units diverge across WebKitGTK/WebView2/WKWebView). The in-window
+  // ghost + the "outside this window" test stay on DOM `clientX/clientY` (reliable
+  // CSS px on every engine). The terminal release is centralized through
+  // `bindDragRelease`, which applies the engine-correct cancel-vs-commit policy.
   function onTabPointerDown(
     e: React.PointerEvent,
     tab: (typeof tabs)[number],
@@ -387,14 +479,29 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     e.preventDefault();
     const startX = e.clientX;
     const startY = e.clientY;
+    const pointerId = e.pointerId;
+    // Capture on the document root, NOT the dragged tab. When this tab is the
+    // lone tab of its subwindow, CenterPanel collapses that subwindow LIVE the
+    // moment the drag starts — which unmounts this tab's DOM node. Removing the
+    // pointer-capture *target* mid-gesture drops the capture (and on Chromium/
+    // WebView2 can fire a spurious pointercancel → abort). The root never
+    // unmounts, so the capture — which on Win/mac is what keeps the terminal
+    // pointerup landing on this window once the cursor leaves it — survives.
+    const captureEl = document.documentElement;
     let dragging = false;
 
     // #42 (main → detached): an open popout of the current scope is a valid drop
     // target — releasing the dragged tab over one docks it there instead of
-    // spawning a new window. The shared session resolves each popout's on-screen
-    // bounds (async), hit-tests the cursor against them, and toggles the popout's
-    // drop-target highlight — the SAME logic the file drag uses (FileTree).
+    // spawning a new window. The shared session resolves each popout's physical-px
+    // frame (async), hit-tests the physical cursor against them, and toggles the
+    // popout's drop-target highlight — the SAME logic the file drag uses (FileTree).
     const detached = startDetachedDropSession();
+
+    // Latest in-window client coords (ghost + "outside this window" test) and the
+    // latest physical desktop cursor (cross-window hit-test, poll-driven).
+    let lastClient = { x: startX, y: startY };
+    let lastPhys: PhysPoint | null = null;
+    let stopPoll: (() => void) | null = null;
 
     const onMove = (ev: PointerEvent) => {
       if (!dragging) {
@@ -439,19 +546,46 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         });
         // Begin resolving popout drop targets now that a real drag is underway.
         void detached.resolve();
+        // Capture the terminal pointer event on engines that don't keep delivering
+        // it past the source window's HWND (Win/mac); WebKitGTK keeps the implicit
+        // grab, so capturing there is unnecessary (and the flag leaves it off).
+        if (dragPlatform.needsPointerCapture) {
+          try {
+            captureEl.setPointerCapture(pointerId);
+          } catch {
+            /* capture is best-effort; the OS-cursor poll does not depend on it */
+          }
+        }
+        // Poll the OS cursor (physical desktop px) to drive the popout hover past
+        // the main viewport — DOM pointermove may not cross the OS window boundary.
+        stopPoll = startCursorPoll((p) => {
+          lastPhys = p;
+          detached.hover(detached.at(p), p, tab.label);
+        });
       }
+      lastClient = { x: ev.clientX, y: ev.clientY };
       useDragStore.getState().move(ev.clientX, ev.clientY);
-      // Drive the drop preview in the popout under the cursor (if any) — it
-      // resolves the pane and renders the per-pane preview. screenX/Y stay valid
-      // past the main viewport thanks to the pointer's implicit grab.
-      detached.hover(detached.at(ev.screenX, ev.screenY), ev.screenX, ev.screenY, tab.label);
     };
-    const onUp = (ev: PointerEvent) => {
+
+    // Tear down the move listener, poll, popout highlight, and pointer capture —
+    // however the gesture resolves.
+    const cleanup = () => {
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      // Clear the popout highlight + tear down the panes listener, however this
-      // release resolves. `targetAt` still hit-tests the cached pane geometry.
+      stopPoll?.();
+      // Clear the popout highlight + tear down the panes listener. `targetAt`
+      // still hit-tests the cached pane geometry for the commit below.
       detached.dispose();
+      if (dragPlatform.needsPointerCapture) {
+        try {
+          captureEl.releasePointerCapture(pointerId);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
+    const onCommit = async (shiftKey: boolean) => {
+      cleanup();
       if (!dragging) {
         // Never dragged → this was a click: activate the tab.
         setGroupActive(groupId, tab.key);
@@ -463,35 +597,52 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       // that was just integrated).
       const d = useDragStore.getState().drag;
       if (!d) return;
+      // Claim ownership of the gesture SYNCHRONOUSLY, before the `await` below.
+      // On Chromium/WebView2 (Windows) CenterPanel's window listeners DO see the
+      // terminal pointer event and run their own `finish()` synchronously — which,
+      // if the store were still populated during our await, would commit/end the
+      // drag first and swallow the outside-detach / popout-dock decisions made
+      // here. Emptying the store now makes that racing handler bail (its `d` is
+      // null); we proceed using the local `d` snapshot captured above. (On
+      // WebKitGTK only this handler ever fires, so clearing early is a harmless
+      // no-op there. The later `end()` calls become redundant no-ops.)
+      useDragStore.getState().end();
+      // Final physical cursor at release (a fresh read; falls back to the last poll
+      // reading if the IPC fails). Mirrors FileTree: the last poll tick can be up to
+      // ~16 ms stale — or `null` if released before the first tick — which would
+      // otherwise spawn the new window at the (−80,−8) corner.
+      const phys = (await desktopCursor().catch(() => null)) ?? lastPhys;
       // Pop the dragged tab into its own standalone OS window at the cursor,
       // mirroring the bar-drag detach (onBarPointerDown). Reused by the Shift
-      // override and the free-space (outside-the-window) release below.
+      // override and the free-space (outside-the-window) release below. The new
+      // window's bounds feed Rust `.position(x,y)`, which is PHYSICAL — so place it
+      // at the physical cursor (the last poll reading), not DOM screen coords.
       const popToNewWindow = () => {
         const bounds = {
-          x: Math.round(ev.screenX - 80),
-          y: Math.round(ev.screenY - 8),
+          x: Math.round((phys?.x ?? 0) - 80),
+          y: Math.round((phys?.y ?? 0) - 8),
           w: 900,
           h: 640,
         };
         // Send-off animation toward the edge the tab exited through, before the
         // drag state (and its ghost) tears down.
-        playDetachFlyOut(ev.clientX, ev.clientY, tab.label, d.previewW, d.previewH);
+        playDetachFlyOut(lastClient.x, lastClient.y, tab.label, d.previewW, d.previewH);
         detachTab(tab.key, bounds);
         useDragStore.getState().end();
       };
       // Shift ALWAYS pops a new window — overriding both docking into a popout and
       // integrating into a background subwindow. (May spawn the new window over a
       // popout the cursor happens to be on; that's the intended "always new".)
-      if (ev.shiftKey) {
+      if (shiftKey) {
         popToNewWindow();
         return;
       }
       // #42: released over an existing popout → dock the tab straight into it (no
-      // new window). Re-hit-test at the release coords so it reflects exactly
+      // new window). Hit-tested at the final physical cursor so it reflects exactly
       // where the cursor ended. The popout's panes attach-only to PTYs the main
       // keeps mounted, so the tab's terminal survives the move.
-      const overDetached = detached.at(ev.screenX, ev.screenY);
-      if (overDetached) {
+      const overDetached = phys ? detached.at(phys) : null;
+      if (overDetached && phys) {
         // Dock into the SPECIFIC pane under the cursor (a body edge splits, a bar
         // merges) — resolved synchronously at the release coords, so no stale
         // cross-window cache and never always-the-first-pane.
@@ -501,48 +652,56 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             overDetached.scope,
             overDetached.groupId,
             tab.key,
-            detached.targetAt(overDetached, ev.screenX, ev.screenY),
+            detached.targetAt(overDetached, phys),
           );
         // Re-seed the popout so it renders the newly-docked tab, tagged so it
         // plays the drop-in landing for this cross-window merge (mirrors the
         // dock-BACK re-seed in CenterPanel's DETACHED_DRAG_END handler).
         reseedDetached(overDetached.scope, overDetached.groupId, tab.key);
         // Send-off animation toward the edge the tab exited through.
-        playDetachFlyOut(ev.clientX, ev.clientY, tab.label, d.previewW, d.previewH);
+        playDetachFlyOut(lastClient.x, lastClient.y, tab.label, d.previewW, d.previewH);
         useDragStore.getState().end();
         return;
       }
       // Released in FREE SPACE — outside the main window and not over a popout, so
       // no Eldrun window is under the cursor (e.g. dragged onto the desktop or
-      // another monitor). Pop this tab into its own standalone OS window. The
-      // pointer's implicit capture keeps delivering coords beyond the viewport, so
-      // client coords falling outside [0,inner) is the outside-the-window signal.
+      // another monitor). Pop this tab into its own standalone OS window. Client
+      // coords falling outside [0,inner) is the outside-the-window signal (DOM
+      // clientX/Y is reliable CSS px on every engine).
       const outside =
-        ev.clientX < 0 ||
-        ev.clientY < 0 ||
-        ev.clientX >= window.innerWidth ||
-        ev.clientY >= window.innerHeight;
+        lastClient.x < 0 ||
+        lastClient.y < 0 ||
+        lastClient.x >= window.innerWidth ||
+        lastClient.y >= window.innerHeight;
       if (outside) {
         popToNewWindow();
         return;
       }
       // Released over THIS main window without Shift → integrate into the
-      // background subwindow under the cursor. This handler is bound inside the
-      // pointerdown handler — i.e. before the gesture's implicit pointer capture
-      // begins — so on WebKitGTK it is the ONLY release handler that reliably
-      // fires. CenterPanel's window listeners are added mid-gesture (after the
-      // `start()` → React re-render) and, on WebKitGTK, receive pointermove but
-      // never the terminal pointerup, so they cannot be the committer. The
-      // target was already resolved into the drag store by CenterPanel's
-      // pointermove handler during the drag, so commit it verbatim. A null target
-      // (chrome / split divider) is a no-op — the tab stays put. If CenterPanel's
-      // pointerup DID fire first (other platforms), it already committed + ended,
-      // so the top-of-handler guard already returned — no double-commit.
+      // background subwindow under the cursor. `bindDragRelease` binds the terminal
+      // listeners synchronously at pointerdown — i.e. before the gesture's pointer
+      // capture begins — so on WebKitGTK it is the ONLY release handler that
+      // reliably fires. CenterPanel's window listeners are added mid-gesture (after
+      // the `start()` → React re-render) and, on WebKitGTK, receive pointermove but
+      // never the terminal pointerup, so they cannot be the committer. The target
+      // was already resolved into the drag store by CenterPanel's pointermove
+      // handler during the drag, so commit it verbatim. A null target (chrome /
+      // split divider) is a no-op — the tab stays put. If CenterPanel's pointerup
+      // DID fire first (other platforms), it already committed + ended, so the
+      // top-of-handler guard already returned — no double-commit.
       commitDrop(d);
       useDragStore.getState().end();
     };
+
+    // Escape / blur / a genuine pointercancel (Win/mac) aborts: tear down and drop
+    // any in-flight drag without committing.
+    const onAbort = () => {
+      cleanup();
+      if (dragging) useDragStore.getState().end();
+    };
+
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    bindDragRelease({ onCommit: (shiftKey) => void onCommit(shiftKey), onAbort });
   }
 
   // #42: grab the subwindow's top frame (the empty tab-bar area) and drag it out
@@ -571,22 +730,30 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 8) return;
       detaching = true;
       cleanup();
+      const clientX = ev.clientX;
+      const clientY = ev.clientY;
+      const activeLabel = tabs.find((t) => t.key === activeKey)?.label;
       // Spawn the popout under the cursor (offset so the grab point lands on its
       // top frame), then hand the move to the WM via startDragging — the still-
-      // pressed pointer drives a native window move until release.
-      const bounds = {
-        x: Math.round(ev.screenX - 80),
-        y: Math.round(ev.screenY - 8),
-        w: 900,
-        h: 640,
-      };
-      const label = detachGroup(groupId, { bounds });
-      if (!label) return; // lone group can't detach — abort quietly.
-      // Send-off animation at the grab point, flying toward the exit edge.
-      const activeLabel = tabs.find((t) => t.key === activeKey)?.label;
-      playDetachFlyOut(ev.clientX, ev.clientY, activeLabel ?? "Subwindow");
-      WebviewWindow.getByLabel(label)
-        .then((w) => w?.startDragging())
+      // pressed pointer drives a native window move until release. The bounds feed
+      // Rust `.position(x,y)` (PHYSICAL), so read the OS cursor in physical px
+      // (desktopCursor) rather than DOM screenX/Y, whose units diverge under DPI.
+      void desktopCursor()
+        .then((p) => {
+          const bounds = {
+            x: Math.round(p.x - 80),
+            y: Math.round(p.y - 8),
+            w: 900,
+            h: 640,
+          };
+          const label = detachGroup(groupId, { bounds });
+          if (!label) return; // lone group can't detach — abort quietly.
+          // Send-off animation at the grab point, flying toward the exit edge.
+          playDetachFlyOut(clientX, clientY, activeLabel ?? "Subwindow");
+          WebviewWindow.getByLabel(label)
+            .then((w) => w?.startDragging())
+            .catch(() => {});
+        })
         .catch(() => {});
     };
     const onUp = () => cleanup();
@@ -627,11 +794,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         // The placeholder slot previewing where the dragged tab will land — shown
         // immediately before the tab occupying the resolved insertion index.
         const showMarkerBefore = isDropTarget && reorderIndex === index;
-        // Files tabs have no PTY, so they never register output activity.
-        const working = tab.kind !== "files" && !!busyByTab[tab.key];
-        const style: React.CSSProperties = isActive
-          ? { boxShadow: `inset 0 3px 0 ${TAB_ACCENT[tab.kind]}` }
-          : {};
+        // Only PTY-backed tabs can register terminal output activity.
+        const working = isPtyTabKind(tab.kind) && !!busyByTab[tab.key];
+        // Expose the kind colour to CSS instead of setting box-shadow inline:
+        // plain themes draw the active rail above, while fancy themes move it
+        // below without losing the per-kind colour.
+        const style = isActive
+          ? ({ "--tab-accent": TAB_ACCENT[tab.kind] } as React.CSSProperties)
+          : undefined;
         // Agent tabs launched with a deterministic session id show it on hover.
         // This is the launch id (`--session-id <uuid>`): stable and unique per
         // tab. It does NOT follow a `/clear` (which rolls onto a new id) — that
@@ -698,6 +868,48 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             ) : (
               <span className="tab-label">{tab.label}</span>
             )}
+            {/* Viewer file-source badge — remote-native (host SFTP) vs local
+                mirror — published by FileViewerPane. Rides on the tab so it
+                costs no viewer header row; absent for local projects/tabs. */}
+            {(() => {
+              const src = fileSources[tab.key];
+              if (src !== "remote" && src !== "local") return null;
+              return (
+                <span
+                  className={`tab-source ${src}`}
+                  title={
+                    src === "remote"
+                      ? "Remote-native: read directly from the host over SFTP (no local copy)."
+                      : "Local mirror: read from this project's local synced copy of the host file."
+                  }
+                >
+                  {src === "remote" ? "☁" : "⌂"}
+                </span>
+              );
+            })()}
+            {/* SSH-sync Phase 0: local/remote locality badge — click to toggle
+                whether this agent/shell tab runs in the local mirror or on the
+                host. Only shown for a remote project's locatable tabs. */}
+            {isRemoteScope && isLocatableKind(tab.kind) && (() => {
+              const loc = effectiveTabLocation(tab);
+              return (
+                <button
+                  className={`tab-locality ${loc}`}
+                  title={
+                    loc === "local"
+                      ? "Runs locally in the project mirror — click to run on the host"
+                      : "Runs on the host over SSH — click to run locally in the mirror"
+                  }
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTabLocation(tab.key, loc === "local" ? "remote" : "local");
+                  }}
+                >
+                  {loc === "local" ? "⌂" : "☁"}
+                </button>
+              );
+            })()}
             <button
               className="tab-close"
               onClick={(e) => { e.stopPropagation(); removeTab(tab.key); }}
@@ -713,6 +925,19 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       {isDropTarget && reorderIndex === tabs.length && tabs.length > 0 && (
         <Fragment key="drop-marker-end">{dropPlaceholder}</Fragment>
       )}
+      <div className="tab-new-wrap">
+        <button
+          ref={addBtnRef}
+          // When this group has no tabs, the + is the only way to get started —
+          // pulse it to draw the eye to it.
+          className={`tab-new-btn${tabs.length === 0 ? " empty-hint" : ""}`}
+          data-hint-anchor="tab-add"
+          title="New tab"
+          onClick={openAddMenu}
+        >
+          +
+        </button>
+      </div>
       </div>
       {canScrollRight && (
         <button
@@ -724,16 +949,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           ›
         </button>
       )}
-      <div className="tab-new-wrap">
-        <button
-          ref={addBtnRef}
-          className="tab-new-btn"
-          title="New tab"
-          onClick={openAddMenu}
-        >
-          +
-        </button>
-      </div>
       {showGroupClose && (
         <button
           className="subwindow-close"
@@ -755,7 +970,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           style={{ position: "fixed", left: menuPos.x, top: menuPos.y }}
         >
           <div className="tab-new-menu-group-label">Agents</div>
-          {AGENT_ITEMS.map((item) => (
+          {AGENT_ITEMS.filter((item) => installedAgents?.has(item.cmd)).map((item) => (
             <button
               key={item.cmd}
               className="tab-new-menu-item"
@@ -770,29 +985,45 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             {localModel ? `Local Model · ${localModel}` : "Local Model"}
           </div>
           {localModel ? (
-            <>
-              {/* Mistral/vibe keeps its bespoke per-model VIBE_HOME path. */}
-              <button
-                className="tab-new-menu-item"
-                onClick={() => handleOllamaModel(localModel)}
-              >
-                <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
-                Mistral
-              </button>
-              {/* Other agents drive the same model via `ollama launch` / fallback. */}
-              {localDrivers
-                .filter((d) => d.available)
-                .map((d) => (
-                  <button
-                    key={d.id}
-                    className="tab-new-menu-item"
-                    onClick={() => handleLocalLaunch(d.id, d.label, localModel)}
-                  >
-                    <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
-                    {d.label}
-                  </button>
-                ))}
-            </>
+            (() => {
+              // Only offer agents whose binary is actually installed: Mistral/vibe
+              // (checked against `installedAgents`) and the drivers the backend
+              // already marks `available` (which now includes an installed check).
+              const vibeInstalled = installedAgents?.has("vibe") ?? false;
+              const drivers = localDrivers.filter((d) => d.available);
+              if (!vibeInstalled && drivers.length === 0) {
+                return (
+                  <div className="tab-new-menu-hint">
+                    No local agent installed — install one in the 🧠 menu
+                  </div>
+                );
+              }
+              return (
+                <>
+                  {/* Mistral/vibe keeps its bespoke per-model VIBE_HOME path. */}
+                  {vibeInstalled && (
+                    <button
+                      className="tab-new-menu-item"
+                      onClick={() => handleOllamaModel(localModel)}
+                    >
+                      <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
+                      Mistral
+                    </button>
+                  )}
+                  {/* Other agents drive the same model via `ollama launch` / fallback. */}
+                  {drivers.map((d) => (
+                    <button
+                      key={d.id}
+                      className="tab-new-menu-item"
+                      onClick={() => handleLocalLaunch(d.id, d.label, localModel)}
+                    >
+                      <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
+                      {d.label}
+                    </button>
+                  ))}
+                </>
+              );
+            })()
           ) : (
             <div className="tab-new-menu-hint">No local model set — pick one in the app bar</div>
           )}
@@ -821,6 +1052,31 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
               {item.label}
             </button>
           ))}
+
+          {scope !== "root" && (
+            <>
+              <div className="tab-new-menu-group-label">Monitoring</div>
+              <button className="tab-new-menu-item" onClick={handleAddNetwork}>
+                <span
+                  className="tab-new-menu-dot"
+                  style={{ color: TAB_ACCENT.network }}
+                >
+                  ●
+                </span>
+                Network Traffic
+              </button>
+            </>
+          )}
+
+          {showBlobItem && (
+            <>
+              <div className="tab-new-menu-group-label">Workspace</div>
+              <button className="tab-new-menu-item" onClick={handleAddBlob}>
+                <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["projects3d"] }}>◍</span>
+                Projects (3D)
+              </button>
+            </>
+          )}
 
           <div className="tab-new-menu-group-label">Project</div>
           <button

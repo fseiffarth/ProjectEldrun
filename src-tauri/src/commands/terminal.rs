@@ -38,6 +38,20 @@ pub async fn pty_spawn(
         opts.cwd = root_dir.to_string_lossy().into_owned();
     }
 
+    // SSH-sync Phase 1: a LOCAL-running tab on a REMOTE project runs in the
+    // project's local mirror — it can't reach the remote tree. Resolve the cwd to
+    // the mirror here (authoritative, OS-correct path) and ensure it exists, so a
+    // local agent/shell tab spawns in the synced twin rather than a stale cwd.
+    if opts.local_only {
+        if let Some(pid) = opts.project_id.clone() {
+            if crate::services::remote::remote_target_for(&pid).is_some() {
+                let mirror = crate::services::remote_sync::mirror_dir(&pid);
+                let _ = std::fs::create_dir_all(&mirror);
+                opts.cwd = mirror.to_string_lossy().into_owned();
+            }
+        }
+    }
+
     // Resolve agent-session resume args (Claude `--resume`, Codex `resume …`)
     // BEFORE any ssh wrapping. `wrap_pty_options` rewrites `opts.cmd` to "ssh",
     // after which the resolver (which dispatches on `cmd == "claude"|"codex"`)
@@ -120,41 +134,34 @@ pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<
 /// Live CPU usage (percent of a single core; may exceed 100 on multi-core work)
 /// for the processes rooted at the given PTYs and all their descendants.
 ///
-/// Samples `/proc` jiffies twice over a short interval. Linux-only; other
-/// platforms return 0.0 so the UI can simply hide the figure.
+/// Samples busy CPU ticks twice over a short interval via `sysstat` (Linux
+/// `/proc`, Windows `GetProcessTimes`). On backends that don't sample (other
+/// OSes) the ticks are always 0, so this returns 0.0 and the UI hides the figure.
 #[tauri::command]
 pub async fn project_cpu_percent(
     registry: State<'_, RegistryState>,
     pty_ids: Vec<String>,
 ) -> Result<f64, String> {
-    #[cfg(target_os = "linux")]
-    {
-        use crate::sysstat;
+    use crate::sysstat;
 
-        let roots: Vec<u32> = {
-            let reg = registry.lock().unwrap();
-            pty_ids.iter().filter_map(|id| reg.pid(id)).collect()
-        };
-        if roots.is_empty() {
-            return Ok(0.0);
-        }
-
-        // Resolve the process tree once, then sample its busy time across a
-        // fixed window. Newly spawned children mid-window simply contribute
-        // less; that is acceptable for a coarse live readout.
-        let pids = sysstat::descendant_pids(&roots);
-        let interval = std::time::Duration::from_millis(300);
-        let t0 = sysstat::sum_jiffies(&pids);
-        tokio::time::sleep(interval).await;
-        let t1 = sysstat::sum_jiffies(&pids);
-
-        let busy_secs = t1.saturating_sub(t0) as f64 / sysstat::clk_tck() as f64;
-        let pct = busy_secs / interval.as_secs_f64() * 100.0;
-        Ok((pct * 10.0).round() / 10.0)
+    let roots: Vec<u32> = {
+        let reg = registry.lock().unwrap();
+        pty_ids.iter().filter_map(|id| reg.pid(id)).collect()
+    };
+    if roots.is_empty() {
+        return Ok(0.0);
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (registry, pty_ids);
-        Ok(0.0)
-    }
+
+    // Resolve the process tree once, then sample its busy time across a fixed
+    // window. Newly spawned children mid-window simply contribute less; that is
+    // acceptable for a coarse live readout.
+    let pids = sysstat::descendant_pids(&roots);
+    let interval = std::time::Duration::from_millis(300);
+    let t0 = sysstat::sum_jiffies(&pids);
+    tokio::time::sleep(interval).await;
+    let t1 = sysstat::sum_jiffies(&pids);
+
+    let busy_secs = t1.saturating_sub(t0) as f64 / sysstat::clk_tck() as f64;
+    let pct = busy_secs / interval.as_secs_f64() * 100.0;
+    Ok((pct * 10.0).round() / 10.0)
 }

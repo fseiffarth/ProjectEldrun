@@ -4,15 +4,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileTree } from "../files/FileTree";
 import { GitHistory } from "../files/GitHistory";
+import { GitChangeTree, type ChangeScope } from "../files/GitChangeTree";
 import { SearchPanel } from "../files/SearchPanel";
 import { useProjectsStore } from "../../stores/projects";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useSyncStore, amberPaths } from "../../stores/sync";
+import { openLinkedFile } from "../embed/FileViewerPane";
+import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useWindowsStore } from "../../stores/windows";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore } from "../../stores/tabs";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
-import { resolveProjectDirectory } from "../../types";
+import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
 import { type SortKey, VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
+import { basename, dirname, fromFileUri } from "../../lib/paths";
 import type { ViewerPref } from "../../types";
 
 interface GitStatus {
@@ -26,12 +32,20 @@ interface GitStatus {
 interface Props {
   open: boolean;
   pinned?: boolean;
+  /** Current panel width in px (driven by the left-border resize drag). */
+  width?: number;
+  /** True while a resize drag is in progress — suppresses width/transform
+   *  transitions so the panel tracks the cursor instead of lagging behind. */
+  resizing?: boolean;
+  onResizeStart?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onResizeMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onResizeEnd?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onTogglePin?: () => void;
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
 }
 
-type View = "files" | "windows" | "git" | "search";
+type View = "files" | "windows" | "git" | "search" | "orange";
 type ProjectJson = Record<string, unknown>;
 
 const PANEL_HIDDEN_ENDINGS_KEY = "panel_hidden_endings";
@@ -73,18 +87,10 @@ function isExternalFileDrag(dt: DataTransfer): boolean {
   );
 }
 
-/** Convert one `file://` URI to an absolute local path (decoding `%20` etc.),
- *  dropping any `file://host/…` authority. */
+/** Convert one `file://` URI to an absolute local path (decoding `%20` etc.).
+ * Delegates to the shared OS-aware helper, including UNC authorities. */
 function fileUriToPath(uri: string): string | null {
-  if (!uri.startsWith("file://")) return null;
-  let rest = uri.slice("file://".length);
-  const slash = rest.indexOf("/");
-  if (slash > 0) rest = rest.slice(slash);
-  try {
-    return decodeURIComponent(rest);
-  } catch {
-    return rest;
-  }
+  return fromFileUri(uri);
 }
 
 /** Extract absolute local paths from an OS HTML5 file drop. WebKitGTK withholds
@@ -188,7 +194,18 @@ function BoxRootSection({
   );
 }
 
-export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLeave }: Props) {
+export function RightPanel({
+  open,
+  pinned,
+  width,
+  resizing,
+  onResizeStart,
+  onResizeMove,
+  onResizeEnd,
+  onTogglePin,
+  onMouseEnter,
+  onMouseLeave,
+}: Props) {
   const { projects, activeId } = useProjectsStore();
   const rightPanelFolderByProject = useProjectsStore((s) => s.rightPanelFolderByProject);
   const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
@@ -196,6 +213,9 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [view, setView] = useState<View>("files");
+  // SSH-sync Phase 1: which side of a remote project the files view shows — the
+  // host (remote, SFTP-listed, with the sync overlay) or the local mirror.
+  const [fileSource, setFileSource] = useState<"remote" | "local">("remote");
   const [dropActive, setDropActive] = useState(false);
   const [dropFlash, setDropFlash] = useState(false);
   const [conflict, setConflict] = useState<
@@ -214,28 +234,24 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
   const [settingsError, setSettingsError] = useState<string | null>(null);
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
-  const [gitFileList, setGitFileList] = useState<Record<string, string>>({});
   const [unpushedCommits, setUnpushedCommits] = useState<string[]>([]);
-  const [hoveredBtn, setHoveredBtn] = useState<"add" | "commit" | "push" | null>(null);
+  const [openTree, setOpenTree] = useState<"add" | "commit" | "push" | null>(null);
   const [commitMsg, setCommitMsg] = useState<string | null>(null);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitError, setGitError] = useState<string | null>(null);
   const commitRef = useRef<HTMLTextAreaElement>(null);
+  const actionBarRef = useRef<HTMLDivElement>(null);
   const refreshGitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Run all three git probes concurrently (Eff #9): they hit independent
-  // subprocesses, so `Promise.all` collapses three serially-awaited chains into
+  // Run both git probes concurrently (Eff #9): they hit independent
+  // subprocesses, so `Promise.all` collapses two serially-awaited chains into
   // one round of parallel work. Each result still applies independently.
   const runRefreshGit = (dir: string) => {
     void Promise.all([
       invoke<GitStatus>("git_status", { projectDir: dir }).catch(() => null),
-      invoke<Record<string, string>>("git_file_statuses", { projectDir: dir, relPath: "" }).catch(
-        () => ({}) as Record<string, string>,
-      ),
       invoke<string[]>("git_unpushed_commits", { projectDir: dir }).catch(() => [] as string[]),
-    ]).then(([status, files, unpushed]) => {
+    ]).then(([status, unpushed]) => {
       setGitStatus(status);
-      setGitFileList(files);
       setUnpushedCommits(unpushed);
       // Keep the active project's pill dot in sync from the data we just fetched
       // (no extra git subprocesses), so edits/commits/pushes reflect immediately
@@ -264,19 +280,63 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
     };
   }, []);
 
-  const hoverItems: string[] =
-    hoveredBtn === "add"
-      ? Object.entries(gitFileList).filter(([, s]) => s === "untracked" || s === "modified").map(([f]) => f)
-      : hoveredBtn === "commit"
-      ? Object.entries(gitFileList).filter(([, s]) => s === "staged").map(([f]) => f)
-      : hoveredBtn === "push"
-      ? unpushedCommits
-      : [];
+  // The change tree is click-opened and persistent; close it on Escape or a
+  // click anywhere outside the action bar (which contains both the toggles and
+  // the tree itself).
+  useEffect(() => {
+    if (!openTree) return;
+    const onDown = (e: MouseEvent) => {
+      if (!actionBarRef.current?.contains(e.target as Node)) setOpenTree(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenTree(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [openTree]);
+
+  const treeScope: ChangeScope | null =
+    openTree === "add" ? "unstaged" : openTree === "commit" ? "staged" : openTree === "push" ? "unpushed" : null;
 
   const activeProject = projects.find((p) => p.id === activeId);
   const projectDir = resolveProjectDirectory(activeProject);
   const localFile = activeProject?.local_file;
+  // Remote git/endings probes dispatch over SSH/SFTP via SYNCHRONOUS Tauri
+  // commands (run on the main thread). Calling them while the pool is down blocks
+  // on the dead session and freezes the window, so suppress them until the remote
+  // project is connected. Local projects are never blocked.
+  const remoteSshState = useRemoteStatusStore((s) =>
+    activeId ? s.byProject[activeId]?.ssh : undefined,
+  );
+  const remoteBlocked = !!activeProject?.remote && remoteSshState !== "connected";
   const rightPanelFolder = activeId ? rightPanelFolderByProject[activeId] ?? "" : "";
+
+  // Diverged (amber/orange) files for the active remote project, from the cached
+  // sync status — backs the toolbar count badge and the "Orange" list view. These
+  // are exactly the files auto-sync refuses to touch (both sides changed), so they
+  // need a human to pick a side.
+  const syncMap = useSyncStore((s) => (activeId ? s.byProject[activeId] : undefined));
+  const orangeFiles = useMemo(() => amberPaths(syncMap), [syncMap]);
+  // The local mirror root, to open an amber file's mirror copy for inspection.
+  const mirrorRoot =
+    resolveLocalMirror(activeProject) ?? (projectDir ? `${projectDir}/mirror` : null);
+
+  // Default the file source to whichever side is actually usable when a remote
+  // project becomes active: connected → Remote (the host tree), disconnected →
+  // Local (the mirror, so the panel doesn't open on a Connect prompt). Only
+  // resets on a project switch — it never fights a mid-session manual toggle
+  // (e.g. the user flips to Remote, then the connection drops: the Connect
+  // placeholder below takes over, but the toggle stays put).
+  useEffect(() => {
+    if (activeId && activeProject?.remote) {
+      setFileSource(remoteSshState === "connected" ? "remote" : "local");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   // When a box scope is open, the panel shows a multi-root file view: the box
   // folder plus every member project's root. Detected from the current tab scope
@@ -350,7 +410,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
       let blanket: ConflictChoice | null = null;
       for (let i = 0; i < paths.length; i++) {
         const sourcePath = paths[i];
-        const name = sourcePath.replace(/\/+$/, "").split("/").pop() || sourcePath;
+        const name = basename(sourcePath) || sourcePath;
         const rel = destRel ? `${destRel}/${name}` : name;
         let choice: ConflictChoice = "rename";
         const exists = await invoke<boolean>("project_path_exists", { projectDir, relPath: rel }).catch(() => false);
@@ -415,12 +475,12 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
   }, [open, activeId]);
 
   useEffect(() => {
-    if (open && projectDir) {
+    if (open && projectDir && !remoteBlocked) {
       refreshGit(projectDir);
     } else {
       setGitStatus(null);
     }
-  }, [open, projectDir]);
+  }, [open, projectDir, remoteBlocked]);
 
   useEffect(() => {
     setShowSettings(false);
@@ -433,9 +493,14 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
       setShownPaths([]);
       return;
     }
+    // `list_project_endings` scans the project dir over SFTP for a remote project —
+    // skip it while disconnected (would freeze the main thread). `load_project`
+    // reads the LOCAL project.json, so it's always safe to run.
     Promise.all([
       invoke<ProjectJson>("load_project", { localFile }),
-      invoke<string[]>("list_project_endings", { projectDir }).catch(() => []),
+      remoteBlocked
+        ? Promise.resolve<string[]>([])
+        : invoke<string[]>("list_project_endings", { projectDir }).catch(() => []),
     ])
       .then(([project, endings]) => {
         const savedHiddenEndings = readHiddenEndings(project);
@@ -456,7 +521,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
         setShownPaths([]);
         setSettingsError(String(error));
       });
-  }, [localFile, projectDir]);
+  }, [localFile, projectDir, remoteBlocked]);
 
   const handleAdd = async () => {
     if (!projectDir) return;
@@ -507,7 +572,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
     setGitBusy(true);
     setGitError(null);
     try {
-      await invoke("git_push", { projectDir });
+      await invoke("git_push", { projectDir, projectId: activeId ?? null });
       refreshGit(projectDir);
     } catch (e) {
       setGitError(String(e));
@@ -546,7 +611,8 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
 
   return (
     <div
-      className={`right-panel ${open ? "open" : ""}${dropActive ? " drop-active" : ""}${dropFlash ? " drop-flash" : ""}`}
+      className={`right-panel ${open ? "open" : ""}${dropActive ? " drop-active" : ""}${dropFlash ? " drop-flash" : ""}${resizing ? " resizing" : ""}`}
+      style={width ? { width } : undefined}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       onDragEnter={handleImportDragOver}
@@ -554,6 +620,19 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
       onDragLeave={handleImportDragLeave}
       onDrop={handleImportDrop}
     >
+      {/* Drag the left border to resize the panel; width persists in settings.
+          Pointer capture (set in onResizeStart) keeps the drag alive once the
+          cursor leaves this thin strip. */}
+      {onResizeStart && (
+        <div
+          className="right-panel-resize"
+          onPointerDown={onResizeStart}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeEnd}
+          title="Drag to resize panel"
+          aria-hidden
+        />
+      )}
       {conflict && createPortal(
         <div
           className="modal-backdrop"
@@ -608,7 +687,7 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
         )}
         <span
           style={{
-            flex: 1,
+            flexShrink: 1,
             minWidth: 0,
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -617,6 +696,146 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
         >
           {activeBox ? `▣ ${activeBox.name}` : activeProject ? activeProject.name : "Files"}
         </span>
+        {/* Remote/Local source toggle sits right of the project name (remote SSH
+            projects only). It shows the side the files view is currently on —
+            "Remote" = the host tree over SFTP, "Local" = the synced mirror — and
+            one click flips to the other. */}
+        {!activeBox && activeProject?.remote && activeId && (
+          <button
+            type="button"
+            className={`right-panel-source-toggle source-${fileSource}`}
+            aria-label={`File source: ${fileSource === "remote" ? "Remote" : "Local"} — click to switch`}
+            onClick={() => setFileSource((s) => (s === "remote" ? "local" : "remote"))}
+            title={
+              fileSource === "remote"
+                ? "Showing the host tree over SFTP. Click to switch to the local mirror."
+                : "Showing the local mirror copy. Click to switch to the host (remote) tree."
+            }
+          >
+            {fileSource === "remote" ? "Remote" : "Local"}
+          </button>
+        )}
+        {/* Git status/action buttons sit right of the project name in the header
+            row. Only rendered when there's something to do (or we're mid-commit)
+            — an empty strip with no actions just wastes space. */}
+        {!activeBox && gitStatus?.is_repo &&
+          (commitMsg !== null ||
+            gitStatus.unstaged + gitStatus.untracked > 0 ||
+            gitStatus.staged > 0 ||
+            (gitStatus.has_remote && unpushedCommits.length > 0)) && (
+          <div ref={actionBarRef} className="git-action-bar git-action-bar--inline" style={{ position: "relative", marginLeft: "auto" }}>
+            {commitMsg !== null ? (
+              <>
+                <button
+                  className="git-action-btn git-action-btn--commit"
+                  disabled={gitBusy}
+                  onClick={handleCommitConfirm}
+                  title="Confirm commit"
+                >
+                  <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
+                  <span>↵</span>
+                  <span className="git-btn-label">Confirm</span>
+                </button>
+                <button
+                  className="git-action-btn git-action-btn--back"
+                  disabled={gitBusy}
+                  onClick={() => setCommitMsg(null)}
+                  title="Go back"
+                >
+                  <span>←</span>
+                  <span className="git-btn-label">Back</span>
+                </button>
+              </>
+            ) : (
+              <>
+                {/* Each action only appears when it has work to do: Add when there
+                    are unstaged/untracked changes, Commit when something is staged,
+                    Push when commits are ahead of the remote. A clean, pushed repo
+                    shows no buttons. The caret beside each action opens a
+                    navigable folder tree of the files it touches, with line
+                    stats. */}
+                {gitStatus.unstaged + gitStatus.untracked > 0 && (
+                  <div className="git-action git-action--add">
+                    <button
+                      className="git-action-btn git-action-btn--add"
+                      disabled={gitBusy}
+                      onClick={handleAdd}
+                      title={`Stage all changes (${gitStatus.unstaged + gitStatus.untracked} unstaged)`}
+                    >
+                      <span data-testid="add-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#f85149" }} />
+                      <span>⊕</span>
+                      <span className="git-btn-label">Add ({gitStatus.unstaged + gitStatus.untracked})</span>
+                    </button>
+                    <button
+                      className="git-action-toggle"
+                      disabled={gitBusy}
+                      aria-label="Show changed files"
+                      aria-expanded={openTree === "add"}
+                      title="Show changed files"
+                      onClick={() => setOpenTree((t) => (t === "add" ? null : "add"))}
+                    >
+                      {openTree === "add" ? "▴" : "▾"}
+                    </button>
+                  </div>
+                )}
+                {gitStatus.staged > 0 && (
+                  <div className="git-action git-action--commit">
+                    <button
+                      className="git-action-btn git-action-btn--commit"
+                      disabled={gitBusy}
+                      onClick={handleCommitOpen}
+                      title={`Commit ${gitStatus.staged} staged`}
+                    >
+                      <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
+                      <span>✔</span>
+                      <span className="git-btn-label">Commit ({gitStatus.staged})</span>
+                    </button>
+                    <button
+                      className="git-action-toggle"
+                      disabled={gitBusy}
+                      aria-label="Show staged files"
+                      aria-expanded={openTree === "commit"}
+                      title="Show staged files"
+                      onClick={() => setOpenTree((t) => (t === "commit" ? null : "commit"))}
+                    >
+                      {openTree === "commit" ? "▴" : "▾"}
+                    </button>
+                  </div>
+                )}
+                {gitStatus.has_remote && unpushedCommits.length > 0 && (
+                  <div className="git-action git-action--push">
+                    <button
+                      className="git-action-btn git-action-btn--push"
+                      disabled={gitBusy}
+                      onClick={handlePush}
+                      title={`Push ${unpushedCommits.length} commit${unpushedCommits.length === 1 ? "" : "s"} to remote`}
+                    >
+                      <span data-testid="push-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#3fb950" }} />
+                      <span>⬆</span>
+                      <span className="git-btn-label">Push ({unpushedCommits.length})</span>
+                    </button>
+                    <button
+                      className="git-action-toggle"
+                      disabled={gitBusy}
+                      aria-label="Show files in unpushed commits"
+                      aria-expanded={openTree === "push"}
+                      title="Show files in unpushed commits"
+                      onClick={() => setOpenTree((t) => (t === "push" ? null : "push"))}
+                    >
+                      {openTree === "push" ? "▴" : "▾"}
+                    </button>
+                  </div>
+                )}
+                {treeScope && projectDir && (
+                  <GitChangeTree projectDir={projectDir} scope={treeScope} />
+                )}
+              </>
+            )}
+          </div>
+          )}
+      </div>
+
+      <div className="right-panel-toolbar">
         {(["files", "git", "search", "windows"] as View[]).map((v) => (
           <button
             key={v}
@@ -628,6 +847,20 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
             {v === "files" ? "Files" : v === "git" ? "Git" : v === "search" ? "Search" : "Apps"}
           </button>
         ))}
+        {/* Orange (diverged) files: a dedicated toggle for remote projects,
+            badged with the count so conflicts are visible at a glance. Auto-sync
+            never touches these, so this is where they get resolved. */}
+        {!activeBox && activeProject?.remote && activeId && (
+          <button
+            className={`tab-add-btn right-panel-orange-btn${view === "orange" ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            aria-pressed={view === "orange"}
+            onClick={() => setView((v) => (v === "orange" ? "files" : "orange"))}
+            title={`Diverged (orange) files: ${orangeFiles.length}`}
+          >
+            ± {orangeFiles.length > 0 && <span className="right-panel-orange-count">{orangeFiles.length}</span>}
+          </button>
+        )}
         {canImportDrop && (
           <button
             className="tab-add-btn"
@@ -660,94 +893,8 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
         )}
       </div>
 
-      {!activeBox && gitStatus?.is_repo && view === "files" && (
+      {!activeBox && gitStatus?.is_repo && (
         <>
-          {/* Only render the action bar when there's something to do (or we're
-              mid-commit) — an empty strip with no actions just wastes space. */}
-          {(commitMsg !== null ||
-            gitStatus.unstaged + gitStatus.untracked > 0 ||
-            gitStatus.staged > 0 ||
-            (gitStatus.has_remote && unpushedCommits.length > 0)) && (
-          <div className="git-action-bar" style={{ position: "relative" }} onMouseLeave={() => setHoveredBtn(null)}>
-            {commitMsg !== null ? (
-              <>
-                <button
-                  className="git-action-btn"
-                  disabled={gitBusy}
-                  onClick={handleCommitConfirm}
-                  title="Confirm commit"
-                  onMouseEnter={() => setHoveredBtn("commit")}
-                >
-                  <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
-                  <span>↵</span>
-                  <span className="git-btn-label">Confirm</span>
-                </button>
-                <button
-                  className="git-action-btn"
-                  disabled={gitBusy}
-                  onClick={() => setCommitMsg(null)}
-                  title="Go back"
-                >
-                  <span>←</span>
-                  <span className="git-btn-label">Back</span>
-                </button>
-              </>
-            ) : (
-              <>
-                {/* Each action only appears when it has work to do: Add when there
-                    are unstaged/untracked changes, Commit when something is staged,
-                    Push when commits are ahead of the remote. A clean, pushed repo
-                    shows no buttons. */}
-                {gitStatus.unstaged + gitStatus.untracked > 0 && (
-                  <button
-                    className="git-action-btn"
-                    disabled={gitBusy}
-                    onClick={handleAdd}
-                    title={`Stage all changes (${gitStatus.unstaged + gitStatus.untracked} unstaged)`}
-                    onMouseEnter={() => setHoveredBtn("add")}
-                  >
-                    <span data-testid="add-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#f85149" }} />
-                    <span>⊕</span>
-                    <span className="git-btn-label">Add ({gitStatus.unstaged + gitStatus.untracked})</span>
-                  </button>
-                )}
-                {gitStatus.staged > 0 && (
-                  <button
-                    className="git-action-btn"
-                    disabled={gitBusy}
-                    onClick={handleCommitOpen}
-                    title={`Commit ${gitStatus.staged} staged`}
-                    onMouseEnter={() => setHoveredBtn("commit")}
-                  >
-                    <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
-                    <span>✔</span>
-                    <span className="git-btn-label">Commit ({gitStatus.staged})</span>
-                  </button>
-                )}
-                {gitStatus.has_remote && unpushedCommits.length > 0 && (
-                  <button
-                    className="git-action-btn"
-                    disabled={gitBusy}
-                    onClick={handlePush}
-                    title={`Push ${unpushedCommits.length} commit${unpushedCommits.length === 1 ? "" : "s"} to remote`}
-                    onMouseEnter={() => setHoveredBtn("push")}
-                  >
-                    <span data-testid="push-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#3fb950" }} />
-                    <span>⬆</span>
-                    <span className="git-btn-label">Push ({unpushedCommits.length})</span>
-                  </button>
-                )}
-                {hoveredBtn && hoverItems.length > 0 && (
-                  <div className="git-hover-list" data-testid="git-hover-list">
-                    {hoverItems.map((item, i) => (
-                      <div key={i} className="git-hover-item">{item}</div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-          )}
           {commitMsg !== null && (
             <div style={{ padding: "4px 6px", borderBottom: "1px solid var(--border-color)" }}>
               <textarea
@@ -780,7 +927,12 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
 
       {view === "git" && (
         <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
-          <GitHistory projectDir={projectDir} onChanged={() => projectDir && refreshGit(projectDir)} />
+          <GitHistory
+            projectDir={projectDir}
+            projectId={activeProject?.remote ? activeId ?? undefined : undefined}
+            remote={!!activeProject?.remote}
+            onChanged={() => projectDir && refreshGit(projectDir)}
+          />
         </div>
       )}
 
@@ -788,8 +940,89 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
         <SearchPanel projectDir={projectDir} linkingTabKey={undefined} />
       )}
 
+      {view === "orange" && (
+        <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
+          {orangeFiles.length === 0 ? (
+            <div className="right-panel-orange-empty">No diverged files</div>
+          ) : (
+            orangeFiles.map((rel) => (
+              <div key={rel} className="orange-file-row" title={rel}>
+                <button
+                  type="button"
+                  className="orange-file-name"
+                  disabled={!mirrorRoot}
+                  title={mirrorRoot ? `Open ${rel}` : rel}
+                  onClick={() => {
+                    if (!mirrorRoot) return;
+                    const abs = `${mirrorRoot}/${rel}`;
+                    // Open the diverged file as a host-vs-mirror sync diff so the
+                    // user sees exactly what differs before picking a side.
+                    openLinkedFile(undefined, dirname(abs), {
+                      path: abs,
+                      viewer: "syncdiff",
+                      label: basename(abs),
+                    });
+                  }}
+                >
+                  <span className="orange-file-dot" aria-hidden="true">±</span>
+                  {rel}
+                </button>
+                <div className="orange-file-actions">
+                  <button
+                    type="button"
+                    className="orange-file-act"
+                    title="Take the host copy (overwrite the local mirror)"
+                    disabled={remoteBlocked}
+                    onClick={() => activeId && void useSyncStore.getState().pull(activeId, rel)}
+                  >
+                    Take host
+                  </button>
+                  <button
+                    type="button"
+                    className="orange-file-act"
+                    title="Keep the local copy (force-push over the host)"
+                    disabled={remoteBlocked}
+                    onClick={() => activeId && void useSyncStore.getState().push(activeId, rel, true)}
+                  >
+                    Keep local
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
       {view === "files" && (
         <>
+          {/* The Remote/Local toggle now lives in the header (right of the project
+              name); this row carries the whole-tree sync action for the active
+              source: Remote → pull the host tree into the mirror; Local → push the
+              mirror back to the host (skipping host-diverged/orange files). Both
+              need a live connection, so the row is gated on !remoteBlocked. */}
+          {!activeBox && activeProject?.remote && activeId && !remoteBlocked && (
+            <div className="right-panel-source">
+              {fileSource === "remote" ? (
+                <button
+                  className="tab-add-btn"
+                  style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
+                  onClick={() => void useSyncStore.getState().syncWholeProject(activeId)}
+                  title="Sync the whole project tree into the local mirror (remote → local)"
+                >
+                  Sync all
+                </button>
+              ) : (
+                <button
+                  className="tab-add-btn"
+                  style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
+                  onClick={() => void useSyncStore.getState().pushWholeProject(activeId)}
+                  title="Push the whole local mirror to the host (local → remote). Files that diverged on the host (orange) are skipped, never overwritten."
+                >
+                  Sync all
+                </button>
+              )}
+            </div>
+          )}
           <div className="right-panel-sort">
             {(["name", "size", "type", "created", "modified"] as SortKey[]).map((key) => (
               <button
@@ -822,22 +1055,68 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
                 ))
               )
             ) : (
-              open && (
-                <FileTree
-                  projectDir={projectDir}
-                  projectId={activeId}
-                  localFile={localFile}
-                  sortKey={sortKey}
-                  descending={descending}
-                  hiddenEndings={hiddenEndings}
-                  hiddenPaths={hiddenPaths}
-                  shownPaths={shownPaths}
-                  initialRelPath={rightPanelFolder}
-                  onRelPathChange={(folder) => {
-                    if (activeId) setRightPanelFolder(activeId, folder);
-                  }}
-                />
-              )
+              open && (() => {
+                // SSH-sync Phase 1: a remote project's "Local" source points the
+                // tree at the local mirror dir (browsed as a plain local tree);
+                // "Remote" keeps the host (SFTP) tree with the sync overlay. A
+                // local project ignores the toggle entirely.
+                const isRemoteProject = !!activeProject?.remote;
+                // Disconnected remote source: don't mount the SFTP-backed tree
+                // (its main-thread list_dir would freeze the window). Keep the
+                // panel looking the same — the Remote/Local toggle stays up — but
+                // show a Connect prompt in the tree area. Selecting "Local" still
+                // browses the offline mirror. The whole-window freeze rationale
+                // lives on `remoteBlocked` above.
+                if (isRemoteProject && fileSource === "remote" && remoteBlocked) {
+                  return (
+                    <div className="file-tree-empty" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                      <div>
+                        {remoteSshState === "connecting"
+                          ? "Connecting to the remote host…"
+                          : "Disconnected — connect to browse the remote tree."}
+                      </div>
+                      {remoteSshState !== "connecting" && activeId && (
+                        <button
+                          type="button"
+                          className="dialog-connect-btn"
+                          onClick={() => useConnectDialogStore.getState().open(activeId)}
+                        >
+                          Connect
+                        </button>
+                      )}
+                    </div>
+                  );
+                }
+                // The relocatable mirror override (projects.json `extra["mirror"]`,
+                // updated by `move_remote_mirror`) is authoritative; fall back to the
+                // default `<state_dir>/mirror` only for legacy projects that never
+                // persisted one. Computing `${projectDir}/mirror` unconditionally
+                // pointed the Local tree at the pre-move location after a relocate.
+                const mirrorDir =
+                  resolveLocalMirror(activeProject) ??
+                  (projectDir
+                    ? `${projectDir.replace(/[/\\]+$/, "")}/mirror`
+                    : projectDir);
+                const treeDir =
+                  isRemoteProject && fileSource === "local" ? mirrorDir : projectDir;
+                return (
+                  <FileTree
+                    projectDir={treeDir}
+                    projectId={activeId}
+                    localFile={localFile}
+                    sortKey={sortKey}
+                    descending={descending}
+                    hiddenEndings={hiddenEndings}
+                    hiddenPaths={hiddenPaths}
+                    shownPaths={shownPaths}
+                    initialRelPath={rightPanelFolder}
+                    onRelPathChange={(folder) => {
+                      if (activeId) setRightPanelFolder(activeId, folder);
+                    }}
+                    syncSource={isRemoteProject ? fileSource : undefined}
+                  />
+                );
+              })()
             )}
           </div>
         </>
@@ -852,8 +1131,8 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
               <div key={w.id} className="file-entry">
                 <span className="file-icon">🪟</span>
                 <span className="file-name" title={w.exec}>
-                  {w.exec.split("/").pop() ?? w.exec}
-                  {w.file && <span style={{ color: "var(--text-muted)" }}> {w.file.split("/").pop()}</span>}
+                  {basename(w.exec) || w.exec}
+                  {w.file && <span style={{ color: "var(--text-muted)" }}> {basename(w.file)}</span>}
                 </span>
                 <button
                   className="tab-close"
@@ -918,6 +1197,14 @@ export function RightPanel({ open, pinned, onTogglePin, onMouseEnter, onMouseLea
                 onChange={(e) => void updateSettings({ autosave: e.target.checked })}
               />
               <span>Autosave edits</span>
+            </label>
+            <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
+              <input
+                type="checkbox"
+                checked={settings?.change_tint !== false}
+                onChange={(e) => void updateSettings({ change_tint: e.target.checked })}
+              />
+              <span>Highlight recent edits (new→old colour trail)</span>
             </label>
             <div className="viewer-prefs-list">
               {VIEWER_PREF_TYPES.map((t) => {

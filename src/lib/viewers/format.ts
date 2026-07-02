@@ -12,7 +12,7 @@
 
 /** Lowercase extension of `path` including the dot (e.g. ".css"), or "". */
 function extOf(path: string): string {
-  const name = (path.split("/").filter(Boolean).pop() ?? path).toLowerCase();
+  const name = (path.split(/[/\\]/).filter(Boolean).pop() ?? path).toLowerCase();
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot) : "";
 }

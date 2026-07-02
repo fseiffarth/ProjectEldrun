@@ -3,6 +3,7 @@ import { findGroupOfTab, useTabsStore } from "../../stores/tabs";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
 import { useTabLandStore } from "../../stores/tabLand";
 import { openLinkedFile } from "../embed/FileViewerPane";
+import { basename, dirname } from "../../lib/paths";
 
 /**
  * Commit a finished tab drag. Reads store actions from getState() so it can live
@@ -73,10 +74,10 @@ export function commitLinkDrop(d: TabDrag) {
   useLinkRoutingStore
     .getState()
     .setRoute(d.linkingTabKey, d.linkTargetPath, d.overGroup);
-  const dir = d.linkTargetPath.slice(0, d.linkTargetPath.lastIndexOf("/")) || "/";
+  const dir = dirname(d.linkTargetPath) || "/";
   openLinkedFile(d.linkingTabKey, dir, {
     path: d.linkTargetPath,
     viewer: d.viewer,
-    label: d.linkTargetPath.slice(d.linkTargetPath.lastIndexOf("/") + 1),
+    label: basename(d.linkTargetPath),
   });
 }

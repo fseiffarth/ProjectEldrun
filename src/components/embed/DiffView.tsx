@@ -87,11 +87,16 @@ function DiffLineRow({ line }: { line: DiffLine }) {
 export function DiffView({
   path,
   projectId,
+  mode = "git",
   onOpenExternally,
   tabKey: _tabKey,
 }: {
   path: string;
   projectId: string | null;
+  /** `"git"` (default) diffs the working tree via `git_diff_file`; `"sync"`
+   *  diffs the local mirror against the current host over `sync_diff` (SSH
+   *  projects). Patch/diff files always render their own raw content regardless. */
+  mode?: "git" | "sync";
   onOpenExternally: () => void;
   tabKey?: string;
 }) {
@@ -105,7 +110,9 @@ export function DiffView({
   const projectDir = resolveProjectDirectory(project);
   const relPath = relFromAbs(projectDir, path);
 
-  // Source-mode: invoke git_diff_file on mount (and whenever the target changes).
+  // Source-mode: fetch the diff on mount (and whenever the target changes) — the
+  // working-tree diff via `git_diff_file`, or the host-vs-mirror diff via
+  // `sync_diff` when this pane is a sync diff.
   const [gitText, setGitText] = useState<string | null>(null);
   const [gitError, setGitError] = useState<string | null>(null);
   useEffect(() => {
@@ -113,7 +120,11 @@ export function DiffView({
     let cancelled = false;
     setGitText(null);
     setGitError(null);
-    invoke<string>("git_diff_file", { projectDir, relPath })
+    const req =
+      mode === "sync"
+        ? invoke<string>("sync_diff", { projectId, relPath })
+        : invoke<string>("git_diff_file", { projectDir, relPath });
+    req
       .then((text) => {
         if (!cancelled) setGitText(text);
       })
@@ -123,7 +134,7 @@ export function DiffView({
     return () => {
       cancelled = true;
     };
-  }, [patchMode, projectDir, relPath]);
+  }, [patchMode, mode, projectId, projectDir, relPath]);
 
   const text = patchMode ? fileState.content : gitText;
   const error = patchMode ? fileState.error : gitError;

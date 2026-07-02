@@ -53,6 +53,15 @@ pub struct PtyOptions {
     /// of a project whose sandbox toggle is enabled. See `services::sandbox`.
     #[serde(default)]
     pub sandbox: bool,
+    /// The owning project's id, set by the frontend for tabs that belong to a
+    /// project scope (not the root scope). It makes remoteness **explicit**: the
+    /// ssh-wrap spawn path resolves the project's `RemoteSpec` from this id (via
+    /// `services::remote::remote_target_for`) instead of sniffing whether `cwd`
+    /// lives under the sshfs mounts root. `None` for root/connection terminals
+    /// (and any spawn path not yet updated), where the cwd-sniffing fallback
+    /// still applies. Harmless for local projects — they resolve to no remote.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,9 +93,9 @@ struct PtyEntry {
 
 /// Invalidate the cached process tree used for CPU sampling. Called whenever a
 /// PTY is spawned or dies so the next `sysstat::descendant_pids` rebuilds rather
-/// than reusing a stale walk. No-op off Linux (sysstat is Linux-only).
+/// than reusing a stale walk. `sysstat` is cross-platform (Linux/Windows sample,
+/// other OSes return zero), so this is a plain atomic bump everywhere.
 fn invalidate_proc_tree_cache() {
-    #[cfg(target_os = "linux")]
     crate::sysstat::invalidate_descendant_cache();
 }
 
@@ -193,10 +202,19 @@ pub fn spawn_pty(
 
     let pty_system = NativePtySystem::default();
 
+    // Never open a zero-size PTY. A 0-col/0-row size can slip in if the caller
+    // spawns before xterm has measured a layout box; Unix ptys tolerate it but
+    // Windows ConPTY accepts it silently and then emits no output, which shows up
+    // as a black, dead agent tab. Clamp to a sane default so the child always has
+    // a usable window — the frontend re-sends the real size via `pty_resize` as
+    // soon as the pane is fitted.
+    let cols = if opts.cols == 0 { 80 } else { opts.cols };
+    let rows = if opts.rows == 0 { 24 } else { opts.rows };
+
     let pair = pty_system
         .openpty(PtySize {
-            rows: opts.rows,
-            cols: opts.cols,
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -344,15 +362,57 @@ pub fn default_shell() -> String {
 
 // ── Command builder ────────────────────────────────────────────────────────
 
+/// Wrap a resolved absolute executable path into a `CommandBuilder`. A `.exe`
+/// (or a Unix binary) runs directly; a `.cmd`/`.bat` shim (npm-style) needs
+/// `cmd.exe /c` and a `.ps1` needs PowerShell, since `CreateProcess` can't exec
+/// those directly inside the PTY.
+fn command_for_resolved(path: std::path::PathBuf) -> CommandBuilder {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("cmd") | Some("bat") => {
+            let mut c = CommandBuilder::new("cmd.exe");
+            c.arg("/c");
+            c.arg(path);
+            c
+        }
+        Some("ps1") => {
+            let mut c = CommandBuilder::new("powershell.exe");
+            c.arg("-NoProfile");
+            c.arg("-ExecutionPolicy");
+            c.arg("Bypass");
+            c.arg("-File");
+            c.arg(path);
+            c
+        }
+        _ => CommandBuilder::new(path),
+    }
+}
+
 fn build_command(opts: &PtyOptions) -> CommandBuilder {
     let cmd_str = if opts.cmd.is_empty() { default_shell() } else { opts.cmd.clone() };
-    let mut cmd = CommandBuilder::new(&cmd_str);
+    // A bare tool name (e.g. "vibe"/"ollama") that Eldrun detected as installed
+    // may still not be launchable on Windows: winget/uv/npm install into per-user
+    // dirs (%LOCALAPPDATA%\Programs, %USERPROFILE%\.local\bin, %APPDATA%\npm, …)
+    // that the PATH this process inherited often omits. Resolve to an absolute
+    // path so the spawn finds it. No-op when the name already resolves on PATH or
+    // carries a path — so ssh/docker-wrapped tabs (cmd "ssh"/"docker", both on
+    // PATH) keep their remote/in-container binary names, which live in `args`.
+    let mut cmd = match crate::paths::resolve_offpath_binary(&cmd_str) {
+        Some(resolved) => command_for_resolved(resolved),
+        None => CommandBuilder::new(&cmd_str),
+    };
     for arg in &opts.args {
         cmd.arg(arg);
     }
     cmd.cwd(&opts.cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    if let Some(path) = crate::paths::effective_path() {
+        cmd.env("PATH", path);
+    }
     for (k, v) in &opts.env {
         cmd.env(k, v);
     }

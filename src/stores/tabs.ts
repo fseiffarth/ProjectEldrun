@@ -5,9 +5,37 @@ import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
 import { useLinkRoutingStore } from "./linkRouting";
 
-export type TabKind = "agent" | "local_agent" | "shell" | "files" | "embed";
+export type TabKind =
+  | "agent"
+  | "local_agent"
+  | "shell"
+  | "files"
+  | "embed"
+  | "projects3d"
+  | "network";
+
+/**
+ * SSH-sync Phase 0 — a PTY tab's locality on a REMOTE (SSH) project: does it run
+ * locally (in the project's local mirror) or on the host over `ssh -tt`? Only
+ * meaningful for `agent`/`shell` tabs (see {@link isLocatableKind}); `local_agent`
+ * is always local and non-PTY kinds have no locality. On a LOCAL project the axis
+ * is inert (everything is local — the backend gates the ssh-wrap on remoteness).
+ * Plan: docs/ssh_sync_plan.md.
+ */
+export type TabLocation = "local" | "remote";
 
 export const FILES_TAB_CMD = "__eldrun_files__";
+
+/**
+ * Sentinel `cmd` for the 3D project-blob tab (root scope only): a navigable 3D
+ * cloud of every project (active + inactive) and box. Carries no PTY — like the
+ * files tab it's a pure-frontend pane, identified by this command so cmdToKind
+ * can recover its kind from a bare command string.
+ */
+export const BLOB_TAB_CMD = "__eldrun_blob__";
+
+/** Sentinel command for the read-only local/SSH host traffic dashboard. */
+export const NETWORK_TAB_CMD = "__eldrun_network__";
 
 /**
  * Synthetic group id for the empty-state placeholder subwindow (rendered by
@@ -102,6 +130,11 @@ export interface TabEntry {
   // the file (or restarting) restores the position instead of jumping to the top
   // (see ViewerState). Written by the viewer panes, persisted in project.json.
   viewerState?: ViewerState;
+  // SSH-sync Phase 0: for `agent`/`shell` tabs on a remote project, whether this
+  // tab runs locally (in the mirror) or on the host. Absent → the per-kind
+  // default (agents local, shells remote — see effectiveTabLocation). Inert on a
+  // local project. Persisted so the choice survives a restart.
+  location?: TabLocation;
 }
 
 export type SplitDir = "row" | "column";
@@ -200,6 +233,8 @@ export interface SavedTabEntry {
   viewer?: InternalViewer;
   // Persisted reader position (scroll/zoom/pan) for in-app viewer embeds.
   viewerState?: ViewerState;
+  // SSH-sync Phase 0: persisted per-tab local/remote locality (see TabEntry).
+  location?: TabLocation;
 }
 
 /** Serialized layout tree as persisted in project.json's `tab_groups`. */
@@ -279,6 +314,12 @@ interface TabsStore {
 
   // tab lifecycle
   addTab: (tab: Omit<TabEntry, "key">) => TabEntry; // into focused group
+  // Add a tab into a SPECIFIC scope's focused group, regardless of which scope is
+  // currently active. Used to surface remote SSH/OpenVPN connections in the root
+  // scope without disturbing the active project. When `scope` is the current
+  // scope this behaves exactly like `addTab`; otherwise the tab is written into
+  // that scope's maps only (the user sees it after switching to it).
+  addTabToScope: (scope: string, tab: Omit<TabEntry, "key">) => TabEntry;
   ensureTab: (
     tab: Omit<TabEntry, "key">,
     matches: (tab: TabEntry) => boolean,
@@ -292,6 +333,10 @@ interface TabsStore {
   // explicitly at the call site if the scope isn't the active project.
   closeAllTabs: (scope?: string) => void;
   updateTabEnv: (key: string, env: Record<string, string>) => void;
+  // SSH-sync Phase 0: set a tab's local/remote locality (agent/shell tabs on a
+  // remote project). No-op when unchanged. The CenterPanel's localOnly/cwd
+  // computation reads the result so the next mount spawns on the chosen side.
+  setTabLocation: (key: string, location: TabLocation) => void;
   // Merge a patch into an embed tab's persisted viewer position (scroll/zoom/
   // pan). The viewer panes call this as the reader scrolls/zooms; the debounced
   // saveLayout effect then flushes it to project.json (see ViewerState).
@@ -359,6 +404,22 @@ interface TabsStore {
     tabKey: string,
     opts?: { targetGroupId?: string; edge?: DropEdge; skipBackend?: boolean },
   ) => void;
+  // #42: pop a SINGLE tab OUT of an existing detached popout into its OWN brand
+  // new detached OS window (the popout analog of TabBar's `popToNewWindow`),
+  // fired when a tab dragged out of a popout is released in FREE SPACE — outside
+  // both the main window and the popout. Removes `tabKey` from the source
+  // popout's subtree and records a fresh single-tab detached entry at `bounds`,
+  // then spawns its OS window. The tab payload stays in `tabsByScope[scope]`
+  // (shared), so the new popout self-seeds and the PTY never dies. No-ops
+  // (returns null) when the source/tab is gone OR when removing the tab would
+  // empty the source popout — a lone-tab popout dragged whole is already its own
+  // window, so re-detaching it would be needless churn. Returns the new label.
+  detachTabToNewWindow: (
+    scope: string,
+    fromGroupId: string,
+    tabKey: string,
+    bounds: WindowBounds,
+  ) => string | null;
   // #42 (main → detached): dock a SINGLE existing in-window tab INTO an already
   // open detached popout's group — the inverse of `attachDetachedTab`, fired when
   // a tab dragged out of the main window is released over a popout (so no new OS
@@ -1170,6 +1231,40 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     return entry;
   },
 
+  addTabToScope: (scope, tab) => {
+    const key = nextKey(tab.kind);
+    const entry: TabEntry = { ...tab, key, scope };
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      const layout = s.layoutByScope[scope] ?? null;
+      const focusedGroupId = s.focusedGroupByScope[scope] ?? null;
+      const nextTabs = [...tabs, entry];
+
+      // No layout yet → create a root group containing this tab.
+      if (!layout) {
+        const root: GroupNode = {
+          type: "group",
+          id: nextGroupId(),
+          tabKeys: [key],
+          activeKey: key,
+        };
+        return writeScope(s, scope, nextTabs, root, root.id);
+      }
+
+      // Add into that scope's focused group (fall back to its first group).
+      const target =
+        (focusedGroupId && findGroup(layout, focusedGroupId)) ||
+        allGroups(layout)[0];
+      const next = mapGroup(layout, target.id, (g) => ({
+        ...g,
+        tabKeys: [...g.tabKeys, key],
+        activeKey: key,
+      }));
+      return writeScope(s, scope, nextTabs, next, target.id);
+    });
+    return entry;
+  },
+
   ensureTab: (tab, matches) => {
     const existing = get().tabs.find(matches);
     if (existing) {
@@ -1260,6 +1355,22 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const nextTabs = tabs.map((t) => (t.key === key ? { ...t, env } : t));
+      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  setTabLocation: (key, location) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      let changed = false;
+      const nextTabs = tabs.map((t) => {
+        if (t.key !== key || t.location === location) return t;
+        changed = true;
+        return { ...t, location };
+      });
+      // No-op (stable array) when the value is unchanged, so an idle re-toggle
+      // doesn't churn the tabs array / wake the saveLayout debounce.
+      if (!changed) return {};
       return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
     });
   },
@@ -1749,6 +1860,54 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     }
   },
 
+  detachTabToNewWindow: (scope, fromGroupId, tabKey, bounds) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const src = entries.find((d) => d.id === fromGroupId);
+    // The source popout (and the tab within it) must still exist.
+    if (!src || !orderedTabKeys(src.subtree).includes(tabKey)) return null;
+    // A lone-tab popout dragged whole is already its own window — re-detaching it
+    // would empty the source and churn for nothing, so refuse that case.
+    const remaining = removeKeyFromTree(src.subtree, tabKey);
+    if (!remaining || orderedTabKeys(remaining).length === 0) return null;
+
+    const groupId = nextGroupId();
+    const label = `detached-${scope}-${groupId}`;
+    // The popped tab becomes the sole member of a fresh single-tab group; its
+    // payload stays in tabsByScope (shared), so the new popout self-seeds and the
+    // PTY never unmounts (mirrors `detachTab`).
+    const subtree: GroupNode = {
+      type: "group",
+      id: groupId,
+      tabKeys: [tabKey],
+      activeKey: tabKey,
+    };
+
+    set((s) => {
+      const existing = s.detachedGroupsByScope[scope] ?? [];
+      // One atomic update: strip the tab from the source popout's subtree AND
+      // append the new detached entry. The payload in `tabsByScope` is untouched.
+      const nextEntries = existing.map((d) =>
+        d.id === fromGroupId ? { ...d, subtree: remaining } : d,
+      );
+      return {
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: [...nextEntries, { id: groupId, subtree, label, bounds }],
+        },
+      };
+    });
+
+    invoke("detach_subwindow", {
+      projectId: scope,
+      groupId,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.w,
+      height: bounds.h,
+    }).catch(() => {});
+    return label;
+  },
+
   dockTabIntoDetached: (scope, detachedGroupId, tabKey, target) => {
     const entries = get().detachedGroupsByScope[scope] ?? [];
     const entry = entries.find((d) => d.id === detachedGroupId);
@@ -1942,7 +2101,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     for (const key of keys) {
       purge(key);
       const tab = byKey.get(key);
-      if (tab && tab.kind !== "files" && tab.kind !== "embed") {
+      if (tab && isPtyTabKind(tab.kind)) {
         invoke("pty_kill", { id: `${scope}:${key}` }).catch(() => {});
       }
     }
@@ -2066,6 +2225,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         embedExec: t.embedExec,
         viewer: t.viewer,
         viewerState: t.viewerState,
+        // SSH-sync Phase 0: restore the persisted per-tab locality.
+        location: t.location,
       };
     });
 
@@ -2143,7 +2304,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     for (const t of scopeTabs) {
       if (!keyOrder.includes(t.key)) ordered.push(t);
     }
-    // Shell/files tabs, resumable agent tabs (Claude with a sessionId), and
+    // Shell/files/network tabs, resumable agent tabs (Claude with a sessionId), and
     // in-app file-viewer embeds are persisted; other agent/embed tabs (including
     // external-app embeds) are dropped here and the saved tree is pruned to
     // match. See isRestorableTab. Defense-in-depth (#55): also drop any tab not
@@ -2172,6 +2333,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         embedExec: t.embedExec,
         viewer: t.viewer,
         viewerState: t.viewerState,
+        // SSH-sync Phase 0: persist the per-tab locality.
+        location: t.location,
       }));
       // #42: re-dock detached groups into the persisted tree so disk reflects a
       // restart-as-docked layout (their tabs are already in the flat list above
@@ -2229,14 +2392,16 @@ const AGENT_CMDS = new Set([
 
 export function cmdToKind(cmd: string): TabKind {
   if (cmd === FILES_TAB_CMD) return "files";
+  if (cmd === BLOB_TAB_CMD) return "projects3d";
+  if (cmd === NETWORK_TAB_CMD) return "network";
   if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
 }
 
 /**
- * Whether a tab KIND alone survives a restart. Shell/files tabs are restorable
- * by kind; agent / local-agent and embed tabs are not, because the kind alone
- * carries no session to resume. Prefer the tab-level `isRestorableTab` at call
+ * Whether a tab KIND alone survives a restart. Shell/files/network tabs are
+ * restorable by kind; agent / local-agent and embed tabs are not, because the
+ * kind alone carries no session to resume. Prefer the tab-level `isRestorableTab` at call
  * sites that have the full tab — a resumable agent tab (Claude with a sessionId)
  * IS restorable even though its kind is not. This kind-only check stays for the
  * places that only have a `TabKind`.
@@ -2247,7 +2412,13 @@ export function cmdToKind(cmd: string): TabKind {
  * not here.
  */
 export function isRestorableKind(kind: TabKind): boolean {
-  return kind === "shell" || kind === "files";
+  return kind === "shell" || kind === "files" || kind === "network";
+}
+
+/** Whether a tab owns a backend PTY. Pure frontend panes must never be sent
+ * through terminal spawn/kill/activity paths merely because they are not files. */
+export function isPtyTabKind(kind: TabKind): boolean {
+  return kind === "agent" || kind === "local_agent" || kind === "shell";
 }
 
 /**
@@ -2385,6 +2556,67 @@ export function pruneSavedTree(
 
 export function isLocalAgentKind(kind: TabKind): kind is "local_agent" {
   return kind === "local_agent";
+}
+
+/**
+ * SSH-sync Phase 0: whether a tab kind has a user-toggleable local/remote
+ * locality. Only `agent` and `shell` tabs run a PTY that can sit on either side;
+ * `local_agent` is fixed-local and the non-PTY kinds
+ * (files/embed/projects3d/network)
+ * have no locality.
+ */
+export function isLocatableKind(kind: TabKind): boolean {
+  return kind === "agent" || kind === "shell";
+}
+
+/**
+ * SSH-sync Phase 0: the default locality for a kind on a remote project (product
+ * decision 1): **agents default LOCAL** (cwd = the local mirror), **shells
+ * default REMOTE** (run remote scripts on the host). `local_agent` and the
+ * non-PTY kinds resolve local. See docs/ssh_sync_plan.md.
+ */
+export function defaultLocationForKind(kind: TabKind): TabLocation {
+  return kind === "shell" ? "remote" : "local";
+}
+
+/**
+ * SSH-sync Phase 0: a tab's effective locality — its explicit `location`, or the
+ * per-kind default when unset. `local_agent` is always local regardless of any
+ * stored value. Consumed by CenterPanel/DetachedCenterPanel to decide `localOnly`
+ * and resolve the local `cwd` (mirror root) for a local-on-remote tab.
+ */
+export function effectiveTabLocation(
+  tab: { kind: TabKind; location?: TabLocation },
+): TabLocation {
+  if (isLocalAgentKind(tab.kind)) return "local";
+  return tab.location ?? defaultLocationForKind(tab.kind);
+}
+
+/**
+ * SSH-sync Phase 1: the local working directory a PTY tab should run in when it
+ * runs LOCALLY on a REMOTE project. A local-on-remote tab can't cwd into the
+ * remote tree, so it runs in the project's local **mirror** — the synced twin.
+ * This is the value shown in the tab title (and the path the disconnected file
+ * browser lists); the backend resolves the same path authoritatively at spawn
+ * (and guarantees it exists).
+ *
+ * The mirror can be relocated to a custom folder ("Move project…"), so prefer the
+ * project's persisted override (`opts.mirror`, from resolveLocalMirror) when set;
+ * fall back to the default `<state dir>/mirror` for legacy projects with none.
+ * Returns `fallback` (the tab's own cwd) unchanged for a local project or a tab
+ * that runs on the host (remote locality).
+ */
+export function localTabCwd(
+  tab: { kind: TabKind; location?: TabLocation },
+  opts: { isRemoteProject: boolean; projectDirectory: string; fallback: string; mirror?: string | null },
+): string {
+  if (!opts.isRemoteProject || effectiveTabLocation(tab) !== "local") {
+    return opts.fallback;
+  }
+  const override = opts.mirror?.trim();
+  if (override) return override.replace(/[/\\]+$/, "");
+  if (!opts.projectDirectory) return opts.fallback;
+  return `${opts.projectDirectory.replace(/[/\\]+$/, "")}/mirror`;
 }
 
 /**

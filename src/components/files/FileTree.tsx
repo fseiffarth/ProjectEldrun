@@ -1,17 +1,24 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { useWindowsStore } from "../../stores/windows";
 import { useTabsStore } from "../../stores/tabs";
 import { useDragStore, type EmbedCap } from "../../stores/drag";
 import { commitFileDrop } from "../tabs/commitFileDrop";
 import { startDetachedDropSession } from "../tabs/detachedDropTargets";
+import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
+import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
+import { useProjectsStore } from "../../stores/projects";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useSyncStore, type SyncFileMeta } from "../../stores/sync";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
+import { basename } from "../../lib/paths";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 
 // Persist whether the collapsed "hidden" files section is expanded, so the
@@ -39,6 +46,11 @@ interface Props {
   shownPaths?: string[];
   initialRelPath?: string | null;
   onRelPathChange?: (relPath: string) => void;
+  /** SSH-sync Phase 1: which side of a remote project this tree shows. `"remote"`
+   *  = the host source with the sync overlay + select-to-sync affordance; `"local"`
+   *  = the local mirror (browsed/watched as a plain local tree). Absent = a normal
+   *  local/remote project tree (no sync UI). */
+  syncSource?: "remote" | "local";
 }
 
 type GitStatusMap = Record<string, string>;
@@ -94,8 +106,21 @@ function GitMarker({ status }: { status: string | undefined }) {
   );
 }
 
-function pathToFileUri(path: string): string {
-  return `file://${path.split("/").map(encodeURIComponent).join("/")}`;
+
+// Native drag-out (tauri-plugin-drag) needs the OS drag-preview icon as a base64
+// PNG data URL (its icon field rejects a bare path), read synchronously inside
+// the `dragstart` gesture. The backend returns that data URL; cache it
+// process-wide so every file row shares one warm-up (kicked off at mount) and
+// reads it without awaiting.
+let dragIconDataUrl = "";
+let dragIconPromise: Promise<string> | null = null;
+function warmDragIcon(): Promise<string> {
+  if (!dragIconPromise) {
+    dragIconPromise = invoke<string>("drag_preview_icon")
+      .then((p) => (dragIconDataUrl = p))
+      .catch(() => "");
+  }
+  return dragIconPromise;
 }
 
 function shellQuote(value: string): string {
@@ -114,6 +139,7 @@ export function FileTree({
   shownPaths = [],
   initialRelPath = "",
   onRelPathChange,
+  syncSource,
 }: Props) {
   const [rawEntries, setRawEntries] = useState<FileEntry[]>([]);
   // Which files can be embedded as a frameless in-tab app (Group K #40). Keyed
@@ -135,20 +161,44 @@ export function FileTree({
     }
   });
   const [scaffoldExpanded, setScaffoldExpanded] = useState(false);
-  // Whether the Alt key is currently held. While held, file rows arm NATIVE
-  // HTML5 drag-and-drop (export the file to an embedded browser / external
-  // target) instead of the pointer-based drag-to-tab. The two can't both be
-  // armed on the same drag (native DnD fires pointercancel on WebKitGTK and
-  // breaks the pointer drag — see onEntryPointerDown's R6 note), so Alt is the
-  // explicit switch. Tracked as state so `draggable` re-evaluates per row when
-  // Alt is pressed/released.
-  const [altHeld, setAltHeld] = useState(false);
+  // Whether the Ctrl key is currently held. While held, file rows arm NATIVE
+  // HTML5 drag-and-drop (export/copy the file to an embedded browser / external
+  // target like Signal) instead of the pointer-based drag-to-tab. The two can't
+  // both be armed on the same drag (native DnD fires pointercancel on WebKitGTK
+  // and breaks the pointer drag — see onEntryPointerDown's R6 note), so Ctrl is
+  // the explicit switch. Tracked as state so `draggable` re-evaluates per row
+  // when Ctrl is pressed/released.
+  const [ctrlHeld, setCtrlHeld] = useState(false);
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
+  // Drag-to-move: the rel path of the folder / breadcrumb under the cursor while
+  // a file is being dragged (null = none). The ref carries the live value into
+  // the drag's window-bound release handler (which captured an earlier closure);
+  // the state drives the drop-target highlight and only changes when the hovered
+  // target changes (not every pointermove), so the tree re-renders rarely.
+  const moveTargetRef = useRef<string | null>(null);
+  const [moveTargetRel, setMoveTargetRel] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
   const [defaultAppFor, setDefaultAppFor] = useState<FileEntry | null>(null);
   const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
   const [pasteBusy, setPasteBusy] = useState(false);
+  // SSH-sync Phase 2: project-relative paths whose push was blocked by a stale
+  // host base, awaiting the user's keep-local / take-host / skip choice. The
+  // first is shown in the conflict modal; resolving advances the queue.
+  const [pushConflicts, setPushConflicts] = useState<string[]>([]);
+  const [pushBusy, setPushBusy] = useState(false);
+  // SSH-sync: the amber "resolve" popup for a diverged file — its local+host
+  // metadata, the git diff when one is available (null until loaded, "" = none),
+  // and the take-local/take-remote busy flag.
+  const [syncResolve, setSyncResolve] = useState<{
+    entry: FileEntry;
+    rel: string;
+    meta: SyncFileMeta | null;
+    diff: string | null;
+    loading: boolean;
+    busy: boolean;
+    error: string | null;
+  } | null>(null);
   // Whether the system clipboard holds an image when the context menu opened
   // (probed async on right-click), gating the "Paste screenshot" option.
   const [clipboardImage, setClipboardImage] = useState(false);
@@ -166,6 +216,40 @@ export function FileTree({
   const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
   const runningScripts = useActivityStore((s) => s.runningScripts);
   const runScript = useActivityStore((s) => s.runScript);
+  // Mount-free remote (Phase 2): a remote project lists over SFTP and has no
+  // local inotify watcher, so we skip the fs-watch wiring and offer a manual
+  // refresh control instead. Local projects keep live watch-driven updates.
+  const isRemote = useProjectsStore(
+    (s) => !!s.projects.find((p) => p.id === projectId)?.remote,
+  );
+  // SSH-sync Phase 1: the local mirror source (`syncSource === "local"`) is a
+  // plain LOCAL tree even though its project is remote — it lists/​watches the
+  // local mirror dir and is never gated on the SSH pool. Only a remote-SOURCE
+  // tree dispatches its listing over SFTP. `remoteListing` is the flag the
+  // watch/refresh-bar/pool-gate logic below keys on.
+  const treatLocal = syncSource === "local";
+  const remoteListing = isRemote && !treatLocal;
+  // SSH-sync overlay state for the remote source: per-path green/amber/none + the
+  // in-flight transfer progress. Only consulted in the remote-source view.
+  const syncStatus = useSyncStore((s) => (projectId ? s.byProject[projectId] : undefined));
+  const syncProgress = useSyncStore((s) => (projectId ? s.progressByProject[projectId] : undefined));
+  const refreshSyncStatus = useSyncStore((s) => s.refreshStatus);
+  const syncPull = useSyncStore((s) => s.pull);
+  const syncPush = useSyncStore((s) => s.push);
+  const syncFileMeta = useSyncStore((s) => s.fileMeta);
+  const syncMarkSelected = useSyncStore((s) => s.markSelected);
+  const syncSetAuto = useSyncStore((s) => s.setAuto);
+  // A remote project's `list_dir`/`git_file_statuses` dispatch over SSH/SFTP on
+  // the backend. Those are SYNCHRONOUS Tauri commands (they run on the main
+  // thread), so calling them while the pooled connection is down blocks on the
+  // dead SSH session and FREEZES the whole window. Gate every listing on the pool
+  // being "connected": until then the tree shows a disconnected note instead of
+  // issuing any remote call. Reconnect (header lamp / center placeholder) brings
+  // the pool up, flips this true, and the load effect re-runs.
+  const remoteSshState = useRemoteStatusStore((s) =>
+    projectId ? s.byProject[projectId]?.ssh : undefined,
+  );
+  const remoteBlocked = remoteListing && remoteSshState !== "connected";
 
   const entries = useMemo(
     () => visibleEntries(rawEntries, {
@@ -248,12 +332,16 @@ export function FileTree({
     return () => { cancelled = true; };
   }, []);
 
-  // Track Alt so file rows can switch to native DnD (export to browser) while
-  // it's held. Also clear on blur/visibility loss so a release that happens
-  // while another window has focus doesn't leave rows stuck in native-drag mode.
+  // Track Ctrl so file rows can switch to native DnD (export/copy to browser or
+  // an external app) while it's held. Also clear on blur/visibility loss so a
+  // release that happens while another window has focus doesn't leave rows stuck
+  // in native-drag mode.
   useEffect(() => {
-    const sync = (e: KeyboardEvent) => setAltHeld(e.altKey);
-    const clear = () => setAltHeld(false);
+    // Warm the native drag-out preview icon so its path is ready (sync-readable)
+    // by the time the user starts a Ctrl-drag.
+    void warmDragIcon();
+    const sync = (e: KeyboardEvent) => setCtrlHeld(e.ctrlKey);
+    const clear = () => setCtrlHeld(false);
     window.addEventListener("keydown", sync);
     window.addEventListener("keyup", sync);
     window.addEventListener("blur", clear);
@@ -266,15 +354,61 @@ export function FileTree({
 
   useEffect(() => {
     if (!projectDir) return;
+    // Don't list a disconnected remote project's tree — the sync list_dir/
+    // git_file_statuses commands would block the main thread on the dead SSH pool
+    // and freeze the app. Re-runs once the pool connects (remoteBlocked flips).
+    if (remoteBlocked) return;
     load(initialRelPath ?? "");
-  }, [projectDir]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectDir, remoteBlocked]);
+
+  // SSH-sync Phase 1: keep the sync overlay fresh — re-stat selected files
+  // whenever the tree (re)lists. Runs for both the remote-source tree and the
+  // local-mirror tree (the marker is symmetric); `remoteBlocked` only ever gates
+  // the remote-source case; the mirror tree keeps working offline off the last-
+  // known manifest state (the backend falls back gracefully when the pool is
+  // down — see `sync_status`).
+  useEffect(() => {
+    if (isRemote && projectId && !remoteBlocked) {
+      void refreshSyncStatus(projectId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRemote, projectId, remoteBlocked, relPath]);
+
+  // SSH-sync: the host tree has no change watcher (inotify can't see the SFTP
+  // tree), so a remote-side edit wouldn't flip a file to amber until the user
+  // re-lists — and the local-mirror view has no re-list button at all. Re-stat
+  // the SELECTED files (cheap metadata over the pooled ControlMaster — NOT a
+  // tree re-list) whenever Eldrun regains focus and on a light interval, so a
+  // remote-only divergence surfaces on its own shortly after it happens instead
+  // of silently going stale. Gated on a live pool so a cold connection never
+  // re-stats (which would report stale green); runs for both the remote-source
+  // and local-mirror views (the amber marker is symmetric).
+  useEffect(() => {
+    if (!isRemote || !projectId || remoteSshState !== "connected") return;
+    const refresh = () => { void refreshSyncStatus(projectId); };
+    window.addEventListener("focus", refresh);
+    // Only tick while Eldrun is focused: a backgrounded window doesn't need to
+    // keep re-stat'ing the host every 15 s (the `focus` listener re-stats on
+    // return anyway), which keeps an idle remote project off the wire.
+    const id = window.setInterval(() => {
+      if (document.hasFocus()) refresh();
+    }, 15000);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.clearInterval(id);
+    };
+  }, [isRemote, projectId, remoteSshState, refreshSyncStatus]);
 
   // Live updates: watch the currently-displayed directory on the backend and
   // re-fetch when it changes, so files created/removed by terminals, agents, or
   // other processes appear without manual navigation. Re-points to the new
   // directory whenever relPath changes; tears down on unmount/panel close.
   useEffect(() => {
-    if (!projectDir) return;
+    // Remote projects have no local fs watcher (inotify can't see the SFTP tree);
+    // they refresh manually via the toolbar button. Skip the watch wiring. The
+    // local mirror source IS a real local dir, so it keeps live watch updates.
+    if (!projectDir || remoteListing) return;
     const absDir = relPath ? `${projectDir}/${relPath}` : projectDir;
     let unlisten: (() => void) | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -297,9 +431,12 @@ export function FileTree({
       invoke("unwatch_dir").catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectDir, relPath]);
+  }, [projectDir, relPath, remoteListing]);
 
   async function load(rel: string) {
+    // Never issue the (synchronous, main-thread) remote listing commands while the
+    // pool is down — they would freeze the window. See `remoteBlocked`.
+    if (remoteBlocked) return;
     setLoading(true);
     setError(null);
     try {
@@ -327,6 +464,7 @@ export function FileTree({
   // Replacing rawEntries/gitStatuses on every event (a single write emits a
   // burst) is what caused the tree to flicker, so we diff before committing.
   async function refresh(rel: string) {
+    if (remoteBlocked) return;
     let result: FileEntry[];
     try {
       result = await invoke<FileEntry[]>("list_dir", { projectDir, relPath: rel });
@@ -384,16 +522,23 @@ export function FileTree({
   }
 
   function handleEntryDragStart(e: React.DragEvent<HTMLDivElement>, entry: FileEntry) {
-    const fileUri = pathToFileUri(entry.path);
-    e.dataTransfer.effectAllowed = "copy";
-    e.dataTransfer.setData("text/uri-list", fileUri);
-    e.dataTransfer.setData("text/plain", entry.path);
-    if (!entry.is_dir) {
-      e.dataTransfer.setData(
-        "DownloadURL",
-        `${entry.mime || "application/octet-stream"}:${entry.name}:${fileUri}`,
+    // WebKitGTK's HTML5 drag-out renders no drag image outside the window and
+    // doesn't reliably export the file to other apps, so suppress it and hand
+    // off to the native OS drag (tauri-plugin-drag): real OLE/NSDragging/GTK
+    // drag, with an OS-rendered icon that crosses into Signal / a browser / a
+    // file manager / the desktop. `mode: "copy"` so the file is never MOVED out
+    // of the project. The preview icon path was warmed at mount (warmDragIcon).
+    e.preventDefault();
+    const begin = (icon: string) =>
+      startDrag({ item: [entry.path], icon, mode: "copy" }).catch((err) =>
+        // Surfaces the most common failure: the backend wasn't rebuilt, so the
+        // `plugin:drag|start_drag` command (and `drag_preview_icon`) don't exist
+        // yet — the drag silently no-ops. Log it so the cause is visible.
+        console.error("[eldrun] native file drag-out failed:", err),
       );
-    }
+    // The icon data URL is normally warm by drag time; if not, resolve first.
+    if (dragIconDataUrl) void begin(dragIconDataUrl);
+    else void warmDragIcon().then(begin);
   }
 
   // Start a pointer-based drag from a file row, mirroring TabBar.onTabPointerDown.
@@ -411,26 +556,45 @@ export function FileTree({
   function onEntryPointerDown(
     e: React.PointerEvent,
     entry: FileEntry,
-    viewer: InternalViewer | null,
+    dragTarget: InternalViewer | "embed" | null,
   ) {
     if (e.button !== 0 || entry.is_dir) return;
-    // Alt held → the user wants to EXPORT this file (drag it into an embedded
-    // browser / external target) via native HTML5 DnD, which the row arms while
-    // `altHeld` (see renderEntry's `draggable`/`onDragStart`). Bail out without
-    // preventDefault so native DnD takes over instead of the pointer drag-to-tab.
-    if (e.altKey) return;
+    // A built-in viewer drives the in-app drop; "embed" means an external
+    // handler, so no viewer. `canTab` is whether this file can land on a tab bar
+    // / new window at all — only such files take the commitFileDrop path on
+    // release. Files without a tab target are still draggable, but ONLY to move
+    // them into a folder (drag-to-move); released anywhere else they do nothing.
+    const viewer = dragTarget === "embed" ? null : dragTarget;
+    const canTab = dragTarget != null;
+    const sourceRel = relForEntry(entry);
+    // Ctrl held → the user wants to EXPORT/COPY this file out to another app
+    // (Signal, a browser, a file manager). The row arms HTML5 `draggable` while
+    // `ctrlHeld` (see renderEntry); its onDragStart suppresses the broken
+    // WebKitGTK drag and hands off to the native OS drag (handleEntryDragStart).
+    // Bail out here without preventDefault so that gesture takes over instead of
+    // the pointer drag-to-tab.
+    if (e.ctrlKey) return;
     // Let the inline run (▶) button own its own clicks — don't seed a drag or
     // swallow the click when the press lands on it.
     if ((e.target as HTMLElement).closest(".file-run-btn")) return;
     e.preventDefault();
     const startX = e.clientX;
     const startY = e.clientY;
+    const pointerId = e.pointerId;
+    const captureEl = e.currentTarget as HTMLElement;
     let dragging = false;
     // #42: an open popout of the current scope is a valid drop target — releasing
     // the file over one docks it there as an embed tab instead of spawning a new
     // window. SAME shared session the tab drag (TabBar) uses, so a file dragged
     // over a popout behaves exactly like one dragged over the main window.
     const detached = startDetachedDropSession();
+
+    // Latest in-window client coords ("outside this window" test) and the latest
+    // physical desktop cursor (cross-window hit-test, poll-driven — see lib/coords;
+    // DOM screenX/Y units diverge across WebKitGTK/WebView2/WKWebView).
+    let lastClient = { x: startX, y: startY };
+    let lastPhys: PhysPoint | null = null;
+    let stopPoll: (() => void) | null = null;
 
     const onMove = (ev: PointerEvent) => {
       if (!dragging) {
@@ -454,78 +618,191 @@ export function FileTree({
         }
         // Begin resolving popout drop targets now that a real drag is underway.
         void detached.resolve();
+        // Capture the terminal pointer event on engines that don't keep delivering
+        // it past the source window's HWND (Win/mac); WebKitGTK keeps the implicit
+        // grab, so the flag leaves capture off there.
+        if (dragPlatform.needsPointerCapture) {
+          try {
+            captureEl.setPointerCapture(pointerId);
+          } catch {
+            /* capture is best-effort; the OS-cursor poll does not depend on it */
+          }
+        }
+        // Poll the OS cursor (physical desktop px) to drive the popout hover past
+        // the main viewport — DOM pointermove may not cross the OS window boundary.
+        stopPoll = startCursorPoll((p) => {
+          lastPhys = p;
+          detached.hover(detached.at(p), p, entry.name);
+        });
       }
+      lastClient = { x: ev.clientX, y: ev.clientY };
       useDragStore.getState().move(ev.clientX, ev.clientY);
-      // Drive the drop preview in the popout under the cursor (if any) — it
-      // resolves the pane and renders the per-pane preview. screenX/Y stay valid
-      // past the main viewport thanks to the pointer's implicit grab.
-      detached.hover(detached.at(ev.screenX, ev.screenY), ev.screenX, ev.screenY, entry.name);
+      // Drag-to-move: highlight the folder row / breadcrumb / up button under the
+      // cursor as the destination. The drag ghost is pointer-events:none, so
+      // elementFromPoint reaches the rows beneath it. A target whose rel matches
+      // the file's current folder is a no-op and is ignored.
+      const overEl = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+      const moveEl = overEl?.closest<HTMLElement>("[data-move-rel]") ?? null;
+      const moveRel = moveEl?.getAttribute("data-move-rel") ?? null;
+      setMoveTarget(moveRel != null && moveRel !== relPath ? moveRel : null);
     };
-    const onUp = async (ev: PointerEvent) => {
+
+    // Tear down the move listener, poll, popout highlight, and pointer capture —
+    // however the gesture resolves.
+    const cleanup = () => {
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      // Clear the popout highlight + tear down the panes listener, however this
-      // release resolves. `targetAt` still hit-tests the cached pane geometry.
+      setMoveTarget(null);
+      stopPoll?.();
+      // Clear the popout highlight + tear down the panes listener. `targetAt`
+      // still hit-tests the cached pane geometry for the commit below.
       detached.dispose();
+      if (dragPlatform.needsPointerCapture) {
+        try {
+          captureEl.releasePointerCapture(pointerId);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
+    const commitRelease = async (shiftKey: boolean) => {
+      cleanup();
       if (!dragging) {
         // Never moved → a plain click does NOT open. Opening a file is a
         // double-click (onDoubleClick → handleClick); dragging it onto a tab bar
         // is the other gesture. So a single click is a no-op here.
         return;
       }
+      // Drag-to-move takes precedence: released over a folder / breadcrumb in the
+      // tree → relocate the file there. This is the one gesture available to ALL
+      // files (even those with no tab/viewer target).
+      const moveRel = moveTargetRef.current;
+      if (moveRel != null) {
+        useDragStore.getState().end();
+        await moveEntryToFolder(sourceRel, entry.name, moveRel);
+        return;
+      }
       const d = useDragStore.getState().drag;
       if (d == null) return;
+      // A file with no tab/viewer/embed target can only be moved (handled above);
+      // released anywhere else it does nothing — never leak it out as an external
+      // open or an empty embed tab.
+      if (!canTab) {
+        useDragStore.getState().end();
+        return;
+      }
+      // Final physical cursor at release (a fresh read; falls back to the last
+      // poll reading if the IPC fails). This is the canonical cross-window space.
+      const phys = (await desktopCursor().catch(() => null)) ?? lastPhys;
       // Released over an open popout → dock the file into it as an embed tab,
       // landing in the SPECIFIC pane the popout resolved under the cursor (mirrors
-      // a tab dragged onto a popout). Re-hit-test at the release coords. BUT only
-      // if the popout is actually the front window at the drop point: its bounds
-      // can geometrically contain the cursor while it sits BEHIND the main window
-      // (the press raised the main window) or another app. Docking into a popout
-      // the user can't see is wrong — treat an occluded popout like a release into
-      // empty space outside the window so a NEW detached window opens instead.
-      const overDetached = detached.at(ev.screenX, ev.screenY);
+      // a tab dragged onto a popout). BUT only if the popout is actually the front
+      // window at the drop point: its bounds can geometrically contain the cursor
+      // while it sits BEHIND the main window (the press raised the main window) or
+      // another app. Docking into a popout the user can't see is wrong — treat an
+      // occluded popout like a release into empty space so a NEW window opens.
+      // Shift forces a brand-new standalone window even when released over a
+      // front popout — the explicit "don't dock here, give me a fresh window"
+      // override the user asked for.
+      const overDetached = phys ? detached.at(phys) : null;
       const overFrontDetached =
+        !shiftKey &&
         overDetached &&
         (await invoke<boolean>("detached_window_frontmost", {
           registryId: overDetached.label,
         }).catch(() => true));
-      if (overDetached && overFrontDetached) {
+      if (overDetached && overFrontDetached && phys) {
         commitFileDrop(d, projectId, projectDir, null, {
           scope: overDetached.scope,
           groupId: overDetached.groupId,
-          target: detached.targetAt(overDetached, ev.screenX, ev.screenY),
+          target: detached.targetAt(overDetached, phys),
         });
         useDragStore.getState().end();
         return;
       }
       // Released OUTSIDE the main window (e.g. dragged onto another monitor), or
       // over an OCCLUDED popout (handled above): open the file in its own
-      // standalone detached window at the cursor. The pointer's implicit capture
-      // keeps delivering coords past the viewport, so client coords outside
-      // [0,inner) — or being over a popout's bounds at all — is the signal.
+      // standalone detached window at the cursor. Client coords outside [0,inner)
+      // — or being over a popout's bounds at all — is the signal. The new window's
+      // bounds feed Rust `.position(x,y)`, which is PHYSICAL → use the physical
+      // cursor, not DOM screen coords.
+      //
+      // Shift forces a new window even when released INSIDE the main window: the
+      // split/dock preview was suppressed during the drag (see CenterPanel's
+      // pointer-move handler), so the only sensible commit is a fresh window.
       const outside =
+        shiftKey ||
         !!overDetached ||
-        ev.clientX < 0 ||
-        ev.clientY < 0 ||
-        ev.clientX >= window.innerWidth ||
-        ev.clientY >= window.innerHeight;
-      const detachBounds = outside
-        ? {
-            x: Math.round(ev.screenX - 80),
-            y: Math.round(ev.screenY - 8),
-            w: 900,
-            h: 640,
-          }
-        : null;
+        lastClient.x < 0 ||
+        lastClient.y < 0 ||
+        lastClient.x >= window.innerWidth ||
+        lastClient.y >= window.innerHeight;
+      const detachBounds =
+        outside && phys
+          ? {
+              x: Math.round(phys.x - 80),
+              y: Math.round(phys.y - 8),
+              w: 900,
+              h: 640,
+            }
+          : null;
       commitFileDrop(d, projectId, projectDir, detachBounds);
       useDragStore.getState().end();
     };
+
+    // Escape / blur / a genuine pointercancel (Win/mac) aborts: tear down and drop
+    // any in-flight drag without committing.
+    const onAbort = () => {
+      cleanup();
+      if (dragging) useDragStore.getState().end();
+    };
+
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    bindDragRelease({ onCommit: (shiftKey) => void commitRelease(shiftKey), onAbort });
   }
 
   function relForEntry(entry: FileEntry): string {
     return relPath ? `${relPath}/${entry.name}` : entry.name;
+  }
+
+  // Set the current drag-to-move drop target (a folder rel path, "" = project
+  // root, null = none). Keeps the ref (read by the release handler) and the
+  // highlight state in sync; the setter is a no-op when unchanged so dragging
+  // over the same folder doesn't churn renders.
+  function setMoveTarget(rel: string | null) {
+    moveTargetRef.current = rel;
+    setMoveTargetRel((prev) => (prev === rel ? prev : rel));
+  }
+
+  // Relocate a dragged file into a folder shown in the tree (drag-to-move). The
+  // backend `move_path` works the same for local and remote (SFTP) projects. A
+  // name collision in the destination aborts with an error rather than silently
+  // clobbering — moving is meant to be safe.
+  async function moveEntryToFolder(sourceRel: string, name: string, destFolderRel: string) {
+    const destRel = destFolderRel ? `${destFolderRel}/${name}` : name;
+    setLoading(true);
+    setError(null);
+    try {
+      const exists = await invoke<boolean>("project_path_exists", {
+        projectDir,
+        relPath: destRel,
+      }).catch(() => false);
+      if (exists) {
+        setError(`"${name}" already exists in ${destFolderRel || "the project root"}`);
+        setLoading(false);
+        return;
+      }
+      await invoke("move_path", {
+        srcProjectDir: projectDir,
+        srcRel: sourceRel,
+        destProjectDir: projectDir,
+        destRel,
+      });
+      await load(relPath);
+    } catch (err) {
+      setError(String(err));
+      setLoading(false);
+    }
   }
 
   function showEntryContextMenu(e: React.MouseEvent<HTMLDivElement>, entry: FileEntry) {
@@ -568,6 +845,134 @@ export function FileTree({
       embedPath: entry.path,
       viewer: "diff",
     });
+  }
+
+  /** SSH-sync: open the amber "resolve" popup for a diverged file. Shows the
+   *  local vs host metadata (size/mtime) and, when the host copy yields a text
+   *  diff, the git diff itself; otherwise (binary / one side missing / no diff)
+   *  it just offers take-local / take-remote. Uses `relForEntry` for the correct
+   *  project-relative key — the old diff *tab* recomputed the rel from an
+   *  absolute path via the DiffView, which came out empty on the remote view
+   *  (the host path isn't under the local project dir) and made `sync_diff`
+   *  point at the mirror ROOT ("git could not access …/.tmpXXX"). */
+  function openSyncResolve(entry: FileEntry) {
+    setContextMenu(null);
+    if (!projectId) return;
+    const rel = relForEntry(entry);
+    setSyncResolve({ entry, rel, meta: null, diff: null, loading: true, busy: false, error: null });
+    // Fetch metadata and the git diff together; either may fail independently
+    // (a cold pool fails both; a binary/identical file just yields no diff).
+    void Promise.allSettled([
+      syncFileMeta(projectId, rel),
+      invoke<string>("sync_diff", { projectId, relPath: rel }),
+    ]).then(([metaR, diffR]) => {
+      setSyncResolve((s) => {
+        if (!s || s.rel !== rel) return s; // superseded by another open
+        return {
+          ...s,
+          loading: false,
+          meta: metaR.status === "fulfilled" ? metaR.value : null,
+          diff: diffR.status === "fulfilled" ? diffR.value : "",
+          error: metaR.status === "rejected" ? String(metaR.reason) : null,
+        };
+      });
+    });
+  }
+
+  /** Resolve the amber divergence: "remote" pulls the host copy over the mirror,
+   *  "local" force-pushes the mirror over the host. Both clear amber → green. */
+  async function resolveSyncDivergence(action: "local" | "remote") {
+    if (!syncResolve || !projectId) return;
+    const rel = syncResolve.rel;
+    setSyncResolve((s) => (s ? { ...s, busy: true, error: null } : s));
+    try {
+      if (action === "remote") await syncPull(projectId, rel);
+      else await syncPush(projectId, rel, true);
+      await refreshSyncStatus(projectId);
+      await load(relPath);
+      setSyncResolve(null);
+    } catch (err) {
+      setSyncResolve((s) => (s ? { ...s, busy: false, error: String(err) } : s));
+    }
+  }
+
+  // SSH-sync Phase 1: pull this file/folder into the local mirror (and mark it
+  // selected), or stop tracking it. Remote source view only.
+  async function syncEntryToLocal(entry: FileEntry) {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      await syncPull(projectId, relForEntry(entry));
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function stopSyncingEntry(entry: FileEntry) {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      await syncMarkSelected(projectId, [relForEntry(entry)], false, entry.is_dir);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  // Auto-sync: toggle background bidirectional sync for a file or (recursively) a
+  // folder. Turning it on implies tracking; the backend engine reconciles it on
+  // its next pass, skipping anything diverged (orange).
+  async function toggleAutoSyncEntry(entry: FileEntry, on: boolean) {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      await syncSetAuto(projectId, [relForEntry(entry)], on, entry.is_dir);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  // SSH-sync Phase 2: push a local mirror file/folder up to the host. A push that
+  // a host change would clobber is blocked and queued for per-file resolution.
+  async function pushEntryToHost(entry: FileEntry) {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      const { conflicts } = await syncPush(projectId, relForEntry(entry), false);
+      if (conflicts.length > 0) setPushConflicts(conflicts);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  // Push the whole local mirror up to the host (root context menu, local source).
+  async function pushAllToHost() {
+    setContextMenu(null);
+    if (!projectId) return;
+    try {
+      const { conflicts } = await syncPush(projectId, "", false);
+      if (conflicts.length > 0) setPushConflicts(conflicts);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  // Resolve the first queued push conflict: keep-local force-pushes, take-host
+  // pulls the host copy back, skip drops it. Each advances the queue.
+  async function resolvePushConflict(action: "keep" | "host" | "skip") {
+    const rel = pushConflicts[0];
+    if (!rel || !projectId) return;
+    setPushBusy(true);
+    try {
+      if (action === "keep") await syncPush(projectId, rel, true);
+      else if (action === "host") await syncPull(projectId, rel);
+      // "skip" leaves both sides as-is.
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setPushBusy(false);
+      setPushConflicts((q) => q.slice(1));
+      await load(relPath);
+    }
   }
 
   async function updateGitignore(entry: FileEntry, action: "ignore" | "unignore") {
@@ -764,7 +1169,7 @@ export function FileTree({
     );
     if (prior) store.removeTab(prior.key);
     store.addTab({
-      label: pdfPath.split("/").filter(Boolean).pop() ?? pdfPath,
+      label: basename(pdfPath) || pdfPath,
       cmd: "",
       cwd: projectDir,
       kind: "embed",
@@ -848,6 +1253,19 @@ export function FileTree({
     );
   }
 
+  // Disconnected remote project: the tree can't be listed without freezing the
+  // app (sync remote commands on the main thread). Show a note and let the user
+  // reconnect from the header lamp; the tree re-lists once the pool is up.
+  if (remoteBlocked) {
+    return (
+      <div className="file-tree-empty">
+        {remoteSshState === "connecting"
+          ? "Connecting to the remote host…"
+          : "Disconnected — reconnect (header lamp) to browse files."}
+      </div>
+    );
+  }
+
   return (
     <div
       className={`file-tree${isDragOver ? " drag-over" : ""}`}
@@ -857,10 +1275,48 @@ export function FileTree({
       onMouseDown={() => setContextMenu(null)}
       onContextMenu={showRootContextMenu}
     >
-      {relPath && (
+      {remoteListing && (
+        <div className="file-tree-remote-bar" title="Remote project — live updates are off; refresh to re-list">
+          <button
+            className="file-tree-up file-tree-refresh"
+            onClick={() => { load(relPath); if (projectId) void refreshSyncStatus(projectId); }}
+            disabled={loading}
+            title="Refresh (re-list over SFTP)"
+            aria-label="Refresh"
+          >
+            ↻
+          </button>
+          <span className="file-tree-remote-label">remote</span>
+          {syncProgress && (
+            <span className="file-tree-sync-progress" title={`Syncing ${syncProgress.rel || "…"}`}>
+              ⟳ {syncProgress.done}/{syncProgress.total}
+            </span>
+          )}
+        </div>
+      )}
+      {relPath && (() => {
+        // Parent of the current folder — the up button doubles as a drag-to-move
+        // target ("move into the parent dir"). The breadcrumb crumbs cover the
+        // other ancestors (and ⌂ the project root).
+        const parentRel = relPath.split("/").filter(Boolean).slice(0, -1).join("/");
+        return (
         <div className="file-tree-breadcrumb">
-          <button className="file-tree-up" onClick={goUp} title="Go up">↑</button>
-          <button className="file-tree-crumb" onClick={() => load("")} title="Project root">⌂</button>
+          <button
+            className={`file-tree-up${moveTargetRel === parentRel ? " move-drop-target" : ""}`}
+            data-move-rel={parentRel}
+            onClick={goUp}
+            title="Go up"
+          >
+            ↑
+          </button>
+          <button
+            className={`file-tree-crumb${moveTargetRel === "" ? " move-drop-target" : ""}`}
+            data-move-rel=""
+            onClick={() => load("")}
+            title="Project root"
+          >
+            ⌂
+          </button>
           {relPath.split("/").filter(Boolean).map((seg, i, arr) => {
             const target = arr.slice(0, i + 1).join("/");
             const isLast = i === arr.length - 1;
@@ -868,7 +1324,8 @@ export function FileTree({
               <React.Fragment key={target}>
                 <span className="file-tree-crumb-sep">/</span>
                 <button
-                  className={`file-tree-crumb${isLast ? " current" : ""}`}
+                  className={`file-tree-crumb${isLast ? " current" : ""}${moveTargetRel === target ? " move-drop-target" : ""}`}
+                  data-move-rel={target}
                   onClick={() => { if (!isLast) load(target); }}
                   title={target}
                 >
@@ -878,7 +1335,8 @@ export function FileTree({
             );
           })}
         </div>
-      )}
+        );
+      })()}
       {loading && <div className="file-tree-loading">Loading…</div>}
       {error && <div className="file-tree-error">{error}</div>}
       {!relPath && (
@@ -899,33 +1357,108 @@ export function FileTree({
           const isRunning = runningScripts.has(e.path);
           const isCompiling = compiling.has(e.path);
           const dragTarget = draggableToTab(e);
-          const viewer = dragTarget === "embed" ? null : dragTarget;
+          const isMoveTarget = e.is_dir && moveTargetRel === relForEntry(e);
+          // SSH-sync Phase 1: per-path mirror state, symmetric across the
+          // remote-source and local-mirror trees. Each non-resting state gets a
+          // colored action button left of the icon: red for `none` (not synced)
+          // — pull/push it; orange for `amber` (host diverged from our mirror) —
+          // view the diff. `green` (in sync) is the resting state and shows
+          // nothing.
+          const syncTracked = remoteListing || treatLocal;
+          const rel = syncTracked ? relForEntry(e) : "";
+          const syncState = syncTracked ? syncStatus?.[rel]?.state ?? "none" : "none";
+          // Auto-sync glyph: shown on both the remote and local trees when this
+          // path (or an ancestor auto folder) is set to auto-sync. Coexists with
+          // the amber ± button — an auto path that went orange is exactly what the
+          // user must resolve manually.
+          const autoSync = syncTracked ? !!syncStatus?.[rel]?.auto : false;
           return (
             <div
               key={e.path}
-              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold ? " scaffold" : ""}`}
+              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold ? " scaffold" : ""}${isMoveTarget ? " move-drop-target" : ""}`}
+              // Folders are drag-to-move destinations: dropping a dragged file
+              // here relocates it (hit-tested by data-move-rel in the drag).
+              data-move-rel={e.is_dir ? relForEntry(e) : undefined}
               // Dirs: single-click navigates + native DnD (file export).
               // Files, plain drag: pointer-based drag onto a tab bar for
               // drag-to-tab files (built-in viewer OR embeddable handler); R6 —
               // native DnD disabled then so it can't hijack the pointer. Opened
               // by double-click.
-              // Files, ALT held: arm native HTML5 DnD so any file can be dragged
-              // out into an embedded browser / external target (the pointer
-              // drag-to-tab bails on Alt, see onEntryPointerDown).
+              // Files, CTRL held: arm native HTML5 DnD so any file can be dragged
+              // out into an embedded browser / external target like Signal (the
+              // pointer drag-to-tab bails on Ctrl, see onEntryPointerDown).
               onClick={e.is_dir ? () => handleClick(e) : undefined}
               onDoubleClick={e.is_dir ? undefined : () => handleClick(e)}
               onContextMenu={(ev) => showEntryContextMenu(ev, e)}
-              draggable={e.is_dir || altHeld}
+              draggable={e.is_dir || ctrlHeld}
               onDragStart={
-                e.is_dir || altHeld
+                e.is_dir || ctrlHeld
                   ? (ev) => handleEntryDragStart(ev, e)
                   : (ev) => ev.preventDefault()
               }
-              onPointerDown={dragTarget ? (ev) => onEntryPointerDown(ev, e, viewer) : undefined}
+              // Every file arms the pointer drag — files with a tab/viewer target
+              // can drop onto a tab bar, and ALL files can be dragged into a
+              // folder to move them. Folders aren't dragged (they navigate).
+              onPointerDown={!e.is_dir ? (ev) => onEntryPointerDown(ev, e, dragTarget) : undefined}
               onMouseEnter={(ev) => handleEntryMouseEnter(ev, e)}
               onMouseLeave={() => setTooltip(null)}
             >
               <GitMarker status={status} />
+              {/* Fixed-width sync slot: always reserved on a sync-tracked tree so
+                  file/folder names stay left-aligned whether or not the row has an
+                  action button. `none` → red sync/push button; `amber` → orange
+                  diff button; `green` → empty (in sync). */}
+              {syncTracked && (
+                <span className="file-sync-slot">
+                  {syncState === "none" && (() => {
+                    const anyBusy = !!syncProgress;
+                    const thisBusy = syncProgress?.rel === rel;
+                    return (
+                      <button
+                        type="button"
+                        className={`file-sync-btn${thisBusy ? " busy" : ""}`}
+                        title={remoteListing ? "Sync to local" : "Push to host"}
+                        aria-label={remoteListing ? "Sync to local" : "Push to host"}
+                        disabled={anyBusy}
+                        onClick={(ev) => {
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                          void (remoteListing ? syncEntryToLocal(e) : pushEntryToHost(e));
+                        }}
+                      >
+                        {thisBusy ? <span className="file-run-spinner" /> : "⇄"}
+                      </button>
+                    );
+                  })()}
+                  {syncState === "amber" && !e.is_dir && (
+                    <button
+                      type="button"
+                      className="file-diff-btn"
+                      title="Host and local differ — compare and resolve"
+                      aria-label="Compare host vs local and resolve"
+                      onClick={(ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        openSyncResolve(e);
+                      }}
+                    >
+                      ±
+                    </button>
+                  )}
+                  {/* Auto-sync indicator (non-interactive): only when the slot has
+                      no action button, so it never crowds out the red/orange
+                      controls. Amber auto paths still show ± (needs resolving). */}
+                  {autoSync && syncState === "green" && (
+                    <span
+                      className="file-autosync-icon"
+                      title="Auto-syncing"
+                      aria-label="Auto-syncing"
+                    >
+                      ⟳
+                    </span>
+                  )}
+                </span>
+              )}
               {canRun && (
                 <button
                   type="button"
@@ -1010,6 +1543,14 @@ export function FileTree({
               <button onClick={() => createEntry("dir")}>
                 New Folder
               </button>
+              {treatLocal && (
+                <>
+                  <hr />
+                  <button onClick={() => pushAllToHost()}>
+                    Push all to host
+                  </button>
+                </>
+              )}
               {(clipboard || clipboardImage) && <hr />}
               {clipboard && (
                 <button onClick={openPastePrompt}>
@@ -1028,8 +1569,49 @@ export function FileTree({
             const status = gitStatuses[entry.name];
             const isTex = !entry.is_dir && entry.extension === ".tex";
             const isZip = !entry.is_dir && entry.extension === ".zip";
+            const entryRel = relForEntry(entry);
+            const syncSel = remoteListing ? syncStatus?.[entryRel]?.selected : false;
+            // Auto-sync is symmetric across the remote/local trees (both are
+            // sync-tracked); read the effective flag either way.
+            const syncTracked = remoteListing || treatLocal;
+            const autoOn = syncTracked ? !!syncStatus?.[entryRel]?.auto : false;
             return (
               <>
+                {remoteListing && (
+                  <>
+                    <button onClick={() => syncEntryToLocal(entry)}>
+                      {entry.is_dir ? "Sync folder to local" : "Sync to local"}
+                    </button>
+                    {syncSel && (
+                      <button onClick={() => stopSyncingEntry(entry)}>
+                        Stop syncing
+                      </button>
+                    )}
+                    <hr />
+                  </>
+                )}
+                {treatLocal && (
+                  <>
+                    <button onClick={() => pushEntryToHost(entry)}>
+                      {entry.is_dir ? "Push folder to host" : "Push to host"}
+                    </button>
+                    <hr />
+                  </>
+                )}
+                {syncTracked && (
+                  <>
+                    <button onClick={() => toggleAutoSyncEntry(entry, !autoOn)}>
+                      {autoOn
+                        ? entry.is_dir
+                          ? "Stop auto-syncing folder"
+                          : "Stop auto-syncing"
+                        : entry.is_dir
+                          ? "Auto-sync this folder"
+                          : "Auto-sync this file"}
+                    </button>
+                    <hr />
+                  </>
+                )}
                 {isZip && (
                   <>
                     <button onClick={() => extractArchive(entry)}>
@@ -1126,6 +1708,141 @@ export function FileTree({
         </div>,
         document.body,
       )}
+      {pushConflicts.length > 0 && createPortal(
+        <div className="modal-backdrop" onMouseDown={() => !pushBusy && resolvePushConflict("skip")}>
+          <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
+            <h2>Host changed since last sync</h2>
+            <p>
+              <strong>{basename(pushConflicts[0]) || pushConflicts[0]}</strong> was
+              modified on the host since you last synced it. Pushing your local copy
+              would overwrite that change.
+            </p>
+            <div className="file-delete-path">{pushConflicts[0]}</div>
+            {pushConflicts.length > 1 && (
+              <p style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {pushConflicts.length - 1} more conflict{pushConflicts.length - 1 > 1 ? "s" : ""} after this.
+              </p>
+            )}
+            <div className="file-delete-actions">
+              <button type="button" disabled={pushBusy} onClick={() => resolvePushConflict("skip")}>
+                Skip
+              </button>
+              <button type="button" disabled={pushBusy} onClick={() => resolvePushConflict("host")}>
+                Take host
+              </button>
+              <button type="button" className="danger" disabled={pushBusy} onClick={() => resolvePushConflict("keep")}>
+                Keep local
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+      {syncResolve && createPortal(
+        <div className="modal-backdrop" onMouseDown={() => !syncResolve.busy && setSyncResolve(null)}>
+          <div
+            className="file-delete-dialog"
+            style={{ maxWidth: 560, width: "min(560px, 92vw)" }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h2>Local and host differ</h2>
+            <div className="file-delete-path">{syncResolve.rel}</div>
+            {syncResolve.loading ? (
+              <p style={{ color: "var(--text-muted)" }}>Comparing local mirror and host…</p>
+            ) : syncResolve.meta ? (
+              (() => {
+                const { local, host } = syncResolve.meta!;
+                const sizeDiff = local.size !== host.size;
+                const timeDiff = (local.mtime ?? null) !== (host.mtime ?? null);
+                const cell = (present: boolean, text: string, diff: boolean) => (
+                  <td style={{ padding: "3px 10px", color: !present ? "var(--text-muted)" : diff ? "var(--warning, #d29922)" : "var(--text-primary)" }}>
+                    {present ? text : "—"}
+                  </td>
+                );
+                return (
+                  <table style={{ borderCollapse: "collapse", margin: "6px 0", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ color: "var(--text-muted)" }}>
+                        <th style={{ textAlign: "left", padding: "3px 10px", fontWeight: 500 }} />
+                        <th style={{ textAlign: "left", padding: "3px 10px", fontWeight: 600 }}>Local</th>
+                        <th style={{ textAlign: "left", padding: "3px 10px", fontWeight: 600 }}>Host (remote)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td style={{ padding: "3px 10px", color: "var(--text-muted)" }}>Present</td>
+                        {cell(true, local.exists ? "yes" : "no", local.exists !== host.exists)}
+                        {cell(true, host.exists ? "yes" : "no", local.exists !== host.exists)}
+                      </tr>
+                      <tr>
+                        <td style={{ padding: "3px 10px", color: "var(--text-muted)" }}>Size</td>
+                        {cell(local.exists, fmtSize(local.size), sizeDiff)}
+                        {cell(host.exists, fmtSize(host.size), sizeDiff)}
+                      </tr>
+                      <tr>
+                        <td style={{ padding: "3px 10px", color: "var(--text-muted)" }}>Modified</td>
+                        {cell(local.exists, fmtModified(local.mtime) || "—", timeDiff)}
+                        {cell(host.exists, fmtModified(host.mtime) || "—", timeDiff)}
+                      </tr>
+                    </tbody>
+                  </table>
+                );
+              })()
+            ) : (
+              <p style={{ color: "var(--danger, #f85149)" }}>
+                {syncResolve.error ?? "Could not read file metadata."}
+              </p>
+            )}
+            {/* Git diff when one is available; otherwise a note pointing at the
+                take-local / take-remote choice below. */}
+            {!syncResolve.loading && (syncResolve.diff ? (
+              <pre
+                style={{
+                  maxHeight: 240, overflow: "auto", margin: "4px 0 0",
+                  padding: 8, fontSize: 11, lineHeight: 1.4,
+                  background: "var(--bg-inset, rgba(0,0,0,0.25))", borderRadius: 4,
+                  whiteSpace: "pre", fontFamily: "var(--font-mono, monospace)",
+                }}
+              >
+                {syncResolve.diff}
+              </pre>
+            ) : syncResolve.meta ? (
+              <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "4px 0 0" }}>
+                No line diff available (binary, identical text, or one side missing).
+                Choose which copy to keep.
+              </p>
+            ) : null)}
+            {syncResolve.meta && syncResolve.error && (
+              <p style={{ fontSize: 11, color: "var(--danger, #f85149)", margin: "4px 0 0" }}>
+                {syncResolve.error}
+              </p>
+            )}
+            <div className="file-delete-actions">
+              <button type="button" disabled={syncResolve.busy} onClick={() => setSyncResolve(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={syncResolve.busy || syncResolve.loading}
+                title="Pull the host copy over your local mirror"
+                onClick={() => void resolveSyncDivergence("remote")}
+              >
+                Take remote
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={syncResolve.busy || syncResolve.loading}
+                title="Force-push your local copy over the host"
+                onClick={() => void resolveSyncDivergence("local")}
+              >
+                Take local
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
       {pastePrompt && createPortal(
         <div className="modal-backdrop" onMouseDown={() => !pasteBusy && setPastePrompt(null)}>
           <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
@@ -1142,7 +1859,7 @@ export function FileTree({
                   {clipboard?.op === "cut" ? "Move" : "Copy"} <strong>{clipboard?.name}</strong>
                 </>
               )}{" "}
-              into <strong>{relPath || projectDir.split("/").pop() || "project root"}</strong> as:
+              into <strong>{relPath || basename(projectDir) || "project root"}</strong> as:
             </p>
             <input
               className="file-paste-name"

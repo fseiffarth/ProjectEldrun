@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { ViewerHeader } from "./FileViewerPane";
+import { useFileScope, readFileBytes } from "./fileAccess";
+import { basename } from "../../lib/paths";
 
 /**
  * Audio/video player viewer (Dev D). Plays `.mp3`/`.mp4`/`.webm`/… in-tab via
@@ -42,7 +43,7 @@ const VIDEO_EXTS = new Set(["mp4", "m4v", "webm", "mov", "mkv", "ogv"]);
 
 /** Lowercased extension (no dot) of a path, or "" when it has none. */
 function extOf(path: string): string {
-  const name = path.slice(path.lastIndexOf("/") + 1);
+  const name = basename(path);
   const dot = name.lastIndexOf(".");
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
@@ -54,6 +55,7 @@ function extOf(path: string): string {
  * the backend's large-file rejection) surfaces as `error`.
  */
 function useMediaBlobUrl(path: string, type: string) {
+  const scope = useFileScope();
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const urlRef = useRef<string | null>(null);
@@ -62,7 +64,7 @@ function useMediaBlobUrl(path: string, type: string) {
     let cancelled = false;
     setUrl(null);
     setError(null);
-    invoke<number[]>("read_file_bytes", { path })
+    readFileBytes(path, scope)
       .then((bytes) => {
         if (cancelled) return;
         const blob = new Blob([new Uint8Array(bytes)], type ? { type } : undefined);
@@ -78,7 +80,7 @@ function useMediaBlobUrl(path: string, type: string) {
     return () => {
       cancelled = true;
     };
-  }, [path, type]);
+  }, [path, type, scope]);
 
   // Revoke the last live URL on unmount.
   useEffect(

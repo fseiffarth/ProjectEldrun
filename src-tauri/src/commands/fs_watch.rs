@@ -29,6 +29,13 @@ pub fn watch_dir(
     state: State<'_, FsWatchState>,
     path: String,
 ) -> Result<(), String> {
+    // Mount-free remote (Phase 2): inotify cannot see a remote (SFTP) tree, and a
+    // remote project's watched dir is its non-fs mountpoint root. No-op so the
+    // remote file tree just relies on manual refresh; the frontend already skips
+    // watching for remote projects, this is belt-and-suspenders.
+    if crate::services::remote::remote_target_for_dir(&path).is_some() {
+        return Ok(());
+    }
     let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
 
     let mut guard = state.lock().unwrap();

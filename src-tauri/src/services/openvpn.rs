@@ -16,31 +16,51 @@
 //! (no leading `-`, no control characters) and passed to the child as a separate
 //! argv item.
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::collections::HashMap;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
+// `OpenOptionsExt::mode` is only used by `write_askpass`, which is compiled on
+// Linux/Windows but not macOS — scope its import to Linux to avoid an unused
+// import there (macOS still uses `PermissionsExt` in `store_config`).
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use std::process::{Child, Stdio};
+#[cfg(target_os = "linux")]
+use std::process::Command;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::sync::{Mutex, OnceLock};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::time::{Duration, Instant};
 
-use crate::services::ssh_mount::validate_arg;
+use serde::Serialize;
+
+use crate::services::ssh_common::validate_arg;
 use crate::storage;
 
 /// OpenVPN prints this once the tunnel is fully up.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const READY_MARKER: &str = "Initialization Sequence Completed";
 /// Give the tunnel this long to come up before we give up and kill it.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// A running tunnel: the `pkexec openvpn` child plus the pidfile OpenVPN wrote
-/// (so we can `pkexec kill` the root process on teardown).
+/// A running tunnel: the OpenVPN child plus the pidfile OpenVPN wrote. On Linux
+/// the child is `pkexec openvpn` and the pidfile lets us `pkexec kill` the root
+/// process; on Windows the child *is* `openvpn.exe`, torn down via its handle /
+/// `taskkill` (the pidfile is still written but unused for teardown).
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 struct VpnProc {
     child: Child,
     pidfile: PathBuf,
 }
 
 /// Process-global registry of live tunnels, keyed by config path.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn registry() -> &'static Mutex<HashMap<String, VpnProc>> {
     static REG: OnceLock<Mutex<HashMap<String, VpnProc>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
@@ -85,17 +105,144 @@ pub fn store_config(src: &str) -> Result<String, String> {
     Ok(dest.to_string_lossy().into_owned())
 }
 
-/// True if `openvpn` and `pkexec` are both available on `PATH`.
-pub fn openvpn_available() -> bool {
-    which_exists("openvpn") && which_exists("pkexec")
+/// A previously-used `.ovpn` config copied into Eldrun's store, offered for
+/// reuse so a config need only be browsed for once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoredConfig {
+    /// Absolute path to the stored copy (what callers pass to `connect`).
+    pub path: String,
+    /// Friendly display name (the original `.ovpn` file name).
+    pub name: String,
 }
 
-fn which_exists(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// List the `.ovpn` configs Eldrun has previously stored, newest first (by file
+/// mtime). Every config passed through [`store_config`] lands here, so the dir
+/// doubles as the "recently used" history. Returns empty if nothing is stored.
+pub fn list_configs() -> Vec<StoredConfig> {
+    let dir = configs_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut items: Vec<(std::time::SystemTime, StoredConfig)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let name = display_name(file_name);
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        items.push((
+            mtime,
+            StoredConfig {
+                path: path.to_string_lossy().into_owned(),
+                name,
+            },
+        ));
+    }
+    items.sort_by(|a, b| b.0.cmp(&a.0));
+    items.into_iter().map(|(_, c)| c).collect()
+}
+
+/// Recover an `.ovpn` config's display name from its stored file name. Stored
+/// as `{stem}__{original_name}`; `rsplit_once` keeps the last segment as the
+/// name (the stem can itself contain `__` since non-alnums collapse to `_`,
+/// while the original file name rarely does). Falls back to the whole name.
+fn display_name(file_name: &str) -> String {
+    file_name
+        .rsplit_once("__")
+        .map(|(_, n)| n.to_string())
+        .unwrap_or_else(|| file_name.to_string())
+}
+
+/// Single-quote `s` for a POSIX shell so a config path with spaces or
+/// metacharacters stays a single inert argument when the built command is typed
+/// into a terminal. Embedded single quotes become `'\''`.
+fn shell_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Build a ready-to-run shell command string that brings up the OpenVPN tunnel
+/// for `config` **interactively**, so the encrypted-key passphrase is typed
+/// directly into a visible terminal (no `--askpass` temp file, nothing for Eldrun
+/// to handle). Typed into a root-scope shell tab (see the frontend
+/// `openConnectionInRoot`) when headless connections are turned off.
+///
+/// Linux launches it elevated via `pkexec` (the tun device / routing need root);
+/// the polkit prompt comes first, then OpenVPN prompts for the passphrase on the
+/// same tty. `--auth-nocache` keeps the passphrase out of OpenVPN's memory across
+/// re-keys. Windows runs `openvpn.exe` directly (it must be started elevated).
+/// The config path is validated and shell-quoted as a single argument.
+#[cfg(target_os = "linux")]
+pub fn interactive_connect_command(config: &str) -> Result<String, String> {
+    let config = config.trim();
+    validate_arg("OpenVPN config", config)?;
+    if config.is_empty() {
+        return Err("OpenVPN config path must not be empty".to_string());
+    }
+    Ok(format!(
+        "pkexec openvpn --config {} --auth-nocache",
+        shell_quote(config)
+    ))
+}
+
+/// Windows variant: no `pkexec`; `openvpn.exe` must already be running elevated.
+#[cfg(target_os = "windows")]
+pub fn interactive_connect_command(config: &str) -> Result<String, String> {
+    let config = config.trim();
+    validate_arg("OpenVPN config", config)?;
+    if config.is_empty() {
+        return Err("OpenVPN config path must not be empty".to_string());
+    }
+    Ok(format!(
+        "openvpn --config {} --auth-nocache",
+        shell_quote(config)
+    ))
+}
+
+/// macOS has no wired OpenVPN backend yet (see [`connect`]).
+#[cfg(target_os = "macos")]
+pub fn interactive_connect_command(_config: &str) -> Result<String, String> {
+    Err("OpenVPN-gated projects are not yet supported on macOS".into())
+}
+
+/// True if `openvpn` and `pkexec` are both available on `PATH` (both are needed:
+/// OpenVPN to build the tunnel, polkit's `pkexec` to launch it elevated).
+#[cfg(target_os = "linux")]
+pub fn openvpn_available() -> bool {
+    crate::paths::binary_on_path("openvpn") && crate::paths::binary_on_path("pkexec")
+}
+
+/// True if `openvpn.exe` can be located (PATH, a per-user dir, or the standard
+/// `Program Files\OpenVPN\bin` location). Windows has no `pkexec`/polkit, so
+/// only the OpenVPN binary itself is probed (see [`connect`] for how elevation
+/// is handled).
+#[cfg(target_os = "windows")]
+pub fn openvpn_available() -> bool {
+    resolve_openvpn().is_some()
+}
+
+/// macOS has no wired OpenVPN backend yet (no `pkexec`/polkit analogue and the
+/// tunnel-management flow needs runtime testing), so VPN-gated projects report as
+/// unavailable rather than the crate failing to build.
+#[cfg(target_os = "macos")]
+pub fn openvpn_available() -> bool {
+    false
 }
 
 /// Build the `openvpn` argv (without the leading `pkexec`/`openvpn`) for a
@@ -150,6 +297,10 @@ fn safe_stem(config: &str) -> String {
 }
 
 /// Write `password` to an owner-only (0600) askpass file and return its path.
+/// On Windows the 0600 mode is skipped (no `mode()`); the file lives under the
+/// per-user `%APPDATA%\eldrun\openvpn` dir, which is already user-scoped, and is
+/// deleted as soon as OpenVPN has read it.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn write_askpass(stem: &str, password: &str) -> Result<PathBuf, String> {
     let dir = runtime_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create openvpn dir: {e}"))?;
@@ -166,7 +317,9 @@ fn write_askpass(stem: &str, password: &str) -> Result<PathBuf, String> {
 }
 
 /// True if a tunnel for `config` is currently up (registered and its process is
-/// still alive).
+/// still alive). Shared by Linux and Windows since both track the spawned child
+/// in [`registry`].
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn is_connected(config: &str) -> bool {
     let mut reg = registry().lock().unwrap();
     match reg.get_mut(config) {
@@ -183,10 +336,30 @@ pub fn is_connected(config: &str) -> bool {
     }
 }
 
+/// macOS stub: no tunnels are tracked, so none are ever connected.
+#[cfg(target_os = "macos")]
+pub fn is_connected(_config: &str) -> bool {
+    false
+}
+
 /// Bring up the OpenVPN tunnel for `config`, authenticating with `password`.
 /// No-op (returns `Ok`) if already connected. Blocks until OpenVPN reports the
 /// tunnel up, the process exits, or `CONNECT_TIMEOUT` elapses.
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub fn connect(config: &str, password: &str) -> Result<(), String> {
+    connect_streaming(config, password, |_| {})
+}
+
+/// Like [`connect`], but invokes `on_line` for every line OpenVPN emits while the
+/// tunnel comes up (stdout + stderr), so the caller can stream the live handshake
+/// into a read-only log. The callback runs on the calling thread, before the
+/// ready-marker check, so the marker line is reported too.
+#[cfg(target_os = "linux")]
+pub fn connect_streaming(
+    config: &str,
+    password: &str,
+    on_line: impl Fn(&str),
+) -> Result<(), String> {
     let config = config.trim();
     validate_arg("OpenVPN config", config)?;
     if !Path::new(config).is_file() {
@@ -223,8 +396,8 @@ pub fn connect(config: &str, password: &str) -> Result<(), String> {
         }
     };
 
-    // Stream stdout until the ready marker, EOF, or timeout.
-    let ready = wait_for_ready(&mut child);
+    // Stream stdout/stderr until the ready marker, EOF, or timeout.
+    let ready = wait_for_ready(&mut child, &on_line);
     // The passphrase has been read by now; remove it regardless of outcome.
     let _ = std::fs::remove_file(&askpass);
 
@@ -244,44 +417,102 @@ pub fn connect(config: &str, password: &str) -> Result<(), String> {
     }
 }
 
-/// Read the child's stdout until the ready marker appears (Ok), the stream ends
-/// (Err with the tail), or the timeout elapses (Err).
-fn wait_for_ready(child: &mut Child) -> Result<(), String> {
+/// Wait until OpenVPN reports the tunnel up (Ok), the process ends without the
+/// marker (Err with the tail), or [`CONNECT_TIMEOUT`] elapses (Err). Shared by
+/// Linux/Windows.
+///
+/// Both stdout *and* stderr are drained on background threads feeding a channel,
+/// and the wait loop blocks on `recv_timeout` rather than directly on a read.
+/// This is deliberate: a plain `for line in reader.lines()` only re-checks the
+/// deadline once a line arrives, so a child that emits *nothing* — e.g. `pkexec`
+/// blocked on a polkit prompt that is never answered (or has no agent), or a
+/// stalled handshake — would hang indefinitely instead of timing out. Reading
+/// stderr too means `pkexec`/driver errors (which never touch stdout) surface in
+/// the failure message instead of being lost.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn wait_for_ready(child: &mut Child, on_line: &dyn Fn(&str)) -> Result<(), String> {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "openvpn produced no stdout".to_string())?;
+    let stderr = child.stderr.take();
+
+    let (tx, rx) = mpsc::channel::<String>();
+    let tx_err = tx.clone();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            match line {
+                Ok(l) => {
+                    if tx.send(l).is_err() {
+                        break; // receiver gone (timed out / found marker)
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    match stderr {
+        Some(stderr) => {
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines() {
+                    match line {
+                        Ok(l) => {
+                            if tx_err.send(l).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        // No stderr pipe: drop the spare sender so the channel can disconnect
+        // once the stdout reader finishes (otherwise `Disconnected` never fires).
+        None => drop(tx_err),
+    }
+
     let start = Instant::now();
     let mut tail: Vec<String> = Vec::new();
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        if start.elapsed() > CONNECT_TIMEOUT {
-            return Err("OpenVPN connection timed out".to_string());
-        }
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
+    loop {
+        let remaining = match CONNECT_TIMEOUT.checked_sub(start.elapsed()) {
+            Some(r) if !r.is_zero() => r,
+            _ => return Err("OpenVPN connection timed out".to_string()),
         };
-        if line.contains(READY_MARKER) {
-            return Ok(());
+        match rx.recv_timeout(remaining) {
+            Ok(line) => {
+                // Surface every line (stdout + stderr) to the caller so the UI can
+                // render the live handshake, then keep the marker/tail bookkeeping.
+                on_line(&line);
+                if line.contains(READY_MARKER) {
+                    return Ok(());
+                }
+                tail.push(line);
+                if tail.len() > 8 {
+                    tail.remove(0);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                return Err("OpenVPN connection timed out".to_string());
+            }
+            // Both readers ended → the process exited without the marker.
+            Err(RecvTimeoutError::Disconnected) => {
+                let detail = tail.join("; ");
+                return if detail.is_empty() {
+                    Err("OpenVPN exited before the tunnel came up".to_string())
+                } else {
+                    Err(format!("OpenVPN failed: {detail}"))
+                };
+            }
         }
-        tail.push(line);
-        if tail.len() > 8 {
-            tail.remove(0);
-        }
-    }
-    // Stream ended without the marker → connection failed.
-    let detail = tail.join("; ");
-    if detail.is_empty() {
-        Err("OpenVPN exited before the tunnel came up".to_string())
-    } else {
-        Err(format!("OpenVPN failed: {detail}"))
     }
 }
 
 /// Tear down the tunnel for `config` if it is up. Best-effort: signals the root
 /// OpenVPN process via `pkexec kill` (reading the pid OpenVPN wrote), then reaps
 /// our child. A missing/already-dead tunnel is treated as success.
+#[cfg(target_os = "linux")]
 pub fn disconnect(config: &str) -> Result<(), String> {
     let proc = registry().lock().unwrap().remove(config);
     let Some(mut proc) = proc else {
@@ -295,6 +526,7 @@ pub fn disconnect(config: &str) -> Result<(), String> {
 }
 
 /// `pkexec kill` the pid recorded in `pidfile` (the root OpenVPN process).
+#[cfg(target_os = "linux")]
 fn kill_pidfile(pidfile: &Path) {
     let Ok(contents) = std::fs::read_to_string(pidfile) else {
         return;
@@ -311,7 +543,9 @@ fn kill_pidfile(pidfile: &Path) {
 }
 
 /// Tear down every live tunnel. Used at app exit; errors are swallowed so
-/// shutdown never blocks.
+/// shutdown never blocks. Shared by Linux/Windows (each dispatches to its own
+/// platform [`disconnect`]).
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn disconnect_all() {
     let keys: Vec<String> = {
         let reg = registry().lock().unwrap();
@@ -322,9 +556,197 @@ pub fn disconnect_all() {
     }
 }
 
+// --- Windows: best-effort tunnel management --------------------------------
+//
+// Windows has no `pkexec`/polkit, so there is no non-interactive privilege
+// escalation analogue. OpenVPN on Windows instead expects to run either elevated
+// (Administrator) or via the bundled OpenVPN interactive service. Eldrun spawns
+// `openvpn.exe` directly with the same `--askpass`-file credential flow as Linux
+// (the askpass file is cross-platform), suppressing the console window, parsing
+// stdout for the ready marker, and tracking the child so teardown can terminate
+// it via its handle / `taskkill`.
+//
+// NOTE (runtime-verify): creating the VPN adapter (TAP/Wintun) typically needs
+// Administrator rights. If Eldrun is not elevated, the spawn or the handshake
+// will fail and the error message points the user at running as Administrator.
+// A non-elevated flow would require integrating with the OpenVPN interactive
+// service (named-pipe IPC), which is out of scope and needs runtime testing.
+
+/// Actionable "openvpn not found" message for Windows.
+#[cfg(target_os = "windows")]
+const OPENVPN_MISSING: &str = "openvpn.exe not found — install OpenVPN (the community build, \
+     https://openvpn.net/community-downloads/) to use VPN-gated projects on Windows";
+
+/// Locate `openvpn.exe`: on `PATH`, in a per-user install dir, or under the
+/// standard `Program Files\OpenVPN\bin` location a GUI app's PATH usually omits.
+#[cfg(target_os = "windows")]
+fn resolve_openvpn() -> Option<PathBuf> {
+    if crate::paths::binary_on_path("openvpn") {
+        return Some(PathBuf::from("openvpn"));
+    }
+    if let Some(p) = crate::paths::resolve_offpath_binary("openvpn") {
+        return Some(p);
+    }
+    for key in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+        if let Some(pf) = std::env::var_os(key) {
+            let cand = PathBuf::from(pf)
+                .join("OpenVPN")
+                .join("bin")
+                .join("openvpn.exe");
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// Like [`connect`], but invokes `on_line` for every line OpenVPN emits while the
+/// tunnel comes up (stdout + stderr), so the caller can stream the live handshake
+/// into a read-only log.
+#[cfg(target_os = "windows")]
+pub fn connect_streaming(
+    config: &str,
+    password: &str,
+    on_line: impl Fn(&str),
+) -> Result<(), String> {
+    let config = config.trim();
+    validate_arg("OpenVPN config", config)?;
+    if !Path::new(config).is_file() {
+        return Err(format!("OpenVPN config not found: {config}"));
+    }
+    if is_connected(config) {
+        return Ok(());
+    }
+    let exe = resolve_openvpn().ok_or_else(|| OPENVPN_MISSING.to_string())?;
+
+    let stem = safe_stem(config);
+    let askpass = write_askpass(&stem, password)?;
+    let pidfile = runtime_dir().join(format!("{stem}.pid"));
+    let args = openvpn_args(config, &askpass, &pidfile)?;
+
+    // `command_no_window` adds CREATE_NO_WINDOW so the long-lived openvpn.exe
+    // does not own a flashing console window.
+    let spawn_result = crate::paths::command_no_window(&exe.to_string_lossy())
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    let mut child = match spawn_result {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = std::fs::remove_file(&askpass);
+            return Err(format!(
+                "failed to launch openvpn.exe: {e} — creating the VPN adapter usually \
+                 requires running Eldrun as Administrator"
+            ));
+        }
+    };
+
+    // Stream stdout/stderr until the ready marker, EOF, or timeout.
+    let ready = wait_for_ready(&mut child, &on_line);
+    // The passphrase has been read by now; remove it regardless of outcome.
+    let _ = std::fs::remove_file(&askpass);
+
+    match ready {
+        Ok(()) => {
+            registry()
+                .lock()
+                .unwrap()
+                .insert(config.to_string(), VpnProc { child, pidfile });
+            Ok(())
+        }
+        Err(msg) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!(
+                "{msg} — if this is a permissions/adapter error, run Eldrun as \
+                 Administrator or (re)install the OpenVPN TAP/Wintun driver"
+            ))
+        }
+    }
+}
+
+/// Tear down the tunnel for `config` if it is up. Best-effort: terminates the
+/// `openvpn.exe` child (and any descendants) via `taskkill /T`, then reaps it.
+/// A missing/already-dead tunnel is treated as success.
+#[cfg(target_os = "windows")]
+pub fn disconnect(config: &str) -> Result<(), String> {
+    let proc = registry().lock().unwrap().remove(config);
+    let Some(mut proc) = proc else {
+        return Ok(());
+    };
+    let pid = proc.child.id();
+    let _ = crate::paths::command_no_window("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output();
+    let _ = proc.child.kill();
+    let _ = proc.child.wait();
+    let _ = std::fs::remove_file(&proc.pidfile);
+    Ok(())
+}
+
+// --- macOS: not yet supported -----------------------------------------------
+//
+// macOS has no `pkexec`/polkit non-interactive escalation analogue, and driving
+// the bundled OpenVPN client (or Tunnelblick) needs runtime testing, so the
+// tunnel lifecycle is stubbed: connect errors with a clear message and the
+// teardown paths are no-ops. `is_connected`/`openvpn_available` already report
+// false above, so VPN-gated projects degrade gracefully rather than failing to
+// build.
+
+/// macOS stub: bringing up a tunnel is not implemented yet. (Shared `connect`
+/// wrapper above forwards here with a no-op callback.)
+#[cfg(target_os = "macos")]
+pub fn connect_streaming(
+    _config: &str,
+    _password: &str,
+    _on_line: impl Fn(&str),
+) -> Result<(), String> {
+    Err("OpenVPN-gated projects are not yet supported on macOS".into())
+}
+
+/// macOS stub: nothing is ever connected, so teardown is a no-op success.
+#[cfg(target_os = "macos")]
+pub fn disconnect(_config: &str) -> Result<(), String> {
+    Ok(())
+}
+
+/// macOS stub: no live tunnels to tear down at app exit.
+#[cfg(target_os = "macos")]
+pub fn disconnect_all() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_quote_wraps_and_escapes() {
+        assert_eq!(shell_quote("/home/u/a.ovpn"), "'/home/u/a.ovpn'");
+        assert_eq!(shell_quote("a b"), "'a b'");
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interactive_connect_command_linux_shape() {
+        let cmd = interactive_connect_command("/home/u/work.ovpn").unwrap();
+        // Elevated via pkexec; passphrase typed interactively (no --askpass file).
+        assert!(cmd.starts_with("pkexec openvpn --config "));
+        assert!(cmd.contains("'/home/u/work.ovpn'"));
+        assert!(cmd.contains("--auth-nocache"));
+        assert!(!cmd.contains("--askpass"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interactive_connect_command_rejects_bad_config() {
+        assert!(interactive_connect_command("-evil").is_err());
+        assert!(interactive_connect_command("/a\nb.ovpn").is_err());
+        assert!(interactive_connect_command("   ").is_err());
+    }
 
     #[test]
     fn openvpn_args_basic_shape() {
@@ -377,6 +799,15 @@ mod tests {
         assert!(stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
         // 40-char tail + '_' + 16 hex digits.
         assert!(stem.len() <= 40 + 1 + 16);
+    }
+
+    #[test]
+    fn display_name_recovers_original_from_stored() {
+        // `{stem}__{original}` → original; stem may contain `__`.
+        assert_eq!(display_name("_home_u_work_ovpn_abcd1234__work.ovpn"), "work.ovpn");
+        assert_eq!(display_name("a__b__client.conf"), "client.conf");
+        // No separator → whole name (defensive; shouldn't happen for stored copies).
+        assert_eq!(display_name("loose.ovpn"), "loose.ovpn");
     }
 
     #[test]

@@ -1,3 +1,5 @@
+import { relativePathWithin } from "../paths";
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -42,6 +44,10 @@ export type InternalViewer =
   | "table"
   | "notebook"
   | "diff"
+  // SSH-sync host-vs-mirror diff. Never auto-selected by extension — only opened
+  // explicitly from a diverged (amber) file's diff button; routed to `DiffView`
+  // in sync mode (backend `sync_diff`).
+  | "syncdiff"
   | "odt"
   | "media"
   | "html"
@@ -289,10 +295,7 @@ export function parentRel(path: string): string {
 }
 
 export function relFromAbs(projectDir: string, absPath: string): string {
-  const root = projectDir.replace(/\/+$/, "");
-  if (absPath === root) return "";
-  if (!absPath.startsWith(`${root}/`)) return "";
-  return absPath.slice(root.length + 1);
+  return relativePathWithin(projectDir, absPath) ?? "";
 }
 
 export function visibleEntries(

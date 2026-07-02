@@ -6,6 +6,13 @@ import { useSettingsStore } from "../../stores/settings";
 import { FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
 import type { GlobalAppEntry } from "../../types";
 import { resolveProjectDirectory } from "../../types";
+import { basename, IS_WINDOWS } from "../../lib/paths";
+
+// A platform-appropriate example path for the executable-picker placeholder
+// (a Windows .exe vs a Unix bin path).
+const EXEC_PLACEHOLDER = IS_WINDOWS
+  ? "Command path, e.g. C:\\Program Files\\Mozilla Firefox\\firefox.exe"
+  : "Command path, e.g. /usr/bin/firefox";
 
 export const GLOBAL_APP_ROLES: Array<{ key: string; label: string; fallback: string }> = [
   { key: "browser", label: "Browser", fallback: "🌐" },
@@ -178,7 +185,7 @@ export function GlobalAppBar() {
           <div className="global-app-edit-row">
             <input
               value={edit.exec}
-              placeholder="Command path, e.g. /usr/bin/firefox"
+              placeholder={EXEC_PLACEHOLDER}
               onChange={(event) => setEdit({ ...edit, exec: event.target.value })}
               onKeyDown={(event) => {
                 if (event.key === "Enter") saveEdit();
@@ -210,10 +217,6 @@ function orderedGlobalApps(apps: Record<string, GlobalAppEntry>): Array<[string,
   ];
 }
 
-function basename(path: string): string {
-  return path.split("/").filter(Boolean).pop() ?? "";
-}
-
 // Flags that make a screenshot tool begin interactive rectangular-region
 // selection immediately on launch, keyed by the executable's basename. Tools we
 // don't recognize fall through to launching with no extra arguments.
@@ -226,6 +229,9 @@ const SCREENSHOT_REGION_ARGS: Record<string, string[]> = {
   "xfce4-screenshooter": ["--region"],
   ksnip: ["--rectarea"],
   shutter: ["--select"],
+  // macOS built-in: `screencapture -i <outfile>` starts interactive selection,
+  // letting the user drag a rectangular region (or spacebar to grab a window).
+  screencapture: ["-i"],
 };
 
 function screenshotRegionArgs(exec: string): string[] {

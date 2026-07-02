@@ -31,12 +31,24 @@ pub struct Settings {
     pub git_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_scheme: Option<String>,
+    /// Global UI zoom factor for the whole interface (helps on high-DPI/4K
+    /// monitors). `1.0` (or unset) is 100% — the current default look. Applied
+    /// frontend-side as a CSS `zoom`; the backend only round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_zoom: Option<f32>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_host: Option<String>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_model: Option<String>,
+    /// Per-task local-model assignments set from the 🧠 menu's role chips. Maps a
+    /// task key (`"autocomplete"`, `"grammar"`, `"tabs"`) to the model name that
+    /// serves it, so several loaded models can run different jobs in parallel.
+    /// Optional + flat so older settings files round-trip cleanly; a task absent
+    /// here falls back to `ollama_model`. Frontend logic only — persisted here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_roles: Option<HashMap<String, String>>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_autostart: Option<bool>,
@@ -51,6 +63,23 @@ pub struct Settings {
     /// app/web. Only Claude supports the flag; other agents ignore it. Default ON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_remote_control: Option<bool>,
+    /// When true (the default), remote SSH/OpenVPN connections are made headlessly
+    /// in the background, with Eldrun handling the password transiently (sshpass /
+    /// askpass). When false, those connections are launched as interactive
+    /// terminal tabs in the Eldrun **root** scope so the password is typed directly
+    /// into the live terminal and Eldrun never handles it at all. Default ON
+    /// (headless) so existing behaviour is preserved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connections_headless: Option<bool>,
+    /// Header resource-monitor row toggles. Each defaults ON when unset so the
+    /// pill shows CPU/RAM/GPU by default; flip one off to hide that row. Shown in
+    /// every build (independent of `debug`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_cpu_usage: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_ram_usage: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_gpu_usage: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_apps: Option<HashMap<String, GlobalAppEntry>>,
     /// Minimum subwindow (split pane) width in px a divider drag may shrink a
@@ -66,6 +95,11 @@ pub struct Settings {
     /// counterpart for external changes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autosave: Option<bool>,
+    /// When true (the default), the in-app text/TeX editors tint recently typed
+    /// runs with a sequential new→old colour trail that fades as typing
+    /// continues. Defaults ON; only an explicit `false` disables it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_tint: Option<bool>,
     /// Per-file-type native-viewer preferences (#48), keyed by a type id derived
     /// from `fileUtils` (e.g. "tex", "text", "markdown"). Holds the opt-in
     /// autocomplete toggle (#45). Optional + flat so older settings files
@@ -143,5 +177,12 @@ impl Settings {
     /// Defaults ON when unset so existing settings files opt in automatically.
     pub fn agent_remote_control(&self) -> bool {
         self.agent_remote_control.unwrap_or(true)
+    }
+
+    /// Whether remote SSH/OpenVPN connections are made headlessly (Eldrun handles
+    /// the password) rather than as interactive root-terminal tabs. Defaults ON
+    /// (headless) when unset so existing behaviour is preserved.
+    pub fn connections_headless(&self) -> bool {
+        self.connections_headless.unwrap_or(true)
     }
 }

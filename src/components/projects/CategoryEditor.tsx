@@ -1,0 +1,141 @@
+import { useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import type { ProjectEntry } from "../../types";
+import { useProjectsStore } from "../../stores/projects";
+import {
+  categoryColor,
+  cleanCategories,
+  normalizeCategory,
+  projectCategories,
+} from "../../lib/categoryColor";
+
+/**
+ * Modal to manage a project's category tags. Categories color/group a project in
+ * both the 3D project cloud and the pill bar (see `categoryColor`). Existing
+ * categories across all projects are offered as toggle chips so tagging is a
+ * click, and a free-text field adds new ones. Reused by the pill and the
+ * blob-node right-click menus.
+ */
+export function CategoryEditor({
+  project,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onClose: () => void;
+}) {
+  const projects = useProjectsStore((s) => s.projects);
+  const setProjectCategories = useProjectsStore((s) => s.setProjectCategories);
+
+  const [selected, setSelected] = useState<string[]>(() => projectCategories(project));
+  const [input, setInput] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // Every category in use across all projects, plus any the user just added,
+  // so previously-used tags are one click to reapply.
+  const known = useMemo(() => {
+    const all = projects.flatMap((p) => projectCategories(p));
+    return cleanCategories([...all, ...selected]);
+  }, [projects, selected]);
+
+  const selectedKeys = useMemo(
+    () => new Set(selected.map((c) => c.toLowerCase())),
+    [selected],
+  );
+
+  const toggle = (cat: string) => {
+    const key = cat.toLowerCase();
+    setSelected((prev) =>
+      prev.some((c) => c.toLowerCase() === key)
+        ? prev.filter((c) => c.toLowerCase() !== key)
+        : [...prev, cat],
+    );
+  };
+
+  const addNew = () => {
+    const c = normalizeCategory(input);
+    if (!c) return;
+    if (!selected.some((s) => s.toLowerCase() === c.toLowerCase())) {
+      setSelected((prev) => [...prev, c]);
+    }
+    setInput("");
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await setProjectCategories(project.id, cleanCategories(selected));
+      onClose();
+    } catch {
+      setSaving(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div
+        className="project-dialog category-editor"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="settings-title-row">
+          <h2>{project.name} — Categories</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="project-dialog-path">
+          Tag this project to color and group it in the project cloud and the pill
+          bar. A project can carry several categories; the first is its primary color.
+        </div>
+
+        {known.length > 0 && (
+          <div className="category-chip-row">
+            {known.map((cat) => {
+              const on = selectedKeys.has(cat.toLowerCase());
+              return (
+                <button
+                  type="button"
+                  key={cat.toLowerCase()}
+                  className={`category-chip${on ? " on" : ""}`}
+                  style={{ "--cat-color": categoryColor(cat) } as React.CSSProperties}
+                  onClick={() => toggle(cat)}
+                  title={on ? "Remove this category" : "Add this category"}
+                >
+                  <span className="category-chip-dot" />
+                  {cat}
+                  {on && <span className="category-chip-x" aria-hidden>×</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        <label>
+          Add a category
+          <div className="category-add-row">
+            <input
+              type="text"
+              value={input}
+              autoFocus
+              placeholder="e.g. work, research, client-x…"
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addNew();
+                }
+                if (e.key === "Escape") onClose();
+              }}
+            />
+            <button type="button" onClick={addNew} disabled={!input.trim()}>Add</button>
+          </div>
+        </label>
+
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="button" onClick={() => void save()} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}

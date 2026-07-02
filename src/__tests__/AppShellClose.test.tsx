@@ -25,6 +25,7 @@ vi.mock("@tauri-apps/api/window", () => ({
     // AppShell installs a WebKitGTK onResized→DOM-resize bridge; the mock must
     // provide it (returns an unlisten) or the effect throws at mount.
     onResized: vi.fn().mockResolvedValue(() => {}),
+    onScaleChanged: vi.fn().mockResolvedValue(() => {}),
   }),
 }));
 

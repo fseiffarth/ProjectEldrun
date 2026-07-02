@@ -3,19 +3,28 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type MutableRefObject,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { PLATFORM } from "../../lib/dragPlatform";
 import { notePtyOutput, useActivityStore } from "../../stores/activity";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
+import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { QuickOpen } from "../files/QuickOpen";
+import { HintHost } from "./HintHost";
+import { TourHost } from "./TourHost";
+import { HowToStart } from "./HowToStart";
+import { LessonsMenu } from "./LessonsMenu";
+import { useHintsStore } from "../../stores/hints";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
 import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
 import { listenPdfReveal } from "../../stores/pdfSync";
+import { listenSyncProgress } from "../../stores/sync";
 import { listenEditorJump } from "../../stores/editorJump";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
@@ -24,13 +33,34 @@ import { useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
 import { useKeyboard } from "../../hooks/useKeyboard";
 
+// Width of the right-edge band that reveals the (unpinned) right panel on hover.
+// Kept wide because on Windows/WebView2 the window often isn't true-fullscreen
+// (the Windows platform backend is a stub, so setFullscreen may not take) and
+// the OS resize border swallows mousemove events for the last few edge pixels —
+// a 2px strip there is unreachable, so the panel never opened. A wider band is
+// crossed on the way to the edge, so the reveal fires before the dead-zone.
+const REVEAL_EDGE_PX = 8;
+
+// Right-panel width bounds. The default matches the historical fixed 280px so
+// existing installs (no stored width) look unchanged; the max is capped against
+// the live window so the panel can never swallow the whole workspace.
+const RIGHT_PANEL_MIN = 220;
+const RIGHT_PANEL_DEFAULT = 280;
+function clampRightWidth(px: number): number {
+  const max = Math.max(RIGHT_PANEL_MIN, Math.min(900, window.innerWidth - 240));
+  return Math.round(Math.max(RIGHT_PANEL_MIN, Math.min(max, px)));
+}
+
 export function AppShell() {
   const loadSettings = useSettingsStore((s) => s.load);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const pinnedSetting = useSettingsStore((s) => s.settings?.right_panel_pinned ?? false);
+  const widthSetting = useSettingsStore((s) => s.settings?.right_panel_width ?? RIGHT_PANEL_DEFAULT);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const loadProjects = useProjectsStore((s) => s.load);
   const projectsLoaded = useProjectsStore((s) => s.loaded);
+  const projectCount = useProjectsStore((s) => s.projects.length);
+  const onboardingSeen = useSettingsStore((s) => s.settings?.onboarding_seen ?? false);
   const loadBoxes = useBoxesStore((s) => s.load);
   const activeId = useProjectsStore((s) => s.activeId);
   const scope = useTabsStore((s) => s.scope);
@@ -39,17 +69,49 @@ export function AppShell() {
   const panelTarget = activeId !== null || scope.startsWith(BOX_SCOPE_PREFIX);
   const switchToast = useProjectsStore((s) => s.switchToast);
   const clearSwitchToast = useProjectsStore((s) => s.clearSwitchToast);
+  const connToast = useProjectsStore((s) => s.connToast);
+  const clearConnToast = useProjectsStore((s) => s.clearConnToast);
   const initTimer = useTimerStore((s) => s.init);
   const flushTimer = useTimerStore((s) => s.flush);
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [rightPinned, setRightPinned] = useState(false);
+  const [rightWidth, setRightWidth] = useState(RIGHT_PANEL_DEFAULT);
+  const [resizingRight, setResizingRight] = useState(false);
+  const latestRightWidth = useRef(RIGHT_PANEL_DEFAULT);
+  const [showHowToStart, setShowHowToStart] = useState(false);
+  const [showLessons, setShowLessons] = useState(false);
   const rightCloseTimer = useRef<number | null>(null);
 
   useEffect(() => {
     loadSettings();
     loadProjects();
-    getCurrentWindow().setFullscreen(true).catch(() => {});
+    const win = getCurrentWindow();
+    // The window opens MAXIMIZED, not fullscreen (tauri.conf.json: `maximized: true`,
+    // `fullscreen: false`). This is deliberate on two counts:
+    //   1. Maximizing at config/map-time lets the WM record a clean restore geometry.
+    //      A JS `maximize()` fired right after load races KWin (the window may not be
+    //      mapped yet) and yields a fragile maximize-state — which both dropped the
+    //      "full at start" intent and broke KWin edge-snap after the maximize button
+    //      un-maximized (the button restore left stale tile state; a drag-restore,
+    //      which goes through KWin's own move handler, did not).
+    //   2. We must NOT enter fullscreen on Linux: a window the WM put into fullscreen
+    //      keeps `_NET_WM_STATE_FULLSCREEN`, which on KWin wins over MAXIMIZED and
+    //      makes the window UNMOVABLE — KWin refuses the `_NET_WM_MOVERESIZE` that
+    //      `startDragging` sends, so the header title-bar drag silently no-ops.
+    //      (Windows masked this because its fullscreen backend is a stub.) A maximized
+    //      window fills the monitor identically yet stays draggable and edge-snappable.
+    if (PLATFORM === "macos") {
+      // macOS: real fullscreen is the platform-expected behavior (own Space) and the
+      // system traffic-light controls keep the window manageable. Enter it from the
+      // maximized start (brief flash before this resolves).
+      win.setFullscreen(true).catch(() => {});
+    } else {
+      // Windows AND Linux: config already maximizes at map-time; re-assert it
+      // defensively in case the WM dropped the hint, and guard against any stray
+      // fullscreen state that would strand the window (see note 2 above).
+      win.setFullscreen(false).then(() => win.maximize()).catch(() => {});
+    }
   }, [loadSettings, loadProjects]);
 
   // WebKitGTK doesn't reliably fire DOM 'resize' / ResizeObserver for OS-level
@@ -98,6 +160,53 @@ export function AppShell() {
     if (settingsLoaded) setRightPinned(pinnedSetting);
   }, [settingsLoaded, pinnedSetting]);
 
+  // Restore the stored panel width once settings load (clamped to the current
+  // window so a width saved on a wider monitor can't strand the panel off-screen).
+  useEffect(() => {
+    if (settingsLoaded) {
+      const w = clampRightWidth(widthSetting);
+      latestRightWidth.current = w;
+      setRightWidth(w);
+    }
+  }, [settingsLoaded, widthSetting]);
+
+  // First-run "How to start": show once on a genuinely empty install (the
+  // `projects.length === 0` guard keeps upgrading users — who already have
+  // projects but no flag — from seeing it). Mark seen immediately (optimistic)
+  // so a hot-reload or transient re-render can't reopen it.
+  useEffect(() => {
+    if (settingsLoaded && projectsLoaded && !onboardingSeen && projectCount === 0) {
+      setShowHowToStart(true);
+      void updateSettings({ onboarding_seen: true });
+    }
+  }, [settingsLoaded, projectsLoaded, onboardingSeen, projectCount, updateSettings]);
+
+  // Let the Settings dialog / gear menu re-open the welcome on demand.
+  useEffect(() => {
+    const open = () => setShowHowToStart(true);
+    window.addEventListener("eldrun:open-how-to-start", open);
+    return () => window.removeEventListener("eldrun:open-how-to-start", open);
+  }, []);
+
+  // Open the lessons picker on demand, and let a tour/lesson step force the
+  // (otherwise hover-revealed) file panel open so it has something to spotlight.
+  useEffect(() => {
+    const openLessons = () => setShowLessons(true);
+    const revealPanel = () => {
+      if (rightCloseTimer.current !== null) {
+        window.clearTimeout(rightCloseTimer.current);
+        rightCloseTimer.current = null;
+      }
+      setRightOpen(true);
+    };
+    window.addEventListener("eldrun:open-lessons", openLessons);
+    window.addEventListener("eldrun:reveal-right-panel", revealPanel);
+    return () => {
+      window.removeEventListener("eldrun:open-lessons", openLessons);
+      window.removeEventListener("eldrun:reveal-right-panel", revealPanel);
+    };
+  }, []);
+
   // Load boxes once projects are in memory so deriving each project's box_id
   // (from the authoritative member_ids) runs over the loaded project list.
   useEffect(() => {
@@ -112,11 +221,57 @@ export function AppShell() {
     });
   };
 
+  // Drag the panel's left border to resize. The panel is absolutely positioned
+  // at right:0, so its width is just `innerWidth - cursorX`. We update local
+  // state live (driving both the panel width and the docked body inset) and
+  // persist only on release. Pointer capture keeps the gesture alive when the
+  // cursor leaves the thin handle.
+  const onResizeStart = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture is best-effort */
+    }
+    setResizingRight(true);
+  };
+
+  const onResizeMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizingRight) return;
+    const w = clampRightWidth(window.innerWidth - e.clientX);
+    latestRightWidth.current = w;
+    setRightWidth(w);
+  };
+
+  const onResizeEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizingRight) return;
+    setResizingRight(false);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    void updateSettings({ right_panel_width: latestRightWidth.current });
+    // Terminals and other panes refit off the DOM resize event; the docked body
+    // inset just changed, so nudge them to remeasure at the new width.
+    window.dispatchEvent(new Event("resize"));
+  };
+
   // Apply tab layout / right-panel restores emitted by the backend's
   // project-runtime switch (which runs off the UI thread).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listenProjectRuntimeSwitched()
+      .then((fn) => { unlisten = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); };
+  }, []);
+
+  // SSH-sync Phase 1: subscribe to the backend's mirror-sync progress stream so
+  // the remote file view reflects transfers + refreshes status on completion.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listenSyncProgress()
       .then((fn) => { unlisten = fn; })
       .catch(() => {});
     return () => { unlisten?.(); };
@@ -239,6 +394,12 @@ export function AppShell() {
     return () => clearTimeout(t);
   }, [switchToast, clearSwitchToast]);
 
+  useEffect(() => {
+    if (!connToast) return;
+    const t = setTimeout(clearConnToast, 3200);
+    return () => clearTimeout(t);
+  }, [connToast, clearConnToast]);
+
   const reveal = (
     timer: MutableRefObject<number | null>,
     setter: (open: boolean) => void,
@@ -262,13 +423,19 @@ export function AppShell() {
     }, delay);
   };
 
-  useKeyboard({ onTogglePanels: () => setPanelsHidden((v) => !v) });
+  useKeyboard({
+    onTogglePanels: () => {
+      useHintsStore.getState().markSeen("toggle-panels");
+      setPanelsHidden((v) => !v);
+    },
+  });
 
   const revealRight = panelTarget && !panelsHidden && (rightOpen || rightPinned);
 
   const handleBodyMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (!panelTarget || panelsHidden || rightOpen) return;
-    if (window.innerWidth - event.clientX <= 2) {
+    if (window.innerWidth - event.clientX <= REVEAL_EDGE_PX) {
+      useHintsStore.getState().markSeen("file-tree");
       reveal(rightCloseTimer, setRightOpen);
     }
   };
@@ -277,10 +444,17 @@ export function AppShell() {
     <div className="app-shell">
       <HeaderBar />
       {switchToast != null && (
-        <div key={switchToast} className="project-switch-toast">{switchToast}</div>
+        <div
+          key={switchToast}
+          className={`project-switch-toast${switchToast.includes("\n") ? " multiline" : ""}`}
+        >{switchToast}</div>
+      )}
+      {connToast != null && (
+        <div key={connToast} className="project-switch-toast conn-toast">{connToast}</div>
       )}
       <div
-        className={`app-body${revealRight && rightPinned ? " right-docked" : ""}`}
+        className={`app-body${revealRight && rightPinned ? " right-docked" : ""}${resizingRight ? " resizing" : ""}`}
+        style={revealRight && rightPinned ? { paddingRight: rightWidth } : undefined}
         onMouseMove={handleBodyMouseMove}
       >
         <CenterPanel />
@@ -288,14 +462,29 @@ export function AppShell() {
           <RightPanel
             open={revealRight}
             pinned={rightPinned}
+            width={rightWidth}
+            resizing={resizingRight}
+            onResizeStart={onResizeStart}
+            onResizeMove={onResizeMove}
+            onResizeEnd={onResizeEnd}
             onTogglePin={togglePin}
             onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
             onMouseLeave={() => !rightPinned && scheduleClose(rightCloseTimer, setRightOpen)}
           />
         )}
+        {/* Invisible marker at the right-edge reveal band so the guided tour has
+            a stable element to spotlight for the "find your files" step. */}
+        {panelTarget && !panelsHidden && (
+          <div className="tour-edge-marker" data-hint-anchor="file-tree-edge" aria-hidden />
+        )}
       </div>
       <VpnPasswordPrompt />
+      <RemoteConnectDialog />
       <QuickOpen />
+      <HintHost />
+      <TourHost />
+      {showHowToStart && <HowToStart onClose={() => setShowHowToStart(false)} />}
+      {showLessons && <LessonsMenu onClose={() => setShowLessons(false)} />}
     </div>
   );
 }

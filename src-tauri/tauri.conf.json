@@ -1,6 +1,6 @@
 {
   "productName": "Eldrun",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "identifier": "io.github.fseiffarth.eldrun",
   "build": {
     "frontendDist": "../dist",
@@ -20,7 +20,8 @@
         "dragDropEnabled": false,
         "decorations": false,
         "transparent": false,
-        "fullscreen": true
+        "fullscreen": false,
+        "maximized": true
       }
     ],
     "security": {

@@ -413,6 +413,26 @@ describe("forwardInputCandidates (SyncTeX forward-search path spellings)", () =>
       "./x.tex",
     ]);
   });
+
+  it("handles native Windows paths, emitting forward-slash relatives SyncTeX stored", () => {
+    // The absolute spelling keeps native backslashes; the build-dir-relative and
+    // basename spellings use forward slashes (what TeX writes into the .synctex).
+    expect(
+      forwardInputCandidates("C:\\proj\\paper\\chapters\\intro.tex", "C:\\proj\\paper"),
+    ).toEqual([
+      "C:\\proj\\paper\\chapters\\intro.tex",
+      "chapters/intro.tex",
+      "./chapters/intro.tex",
+      "intro.tex",
+      "./intro.tex",
+    ]);
+    // Trailing separator on the build dir and a file directly in it.
+    expect(forwardInputCandidates("C:\\proj\\paper\\main.tex", "C:\\proj\\paper\\")).toEqual([
+      "C:\\proj\\paper\\main.tex",
+      "main.tex",
+      "./main.tex",
+    ]);
+  });
 });
 
 describe("editorJump store", () => {

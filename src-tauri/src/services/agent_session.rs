@@ -17,7 +17,13 @@ use crate::paths;
 use crate::storage;
 use crate::terminal::PtyOptions;
 
+// The hook body is platform-specific: a POSIX `#!/bin/sh` script that the agents'
+// shell (`/bin/sh`) runs directly on unix, and a PowerShell script on Windows
+// (there is no `/bin/sh`; the agents run the hook `command` through `cmd.exe`).
+#[cfg(not(windows))]
 const HOOK_SCRIPT_NAME: &str = "eldrun_session_start.sh";
+#[cfg(windows)]
+const HOOK_SCRIPT_NAME: &str = "eldrun_session_start.ps1";
 
 // ── Agent session resolution ────────────────────────────────────────────────
 //
@@ -195,6 +201,27 @@ fn hook_script_path() -> PathBuf {
     storage::state_dir().join("hooks").join(HOOK_SCRIPT_NAME)
 }
 
+/// The `command` string Eldrun registers in the agents' SessionStart hook config
+/// (Claude `settings.json` / Codex `config.toml`). The agents run this through the
+/// OS shell, so it must be runnable there: on unix the bare `#!/bin/sh` script path
+/// suffices, but on Windows `cmd.exe` cannot execute that script, so we invoke the
+/// PowerShell hook explicitly. `-File` makes PowerShell read the script while still
+/// forwarding the hook's stdin JSON payload to it.
+fn hook_command() -> String {
+    let path = hook_script_path();
+    #[cfg(windows)]
+    {
+        format!(
+            "powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
+            path.to_string_lossy()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().into_owned()
+    }
+}
+
 /// uuid-ish guard: hex digits + dashes only, non-empty. Doubles as path-traversal
 /// protection for the file key.
 fn is_uuidish(s: &str) -> bool {
@@ -257,6 +284,7 @@ fn write_hook_script() -> std::io::Result<()> {
 /// POSIX-sh hook body. Reads the SessionStart JSON on stdin, extracts
 /// `session_id`, and records it under `<live_dir>/<ELDRUN_TAB_UID>`. No jq
 /// dependency: a single `sed` pulls the uuid out of the one-line JSON.
+#[cfg(not(windows))]
 fn hook_script_body(live_dir: &str) -> String {
     format!(
         "#!/bin/sh\n\
@@ -276,6 +304,38 @@ fn hook_script_body(live_dir: &str) -> String {
     )
 }
 
+/// PowerShell hook body (Windows). Mirrors the POSIX script: reads the SessionStart
+/// JSON on stdin, extracts `session_id` with a regex (no jq/`Get-Content` JSON
+/// dependency), and writes it to `<live_dir>/<ELDRUN_TAB_UID>` using the same key
+/// scheme `read_live_session` reads back. No-op unless launched by Eldrun
+/// (`ELDRUN_TAB_UID` set); the uuid-ish guard doubles as path-traversal defense.
+/// `[IO.File]::WriteAllText` writes UTF-8 *without* a BOM, so the stored id round-
+/// trips cleanly through `read_live_session`'s `trim()`/`is_uuidish` checks.
+#[cfg(windows)]
+fn hook_script_body(live_dir: &str) -> String {
+    // `live_dir` is a Windows path (backslashes); embed it in a single-quoted
+    // PowerShell literal so backslashes are not treated as escapes.
+    let live_dir = live_dir.replace('\'', "''");
+    format!(
+        "# Eldrun SessionStart hook - records the agent's live session id per tab so\r\n\
+         # Eldrun can resume the current session (incl. after /clear). No-op unless\r\n\
+         # launched by Eldrun (ELDRUN_TAB_UID set). Managed by Eldrun; do not edit.\r\n\
+         $ErrorActionPreference = 'SilentlyContinue'\r\n\
+         $uid = $env:ELDRUN_TAB_UID\r\n\
+         if ([string]::IsNullOrEmpty($uid)) {{ exit 0 }}\r\n\
+         if ($uid -notmatch '^[A-Za-z0-9-]+$') {{ exit 0 }}\r\n\
+         $payload = [Console]::In.ReadToEnd()\r\n\
+         $m = [regex]::Match($payload, '\"session_id\"\\s*:\\s*\"([0-9A-Fa-f-]+)\"')\r\n\
+         if (-not $m.Success) {{ exit 0 }}\r\n\
+         $sid = $m.Groups[1].Value\r\n\
+         $dir = '{live_dir}'\r\n\
+         [void](New-Item -ItemType Directory -Force -Path $dir -ErrorAction SilentlyContinue)\r\n\
+         [IO.File]::WriteAllText((Join-Path $dir $uid), $sid)\r\n\
+         exit 0\r\n",
+        live_dir = live_dir,
+    )
+}
+
 /// Merge our `SessionStart` handler into a Claude `settings.json`, preserving all
 /// other content and other hooks. Idempotent: a handler already pointing at our
 /// script is left untouched. The matcher is omitted so the hook fires for every
@@ -291,7 +351,7 @@ fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result
     if !root.is_object() {
         root = serde_json::json!({});
     }
-    let cmd = hook_script_path().to_string_lossy().into_owned();
+    let cmd = hook_command();
 
     let obj = root.as_object_mut().unwrap();
     let hooks = obj.entry("hooks").or_insert_with(|| serde_json::json!({}));
@@ -350,7 +410,7 @@ fn register_codex_hook() -> std::io::Result<()> {
 
 /// Testable core of [`register_codex_hook`] against an explicit config path.
 fn register_codex_hook_in(config_path: &std::path::Path) -> std::io::Result<()> {
-    let cmd = hook_script_path().to_string_lossy().into_owned();
+    let cmd = hook_command();
     let mut content = std::fs::read_to_string(config_path).unwrap_or_default();
     if content.contains(&cmd) {
         return Ok(());
@@ -400,6 +460,7 @@ mod tests {
             rows: 24,
             local_only: false,
             sandbox: false,
+            project_id: None,
         }
     }
 
@@ -618,12 +679,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn hook_body_is_no_op_without_env_and_bakes_dir() {
         let body = hook_script_body("/home/x/.local/share/eldrun/live_sessions");
         assert!(body.starts_with("#!/bin/sh"));
         assert!(body.contains("[ -n \"$ELDRUN_TAB_UID\" ] || exit 0"));
         assert!(body.contains("/home/x/.local/share/eldrun/live_sessions"));
+        assert!(body.contains("\"session_id\""));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hook_body_is_no_op_without_env_and_bakes_dir() {
+        let body = hook_script_body(r"C:\Users\x\AppData\Roaming\eldrun\live_sessions");
+        assert!(body.contains("$uid = $env:ELDRUN_TAB_UID"));
+        assert!(body.contains("if ([string]::IsNullOrEmpty($uid)) { exit 0 }"));
+        assert!(body.contains(r"C:\Users\x\AppData\Roaming\eldrun\live_sessions"));
         assert!(body.contains("\"session_id\""));
     }
 
@@ -646,7 +718,9 @@ mod tests {
         let ss = v["hooks"]["SessionStart"].as_array().unwrap();
         assert_eq!(ss.len(), 1);
         let cmd = ss[0]["hooks"][0]["command"].as_str().unwrap();
-        assert!(cmd.ends_with(HOOK_SCRIPT_NAME));
+        // unix registers the bare script path (ends with the name); Windows wraps it
+        // in a `powershell ... -File "<path>"` invocation, so assert containment.
+        assert!(cmd.contains(HOOK_SCRIPT_NAME));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { unzipSync } from "fflate";
 import { ViewerHeader, useViewerState } from "./FileViewerPane";
+import { useFileScope, readFileBytes, fileMtime } from "./fileAccess";
 import { extractOdt, renderOdtDocument } from "../../lib/viewers/odt";
 
 // Re-read the file this long after an external change is detected (mirrors the
@@ -30,6 +30,7 @@ export function OdtView({
 }) {
   // tabKey accepted for call-site parity; no persisted reader position yet.
   useViewerState(tabKey);
+  const scope = useFileScope();
 
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +38,7 @@ export function OdtView({
 
   const load = useCallback(async () => {
     try {
-      const bytes = await invoke<number[]>("read_file_bytes", { path });
+      const bytes = await readFileBytes(path, scope);
       const entries = unzipSync(new Uint8Array(bytes));
       const { contentXml, images } = extractOdt(entries);
       setHtml(renderOdtDocument(contentXml, { images }));
@@ -45,7 +46,7 @@ export function OdtView({
     } catch (e) {
       setError(String(e));
     }
-  }, [path]);
+  }, [path, scope]);
 
   // Initial load + mtime baseline.
   useEffect(() => {
@@ -53,17 +54,17 @@ export function OdtView({
     setError(null);
     lastMtime.current = null;
     void load();
-    invoke<number>("file_mtime", { path })
+    fileMtime(path, scope)
       .then((m) => { lastMtime.current = m; })
       .catch(() => {});
-  }, [path, load]);
+  }, [path, scope, load]);
 
   // Diff-aware reload: poll mtime; re-render on an external advance.
   useEffect(() => {
     if (html == null) return;
     let cancelled = false;
     const id = setInterval(() => {
-      invoke<number>("file_mtime", { path })
+      fileMtime(path, scope)
         .then((m) => {
           if (cancelled || lastMtime.current == null || m <= lastMtime.current) return;
           lastMtime.current = m;
@@ -72,7 +73,7 @@ export function OdtView({
         .catch(() => {});
     }, RELOAD_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [path, html, load]);
+  }, [path, scope, html, load]);
 
   const loaded = html != null;
   return (

@@ -1,7 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,8 +8,53 @@ use serde_json::Value;
 use crate::paths;
 use crate::schema::project::{Project, RemoteSpec, SandboxSpec};
 use crate::schema::projects::{ProjectEntry, ProjectsList};
-use crate::services::ssh_mount;
 use crate::storage;
+
+/// Local per-project state directory for a **remote** project:
+/// `<state_dir>/remote-projects/<id>`. Mount-free remote projects keep their
+/// `project.json` (tabs/time/etc.) here — a real local dir, unlike the old sshfs
+/// mountpoint — while the project's tree lives on the host and is reached over
+/// SFTP/SSH. This path becomes the project's `directory` (a stable local key the
+/// fs/git/terminal commands resolve to a `RemoteTarget`).
+fn remote_project_state_dir(id: &str) -> std::path::PathBuf {
+    storage::state_dir().join("remote-projects").join(id)
+}
+
+/// Compute a `<name>` leaf under `parent` for a remote (SSH) project's local
+/// mirror. `sanitize_name` keeps the folder readable; the `id` disambiguates a
+/// name-based path already taken by another remote project, so two hosts' `~/work`
+/// never collide on the same local mirror. Shared by the default location and the
+/// user-chosen `mirror_parent`.
+fn remote_mirror_in(parent: &Path, name: &str, id: &str) -> PathBuf {
+    let safe = sanitize_name(name);
+    let leaf = if safe.is_empty() { id.to_string() } else { safe };
+    let candidate = parent.join(&leaf);
+    if candidate.exists() {
+        parent.join(format!("{leaf}-{}", &id[..id.len().min(8)]))
+    } else {
+        candidate
+    }
+}
+
+/// The default local mirror location for a new remote (SSH) project: a readable
+/// `<name>` subfolder of the top-level `eldrun/projects-ssh/` root (rather than a
+/// hidden state dir or the managed-local `projects/` tree).
+fn default_remote_mirror(name: &str, id: &str) -> PathBuf {
+    remote_mirror_in(&paths::projects_ssh_root(), name, id)
+}
+
+/// Resolve a remote project's local mirror path: under the user-chosen
+/// `mirror_parent` (the dialog's "Local location") when provided and non-empty,
+/// otherwise the default `projects-ssh` root. Returns the full `<parent>/<name>`
+/// path as a string, ready to store in `project.json`/`projects.json`.
+fn resolve_remote_mirror(mirror_parent: Option<&str>, name: &str, id: &str) -> String {
+    match mirror_parent.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(parent) => remote_mirror_in(Path::new(parent), name, id),
+        None => default_remote_mirror(name, id),
+    }
+    .to_string_lossy()
+    .to_string()
+}
 
 // ── Project list ──────────────────────────────────────────────────────────
 
@@ -59,6 +103,304 @@ pub fn save_projects(projects: ProjectsList) -> Result<(), String> {
     storage::write_json(&path, &projects).map_err(|e| e.to_string())
 }
 
+// ── Archive (delete → restorable holding area) ─────────────────────────────
+//
+// Deleting a project moves its LOCAL folders into `~/eldrun/archive/<id>/` and
+// drops it from `projects.json`. A remote project's tree on its host is never
+// touched — only its local state dir + mirror move. The archive is only cleared
+// manually from Settings; restore moves the folders back and re-registers the
+// project as `inactive`.
+
+/// Restore manifest written into `archive/<id>/entry.json`. Holds the full
+/// original `projects.json` entry (the source of truth for restore) plus the
+/// archive stamp and a remote flag.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ArchiveManifest {
+    entry: ProjectEntry,
+    archived_at: String,
+    remote: bool,
+}
+
+/// A summary row for the Settings "Archived projects" list.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchivedProject {
+    pub id: String,
+    pub name: String,
+    pub archived_at: String,
+    pub remote: bool,
+}
+
+/// Reject ids that could escape the archive root (path traversal). Project ids
+/// are UUIDs in practice, so anything with a separator or `..` is invalid.
+fn validate_project_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        return Err(format!("invalid project id '{id}'"));
+    }
+    Ok(())
+}
+
+fn entry_directory(entry: &ProjectEntry) -> Option<String> {
+    entry
+        .extra
+        .get("directory")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn entry_mirror(entry: &ProjectEntry) -> Option<String> {
+    entry
+        .extra
+        .get("mirror")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn entry_is_remote(entry: &ProjectEntry) -> bool {
+    entry
+        .extra
+        .get("remote")
+        .map(|v| !v.is_null())
+        .unwrap_or(false)
+}
+
+/// Move a directory tree from `src` to `dst`, creating `dst`'s parent. Tries a
+/// fast `rename` first and falls back to recursive copy + remove when that fails
+/// (e.g. a cross-filesystem move). No-op when `src` does not exist.
+fn move_tree(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    copy_tree(src, dst).map_err(|e| e.to_string())?;
+    fs::remove_dir_all(src).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// The original path if free, else a collision-safe sibling, so restoring never
+/// clobbers a folder re-created since the project was archived.
+fn free_target(orig: &Path) -> PathBuf {
+    if !orig.exists() {
+        return orig.to_path_buf();
+    }
+    let parent = orig.parent().unwrap_or_else(|| Path::new("."));
+    let stem = orig.file_name().and_then(|n| n.to_str()).unwrap_or("restored");
+    for n in 1..1000 {
+        let cand = parent.join(format!("{stem}-restored-{n}"));
+        if !cand.exists() {
+            return cand;
+        }
+    }
+    parent.join(format!("{stem}-restored"))
+}
+
+/// Purge a project's time-tracking history: drop it from every day bucket of the
+/// rolling summary and filter it out of the legacy append-only log if present.
+/// Called only on PERMANENT deletion (archiving keeps the history).
+fn purge_project_time(project_id: &str) {
+    use crate::schema::time_log;
+    let mut summary = time_log::load_summary_migrating();
+    let mut changed = false;
+    for by_project in summary.days.values_mut() {
+        if by_project.remove(project_id).is_some() {
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = time_log::save_summary(&summary);
+    }
+    let legacy = storage::state_dir().join(time_log::LEGACY_LOG_FILE);
+    if legacy.exists() {
+        if let Ok(entries) = storage::read_json::<time_log::TimeLog>(&legacy) {
+            let kept: time_log::TimeLog = entries
+                .into_iter()
+                .filter(|e| e.project_id != project_id)
+                .collect();
+            let _ = storage::write_json(&legacy, &kept);
+        }
+    }
+}
+
+/// Move a project into the archive and drop it from `projects.json`. `archived_at`
+/// is a caller-supplied ISO timestamp (the frontend stamps it). The remote host
+/// tree is never touched — only local folders move.
+#[tauri::command]
+pub fn archive_project(project_id: String, archived_at: String) -> Result<(), String> {
+    validate_project_id(&project_id)?;
+
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let idx = list
+        .iter()
+        .position(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    let entry = list[idx].clone();
+    let remote = entry_is_remote(&entry);
+
+    let dest = paths::archive_root().join(&project_id);
+    if dest.exists() {
+        return Err(format!(
+            "an archived project with id '{project_id}' already exists"
+        ));
+    }
+    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+
+    // Move the LOCAL folders. Remote host tree is intentionally left in place.
+    if remote {
+        move_tree(&remote_project_state_dir(&project_id), &dest.join("state"))?;
+        if let Some(mirror) = entry_mirror(&entry) {
+            move_tree(Path::new(&mirror), &dest.join("mirror"))?;
+        }
+    } else if let Some(dir) = entry_directory(&entry) {
+        move_tree(Path::new(&dir), &dest.join("dir"))?;
+    }
+
+    let manifest = ArchiveManifest {
+        entry,
+        archived_at,
+        remote,
+    };
+    storage::write_json(&dest.join("entry.json"), &manifest).map_err(|e| e.to_string())?;
+
+    list.remove(idx);
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// List archived projects (newest first) for the Settings panel.
+#[tauri::command]
+pub fn list_archived_projects() -> Result<Vec<ArchivedProject>, String> {
+    let root = paths::archive_root();
+    if !root.exists() {
+        return Ok(vec![]);
+    }
+    let mut out = Vec::new();
+    for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        if let Ok(m) = storage::read_json::<ArchiveManifest>(&entry.path().join("entry.json")) {
+            out.push(ArchivedProject {
+                id: m.entry.id.clone(),
+                name: m.entry.name.clone(),
+                archived_at: m.archived_at,
+                remote: m.remote,
+            });
+        }
+    }
+    // Newest first; the stamp is an ISO string so a lexical sort is chronological.
+    out.sort_by(|a, b| b.archived_at.cmp(&a.archived_at));
+    Ok(out)
+}
+
+/// Restore an archived project: move its folders back (collision-safe) and
+/// re-register it in `projects.json` as `inactive`. Returns the restored entry.
+#[tauri::command]
+pub fn restore_archived_project(project_id: String) -> Result<ProjectEntry, String> {
+    validate_project_id(&project_id)?;
+
+    let dest = paths::archive_root().join(&project_id);
+    let manifest: ArchiveManifest =
+        storage::read_json(&dest.join("entry.json")).map_err(|e| e.to_string())?;
+    let mut entry = manifest.entry;
+
+    if manifest.remote {
+        // The state dir is keyed by id and was moved out on archive, so its
+        // original path is free again.
+        let state_dst = remote_project_state_dir(&project_id);
+        move_tree(&dest.join("state"), &state_dst)?;
+        entry.local_file = state_dst
+            .join("project.json")
+            .to_string_lossy()
+            .to_string();
+        entry.extra.insert(
+            "directory".to_string(),
+            Value::String(state_dst.to_string_lossy().to_string()),
+        );
+        let mirror_src = dest.join("mirror");
+        if mirror_src.exists() {
+            if let Some(orig) = entry_mirror(&entry) {
+                let target = free_target(Path::new(&orig));
+                move_tree(&mirror_src, &target)?;
+                entry.extra.insert(
+                    "mirror".to_string(),
+                    Value::String(target.to_string_lossy().to_string()),
+                );
+            }
+        }
+    } else if let Some(dir) = entry_directory(&entry) {
+        let target = free_target(Path::new(&dir));
+        move_tree(&dest.join("dir"), &target)?;
+        entry.extra.insert(
+            "directory".to_string(),
+            Value::String(target.to_string_lossy().to_string()),
+        );
+        entry.local_file = target.join("project.json").to_string_lossy().to_string();
+    }
+
+    entry.status = "inactive".to_string();
+
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    entry.position = next_position(&list);
+    list.retain(|p| p.id != entry.id); // guard against a stale duplicate
+    list.push(entry.clone());
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
+    Ok(entry)
+}
+
+/// Permanently delete an archived project: remove its archive folder and purge
+/// its time-tracking history. Irreversible.
+#[tauri::command]
+pub fn delete_archived_project(project_id: String) -> Result<(), String> {
+    validate_project_id(&project_id)?;
+    let dest = paths::archive_root().join(&project_id);
+    if dest.exists() {
+        fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
+    }
+    purge_project_time(&project_id);
+    Ok(())
+}
+
+/// Permanently delete every archived project (Settings "Clear archive").
+#[tauri::command]
+pub fn clear_archive() -> Result<(), String> {
+    for archived in list_archived_projects()? {
+        delete_archived_project(archived.id)?;
+    }
+    Ok(())
+}
+
 /// Update a project's description in both `projects.json` (the pill list) and
 /// the project's own `project.json`, keeping the two in sync. An empty/blank
 /// description clears the field. Returns the cleaned description (or null).
@@ -99,6 +441,45 @@ pub fn set_project_description(
     if proj_path.exists() {
         if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
             project.description = cleaned.clone();
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(cleaned)
+}
+
+/// Rename a project: update its display `name` in both `projects.json` (the
+/// pill list) and the project's own `project.json`, keeping the two in sync.
+/// The on-disk `directory` is left untouched — only the human-facing name
+/// changes. A blank name is rejected. Returns the cleaned (trimmed) name.
+#[tauri::command]
+pub fn set_project_name(project_id: String, name: String) -> Result<String, String> {
+    let cleaned = name.trim().to_string();
+    if cleaned.is_empty() {
+        return Err("project name cannot be empty".to_string());
+    }
+
+    // projects.json — find the entry and update its `name`.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    entry.name = cleaned.clone();
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project file consistent (best effort: a
+    // missing file is not fatal since the list is the source of truth for pills).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            project.name = cleaned.clone();
             storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
         }
     }
@@ -154,6 +535,154 @@ pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<bool, St
     Ok(enabled)
 }
 
+/// Normalize a list of category tags: trim each, drop blanks, and de-duplicate
+/// case-insensitively (first spelling wins), preserving order. Mirrors the
+/// frontend `cleanCategories` so storage stays canonical regardless of caller.
+fn clean_categories(raw: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for r in raw {
+        let c = r.split_whitespace().collect::<Vec<_>>().join(" ");
+        if c.is_empty() {
+            continue;
+        }
+        if seen.insert(c.to_lowercase()) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Set a project's category tags in both `projects.json` (the pill list) and the
+/// project's own `project.json`, keeping the two in sync. Categories color/group
+/// the project in the cloud and the pill bar. An empty list clears the field
+/// entirely. Returns the cleaned, de-duplicated list that was stored.
+#[tauri::command]
+pub fn set_project_categories(
+    project_id: String,
+    categories: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let cleaned = clean_categories(categories);
+
+    // projects.json — mirror into the entry's flattened `categories`.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    if cleaned.is_empty() {
+        entry.extra.remove("categories");
+    } else {
+        let value = serde_json::to_value(&cleaned).map_err(|e| e.to_string())?;
+        entry.extra.insert("categories".to_string(), value);
+    }
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project file consistent (best effort).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            if cleaned.is_empty() {
+                project.extra.remove("categories");
+            } else {
+                let value = serde_json::to_value(&cleaned).map_err(|e| e.to_string())?;
+                project.extra.insert("categories".to_string(), value);
+            }
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(cleaned)
+}
+
+/// Enable or disable git version control for an existing project.
+///
+/// **Destructive when disabling.** Disabling deletes the project's `.git`
+/// directory outright — every commit, branch, stash, and remote is gone and
+/// cannot be recovered — and moves the project to `git_type` `"none"`, the same
+/// state a "No git (local files only)" project starts in. Enabling runs
+/// `git init` (a no-op if a repo already exists) and moves the project to
+/// `git_type` `"local"`.
+///
+/// Returns the resulting `git_type`. Mirrors the change into both
+/// `projects.json` and `project.json`, like `set_project_sandbox`.
+#[tauri::command]
+pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<String, String> {
+    // projects.json — locate the entry and resolve its on-disk directory.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    let local_file = entry.local_file.clone();
+    let directory = entry
+        .extra
+        .get("directory")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| "project has no directory".to_string())?;
+    if !directory.is_dir() {
+        return Err(format!(
+            "project directory does not exist: {}",
+            directory.display()
+        ));
+    }
+
+    let git_dir = directory.join(".git");
+    let new_git_type = if disabled {
+        // Destroy version-control history. `.git` is the single source of truth
+        // for it, so removing the directory is the whole operation.
+        if git_dir.exists() {
+            fs::remove_dir_all(&git_dir)
+                .map_err(|e| format!("failed to remove .git: {e}"))?;
+        }
+        "none".to_string()
+    } else {
+        if !git_dir.exists() {
+            let output = crate::paths::command_no_window("git")
+                .args(["init"])
+                .current_dir(&directory)
+                .output()
+                .map_err(|e| format!("failed to run git init: {e}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "git init failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+        }
+        "local".to_string()
+    };
+
+    // projects.json — mirror the new push-axis type into the flattened entry.
+    entry
+        .extra
+        .insert("git_type".to_string(), Value::String(new_git_type.clone()));
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project file consistent (best effort).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            project.git_type = Some(new_git_type.clone());
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(new_git_type)
+}
+
 // ── Per-project project.json ───────────────────────────────────────────────
 
 #[tauri::command]
@@ -193,6 +722,14 @@ pub fn projects_root_dir() -> String {
     projects_root().to_string_lossy().to_string()
 }
 
+/// The default parent directory for a remote (SSH) project's local mirror — the
+/// top-level `eldrun/projects-ssh/` root. The New/Import dialog seeds its "Local
+/// location" picker from this so its default matches `default_remote_mirror`.
+#[tauri::command]
+pub fn remote_mirror_root_dir() -> String {
+    paths::projects_ssh_root().to_string_lossy().to_string()
+}
+
 /// Open a directory in the OS file manager (Files/Finder/Explorer).
 #[tauri::command]
 pub fn open_in_file_manager(path: String) -> Result<(), String> {
@@ -201,6 +738,136 @@ pub fn open_in_file_manager(path: String) -> Result<(), String> {
         return Err(format!("Not a directory: {path}"));
     }
     opener::open(&dir).map_err(|e| e.to_string())
+}
+
+/// The local mirror status for a remote (SSH) project — backs the pill's "Show on
+/// disk". Returns the current mirror root (its stored override or the default),
+/// whether that directory still exists on disk (a user may have deleted it), and
+/// a suggested fresh location (`ssh/<name>` under the projects root) to default a
+/// relocation picker to. Errors for a local project.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MirrorStatus {
+    pub path: String,
+    pub exists: bool,
+    pub suggested: String,
+}
+
+#[tauri::command]
+pub fn remote_mirror_status(project_id: String, name: String) -> Result<MirrorStatus, String> {
+    if crate::services::remote::remote_target_for(&project_id).is_none() {
+        return Err("not a remote project".to_string());
+    }
+    let dir = crate::services::remote_sync::mirror_dir(&project_id);
+    let suggested = default_remote_mirror(&name, &project_id);
+    Ok(MirrorStatus {
+        exists: dir.is_dir(),
+        path: dir.to_string_lossy().to_string(),
+        suggested: suggested.to_string_lossy().to_string(),
+    })
+}
+
+/// Point a remote (SSH) project's local mirror at `path`, creating the directory,
+/// and persist the choice in both `projects.json` (`extra["mirror"]`, the source
+/// of truth `remote_sync::mirror_dir` reads) and the project's `project.json`.
+/// Used when the user relocates a mirror whose folder was deleted. Returns the
+/// resolved absolute path.
+#[tauri::command]
+pub fn set_remote_mirror_dir(project_id: String, path: String) -> Result<String, String> {
+    if crate::services::remote::remote_target_for(&project_id).is_none() {
+        return Err("not a remote project".to_string());
+    }
+    let dir = PathBuf::from(path.trim());
+    if dir.as_os_str().is_empty() {
+        return Err("Mirror path is empty".to_string());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let resolved = dir.to_string_lossy().to_string();
+    persist_mirror_dir(&project_id, &resolved)?;
+    Ok(resolved)
+}
+
+/// Persist a remote project's chosen mirror root into both `projects.json`
+/// (`extra["mirror"]`, the always-local source of truth `remote_sync::mirror_dir`
+/// reads) and the project's `project.json` (best effort). Shared by
+/// `set_remote_mirror_dir` and `move_remote_mirror`.
+fn persist_mirror_dir(project_id: &str, resolved: &str) -> Result<(), String> {
+    // projects.json — the always-local source of truth.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    entry
+        .extra
+        .insert("mirror".to_string(), Value::String(resolved.to_string()));
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project file consistent (best effort).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            project.mirror = Some(resolved.to_string());
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Move a remote (SSH) project's local mirror folder to a new location: the user
+/// picks a **parent** directory, and the mirror is relocated to
+/// `<parent_dir>/<sanitized-name>` (disambiguated with a short id suffix if that
+/// leaf is taken). The existing mirror bytes are moved (rename, with a
+/// copy-then-remove fallback across filesystems); a never-synced mirror simply
+/// has the new folder created. Persists the new pointer and returns its absolute
+/// path. Errors for a local project. Backs the pill's "Move project…" option.
+#[tauri::command]
+pub fn move_remote_mirror(
+    project_id: String,
+    name: String,
+    parent_dir: String,
+) -> Result<String, String> {
+    if crate::services::remote::remote_target_for(&project_id).is_none() {
+        return Err("not a remote project".to_string());
+    }
+    let parent = PathBuf::from(parent_dir.trim());
+    if parent.as_os_str().is_empty() {
+        return Err("Destination folder is empty".to_string());
+    }
+    fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+
+    // Compute the new leaf under the chosen parent, mirroring `default_remote_mirror`.
+    let safe = sanitize_name(&name);
+    let leaf = if safe.is_empty() { project_id.clone() } else { safe };
+    let candidate = parent.join(&leaf);
+    let new_root = if candidate.exists() {
+        parent.join(format!("{leaf}-{}", &project_id[..project_id.len().min(8)]))
+    } else {
+        candidate
+    };
+
+    let old = crate::services::remote_sync::mirror_dir(&project_id);
+    if old.exists() && old != new_root {
+        // A plain rename fails across drives/filesystems (EXDEV on Unix). Fall
+        // back to copy-then-remove so a cross-volume move still works.
+        if fs::rename(&old, &new_root).is_err() {
+            copy_dir_all(&old, &new_root)?;
+            fs::remove_dir_all(&old).map_err(|e| e.to_string())?;
+        }
+    } else {
+        fs::create_dir_all(&new_root).map_err(|e| e.to_string())?;
+    }
+
+    let resolved = new_root.to_string_lossy().to_string();
+    persist_mirror_dir(&project_id, &resolved)?;
+    Ok(resolved)
 }
 
 // ── Scaffold new project ───────────────────────────────────────────────────
@@ -253,7 +920,10 @@ pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
         fs::write(cs, CLAUDE_SETTINGS)?;
     }
     if with_git && !dir.join(".git").exists() {
-        let _ = Command::new("git").args(["init"]).current_dir(dir).output();
+        let _ = crate::paths::command_no_window("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output();
     }
     Ok(())
 }
@@ -311,24 +981,66 @@ pub struct CreateProjectRequest {
     /// project root becomes the local sshfs mountpoint for `remote`.
     #[serde(default)]
     pub remote: Option<RemoteSpec>,
+    /// Remote projects only: the user-chosen parent directory for the local
+    /// mirror (the dialog's "Local location"). The mirror lands at
+    /// `<mirror_parent>/<name>`. Absent → the default `projects-ssh` root.
+    #[serde(default)]
+    pub mirror_parent: Option<String>,
 }
 
 #[tauri::command]
 pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String> {
     let id = uuid_v4();
 
-    // For remote projects the working directory is the sshfs mountpoint; for
-    // local projects it is the chosen directory. Establish the mount first so
-    // scaffolding writes onto the remote filesystem.
+    // Mount-free remote: a remote project's `directory` is a LOCAL per-project
+    // state dir that holds its `project.json` (tabs/time/etc.); the project's
+    // actual tree lives on the host at `remote.remote_path` and is reached over
+    // SFTP/SSH. Best-effort create that remote root so agent tabs / git can `cd`
+    // into it (key/agent auth — a password-auth host may need it to pre-exist).
+    // Local projects use the chosen directory unchanged.
     let dir = match req.remote.as_ref() {
-        Some(remote) => ssh_mount::mount(remote, &id)?,
+        Some(remote) => {
+            if let Err(e) = crate::services::ssh_exec::remote_mkdir_p(remote) {
+                eprintln!(
+                    "create_project: remote mkdir '{}' failed (create it on the host if needed): {e}",
+                    remote.remote_path
+                );
+            }
+            remote_project_state_dir(&id)
+        }
         None => PathBuf::from(&req.directory),
     };
     let directory = dir.to_string_lossy().to_string();
 
     let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
 
-    if !req.skip_scaffold {
+    // Remote projects mirror into `<name>` under the chosen "Local location"
+    // (`mirror_parent`), defaulting to the top-level `eldrun/projects-ssh/` root;
+    // relocatable later. None for local projects.
+    let mirror = req
+        .remote
+        .as_ref()
+        .map(|_| resolve_remote_mirror(req.mirror_parent.as_deref(), &req.name, &id));
+
+    // A remote project's local `directory` only holds project.json (created
+    // below); its scaffold belongs in the local **mirror** twin — the working
+    // copy the user edits and local-on-remote tabs cwd into. Bytes reach the
+    // host only on an explicit manual push (SSH-sync is PULL-only / no-clobber),
+    // so scaffolding the mirror is safe and never touches the host tree here.
+    if req.remote.is_some() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // Every remote project has an always-present local mirror twin, created
+        // up front so a local-on-remote tab can cwd into it immediately. Scaffold
+        // it like a local project (honoring skip_scaffold); manual sync pushes it.
+        if let Some(mirror) = &mirror {
+            let mirror_dir = Path::new(mirror);
+            if req.skip_scaffold {
+                let _ = std::fs::create_dir_all(mirror_dir);
+            } else {
+                scaffold_project(mirror_dir, git_type != "none").map_err(|e| e.to_string())?;
+            }
+        }
+    } else if !req.skip_scaffold {
         scaffold_project(&dir, git_type != "none").map_err(|e| e.to_string())?;
     } else {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -345,6 +1057,7 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
         git_type: Some(git_type.clone()),
         created_at: Some(now),
         remote: req.remote.clone(),
+        mirror: mirror.clone(),
         ..Default::default()
     };
 
@@ -359,7 +1072,7 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
         vec![]
     };
     let position = next_position(&list);
-    let extra = project_extra(directory, git_type, description, req.remote.as_ref());
+    let extra = project_extra(directory, git_type, description, req.remote.as_ref(), mirror.as_deref());
 
     let entry = ProjectEntry {
         id: id.clone(),
@@ -394,6 +1107,11 @@ pub struct ImportProjectRequest {
     /// remote directory and the only supported `mode` is "keep".
     #[serde(default)]
     pub remote: Option<RemoteSpec>,
+    /// Remote imports only: the user-chosen parent directory for the local
+    /// mirror (the dialog's "Local location"). The mirror lands at
+    /// `<mirror_parent>/<name>`. Absent → the default `projects-ssh` root.
+    #[serde(default)]
+    pub mirror_parent: Option<String>,
 }
 
 #[tauri::command]
@@ -402,17 +1120,19 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
         return Err("Project name is invalid".to_string());
     }
 
-    // Generate the id up front: remote imports mount under it before we touch
-    // the filesystem.
     let id = uuid_v4();
 
     if let Some(remote) = req.remote.clone() {
         if req.mode != "keep" {
             return Err("Remote imports must use 'keep' mode (copy/move are not supported)".to_string());
         }
-        // Establish (or reuse) the sshfs mount; the mountpoint is the project root.
-        let mountpoint = ssh_mount::mount(&remote, &id)?;
-        return finish_import(req, id, mountpoint, Some(remote));
+        // Mount-free: the user browsed to an existing remote directory, so there
+        // is nothing to create on the host. The project's `directory` is a LOCAL
+        // per-project state dir that holds its project.json; the tree stays on the
+        // host (`remote.remote_path`) and is reached over SFTP/SSH.
+        let local = remote_project_state_dir(&id);
+        std::fs::create_dir_all(&local).map_err(|e| e.to_string())?;
+        return finish_import(req, id, local, Some(remote));
     }
 
     let source = PathBuf::from(&req.source_dir);
@@ -486,12 +1206,25 @@ fn finish_import(
 
     let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
 
-    if !req.skip_scaffold {
+    // Scaffold only LOCAL imports onto their (local) tree. A remote import's
+    // `target` is the local per-project state dir (project.json only); its tree
+    // already exists on the host, so no local scaffold is written there.
+    if remote.is_none() && !req.skip_scaffold {
         scaffold_project(&target, git_type != "none").map_err(|e| e.to_string())?;
     }
 
     let now = chrono_now();
     let requested_description = clean_description(req.description);
+
+    // Remote imports mirror into `<name>` under the chosen "Local location"
+    // (`mirror_parent`), defaulting to the `eldrun/projects-ssh/` root; created up
+    // front so a local-on-remote tab can cwd into it immediately. None for local.
+    let mirror = remote
+        .as_ref()
+        .map(|_| resolve_remote_mirror(req.mirror_parent.as_deref(), &req.name, &id));
+    if let Some(mirror) = &mirror {
+        let _ = std::fs::create_dir_all(mirror);
+    }
 
     let project = if project_file.exists() {
         let mut existing: Project = storage::read_json(&project_file).unwrap_or_default();
@@ -503,6 +1236,7 @@ fn finish_import(
         }
         existing.git_type = Some(git_type.clone());
         existing.remote = remote.clone();
+        existing.mirror = mirror.clone();
         existing
     } else {
         Project {
@@ -513,6 +1247,7 @@ fn finish_import(
             git_type: Some(git_type.clone()),
             created_at: Some(now),
             remote: remote.clone(),
+            mirror: mirror.clone(),
             ..Default::default()
         }
     };
@@ -520,7 +1255,7 @@ fn finish_import(
 
     let position = next_position(&list);
     let description = project.description.clone();
-    let extra = project_extra(directory, git_type, description, remote.as_ref());
+    let extra = project_extra(directory, git_type, description, remote.as_ref(), mirror.as_deref());
     let entry = ProjectEntry {
         id,
         name: req.name,
@@ -532,6 +1267,105 @@ fn finish_import(
     list.push(entry.clone());
     storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
     Ok(entry)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtendProjectRemoteRequest {
+    pub project_id: String,
+    /// The remote spec to attach. `remote_path` already includes the project
+    /// name leaf (the frontend appends it, matching direct remote creation).
+    pub remote: RemoteSpec,
+}
+
+/// Extend an existing **local** project to remote: attach a `RemoteSpec`, create
+/// the empty remote root on the host (best-effort, exactly like `create_project`),
+/// and re-point the project into the mount-free remote layout **without uploading
+/// any data**. The project keeps its id; its current local directory becomes the
+/// local `mirror` (working copy) in place — files never move — and its `directory`
+/// becomes a local state dir holding `project.json`. The user pushes files to the
+/// (empty) host later via the existing manual sync UI.
+#[tauri::command]
+pub fn extend_project_to_remote(req: ExtendProjectRemoteRequest) -> Result<ProjectEntry, String> {
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        return Err("Project not found".to_string());
+    };
+
+    let idx = list
+        .iter()
+        .position(|p| p.id == req.project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+
+    // Guard: only local projects can be extended.
+    if list[idx].extra.contains_key("remote") {
+        return Err("Project is already remote".to_string());
+    }
+
+    // The current local tree becomes the mirror (working copy), unchanged.
+    let old_dir = list[idx]
+        .extra
+        .get("directory")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "Project has no local directory".to_string())?;
+    let old_path = PathBuf::from(&old_dir);
+    if !old_path.is_dir() {
+        return Err(format!("Local directory '{old_dir}' does not exist"));
+    }
+
+    // Best-effort create the empty remote root — same as create_project. Failure
+    // is non-fatal (key/agent-auth hosts may need it to pre-exist; a password-auth
+    // host connects and creates it at activation).
+    if let Err(e) = crate::services::ssh_exec::remote_mkdir_p(&req.remote) {
+        eprintln!(
+            "extend_project_to_remote: remote mkdir '{}' failed (create it on the host if needed): {e}",
+            req.remote.remote_path
+        );
+    }
+
+    // The remote project's `directory` is a local state dir holding project.json.
+    let state_dir = remote_project_state_dir(&req.project_id);
+    std::fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
+    let new_directory = state_dir.to_string_lossy().to_string();
+
+    // Move project.json from the old (now mirror) tree into the state dir, tagging
+    // it remote. Read the existing one so tabs/time/created_at/etc. survive.
+    let old_project_file = old_path.join("project.json");
+    let mut project: Project = if old_project_file.exists() {
+        storage::read_json(&old_project_file).unwrap_or_default()
+    } else {
+        Project::default()
+    };
+    project.id = req.project_id.clone();
+    project.name = list[idx].name.clone();
+    project.directory = new_directory.clone();
+    project.remote = Some(req.remote.clone());
+    project.mirror = Some(old_dir.clone());
+    let new_project_file = state_dir.join("project.json");
+    storage::write_json(&new_project_file, &project).map_err(|e| e.to_string())?;
+    // Remote projects don't keep project.json in the working copy — drop the stale
+    // one so the mirror is clean. Best-effort (a leftover file is harmless).
+    let _ = std::fs::remove_file(&old_project_file);
+
+    // Update the same projects.json entry in place, preserving every other extra
+    // key (categories, git_provider, git_type, description, sandbox, …).
+    let entry = &mut list[idx];
+    entry.local_file = new_project_file.to_string_lossy().to_string();
+    entry
+        .extra
+        .insert("directory".to_string(), Value::String(new_directory));
+    if let Ok(value) = serde_json::to_value(&req.remote) {
+        entry.extra.insert("remote".to_string(), value);
+    }
+    entry
+        .extra
+        .insert("mirror".to_string(), Value::String(old_dir));
+    let updated = entry.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+    Ok(updated)
 }
 
 // ── Time tracking ─────────────────────────────────────────────────────────
@@ -554,6 +1388,7 @@ fn project_extra(
     git_type: String,
     description: Option<String>,
     remote: Option<&RemoteSpec>,
+    mirror: Option<&str>,
 ) -> HashMap<String, Value> {
     let mut extra = HashMap::from([
         ("directory".to_string(), Value::String(directory)),
@@ -569,6 +1404,11 @@ fn project_extra(
         if let Ok(value) = serde_json::to_value(remote) {
             extra.insert("remote".to_string(), value);
         }
+    }
+    // The chosen local mirror root (remote projects only) — the always-local
+    // source of truth `remote_sync::mirror_dir` reads.
+    if let Some(mirror) = mirror {
+        extra.insert("mirror".to_string(), Value::String(mirror.to_string()));
     }
     extra
 }

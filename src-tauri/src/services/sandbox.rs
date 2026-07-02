@@ -33,10 +33,8 @@
 //! on `$HOME` shell-expansion, because `docker` is exec'd directly (no shell).
 
 use std::collections::BTreeMap;
-use std::process::Command;
 
 use crate::paths;
-use crate::services::ssh_mount;
 use crate::storage;
 use crate::terminal::PtyOptions;
 
@@ -114,9 +112,13 @@ pub fn wrap_pty_options_docker(opts: &mut PtyOptions) -> Result<(), String> {
     if !opts.sandbox {
         return Ok(());
     }
-    // Defence-in-depth: sandbox is local-only. A cwd under the sshfs mounts root
-    // belongs to a remote project; never docker-wrap it.
-    if cwd_under_mounts_root(&opts.cwd) {
+    // Defence-in-depth: sandbox is local-only. Never docker-wrap a remote
+    // project (resolved explicitly from the tab's owning project id).
+    if opts
+        .project_id
+        .as_deref()
+        .is_some_and(|id| crate::services::remote::remote_target_for(id).is_some())
+    {
         return Ok(());
     }
 
@@ -156,7 +158,9 @@ pub fn wrap_pty_options_docker(opts: &mut PtyOptions) -> Result<(), String> {
 
 /// Verify docker is installed and the image is present locally.
 fn preflight(image: &str) -> Result<(), String> {
-    let version = Command::new("docker").arg("--version").output();
+    let version = crate::paths::command_no_window("docker")
+        .arg("--version")
+        .output();
     match version {
         Ok(o) if o.status.success() => {}
         _ => {
@@ -167,7 +171,7 @@ fn preflight(image: &str) -> Result<(), String> {
             )
         }
     }
-    let inspect = Command::new("docker")
+    let inspect = crate::paths::command_no_window("docker")
         .args(["image", "inspect", image])
         .output();
     match inspect {
@@ -201,11 +205,6 @@ fn host_auth_env() -> BTreeMap<String, String> {
         }
     }
     out
-}
-
-fn cwd_under_mounts_root(cwd: &str) -> bool {
-    let root = ssh_mount::mounts_root();
-    std::path::Path::new(cwd).starts_with(&root)
 }
 
 #[cfg(unix)]
@@ -366,6 +365,7 @@ mod tests {
             rows: 24,
             local_only: false,
             sandbox: false,
+            project_id: None,
         };
         wrap_pty_options_docker(&mut opts).unwrap();
         assert_eq!(opts.cmd, "claude");

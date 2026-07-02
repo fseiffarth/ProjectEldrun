@@ -1,5 +1,7 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { PLATFORM } from "../lib/dragPlatform";
+import { IS_MAC } from "../lib/platform";
 import {
   allGroups,
   findGroup,
@@ -68,16 +70,27 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     const win = getCurrentWindow();
 
     async function onKeyDown(e: KeyboardEvent) {
-      // F11 — OS fullscreen toggle (unchanged).
+      // F11 — OS fullscreen toggle. On Windows, real fullscreen strips the
+      // window styles that Aero Snap and native title-bar dragging rely on (see
+      // AppShell's startup), so toggle MAXIMIZE there instead — same "fill the
+      // screen" effect, but the window stays snappable/draggable like other apps.
       if (e.key === "F11") {
         e.preventDefault();
-        const isFs = await win.isFullscreen();
-        win.setFullscreen(!isFs);
+        if (PLATFORM === "windows") {
+          if (await win.isMaximized()) win.unmaximize();
+          else win.maximize();
+        } else {
+          const isFs = await win.isFullscreen();
+          win.setFullscreen(!isFs);
+        }
         return;
       }
 
-      // Super key — toggle right panel.
-      if (e.key === "Meta" || e.key === "Super") {
+      // Super key — toggle right panel. Disabled on macOS: there Cmd reports as
+      // "Meta" and is the platform-primary shortcut modifier (see
+      // shortcuts.chordMatches), so a lone-key toggle would fire on every Cmd+key
+      // chord. Mac users reveal the panels via the cursor-to-edge hover instead.
+      if (!IS_MAC && (e.key === "Meta" || e.key === "Super")) {
         e.preventDefault();
         onTogglePanels();
         return;

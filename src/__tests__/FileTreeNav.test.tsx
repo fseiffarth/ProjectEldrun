@@ -55,6 +55,7 @@ function setupInvoke() {
       );
     }
     if (cmd === "git_status") return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
+    if (cmd === "git_unpushed_commits") return Promise.resolve([]);
     if (cmd === "git_file_statuses") return Promise.resolve({});
     if (cmd === "load_project") return Promise.resolve({});
     if (cmd === "list_project_endings") return Promise.resolve([]);
@@ -72,9 +73,19 @@ describe("file tree navigation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setupInvoke();
-    mockUseProjectsStore.mockReturnValue(
-      { projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>,
-    );
+    // Apply the selector like real zustand: FileTree subscribes with selectors
+    // (e.g. `(s) => !!s.projects.find(...)?.remote`), so the mock must run the
+    // selector against the state — returning the whole state object would make
+    // those boolean selectors truthy (a non-empty object) and mis-flag the local
+    // test project as remote.
+    const state = {
+      projects: [ACTIVE_PROJECT],
+      activeId: "proj-1",
+      rightPanelFolderByProject: {},
+      setRightPanelFolder: vi.fn(),
+    } as unknown as ReturnType<typeof useProjectsStore>;
+    mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
+      selector ? selector(state) : state) as typeof useProjectsStore);
   });
 
   it("#2 shows the full file name in a title attribute", async () => {
@@ -112,8 +123,10 @@ describe("file tree navigation", () => {
     const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("created.ts");
     await renderPanel();
 
-    // Right-click an entry to open the shared context menu, then choose New File.
-    fireEvent.contextMenu(await screen.findByText("sub"));
+    // Right-click the file-tree background to open the root context menu (New
+    // File / New Folder live there, not on the per-entry menu), then choose New File.
+    await screen.findByText("sub");
+    fireEvent.contextMenu(document.querySelector(".file-tree")!);
     await user.click(await screen.findByText("New File"));
 
     expect(promptSpy).toHaveBeenCalled();

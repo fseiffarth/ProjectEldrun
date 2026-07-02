@@ -31,6 +31,7 @@ export type Lang =
   | "sql"
   | "tex"
   | "markup"
+  | "markdown"
   | "plain";
 
 function escapeHtml(s: string): string {
@@ -150,7 +151,7 @@ const SQL_KW = set(
 
 const TOML_KW = set("true", "false");
 
-const SPECS: Record<Exclude<Lang, "markup" | "tex" | "plain">, LangSpec> = {
+const SPECS: Record<Exclude<Lang, "markup" | "tex" | "markdown" | "plain">, LangSpec> = {
   js: { line: ["//"], block: ["/*", "*/"], strings: ['"', "'", "`"], keywords: JS_KW, literals: set("true", "false", "null", "undefined", "NaN", "Infinity"), types: JS_TYPES },
   rust: { line: ["//"], block: ["/*", "*/"], strings: ['"'], keywords: RUST_KW, literals: set("true", "false", "None", "Some", "Ok", "Err"), types: RUST_TYPES },
   python: { line: ["#"], strings: ['"', "'"], triple: true, keywords: PY_KW, literals: set("True", "False", "None", "self", "cls"), types: PY_TYPES },
@@ -184,6 +185,8 @@ const EXT_LANG: Record<string, Lang> = {
   ".sql": "sql",
   ".tex": "tex", ".sty": "tex", ".cls": "tex", ".ltx": "tex",
   ".html": "markup", ".htm": "markup", ".xml": "markup", ".svg": "markup",
+  ".md": "markdown", ".markdown": "markdown", ".mdown": "markdown",
+  ".mkd": "markdown", ".mdx": "markdown",
 };
 
 const FILENAME_LANG: Record<string, Lang> = {
@@ -198,7 +201,7 @@ const FILENAME_LANG: Record<string, Lang> = {
  *  then shows the file uncoloured). Matched by extension first, then by a few
  *  well-known extensionless filenames. */
 export function languageForPath(path: string): Lang {
-  const name = (path.split("/").filter(Boolean).pop() ?? path).toLowerCase();
+  const name = (path.split(/[/\\]/).filter(Boolean).pop() ?? path).toLowerCase();
   const dot = name.lastIndexOf(".");
   // A leading-dot name (".gitignore") has no extension; only a dot past index 0
   // separates a real extension.
@@ -470,6 +473,147 @@ function scanTex(code: string): string {
   return out;
 }
 
+const isWordChar = (c: string | undefined) => !!c && /[A-Za-z0-9]/.test(c);
+
+/** Highlight the inline span content of one markdown line: code spans, links/
+ *  images, and `**strong**` / `*emphasis*` runs. Emphasis uses CommonMark-style
+ *  flanking checks (no space just inside the markers, underscores not intra-word)
+ *  so stray `*`/`_` in prose or `2 * 3` math don't get coloured. Everything not
+ *  matched passes through HTML-escaped. */
+function scanMarkdownInline(text: string): string {
+  let out = "";
+  let i = 0;
+  const n = text.length;
+
+  while (i < n) {
+    const c = text[i];
+
+    // Inline code: a run of N backticks closed by the same run.
+    if (c === "`") {
+      let ticks = 0;
+      while (text[i + ticks] === "`") ticks += 1;
+      const close = text.indexOf("`".repeat(ticks), i + ticks);
+      if (close !== -1) {
+        out += span("md-code", text.slice(i, close + ticks));
+        i = close + ticks;
+        continue;
+      }
+    }
+
+    // Link `[text](url)` or image `![alt](url)`.
+    if (c === "[" || (c === "!" && text[i + 1] === "[")) {
+      const lb = c === "!" ? i + 1 : i;
+      const rb = text.indexOf("]", lb + 1);
+      if (rb !== -1 && text[rb + 1] === "(") {
+        const rp = text.indexOf(")", rb + 2);
+        if (rp !== -1) {
+          if (c === "!") out += escapeHtml("!");
+          out += escapeHtml("[") + span("md-link", text.slice(lb + 1, rb)) + escapeHtml("](");
+          out += span("md-url", text.slice(rb + 2, rp)) + escapeHtml(")");
+          i = rp + 1;
+          continue;
+        }
+      }
+    }
+
+    // Strong: ** or __ (checked before emphasis so `**` wins over `*`).
+    if (
+      (c === "*" || c === "_") && text[i + 1] === c &&
+      text[i + 2] !== undefined && text[i + 2] !== " " &&
+      !(c === "_" && isWordChar(text[i - 1]))
+    ) {
+      const close = text.indexOf(c + c, i + 2);
+      if (close !== -1 && text[close - 1] !== " " &&
+          !(c === "_" && isWordChar(text[close + 2]))) {
+        out += span("md-strong", text.slice(i, close + 2));
+        i = close + 2;
+        continue;
+      }
+    }
+
+    // Emphasis: a single * or _.
+    if (
+      (c === "*" || c === "_") &&
+      text[i + 1] !== undefined && text[i + 1] !== " " && text[i + 1] !== c &&
+      !(c === "_" && isWordChar(text[i - 1]))
+    ) {
+      const close = text.indexOf(c, i + 1);
+      if (close !== -1 && text[close - 1] !== " " &&
+          !(c === "_" && isWordChar(text[close + 1]))) {
+        out += span("md-em", text.slice(i, close + 1));
+        i = close + 1;
+        continue;
+      }
+    }
+
+    out += escapeHtml(c);
+    i += 1;
+  }
+
+  return out;
+}
+
+/** Tokenize Markdown line-by-line: fenced code blocks, ATX headings, horizontal
+ *  rules, blockquote/list line prefixes, plus the inline spans handled by
+ *  {@link scanMarkdownInline}. A focused subset, like the other scanners. */
+function scanMarkdown(code: string): string {
+  const lines = code.split("\n");
+  let out = "";
+  let inFence = false;
+  let fence = "";
+
+  for (let li = 0; li < lines.length; li += 1) {
+    const line = lines[li];
+    const nl = li < lines.length - 1 ? "\n" : "";
+
+    // Inside a fenced code block: paint verbatim until a matching close fence.
+    if (inFence) {
+      out += span("md-code", line) + nl;
+      if (line.trimStart().startsWith(fence)) inFence = false;
+      continue;
+    }
+
+    // Opening code fence (``` or ~~~, optionally with an info string).
+    const open = /^\s{0,3}(```+|~~~+)/.exec(line);
+    if (open) {
+      inFence = true;
+      fence = open[1].slice(0, 3);
+      out += span("md-code", line) + nl;
+      continue;
+    }
+
+    // ATX heading (#…######).
+    if (/^\s{0,3}#{1,6}(\s|$)/.test(line)) {
+      out += span("md-heading", line) + nl;
+      continue;
+    }
+
+    // Horizontal rule (three or more -, *, or _).
+    if (/^\s{0,3}([-*_])\s*(?:\1\s*){2,}$/.test(line)) {
+      out += span("md-hr", line) + nl;
+      continue;
+    }
+
+    // Leading blockquote markers and/or a list marker, then inline content.
+    let rest = line;
+    let prefix = "";
+    const bq = /^(\s{0,3}(?:>\s?)+)/.exec(rest);
+    if (bq) {
+      prefix += span("md-quote", bq[1]);
+      rest = rest.slice(bq[1].length);
+    }
+    const list = /^(\s*)([-*+]|\d{1,9}[.)])(\s+)/.exec(rest);
+    if (list) {
+      prefix += escapeHtml(list[1]) + span("md-list", list[2]) + escapeHtml(list[3]);
+      rest = rest.slice(list[0].length);
+    }
+
+    out += prefix + scanMarkdownInline(rest) + nl;
+  }
+
+  return out;
+}
+
 /** Largest source we will highlight, in characters. Beyond this the viewer falls
  *  back to plain text so editing a huge file stays responsive (re-highlight runs
  *  on every keystroke). */
@@ -485,5 +629,6 @@ export function highlight(code: string, lang: Lang): string | null {
   if (code.length > HIGHLIGHT_MAX_CHARS) return null;
   if (lang === "markup") return scanMarkup(code);
   if (lang === "tex") return scanTex(code);
+  if (lang === "markdown") return scanMarkdown(code);
   return scanCode(code, SPECS[lang]);
 }

@@ -37,6 +37,11 @@ interface Props {
   // When true, run this (agent) tab inside a Docker sandbox that mounts only the
   // project dir. Set only for agent tabs of a sandbox-enabled local project.
   sandbox?: boolean;
+  // The owning project's id for a project-scope tab (null/undefined for the root
+  // scope and connection terminals). Forwarded to the backend spawn so it can
+  // detect remoteness explicitly (resolve the project's RemoteSpec) instead of
+  // sniffing the cwd. Harmless for local projects — they resolve to no remote.
+  projectId?: string | null;
   // Whether this pane is laid out on screen (single-mode active tab, or any
   // pane in grid mode). Drives display + xterm fit.
   visible: boolean;
@@ -52,6 +57,13 @@ interface Props {
   // When true (agent tabs), the pane is font-zoomable: Ctrl+wheel and
   // Ctrl +/-/0 scale the font, with the level shared across all agent panes.
   zoomable?: boolean;
+  // When true, do NOT kill the PTY when this view unmounts. Used by the
+  // non-headless connection terminals embedded in the project dialog: the
+  // OpenVPN/SSH login they run must outlive the dialog (the new project relies
+  // on the tunnel/master being up), so closing the dialog leaves the PTY
+  // running rather than tearing the connection down. This view owns the PTY
+  // (it spawns it, unlike `attachOnly`), it just declines to reap it on unmount.
+  persistOnUnmount?: boolean;
 }
 
 function terminalTheme(scheme: string | undefined) {
@@ -134,7 +146,7 @@ function readAgentFontSize(): number {
   return DEFAULT_FONT_SIZE;
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, visible, focused, attachOnly = false, zoomable = false }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -144,6 +156,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const unlistenExit = useRef<(() => void) | null>(null);
   const initialInputSent = useRef(false);
   const initialEnterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openWatchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firstOutputAt = useRef<number | null>(null);
   // xterm crashes if opened/written into a zero-size or display:none element
   // (its renderer never initializes, so syncScrollArea dereferences undefined).
@@ -170,7 +183,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       allowProposedApi: false,
       cursorBlink: true,
       fontSize: zoomable ? readAgentFontSize() : DEFAULT_FONT_SIZE,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+      // Consolas/Cascadia Mono are the guaranteed Windows monospace fonts; keep
+      // them ahead of the generic fallback so the terminal isn't a bitmap font on
+      // Windows when the preferred coding fonts aren't installed.
+      fontFamily:
+        "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Cascadia Mono', Consolas, Menlo, monospace",
       theme: terminalTheme(colorScheme),
     });
 
@@ -369,7 +386,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
 
       try {
         await invoke("pty_spawn", {
-          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox },
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, project_id: projectId ?? null },
         });
       } catch (e) {
         if (!cancelled) {
@@ -406,6 +423,30 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // for viewport-level changes (maximize, fullscreen toggle).
     window.addEventListener("resize", doFit);
 
+    // Open watchdog (the "black agent tab" gate, esp. Windows/WebView2).
+    // tryOpen() only runs from the ResizeObserver and the `visible` effect. When
+    // a pane goes display:none → flex while `visible` was already true, the only
+    // trigger is the ResizeObserver firing on that box change — and WebView2
+    // occasionally drops that callback. The PTY has already spawned and is
+    // buffering its output into pendingOutput, but xterm never opens, so the
+    // pane stays black AND unresponsive (no open → no focus → keystrokes go
+    // nowhere). This bounded poll guarantees we keep attempting tryOpen while the
+    // pane is visible-but-unopened, so it can never get stuck closed. It costs a
+    // few cheap ticks at mount, stops the instant the terminal opens, and is
+    // capped by a wall-clock deadline so it can't spin forever (a legitimately
+    // hidden pane is opened by the `visible` effect when it is next shown).
+    const OPEN_WATCH_INTERVAL_MS = 150;
+    const OPEN_WATCH_DEADLINE_MS = 8000;
+    const watchStart = Date.now();
+    const watchOpen = () => {
+      openWatchTimer.current = null;
+      if (cancelled || openedRef.current) return;
+      if (visibleRef.current) tryOpen();
+      if (openedRef.current || Date.now() - watchStart >= OPEN_WATCH_DEADLINE_MS) return;
+      openWatchTimer.current = setTimeout(watchOpen, OPEN_WATCH_INTERVAL_MS);
+    };
+    openWatchTimer.current = setTimeout(watchOpen, OPEN_WATCH_INTERVAL_MS);
+
     // Agent-pane zoom: Ctrl+wheel scales the font; a window event keeps every
     // other open agent pane in sync with the shared level. Both are no-ops for
     // non-agent shells. The wheel listener is non-passive so it can preventDefault.
@@ -429,6 +470,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     return () => {
       cancelled = true;
       if (initialEnterTimer.current) clearTimeout(initialEnterTimer.current);
+      if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
       window.removeEventListener("resize", doFit);
       if (zoomable) {
         containerRef.current?.removeEventListener("wheel", onWheel);
@@ -447,13 +489,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // unmounting *because its tab was just detached* into a popped-out window
       // (the detached attach-only viewer is now reading this PTY; killing it
       // would leave that window a dead black pane). Only a real close tears it
-      // down.
-      if (!attachOnly && !isDetachedPtyId(id)) {
+      // down. (c) `persistOnUnmount` — a dialog-embedded connection terminal
+      // whose tunnel/login must outlive the dialog.
+      if (!attachOnly && !isDetachedPtyId(id) && !persistOnUnmount) {
         invoke("pty_kill", { id }).catch(() => {});
       }
       term.dispose();
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, attachOnly, zoomable]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, attachOnly, zoomable, persistOnUnmount]);
 
   useEffect(() => {
     if (termRef.current) {

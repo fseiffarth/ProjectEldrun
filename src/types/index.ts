@@ -78,17 +78,41 @@ export interface Settings {
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
+  /** Global UI zoom factor for the whole interface (helps on high-DPI/4K
+   *  monitors). `1` (or unset) is 100% — the default look; applied as a CSS
+   *  `zoom` on the document root. Clamped to [0.5, 3]. */
+  ui_zoom?: number;
   default_agent_cmd?: string;
-  /** The single active local (Ollama) model. A "Local Model" tab launches this
-   *  one; chosen in Settings → Ollama. Unset = no local model selected. */
+  /** The default local (Ollama) model. Used by any task without its own
+   *  per-task assignment in `ollama_roles`, and as the legacy "active model".
+   *  Chosen in the 🧠 menu (click a loaded model's name). Unset = none. */
   ollama_model?: string;
+  /** Per-task local-model assignments (🧠 menu role chips). Maps a task key —
+   *  `"autocomplete"`, `"grammar"`, or `"tabs"` — to the model name that should
+   *  serve it, so several loaded models can run different jobs in parallel. A
+   *  task absent here falls back to `ollama_model`, then to any loaded model. */
+  ollama_roles?: Record<string, string>;
   run_scripts_in_background?: boolean;
+  /** Header resource-monitor row toggles. Each defaults ON (undefined → shown).
+   *  Independent of `debug`; the pill is available in every build. */
+  show_cpu_usage?: boolean;
+  show_ram_usage?: boolean;
+  show_gpu_usage?: boolean;
   /** When true (the default), Claude agent tabs are spawned with `--remote-control`
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
   agent_remote_control?: boolean;
+  /** When true (the default), remote SSH/OpenVPN connections are made headlessly
+   *  in the background (Eldrun handles the password transiently). When false, they
+   *  are launched as interactive terminal tabs in the Eldrun root scope, so the
+   *  password is typed directly into the live terminal and Eldrun never handles
+   *  it. Default ON (headless) preserves existing behaviour. */
+  connections_headless?: boolean;
   /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
   right_panel_pinned?: boolean;
+  /** Width of the right (file/git) panel in px. Set by dragging the panel's left
+   *  border; unset falls back to the default 280px. */
+  right_panel_width?: number;
   /** Minimum subwindow (split pane) width in px a divider drag may shrink to.
    *  Unset falls back to DEFAULT_MIN_SUBWINDOW_PX. */
   min_subwindow_width?: number;
@@ -97,6 +121,10 @@ export interface Settings {
   min_subwindow_height?: number;
   /** When true, in-app editors debounce-save edits automatically (#47). Default OFF. */
   autosave?: boolean;
+  /** When true (the default), the text/TeX editors tint recently typed runs with a
+   *  sequential new→old colour trail that fades as you keep typing. Default ON;
+   *  only an explicit `false` disables it. */
+  change_tint?: boolean;
   /** Per-type native-viewer prefs (#48): opt-in local autocomplete (#45). */
   viewer_prefs?: Record<string, ViewerPref>;
   global_apps?: Record<string, GlobalAppEntry>;
@@ -107,12 +135,33 @@ export interface Settings {
    * original hard-coded behaviour.
    */
   keyboard_shortcuts?: Record<string, KeyboardChord>;
+  /** True once the first-run "How to start" welcome has been shown/dismissed, so
+   *  it never re-opens automatically. Re-openable manually from Settings. */
+  onboarding_seen?: boolean;
+  /** Ids of contextual hints (see `src/lib/hints.ts`) the user has seen/dismissed
+   *  or implicitly acted on, so each surfaces at most once. */
+  hints_seen?: string[];
+  /** Master switch for the contextual hint system; default ON when unset. */
+  hints_enabled?: boolean;
+  /** True once the guided "Take a tour" walkthrough has been completed or
+   *  skipped. Cosmetic only (never auto-launches the tour); the tour is always
+   *  replayable from the gear menu / Settings. */
+  tour_completed?: boolean;
   [key: string]: unknown;
 }
 
 export interface OpenVpnSpec {
   /** Absolute path to the local `.ovpn` client config file. */
   config: string;
+}
+
+/** A previously-used `.ovpn` config copied into Eldrun's store, offered for
+ *  reuse so a config need only be browsed for once. */
+export interface StoredVpnConfig {
+  /** Absolute path to the stored copy (passed to `openvpn_connect`). */
+  path: string;
+  /** Friendly display name (the original `.ovpn` file name). */
+  name: string;
 }
 
 export interface RemoteSpec {
@@ -136,14 +185,16 @@ export interface RemoteEntry {
   is_dir: boolean;
 }
 
-/** Availability of the external binaries remote (SSH) projects rely on. */
+/** Availability of the external binaries remote (SSH) projects rely on.
+ * Remote projects are SSH/SFTP-native (no FUSE mount), so only password-auth
+ * (`sshpass`) and VPN-gated (`openvpn`) tooling is relevant. */
 export interface SshTooling {
-  /** `sshfs` — required to mount a remote project locally. */
-  sshfs: boolean;
   /** `sshpass` — required only for password auth. */
   sshpass: boolean;
   /** `openvpn` + `pkexec` — required only for VPN-gated hosts. */
   openvpn: boolean;
+  /** `rsync` on the local machine — enables the SSH-sync bulk fast-path. */
+  rsync: boolean;
 }
 
 export interface ProjectEntry {
@@ -160,7 +211,49 @@ export interface ProjectEntry {
   sandbox?: SandboxSpec;
   /** Denormalized inverse of `ProjectBox.member_ids` (the box this pill is in). */
   box_id?: string;
+  /** Per-project git-hosting profile URL that overrides the global one. Mirrored
+   *  from project.json into the pill list; the matching token lives in the OS
+   *  keyring, never here. See `GitHostingInfo`. */
+  git_profile_url?: string;
+  /** Hosting provider this project was published to, recorded at publish time.
+   *  Absent until published to a remote. */
+  git_provider?: GitProvider;
+  /** User-assigned category tags. Group/color the project in the cloud + pills;
+   *  set via the pill / blob-node right-click menu. Stored in the entry's
+   *  flattened `extra` (mirrored into project.json). */
+  categories?: string[];
   [key: string]: unknown;
+}
+
+/** A row in the Settings "Archived projects" list (from `list_archived_projects`).
+ *  Archived projects live under `~/eldrun/archive/<id>/` until restored or
+ *  permanently cleared. */
+export interface ArchivedProject {
+  id: string;
+  name: string;
+  /** ISO timestamp the project was archived (stamped at delete time). */
+  archived_at: string;
+  /** True for remote (SSH) projects — their host tree was never touched. */
+  remote: boolean;
+}
+
+/** Supported git-hosting providers for publishing a project's repo. */
+export type GitProvider = "github" | "gitlab";
+
+/**
+ * Per-project git-hosting config as returned by `get_project_git_hosting`. The
+ * token is never sent to the renderer — only whether one is stored — and the
+ * global values are surfaced so the editor can show what is inherited by default.
+ */
+export interface GitHostingInfo {
+  /** Per-project profile URL override, if set (else inherits `global_profile_url`). */
+  profile_url: string | null;
+  /** Whether a per-project token is stored in the keyring. */
+  has_token: boolean;
+  /** Global fallback profile URL (from settings), shown as the inherited default. */
+  global_profile_url: string | null;
+  /** Whether a global token exists to fall back on. */
+  has_global_token: boolean;
 }
 
 /**
@@ -206,9 +299,27 @@ export function boxFolderName(name: string): string {
 export function resolveProjectDirectory(project: ProjectEntry | null | undefined): string {
   if (!project) return "";
   if (project.directory) return project.directory;
-  return project.local_file.endsWith("/project.json")
-    ? project.local_file.slice(0, -"/project.json".length)
-    : "";
+  const match = /^(.*)[/\\]project\.json$/i.exec(project.local_file);
+  return match?.[1] ?? "";
+}
+
+/**
+ * Format a remote project's location as `user@host:remote_path` (the `user@`
+ * prefix is dropped when no user is set). Port is intentionally omitted — this
+ * is an at-a-glance display string, and `host:port:path` would be ambiguous.
+ */
+export function formatRemoteTarget(remote: RemoteSpec): string {
+  return `${remote.user ? `${remote.user}@` : ""}${remote.host}:${remote.remote_path}`;
+}
+
+/**
+ * The paired local working-copy ("mirror") path for a remote project, read from
+ * the flattened `extra["mirror"]` field mirrored onto the entry. Returns null
+ * when unset (legacy remote projects created before the mirror was persisted).
+ */
+export function resolveLocalMirror(project: ProjectEntry | null | undefined): string | null {
+  const mirror = project?.mirror;
+  return typeof mirror === "string" && mirror.trim() ? mirror : null;
 }
 
 export type Theme = "fancy_dark" | "dark" | "light" | "fancy_light";
