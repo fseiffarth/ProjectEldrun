@@ -208,6 +208,27 @@ pub fn ssh_pty_args(remote: &RemoteSpec, remote_command: &str) -> Result<Vec<Str
     Ok(args)
 }
 
+/// Build `ssh -S <shared-control-path> -O check <target>` for resolving the
+/// actual ControlMaster PID without opening a network connection. The `%C`
+/// token is expanded by OpenSSH from the same user/host/port tuple used by every
+/// remote-project channel.
+pub fn ssh_control_check_args(remote: &RemoteSpec) -> Result<Vec<String>, String> {
+    let target = ssh_target(&remote.user, &remote.host)?;
+    let control_path = control_dir().join("cm-%C");
+    let mut args = vec![
+        "-S".to_string(),
+        control_path.to_string_lossy().into_owned(),
+        "-O".to_string(),
+        "check".to_string(),
+    ];
+    if let Some(port) = remote.port {
+        args.push("-p".to_string());
+        args.push(port.to_string());
+    }
+    args.push(target);
+    Ok(args)
+}
+
 /// Build the remote command string `cd <remote_path> && git <args…>` for a
 /// git-over-ssh invocation. This is the one unavoidable shell string: ssh
 /// concatenates its trailing argv and hands it to the remote `$SHELL -c`, so
@@ -541,6 +562,17 @@ mod tests {
     fn ssh_pty_args_rejects_bad_host() {
         let s = spec(None, "-evil", None, "/p");
         assert!(ssh_pty_args(&s, "exec sh").is_err());
+    }
+
+    #[test]
+    fn ssh_control_check_uses_shared_path_and_target() {
+        let args = ssh_control_check_args(&spec(Some("alice"), "host.example", Some(2200), "/p"))
+            .unwrap();
+        assert_eq!(args[0], "-S");
+        assert!(args[1].contains("cm-%C"));
+        assert!(args.windows(2).any(|w| w == ["-O", "check"]));
+        assert!(args.windows(2).any(|w| w == ["-p", "2200"]));
+        assert_eq!(args.last().unwrap(), "alice@host.example");
     }
 
     // ── interactive_login_command ──────────────────────────────────────────

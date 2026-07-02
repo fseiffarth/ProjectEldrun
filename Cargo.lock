@@ -1132,6 +1132,7 @@ version = "0.1.7"
 dependencies = [
  "arboard",
  "base64 0.22.1",
+ "bytes",
  "calamine",
  "futures-util",
  "gtk",
@@ -1142,6 +1143,7 @@ dependencies = [
  "notify",
  "opener",
  "openssh-sftp-client",
+ "plist",
  "png 0.17.16",
  "portable-pty",
  "rusqlite",

@@ -47,7 +47,15 @@ import {
   type EditResult,
 } from "../../lib/viewers/markdownEdit";
 import { internalViewerFor, disabledViewers, relFromAbs, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
-import { basename, dirname, resolvePath, toFileUri } from "../../lib/paths";
+import {
+  basename,
+  dirname,
+  fromFileUri,
+  isPathWithin,
+  normalizePath,
+  resolvePath,
+  toFileUri,
+} from "../../lib/paths";
 import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab } from "../../lib/installCommand";
 import {
@@ -475,12 +483,13 @@ export function openLinkedFile(
  *  result keeps `mdPath`'s separator style, so it is correct on Windows (native
  *  backslashes + drive letter) as well as Unix. Returns null for an empty target. */
 function resolveLocalHref(mdPath: string, href: string): string | null {
-  let h = href.trim().replace(/^file:\/\//i, "").replace(/[?#].*$/, "");
+  let h = href.trim().replace(/[?#].*$/, "");
   if (!h) return null;
+  if (/^file:\/\//i.test(h)) {
+    const decoded = fromFileUri(h);
+    return decoded ? normalizePath(decoded) : null;
+  }
   try { h = decodeURIComponent(h); } catch { /* keep the raw href */ }
-  // A `file:///C:/…` URI leaves a leading slash before the drive — drop it so the
-  // target is recognised as a Windows-absolute path rather than a POSIX one.
-  h = h.replace(/^\/([a-zA-Z]:)/, "$1");
   return resolvePath(dirname(mdPath), h);
 }
 
@@ -1642,7 +1651,7 @@ function CodeEditor({
     let best = "";
     for (const p of projects) {
       const dir = resolveProjectDirectory(p);
-      if (dir && (path === dir || path.startsWith(dir + "/")) && dir.length > best.length) {
+      if (dir && isPathWithin(path, dir) && dir.length > best.length) {
         best = dir;
       }
     }
@@ -5368,7 +5377,9 @@ function TexView({
               type="button"
               className="ollama-action-btn primary"
               title="Run this command in a new terminal tab"
-              onClick={() => runInstallInTab(TEX_INSTALL_LABEL, TEX_INSTALL_CMD)}
+              onClick={() =>
+                runInstallInTab(TEX_INSTALL_LABEL, TEX_INSTALL_CMD, IS_WINDOWS ? "default" : "bash")
+              }
             >
               Run in terminal
             </button>

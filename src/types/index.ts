@@ -299,9 +299,8 @@ export function boxFolderName(name: string): string {
 export function resolveProjectDirectory(project: ProjectEntry | null | undefined): string {
   if (!project) return "";
   if (project.directory) return project.directory;
-  return project.local_file.endsWith("/project.json")
-    ? project.local_file.slice(0, -"/project.json".length)
-    : "";
+  const match = /^(.*)[/\\]project\.json$/i.exec(project.local_file);
+  return match?.[1] ?? "";
 }
 
 /**

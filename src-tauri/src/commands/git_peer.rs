@@ -111,3 +111,32 @@ pub async fn git_peer_checkout(
     git_peer::emit_status(&app, &project_id, &state);
     Ok(state)
 }
+
+/// Resolve a divergence by choosing an authority: `authority` is `"local"` or
+/// `"remote"`. The winner's history is force-applied to the loser (its overwritten
+/// tips backed up to `refs/eldrun/backup/*` first), file-sync bases are re-stamped,
+/// and the recomputed status is emitted. The Use-local / Use-remote action (#28n
+/// Phase 2), only offered when the state is `Desynchronized`.
+#[tauri::command]
+pub async fn git_peer_resolve(
+    app: AppHandle,
+    pool: State<'_, RemotePoolState>,
+    manifest: State<'_, SyncManifestState>,
+    auto: State<'_, AutoSyncState>,
+    project_id: String,
+    authority: String,
+) -> Result<GitPeerState, String> {
+    let rt = remote_target_for(&project_id)
+        .ok_or("Git lockstep is only available for SSH remote projects")?;
+    let state = git_peer::resolve(
+        pool.inner(),
+        manifest.inner(),
+        auto.inner(),
+        &project_id,
+        &rt.spec,
+        &authority,
+    )
+    .await?;
+    git_peer::emit_status(&app, &project_id, &state);
+    Ok(state)
+}

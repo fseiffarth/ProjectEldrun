@@ -33,6 +33,7 @@ function setup(peerState: unknown) {
     if (cmd === "git_worktree_list") return Promise.resolve([]);
     if (cmd === "git_peer_status") return Promise.resolve(peerState);
     if (cmd === "git_peer_checkout") return Promise.resolve(peerState);
+    if (cmd === "git_peer_resolve") return Promise.resolve({ ...(peerState as object), status: "synchronized", detail: null });
     if (cmd === "git_checkout") return Promise.resolve(null);
     return Promise.resolve(null);
   });
@@ -83,6 +84,36 @@ describe("#28n git lockstep UI", () => {
     await user.click(await screen.findByRole("button", { name: "feature" }));
     expect(mockInvoke).toHaveBeenCalledWith("git_checkout", { projectDir: "/p", target: "feature" });
     expect(mockInvoke).not.toHaveBeenCalledWith("git_peer_checkout", expect.anything());
+  });
+
+  it("offers Use local / Use remote when desynchronized and routes to git_peer_resolve", async () => {
+    const DESYNC = { ...ENABLED, status: "desynchronized", detail: "Diverged: main" };
+    setup(DESYNC);
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await renderRemote(DESYNC);
+
+    // The desync detail + both authority buttons render.
+    expect(await screen.findByText("Diverged: main")).toBeTruthy();
+    await user.click(await screen.findByRole("button", { name: "Use remote" }));
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(mockInvoke).toHaveBeenCalledWith("git_peer_resolve", {
+      projectId: "proj1",
+      authority: "remote",
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it("does not resolve when the confirm is dismissed", async () => {
+    const DESYNC = { ...ENABLED, status: "desynchronized", detail: "Diverged: main" };
+    setup(DESYNC);
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await renderRemote(DESYNC);
+
+    await user.click(await screen.findByRole("button", { name: "Use local" }));
+    expect(mockInvoke).not.toHaveBeenCalledWith("git_peer_resolve", expect.anything());
+    confirmSpy.mockRestore();
   });
 
   it("does not render the lockstep bar for a local project", async () => {

@@ -768,7 +768,7 @@ export function listenProjectRuntimeSwitched(): Promise<() => void> {
     const payload = ev.payload;
     const scopeKey = payload.projectId ?? "root";
     const tabsStore = useTabsStore.getState();
-    // Keep shell/files tabs, resumable agent tabs (Claude with a sessionId), and
+    // Keep shell/files/network tabs, resumable agent tabs (Claude with a sessionId), and
     // in-app file-viewer embeds; other agent tabs (and external-app embeds) are
     // dropped (no session to restore). Newer snapshots carry `kind`/`sessionId`;
     // fall back to deriving the kind from the command. The saved groups tree

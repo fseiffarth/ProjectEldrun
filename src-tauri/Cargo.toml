@@ -57,6 +57,9 @@ keyring = { version = "3", features = ["windows-native", "apple-native", "sync-s
 openssh-sftp-client = "0.15.7"
 # `StreamExt::next` to drive the SFTP `ReadDir` stream (already in the dep tree).
 futures-util = "0.3"
+# `BytesMut` buffer type for chunked SFTP reads (git-lockstep streaming transport,
+# #28n Phase 3); matches the `bytes` version openssh-sftp-client already resolves.
+bytes = "1"
 
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -86,6 +89,9 @@ windows = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

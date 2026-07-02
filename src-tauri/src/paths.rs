@@ -1,4 +1,6 @@
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsKind {
@@ -34,120 +36,100 @@ pub fn path_finder(os: OsKind) -> &'static str {
 /// are GUI-less subprocesses we only read output from; without `CREATE_NO_WINDOW`
 /// each invocation pops a transient console window, and a single TeX compile
 /// spawns several. No-op on non-Windows targets.
-pub fn command_no_window(bin: &str) -> std::process::Command {
-    #[allow(unused_mut)]
-    let mut cmd = std::process::Command::new(bin);
+pub fn command_no_window(bin: impl AsRef<OsStr>) -> Command {
+    let mut cmd = Command::new(bin);
+    augment_command_path(&mut cmd);
+    hide_command_window(&mut cmd);
+    cmd
+}
+
+fn hide_command_window(_cmd: &mut Command) {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         // CREATE_NO_WINDOW (winbase.h): don't allocate a console for the child.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        _cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    cmd
 }
 
-/// True when `bin` resolves on `PATH` on the current OS. Centralised so every
-/// "is this CLI installed?" probe is correct cross-platform — see [`path_finder`].
-///
-/// On macOS the PATH the probe (`which`) sees is augmented with
-/// [`extra_path_dirs`] so that a Finder/Dock-launched Eldrun — whose inherited
-/// PATH omits Homebrew/MacTeX dirs — still detects tools installed there.
+/// True when `bin` resolves on Eldrun's effective PATH on the current OS.
+/// Windows lookup expands PATHEXT and all platforms include supplemental
+/// per-user/package-manager directories.
 pub fn binary_on_path(bin: &str) -> bool {
-    let mut cmd = command_no_window(path_finder(OsKind::current()));
-    cmd.arg(bin)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    augment_command_path(&mut cmd);
-    cmd.status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    resolve_executable(bin).is_some()
 }
 
 /// Standard directories macOS package managers (Homebrew, MacTeX) install CLI
 /// tools into but which a Finder/Dock-launched GUI app's inherited PATH omits —
 /// so a tool can be installed yet unreachable by bare name. The macOS analogue of
 /// the per-user dirs in [`launch_search_dirs`].
-#[cfg(target_os = "macos")]
 const MACOS_EXTRA_DIRS: &[&str] = &[
     "/opt/homebrew/bin",
-    "/usr/local/bin",
     "/opt/homebrew/sbin",
+    "/usr/local/bin",
     "/usr/local/sbin",
+    "/opt/local/bin",
+    "/opt/local/sbin",
     "/Library/TeX/texbin",
 ];
 
-/// Directories to prepend to a child process's PATH so a GUI-launched Eldrun can
-/// resolve Homebrew/MacTeX-installed tools (tex/ollama/sshfs/…). Only existing
-/// dirs are returned. Empty on every non-macOS platform, where the inherited
-/// PATH already covers these locations.
-pub fn extra_path_dirs() -> Vec<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        MACOS_EXTRA_DIRS
-            .iter()
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-            .collect()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Vec::new()
-    }
-}
-
-/// Prepend [`extra_path_dirs`] to `cmd`'s PATH env so the child can find tools a
-/// GUI-launched Eldrun's inherited PATH omits. No-op when there are no extra dirs
-/// (every non-macOS platform), preserving the inherited PATH unchanged.
-pub fn augment_command_path(cmd: &mut std::process::Command) {
-    let extra = extra_path_dirs();
-    if extra.is_empty() {
-        return;
-    }
-    let current = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths: Vec<PathBuf> = extra;
-    paths.extend(std::env::split_paths(&current));
-    if let Ok(joined) = std::env::join_paths(&paths) {
-        cmd.env("PATH", joined);
-    }
-}
-
-/// Well-known per-user directories that package managers drop CLI tools into but
-/// which a running GUI app's *inherited* PATH frequently omits — so a tool can be
-/// installed yet unreachable by bare name. Mirrors the fallback locations the
-/// "is it installed?" probes already check (`ollama_is_installed`,
-/// `vibe_is_installed`, the agent registry's `extra_paths`); kept here so the
-/// *launch* path resolves to the same places detection trusts.
-fn launch_search_dirs() -> Vec<PathBuf> {
-    let home = home_dir();
+fn supplemental_path_dirs_for(
+    os: OsKind,
+    home: &Path,
+    local_app_data: Option<&OsStr>,
+    app_data: Option<&OsStr>,
+) -> Vec<PathBuf> {
     let mut dirs = vec![
         home.join(".local").join("bin"),
         home.join(".cargo").join("bin"),
         home.join(".opencode").join("bin"),
     ];
-    if cfg!(target_os = "windows") {
-        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            let local = PathBuf::from(local);
-            // winget / the Ollama GUI installer (per-user).
-            dirs.push(local.join("Programs").join("Ollama"));
-            dirs.push(local.join("Microsoft").join("WindowsApps"));
+    match os {
+        OsKind::Macos => dirs.extend(MACOS_EXTRA_DIRS.iter().map(PathBuf::from)),
+        OsKind::Windows => {
+            if let Some(local) = local_app_data {
+                let local = PathBuf::from(local);
+                dirs.push(local.join("Microsoft").join("WindowsApps"));
+                dirs.push(local.join("Programs").join("Ollama"));
+                dirs.push(local.join("bin"));
+            }
+            if let Some(roaming) = app_data {
+                dirs.push(PathBuf::from(roaming).join("npm"));
+            }
         }
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            // npm global bin (shims live here as .cmd).
-            dirs.push(PathBuf::from(appdata).join("npm"));
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // Homebrew/MacTeX dirs a GUI-launched app's PATH omits (see
-        // `MACOS_EXTRA_DIRS`). Harmless if absent: `resolve_in_dirs` only returns
-        // entries that exist.
-        for dir in MACOS_EXTRA_DIRS {
-            dirs.push(PathBuf::from(dir));
-        }
+        OsKind::Unix => {}
     }
     dirs
+}
+
+/// Directories prepended to every child process PATH. GUI-launched applications
+/// commonly miss per-user package directories on every supported OS.
+pub fn extra_path_dirs() -> Vec<PathBuf> {
+    supplemental_path_dirs_for(
+        OsKind::current(),
+        &home_dir(),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
+        std::env::var_os("APPDATA").as_deref(),
+    )
+}
+
+/// Prepend [`extra_path_dirs`] to `cmd`'s PATH env.
+pub fn augment_command_path(cmd: &mut std::process::Command) {
+    if let Some(path) = effective_path() {
+        cmd.env("PATH", path);
+    }
+}
+
+pub fn effective_path() -> Option<std::ffi::OsString> {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = extra_path_dirs();
+    paths.extend(std::env::split_paths(&current));
+    std::env::join_paths(&paths).ok()
+}
+
+fn launch_search_dirs() -> Vec<PathBuf> {
+    extra_path_dirs()
 }
 
 /// Pure resolver: the first existing `bin` across `dirs`, trying each of `exts`
@@ -177,6 +159,112 @@ fn resolve_in_dirs(
     None
 }
 
+fn windows_extensions(pathext: Option<&OsStr>) -> Vec<String> {
+    let value = pathext
+        .and_then(OsStr::to_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(".COM;.EXE;.BAT;.CMD;.PS1");
+    let mut extensions = value
+        .split(';')
+        .map(|ext| ext.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|ext| !ext.is_empty())
+        .collect::<Vec<_>>();
+    // PowerShell scripts are launchable through our explicit dispatcher even
+    // though Windows' default PATHEXT usually omits .PS1.
+    if !extensions.iter().any(|ext| ext == "ps1") {
+        extensions.push("ps1".to_string());
+    }
+    extensions
+}
+
+fn resolve_executable_in_dirs(
+    os: OsKind,
+    dirs: &[PathBuf],
+    bin: &str,
+    pathext: Option<&OsStr>,
+    exists: &impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if bin.is_empty() {
+        return None;
+    }
+    if bin.contains('/') || bin.contains('\\') {
+        let path = PathBuf::from(bin);
+        return exists(&path).then_some(path);
+    }
+    let exts = if os == OsKind::Windows {
+        windows_extensions(pathext)
+    } else {
+        Vec::new()
+    };
+    let refs = exts.iter().map(String::as_str).collect::<Vec<_>>();
+    resolve_in_dirs(dirs, bin, &refs, exists)
+}
+
+/// Resolve a command using the same effective PATH Eldrun applies at execution.
+/// Windows resolution follows PATHEXT, including script shims.
+pub fn resolve_executable(bin: &str) -> Option<PathBuf> {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = extra_path_dirs();
+    dirs.extend(std::env::split_paths(&current));
+    resolve_executable_in_dirs(
+        OsKind::current(),
+        &dirs,
+        bin,
+        std::env::var_os("PATHEXT").as_deref(),
+        &|path| path.is_file(),
+    )
+}
+
+pub fn resolve_executable_in_dir(dir: &Path, bin: &str) -> Option<PathBuf> {
+    resolve_executable_in_dirs(
+        OsKind::current(),
+        std::slice::from_ref(&dir.to_path_buf()),
+        bin,
+        std::env::var_os("PATHEXT").as_deref(),
+        &|path| path.is_file(),
+    )
+}
+
+fn command_for_program_for(os: OsKind, program: &Path) -> Command {
+    let ext = program
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mut cmd = if os == OsKind::Windows && matches!(ext.as_str(), "cmd" | "bat") {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/D", "/C"]).arg(program);
+        cmd
+    } else if os == OsKind::Windows && ext == "ps1" {
+        let mut cmd = Command::new("powershell.exe");
+        cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(program);
+        cmd
+    } else {
+        Command::new(program)
+    };
+    augment_command_path(&mut cmd);
+    hide_command_window(&mut cmd);
+    cmd
+}
+
+/// Build a command for a resolved executable. Windows command/batch shims run
+/// through cmd.exe and PowerShell scripts through powershell.exe.
+pub fn command_for_program(program: &Path) -> Command {
+    command_for_program_for(OsKind::current(), program)
+}
+
+/// Spawn a process whose result is intentionally ignored, retaining the Child
+/// in a background waiter so it cannot become a zombie or leak process handles.
+pub fn spawn_reaped(mut cmd: Command) -> std::io::Result<u32> {
+    let mut child: Child = cmd.spawn()?;
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(pid)
+}
+
 /// Resolve a bare tool name to an absolute executable path when it is installed
 /// in a well-known per-user location but is NOT on the inherited PATH. Returns
 /// `None` when the name already carries a path, already resolves on PATH (so the
@@ -190,12 +278,13 @@ pub fn resolve_offpath_binary(bin: &str) -> Option<PathBuf> {
     if binary_on_path(bin) {
         return None;
     }
-    let exts: &[&str] = if cfg!(target_os = "windows") {
-        &["exe", "cmd", "bat", "ps1"]
-    } else {
-        &[]
-    };
-    resolve_in_dirs(&launch_search_dirs(), bin, exts, &|p| p.is_file())
+    resolve_executable_in_dirs(
+        OsKind::current(),
+        &launch_search_dirs(),
+        bin,
+        std::env::var_os("PATHEXT").as_deref(),
+        &|p| p.is_file(),
+    )
 }
 
 pub fn home_dir() -> PathBuf {
@@ -324,7 +413,10 @@ mod tests {
 
     #[test]
     fn resolve_in_dirs_finds_extensionless_match() {
-        let dirs = vec![PathBuf::from("/opt/bin"), PathBuf::from("/home/a/.local/bin")];
+        let dirs = vec![
+            PathBuf::from("/opt/bin"),
+            PathBuf::from("/home/a/.local/bin"),
+        ];
         let present = PathBuf::from("/home/a/.local/bin/vibe");
         let found = resolve_in_dirs(&dirs, "vibe", &[], &|p| p == present);
         assert_eq!(found, Some(present));
@@ -346,6 +438,100 @@ mod tests {
         let dirs = vec![PathBuf::from("/opt/bin")];
         let found = resolve_in_dirs(&dirs, "nope", &["exe"], &|_| false);
         assert_eq!(found, None);
+    }
+
+    #[test]
+    fn supplemental_paths_cover_all_supported_os_families() {
+        let home = Path::new("/home/alice");
+        let unix = supplemental_path_dirs_for(OsKind::Unix, home, None, None);
+        assert!(unix.contains(&home.join(".local/bin")));
+        assert!(unix.contains(&home.join(".cargo/bin")));
+        assert!(unix.contains(&home.join(".opencode/bin")));
+
+        let mac = supplemental_path_dirs_for(OsKind::Macos, home, None, None);
+        assert!(mac.contains(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(mac.contains(&PathBuf::from("/Library/TeX/texbin")));
+
+        let windows = supplemental_path_dirs_for(
+            OsKind::Windows,
+            Path::new(r"C:\Users\alice"),
+            Some(OsStr::new(r"C:\Users\alice\AppData\Local")),
+            Some(OsStr::new(r"C:\Users\alice\AppData\Roaming")),
+        );
+        assert!(windows
+            .iter()
+            .any(|path| path.ends_with(Path::new("Microsoft/WindowsApps"))));
+        assert!(windows.iter().any(|path| path.ends_with(Path::new("npm"))));
+        assert!(windows
+            .iter()
+            .any(|path| path.ends_with(Path::new("Programs/Ollama"))));
+    }
+
+    #[test]
+    fn windows_resolution_honors_pathext() {
+        let dir = PathBuf::from("tools");
+        for (ext, expected) in [
+            ("EXE", "fmt.exe"),
+            ("CMD", "fmt.cmd"),
+            ("BAT", "fmt.bat"),
+            ("PS1", "fmt.ps1"),
+        ] {
+            let present = dir.join(expected);
+            let pathext = format!(".{ext}");
+            let found = resolve_executable_in_dirs(
+                OsKind::Windows,
+                std::slice::from_ref(&dir),
+                "fmt",
+                Some(OsStr::new(&pathext)),
+                &|path| path == present,
+            );
+            assert_eq!(found, Some(present));
+        }
+        let script = dir.join("fmt.ps1");
+        let found = resolve_executable_in_dirs(
+            OsKind::Windows,
+            std::slice::from_ref(&dir),
+            "fmt",
+            Some(OsStr::new(".EXE;.CMD")),
+            &|path| path == script,
+        );
+        assert_eq!(found, Some(script));
+    }
+
+    #[test]
+    fn windows_scripts_dispatch_through_their_interpreters() {
+        let cmd = command_for_program_for(OsKind::Windows, Path::new(r"C:\tools\fmt.cmd"));
+        assert_eq!(cmd.get_program(), "cmd.exe");
+        assert!(cmd
+            .get_args()
+            .any(|arg| arg == OsStr::new(r"C:\tools\fmt.cmd")));
+
+        let ps = command_for_program_for(OsKind::Windows, Path::new(r"C:\tools\fmt.ps1"));
+        assert_eq!(ps.get_program(), "powershell.exe");
+        assert!(ps
+            .get_args()
+            .any(|arg| arg == OsStr::new(r"C:\tools\fmt.ps1")));
+
+        let exe = command_for_program_for(OsKind::Windows, Path::new(r"C:\tools\fmt.exe"));
+        assert_eq!(exe.get_program(), OsStr::new(r"C:\tools\fmt.exe"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fire_and_forget_children_are_reaped() {
+        let mut cmd = command_no_window("sh");
+        cmd.args(["-c", "exit 0"]);
+        let pid = spawn_reaped(cmd).expect("spawn");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            let result =
+                unsafe { libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) };
+            if result == -1 {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("background waiter did not reap pid {pid}");
     }
 
     #[test]
@@ -373,7 +559,10 @@ mod tests {
     fn archive_root_ends_with_archive_under_eldrun() {
         let dir = archive_root();
         let last = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        assert_eq!(last, "archive", "archive_root must end in 'archive': {dir:?}");
+        assert_eq!(
+            last, "archive",
+            "archive_root must end in 'archive': {dir:?}"
+        );
         let parent = dir
             .parent()
             .and_then(|p| p.file_name())

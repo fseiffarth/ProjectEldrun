@@ -5,7 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { useSettingsStore } from "../../stores/settings";
 import { IS_WINDOWS, PLATFORM } from "../../lib/platform";
-import { runInstallInTab } from "../../lib/installCommand";
+import { runInstallInTab, type InstallShellKind } from "../../lib/installCommand";
 import type { GlobalAppEntry } from "../../types";
 
 interface OllamaModelInfo {
@@ -267,6 +267,8 @@ interface AgentInfo {
   install_cmd: string;
   /** Shell the command runs in: "bash", "PowerShell", or "PowerShell or Command Prompt". */
   shell: string;
+  /** Machine-readable shell selection; display labels are not executable policy. */
+  shell_kind: InstallShellKind;
   docs: string;
   installed: boolean;
 }
@@ -280,21 +282,24 @@ interface AgentInfo {
  */
 const NODE_INSTALL: Record<
   "windows" | "macos" | "linux",
-  { command: string; shell: string }
+  { command: string; shell: string; shellKind: InstallShellKind }
 > = {
   linux: {
     command:
       'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
     shell: "bash",
+    shellKind: "bash",
   },
   macos: {
     command:
       'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
     shell: "bash",
+    shellKind: "bash",
   },
   windows: {
     command: "winget install OpenJS.NodeJS.LTS",
     shell: "PowerShell or Command Prompt",
+    shellKind: "default",
   },
 };
 const NODE_DOWNLOAD_URL = "https://nodejs.org/en/download";
@@ -315,7 +320,7 @@ function NodeRuntimeNotice() {
   // While probing, or once npm is present, there is nothing to nudge about.
   if (hasNpm !== false) return null;
 
-  const { command, shell } = NODE_INSTALL[PLATFORM];
+  const { command, shell, shellKind } = NODE_INSTALL[PLATFORM];
   return (
     <div className="ollama-vibe-section agent-list-entry">
       <div className="settings-section-title">
@@ -332,7 +337,7 @@ function NodeRuntimeNotice() {
         <button
           type="button"
           className="ollama-action-btn primary"
-          onClick={() => runInstallInTab("Install Node.js (npm)", command)}
+          onClick={() => runInstallInTab("Install Node.js (npm)", command, shellKind)}
         >
           Run in terminal
         </button>
@@ -495,7 +500,9 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                         <button
                           type="button"
                           className="ollama-action-btn primary"
-                          onClick={() => runInstallInTab(`Install ${a.label}`, a.install_cmd)}
+                          onClick={() =>
+                            runInstallInTab(`Install ${a.label}`, a.install_cmd, a.shell_kind)
+                          }
                         >
                           Run in terminal
                         </button>
@@ -1059,7 +1066,11 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
               type="button"
               className="ollama-action-btn primary"
               onClick={() =>
-                runInstallInTab("Install Vibe", vibeStrategy?.command ?? VIBE_INSTALL_CMD)
+                runInstallInTab(
+                  "Install Vibe",
+                  vibeStrategy?.command ?? VIBE_INSTALL_CMD,
+                  vibeStrategy?.os === "windows" ? "powershell" : "bash",
+                )
               }
             >
               Run in terminal
@@ -1156,7 +1167,9 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
               <button
                 type="button"
                 className="ollama-action-btn primary"
-                onClick={() => runInstallInTab("Install Ollama", installCmd)}
+                onClick={() =>
+                  runInstallInTab("Install Ollama", installCmd, isWindows ? "default" : "bash")
+                }
               >
                 Run in terminal
               </button>

@@ -327,6 +327,39 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     }
   }, [projectId, load]);
 
+  // Use-local / Use-remote divergence resolution (#28n Phase 2): the chosen side
+  // becomes authoritative and the loser's overwritten tips are backed up to
+  // refs/eldrun/backup/* before it is reset. Confirm first — it discards commits
+  // on the losing side (recoverable only via those backup refs).
+  const lockstepResolve = useCallback(
+    async (authority: "local" | "remote") => {
+      if (!projectId) return;
+      const other = authority === "local" ? "remote host" : "local mirror";
+      if (
+        !window.confirm(
+          `Use ${authority} as the source of truth?\n\nThe ${other}'s diverging commits will be reset to match ${authority} (backed up to refs/eldrun/backup/* first).`,
+        )
+      )
+        return;
+      setLockstepBusy(true);
+      setError(null);
+      try {
+        const s = await invoke<GitPeerState>("git_peer_resolve", {
+          projectId,
+          authority,
+        });
+        setLockstep(s);
+        await load();
+        onChanged?.();
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setLockstepBusy(false);
+      }
+    },
+    [projectId, load, onChanged],
+  );
+
   async function checkout(target: string) {
     setLoading(true);
     setError(null);
@@ -472,6 +505,26 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
               <button className="tab-add-btn" onClick={lockstepSyncNow} disabled={lockstepBusy} title="Reconcile git state now (retry after resolving a divergence)">
                 {lockstep.status === "desynchronized" ? "Retry" : "Sync now"}
               </button>
+              {lockstep.status === "desynchronized" && (
+                <>
+                  <button
+                    className="tab-add-btn"
+                    onClick={() => lockstepResolve("local")}
+                    disabled={lockstepBusy}
+                    title="Resolve the divergence with the local mirror as the source of truth (backs up the remote's overwritten tips first)"
+                  >
+                    Use local
+                  </button>
+                  <button
+                    className="tab-add-btn"
+                    onClick={() => lockstepResolve("remote")}
+                    disabled={lockstepBusy}
+                    title="Resolve the divergence with the remote host as the source of truth (backs up the mirror's overwritten tips first)"
+                  >
+                    Use remote
+                  </button>
+                </>
+              )}
               {lockstep.status === "desynchronized" && lockstep.detail && (
                 <span style={{ color: "var(--danger, #f85149)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={lockstep.detail}>
                   {lockstep.detail}

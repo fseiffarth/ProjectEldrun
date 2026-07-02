@@ -18,6 +18,7 @@ import { FileBrowser } from "../files/FileBrowser";
 import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
 import { ProjectBlobPane } from "../common/ProjectBlobPane";
+import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
 import { Subwindow } from "../tabs/Subwindow";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
@@ -30,6 +31,7 @@ import {
   cmdToKind,
   effectiveTabLocation,
   isRestorableTab,
+  isPtyTabKind,
   localTabCwd,
   useTabsStore,
   type LayoutNode,
@@ -175,7 +177,7 @@ export function CenterPanel() {
     invoke<Record<string, unknown>>("load_project", { localFile })
       .then((proj) => {
         const raw = (proj.tab_layout as LayoutEntry[] | undefined) ?? [];
-        // Keep shell/files tabs, resumable agent tabs (Claude with a sessionId,
+        // Keep shell/files/network tabs, resumable agent tabs (Claude with a sessionId,
         // resumed via --resume), and in-app file-viewer embeds; other agent/embed
         // tabs (including external-app embeds) are dropped. Derive kind from the
         // saved entry or its command. The saved groups tree self-heals
@@ -841,9 +843,7 @@ export function CenterPanel() {
           // is down: spawning `ssh -tt` now would block on the dead pool.
           const holdRemoteTerminal =
             paneDisconnected &&
-            tab.kind !== "files" &&
-            tab.kind !== "embed" &&
-            tab.kind !== "projects3d" &&
+            isPtyTabKind(tab.kind) &&
             effectiveTabLocation(tab) === "remote";
           return (
             <div
@@ -857,6 +857,12 @@ export function CenterPanel() {
             >
               {tab.kind === "projects3d" ? (
                 <ProjectBlobPane />
+              ) : tab.kind === "network" ? (
+                <NetworkTrafficPane
+                  projectId={scopeKey}
+                  visible={visible}
+                  onConnect={() => openConnectDialog(scopeKey)}
+                />
               ) : tab.kind === "files" ? (
                 <FileBrowser
                   // While a remote project is disconnected the SFTP tree can't be

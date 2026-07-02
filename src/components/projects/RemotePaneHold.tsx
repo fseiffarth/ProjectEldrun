@@ -19,8 +19,8 @@ export function RemotePaneHold({ host, onConnect }: { host: string; onConnect: (
           This tab runs on {host || "the remote host"}. Connect to start it — your
           local tabs keep working on the mirror meanwhile.
         </div>
-        <div className="project-dialog-actions">
-          <button type="button" className="dialog-connect-btn" onClick={onConnect}>
+        <div className="project-dialog-actions" style={{ justifyContent: "center" }}>
+          <button type="button" className="btn-primary" onClick={onConnect}>
             Connect
           </button>
         </div>

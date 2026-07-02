@@ -5,8 +5,10 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   BLOB_TAB_CMD,
   FILES_TAB_CMD,
+  NETWORK_TAB_CMD,
   effectiveTabLocation,
   isLocatableKind,
+  isPtyTabKind,
   useTabsStore,
   useGroup,
   useGroupTabs,
@@ -62,6 +64,7 @@ const TAB_ACCENT: Record<TabKind, string> = {
   files: "#888",
   embed: "var(--info, #4aa3df)",
   projects3d: "var(--accent-secondary)",
+  network: "var(--info, #4aa3df)",
 };
 
 interface StaticMenuItem {
@@ -363,6 +366,17 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       ...(tracked && sessionId ? { ELDRUN_TAB_UID: sessionId } : {}),
     };
     addTab({ label: item.label, cmd: item.cmd, args, env, cwd: projectCwd, kind: item.kind, initialInput, sessionId });
+    setMenuPos(null);
+  }
+
+  function handleAddNetwork() {
+    focusGroup(groupId);
+    addTab({
+      label: "Network Traffic",
+      cmd: NETWORK_TAB_CMD,
+      cwd: projectCwd,
+      kind: "network",
+    });
     setMenuPos(null);
   }
 
@@ -780,8 +794,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         // The placeholder slot previewing where the dragged tab will land — shown
         // immediately before the tab occupying the resolved insertion index.
         const showMarkerBefore = isDropTarget && reorderIndex === index;
-        // Files tabs have no PTY, so they never register output activity.
-        const working = tab.kind !== "files" && !!busyByTab[tab.key];
+        // Only PTY-backed tabs can register terminal output activity.
+        const working = isPtyTabKind(tab.kind) && !!busyByTab[tab.key];
         // Expose the kind colour to CSS instead of setting box-shadow inline:
         // plain themes draw the active rail above, while fancy themes move it
         // below without losing the per-kind colour.
@@ -1038,6 +1052,21 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
               {item.label}
             </button>
           ))}
+
+          {scope !== "root" && (
+            <>
+              <div className="tab-new-menu-group-label">Monitoring</div>
+              <button className="tab-new-menu-item" onClick={handleAddNetwork}>
+                <span
+                  className="tab-new-menu-dot"
+                  style={{ color: TAB_ACCENT.network }}
+                >
+                  ●
+                </span>
+                Network Traffic
+              </button>
+            </>
+          )}
 
           {showBlobItem && (
             <>

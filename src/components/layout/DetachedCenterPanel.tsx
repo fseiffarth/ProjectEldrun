@@ -30,6 +30,7 @@ import { TerminalView } from "../terminal/TerminalView";
 import { FileBrowser } from "../files/FileBrowser";
 import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
+import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
@@ -907,7 +908,9 @@ export function DetachedCenterPanel({
                 : { display: "none" };
               return (
                 <div key={tab.key} className="center-pane" data-tab-key={tab.key} style={style}>
-                  {tab.kind === "files" ? (
+                  {tab.kind === "network" ? (
+                    <NetworkTrafficPane projectId={scope} visible={visible} />
+                  ) : tab.kind === "files" ? (
                     <FileBrowser
                       projectDir={tab.cwd}
                       projectId={scope === "root" ? null : scope}
@@ -1012,9 +1015,11 @@ export function DetachedCenterPanel({
           the popout was split; an outer frame keeps them pinned. The empty strip
           is a drag handle for moving / docking the whole window. */}
       <div className="detached-titlebar detached-drag-handle" onPointerDown={onTitlebarPointerDown}>
-        <div className="detached-titlebar-controls no-drag">
-          <WindowControls />
-        </div>
+        {PLATFORM !== "macos" && (
+          <div className="detached-titlebar-controls no-drag">
+            <WindowControls />
+          </div>
+        )}
       </div>
       {/* The layout tree (below the title bar) is the positioning context for the
           absolutely-inset split/subwindow nodes and the split-preview overlay. */}

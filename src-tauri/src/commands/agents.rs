@@ -43,18 +43,30 @@ fn windows_shell(cmd: &str) -> &'static str {
     }
 }
 
+fn windows_shell_kind(cmd: &str) -> &'static str {
+    if cmd.contains("iex") || cmd.trim_start().starts_with("irm") {
+        "powershell"
+    } else {
+        "default"
+    }
+}
+
 /// The install command + the shell it runs in, for the host OS. On Windows the
 /// command is `None` when no one-line installer exists.
-fn platform_install(spec: &AgentSpec) -> (Option<&'static str>, String) {
+fn platform_install(spec: &AgentSpec) -> (Option<&'static str>, String, &'static str) {
     if cfg!(target_os = "windows") {
         let shell = spec
             .install_cmd_windows
             .map(windows_shell)
             .unwrap_or("PowerShell")
             .to_string();
-        (spec.install_cmd_windows, shell)
+        let kind = spec
+            .install_cmd_windows
+            .map(windows_shell_kind)
+            .unwrap_or("powershell");
+        (spec.install_cmd_windows, shell, kind)
     } else {
-        (Some(spec.install_cmd), "bash".to_string())
+        (Some(spec.install_cmd), "bash".to_string(), "bash")
     }
 }
 
@@ -175,6 +187,8 @@ pub struct AgentInfo {
     /// The shell `install_cmd` is meant to run in: `bash` on Linux/macOS,
     /// `PowerShell` or `PowerShell or Command Prompt` on Windows.
     pub shell: String,
+    /// Machine-readable terminal shell policy for the frontend.
+    pub shell_kind: String,
     pub docs: String,
     pub installed: bool,
 }
@@ -240,13 +254,14 @@ pub async fn list_agents() -> Vec<AgentInfo> {
     AGENTS
         .iter()
         .map(|spec| {
-            let (cmd, shell) = platform_install(spec);
+            let (cmd, shell, shell_kind) = platform_install(spec);
             AgentInfo {
                 id: spec.id.to_string(),
                 label: spec.label.to_string(),
                 bin: spec.bin.to_string(),
                 install_cmd: cmd.unwrap_or("").to_string(),
                 shell,
+                shell_kind: shell_kind.to_string(),
                 docs: spec.docs.to_string(),
                 installed: spec_is_installed(spec),
             }
@@ -287,7 +302,7 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
     };
     emit(&format!("Starting {} installer…", spec.label));
 
-    let mut child = std::process::Command::new("sh")
+    let mut child = crate::paths::command_no_window("sh")
         .arg("-c")
         .arg(format!("{} 2>&1", spec.install_cmd))
         .stdout(std::process::Stdio::piped())
@@ -366,15 +381,38 @@ mod tests {
         let win = claude
             .install_cmd_windows
             .expect("claude has a Windows installer");
-        assert!(win.contains("irm"), "expected the PowerShell `irm` installer");
-        assert!(!win.contains("curl"), "Windows installer must not use curl/bash");
+        assert!(
+            win.contains("irm"),
+            "expected the PowerShell `irm` installer"
+        );
+        assert!(
+            !win.contains("curl"),
+            "Windows installer must not use curl/bash"
+        );
     }
 
     #[test]
     fn every_agent_serves_a_shell_label() {
         for spec in AGENTS {
-            let (_cmd, shell) = platform_install(spec);
+            let (_cmd, shell, shell_kind) = platform_install(spec);
             assert!(!shell.is_empty(), "{} has no shell label", spec.id);
+            assert!(
+                matches!(shell_kind, "bash" | "powershell" | "default"),
+                "{} has an invalid shell kind",
+                spec.id
+            );
         }
+    }
+
+    #[test]
+    fn windows_shell_kind_is_not_derived_from_display_text() {
+        assert_eq!(
+            windows_shell_kind("irm https://claude.ai/install.ps1 | iex"),
+            "powershell"
+        );
+        assert_eq!(
+            windows_shell_kind("npm install -g @openai/codex"),
+            "default"
+        );
     }
 }

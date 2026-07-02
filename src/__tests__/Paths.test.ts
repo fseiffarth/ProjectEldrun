@@ -7,6 +7,7 @@ import {
   resolvePath,
   toFileUri,
   fromFileUri,
+  isPathWithin,
 } from "../lib/paths";
 
 // The helpers must accept BOTH separator styles: absolute paths reach the UI with
@@ -58,6 +59,24 @@ describe("normalizePath", () => {
     expect(normalizePath("/home/u/../v/./x")).toBe("/home/v/x");
     expect(normalizePath("C:\\Users\\u\\..\\v\\.\\x")).toBe("C:\\Users\\v\\x");
   });
+  it("preserves UNC shares as roots and clamps traversal there", () => {
+    expect(normalizePath("\\\\server\\share\\a\\..\\b")).toBe("\\\\server\\share\\b");
+    expect(normalizePath("\\\\server\\share\\..\\..\\escape")).toBe(
+      "\\\\server\\share\\escape",
+    );
+  });
+});
+
+describe("isPathWithin", () => {
+  it("handles Windows drives case-insensitively with mixed separators", () => {
+    expect(isPathWithin("c:\\Users\\A\\project\\src\\x.ts", "C:/users/a/project")).toBe(true);
+    expect(isPathWithin("C:\\work\\project-two", "c:\\work\\project")).toBe(false);
+  });
+  it("handles UNC paths case-insensitively and POSIX paths case-sensitively", () => {
+    expect(isPathWithin("\\\\SERVER\\Share\\Repo\\x", "\\\\server\\share\\repo")).toBe(true);
+    expect(isPathWithin("/Work/repo/x", "/work/repo")).toBe(false);
+    expect(isPathWithin("/work/repository", "/work/repo")).toBe(false);
+  });
 });
 
 describe("resolvePath", () => {
@@ -86,5 +105,10 @@ describe("toFileUri / fromFileUri round-trip", () => {
     expect(fromFileUri("file:///home/u/a%20b.png")).toBe("/home/u/a b.png");
     expect(fromFileUri("file:///C:/Users/u/a%20b.png")).toBe("C:/Users/u/a b.png");
     expect(fromFileUri("https://example.com")).toBeNull();
+  });
+  it("round-trips UNC paths without dropping server/share", () => {
+    const path = "\\\\server\\share\\folder\\a b.png";
+    expect(toFileUri(path)).toBe("file://server/share/folder/a%20b.png");
+    expect(fromFileUri(toFileUri(path))).toBe(path);
   });
 });

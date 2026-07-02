@@ -15,7 +15,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 
@@ -31,10 +31,7 @@ struct Tool {
 
 /// Find the first executable named `name` on `PATH`, if any.
 fn on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|cand| cand.is_file())
+    crate::paths::resolve_executable(name)
 }
 
 /// Walk up from `start` looking for a `node_modules/.bin/<name>` executable, so a
@@ -42,8 +39,8 @@ fn on_path(name: &str) -> Option<PathBuf> {
 fn node_bin(start: &Path, name: &str) -> Option<PathBuf> {
     let mut dir = Some(start);
     while let Some(d) = dir {
-        let cand = d.join("node_modules").join(".bin").join(name);
-        if cand.is_file() {
+        let bin_dir = d.join("node_modules").join(".bin");
+        if let Some(cand) = crate::paths::resolve_executable_in_dir(&bin_dir, name) {
             return Some(cand);
         }
         dir = d.parent();
@@ -151,7 +148,7 @@ pub fn format_source(text: String, lang: String, path: Option<String>) -> Result
     let tool = resolve_tool(&lang, path.as_deref())
         .ok_or_else(|| format!("formatter-unavailable:{lang}"))?;
 
-    let mut cmd = Command::new(&tool.program);
+    let mut cmd = crate::paths::command_for_program(&tool.program);
     cmd.args(&tool.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

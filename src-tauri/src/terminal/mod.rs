@@ -410,6 +410,9 @@ fn build_command(opts: &PtyOptions) -> CommandBuilder {
     cmd.cwd(&opts.cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    if let Some(path) = crate::paths::effective_path() {
+        cmd.env("PATH", path);
+    }
     for (k, v) in &opts.env {
         cmd.env(k, v);
     }

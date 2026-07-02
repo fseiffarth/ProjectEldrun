@@ -25,6 +25,7 @@ export { IS_WINDOWS };
 
 /** A Windows drive prefix like `C:` (anchored at the start). */
 const DRIVE_RE = /^[a-zA-Z]:(?=[/\\]|$)/;
+const UNC_RE = /^[/\\]{2}([^/\\]+)[/\\]+([^/\\]+)/;
 
 /** The separator to use when building onto `p`: matches the path's own style, or
  *  the host OS when the path carries no separators to learn from. */
@@ -90,12 +91,17 @@ export function normalizePath(p: string): string {
     if (drive) {
       root = drive[0] + sep; // "C:" + sep
       body = p.slice(drive[0].length);
-    } else if (p.startsWith("\\\\")) {
-      root = sep + sep; // UNC "\\"
-      body = p.slice(2);
-    } else if (/^[/\\]/.test(p)) {
-      root = sep;
-      body = p.slice(1);
+    } else {
+      const unc = p.match(UNC_RE);
+      if (unc) {
+        // A UNC share is the filesystem root. Keep server/share outside the
+        // reducible stack so `..` cannot escape above it.
+        root = `${sep}${sep}${unc[1]}${sep}${unc[2]}`;
+        body = p.slice(unc[0].length);
+      } else if (/^[/\\]/.test(p)) {
+        root = sep;
+        body = p.slice(1);
+      }
     }
   } else if (p.startsWith("/")) {
     root = "/";
@@ -110,7 +116,34 @@ export function normalizePath(p: string): string {
       else if (!root) out.push("..");
     } else out.push(seg);
   }
-  return root + out.join(sep);
+  if (!out.length) return root;
+  return root + (root && !root.endsWith(sep) ? sep : "") + out.join(sep);
+}
+
+/** True when `path` is `root` or lies below it on a segment boundary.
+ * Windows drive and UNC paths compare case-insensitively and accept mixed
+ * separators. POSIX paths remain case-sensitive. */
+export function isPathWithin(path: string, root: string): boolean {
+  if (!path || !root) return false;
+  const windows = isWinStyle(path) || isWinStyle(root);
+  const canonical = (value: string) => {
+    const normalized = normalizePath(value).replace(/\\/g, "/").replace(/\/+$/, "");
+    return windows ? normalized.toLowerCase() : normalized;
+  };
+  const child = canonical(path);
+  const parent = canonical(root);
+  return child === parent || child.startsWith(`${parent}/`);
+}
+
+/** Separator-normalized relative path when `path` is within `root`, otherwise
+ * null. The emitted relative path follows the backend's `/` convention. */
+export function relativePathWithin(root: string, path: string): string | null {
+  if (!isPathWithin(path, root)) return null;
+  const normalizedRoot = normalizePath(root).replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalizedPath = normalizePath(path).replace(/\\/g, "/").replace(/\/+$/, "");
+  return normalizedPath.length === normalizedRoot.length
+    ? ""
+    : normalizedPath.slice(normalizedRoot.length + 1);
 }
 
 /** Resolve `target` against the directory `baseDir`. An absolute `target` is
@@ -142,21 +175,23 @@ export function toFileUri(p: string): string {
   return `file://${p.split("/").map(encodeURIComponent).join("/")}`;
 }
 
-/** Convert a `file://` URI back to an absolute local path (decoding `%20` etc.),
- *  dropping any `file://host/…` authority and the extra leading slash Windows
- *  drive URIs carry (`file:///C:/…` → `C:/…`). Returns null for non-`file:` input. */
+/** Convert a `file://` URI back to an absolute local path (decoding `%20` etc.).
+ * A non-empty authority becomes a UNC server (`file://server/share/x` →
+ * `\\server\share\x`); the extra leading slash on a drive URI is stripped. */
 export function fromFileUri(uri: string): string | null {
-  if (!uri.startsWith("file://")) return null;
+  if (!/^file:\/\//i.test(uri)) return null;
   let rest = uri.slice("file://".length);
-  // file://host/path — drop the authority (but not a Windows `file:///C:/…`,
-  // whose first slash starts the path).
-  const slash = rest.indexOf("/");
-  if (slash > 0) rest = rest.slice(slash);
-  // file:///C:/… leaves a leading slash before the drive letter — strip it.
-  rest = rest.replace(/^\/([a-zA-Z]:)/, "$1");
   try {
-    return decodeURIComponent(rest);
+    rest = decodeURIComponent(rest);
   } catch {
-    return rest;
+    // Keep malformed escape sequences verbatim.
   }
+  if (!rest.startsWith("/")) {
+    const slash = rest.indexOf("/");
+    const authority = slash < 0 ? rest : rest.slice(0, slash);
+    const path = slash < 0 ? "" : rest.slice(slash + 1);
+    return normalizePath(`\\\\${authority}\\${path.replace(/\//g, "\\")}`);
+  }
+  const local = rest.replace(/^\/([a-zA-Z]:)/, "$1");
+  return DRIVE_RE.test(local) ? normalizePath(local).replace(/\\/g, "/") : normalizePath(local);
 }

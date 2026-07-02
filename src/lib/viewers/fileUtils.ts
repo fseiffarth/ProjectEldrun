@@ -1,5 +1,4 @@
-import { IS_WINDOWS } from "../paths";
-import { IS_MAC } from "../platform";
+import { relativePathWithin } from "../paths";
 
 export interface FileEntry {
   name: string;
@@ -296,23 +295,7 @@ export function parentRel(path: string): string {
 }
 
 export function relFromAbs(projectDir: string, absPath: string): string {
-  // Compare separator-agnostically (absolute paths arrive with native separators —
-  // backslashes on Windows) and emit the backend's forward-slash rel convention.
-  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
-  const root = norm(projectDir);
-  const abs = norm(absPath);
-  // Windows and macOS (APFS/HFS+ default) filesystems are case-insensitive, and
-  // the casing of the backend's absolute path (e.g. a Rust-canonicalised drive
-  // letter) can differ from the stored project dir — compare case-insensitively
-  // there so the file isn't wrongly treated as outside the project. Linux stays
-  // case-sensitive. The returned remainder is still sliced from `abs` so its
-  // real casing is kept (lower-casing preserves length, so the offsets line up).
-  const ci = IS_WINDOWS || IS_MAC;
-  const cmpRoot = ci ? root.toLowerCase() : root;
-  const cmpAbs = ci ? abs.toLowerCase() : abs;
-  if (cmpAbs === cmpRoot) return "";
-  if (!cmpAbs.startsWith(`${cmpRoot}/`)) return "";
-  return abs.slice(root.length + 1);
+  return relativePathWithin(projectDir, absPath) ?? "";
 }
 
 export function visibleEntries(

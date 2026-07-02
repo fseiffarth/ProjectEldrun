@@ -960,11 +960,29 @@ container) — as opposed to the git **push** axis (#21/#22).*
       it proves chatty. Gates: `npx tsc --noEmit`, `cargo test` (448 lib) green;
       needs live-host QA (auto pull/push timing, orange skip, lifecycle).
 
-    - [ ] **28n — Git-aware local↔remote lockstep sync.** **Phase 1 ✅ Done
+    - [ ] **28n — Git-aware local↔remote lockstep sync.** **Phases 1–3 ✅ Done
       (2026-07-02; opt-in per project; checkout lockstep + fast-forward-only ref
       transfer + desync detection/display · 🧪 live-host QA pending).** Phase 2
       (Use-local/Use-remote resolution + `refs/eldrun/backup/*` reset) and Phase 3
-      (initial-pairing authority + streaming transport for large bundles) remain.
+      (initial-pairing authority + streaming transport for large bundles) landed
+      2026-07-02: `transfer_and_apply` gained a `force` path that, for diverged /
+      dest-ahead branches and conflicting tags, saves the overwritten tip to a
+      timestamped `refs/eldrun/backup/*` ref then resets to the authority (a
+      checked-out loser branch via `reset --hard`, moving ref + tree); `resolve`/
+      `resolve_inner` (pause auto-sync → force winner→loser → restamp bases →
+      reconcile) back the `git_peer_resolve(authority)` command + Use local / Use
+      remote buttons (confirm-gated) in the desync bar. `init_pairing` (`git init`
+      the empty side, full-bundle transfer, `symbolic-ref`+`reset --hard` / detached
+      checkout to populate) runs from `reconcile` when exactly one side is a repo
+      (remote-import → mirror-from-remote, extend-local → remote-from-local; both-
+      exist-and-diverge still routes to the explicit authority choice). `move_bundle`
+      now streams via new `sftp::{upload,download}_file_streaming_on` (256 KiB
+      chunks, `bytes` dep) so the 64 MiB whole-file cap is gone and initial-pairing
+      bundles carrying whole histories transfer without buffering. New unit tests:
+      `winner_is_local` default, tag backup-ref naming, force-targets-diverged/
+      dest-ahead truth pins; frontend `GitLockstep.test.tsx` +2 (resolve routes to
+      `git_peer_resolve`, confirm-dismiss no-ops). Gates: `cargo test` (603),
+      `npx tsc`, `vitest` (745) green.
       New `services/git_peer.rs` (AppHandle-free: `Peer` enum runner, pure parsers/
       `decide`/`bundle_create_args`, `probe`, `reconcile` via delta `git bundle` over
       the pooled SFTP into `refs/eldrun/incoming/*` + ff-apply, `checkout_lockstep`,
@@ -1010,18 +1028,23 @@ container) — as opposed to the git **push** axis (#21/#22).*
         coordinated checkout with project id + initiating side while preserving
         camelCase payload compatibility. Show synchronized/syncing/desynchronized
         state and actionable errors in the Git UI.
-      - [x] 🤖 Automated test (Phase 1) — `git_peer` unit tests: ref/HEAD parsing,
+      - [x] 🤖 Automated test (Phases 1–3) — `git_peer` unit tests: ref/HEAD parsing,
         `decide` fast-forward-vs-divergence truth table, `bundle_create_args`/
         incoming-refspec shape guardrails (never `--all`/`refs/remotes` → `.git`
         internals never copied), tracked-file/deletion discovery, safety-ref naming,
         camelCase state round-trip; frontend `GitLockstep.test.tsx` (checkout routes
         through `git_peer_checkout` when enabled, falls back otherwise, pill renders,
-        local project shows no bar). **Still TODO (Phase 2/3):** both-direction live
-        transfer, detached checkouts, dirty-peer refusal, disconnect/reconnect,
-        import/extend init.
+        local project shows no bar; Phase 2: resolve routes to `git_peer_resolve`,
+        confirm-dismiss no-ops). Phase 2/3 pure-logic tests: `winner_is_local`,
+        tag backup-ref naming, force-targets-diverged/dest-ahead pins.
       - [ ] 🖐️ Manual test — live SSH host: edit/commit/checkout from Eldrun and
         from local/remote shells, verify both trees remain on the same branch or
-        detached commit, then exercise dirty-peer and divergent-history recovery.
+        detached commit, then exercise dirty-peer recovery and Use-local/Use-remote
+        resolution (confirm the loser's overwritten tip lands under
+        `refs/eldrun/backup/*` and both trees converge). Also verify initial pairing:
+        import a remote repo → mirror initializes from it; extend a local repo onto a
+        host → remote initializes from local; and a large-history bundle streams
+        through without the old 64 MiB rejection.
 
     - [ ] **28o — Scaffold both sides of SSH projects.** New and imported SSH
       projects must receive the canonical Eldrun scaffold in both their local

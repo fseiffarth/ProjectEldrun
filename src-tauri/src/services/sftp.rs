@@ -97,6 +97,9 @@ async fn open_session(
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some(path) = crate::paths::effective_path() {
+        cmd.env("PATH", path);
+    }
     // Don't pop a console window for the child ssh on Windows.
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
@@ -164,6 +167,9 @@ pub async fn open_pooled_session(
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some(path) = crate::paths::effective_path() {
+        cmd.env("PATH", path);
+    }
     // Don't pop a console window for the child ssh on Windows.
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
@@ -526,6 +532,85 @@ pub async fn write_file_on(sftp: &Sftp, path: &str, bytes: &[u8]) -> Result<(), 
 /// parents — the remote analogue of `fs::File::create`.
 pub async fn create_file_on(sftp: &Sftp, path: &str) -> Result<(), String> {
     write_file_on(sftp, path, &[]).await
+}
+
+/// Chunk size for the streaming transfers below — bounded so an arbitrarily large
+/// file never lives fully in memory (the whole-file `read_file_on`/`write_file_on`
+/// buffer everything, which is why the git-lockstep bundle transport streams; #28n
+/// Phase 3).
+const STREAM_CHUNK: usize = 256 * 1024;
+
+/// Upload a local file to the host in bounded chunks (never buffering the whole
+/// file), creating missing parent directories first. The remote streaming analogue
+/// of `write_file_on` for large payloads (git bundles at initial pairing).
+pub async fn upload_file_streaming_on(
+    sftp: &Sftp,
+    local_path: &std::path::Path,
+    remote_path: &str,
+) -> Result<(), String> {
+    use tokio::io::AsyncReadExt;
+    ensure_parent_dirs_on(sftp, remote_path).await?;
+    let mut local = tokio::fs::File::open(local_path)
+        .await
+        .map_err(|e| format!("open local bundle failed: {e}"))?;
+    let mut remote = sftp
+        .create(remote_path)
+        .await
+        .map_err(|e| format!("sftp create failed: {e}"))?;
+    let mut buf = vec![0u8; STREAM_CHUNK];
+    loop {
+        let n = local
+            .read(&mut buf)
+            .await
+            .map_err(|e| format!("read local bundle failed: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        remote
+            .write_all(&buf[..n])
+            .await
+            .map_err(|e| format!("sftp streaming write failed: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Download a host file to a local path in bounded chunks (never buffering the
+/// whole file), creating missing parent directories first. The remote streaming
+/// analogue of `read_file_on` for large payloads (git bundles at initial pairing).
+pub async fn download_file_streaming_on(
+    sftp: &Sftp,
+    remote_path: &str,
+    local_path: &std::path::Path,
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    if let Some(parent) = local_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let mut remote = sftp
+        .open(remote_path)
+        .await
+        .map_err(|e| format!("sftp open failed: {e}"))?;
+    let mut local = tokio::fs::File::create(local_path)
+        .await
+        .map_err(|e| format!("create local bundle failed: {e}"))?;
+    loop {
+        let buf = bytes::BytesMut::with_capacity(STREAM_CHUNK);
+        match remote
+            .read(STREAM_CHUNK as u32, buf)
+            .await
+            .map_err(|e| format!("sftp streaming read failed: {e}"))?
+        {
+            Some(chunk) if !chunk.is_empty() => local
+                .write_all(&chunk)
+                .await
+                .map_err(|e| format!("write local bundle failed: {e}"))?,
+            _ => break,
+        }
+    }
+    local
+        .flush()
+        .await
+        .map_err(|e| format!("flush local bundle failed: {e}"))
 }
 
 /// Remove a remote file on an open session.

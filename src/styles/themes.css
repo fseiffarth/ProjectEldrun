@@ -194,6 +194,17 @@ html, body, #root {
   --accent-hover: #5edcff;
   --accent-active: #1ca7d8;
   --accent-secondary: #b388ff;
+  /* Text color for solid-accent-filled controls (e.g. .dialog-connect-btn,
+     .how-to-start-num). One constant across themes (not redeclared per theme,
+     so it cascades from :root everywhere). NOTE: this fixed white gives poor
+     contrast on the bright accents (e.g. fancy_dark's cyan), so filled-accent
+     CTA buttons use --bg-main instead (see .btn-primary) — which is dark in dark
+     themes and light in light themes, tracking the accent for legible text. */
+  --accent-contrast: #ffffff;
+  /* Corner radius knob for the whole app: the house style is sharp corners, so
+     every shared surface/button rule reads var(--radius) and this single value
+     flips them all at once. Defined once on :root (not per theme). */
+  --radius: 0;
   /* Scrollbar colors. Defined ONCE on :root but referencing the theme's own
      --accent / --bg-panel, which are re-declared per theme on this same <html>
      element — so `var()`'s lazy resolution gives every theme a bluish (accent)
@@ -785,7 +796,7 @@ select option {
 
 .file-viewer-mode.active {
   background: var(--accent, #4493f8);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 
 .file-viewer-save {
@@ -856,7 +867,7 @@ select option {
 .file-viewer-ai-btn.active {
   background: var(--accent, #4493f8);
   border-color: var(--accent, #4493f8);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 .file-viewer-ai-mode {
   background: var(--bg-panel);
@@ -1748,13 +1759,13 @@ select option {
 }
 .file-viewer-tex-compl-item.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 .file-viewer-tex-compl-key {
   font-family: var(--font-mono, monospace);
   color: var(--text-primary);
 }
-.file-viewer-tex-compl-item.active .file-viewer-tex-compl-key { color: #fff; }
+.file-viewer-tex-compl-item.active .file-viewer-tex-compl-key { color: var(--accent-contrast); }
 .file-viewer-tex-compl-detail {
   flex: 1 1 auto;
   overflow: hidden;
@@ -2235,7 +2246,7 @@ select option {
    not on a separate toolbar line. */
 .file-viewer-tex-compile {
   background: var(--accent, #4493f8);
-  color: #fff;
+  color: var(--accent-contrast);
   border: 0;
   border-radius: 3px;
   padding: 2px 10px;
@@ -3514,7 +3525,7 @@ select option {
 }
 .set-default-app-row.selected {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 .set-default-app-row.selected .set-default-app-exec {
   color: rgba(255, 255, 255, 0.8);
@@ -3581,7 +3592,9 @@ select option {
   border-color: var(--accent);
 }
 .set-default-app-actions button.danger {
-  color: var(--danger);
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--bg-main);
 }
 .set-default-app-actions button:disabled {
   opacity: 0.55;
@@ -4266,7 +4279,7 @@ select option {
   background: transparent;
   border: 1px solid var(--border-color);
   color: var(--text-primary);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: 4px 10px;
   font-size: 11px;
   cursor: pointer;
@@ -4278,9 +4291,17 @@ select option {
   color: var(--accent-hover);
 }
 
+/* Filled accent (canonical primary), not the old outlined look. */
 .commit-window-actions button.primary {
+  background: var(--accent);
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--bg-main);
+}
+
+.commit-window-actions button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--bg-main);
 }
 
 .commit-window-actions button:disabled {
@@ -5378,17 +5399,26 @@ select option {
   animation: none;
 }
 
+/* One popover/menu surface for the whole app: context menus, the generic
+   dropdown (via .context-menu), the tab "+" menu and the project-switcher add
+   menu all read this. The individual rules keep only positioning / padding /
+   min-width. */
+.context-menu,
+.tab-new-menu,
+.project-switcher-add-menu {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.36);
+}
+
 .tab-new-menu {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
   z-index: 100;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 0;
   padding: 4px;
   min-width: 132px;
-  box-shadow: 0 12px 28px rgba(0,0,0,0.36);
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -5453,9 +5483,6 @@ select option {
   z-index: 1000;
   min-width: 150px;
   padding: 4px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  box-shadow: 0 12px 28px rgba(0,0,0,0.36);
 }
 
 .context-menu button {
@@ -6855,10 +6882,6 @@ select option {
   flex-direction: column;
   gap: 2px;
   padding: 4px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 0;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.32);
   z-index: 60;
 }
 
@@ -6890,18 +6913,25 @@ select option {
   background: rgba(0, 0, 0, 0.35);
 }
 
-.project-dialog {
-  width: min(680px, calc(100vw - 32px));
-  max-height: min(820px, calc(100vh - 40px));
+/* One dialog surface for the whole app — the two shells differ only in size.
+   Shared chrome (bg-panel, accent border, sharp corners, shadow) lives here so
+   every modal reads identically. */
+.project-dialog,
+.settings-dialog {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 22px 24px;
   background: var(--bg-panel);
   border: 1px solid var(--border-color);
-  border-radius: 0;
+  border-radius: var(--radius);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.42);
+}
+
+.project-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(820px, calc(100vh - 40px));
+  padding: 22px 24px;
 }
 
 .settings-backdrop {
@@ -6914,15 +6944,7 @@ select option {
 .settings-dialog {
   width: min(560px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 96px));
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
   padding: 18px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 0;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.42);
 }
 
 .settings-title-row {
@@ -7313,22 +7335,15 @@ select option {
   color: var(--text-primary);
 }
 
+/* Canonical dialog header: solid accent + subtle divider, matching
+   .settings-title-row h2. (Previously a fancy_dark-only gradient-clipped title
+   that diverged from every other dialog.) */
 .project-dialog h2 {
   font-size: 16px;
   font-weight: 650;
-}
-
-[data-theme="fancy_dark"] .project-dialog h2 {
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
+  color: var(--accent);
   padding-bottom: 10px;
-  border-bottom: 1px solid var(--border-color);
-  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-secondary) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .project-dialog label {
@@ -7490,7 +7505,7 @@ select option {
 }
 
 .scaffold-popover-title {
-  color: var(--text-primary);
+  color: var(--accent);
   font-size: 13px;
   font-weight: 650;
 }
@@ -7832,10 +7847,12 @@ select option {
   width: 100%;
   padding: 9px 12px;
   font-weight: 600;
+  /* --bg-main (not --accent-contrast) matches .btn-primary and the dialog
+     action buttons — legible dark-on-accent instead of low-contrast white. */
   color: var(--bg-main);
   background: var(--accent);
   border: 1px solid var(--accent);
-  border-radius: 0;
+  border-radius: var(--radius);
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
 }
@@ -7854,6 +7871,56 @@ select option {
   font-family: "JetBrains Mono", "Fira Code", Consolas, Menlo, monospace;
   font-weight: 700;
   letter-spacing: -1px;
+}
+
+/* ── Shared CTA buttons ──────────────────────────────────────────────────
+   The one canonical primary / danger call-to-action for the whole app. Filled
+   accent (or danger) with text in --bg-main — legible on every theme's accent
+   (dark text on the dark themes' bright accents, light text on the light
+   themes' blues), where fixed-white --accent-contrast would wash out. Sharp
+   corners via --radius. Use .btn-primary / .btn-danger (+ .btn-block to span a
+   row) for any new CTA so buttons never drift again. */
+.btn-primary,
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  font-weight: 600;
+  color: var(--bg-main);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.btn-danger {
+  background: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn-primary:disabled,
+.btn-danger:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btn-block {
+  width: 100%;
 }
 
 .dialog-connect-terminal {
@@ -8974,11 +9041,14 @@ select option {
   font-weight: 600;
   color: var(--text-primary);
 }
-/* SSH-address label with its lamp inline. */
+/* SSH-address label with its lamp inline. Explicit color — this dialog is
+   portaled into <body>, which sets no text color, so without this the plain
+   text child falls back to browser-default black. */
 .remote-field-label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  color: var(--text-primary);
 }
 /* A remote project's live SSH/VPN lamps, rendered as a button (clicking opens
    the Connect modal), so reset the native button chrome and keep just the lamp
@@ -9169,7 +9239,7 @@ select option {
   height: 22px;
   border-radius: 50%;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
   font-size: 12px;
   font-weight: 700;
   display: flex;
@@ -9348,7 +9418,7 @@ select option {
   border: 1px solid var(--accent);
   border-radius: 5px;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
   font-size: 11px;
   padding: 4px 12px;
   cursor: pointer;
@@ -9506,7 +9576,7 @@ select option {
   border: 1px solid var(--accent);
   border-radius: 5px;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
   font-size: 11px;
   padding: 4px 14px;
   cursor: pointer;
@@ -9781,4 +9851,324 @@ select option {
   color: var(--accent);
   opacity: 1;
   text-shadow: 0 0 7px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ── Network traffic monitoring tab ─────────────────────────────────────── */
+.network-pane {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding: 18px;
+  color: var(--text-primary);
+  background: var(--bg-main);
+}
+
+.network-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.network-heading {
+  font-size: 18px;
+  font-weight: 700;
+  /* Pane section header → accent, like the canonical dialog/menu titles. */
+  color: var(--accent);
+}
+
+.network-subheading {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.network-view-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.network-view-tabs button {
+  border: 0;
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.network-view-tabs button:hover,
+.network-view-tabs button.active {
+  color: var(--text-primary);
+  background: var(--control-hover-bg);
+}
+
+.network-view-tabs button.active {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.network-interface-select {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.network-interface-select select,
+.network-connection-filters select,
+.network-connection-filters input {
+  min-width: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+}
+
+.network-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.network-metric {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 13px 15px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.network-metric span,
+.network-metric small {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.network-metric strong {
+  overflow: hidden;
+  font-size: clamp(18px, 3vw, 26px);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+}
+
+.network-metric.receive strong,
+.network-graph-legend .receive {
+  color: var(--accent);
+}
+
+.network-metric.transmit strong,
+.network-graph-legend .transmit {
+  color: var(--success, #3fb950);
+}
+
+.network-graph-wrap {
+  position: relative;
+  padding: 12px 12px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.network-graph {
+  display: block;
+  width: 100%;
+  height: 160px;
+  overflow: visible;
+}
+
+.network-grid-line {
+  stroke: var(--border-subtle);
+  stroke-width: 1;
+}
+
+.network-line {
+  fill: none;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.network-line.receive {
+  stroke: var(--accent);
+}
+
+.network-line.transmit {
+  stroke: var(--success, #3fb950);
+}
+
+.network-graph-scale {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  color: var(--text-muted, var(--text-secondary));
+  font-size: 10px;
+}
+
+.network-graph-legend {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  font-size: 11px;
+}
+
+.network-history-label {
+  margin-left: auto;
+  color: var(--text-secondary);
+}
+
+.network-connections {
+  display: flex;
+  min-height: 190px;
+  flex: 1;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+.network-connections-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.network-connections-head h3 {
+  display: inline;
+  margin: 0 8px 0 0;
+  font-size: 14px;
+}
+
+.network-connections-head span,
+.network-table-note {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.network-connection-filters {
+  display: flex;
+  gap: 8px;
+  min-width: min(100%, 360px);
+}
+
+.network-connection-filters input {
+  flex: 1;
+}
+
+.network-table-wrap {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.network-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.network-table-wrap th,
+.network-table-wrap td {
+  max-width: 260px;
+  padding: 7px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 70%, transparent);
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.network-table-wrap th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+}
+
+.network-table-wrap tbody tr:hover {
+  background: var(--control-hover-bg);
+}
+
+.network-empty-row {
+  padding: 28px !important;
+  color: var(--text-secondary);
+  text-align: center !important;
+}
+
+.network-table-note,
+.network-link-note {
+  padding: 8px 12px;
+}
+
+.network-link-note,
+.network-warning {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+  font-size: 11px;
+}
+
+.network-warning {
+  padding: 8px 10px;
+  color: var(--warning, #d29922);
+}
+
+.network-status-panel {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 9px;
+  min-height: 260px;
+  flex: 1;
+  text-align: center;
+}
+
+.network-status-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.network-status-message {
+  max-width: 520px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 700px) {
+  .network-pane {
+    padding: 12px;
+  }
+
+  .network-interface-select {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .network-interface-select select {
+    flex: 1;
+  }
+
+  .network-connections-head,
+  .network-connection-filters {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }

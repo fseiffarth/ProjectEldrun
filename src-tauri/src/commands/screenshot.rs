@@ -118,7 +118,8 @@ mod platform {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        cmd.spawn().map_err(|e| format!("launch {program}: {e}"))?;
+        crate::paths::augment_command_path(&mut cmd);
+        crate::paths::spawn_reaped(cmd).map_err(|e| format!("launch {program}: {e}"))?;
         Ok(())
     }
 
@@ -344,14 +345,13 @@ mod platform {
     /// `dir`. `_exec` is unused on macOS.
     pub fn capture(dir: &Path, _exec: Option<&str>) -> Result<(), String> {
         let file = dir.join(super::screenshot_filename());
-        Command::new("screencapture")
-            .arg("-i")
+        let mut cmd = crate::paths::command_no_window("screencapture");
+        cmd.arg("-i")
             .arg(&file)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("launch screencapture: {e}"))?;
+            .stderr(Stdio::null());
+        crate::paths::spawn_reaped(cmd).map_err(|e| format!("launch screencapture: {e}"))?;
         Ok(())
     }
 }

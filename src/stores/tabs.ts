@@ -5,7 +5,14 @@ import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
 import { useLinkRoutingStore } from "./linkRouting";
 
-export type TabKind = "agent" | "local_agent" | "shell" | "files" | "embed" | "projects3d";
+export type TabKind =
+  | "agent"
+  | "local_agent"
+  | "shell"
+  | "files"
+  | "embed"
+  | "projects3d"
+  | "network";
 
 /**
  * SSH-sync Phase 0 — a PTY tab's locality on a REMOTE (SSH) project: does it run
@@ -26,6 +33,9 @@ export const FILES_TAB_CMD = "__eldrun_files__";
  * can recover its kind from a bare command string.
  */
 export const BLOB_TAB_CMD = "__eldrun_blob__";
+
+/** Sentinel command for the read-only local/SSH host traffic dashboard. */
+export const NETWORK_TAB_CMD = "__eldrun_network__";
 
 /**
  * Synthetic group id for the empty-state placeholder subwindow (rendered by
@@ -2091,7 +2101,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     for (const key of keys) {
       purge(key);
       const tab = byKey.get(key);
-      if (tab && tab.kind !== "files" && tab.kind !== "embed") {
+      if (tab && isPtyTabKind(tab.kind)) {
         invoke("pty_kill", { id: `${scope}:${key}` }).catch(() => {});
       }
     }
@@ -2294,7 +2304,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     for (const t of scopeTabs) {
       if (!keyOrder.includes(t.key)) ordered.push(t);
     }
-    // Shell/files tabs, resumable agent tabs (Claude with a sessionId), and
+    // Shell/files/network tabs, resumable agent tabs (Claude with a sessionId), and
     // in-app file-viewer embeds are persisted; other agent/embed tabs (including
     // external-app embeds) are dropped here and the saved tree is pruned to
     // match. See isRestorableTab. Defense-in-depth (#55): also drop any tab not
@@ -2383,14 +2393,15 @@ const AGENT_CMDS = new Set([
 export function cmdToKind(cmd: string): TabKind {
   if (cmd === FILES_TAB_CMD) return "files";
   if (cmd === BLOB_TAB_CMD) return "projects3d";
+  if (cmd === NETWORK_TAB_CMD) return "network";
   if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
 }
 
 /**
- * Whether a tab KIND alone survives a restart. Shell/files tabs are restorable
- * by kind; agent / local-agent and embed tabs are not, because the kind alone
- * carries no session to resume. Prefer the tab-level `isRestorableTab` at call
+ * Whether a tab KIND alone survives a restart. Shell/files/network tabs are
+ * restorable by kind; agent / local-agent and embed tabs are not, because the
+ * kind alone carries no session to resume. Prefer the tab-level `isRestorableTab` at call
  * sites that have the full tab — a resumable agent tab (Claude with a sessionId)
  * IS restorable even though its kind is not. This kind-only check stays for the
  * places that only have a `TabKind`.
@@ -2401,7 +2412,13 @@ export function cmdToKind(cmd: string): TabKind {
  * not here.
  */
 export function isRestorableKind(kind: TabKind): boolean {
-  return kind === "shell" || kind === "files";
+  return kind === "shell" || kind === "files" || kind === "network";
+}
+
+/** Whether a tab owns a backend PTY. Pure frontend panes must never be sent
+ * through terminal spawn/kill/activity paths merely because they are not files. */
+export function isPtyTabKind(kind: TabKind): boolean {
+  return kind === "agent" || kind === "local_agent" || kind === "shell";
 }
 
 /**
@@ -2544,7 +2561,8 @@ export function isLocalAgentKind(kind: TabKind): kind is "local_agent" {
 /**
  * SSH-sync Phase 0: whether a tab kind has a user-toggleable local/remote
  * locality. Only `agent` and `shell` tabs run a PTY that can sit on either side;
- * `local_agent` is fixed-local and the non-PTY kinds (files/embed/projects3d)
+ * `local_agent` is fixed-local and the non-PTY kinds
+ * (files/embed/projects3d/network)
  * have no locality.
  */
 export function isLocatableKind(kind: TabKind): boolean {

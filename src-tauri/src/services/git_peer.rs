@@ -19,7 +19,7 @@
 //! initial-pairing authority are deferred to Phase 2/3.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -402,6 +402,13 @@ enum RefKind {
 /// the safe (create / fast-forward) updates on `dest`. Returns branch names that
 /// diverged (never auto-applied) and whether a needed fast-forward was blocked by a
 /// dirty dest. Objects only — `.git` internals never cross (see [`bundle_create_args`]).
+///
+/// When `force` is set (the Use-local/Use-remote resolution, #28n Phase 2), `source`
+/// is the user-chosen authority: a diverged branch or one where `dest` is *ahead* is
+/// reset to `source`'s sha after saving the overwritten tip to a timestamped
+/// `refs/eldrun/backup/*` safety ref (a checked-out loser branch is `reset --hard`,
+/// moving ref + working tree). Tags conflicting on sha are likewise force-moved with
+/// a backup. `force` never widens what history *transfers*, only how `dest` applies it.
 async fn transfer_and_apply(
     pool: &RemotePoolState,
     project_id: &str,
@@ -409,6 +416,7 @@ async fn transfer_and_apply(
     to_remote: bool,
     source: &PeerSnapshot,
     dest: &PeerSnapshot,
+    force: bool,
 ) -> Result<TransferResult, String> {
     let mut result = TransferResult::default();
     if !source.is_repo {
@@ -461,11 +469,13 @@ async fn transfer_and_apply(
     let fetch: Vec<&str> = vec!["fetch", &dst_bundle, &specs[0], &specs[1]];
     let _ = dst_peer.run(&fetch); // fetch failure → apply below simply finds nothing
 
-    // 4. Apply safe updates per branch.
+    // 4. Apply safe updates per branch. One shared timestamp so every safety ref this
+    //    forced pass creates sorts under the same `refs/eldrun/backup/<ts>/` batch.
     let head_branch = match &dest.head {
         Some(HeadRef::Branch { name, .. }) => Some(name.clone()),
         _ => None,
     };
+    let ts = now_secs();
     for src_ref in &source.branches {
         let dst_sha = sha_of(dest, RefKind::Head, &src_ref.name);
         let (fwd, back) = if dst_sha.is_some() {
@@ -476,8 +486,17 @@ async fn transfer_and_apply(
         } else {
             (false, false)
         };
+        let is_head = head_branch.as_deref() == Some(src_ref.name.as_str());
         match decide(dst_sha, &src_ref.sha, fwd, back) {
-            RefAction::InSync | RefAction::DestAhead => {}
+            RefAction::InSync => {}
+            RefAction::DestAhead => {
+                // Under a resolution the authority wins even where the dest is ahead:
+                // discard the dest's extra commits (backed up) and reset to source.
+                if force {
+                    force_reset_branch(&dst_peer, &src_ref.name, &src_ref.sha, dst_sha.unwrap(), is_head, ts);
+                    result.applied += 1;
+                }
+            }
             RefAction::CreateOnDest => {
                 let _ = dst_peer.run(&[
                     "update-ref",
@@ -487,7 +506,7 @@ async fn transfer_and_apply(
                 result.applied += 1;
             }
             RefAction::FastForwardDest => {
-                if head_branch.as_deref() == Some(src_ref.name.as_str()) {
+                if is_head {
                     // Checked-out branch: move ref + working tree, refusing on a dirty tree.
                     let out = dst_peer.run(&["merge", "--ff-only", &src_ref.sha]);
                     match out {
@@ -504,12 +523,19 @@ async fn transfer_and_apply(
                     result.applied += 1;
                 }
             }
-            RefAction::Diverged => result.diverged.push(src_ref.name.clone()),
+            RefAction::Diverged => {
+                if force {
+                    force_reset_branch(&dst_peer, &src_ref.name, &src_ref.sha, dst_sha.unwrap(), is_head, ts);
+                    result.applied += 1;
+                } else {
+                    result.diverged.push(src_ref.name.clone());
+                }
+            }
         }
     }
 
     // Tags: create missing ones; a same-name/different-sha tag is a conflict we
-    // surface but never move.
+    // surface (and, under a resolution, force-move after a backup — never otherwise).
     for src_tag in &source.tags {
         match sha_of(dest, RefKind::Tag, &src_tag.name) {
             None => {
@@ -520,7 +546,20 @@ async fn transfer_and_apply(
                 ]);
                 result.applied += 1;
             }
-            Some(d) if d != src_tag.sha => result.diverged.push(format!("tag:{}", src_tag.name)),
+            Some(d) if d != src_tag.sha => {
+                if force {
+                    let backup = backup_ref_name(&format!("tags/{}", src_tag.name), ts);
+                    let _ = dst_peer.run(&["update-ref", &backup, d]);
+                    let _ = dst_peer.run(&[
+                        "update-ref",
+                        &format!("refs/tags/{}", src_tag.name),
+                        &src_tag.sha,
+                    ]);
+                    result.applied += 1;
+                } else {
+                    result.diverged.push(format!("tag:{}", src_tag.name));
+                }
+            }
             Some(_) => {}
         }
     }
@@ -546,7 +585,37 @@ fn is_ancestor(peer: &Peer, a: &str, b: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Force-move `dest`'s `branch` from `dst_sha` to the authority's `src_sha` during a
+/// resolution, after saving the overwritten tip to a timestamped `refs/eldrun/backup/*`
+/// safety ref so nothing is lost. When the branch is the dest's checked-out HEAD, a
+/// `reset --hard` moves the ref *and* the working tree; otherwise the ref is force-set
+/// with `update-ref`'s old-value guard. Best-effort (each step ignores its own error;
+/// a stale backup is harmless).
+fn force_reset_branch(
+    dst_peer: &Peer,
+    branch: &str,
+    src_sha: &str,
+    dst_sha: &str,
+    is_head: bool,
+    ts: u64,
+) {
+    let backup = backup_ref_name(branch, ts);
+    let _ = dst_peer.run(&["update-ref", &backup, dst_sha]);
+    if is_head {
+        let _ = dst_peer.run(&["reset", "--hard", src_sha]);
+    } else {
+        let _ = dst_peer.run(&[
+            "update-ref",
+            &format!("refs/heads/{branch}"),
+            src_sha,
+            dst_sha,
+        ]);
+    }
+}
+
 /// Copy the bundle file between the two machines over the pooled SFTP session.
+/// Streamed in bounded chunks (#28n Phase 3) so an initial-pairing bundle carrying
+/// a project's whole history never has to fit in memory on either end.
 async fn move_bundle(
     pool: &RemotePoolState,
     project_id: &str,
@@ -557,32 +626,12 @@ async fn move_bundle(
     let sftp = crate::services::remote::pooled_sftp(pool, project_id)
         .await
         .ok_or("remote not connected")?;
-    // Ensure the receiving .git dir exists (it always should for a real repo).
     if to_remote {
-        let bytes = std::fs::read(src_bundle).map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MAX_BUNDLE_BYTES {
-            return Err(format!(
-                "git bundle {}B exceeds the {}B SFTP transfer limit (initial pairing / large \
-                 divergence needs streaming — Phase 3)",
-                bytes.len(),
-                MAX_BUNDLE_BYTES
-            ));
-        }
-        sftp::write_file_on(&sftp, dst_bundle, &bytes).await?;
+        sftp::upload_file_streaming_on(&sftp, Path::new(src_bundle), dst_bundle).await
     } else {
-        let bytes = sftp::read_file_on(&sftp, src_bundle).await?;
-        if let Some(parent) = std::path::Path::new(dst_bundle).parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::write(dst_bundle, &bytes).map_err(|e| e.to_string())?;
+        sftp::download_file_streaming_on(&sftp, src_bundle, Path::new(dst_bundle)).await
     }
-    Ok(())
 }
-
-/// Whole-file SFTP transfer cap, matching `remote_sync::MAX_SYNC_FILE_BYTES` (64 MiB):
-/// delta bundles stay far under it; a giant initial-pairing bundle is rejected with an
-/// actionable error rather than silently truncated.
-const MAX_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Delete the `refs/eldrun/incoming/*` tracking refs on a peer after applying.
 fn cleanup_incoming(peer: &Peer) {
@@ -615,12 +664,74 @@ async fn cleanup_bundles(
     }
 }
 
+// ── Initial pairing ─────────────────────────────────────────────────────────
+
+/// Bring an unpaired side up: `git init` the empty peer, transfer every ref from the
+/// `source` (authority) peer, then position the new HEAD + working tree to match the
+/// source (#28n Phase 3). `source_is_local` picks the direction — the empty side is
+/// always the peer that is *not* the source. Files already physically present on the
+/// empty side (selective/auto file-sync mirrored them) become the tracked tree; a
+/// `reset --hard`/detached checkout materializes any that git manages but are missing,
+/// and untracked files are left untouched (they stay file-sync's domain).
+async fn init_pairing(
+    pool: &RemotePoolState,
+    project_id: &str,
+    spec: &RemoteSpec,
+    source_is_local: bool,
+    source: &PeerSnapshot,
+) -> Result<(), String> {
+    let (dest_peer, to_remote) = if source_is_local {
+        (Peer::Remote(spec.clone()), true)
+    } else {
+        (Peer::Local(mirror_dir(project_id)), false)
+    };
+    if let Peer::Local(dir) = &dest_peer {
+        let _ = std::fs::create_dir_all(dir);
+    }
+
+    // `git init` the empty side (idempotent on an existing repo, but we only reach
+    // here when the dest is not yet a repo).
+    let out = dest_peer.run(&["init"])?;
+    if !out.status.success() {
+        return Err(format!(
+            "git init on {} failed: {}",
+            if source_is_local { "remote host" } else { "local mirror" },
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    // Transfer every ref from the authority into the freshly-init'd (empty) dest;
+    // with no dest shas this is a full bundle and every branch/tag is a create.
+    let dest = probe(&dest_peer);
+    let _ = transfer_and_apply(pool, project_id, spec, to_remote, source, &dest, false).await;
+
+    // Position HEAD + populate the working tree to match the source's HEAD.
+    match &source.head {
+        Some(HeadRef::Branch { name, sha }) => {
+            let _ = dest_peer.run(&["symbolic-ref", "HEAD", &format!("refs/heads/{name}")]);
+            let _ = dest_peer.run(&["reset", "--hard", sha]);
+        }
+        Some(HeadRef::Detached { sha }) => {
+            let _ = dest_peer.run(&["checkout", sha]);
+        }
+        // Unborn/None source → nothing committed yet; leave the empty repo unborn too.
+        _ => {}
+    }
+    Ok(())
+}
+
 // ── Reconcile + status ──────────────────────────────────────────────────────
 
 /// Probe both peers, transfer + fast-forward in both directions, and compute the new
 /// [`GitPeerState`]. Diverged branches / a dirty peer blocking a needed fast-forward
-/// → `Desynchronized` (detected + surfaced; resolution is Phase 2). Persists + returns
-/// the state. `enabled` is preserved from the prior persisted state.
+/// → `Desynchronized` (surfaced for Use-local/Use-remote resolution). Persists +
+/// returns the state. `enabled` is preserved from the prior persisted state.
+///
+/// When exactly one side is a git repo, this performs **initial pairing** (#28n
+/// Phase 3): the repo side is the authority and the empty side is `git init`-ed and
+/// populated from it (remote import → mirror from remote; extend-local → remote from
+/// local). If *both* already exist and diverge, no side is guessed — that is the
+/// normal diverged→`Desynchronized` path, resolved by the explicit authority choice.
 pub async fn reconcile(pool: &RemotePoolState, project_id: &str, spec: &RemoteSpec) -> GitPeerState {
     let prior = load_state(project_id);
     let local = probe(&Peer::Local(mirror_dir(project_id)));
@@ -632,7 +743,7 @@ pub async fn reconcile(pool: &RemotePoolState, project_id: &str, spec: &RemoteSp
     if local.is_repo && remote.is_repo {
         // Local → remote, then remote → local (each catches the side that is ahead).
         if let Ok(r) =
-            transfer_and_apply(pool, project_id, spec, true, &local, &remote).await
+            transfer_and_apply(pool, project_id, spec, true, &local, &remote, false).await
         {
             diverged.extend(r.diverged);
             dirty_blocked |= r.dirty_blocked;
@@ -640,7 +751,7 @@ pub async fn reconcile(pool: &RemotePoolState, project_id: &str, spec: &RemoteSp
         // Re-probe the remote so the reverse pass sees any ref we just moved.
         let remote2 = probe(&Peer::Remote(spec.clone()));
         if let Ok(r) =
-            transfer_and_apply(pool, project_id, spec, false, &remote2, &local).await
+            transfer_and_apply(pool, project_id, spec, false, &remote2, &local, false).await
         {
             for d in r.diverged {
                 if !diverged.contains(&d) {
@@ -649,13 +760,19 @@ pub async fn reconcile(pool: &RemotePoolState, project_id: &str, spec: &RemoteSp
             }
             dirty_blocked |= r.dirty_blocked;
         }
+    } else if local.is_repo != remote.is_repo {
+        // Exactly one side is a repo → initialize the other from it (initial pairing).
+        let source_is_local = local.is_repo;
+        let source = if source_is_local { &local } else { &remote };
+        let _ = init_pairing(pool, project_id, spec, source_is_local, source).await;
     }
 
     let final_local = probe(&Peer::Local(mirror_dir(project_id)));
     let final_remote = probe(&Peer::Remote(spec.clone()));
 
     let (status, detail) = if !final_local.is_repo || !final_remote.is_repo {
-        // One side has no repo yet — nothing to lock-step (initial pairing is Phase 3).
+        // Still one side without a repo (source was unborn, or init failed) — nothing
+        // to lock-step yet.
         (SyncStatus::Synchronized, None)
     } else if !diverged.is_empty() {
         (
@@ -817,6 +934,70 @@ async fn checkout_lockstep_inner(
     restamp_after_checkout(pool, manifest, project_id, spec, &old_local_sha).await;
 
     Ok(state)
+}
+
+/// Normalize a resolution authority string to whether the **local** side wins
+/// (anything but `"remote"` is treated as local — the safer default of "keep my
+/// working copy" for an unexpected value).
+pub fn winner_is_local(authority: &str) -> bool {
+    authority != "remote"
+}
+
+/// Explicit **Use local / Use remote** divergence resolution (#28n Phase 2). The
+/// chosen `authority` (`"local"` or `"remote"`) becomes the source of truth: every
+/// diverged branch — and every branch where the *losing* side is ahead — is reset to
+/// the winner's commit, after the overwritten tip is saved to a timestamped
+/// `refs/eldrun/backup/*` safety ref so nothing is discarded irrecoverably. Conflicting
+/// tags are force-moved the same way. File auto-sync is paused for the duration and its
+/// tracked-file bases are re-stamped afterward (a losing local branch is `reset --hard`,
+/// rewriting the mirror tree), then a normal reconcile recomputes the (now
+/// `Synchronized`) status. A no-op reconcile is returned if either side lacks a repo.
+pub async fn resolve(
+    pool: &RemotePoolState,
+    manifest: &remote_sync::SyncManifestState,
+    auto: &crate::services::sync_auto::AutoSyncState,
+    project_id: &str,
+    spec: &RemoteSpec,
+    authority: &str,
+) -> Result<GitPeerState, String> {
+    crate::services::sync_auto::pause(auto, project_id).await;
+    let result = resolve_inner(pool, manifest, project_id, spec, authority).await;
+    crate::services::sync_auto::resume(auto, project_id).await;
+    result
+}
+
+async fn resolve_inner(
+    pool: &RemotePoolState,
+    manifest: &remote_sync::SyncManifestState,
+    project_id: &str,
+    spec: &RemoteSpec,
+    authority: &str,
+) -> Result<GitPeerState, String> {
+    let local = probe(&Peer::Local(mirror_dir(project_id)));
+    let remote = probe(&Peer::Remote(spec.clone()));
+    if !local.is_repo || !remote.is_repo {
+        // Nothing paired to resolve; a plain reconcile may still initial-pair.
+        return Ok(reconcile(pool, project_id, spec).await);
+    }
+
+    let old_local_sha = head_sha(&local).unwrap_or_default();
+    let winner_local = winner_is_local(authority);
+    // Force in the winner→loser direction: winner local ⇒ push to the remote loser.
+    let to_remote = winner_local;
+    let (source, dest) = if winner_local {
+        (&local, &remote)
+    } else {
+        (&remote, &local)
+    };
+    transfer_and_apply(pool, project_id, spec, to_remote, source, dest, true).await?;
+
+    // A losing local branch was `reset --hard`, rewriting mirror tracked files — refresh
+    // the file-sync bases so the resumed auto-sync reads them green (no-op when the
+    // remote was the loser, since the mirror tree is unchanged).
+    restamp_after_checkout(pool, manifest, project_id, spec, &old_local_sha).await;
+
+    // Recompute status; the forced side is now in sync, so this should read Synchronized.
+    Ok(reconcile(pool, project_id, spec).await)
 }
 
 /// Build + persist a `Desynchronized` state with a message (probes current heads).
@@ -1136,6 +1317,34 @@ mod tests {
             backup_ref_name("feature/x", 1735689600),
             "refs/eldrun/backup/1735689600/feature/x"
         );
+        // Tag conflicts back up under a `tags/` prefix so a branch and a same-named tag
+        // never collide in the safety-ref namespace.
+        assert_eq!(
+            backup_ref_name("tags/v1", 1735689600),
+            "refs/eldrun/backup/1735689600/tags/v1"
+        );
+    }
+
+    #[test]
+    fn winner_is_local_defaults_to_local() {
+        assert!(winner_is_local("local"));
+        assert!(!winner_is_local("remote"));
+        // Anything unexpected keeps the safer "my working copy wins" default.
+        assert!(winner_is_local(""));
+        assert!(winner_is_local("garbage"));
+    }
+
+    #[test]
+    fn decide_under_force_targets_diverged_and_dest_ahead() {
+        // The resolution force path acts exactly on the two actions that a normal
+        // reconcile leaves for the user: a real divergence, and the loser being ahead.
+        // (`force_reset_branch` is IO; this pins which classifications route into it.)
+        assert_eq!(decide(Some("x"), "y", false, false), RefAction::Diverged);
+        assert_eq!(decide(Some("new"), "old", false, true), RefAction::DestAhead);
+        // Fast-forwardable / create / in-sync never need forcing (no data loss).
+        assert_eq!(decide(Some("old"), "new", true, false), RefAction::FastForwardDest);
+        assert_eq!(decide(None, "a", false, false), RefAction::CreateOnDest);
+        assert_eq!(decide(Some("a"), "a", false, false), RefAction::InSync);
     }
 
     #[test]

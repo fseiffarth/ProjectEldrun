@@ -20,7 +20,14 @@ vi.mock("../stores/windows", () => ({
 // picker (#45) lists that project's files.
 vi.mock("../stores/projects", () => {
   const state = {
-    projects: [{ id: "proj", directory: "/p", local_file: "/p/project.json" }],
+    projects: [
+      { id: "proj", directory: "/p", local_file: "/p/project.json" },
+      {
+        id: "win",
+        directory: "C:\\Work\\Demo",
+        local_file: "C:\\Work\\Demo\\project.json",
+      },
+    ],
     activeId: "proj",
   };
   // Callable like a real zustand hook (selector) AND exposes getState(), since
@@ -62,11 +69,11 @@ function setup() {
   });
 }
 
-async function renderTextView() {
+async function renderTextView(path = "/p/foo.py") {
   vi.resetModules();
   const { FileViewerPane } = await import("../components/embed/FileViewerPane");
   await act(async () => {
-    render(<FileViewerPane viewer="text" path="/p/foo.py" projectId="proj" />);
+    render(<FileViewerPane viewer="text" path={path} projectId="proj" />);
   });
 }
 
@@ -207,6 +214,19 @@ describe("local autocomplete (#45)", () => {
           context: [{ name: "helper.py", content: SOURCE }],
         }),
       ),
+    );
+  });
+
+  it("selects a Windows project with mixed separators and casing", async () => {
+    autocompleteOn = true;
+    await renderTextView("c:/work/demo/src/foo.py");
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Add a project file as autocomplete context"));
+    });
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("list_project_paths", {
+        projectDir: "C:\\Work\\Demo",
+      }),
     );
   });
 

@@ -20,11 +20,25 @@ import { useProjectsStore } from "../stores/projects";
  * from a settings click would be jarring — so a brief toast points the user at
  * the root terminal where the install is running.
  */
-export function runInstallInTab(label: string, command: string): void {
+export type InstallShellKind = "bash" | "powershell" | "default";
+
+/** Explicit terminal program for an installer shell. Shell-specific syntax must
+ * never be submitted to the host's unrelated default shell. */
+export function installShellCommand(shellKind: InstallShellKind): string {
+  if (shellKind === "bash") return "/bin/bash";
+  if (shellKind === "powershell") return "powershell.exe";
+  return "";
+}
+
+export function runInstallInTab(
+  label: string,
+  command: string,
+  shellKind: InstallShellKind,
+): void {
   const rootDir = useProjectsStore.getState().rootDir ?? "";
   useTabsStore.getState().addTabToScope("root", {
     label,
-    cmd: "", // empty → backend default_shell()
+    cmd: installShellCommand(shellKind),
     cwd: rootDir, // empty resolves to ~/eldrun/root on the backend
     kind: "shell",
     initialInput: command,

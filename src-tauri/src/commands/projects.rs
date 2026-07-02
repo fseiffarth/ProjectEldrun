@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -651,7 +650,7 @@ pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<St
         "none".to_string()
     } else {
         if !git_dir.exists() {
-            let output = Command::new("git")
+            let output = crate::paths::command_no_window("git")
                 .args(["init"])
                 .current_dir(&directory)
                 .output()
@@ -921,7 +920,10 @@ pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
         fs::write(cs, CLAUDE_SETTINGS)?;
     }
     if with_git && !dir.join(".git").exists() {
-        let _ = Command::new("git").args(["init"]).current_dir(dir).output();
+        let _ = crate::paths::command_no_window("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output();
     }
     Ok(())
 }

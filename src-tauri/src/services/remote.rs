@@ -234,6 +234,21 @@ pub async fn pooled_sftp(pool: &RemotePoolState, project_id: &str) -> Option<Arc
     Some(Arc::clone(&conn.sftp))
 }
 
+/// Whether a project's pooled SSH connection is live. Like [`pooled_sftp`], this
+/// evicts a child that has already exited so read-only observers never launch a
+/// fallback connection merely to discover that the project is offline.
+pub async fn is_connected(pool: &RemotePoolState, project_id: &str) -> bool {
+    let mut guard = pool.lock().await;
+    let Some(conn) = guard.conns.get_mut(project_id) else {
+        return false;
+    };
+    if matches!(conn.child.try_wait(), Ok(Some(_))) {
+        guard.conns.remove(project_id);
+        return false;
+    }
+    true
+}
+
 /// Tear down a pooled connection: gracefully close the SFTP session (sends
 /// `SSH_FXP_CLOSE`, matching [`teardown_session`]) when we hold its only
 /// reference, then kill the `ssh` child, which collapses the channel and the

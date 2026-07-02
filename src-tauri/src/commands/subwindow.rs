@@ -41,6 +41,10 @@ pub fn detached_query(scope: &str, group_id: &str) -> String {
     format!("index.html?detached={scope}:{group_id}")
 }
 
+pub fn detached_decorations(os: crate::paths::OsKind) -> bool {
+    os == crate::paths::OsKind::Macos
+}
+
 /// PHYSICAL-pixel position to apply to a freshly-built detached window from the
 /// optional restore-geometry args, or `None` to let the WM place it.
 ///
@@ -115,7 +119,7 @@ pub async fn detach_subwindow(
         WebviewUrl::App(detached_query(&project_id, &group_id).into()),
     )
     .title(&title)
-    .decorations(false);
+    .decorations(detached_decorations(crate::paths::OsKind::current()));
     // Windows: a freshly runtime-created WebView2 window commonly presents a blank
     // WHITE surface until it is shown/focused or genuinely resized — and the rapid
     // +1/-1px resize nudge that fixes the analogous BLACK WebKitGTK surface tends
@@ -339,6 +343,13 @@ mod tests {
     fn query_carries_the_detached_param() {
         assert_eq!(detached_query("p1", "g-3"), "index.html?detached=p1:g-3");
         assert_eq!(detached_query("root", "g-1"), "index.html?detached=root:g-1");
+    }
+
+    #[test]
+    fn only_macos_detached_windows_use_native_decorations() {
+        assert!(detached_decorations(crate::paths::OsKind::Macos));
+        assert!(!detached_decorations(crate::paths::OsKind::Windows));
+        assert!(!detached_decorations(crate::paths::OsKind::Unix));
     }
 
     #[test]

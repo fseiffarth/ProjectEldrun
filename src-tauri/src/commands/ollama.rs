@@ -193,7 +193,10 @@ pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
     };
 
     let emit = |line: &str| {
-        let _ = app.emit("ollama-install-progress", serde_json::json!({ "line": line }));
+        let _ = app.emit(
+            "ollama-install-progress",
+            serde_json::json!({ "line": line }),
+        );
     };
     emit("Starting Ollama installer…");
 
@@ -483,7 +486,8 @@ pub async fn vibe_install_strategy() -> VibeInstallStrategy {
             target_os = "linux",
             target_os = "macos"
         )),
-        docs: "https://docs.mistral.ai/getting-started/quickstarts/vibe-code/install-cli".to_string(),
+        docs: "https://docs.mistral.ai/getting-started/quickstarts/vibe-code/install-cli"
+            .to_string(),
     }
 }
 
@@ -597,22 +601,42 @@ pub struct PartialBlob {
 /// Ollama blob directories to scan (env override, user home, system service),
 /// de-duplicated and filtered to those that exist.
 fn ollama_blob_dirs() -> Vec<std::path::PathBuf> {
-    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(m) = std::env::var("OLLAMA_MODELS") {
-        if !m.is_empty() {
-            dirs.push(std::path::PathBuf::from(m).join("blobs"));
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        dirs.push(std::path::PathBuf::from(home).join(".ollama/models/blobs"));
-    }
-    if let Some(sys) = system_ollama_models_dir() {
-        dirs.push(sys.join("blobs"));
+    let override_dir = std::env::var_os("OLLAMA_MODELS").map(std::path::PathBuf::from);
+    let mut dirs = ollama_model_dir_candidates(
+        crate::paths::OsKind::current(),
+        &crate::paths::home_dir(),
+        override_dir.as_deref(),
+    )
+    .into_iter()
+    .map(|dir| dir.join("blobs"))
+    .collect::<Vec<_>>();
+    if let Some(system) = system_ollama_models_dir() {
+        dirs.push(system.join("blobs"));
     }
     let mut seen = std::collections::HashSet::new();
     dirs.into_iter()
         .filter(|d| d.is_dir() && seen.insert(d.clone()))
         .collect()
+}
+
+fn ollama_model_dir_candidates(
+    os: crate::paths::OsKind,
+    home: &std::path::Path,
+    override_dir: Option<&std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(path) = override_dir.filter(|path| !path.as_os_str().is_empty()) {
+        dirs.push(path.to_path_buf());
+    }
+    dirs.push(home.join(".ollama").join("models"));
+    if os == crate::paths::OsKind::Unix {
+        dirs.extend([
+            std::path::PathBuf::from("/usr/share/ollama/.ollama/models"),
+            std::path::PathBuf::from("/var/lib/ollama/.ollama/models"),
+            std::path::PathBuf::from("/var/lib/ollama/models"),
+        ]);
+    }
+    dirs
 }
 
 /// Orphaned partial download layers sitting in Ollama's blob cache, largest
@@ -769,12 +793,12 @@ fn registry_layer_digests(model: &str) -> Result<Vec<String>, String> {
 /// the given `sha256:<hex>` digests, across all known blob directories.
 fn delete_partials_for_digests(digests: &[String]) {
     // Blob files are named `sha256-<hex>`; the manifest gives `sha256:<hex>`.
-    let stems: std::collections::HashSet<String> = digests
-        .iter()
-        .map(|d| d.replace(':', "-"))
-        .collect();
+    let stems: std::collections::HashSet<String> =
+        digests.iter().map(|d| d.replace(':', "-")).collect();
     for dir in ollama_blob_dirs() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             let Some(rest) = name.strip_suffix("-partial").or_else(|| {
@@ -832,8 +856,7 @@ pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(
 
     let body = serde_json::json!({"model": model, "stream": true}).to_string();
 
-    let stream =
-        TcpStream::connect("127.0.0.1:11434").map_err(|_| "not_running".to_string())?;
+    let stream = TcpStream::connect("127.0.0.1:11434").map_err(|_| "not_running".to_string())?;
     // 10-minute read timeout accommodates large model pulls between chunks.
     stream
         .set_read_timeout(Some(Duration::from_secs(600)))
@@ -864,7 +887,11 @@ pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(
     reader
         .read_line(&mut header)
         .map_err(|e| format!("read: {e}"))?;
-    if let Some(code) = header.split_whitespace().nth(1).and_then(|s| s.parse().ok()) {
+    if let Some(code) = header
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+    {
         status_code = code;
     }
     loop {
@@ -889,7 +916,9 @@ pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(
             return Ok(());
         }
         let mut line = String::new();
-        let n = reader.read_line(&mut line).map_err(|e| format!("read: {e}"))?;
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("read: {e}"))?;
         if n == 0 {
             break;
         }
@@ -1062,7 +1091,9 @@ fn all_tag_texts(card: &str, marker: &str) -> Vec<String> {
     let mut pos = 0;
     while let Some(i) = card[pos..].find(marker) {
         let start = pos + i + marker.len();
-        let Some(gt) = card[start..].find('>') else { break };
+        let Some(gt) = card[start..].find('>') else {
+            break;
+        };
         let after = start + gt + 1;
         if let Some(lt) = card[after..].find('<') {
             let text = html_unescape(card[after..after + lt].trim());
@@ -1423,26 +1454,16 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
     let ollama_bin = crate::paths::resolve_offpath_binary("ollama")
         .map(std::ffi::OsString::from)
         .unwrap_or_else(|| "ollama".into());
-    let mut cmd = std::process::Command::new(&ollama_bin);
+    let mut cmd = crate::paths::command_no_window(&ollama_bin);
     cmd.arg("serve")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    // Background server: keep it from flashing/owning a console window on Windows.
-    // (`ollama_bin` may be a full path, so we can't route through the &str-keyed
-    // `command_no_window` helper here — set the flag directly.)
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
 
     if let Some(sys_models) = system_ollama_models_dir() {
         cmd.env("OLLAMA_MODELS", sys_models);
     }
 
-    cmd.spawn()
-        .map_err(|e| format!("failed to start ollama serve: {e}"))?;
+    crate::paths::spawn_reaped(cmd).map_err(|e| format!("failed to start ollama serve: {e}"))?;
 
     let deadline = Instant::now() + Duration::from_secs(8);
     if wait_for_ollama(deadline) {
@@ -1465,15 +1486,17 @@ fn wait_for_ollama(deadline: Instant) -> bool {
 /// Returns the path to the system-wide Ollama models directory if it exists
 /// and contains at least one model manifest.
 fn system_ollama_models_dir() -> Option<std::path::PathBuf> {
-    let candidates = [
-        "/usr/share/ollama/.ollama/models",
-        "/var/lib/ollama/.ollama/models",
-        "/var/lib/ollama/models",
-    ];
-    for path in &candidates {
-        let p = std::path::Path::new(path);
-        if p.join("manifests").exists() {
-            return Some(p.to_owned());
+    #[cfg(target_os = "linux")]
+    {
+        for path in [
+            "/usr/share/ollama/.ollama/models",
+            "/var/lib/ollama/.ollama/models",
+            "/var/lib/ollama/models",
+        ] {
+            let p = std::path::Path::new(path);
+            if p.join("manifests").exists() {
+                return Some(p.to_owned());
+            }
         }
     }
     None
@@ -1742,7 +1765,11 @@ fn completion_prompt(
     mode: CompletionMode,
     context: &str,
 ) -> String {
-    let lang = if language.is_empty() { "text" } else { language };
+    let lang = if language.is_empty() {
+        "text"
+    } else {
+        language
+    };
     // When the caret sits just after a natural-language comment, switch from
     // continuing text to *implementing that comment as code* (#45 intent comments).
     let task: String = if let Some(desc) = trailing_comment_intent(prefix, language) {
@@ -1803,8 +1830,16 @@ fn clean_completion(raw: &str) -> String {
         let lower = first.to_ascii_lowercase();
         let is_preamble = first.ends_with(':')
             && [
-                "here is", "here's", "here are", "sure", "certainly", "of course",
-                "the continuation", "continuation", "the reformatted", "the completed",
+                "here is",
+                "here's",
+                "here are",
+                "sure",
+                "certainly",
+                "of course",
+                "the continuation",
+                "continuation",
+                "the reformatted",
+                "the completed",
             ]
             .iter()
             .any(|p| lower.starts_with(p));
@@ -1835,10 +1870,7 @@ const MIN_SEAM_OVERLAP: usize = 3;
 fn overlap_len(a: &str, b: &str) -> usize {
     let max = a.len().min(b.len());
     for k in (1..=max).rev() {
-        if b.is_char_boundary(k)
-            && a.is_char_boundary(a.len() - k)
-            && a[a.len() - k..] == b[..k]
-        {
+        if b.is_char_boundary(k) && a.is_char_boundary(a.len() - k) && a[a.len() - k..] == b[..k] {
             return k;
         }
     }
@@ -1883,7 +1915,10 @@ pub async fn complete_text(
     context: Option<Vec<ContextFile>>,
 ) -> Result<String, String> {
     let mode = CompletionMode::parse(mode.as_deref().unwrap_or("sentence"));
-    let context_block = context.as_deref().map(build_context_block).unwrap_or_default();
+    let context_block = context
+        .as_deref()
+        .map(build_context_block)
+        .unwrap_or_default();
     let user = completion_prompt(&prefix, &suffix, &language, mode, &context_block);
     // Implementing a comment needs room for a whole statement/block even in the
     // conservative Sentence mode, so give intent completions at least the Block cap.
@@ -2224,7 +2259,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
 /// True when the installed Ollama exposes the `launch` subcommand (v0.15+).
 /// Cheap probe: `ollama launch --help` exits 0 only when the subcommand exists.
 fn ollama_has_launch() -> bool {
-    std::process::Command::new("ollama")
+    crate::paths::command_no_window("ollama")
         .args(["launch", "--help"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -2336,9 +2371,7 @@ fn validate_model_name(model: &str) -> Result<(), String> {
         .chars()
         .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@')))
     {
-        return Err(format!(
-            "invalid character {bad:?} in model name '{model}'"
-        ));
+        return Err(format!("invalid character {bad:?} in model name '{model}'"));
     }
     Ok(())
 }
@@ -2565,7 +2598,11 @@ mod tests {
     #[test]
     fn friendly_ollama_error_passes_through_unrelated() {
         // Errors we don't special-case must be returned verbatim, not swallowed.
-        for raw in ["model 'foo' not found, try pulling it first", "out of memory", "HTTP 500"] {
+        for raw in [
+            "model 'foo' not found, try pulling it first",
+            "out of memory",
+            "HTTP 500",
+        ] {
             assert_eq!(friendly_ollama_error(raw), raw);
         }
     }
@@ -2647,7 +2684,10 @@ mod tests {
     #[test]
     fn completion_prompt_defaults_empty_language_to_text() {
         let p = completion_prompt("a", "b", "", CompletionMode::Sentence, "");
-        assert!(p.contains("Language: text"), "empty language defaults to text");
+        assert!(
+            p.contains("Language: text"),
+            "empty language defaults to text"
+        );
     }
 
     #[test]
@@ -2662,9 +2702,18 @@ mod tests {
     #[test]
     fn build_context_block_labels_files_and_skips_empty() {
         let files = vec![
-            ContextFile { name: "util.rs".into(), content: "fn helper() {}".into() },
-            ContextFile { name: "blank.rs".into(), content: "   \n  ".into() },
-            ContextFile { name: "types.rs".into(), content: "struct Foo;".into() },
+            ContextFile {
+                name: "util.rs".into(),
+                content: "fn helper() {}".into(),
+            },
+            ContextFile {
+                name: "blank.rs".into(),
+                content: "   \n  ".into(),
+            },
+            ContextFile {
+                name: "types.rs".into(),
+                content: "struct Foo;".into(),
+            },
         ];
         let block = build_context_block(&files);
         assert!(block.contains("--- util.rs ---\nfn helper() {}"));
@@ -2679,14 +2728,26 @@ mod tests {
     fn build_context_block_caps_total_size() {
         let big = "x".repeat(20_000);
         let files = vec![
-            ContextFile { name: "a".into(), content: big.clone() },
-            ContextFile { name: "b".into(), content: big.clone() },
-            ContextFile { name: "c".into(), content: big },
+            ContextFile {
+                name: "a".into(),
+                content: big.clone(),
+            },
+            ContextFile {
+                name: "b".into(),
+                content: big.clone(),
+            },
+            ContextFile {
+                name: "c".into(),
+                content: big,
+            },
         ];
         let block = build_context_block(&files);
         // Each file is per-file capped and the total is bounded; allow for the
         // labels/separators on top of the included bytes.
-        assert!(block.len() <= MAX_CONTEXT_TOTAL + 256, "total context stays bounded");
+        assert!(
+            block.len() <= MAX_CONTEXT_TOTAL + 256,
+            "total context stays bounded"
+        );
         // The first file always makes it in.
         assert!(block.contains("--- a ---"));
     }
@@ -2819,7 +2880,13 @@ mod tests {
 
     #[test]
     fn completion_prompt_biases_to_finishing_the_sentence_when_mid_sentence() {
-        let mid = completion_prompt("I am writing to ", " Best regards", "text", CompletionMode::Sentence, "");
+        let mid = completion_prompt(
+            "I am writing to ",
+            " Best regards",
+            "text",
+            CompletionMode::Sentence,
+            "",
+        );
         assert!(mid.contains("middle of a sentence"));
         assert!(mid.contains("complete") || mid.contains("completes"));
         // At a sentence boundary it switches to the plain-continuation hint.
@@ -2884,7 +2951,10 @@ mod tests {
             "express my thanks",
         );
         // A 1–2 char incidental match is below the threshold, so it is NOT trimmed.
-        assert_eq!(trim_context_overlap("foo a", "", "a list of items"), "a list of items");
+        assert_eq!(
+            trim_context_overlap("foo a", "", "a list of items"),
+            "a list of items"
+        );
     }
 
     #[test]
@@ -2905,7 +2975,8 @@ mod tests {
 
     #[test]
     fn parse_grammar_issues_reads_a_clean_array() {
-        let raw = r#"[{"line":2,"bad":"teh","suggestion":"the","category":"spelling","message":"typo"}]"#;
+        let raw =
+            r#"[{"line":2,"bad":"teh","suggestion":"the","category":"spelling","message":"typo"}]"#;
         let issues = parse_grammar_issues(raw);
         assert_eq!(issues.len(), 1);
         assert_eq!(
@@ -2992,6 +3063,20 @@ mod tests {
         // active_model appears exactly once.
         let active_model_count = cfg.matches(&format!("active_model = \"{alias}\"")).count();
         assert_eq!(active_model_count, 1);
+    }
+
+    #[test]
+    fn model_directory_candidates_are_os_specific() {
+        let home = std::path::Path::new("/home/alice");
+        for os in [crate::paths::OsKind::Windows, crate::paths::OsKind::Macos] {
+            let dirs = ollama_model_dir_candidates(os, home, None);
+            assert_eq!(dirs, vec![home.join(".ollama/models")]);
+        }
+        let linux = ollama_model_dir_candidates(crate::paths::OsKind::Unix, home, None);
+        assert!(linux.contains(&home.join(".ollama/models")));
+        assert!(linux.contains(&std::path::PathBuf::from(
+            "/usr/share/ollama/.ollama/models"
+        )));
     }
 
     /// Integration test: only runs when Ollama is reachable and has models.

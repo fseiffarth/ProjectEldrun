@@ -484,6 +484,7 @@ pub fn run() {
             commands::git_peer::git_peer_set_enabled,
             commands::git_peer::git_peer_sync_now,
             commands::git_peer::git_peer_checkout,
+            commands::git_peer::git_peer_resolve,
             commands::git::git_diff_file,
             // Project-wide content search
             commands::search::project_search,

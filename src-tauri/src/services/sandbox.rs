@@ -33,7 +33,6 @@
 //! on `$HOME` shell-expansion, because `docker` is exec'd directly (no shell).
 
 use std::collections::BTreeMap;
-use std::process::Command;
 
 use crate::paths;
 use crate::storage;
@@ -159,7 +158,9 @@ pub fn wrap_pty_options_docker(opts: &mut PtyOptions) -> Result<(), String> {
 
 /// Verify docker is installed and the image is present locally.
 fn preflight(image: &str) -> Result<(), String> {
-    let version = Command::new("docker").arg("--version").output();
+    let version = crate::paths::command_no_window("docker")
+        .arg("--version")
+        .output();
     match version {
         Ok(o) if o.status.success() => {}
         _ => {
@@ -170,7 +171,7 @@ fn preflight(image: &str) -> Result<(), String> {
             )
         }
     }
-    let inspect = Command::new("docker")
+    let inspect = crate::paths::command_no_window("docker")
         .args(["image", "inspect", image])
         .output();
     match inspect {

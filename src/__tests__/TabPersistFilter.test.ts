@@ -24,9 +24,10 @@ import {
 const invokeMock = vi.mocked(invoke);
 
 describe("isRestorableKind", () => {
-  it("keeps shell and files, drops agent and local_agent", () => {
+  it("keeps shell, files, and network; drops agent and local_agent", () => {
     expect(isRestorableKind("shell")).toBe(true);
     expect(isRestorableKind("files")).toBe(true);
+    expect(isRestorableKind("network")).toBe(true);
     expect(isRestorableKind("agent")).toBe(false);
     expect(isRestorableKind("local_agent")).toBe(false);
   });

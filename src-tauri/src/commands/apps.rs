@@ -103,19 +103,12 @@ pub fn do_launch(
     origin: &str,
 ) -> Result<TrackedWindow, String> {
     let launch_exec = resolve_launch_exec(exec);
-    let mut cmd = Command::new(&launch_exec);
-    cmd.args(args);
-    if let Some(f) = file {
-        cmd.arg(f);
-    }
+    let mut cmd = launch_command(&launch_exec, args, file);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("launch {launch_exec}: {e}"))?;
-    let pid = child.id();
+    let pid = crate::paths::spawn_reaped(cmd).map_err(|e| format!("launch {launch_exec}: {e}"))?;
     let window_id = find_window_for_pid(pid, 20);
 
     let opened_at = SystemTime::now()
@@ -138,6 +131,32 @@ pub fn do_launch(
     };
     registry.lock().unwrap().windows.insert(id, win.clone());
     Ok(win)
+}
+
+fn launch_command(exec: &str, args: &[String], file: Option<&str>) -> Command {
+    #[cfg(target_os = "macos")]
+    if Path::new(exec)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+    {
+        let mut cmd = crate::paths::command_no_window("/usr/bin/open");
+        cmd.arg("-a").arg(exec);
+        if let Some(file) = file {
+            cmd.arg(file);
+        }
+        if !args.is_empty() {
+            cmd.arg("--args").args(args);
+        }
+        return cmd;
+    }
+
+    let mut cmd = crate::paths::command_for_program(Path::new(exec));
+    cmd.args(args);
+    if let Some(file) = file {
+        cmd.arg(file);
+    }
+    cmd
 }
 
 // ── Commands ───────────────────────────────────────────────────────────────
@@ -293,14 +312,12 @@ pub fn open_file(
     };
     if let Some(exec) = effective {
         let launch_exec = resolve_launch_exec(&exec);
-        let child = Command::new(&launch_exec)
-            .arg(&path)
-            .stdin(Stdio::null())
+        let mut cmd = launch_command(&launch_exec, &[], Some(&path));
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("open with {launch_exec}: {e}"))?;
-        let pid = child.id();
+            .stderr(Stdio::null());
+        let pid =
+            crate::paths::spawn_reaped(cmd).map_err(|e| format!("open with {launch_exec}: {e}"))?;
         let window_id = find_window_for_pid(pid, 20).or_else(|| find_new_window(&before, 20));
         return track_opened_file(
             registry.inner(),
@@ -359,14 +376,21 @@ pub fn run_script_detached(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut child = cmd.spawn().map_err(|e| format!("run {script_path}: {e}"))?;
+    crate::paths::augment_command_path(&mut cmd);
+    let child = cmd.spawn().map_err(|e| format!("run {script_path}: {e}"))?;
     if let Some(run_id) = run_id {
+        let mut child = child;
         std::thread::spawn(move || {
             let success = child.wait().map(|s| s.success()).unwrap_or(false);
             let _ = app.emit(
                 "script-finished",
                 serde_json::json!({ "runId": run_id, "success": success }),
             );
+        });
+    } else {
+        std::thread::spawn(move || {
+            let mut child = child;
+            let _ = child.wait();
         });
     }
     Ok(())
@@ -456,34 +480,34 @@ fn resolve_handler_via_mime(path: &str) -> Option<String> {
     }
     #[cfg(target_os = "linux")]
     {
-    let mime = Command::new("xdg-mime")
-        .args(["query", "filetype", path])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())?;
-    let desktop = Command::new("xdg-mime")
-        .args(["query", "default", &mime])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())?;
-    // Locate the named .desktop file and pull its Exec first token.
-    for dir in desktop_app_dirs() {
-        let candidate = dir.join(&desktop);
-        if candidate.exists() {
-            if let Some(entry) = parse_desktop_entry(&candidate) {
-                return Some(entry.exec);
+        let mime = Command::new("xdg-mime")
+            .args(["query", "filetype", path])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())?;
+        let desktop = Command::new("xdg-mime")
+            .args(["query", "default", &mime])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())?;
+        // Locate the named .desktop file and pull its Exec first token.
+        for dir in desktop_app_dirs() {
+            let candidate = dir.join(&desktop);
+            if candidate.exists() {
+                if let Some(entry) = parse_desktop_entry(&candidate) {
+                    return Some(entry.exec);
+                }
             }
         }
-    }
-    None
+        None
     }
 }
 
@@ -666,12 +690,8 @@ fn windows_installed_apps() -> Vec<InstalledApp> {
     apps
 }
 
-/// macOS installed-app list: scan the standard application bundle directories for
-/// `*.app` bundles. The display name is the bundle filename without `.app`; the
-/// `exec` is the launchable binary inside `Contents/MacOS/` (so the existing
-/// `Command::new(exec)` launch path works), falling back to the bundle path
-/// itself. Deduped by name (case-insensitive), sorted by name. Icons are left to
-/// lazy resolution (currently a no-op on macOS).
+/// macOS installed-app list from each bundle's Info.plist. The picker persists
+/// the bundle path so launch goes through LaunchServices.
 #[cfg(target_os = "macos")]
 fn macos_installed_apps() -> Vec<InstalledApp> {
     let mut roots = vec![
@@ -683,7 +703,12 @@ fn macos_installed_apps() -> Vec<InstalledApp> {
         roots.insert(0, PathBuf::from(home).join("Applications"));
     }
 
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    macos_installed_apps_in(&roots)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_installed_apps_in(roots: &[PathBuf]) -> Vec<InstalledApp> {
+    let mut seen = std::collections::HashSet::new();
     let mut apps: Vec<InstalledApp> = Vec::new();
     for root in roots {
         let Ok(entries) = fs::read_dir(&root) else {
@@ -694,48 +719,48 @@ fn macos_installed_apps() -> Vec<InstalledApp> {
             if path.extension().and_then(|e| e.to_str()) != Some("app") {
                 continue;
             }
-            let Some(name) = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .filter(|s| !s.trim().is_empty())
-            else {
+            let Some(app) = parse_macos_app_bundle(&path) else {
                 continue;
             };
-            if !seen.insert(name.to_lowercase()) {
+            if !seen.insert(app.exec.to_lowercase()) {
                 continue;
             }
-            apps.push(InstalledApp {
-                name,
-                exec: macos_app_exec(&path),
-                icon: None,
-            });
+            apps.push(app);
         }
     }
     apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     apps
 }
 
-/// Resolve the launchable executable for a macOS `.app` bundle: prefer the binary
-/// in `Contents/MacOS/` that matches the bundle name, then the first file there,
-/// and finally the bundle path itself when neither is readable.
 #[cfg(target_os = "macos")]
-fn macos_app_exec(app: &Path) -> String {
-    let macos_dir = app.join("Contents").join("MacOS");
-    if let Some(stem) = app.file_stem() {
-        let cand = macos_dir.join(stem);
-        if cand.is_file() {
-            return cand.to_string_lossy().into_owned();
-        }
+fn parse_macos_app_bundle(app: &Path) -> Option<InstalledApp> {
+    let plist = plist::Value::from_file(app.join("Contents").join("Info.plist")).ok()?;
+    let dict = plist.as_dictionary()?;
+    let executable = dict.get("CFBundleExecutable")?.as_string()?.trim();
+    if executable.is_empty()
+        || !app
+            .join("Contents")
+            .join("MacOS")
+            .join(executable)
+            .is_file()
+    {
+        return None;
     }
-    if let Ok(entries) = fs::read_dir(&macos_dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_file() {
-                return p.to_string_lossy().into_owned();
-            }
-        }
-    }
-    app.to_string_lossy().into_owned()
+    let name = ["CFBundleDisplayName", "CFBundleName"]
+        .iter()
+        .find_map(|key| dict.get(*key).and_then(plist::Value::as_string))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            app.file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+        })?;
+    Some(InstalledApp {
+        name,
+        exec: app.to_string_lossy().into_owned(),
+        icon: None,
+    })
 }
 
 /// Parse a single `.desktop` file into an `InstalledApp`, or `None` when it is
@@ -997,7 +1022,8 @@ fn resolve_windows_shortcut(path: &Path) -> Option<ShortcutEntry> {
         persist.Load(PCWSTR(wide.as_ptr()), STGM_READ).ok()?;
 
         let mut target_buf = [0u16; 32768];
-        link.GetPath(&mut target_buf, std::ptr::null_mut(), 0).ok()?;
+        link.GetPath(&mut target_buf, std::ptr::null_mut(), 0)
+            .ok()?;
         let target = utf16_buf_to_path(&target_buf)?;
 
         let mut icon_buf = [0u16; 32768];
@@ -1042,9 +1068,7 @@ fn windows_icon_to_data_url(path: &Path) -> Option<String> {
 fn extract_windows_icon_png(path: &Path) -> Option<String> {
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
-    use windows::Win32::UI::Shell::{
-        SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
-    };
+    use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
     use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
 
     // SAFETY: the HICON returned in `info.hIcon` is destroyed before returning on
@@ -1075,7 +1099,9 @@ fn extract_windows_icon_png(path: &Path) -> Option<String> {
 /// reconstructed from the 1-bpp AND mask instead. The color/mask GDI bitmaps from
 /// `GetIconInfo` are deleted on every path.
 #[cfg(target_os = "windows")]
-unsafe fn hicon_to_rgba(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) -> Option<(u32, u32, Vec<u8>)> {
+unsafe fn hicon_to_rgba(
+    hicon: windows::Win32::UI::WindowsAndMessaging::HICON,
+) -> Option<(u32, u32, Vec<u8>)> {
     use std::ffi::c_void;
     use windows::Win32::Graphics::Gdi::{
         DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
@@ -1355,6 +1381,9 @@ pub fn untrack_window(registry: State<'_, WindowRegistryState>, id: String) -> b
 
 #[tauri::command]
 pub fn check_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
     if cfg!(target_os = "linux") {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
     } else if cfg!(target_os = "windows") {
@@ -1896,6 +1925,44 @@ mod tests {
     #[test]
     fn project_apps_for_id_empty_without_id() {
         assert!(project_apps_for_id(None).is_empty());
+    }
+
+    #[test]
+    fn pid_zero_is_never_alive() {
+        assert!(!check_pid_alive(0));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_bundle_discovery_uses_info_plist_and_bundle_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("Filename.app");
+        let contents = app.join("Contents");
+        let executable = contents.join("MacOS").join("real-bin");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"binary").unwrap();
+
+        let mut info = plist::Dictionary::new();
+        info.insert(
+            "CFBundleDisplayName".into(),
+            plist::Value::String("Preferred Name".into()),
+        );
+        info.insert(
+            "CFBundleName".into(),
+            plist::Value::String("Fallback Name".into()),
+        );
+        info.insert(
+            "CFBundleExecutable".into(),
+            plist::Value::String("real-bin".into()),
+        );
+        plist::Value::Dictionary(info)
+            .to_file_xml(contents.join("Info.plist"))
+            .unwrap();
+
+        let apps = macos_installed_apps_in(&[temp.path().to_path_buf()]);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].name, "Preferred Name");
+        assert_eq!(apps[0].exec, app.to_string_lossy().into_owned());
     }
 
     // ── Windows Start Menu matching ────────────────────────────────────────
