@@ -1,4 +1,18 @@
+<div align="center">
+
+<img src="src/assets/logo.svg" alt="Eldrun logo" width="128" height="128" />
+
 # Eldrun
+
+**A project-centric desktop layer that swaps your entire working context — windows, files, apps, Git state, layout, and AI agent terminals — as a single unit when you switch projects.**
+
+[![CI](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/fseiffarth/ProjectEldrun/actions/workflows/ci-cd.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/fseiffarth/ProjectEldrun/blob/main/LICENSE)
+[![Release](https://img.shields.io/github/v/release/fseiffarth/ProjectEldrun)](https://github.com/fseiffarth/ProjectEldrun/releases)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
+![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri)
+
+</div>
 
 > **You don't open applications — you open projects.**
 > Eldrun is a project-centric desktop layer that swaps your whole working
