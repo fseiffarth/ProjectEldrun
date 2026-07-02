@@ -355,7 +355,10 @@ async fn walk_inner(
     let entries = sftp::list_dir_raw_on(sftp, &abs).await?;
     for entry in entries {
         // Skip Eldrun's internal runtime dir, mirroring the local/remote listers.
-        if entry.name == ".eldrun" {
+        // `.git` is likewise never byte-mirrored: git state is kept in step
+        // *semantically* by `services::git_peer` (lockstep), so copying its bytes
+        // would fight that layer and risk corrupting a repo mid-write.
+        if entry.name == ".eldrun" || entry.name == ".git" {
             continue;
         }
         let child_rel = join_rel(rel, &entry.name);
@@ -705,6 +708,11 @@ fn walk_mirror_inner(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(
         };
         if ft.is_symlink() {
             continue; // G3: never follow symlinks out of the mirror
+        }
+        // `.git`/`.eldrun` are never byte-mirrored (git is kept in step semantically
+        // by `services::git_peer`; `.eldrun` is Eldrun's own runtime dir).
+        if entry.file_name() == *".git" || entry.file_name() == *".eldrun" {
+            continue;
         }
         if ft.is_dir() {
             walk_mirror_inner(root, &path, out)?;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 interface GitCommit {
   hash: string;
@@ -28,8 +29,30 @@ interface Worktree {
   is_bare: boolean;
 }
 
+/** A peer's HEAD as reported by the git-lockstep backend (#28n). */
+type HeadRef =
+  | { kind: "branch"; name: string; sha: string }
+  | { kind: "detached"; sha: string }
+  | { kind: "unborn" };
+
+type LockstepStatus = "synchronized" | "syncing" | "desynchronized";
+
+/** Mirrors `services::git_peer::GitPeerState` (camelCase). */
+interface GitPeerState {
+  enabled: boolean;
+  status: LockstepStatus;
+  detail: string | null;
+  localHead: HeadRef | null;
+  remoteHead: HeadRef | null;
+  lastSyncTs: number | null;
+}
+
 interface Props {
   projectDir: string;
+  /** Project id — only supplied for SSH remote projects, enabling git lockstep (#28n). */
+  projectId?: string;
+  /** True for SSH remote projects (gates the lockstep UI). */
+  remote?: boolean;
   /** Called after a checkout/reword so the parent can refresh git status. */
   onChanged?: () => void;
 }
@@ -197,10 +220,14 @@ function CommitGraphCell({
 
 const GRAPH_MODE_KEY = "eldrun.gitHistoryGraph";
 
-export function GitHistory({ projectDir, onChanged }: Props) {
+export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) {
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  // Git lockstep (#28n): only meaningful for SSH remote projects.
+  const lockstepEligible = !!(remote && projectId);
+  const [lockstep, setLockstep] = useState<GitPeerState | null>(null);
+  const [lockstepBusy, setLockstepBusy] = useState(false);
   const [wtForm, setWtForm] = useState<{ path: string; branch: string; newBranch: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -249,11 +276,74 @@ export function GitHistory({ projectDir, onChanged }: Props) {
     load();
   }, [load]);
 
+  // Load git-lockstep status + subscribe to backend status pushes (#28n).
+  useEffect(() => {
+    if (!lockstepEligible || !projectId) {
+      setLockstep(null);
+      return;
+    }
+    let alive = true;
+    invoke<GitPeerState>("git_peer_status", { projectId })
+      .then((s) => alive && setLockstep(s))
+      .catch(() => {});
+    const un = listen<{ projectId: string; state: GitPeerState }>("git-peer-status", (e) => {
+      if (alive && e.payload.projectId === projectId) setLockstep(e.payload.state);
+    });
+    return () => {
+      alive = false;
+      un.then((f) => f());
+    };
+  }, [lockstepEligible, projectId]);
+
+  const toggleLockstep = useCallback(async () => {
+    if (!projectId) return;
+    setLockstepBusy(true);
+    setError(null);
+    try {
+      const s = await invoke<GitPeerState>("git_peer_set_enabled", {
+        projectId,
+        enabled: !(lockstep?.enabled ?? false),
+      });
+      setLockstep(s);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLockstepBusy(false);
+    }
+  }, [projectId, lockstep?.enabled]);
+
+  const lockstepSyncNow = useCallback(async () => {
+    if (!projectId) return;
+    setLockstepBusy(true);
+    setError(null);
+    try {
+      const s = await invoke<GitPeerState>("git_peer_sync_now", { projectId });
+      setLockstep(s);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLockstepBusy(false);
+    }
+  }, [projectId, load]);
+
   async function checkout(target: string) {
     setLoading(true);
     setError(null);
     try {
-      await invoke("git_checkout", { projectDir, target });
+      // With git lockstep enabled, route through the coordinator so the paired
+      // local mirror + remote host tree switch together (#28n). The Git UI here
+      // reflects the host tree, so the host initiates.
+      if (lockstepEligible && projectId && lockstep?.enabled) {
+        const s = await invoke<GitPeerState>("git_peer_checkout", {
+          projectId,
+          target,
+          initiatingSide: "remote",
+        });
+        setLockstep(s);
+      } else {
+        await invoke("git_checkout", { projectDir, target });
+      }
       setSelected(null);
       await load();
       onChanged?.();
@@ -349,6 +439,48 @@ export function GitHistory({ projectDir, onChanged }: Props) {
           ⟳
         </button>
       </div>
+
+      {lockstepEligible && (
+        <div className="git-lockstep-bar" style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 6px", borderBottom: "1px solid var(--border-color)", fontSize: 10 }}>
+          <button
+            className={`tab-add-btn${lockstep?.enabled ? " active" : ""}`}
+            onClick={toggleLockstep}
+            disabled={lockstepBusy}
+            aria-pressed={!!lockstep?.enabled}
+            title={lockstep?.enabled ? "Git lockstep on — click to disable" : "Keep the local mirror and remote host repo on the same branch/commit"}
+          >
+            ⇄ Lockstep {lockstep?.enabled ? "on" : "off"}
+          </button>
+          {lockstep?.enabled && (
+            <>
+              <span
+                title={lockstep.detail ?? undefined}
+                style={{
+                  padding: "1px 6px",
+                  borderRadius: 8,
+                  color: "#fff",
+                  background:
+                    lockstep.status === "synchronized"
+                      ? "var(--success, #3fb950)"
+                      : lockstep.status === "syncing"
+                        ? "var(--warning, #e3b341)"
+                        : "var(--danger, #f85149)",
+                }}
+              >
+                {lockstep.status}
+              </span>
+              <button className="tab-add-btn" onClick={lockstepSyncNow} disabled={lockstepBusy} title="Reconcile git state now (retry after resolving a divergence)">
+                {lockstep.status === "desynchronized" ? "Retry" : "Sync now"}
+              </button>
+              {lockstep.status === "desynchronized" && lockstep.detail && (
+                <span style={{ color: "var(--danger, #f85149)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={lockstep.detail}>
+                  {lockstep.detail}
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {(localBranches.length > 0 || remoteBranches.length > 0) && (
         <div className="git-branch-list">

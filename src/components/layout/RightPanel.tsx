@@ -87,9 +87,8 @@ function isExternalFileDrag(dt: DataTransfer): boolean {
   );
 }
 
-/** Convert one `file://` URI to an absolute local path (decoding `%20` etc.),
- *  dropping any `file://host/…` authority. Delegates to the shared OS-aware
- *  helper, which also strips the extra leading slash of Windows `file:///C:/…`. */
+/** Convert one `file://` URI to an absolute local path (decoding `%20` etc.).
+ * Delegates to the shared OS-aware helper, including UNC authorities. */
 function fileUriToPath(uri: string): string | null {
   return fromFileUri(uri);
 }
@@ -928,7 +927,12 @@ export function RightPanel({
 
       {view === "git" && (
         <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
-          <GitHistory projectDir={projectDir} onChanged={() => projectDir && refreshGit(projectDir)} />
+          <GitHistory
+            projectDir={projectDir}
+            projectId={activeProject?.remote ? activeId ?? undefined : undefined}
+            remote={!!activeProject?.remote}
+            onChanged={() => projectDir && refreshGit(projectDir)}
+          />
         </div>
       )}
 

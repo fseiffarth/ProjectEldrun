@@ -26,6 +26,7 @@
 //! the conservative "never destructive automatically" stance.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,6 +55,11 @@ const DEBOUNCE: Duration = Duration::from_millis(1500);
 pub struct AutoSyncTask {
     cancel: Arc<Notify>,
     join: tokio::task::JoinHandle<()>,
+    /// When set, `reconcile_pass` early-returns so a git checkout (`services::
+    /// git_peer`) can rewrite the mirror without those writes being pulled/pushed.
+    /// `git_peer` re-stamps the file-sync bases before clearing this, so the next
+    /// pass reads the rewritten tracked files as green rather than as local edits.
+    paused: Arc<AtomicBool>,
     /// Kept alive for the task's lifetime; dropped on `stop` → unwatch.
     _watcher: notify::RecommendedWatcher,
 }
@@ -115,6 +121,7 @@ pub async fn start(
     }
 
     let cancel = Arc::new(Notify::new());
+    let paused = Arc::new(AtomicBool::new(false));
     let join = tokio::spawn(run_loop(
         app,
         pool,
@@ -123,15 +130,35 @@ pub async fn start(
         project_id.to_string(),
         rx,
         cancel.clone(),
+        paused.clone(),
     ));
     guard.insert(
         project_id.to_string(),
         AutoSyncTask {
             cancel,
             join,
+            paused,
             _watcher: watcher,
         },
     );
+}
+
+/// Pause the project's auto-sync reconcile passes (no-op if no task). Used by
+/// `services::git_peer` around a coordinated checkout so the checkout's mirror
+/// writes are neither pulled nor pushed. Idempotent.
+pub async fn pause(state: &AutoSyncState, project_id: &str) {
+    if let Some(t) = state.lock().await.get(project_id) {
+        t.paused.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Resume the project's auto-sync reconcile passes (no-op if no task). The caller
+/// must have re-stamped any checkout-rewritten tracked-file bases first, else the
+/// next pass will treat them as local edits. Idempotent.
+pub async fn resume(state: &AutoSyncState, project_id: &str) {
+    if let Some(t) = state.lock().await.get(project_id) {
+        t.paused.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Stop the project's auto-sync task (no-op if none). Drops the watcher (unwatch),
@@ -165,6 +192,7 @@ async fn run_loop(
     project_id: String,
     mut rx: mpsc::UnboundedReceiver<()>,
     cancel: Arc<Notify>,
+    paused: Arc<AtomicBool>,
 ) {
     let mut interval = tokio::time::interval(AUTO_INTERVAL);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -172,6 +200,7 @@ async fn run_loop(
         tokio::select! {
             _ = cancel.notified() => break,
             _ = interval.tick() => {
+                if paused.load(Ordering::SeqCst) { continue; }
                 reconcile_pass(&app, &pool, &manifest, &target, &project_id).await;
             }
             res = rx.recv() => {
@@ -184,6 +213,10 @@ async fn run_loop(
                         res = rx.recv() => { if res.is_none() { return; } }
                     }
                 }
+                // Skip the pass while a checkout is rewriting the mirror; the writes
+                // that queued these watcher events are re-based by git_peer before
+                // resume, so dropping this pass loses nothing.
+                if paused.load(Ordering::SeqCst) { continue; }
                 reconcile_pass(&app, &pool, &manifest, &target, &project_id).await;
             }
         }

@@ -960,7 +960,24 @@ container) — as opposed to the git **push** axis (#21/#22).*
       it proves chatty. Gates: `npx tsc --noEmit`, `cargo test` (448 lib) green;
       needs live-host QA (auto pull/push timing, orange skip, lifecycle).
 
-    - [ ] **28n — Git-aware local↔remote lockstep sync.** For an SSH project's
+    - [ ] **28n — Git-aware local↔remote lockstep sync.** **Phase 1 ✅ Done
+      (2026-07-02; opt-in per project; checkout lockstep + fast-forward-only ref
+      transfer + desync detection/display · 🧪 live-host QA pending).** Phase 2
+      (Use-local/Use-remote resolution + `refs/eldrun/backup/*` reset) and Phase 3
+      (initial-pairing authority + streaming transport for large bundles) remain.
+      New `services/git_peer.rs` (AppHandle-free: `Peer` enum runner, pure parsers/
+      `decide`/`bundle_create_args`, `probe`, `reconcile` via delta `git bundle` over
+      the pooled SFTP into `refs/eldrun/incoming/*` + ff-apply, `checkout_lockstep`,
+      `.git`-watcher + host-poll detection loop, `GitPeerRegistry`) + `commands/
+      git_peer.rs` (`git_peer_{status,set_enabled,sync_now,checkout}`, `git-peer-status`
+      event). `services/sync_auto.rs` gained a per-project `paused` `AtomicBool` (checked
+      in `reconcile_pass`) so a checkout's mirror writes aren't pushed, with base
+      re-stamping via `record_pull` before resume; `remote_sync` walkers now skip
+      `.git`. Lifecycle wired into `remote_connect`/`disconnect` + app-exit `stop_all`;
+      `GitHistory.tsx` gained a lockstep toggle + status pill + Sync/Retry and routes
+      checkout through `git_peer_checkout` when enabled. Gates: `cargo test` (473),
+      `npx tsc`, `vitest` (743) green. Original spec (still governs Phase 2/3):
+      For an SSH project's
       paired local mirror and remote working tree, keep Git state synchronized
       **semantically** rather than copying `.git/` bytes. Transfer commits and
       refs through Git over the existing SSH ControlMaster; synchronize local
@@ -993,11 +1010,15 @@ container) — as opposed to the git **push** axis (#21/#22).*
         coordinated checkout with project id + initiating side while preserving
         camelCase payload compatibility. Show synchronized/syncing/desynchronized
         state and actionable errors in the Git UI.
-      - [ ] 🤖 Automated test — ref/HEAD parsing, fast-forward vs divergence,
-        transfer argv, tracked-file/deletion discovery, safety refs, both commit
-        directions, branch + detached checkouts, dirty-peer refusal,
-        disconnect/reconnect, and import/extend initialization; assert `.git`
-        internals and untracked/ignored files are never implicitly copied.
+      - [x] 🤖 Automated test (Phase 1) — `git_peer` unit tests: ref/HEAD parsing,
+        `decide` fast-forward-vs-divergence truth table, `bundle_create_args`/
+        incoming-refspec shape guardrails (never `--all`/`refs/remotes` → `.git`
+        internals never copied), tracked-file/deletion discovery, safety-ref naming,
+        camelCase state round-trip; frontend `GitLockstep.test.tsx` (checkout routes
+        through `git_peer_checkout` when enabled, falls back otherwise, pill renders,
+        local project shows no bar). **Still TODO (Phase 2/3):** both-direction live
+        transfer, detached checkouts, dirty-peer refusal, disconnect/reconnect,
+        import/extend init.
       - [ ] 🖐️ Manual test — live SSH host: edit/commit/checkout from Eldrun and
         from local/remote shells, verify both trees remain on the same branch or
         detached commit, then exercise dirty-peer and divergent-history recovery.

@@ -237,6 +237,10 @@ pub fn run() {
     // Registry of per-project auto-sync tasks (started on remote_connect, stopped
     // on remote_disconnect / app exit). See `services::sync_auto`.
     let auto_sync = services::sync_auto::new_state();
+    // Registry of per-project git lockstep tasks (.git watcher + host poll; started
+    // on remote_connect when enabled, stopped on disconnect / exit). See
+    // `services::git_peer` (TODO #28n).
+    let git_peer = services::git_peer::new_registry();
 
     tauri::Builder::default()
         .manage(pty_registry)
@@ -246,6 +250,7 @@ pub fn run() {
         .manage(remote_pool)
         .manage(sync_manifest)
         .manage(auto_sync)
+        .manage(git_peer)
         .setup(|_app| {
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
@@ -351,6 +356,9 @@ pub fn run() {
             // Pooled SSH/SFTP connection lifecycle (mount-free remote, Phase 0)
             commands::remote::remote_connect,
             commands::remote::remote_disconnect,
+            // Read-only local/remote host + SSH transport monitoring.
+            commands::network::network_host_snapshot,
+            commands::network::network_ssh_link_snapshot,
             // SSH-sync (Phase 1): selective local↔remote mirror sync.
             commands::sync::sync_pull,
             commands::sync::sync_whole_project,
@@ -472,6 +480,10 @@ pub fn run() {
             commands::git::git_checkout,
             commands::git::git_commit_message,
             commands::git::git_reword_head,
+            commands::git_peer::git_peer_status,
+            commands::git_peer::git_peer_set_enabled,
+            commands::git_peer::git_peer_sync_now,
+            commands::git_peer::git_peer_checkout,
             commands::git::git_diff_file,
             // Project-wide content search
             commands::search::project_search,
@@ -547,6 +559,13 @@ pub fn run() {
                     .inner()
                     .clone();
                 tauri::async_runtime::block_on(services::sync_auto::stop_all(&auto));
+                // Stop every git-peer lockstep task (cancel poll loops + drop .git
+                // watchers) before the pool teardown.
+                let git_peer = _app
+                    .state::<services::git_peer::GitPeerRegistry>()
+                    .inner()
+                    .clone();
+                tauri::async_runtime::block_on(services::git_peer::stop_all(&git_peer));
                 let pool = _app
                     .state::<services::remote::RemotePoolState>()
                     .inner()

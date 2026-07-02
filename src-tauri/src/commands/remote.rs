@@ -8,6 +8,7 @@
 
 use tauri::{AppHandle, State};
 
+use crate::services::git_peer::{self, GitPeerRegistry};
 use crate::services::remote::{self, RemotePoolState};
 use crate::services::remote_sync::SyncManifestState;
 use crate::services::sync_auto::{self, AutoSyncState};
@@ -27,15 +28,27 @@ pub async fn remote_connect(
     pool: State<'_, RemotePoolState>,
     manifest: State<'_, SyncManifestState>,
     auto: State<'_, AutoSyncState>,
+    git_peer_reg: State<'_, GitPeerRegistry>,
     project_id: String,
     password: Option<String>,
 ) -> Result<(), String> {
     remote::connect(pool.inner(), &project_id, password.as_deref()).await?;
     sync_auto::start(
-        app,
+        app.clone(),
         pool.inner().clone(),
         manifest.inner().clone(),
         auto.inner(),
+        &project_id,
+    )
+    .await;
+    // Launch git lockstep only when the project has opted in (start() itself no-ops
+    // otherwise); it attaches the .git watcher + host poll and reconciles once.
+    git_peer::start(
+        app,
+        pool.inner().clone(),
+        manifest.inner().clone(),
+        auto.inner().clone(),
+        git_peer_reg.inner(),
         &project_id,
     )
     .await;
@@ -49,8 +62,10 @@ pub async fn remote_connect(
 pub async fn remote_disconnect(
     pool: State<'_, RemotePoolState>,
     auto: State<'_, AutoSyncState>,
+    git_peer_reg: State<'_, GitPeerRegistry>,
     project_id: String,
 ) -> Result<(), String> {
+    git_peer::stop(git_peer_reg.inner(), &project_id).await;
     sync_auto::stop(auto.inner(), &project_id).await;
     remote::disconnect(pool.inner(), &project_id).await;
     Ok(())
