@@ -283,6 +283,18 @@ export interface ProjectBox {
 }
 
 /**
+ * One user-authored calendar event, mirroring `schema::calendar::CalendarEvent`.
+ * `date` is `"YYYY-MM-DD"`; `time` is `"HH:MM"` or `""` for an all-day event.
+ */
+export interface CalendarEvent {
+  id: string;
+  date: string;
+  time: string;
+  title: string;
+  notes?: string;
+}
+
+/**
  * Sanitize a box name into a folder segment. Mirrors the backend
  * `commands::projects::sanitize_name` so the frontend can preview the box-folder
  * path consistently.

@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod apps;
 pub mod boxes;
+pub mod calendar;
 pub mod clipboard;
 pub mod crash;
 pub mod debug;

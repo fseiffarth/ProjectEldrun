@@ -19,6 +19,7 @@ import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
 import { ProjectBlobPane } from "../common/ProjectBlobPane";
 import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
+import { CalendarPane } from "../calendar/CalendarPane";
 import { Subwindow } from "../tabs/Subwindow";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
@@ -857,6 +858,8 @@ export function CenterPanel() {
             >
               {tab.kind === "projects3d" ? (
                 <ProjectBlobPane />
+              ) : tab.kind === "calendar" ? (
+                <CalendarPane visible={visible} />
               ) : tab.kind === "network" ? (
                 <NetworkTrafficPane
                   projectId={scopeKey}

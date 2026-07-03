@@ -12,7 +12,8 @@ export type TabKind =
   | "files"
   | "embed"
   | "projects3d"
-  | "network";
+  | "network"
+  | "calendar";
 
 /**
  * SSH-sync Phase 0 — a PTY tab's locality on a REMOTE (SSH) project: does it run
@@ -36,6 +37,13 @@ export const BLOB_TAB_CMD = "__eldrun_blob__";
 
 /** Sentinel command for the read-only local/SSH host traffic dashboard. */
 export const NETWORK_TAB_CMD = "__eldrun_network__";
+
+/**
+ * Sentinel `cmd` for the native calendar tab (root scope only): a local,
+ * self-contained month-grid event calendar. Carries no PTY — like the files
+ * pane it's identified by this command so cmdToKind can recover its kind.
+ */
+export const CALENDAR_TAB_CMD = "__eldrun_calendar__";
 
 /**
  * Synthetic group id for the empty-state placeholder subwindow (rendered by
@@ -2394,6 +2402,7 @@ export function cmdToKind(cmd: string): TabKind {
   if (cmd === FILES_TAB_CMD) return "files";
   if (cmd === BLOB_TAB_CMD) return "projects3d";
   if (cmd === NETWORK_TAB_CMD) return "network";
+  if (cmd === CALENDAR_TAB_CMD) return "calendar";
   if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
 }
@@ -2412,7 +2421,12 @@ export function cmdToKind(cmd: string): TabKind {
  * not here.
  */
 export function isRestorableKind(kind: TabKind): boolean {
-  return kind === "shell" || kind === "files" || kind === "network";
+  return (
+    kind === "shell" ||
+    kind === "files" ||
+    kind === "network" ||
+    kind === "calendar"
+  );
 }
 
 /** Whether a tab owns a backend PTY. Pure frontend panes must never be sent

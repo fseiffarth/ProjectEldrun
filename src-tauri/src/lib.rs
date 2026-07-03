@@ -345,6 +345,12 @@ pub fn run() {
             commands::boxes::ensure_box_folder,
             commands::boxes::refresh_box_agent_docs,
             commands::boxes::set_box_relations,
+            // Native calendar (local event store)
+            commands::calendar::get_events,
+            commands::calendar::save_events,
+            commands::calendar::create_event,
+            commands::calendar::update_event,
+            commands::calendar::delete_event,
             // SSH / remote projects
             commands::ssh::ssh_connect,
             commands::ssh::remote_has_saved_password,

@@ -31,6 +31,7 @@ import { FileBrowser } from "../files/FileBrowser";
 import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
 import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
+import { CalendarPane } from "../calendar/CalendarPane";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
@@ -910,6 +911,8 @@ export function DetachedCenterPanel({
                 <div key={tab.key} className="center-pane" data-tab-key={tab.key} style={style}>
                   {tab.kind === "network" ? (
                     <NetworkTrafficPane projectId={scope} visible={visible} />
+                  ) : tab.kind === "calendar" ? (
+                    <CalendarPane visible={visible} />
                   ) : tab.kind === "files" ? (
                     <FileBrowser
                       projectDir={tab.cwd}

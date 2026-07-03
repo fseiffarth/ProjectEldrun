@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   BLOB_TAB_CMD,
+  CALENDAR_TAB_CMD,
   FILES_TAB_CMD,
   NETWORK_TAB_CMD,
   effectiveTabLocation,
@@ -65,6 +66,7 @@ const TAB_ACCENT: Record<TabKind, string> = {
   embed: "var(--info, #4aa3df)",
   projects3d: "var(--accent-secondary)",
   network: "var(--info, #4aa3df)",
+  calendar: "var(--accent)",
 };
 
 interface StaticMenuItem {
@@ -386,6 +388,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     ensureTab(
       { label: "Projects", cmd: BLOB_TAB_CMD, cwd: projectCwd, kind: "projects3d" },
       (tab) => tab.kind === "projects3d",
+    );
+    setMenuPos(null);
+  }
+
+  // Open (or focus, if already open) the native calendar tab (root scope only).
+  function handleAddCalendar() {
+    focusGroup(groupId);
+    ensureTab(
+      { label: "Calendar", cmd: CALENDAR_TAB_CMD, cwd: projectCwd, kind: "calendar" },
+      (tab) => tab.kind === "calendar",
     );
     setMenuPos(null);
   }
@@ -1074,6 +1086,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
               <button className="tab-new-menu-item" onClick={handleAddBlob}>
                 <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["projects3d"] }}>◍</span>
                 Projects (3D)
+              </button>
+            </>
+          )}
+
+          {scope === "root" && (
+            <>
+              <div className="tab-new-menu-group-label">Calendar</div>
+              <button className="tab-new-menu-item" onClick={handleAddCalendar}>
+                <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT.calendar }}>◆</span>
+                Calendar
               </button>
             </>
           )}
