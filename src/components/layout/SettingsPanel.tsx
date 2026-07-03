@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore, clampZoom, MIN_UI_ZOOM, MAX_UI_ZOOM } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
-import type { ArchivedProject, KeyboardChord, ProjectEntry, Theme } from "../../types";
+import type { ArchivedProject, KeyboardChord, ProjectEntry, Theme, UnsyncedReport } from "../../types";
 import { THEMES } from "../../types";
 import { TERMINAL_OPTIONS, summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
 import {
@@ -235,7 +235,12 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
   const [error, setError] = useState("");
   // id of the row armed for permanent deletion + the name typed to confirm it.
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  // Mirrors confirmId for stale-guarding the async unsynced check below.
+  const confirmIdRef = useRef<string | null>(null);
   const [typed, setTyped] = useState("");
+  // Unsynced-mirror check for the armed row (remote projects only): null while
+  // loading/not-yet-fetched, else the offline report on local-only commits.
+  const [unsynced, setUnsynced] = useState<UnsyncedReport | null>(null);
   // Typed guard for the "Clear archive" bulk action.
   const [clearing, setClearing] = useState(false);
   const [clearTyped, setClearTyped] = useState("");
@@ -253,7 +258,25 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
 
   const resetConfirm = () => {
     setConfirmId(null);
+    confirmIdRef.current = null;
     setTyped("");
+    setUnsynced(null);
+  };
+
+  // Arm a row for permanent deletion; for remote projects, run the offline
+  // unsynced-mirror check so the confirm step can warn about local-only commits.
+  const armDelete = (a: ArchivedProject) => {
+    setConfirmId(a.id);
+    confirmIdRef.current = a.id;
+    setTyped("");
+    setUnsynced(null);
+    if (a.remote) {
+      invoke<UnsyncedReport>("archived_mirror_unsynced", { projectId: a.id })
+        // Drop a late result if the user moved to a different row; ignore failures
+        // (the type-to-confirm guard still stands without the hint).
+        .then((r) => confirmIdRef.current === a.id && setUnsynced(r))
+        .catch(() => {});
+    }
   };
 
   const restore = async (a: ArchivedProject) => {
@@ -332,6 +355,24 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
                   <span className="archived-project-date">{a.archived_at.slice(0, 10)}</span>
                 </div>
                 {armed ? (
+                  <div className="archived-project-confirm-group">
+                    {unsynced && unsynced.total > 0 && (
+                      <p className="archived-project-warn">
+                        ⚠ {unsynced.verified ? (
+                          <>
+                            {unsynced.total} local commit{unsynced.total === 1 ? "" : "s"} on{" "}
+                            {unsynced.branches.map((b) => b.name).join(", ")} {unsynced.total === 1 ? "was" : "were"}{" "}
+                            never synced to the host and will be lost. The host's own files are unaffected.
+                          </>
+                        ) : (
+                          <>
+                            This mirror holds {unsynced.total} commit{unsynced.total === 1 ? "" : "s"} that could not
+                            be verified against the host; deleting discards the local copy. The host's own files are
+                            unaffected.
+                          </>
+                        )}
+                      </p>
+                    )}
                   <div className="archived-project-confirm">
                     <input
                       type="text"
@@ -353,6 +394,7 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
                       {rowBusy ? "Deleting…" : "Delete forever"}
                     </button>
                   </div>
+                  </div>
                 ) : (
                   <div className="archived-project-actions">
                     <button type="button" disabled={rowBusy} onClick={() => void restore(a)}>
@@ -362,7 +404,7 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
                       type="button"
                       className="danger"
                       disabled={rowBusy}
-                      onClick={() => { setConfirmId(a.id); setTyped(""); }}
+                      onClick={() => armDelete(a)}
                     >
                       Delete permanently…
                     </button>

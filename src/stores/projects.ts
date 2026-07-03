@@ -306,6 +306,22 @@ interface ProjectsStore {
     provider: GitProvider,
     visibility: "public" | "private",
   ) => Promise<string>;
+  /** Detach a remote (SSH) project back to a plain local project: its mirror
+   * becomes the project directory in place. The host's files are never touched. */
+  detachProjectFromRemote: (id: string) => Promise<void>;
+  /** Forget a published project's push target without deleting the hosted repo
+   * or local history: removes `origin`, resets git_type → "local". */
+  unpublishProject: (id: string) => Promise<void>;
+  /** Flip a published project's visibility (public ↔ private) in place via the
+   * provider's `repo edit`. Returns the CLI stdout. */
+  setProjectVisibility: (id: string, visibility: "public" | "private") => Promise<string>;
+  /** Migrate a published project to the other provider (old repo left intact as
+   * `origin-old`). Returns the create CLI stdout (new repo URL). */
+  switchProjectProvider: (
+    id: string,
+    provider: GitProvider,
+    visibility: "public" | "private",
+  ) => Promise<string>;
   getProjectGitHosting: (id: string) => Promise<GitHostingInfo>;
   setProjectGitHosting: (
     id: string,
@@ -352,6 +368,23 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       activeId,
       rightPanelFolderByProject,
     });
+    // Fire-and-forget: sniff each local repo's `origin` host so pills can badge
+    // a hosting provider (GitHub/GitLab) and the hover can show the git address,
+    // even when the repo was pushed outside Eldrun's Publish flow. Host-only, no
+    // network — must not block the list.
+    void invoke<Record<string, { provider: string; url: string }>>("detect_git_providers")
+      .then((map) =>
+        set((state) => ({
+          projects: state.projects.map((p) => {
+            const hit = map[p.id];
+            if (hit?.provider === "github" || hit?.provider === "gitlab") {
+              return { ...p, detected_provider: hit.provider as GitProvider, git_origin_url: hit.url };
+            }
+            return p;
+          }),
+        })),
+      )
+      .catch(() => {});
     // The initially-active remote project is intentionally NOT auto-connected on
     // launch. Its saved tabs DO restore (local tabs run on the mirror offline),
     // but any REMOTE pane is held until the pool is up — the user brings it up
@@ -740,6 +773,59 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projects: state.projects.map((project) =>
         project.id === id
           ? { ...project, git_type: gitType, git_provider: provider }
+          : project,
+      ),
+    }));
+    return output;
+  },
+
+  detachProjectFromRemote: async (id) => {
+    // Backend promotes the local mirror back to the project directory and drops
+    // the remote/mirror pointers (host files untouched), returning the updated
+    // local entry. Replace the whole entry so the pill lamp + file tree update.
+    const updated = await invoke<ProjectEntry>("detach_project_from_remote", { projectId: id });
+    set((state) => ({
+      projects: state.projects.map((project) => (project.id === id ? updated : project)),
+    }));
+  },
+
+  unpublishProject: async (id) => {
+    // Backend removes the `origin` remote (locally or over ssh) and resets the
+    // push target to local, leaving history + the hosted repo intact. Mirror the
+    // git_type/provider reset into local state.
+    await invoke("unpublish_project", { projectId: id });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id ? { ...project, git_type: "local", git_provider: undefined } : project,
+      ),
+    }));
+  },
+
+  setProjectVisibility: async (id, visibility) => {
+    // Backend flips visibility in place via the provider CLI (`gh/glab repo
+    // edit`), locally or over ssh, and writes the new remote-<vis> git_type.
+    const output = await invoke<string>("set_project_visibility", { projectId: id, visibility });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id ? { ...project, git_type: `remote-${visibility}` } : project,
+      ),
+    }));
+    return output;
+  },
+
+  switchProjectProvider: async (id, provider, visibility) => {
+    // Backend moves the old origin aside (old repo left intact) and re-publishes
+    // to the new provider, writing the new git_type + git_provider. Returns the
+    // create CLI stdout (new repo URL); mirror the new provider/type into state.
+    const output = await invoke<string>("switch_project_provider", {
+      projectId: id,
+      provider,
+      visibility,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id
+          ? { ...project, git_type: `remote-${visibility}`, git_provider: provider }
           : project,
       ),
     }));

@@ -215,6 +215,15 @@ fn create_remote_project_scaffolds_the_local_mirror() {
             .expect("remote entry carries a mirror path");
         let mirror_dir = Path::new(mirror);
         for (name, default_content) in SCAFFOLDS {
+            // `.gitignore` is a git-axis artifact: a `git_type: "none"` project
+            // never gets one written, so it must be absent from the mirror.
+            if *name == ".gitignore" {
+                assert!(
+                    !mirror_dir.join(name).exists(),
+                    "git_type none must not scaffold a .gitignore"
+                );
+                continue;
+            }
             let path = mirror_dir.join(name);
             assert!(path.exists(), "missing mirror scaffold: {name}");
             let actual = fs::read_to_string(&path).expect("read mirror scaffold");

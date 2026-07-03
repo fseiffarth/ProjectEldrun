@@ -76,6 +76,34 @@ impl Provider {
             Provider::GitLab => "oauth2",
         }
     }
+
+    /// The provider's official CLI binary.
+    fn cli(self) -> &'static str {
+        match self {
+            Provider::GitHub => "gh",
+            Provider::GitLab => "glab",
+        }
+    }
+
+    /// The `repo edit` argv that flips the current repo's visibility in place
+    /// (no re-create). GitHub requires an explicit consent flag for the change.
+    fn visibility_edit_args(self, visibility: &str) -> Vec<String> {
+        match self {
+            Provider::GitHub => vec![
+                "repo".into(),
+                "edit".into(),
+                "--visibility".into(),
+                visibility.into(),
+                "--accept-visibility-change-consequences".into(),
+            ],
+            Provider::GitLab => vec![
+                "repo".into(),
+                "edit".into(),
+                "--visibility".into(),
+                visibility.into(),
+            ],
+        }
+    }
 }
 
 /// Publish a project's git repository to a hosting provider and record the new
@@ -165,6 +193,248 @@ pub fn publish_project(
     }
 
     Ok(stdout.trim().to_string())
+}
+
+/// Unpublish a project: forget its hosting push target **without** deleting
+/// either its local history or the hosted repository. Removes the `origin`
+/// remote (locally, or over ssh on the work-remote host where the repo lives),
+/// resets `git_type` to `"local"`, and clears `git_provider`.
+///
+/// This is the safe inverse of `publish_project`: commits are never touched and
+/// the GitHub/GitLab repo is left intact — only the local tree is detached from
+/// it. Re-publishing later re-creates or re-attaches a remote.
+#[tauri::command]
+pub fn unpublish_project(project_id: String) -> Result<(), String> {
+    let (idx, mut list) = find_entry(&project_id)?;
+    let local_file = list[idx].local_file.clone();
+    let project: Project =
+        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+
+    let gt = project
+        .git_type
+        .as_deref()
+        .map(normalize_git_type)
+        .unwrap_or_default();
+    if !gt.starts_with("remote") {
+        return Err("Project is not published to a remote".to_string());
+    }
+
+    match project.remote.as_ref() {
+        // Work-remote project: the repo (and its `origin`) live on the host.
+        Some(remote) => {
+            let base = ssh_base_args(&remote.user, &remote.host, remote.port)?;
+            validate_arg("remote_path", &remote.remote_path)?;
+            let path = shell_quote(&remote.remote_path);
+            // A missing origin is fine — the goal state is simply "no origin".
+            let script = format!("cd {path} && git remote remove origin 2>/dev/null || true");
+            run_command(crate::paths::command_no_window("ssh").args(&base).arg(script))?;
+        }
+        None => {
+            let dir = PathBuf::from(&project.directory);
+            if !dir.is_dir() {
+                return Err(format!(
+                    "Project directory does not exist: {}",
+                    project.directory
+                ));
+            }
+            // Ignore failure (e.g. origin already absent) — desired end state is "no origin".
+            let _ = crate::paths::command_no_window("git")
+                .current_dir(&dir)
+                .args(["remote", "remove", "origin"])
+                .output();
+        }
+    }
+
+    list[idx]
+        .extra
+        .insert("git_type".to_string(), Value::String("local".to_string()));
+    list[idx].extra.remove("git_provider");
+    storage::write_json(&storage::state_dir().join("projects.json"), &list)
+        .map_err(|e| e.to_string())?;
+
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut p) = storage::read_json::<Project>(&proj_path) {
+            p.git_type = Some("local".to_string());
+            p.git_provider = None;
+            let _ = storage::write_json(&proj_path, &p);
+        }
+    }
+    Ok(())
+}
+
+/// Flip a published project's repository visibility (public ↔ private) in place
+/// via the provider's `repo edit` verb — no re-create, so the repo, its URL, and
+/// its history are preserved. Updates `git_type` to `remote-<visibility>`.
+///
+/// Runs locally, or over ssh on the work-remote host for a remote project
+/// (relying on that host's provider auth, exactly like `publish_project`).
+#[tauri::command]
+pub fn set_project_visibility(project_id: String, visibility: String) -> Result<String, String> {
+    let visibility = match visibility.trim() {
+        "public" => "public",
+        "private" => "private",
+        other => {
+            return Err(format!(
+                "visibility must be 'public' or 'private', got '{other}'"
+            ))
+        }
+    };
+
+    let (idx, mut list) = find_entry(&project_id)?;
+    let local_file = list[idx].local_file.clone();
+    let project: Project =
+        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+
+    let gt = project
+        .git_type
+        .as_deref()
+        .map(normalize_git_type)
+        .unwrap_or_default();
+    if !gt.starts_with("remote") {
+        return Err("Project is not published to a remote".to_string());
+    }
+    let provider = Provider::parse(project.git_provider.as_deref().unwrap_or("github"))?;
+
+    let stdout = match project.remote.as_ref() {
+        Some(remote) => {
+            let base = ssh_base_args(&remote.user, &remote.host, remote.port)?;
+            validate_arg("remote_path", &remote.remote_path)?;
+            let script = remote_visibility_script(provider, &remote.remote_path, visibility);
+            run_command(crate::paths::command_no_window("ssh").args(&base).arg(script))?
+        }
+        None => {
+            let dir = PathBuf::from(&project.directory);
+            if !dir.is_dir() {
+                return Err(format!(
+                    "Project directory does not exist: {}",
+                    project.directory
+                ));
+            }
+            let (_profile, token) = crate::commands::git_hosting::effective_git_creds(&project_id);
+            local_set_visibility(provider, &dir, visibility, token.as_deref())?
+        }
+    };
+
+    let new_git_type = normalize_git_type(&format!("remote-{visibility}"));
+    list[idx]
+        .extra
+        .insert("git_type".to_string(), Value::String(new_git_type.clone()));
+    storage::write_json(&storage::state_dir().join("projects.json"), &list)
+        .map_err(|e| e.to_string())?;
+
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut p) = storage::read_json::<Project>(&proj_path) {
+            p.git_type = Some(new_git_type);
+            let _ = storage::write_json(&proj_path, &p);
+        }
+    }
+    Ok(stdout.trim().to_string())
+}
+
+/// Migrate a published project to the **other** hosting provider. Because this
+/// is a true migration (not a rename), the existing `origin` is moved aside to
+/// `origin-old` — the old provider's repository is intentionally **left intact**
+/// (we never delete someone's hosted repo) and stays reachable as `origin-old` —
+/// then a fresh publish creates the repo on the new provider, wires `origin`,
+/// and pushes. Records the new `git_provider` + `git_type` (via the reused
+/// `publish_project`). Returns the create CLI's stdout (new repo URL).
+#[tauri::command]
+pub fn switch_project_provider(
+    project_id: String,
+    provider: Option<String>,
+    visibility: String,
+) -> Result<String, String> {
+    let new_provider = Provider::parse(provider.as_deref().unwrap_or("github"))?;
+    let visibility = match visibility.trim() {
+        "public" | "private" => visibility.trim().to_string(),
+        other => {
+            return Err(format!(
+                "visibility must be 'public' or 'private', got '{other}'"
+            ))
+        }
+    };
+
+    let (idx, list) = find_entry(&project_id)?;
+    let local_file = list[idx].local_file.clone();
+    let project: Project =
+        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+
+    let gt = project
+        .git_type
+        .as_deref()
+        .map(normalize_git_type)
+        .unwrap_or_default();
+    if !gt.starts_with("remote") {
+        return Err("Project is not published — use Publish instead".to_string());
+    }
+    if project.git_provider.as_deref() == Some(new_provider.as_str()) {
+        return Err(format!("Project is already on {}", new_provider.as_str()));
+    }
+
+    // Move the existing origin aside so a fresh publish can wire a new one. The
+    // old hosted repo is intentionally left intact (reachable as origin-old).
+    rename_origin_aside(&project)?;
+
+    // Delegate the create+wire+push+persist to the normal publish path, now
+    // targeting the new provider.
+    publish_project(project_id, Some(new_provider.as_str().to_string()), visibility)
+}
+
+/// Run the provider's `repo edit --visibility` for a *local* project.
+fn local_set_visibility(
+    provider: Provider,
+    dir: &PathBuf,
+    visibility: &str,
+    token: Option<&str>,
+) -> Result<String, String> {
+    let mut cmd = crate::paths::command_no_window(provider.cli());
+    cmd.current_dir(dir).args(provider.visibility_edit_args(visibility));
+    if let Some(tok) = token {
+        cmd.env(provider.token_env(), tok);
+    }
+    run_command(&mut cmd)
+}
+
+/// Build the remote-host shell script that flips visibility over ssh. `visibility`
+/// is a fixed `public`/`private` literal (validated by the caller); `remote_path`
+/// is single-quoted for the remote shell.
+fn remote_visibility_script(provider: Provider, remote_path: &str, visibility: &str) -> String {
+    let path = shell_quote(remote_path);
+    let args = provider.visibility_edit_args(visibility).join(" ");
+    format!("cd {path} && {} {args}", provider.cli())
+}
+
+/// Rename a project's existing `origin` remote to `origin-old` (best effort),
+/// dropping any stale prior `origin-old` first. Runs locally, or over ssh on the
+/// work-remote host. Used by `switch_project_provider` so a fresh publish can
+/// wire a new `origin` without clobbering the reference to the old repo.
+fn rename_origin_aside(project: &Project) -> Result<(), String> {
+    match project.remote.as_ref() {
+        Some(remote) => {
+            let base = ssh_base_args(&remote.user, &remote.host, remote.port)?;
+            validate_arg("remote_path", &remote.remote_path)?;
+            let path = shell_quote(&remote.remote_path);
+            let script = format!(
+                "cd {path} && git remote remove origin-old 2>/dev/null; \
+                 git remote rename origin origin-old 2>/dev/null || true"
+            );
+            run_command(crate::paths::command_no_window("ssh").args(&base).arg(script))?;
+        }
+        None => {
+            let dir = PathBuf::from(&project.directory);
+            let _ = crate::paths::command_no_window("git")
+                .current_dir(&dir)
+                .args(["remote", "remove", "origin-old"])
+                .output();
+            let _ = crate::paths::command_no_window("git")
+                .current_dir(&dir)
+                .args(["remote", "rename", "origin", "origin-old"])
+                .output();
+        }
+    }
+    Ok(())
 }
 
 /// Run the provider's create (and, for GitLab, an explicit push) for a *local*
@@ -340,5 +610,35 @@ mod tests {
         let s = remote_publish_script(Provider::GitLab, "/srv/proj", "my-proj", "private");
         assert!(s.contains("glab repo create 'my-proj' --private --remoteName origin"));
         assert!(s.contains("&& git push -u origin HEAD"));
+    }
+
+    #[test]
+    fn github_visibility_edit_requires_consent_flag() {
+        let args = Provider::GitHub.visibility_edit_args("private");
+        assert_eq!(
+            args,
+            vec![
+                "repo",
+                "edit",
+                "--visibility",
+                "private",
+                "--accept-visibility-change-consequences"
+            ]
+        );
+    }
+
+    #[test]
+    fn gitlab_visibility_edit_has_no_consent_flag() {
+        let args = Provider::GitLab.visibility_edit_args("public");
+        assert_eq!(args, vec!["repo", "edit", "--visibility", "public"]);
+    }
+
+    #[test]
+    fn remote_visibility_script_quotes_path_and_uses_cli() {
+        let s = remote_visibility_script(Provider::GitLab, "/srv/proj", "public");
+        assert_eq!(
+            s,
+            "cd '/srv/proj' && glab repo edit --visibility public"
+        );
     }
 }

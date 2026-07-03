@@ -20,6 +20,8 @@ import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
 import { type SortKey, VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
 import { basename, dirname, fromFileUri } from "../../lib/paths";
 import type { ViewerPref } from "../../types";
+import { projectTypeTags } from "../projects/projectTypeTags";
+import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
 
 interface GitStatus {
   staged: number;
@@ -239,6 +241,9 @@ export function RightPanel({
   const [commitMsg, setCommitMsg] = useState<string | null>(null);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitError, setGitError] = useState<string | null>(null);
+  // Whether the active project is missing scaffold files — drives the "no
+  // scaffold" type tag shown beside its name, mirroring ProjectPill's hover tags.
+  const [scaffoldMissing, setScaffoldMissing] = useState(false);
   const commitRef = useRef<HTMLTextAreaElement>(null);
   const actionBarRef = useRef<HTMLDivElement>(null);
   const refreshGitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -337,6 +342,26 @@ export function RightPanel({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
+
+  // Resolve the scaffold-missing flag whenever the active project changes.
+  // Failures fall back to "present" so a probe error doesn't flash the tag.
+  useEffect(() => {
+    if (!activeId) {
+      setScaffoldMissing(false);
+      return;
+    }
+    let cancelled = false;
+    invoke<boolean>("project_scaffold_missing", { projectId: activeId })
+      .then((v) => { if (!cancelled) setScaffoldMissing(v); })
+      .catch(() => { if (!cancelled) setScaffoldMissing(false); });
+    return () => { cancelled = true; };
+  }, [activeId]);
+
+  const typeTags = activeProject ? projectTypeTags(activeProject, scaffoldMissing) : [];
+
+  // Same hover card as the project pill, shown when hovering the project name
+  // here — minus the type tags, which already sit beside the name below.
+  const nameHover = useProjectHoverCard(activeProject);
 
   // When a box scope is open, the panel shows a multi-root file view: the box
   // folder plus every member project's root. Detected from the current tab scope
@@ -692,10 +717,34 @@ export function RightPanel({
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
+            cursor: !activeBox && activeProject ? "default" : undefined,
           }}
+          onMouseEnter={
+            !activeBox && activeProject
+              ? (e) => void nameHover.open(e.currentTarget.getBoundingClientRect())
+              : undefined
+          }
+          onMouseLeave={!activeBox && activeProject ? () => nameHover.close() : undefined}
         >
           {activeBox ? `▣ ${activeBox.name}` : activeProject ? activeProject.name : "Files"}
         </span>
+        {!activeBox && activeProject && (
+          <ProjectHoverCard project={activeProject} state={nameHover} showTags={false} />
+        )}
+        {!activeBox && typeTags.length > 0 && (
+          <span className="right-panel-type-tags">
+            {typeTags.map((t) => (
+              <span
+                key={t.key}
+                className="pill-popup-tag"
+                title={t.title}
+                style={{ color: t.color, borderColor: t.color, background: `${t.color}22` }}
+              >
+                {t.label}
+              </span>
+            ))}
+          </span>
+        )}
         {/* Remote/Local source toggle sits right of the project name (remote SSH
             projects only). It shows the side the files view is currently on —
             "Remote" = the host tree over SFTP, "Local" = the synced mirror — and
@@ -715,15 +764,18 @@ export function RightPanel({
             {fileSource === "remote" ? "Remote" : "Local"}
           </button>
         )}
-        {/* Git status/action buttons sit right of the project name in the header
-            row. Only rendered when there's something to do (or we're mid-commit)
-            — an empty strip with no actions just wastes space. */}
+        {/* Git status/action buttons drop to their own row below the project name
+            (forced by the flex-basis breaker) instead of crowding it. Only
+            rendered when there's something to do (or we're mid-commit) — an
+            empty strip with no actions just wastes space. */}
         {!activeBox && gitStatus?.is_repo &&
           (commitMsg !== null ||
             gitStatus.unstaged + gitStatus.untracked > 0 ||
             gitStatus.staged > 0 ||
             (gitStatus.has_remote && unpushedCommits.length > 0)) && (
-          <div ref={actionBarRef} className="git-action-bar git-action-bar--inline" style={{ position: "relative", marginLeft: "auto" }}>
+          <>
+            <span style={{ flexBasis: "100%", width: 0, height: 0 }} />
+            <div ref={actionBarRef} className="git-action-bar git-action-bar--inline" style={{ position: "relative" }}>
             {commitMsg !== null ? (
               <>
                 <button
@@ -832,6 +884,7 @@ export function RightPanel({
               </>
             )}
           </div>
+          </>
           )}
       </div>
 

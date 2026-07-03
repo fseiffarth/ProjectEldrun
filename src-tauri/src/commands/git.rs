@@ -933,6 +933,92 @@ fn git_worktree_prune_blocking(project_dir: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Map an `origin` remote URL to a hosting provider by its **host only**.
+/// Handles both SSH (`git@github.com:owner/repo.git`) and HTTPS
+/// (`https://github.com/owner/repo.git`) forms. Read-only string work — no
+/// network. Returns `None` for unrecognized/self-hosted vanity hosts so we
+/// never render a wrong badge.
+fn provider_from_origin_url(url: &str) -> Option<&'static str> {
+    let lower = url.to_ascii_lowercase();
+    if lower.contains("gitlab") {
+        Some("gitlab")
+    } else if lower.contains("github") {
+        Some("github")
+    } else {
+        None
+    }
+}
+
+/// A recognized `origin` for a local project: the hosting provider plus the raw
+/// remote URL, so the frontend can both badge the provider and display the git
+/// address in the project hover.
+#[derive(serde::Serialize)]
+pub struct DetectedOrigin {
+    pub provider: String,
+    pub url: String,
+}
+
+/// Sniff the `origin` host for each **local** git project and map it to a
+/// hosting provider (`"github"`/`"gitlab"`) plus its raw URL. Read-only: runs
+/// `git remote get-url origin`, makes no network calls and writes nothing.
+/// Returns `{ project_id -> { provider, url } }` only for projects whose origin
+/// resolves to a recognized provider. Published (`remote-*`) local projects are
+/// included too, so their git address shows in the hover even though their badge
+/// already rides on `git_type`. Used to decorate pill/right-panel hovers for
+/// repos pushed to a host — including ones published outside Eldrun's own
+/// Publish flow (the sole writer of the `remote-*` `git_type`).
+#[tauri::command]
+pub fn detect_git_providers() -> Result<HashMap<String, DetectedOrigin>, String> {
+    use serde_json::Value;
+
+    let path = crate::storage::state_dir().join("projects.json");
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let list: crate::schema::projects::ProjectsList =
+        crate::storage::read_json(&path).map_err(|e| e.to_string())?;
+
+    let mut out = HashMap::new();
+    for entry in &list {
+        // Local projects only: a remote project's `origin` lives on the host,
+        // and sniffing it would be a network call.
+        if entry.extra.contains_key("remote") {
+            continue;
+        }
+        // Skip repo-less projects; `local` and `remote-*` are both eligible.
+        if let Some(Value::String(gt)) = entry.extra.get("git_type") {
+            if gt == "none" {
+                continue;
+            }
+        }
+        let Some(Value::String(dir)) = entry.extra.get("directory") else {
+            continue;
+        };
+        if !Path::new(dir).join(".git").exists() {
+            continue;
+        }
+        let output = crate::paths::command_no_window("git")
+            .args(["-C", dir, "remote", "get-url", "origin"])
+            .output();
+        let Ok(output) = output else { continue };
+        if !output.status.success() {
+            continue;
+        }
+        let url = String::from_utf8_lossy(&output.stdout);
+        let url = url.trim();
+        if let Some(provider) = provider_from_origin_url(url) {
+            out.insert(
+                entry.id.clone(),
+                DetectedOrigin {
+                    provider: provider.to_string(),
+                    url: url.to_string(),
+                },
+            );
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1174,5 +1260,37 @@ mod tests {
         git_worktree_remove_blocking(root_str.clone(), wt_path, true).unwrap();
         let listed = git_worktree_list_blocking(root_str).unwrap();
         assert_eq!(listed.len(), 1);
+    }
+
+    #[test]
+    fn provider_from_origin_url_recognizes_hosts() {
+        // SSH form.
+        assert_eq!(
+            provider_from_origin_url("git@github.com:owner/repo.git"),
+            Some("github")
+        );
+        assert_eq!(
+            provider_from_origin_url("git@gitlab.com:owner/repo.git"),
+            Some("gitlab")
+        );
+        // HTTPS form.
+        assert_eq!(
+            provider_from_origin_url("https://github.com/owner/repo.git"),
+            Some("github")
+        );
+        assert_eq!(
+            provider_from_origin_url("https://gitlab.example.com/owner/repo.git"),
+            Some("gitlab")
+        );
+        // Enterprise/vanity host containing the provider name still matches.
+        assert_eq!(
+            provider_from_origin_url("git@github.corp.internal:owner/repo.git"),
+            Some("github")
+        );
+        // Unrecognized / self-hosted vanity host → no badge.
+        assert_eq!(
+            provider_from_origin_url("git@git.mycorp.com:owner/repo.git"),
+            None
+        );
     }
 }

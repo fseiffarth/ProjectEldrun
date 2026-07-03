@@ -379,6 +379,133 @@ pub fn restore_archived_project(project_id: String) -> Result<ProjectEntry, Stri
     Ok(entry)
 }
 
+/// One local branch of an archived mirror carrying commits the host baseline
+/// does not contain.
+#[derive(Debug, Clone, Serialize)]
+pub struct UnsyncedBranch {
+    pub name: String,
+    pub count: usize,
+}
+
+/// Whether permanently deleting an archived remote project's mirror would discard
+/// local-only history. Computed purely from the archived files — no host contact,
+/// so it works while the host is offline.
+#[derive(Debug, Clone, Serialize)]
+pub struct UnsyncedReport {
+    /// Total commits reachable from the mirror's local branches but not from the
+    /// host baseline (last-synced tips). 0 means nothing would be lost.
+    pub total: usize,
+    /// Per-branch breakdown (only branches with a non-zero count).
+    pub branches: Vec<UnsyncedBranch>,
+    /// True when a host baseline existed to compare against (a recorded
+    /// `remote_head` or any `refs/eldrun/{incoming,backup}` ref). When false the
+    /// count is every local commit and should be framed as "could not verify".
+    pub verified: bool,
+}
+
+/// Run `git <args>` in `dir`, returning trimmed stdout (empty string on failure).
+fn git_in(dir: &Path, args: &[&str]) -> String {
+    crate::paths::command_no_window("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Inspect an archived remote project's mirror for commits that were never synced
+/// to its host, so the UI can warn before an irreversible permanent delete.
+/// Non-remote projects (and those without a mirror repo) report nothing to lose.
+#[tauri::command]
+pub fn archived_mirror_unsynced(project_id: String) -> Result<UnsyncedReport, String> {
+    validate_project_id(&project_id)?;
+    let none = UnsyncedReport {
+        total: 0,
+        branches: vec![],
+        verified: true,
+    };
+
+    let dest = paths::archive_root().join(&project_id);
+    let manifest: ArchiveManifest = match storage::read_json(&dest.join("entry.json")) {
+        Ok(m) => m,
+        Err(_) => return Ok(none),
+    };
+    // Only remote projects keep a paired mirror; local projects hold no host-only
+    // relationship, so there is nothing that "wasn't synced".
+    if !manifest.remote {
+        return Ok(none);
+    }
+    let mirror = dest.join("mirror");
+    if !mirror.join(".git").exists() {
+        return Ok(none);
+    }
+
+    // Build the host baseline: refs whose history we know reached (or came from)
+    // the host. `refs/eldrun/incoming/*` are the host's tips at the last fetch,
+    // `refs/eldrun/backup/*` are safety snapshots, and the recorded `remote_head`
+    // is the last-observed host HEAD.
+    let mut negatives: Vec<String> = vec![
+        "--glob=refs/eldrun/incoming".to_string(),
+        "--glob=refs/eldrun/backup".to_string(),
+    ];
+    let mut have_baseline = !git_in(
+        &mirror,
+        &["for-each-ref", "refs/eldrun/incoming", "refs/eldrun/backup"],
+    )
+    .is_empty();
+    if let Ok(state) = storage::read_json::<crate::services::git_peer::GitPeerState>(
+        &dest.join("state").join("git_peer.json"),
+    ) {
+        if let Some(sha) = remote_head_sha(&state) {
+            // Only include a sha the mirror actually has, else rev-list errors out.
+            if !git_in(&mirror, &["rev-parse", "--verify", "--quiet", &format!("{sha}^{{commit}}")])
+                .is_empty()
+            {
+                negatives.push(sha);
+                have_baseline = true;
+            }
+        }
+    }
+
+    // Per-branch: commits on this branch not reachable from the baseline.
+    let mut branches = Vec::new();
+    let mut total = 0usize;
+    let heads = git_in(
+        &mirror,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    );
+    for branch in heads.lines().map(str::trim).filter(|b| !b.is_empty()) {
+        let mut args: Vec<&str> = vec!["rev-list", "--count", branch, "--not"];
+        let neg_refs: Vec<&str> = negatives.iter().map(String::as_str).collect();
+        args.extend_from_slice(&neg_refs);
+        let count: usize = git_in(&mirror, &args).parse().unwrap_or(0);
+        if count > 0 {
+            total += count;
+            branches.push(UnsyncedBranch {
+                name: branch.to_string(),
+                count,
+            });
+        }
+    }
+
+    Ok(UnsyncedReport {
+        total,
+        branches,
+        verified: have_baseline,
+    })
+}
+
+/// The sha of a persisted `remote_head`, if it names a concrete commit.
+fn remote_head_sha(state: &crate::services::git_peer::GitPeerState) -> Option<String> {
+    use crate::services::git_peer::HeadRef;
+    match state.remote_head.as_ref()? {
+        HeadRef::Branch { sha, .. } | HeadRef::Detached { sha } => Some(sha.clone()),
+        HeadRef::Unborn => None,
+    }
+}
+
 /// Permanently delete an archived project: remove its archive folder and purge
 /// its time-tracking history. Irreversible.
 #[tauri::command]
@@ -923,7 +1050,7 @@ pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
         }
     }
     let gi = dir.join(".gitignore");
-    if !gi.exists() {
+    if with_git && !gi.exists() {
         fs::write(gi, GITIGNORE_DEFAULT)?;
     }
     let cs = dot_claude.join("settings.json");
@@ -1008,7 +1135,9 @@ fn repair_project_scaffold_at(dir: &Path, with_git: bool) -> std::io::Result<Sca
             report.created_files.push((*name).to_string());
         }
     }
-    report.gitignore_lines_added = ensure_gitignore_defaults(dir)?;
+    if with_git {
+        report.gitignore_lines_added = ensure_gitignore_defaults(dir)?;
+    }
 
     let cs = dot_claude.join("settings.json");
     if !cs.exists() {
@@ -1151,6 +1280,37 @@ pub fn preview_project_scaffold(source_dir: String) -> Result<Vec<ScaffoldPrevie
         return Err("Source folder does not exist".to_string());
     }
     Ok(scaffold_preview(&source))
+}
+
+/// True when a project is missing one or more scaffold pieces (any scaffold
+/// doc, `.claude/settings.json`, or — for git-backed projects only —
+/// `.gitignore`) — drives the "no scaffold" tag in the pill hover overlay.
+/// `.gitignore` is a git-axis artifact, so it is not required of `git_type:
+/// "none"` projects (which never get one written, see `scaffold_project`).
+/// `.git` is likewise excluded: git presence is the separate `git_type` axis. A
+/// project with no materialized local scaffold target yet (e.g. a remote project
+/// whose mirror hasn't been created) reports `false` rather than a spurious
+/// "missing".
+#[tauri::command]
+pub fn project_scaffold_missing(project_id: String) -> Result<bool, String> {
+    let list_path = storage::state_dir().join("projects.json");
+    if !list_path.exists() {
+        return Ok(false);
+    }
+    let list: ProjectsList = storage::read_json(&list_path).map_err(|e| e.to_string())?;
+    let Some(entry) = list.into_iter().find(|p| p.id == project_id) else {
+        return Ok(false);
+    };
+    let Some((target, with_git)) = scaffold_target_for_entry(&entry) else {
+        return Ok(false);
+    };
+    if !target.is_dir() {
+        return Ok(false);
+    }
+    let missing = SCAFFOLD_FILES.iter().any(|(name, _)| !target.join(name).exists())
+        || (with_git && !target.join(".gitignore").exists())
+        || !target.join(".claude/settings.json").exists();
+    Ok(missing)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1392,7 +1552,7 @@ fn finish_import(
         return Err("Project is already registered".to_string());
     }
 
-    let git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
+    let mut git_type = normalize_git_type(req.git_type.as_deref().unwrap_or("local"));
 
     // Scaffold only LOCAL imports onto their (local) tree. A remote import's
     // `target` is the local per-project state dir (project.json only); its tree
@@ -1406,14 +1566,24 @@ fn finish_import(
     // pulls the host's history down). But when the user imports **with git
     // support** onto a host dir that is not yet a repo, there is no history for
     // lockstep to pair from; initialize a repo on the host so the mirror can be
-    // paired from it. Best-effort + idempotent (skipped if already a repo).
+    // paired from it. Idempotent (a dir that is already a repo is left as-is).
+    //
+    // The git label must reflect reality: a remote project's repo lives on the
+    // host, so if we cannot establish one there, the project must NOT be tagged
+    // git (else the pill shows a git badge for a project with no repo anywhere —
+    // the mirror deliberately carries no `.git`). Import always runs with a live
+    // connection (the user just browsed the host to pick the dir), so a failure
+    // here means git genuinely could not be set up, not a transient offline —
+    // downgrade to `none` so the label is honest.
     if let Some(remote) = &remote {
         if git_type != "none" {
             if let Err(e) = crate::services::ssh_exec::remote_git_init(remote) {
                 eprintln!(
-                    "finish_import: remote git init '{}' failed (init it on the host if needed): {e}",
+                    "finish_import: remote git init '{}' failed; recording git_type=none so the \
+                     project is not labeled git without a repo on the host: {e}",
                     remote.remote_path
                 );
+                git_type = "none".to_string();
             }
         }
     }
@@ -1568,6 +1738,81 @@ pub fn extend_project_to_remote(req: ExtendProjectRemoteRequest) -> Result<Proje
     entry
         .extra
         .insert("mirror".to_string(), Value::String(old_dir));
+    let updated = entry.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+    Ok(updated)
+}
+
+/// Detach a **remote** (SSH) project back to a plain local project — the inverse
+/// of `extend_project_to_remote`. The project's local mirror (working copy)
+/// becomes its `directory` in place; `project.json` moves from the state dir back
+/// into that tree; the `remote`/`mirror` extras are dropped. **The remote host's
+/// files are never touched** — only the local pointers change. The project keeps
+/// its id, tabs, time, categories, git metadata, etc.
+///
+/// Errors if the project isn't remote, or has no local mirror to fall back to.
+#[tauri::command]
+pub fn detach_project_from_remote(project_id: String) -> Result<ProjectEntry, String> {
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        return Err("Project not found".to_string());
+    };
+
+    let idx = list
+        .iter()
+        .position(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+
+    // Guard: only remote projects can be detached.
+    if !list[idx].extra.contains_key("remote") {
+        return Err("Project is not remote".to_string());
+    }
+
+    // The local mirror (working copy) becomes the project directory again.
+    let mirror = list[idx]
+        .extra
+        .get("mirror")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "Remote project has no local mirror to detach to".to_string())?;
+    let mirror_path = PathBuf::from(&mirror);
+    if !mirror_path.is_dir() {
+        return Err(format!("Local mirror '{mirror}' does not exist"));
+    }
+
+    // Move project.json from the state dir back into the (now local) tree,
+    // dropping the remote/mirror fields. Read the existing one so tabs/time/
+    // created_at/etc. survive.
+    let state_local_file = list[idx].local_file.clone();
+    let mut project: Project = if PathBuf::from(&state_local_file).exists() {
+        storage::read_json(&PathBuf::from(&state_local_file)).unwrap_or_default()
+    } else {
+        Project::default()
+    };
+    project.id = project_id.clone();
+    project.name = list[idx].name.clone();
+    project.directory = mirror.clone();
+    project.remote = None;
+    project.mirror = None;
+    let new_project_file = mirror_path.join("project.json");
+    storage::write_json(&new_project_file, &project).map_err(|e| e.to_string())?;
+
+    // Remove the old state-dir project.json + the (now empty) state dir. Best
+    // effort — leftovers are harmless.
+    let _ = std::fs::remove_file(&state_local_file);
+    let _ = std::fs::remove_dir(remote_project_state_dir(&project_id));
+
+    // Update the projects.json entry in place, preserving every other extra key
+    // (categories, git_provider, git_type, description, sandbox, …).
+    let entry = &mut list[idx];
+    entry.local_file = new_project_file.to_string_lossy().to_string();
+    entry
+        .extra
+        .insert("directory".to_string(), Value::String(mirror));
+    entry.extra.remove("remote");
+    entry.extra.remove("mirror");
     let updated = entry.clone();
     storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
     Ok(updated)
@@ -1857,6 +2102,20 @@ mod tests {
     }
 
     #[test]
+    fn scaffold_project_without_git_skips_gitignore() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path(), false).unwrap();
+        // No git → no `.gitignore` (it's a git-axis artifact), but the docs and
+        // .claude settings are still written.
+        assert!(
+            !tmp.path().join(".gitignore").exists(),
+            ".gitignore must not be written for a no-git project"
+        );
+        assert!(tmp.path().join("TODO.md").exists());
+        assert!(tmp.path().join(".claude/settings.json").exists());
+    }
+
+    #[test]
     fn scaffold_preview_reports_git_directory_status() {
         let tmp = tempfile::tempdir().unwrap();
 
@@ -1900,13 +2159,31 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join(".gitignore"), "# my custom rule\nfoo/\n").unwrap();
 
-        let report = repair_project_scaffold_at(tmp.path(), false).unwrap();
+        // `.gitignore` is a git-axis artifact, so the merge only runs for
+        // git-backed projects.
+        let report = repair_project_scaffold_at(tmp.path(), true).unwrap();
 
         assert!(report.gitignore_lines_added.contains(&"project.json".to_string()));
         let content = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
         assert!(content.contains("# my custom rule"));
         assert!(content.contains("foo/"));
         assert!(content.lines().any(|l| l == "project.json"));
+    }
+
+    #[test]
+    fn repair_without_git_does_not_touch_gitignore() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A no-git project missing `.gitignore` entirely.
+        let report = repair_project_scaffold_at(tmp.path(), false).unwrap();
+
+        assert!(
+            !tmp.path().join(".gitignore").exists(),
+            "no-git repair must not create a .gitignore"
+        );
+        assert!(report.gitignore_lines_added.is_empty());
+        // Docs/settings are still filled in as usual.
+        assert!(tmp.path().join("DOCUMENTATION.md").exists());
+        assert!(tmp.path().join(".claude/settings.json").exists());
     }
 
     #[test]

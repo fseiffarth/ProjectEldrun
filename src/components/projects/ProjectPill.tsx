@@ -4,8 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   resolveProjectDirectory,
-  resolveLocalMirror,
-  formatRemoteTarget,
   type GitHostingInfo,
   type GitProvider,
   type ProjectEntry,
@@ -15,6 +13,8 @@ import { useActivityStore } from "../../stores/activity";
 import { useProjectsStore } from "../../stores/projects";
 import { useTabsStore } from "../../stores/tabs";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
+import { providerName, gitTypeLabel } from "./projectTypeTags";
+import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
@@ -39,24 +39,6 @@ interface Props {
 
 export const PILL_DRAG_TYPE = "application/x-eldrun-project";
 
-function statusLabel(status: string): string {
-  if (status === "current") return "Current";
-  if (status === "active") return "Active";
-  return "Inactive";
-}
-
-function formatTime(secs: number): string {
-  if (secs < 60) return "< 1m";
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-
-function projectDescription(project: ProjectEntry): string {
-  return typeof project.description === "string" ? project.description.trim() : "";
-}
-
 /** Folder-icon title/color per git state — mirrors the file-tree markers'
  *  priority (red ▸ orange ▸ green), plus a neutral "clean" default. */
 const GIT_ICON_TITLE: Record<GitDirtyState, string> = {
@@ -65,10 +47,6 @@ const GIT_ICON_TITLE: Record<GitDirtyState, string> = {
   staged: "Staged changes — not yet committed",
   unpushed: "Committed — not yet pushed",
 };
-
-function formatCpu(pct: number): string {
-  return pct < 0.1 ? "idle" : `${pct.toFixed(1)}%`;
-}
 
 interface ContextMenuPos { x: number; y: number }
 
@@ -228,24 +206,6 @@ function RenameWindow({
     </div>,
     document.body,
   );
-}
-
-/** Display name for a hosting provider. */
-function providerName(provider: unknown): string {
-  return provider === "gitlab" ? "GitLab" : "GitHub";
-}
-
-function gitTypeLabel(gitType: unknown, provider?: unknown): string {
-  switch (gitType) {
-    case "remote-public":
-      return `${providerName(provider)} · public`;
-    case "remote-private":
-      return `${providerName(provider)} · private`;
-    case "none":
-      return "No git (no repo)";
-    default:
-      return "Local repo (not pushed)";
-  }
 }
 
 /** Best-effort guess at the provider for a not-yet-published project: an
@@ -603,10 +563,271 @@ function ArchiveConfirmWindow({
   );
 }
 
+/** Simple confirm for detaching a remote (SSH) project back to local. The host's
+ *  files are never touched — only the local mirror is promoted back in place. */
+function DetachRemoteWindow({
+  project,
+  onConfirm,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onConfirm();
+      onClose();
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{project.name} — Detach SSH host</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <p className="settings-help">
+          This turns <strong>{project.name}</strong> back into a plain local
+          project: its local working copy stays exactly where it is and becomes
+          the project directory again. The files on the remote host are
+          {" "}<strong>not</strong> touched — this only drops the SSH link.
+        </p>
+        {error && <div className="project-dialog-error">{error}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" autoFocus onClick={() => void run()} disabled={busy}>
+            {busy ? "Detaching…" : "Detach to local"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** Simple confirm for unpublishing (forgetting the push target). Non-destructive:
+ *  the hosted repo and local history are both kept. */
+function UnpublishWindow({
+  project,
+  onConfirm,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onConfirm();
+      onClose();
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{project.name} — Unpublish</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <p className="settings-help">
+          This removes the <code>origin</code> remote and resets the project to a
+          local git repo. Your commits stay intact and the repository on
+          {" "}{providerName(project.git_provider)} is <strong>not</strong>{" "}
+          deleted — only the local link to it is dropped. You can re-publish later.
+        </p>
+        {error && <div className="project-dialog-error">{error}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" autoFocus onClick={() => void run()} disabled={busy}>
+            {busy ? "Unpublishing…" : "Unpublish (keep repo)"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** Flip a published project's visibility (public ↔ private) in place. */
+function VisibilityWindow({
+  project,
+  onApply,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onApply: (visibility: "public" | "private") => Promise<string>;
+  onClose: () => void;
+}) {
+  const current: "public" | "private" =
+    project.git_type === "remote-public" ? "public" : "private";
+  const target: "public" | "private" = current === "public" ? "private" : "public";
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState("");
+  const isRemoteWork = Boolean(project.remote);
+  const cli = project.git_provider === "gitlab" ? "glab" : "gh";
+
+  const apply = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const out = await onApply(target);
+      setResult(out || `Now ${target}.`);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{project.name} — Change visibility</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="project-dialog-path">
+          Current: {providerName(project.git_provider)} · {current}
+          {isRemoteWork && " · runs on the work-remote host"}
+        </div>
+        <p className="settings-help">
+          Flip this repository from <strong>{current}</strong> to{" "}
+          <strong>{target}</strong> in place via <code>{cli} repo edit</code>. The
+          repo, its URL, and its history are preserved.
+        </p>
+        {error && <div className="project-dialog-error">{error}</div>}
+        {result && <div className="scaffold-empty">{result}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose}>{result ? "Close" : "Cancel"}</button>
+          {!result && (
+            <button type="button" disabled={busy} onClick={() => void apply()}>
+              {busy ? "Applying…" : `Make ${target}`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** Migrate a published project to the other hosting provider (old repo kept). */
+function MigrateProviderWindow({
+  project,
+  onMigrate,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onMigrate: (provider: GitProvider, visibility: "public" | "private") => Promise<string>;
+  onClose: () => void;
+}) {
+  const currentProvider: GitProvider = project.git_provider === "gitlab" ? "gitlab" : "github";
+  const [provider, setProvider] = useState<GitProvider>(
+    currentProvider === "github" ? "gitlab" : "github",
+  );
+  const [visibility, setVisibility] = useState<"public" | "private">(
+    project.git_type === "remote-public" ? "public" : "private",
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState("");
+  const isRemoteWork = Boolean(project.remote);
+
+  const migrate = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const out = await onMigrate(provider, visibility);
+      setResult(out || "Migrated.");
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{project.name} — Move to another provider</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="project-dialog-path">
+          Current: {gitTypeLabel(project.git_type, project.git_provider)}
+          {isRemoteWork && " · runs on the work-remote host"}
+        </div>
+        <label>
+          New provider
+          <select
+            value={provider}
+            disabled={busy || Boolean(result)}
+            onChange={(e) => setProvider(e.target.value as GitProvider)}
+          >
+            <option value="github">GitHub</option>
+            <option value="gitlab">GitLab</option>
+          </select>
+        </label>
+        <label>
+          Repository visibility
+          <select
+            value={visibility}
+            disabled={busy || Boolean(result)}
+            onChange={(e) => setVisibility(e.target.value as "public" | "private")}
+          >
+            <option value="private">private</option>
+            <option value="public">public</option>
+          </select>
+        </label>
+        <p className="settings-help">
+          Creates the repo on {providerName(provider)}, re-points{" "}
+          <code>origin</code>, and pushes. The existing{" "}
+          {providerName(project.git_provider)} repository is{" "}
+          <strong>left intact</strong> (kept as <code>origin-old</code>) — delete
+          it yourself if you no longer want it.
+        </p>
+        {error && <div className="project-dialog-error">{error}</div>}
+        {result && <div className="scaffold-empty">{result}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose}>{result ? "Close" : "Cancel"}</button>
+          {!result && (
+            <button type="button" disabled={busy} onClick={() => void migrate()}>
+              {busy ? "Migrating…" : `Move to ${providerName(provider)}`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export function ProjectPill({ project, active, onClick, onClose, onReorder, onGroup, boxId, onLeaveBox }: Props) {
-  const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
-  const [timeToday, setTimeToday] = useState<number | null>(null);
-  const [cpu, setCpu] = useState<number | null>(null);
+  // Shared hover card (identical popup in the right file-viewer). Owns the
+  // popup position, today's time, CPU% and the scaffold-missing flag.
+  const hover = useProjectHoverCard(project);
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
   const [showActivity, setShowActivity] = useState(false);
   const [editDescription, setEditDescription] = useState(false);
@@ -614,6 +835,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const [showPublish, setShowPublish] = useState(false);
   const [showGitHosting, setShowGitHosting] = useState(false);
   const [showDisableGit, setShowDisableGit] = useState(false);
+  const [showDetach, setShowDetach] = useState(false);
+  const [showUnpublish, setShowUnpublish] = useState(false);
+  const [showVisibility, setShowVisibility] = useState(false);
+  const [showMigrate, setShowMigrate] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
   const [editCategories, setEditCategories] = useState(false);
   const [extendRemote, setExtendRemote] = useState(false);
@@ -627,15 +852,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const [dragging, setDragging] = useState(false);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
-  const localMirror = resolveLocalMirror(project);
-  const description = projectDescription(project);
   const categories = projectCategories(project);
   const catColor = primaryCategoryColor(categories);
 
   const timerPaused = useTimerStore((s) => s.paused);
-  const timerActiveId = useTimerStore((s) => s.activeProjectId);
-  const getProjectSecs = useTimerStore((s) => s.getProjectSecs);
-  const isLiveProject = timerActiveId === project.id;
   const busy = useActivityStore((s) => s.busyByScope[project.id] ?? false);
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
@@ -645,23 +865,11 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const setProjectGitDisabled = useProjectsStore((s) => s.setProjectGitDisabled);
   const repairProjectScaffold = useProjectsStore((s) => s.repairProjectScaffold);
   const publishProject = useProjectsStore((s) => s.publishProject);
+  const detachProjectFromRemote = useProjectsStore((s) => s.detachProjectFromRemote);
+  const unpublishProject = useProjectsStore((s) => s.unpublishProject);
+  const setProjectVisibility = useProjectsStore((s) => s.setProjectVisibility);
+  const switchProjectProvider = useProjectsStore((s) => s.switchProjectProvider);
   const archiveProject = useProjectsStore((s) => s.archiveProject);
-
-  // Live per-project CPU%: polled only while the hover popup is open. Keyed on
-  // the project's PTY ids (the backend resolves them to child PIDs + descendants).
-  const fetchCpu = useCallback(async () => {
-    const tabs = useTabsStore.getState().tabsByScope[project.id] ?? [];
-    const ptyIds = tabs.map((t) => t.key);
-    if (ptyIds.length === 0) {
-      setCpu(null);
-      return;
-    }
-    try {
-      setCpu(await invoke<number>("project_cpu_percent", { ptyIds }));
-    } catch {
-      setCpu(null);
-    }
-  }, [project.id]);
 
   // Reveal the project on disk. Local projects open their working directory; a
   // remote (SSH) project has no local tree, so we open its local mirror — the
@@ -738,15 +946,6 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
     [project.id, project.name, moveRemoteMirror],
   );
 
-  useEffect(() => {
-    if (!popupPos) return;
-    let cancelled = false;
-    const run = () => { if (!cancelled) void fetchCpu(); };
-    run();
-    const id = window.setInterval(run, 1500);
-    return () => { cancelled = true; window.clearInterval(id); };
-  }, [popupPos, fetchCpu]);
-
   // Close context menu on outside click
   useEffect(() => {
     if (!contextMenu) return;
@@ -755,27 +954,16 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
     return () => window.removeEventListener("pointerdown", dismiss);
   }, [contextMenu]);
 
-  const handleMouseEnter = async () => {
+  const handleMouseEnter = () => {
     if (contextMenu) return;
     if (!pillRef.current) return;
-    const r = pillRef.current.getBoundingClientRect();
-    setPopupPos({ x: r.left + r.width / 2, y: r.bottom });
-    try {
-      if (isLiveProject) {
-        setTimeToday(getProjectSecs());
-      } else {
-        const secs = await invoke<number>("get_time_today", { projectId: project.id });
-        setTimeToday(secs);
-      }
-    } catch {
-      setTimeToday(null);
-    }
+    void hover.open(pillRef.current.getBoundingClientRect());
   };
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setPopupPos(null);
+    hover.close();
     // Anchor to the bottom of the pill so the menu opens downward, below the bar
     const y = pillRef.current
       ? pillRef.current.getBoundingClientRect().bottom
@@ -785,45 +973,8 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
 
   return (
     <>
-      {/* Hover popup — hidden while context menu is open */}
-      {popupPos && !contextMenu && createPortal(
-        <div
-          className="project-pill-popup"
-          style={{ left: popupPos.x, top: popupPos.y }}
-        >
-          {description && <span className="pill-popup-description">{description}</span>}
-          {project.remote ? (
-            <>
-              <span className="pill-popup-path-row">
-                <span className="pill-popup-path-label">remote</span>
-                <span className="pill-popup-path">{formatRemoteTarget(project.remote)}</span>
-              </span>
-              {localMirror && (
-                <span className="pill-popup-path-row">
-                  <span className="pill-popup-path-label">local</span>
-                  <span className="pill-popup-path">{localMirror}</span>
-                </span>
-              )}
-            </>
-          ) : (
-            dir && <span className="pill-popup-path">{dir}</span>
-          )}
-          <span className={`pill-popup-status ${project.status === "inactive" ? "inactive" : "active"}`}>
-            {statusLabel(project.status)}
-          </span>
-          {timeToday !== null && (
-            <span className="pill-popup-time">
-              Today: {formatTime(timeToday)}
-              {isLiveProject && timerPaused && " (paused)"}
-              {isLiveProject && !timerPaused && <OrbitSpinner />}
-            </span>
-          )}
-          {cpu !== null && (
-            <span className="pill-popup-cpu">CPU: {formatCpu(cpu)}</span>
-          )}
-        </div>,
-        document.body,
-      )}
+      {/* Hover popup — hidden while context menu is open (which calls hover.close). */}
+      {!contextMenu && <ProjectHoverCard project={project} state={hover} />}
 
       {/* Right-click context menu */}
       {contextMenu && createPortal(
@@ -880,6 +1031,17 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 Move project…
               </button>
             )}
+            {project.remote && (
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  setShowDetach(true);
+                }}
+                title="Turn this back into a local project — the local working copy stays put; the remote host's files are untouched"
+              >
+                Detach SSH host…
+              </button>
+            )}
             {!project.remote && (
               <button
                 onClick={() => {
@@ -925,28 +1087,56 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   Enable git (git init)
                 </button>
               )
-            ) : (
+            ) : typeof project.git_type === "string" && project.git_type.startsWith("remote") ? (
+              // Already published — offer in-place management, not another publish.
               <>
                 <button
                   onClick={() => {
                     setContextMenu(null);
-                    setShowPublish(true);
+                    setShowVisibility(true);
                   }}
+                  title="Flip the repository between public and private in place (gh/glab repo edit)"
                 >
-                  Publish to GitHub / GitLab…
+                  {project.git_type === "remote-public" ? "Make private…" : "Make public…"}
                 </button>
-                {typeof project.git_type === "string" && project.git_type.startsWith("remote") && (
-                  <button
-                    onClick={() => {
-                      setContextMenu(null);
-                      setShowGitHosting(true);
-                    }}
-                    title="Override the global git hosting (profile URL + token) for this project only"
-                  >
-                    Git hosting…
-                  </button>
-                )}
+                <button
+                  onClick={() => {
+                    setContextMenu(null);
+                    setShowMigrate(true);
+                  }}
+                  title="Publish to the other provider and re-point origin; the old repo is left intact"
+                >
+                  Move to {project.git_provider === "gitlab" ? "GitHub" : "GitLab"}…
+                </button>
+                <button
+                  onClick={() => {
+                    setContextMenu(null);
+                    setShowUnpublish(true);
+                  }}
+                  title="Remove the origin remote and go back to a local repo; the hosted repo and history are kept"
+                >
+                  Unpublish (keep repo)…
+                </button>
+                <button
+                  onClick={() => {
+                    setContextMenu(null);
+                    setShowGitHosting(true);
+                  }}
+                  title="Override the global git hosting (profile URL + token) for this project only"
+                >
+                  Git hosting…
+                </button>
               </>
+            ) : (
+              // Local git repo, not yet pushed anywhere.
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  setShowPublish(true);
+                }}
+              >
+                Publish to GitHub / GitLab…
+              </button>
             )}
             <button
               onClick={() => {
@@ -1071,6 +1261,42 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         <ExtendToRemoteDialog project={project} onClose={() => setExtendRemote(false)} />
       )}
 
+      {/* Detach a remote project back to local */}
+      {showDetach && (
+        <DetachRemoteWindow
+          project={project}
+          onConfirm={() => detachProjectFromRemote(project.id)}
+          onClose={() => setShowDetach(false)}
+        />
+      )}
+
+      {/* Unpublish (forget the push target, keep repo + history) */}
+      {showUnpublish && (
+        <UnpublishWindow
+          project={project}
+          onConfirm={() => unpublishProject(project.id)}
+          onClose={() => setShowUnpublish(false)}
+        />
+      )}
+
+      {/* Flip repository visibility (public ↔ private) in place */}
+      {showVisibility && (
+        <VisibilityWindow
+          project={project}
+          onApply={(visibility) => setProjectVisibility(project.id, visibility)}
+          onClose={() => setShowVisibility(false)}
+        />
+      )}
+
+      {/* Migrate to the other hosting provider */}
+      {showMigrate && (
+        <MigrateProviderWindow
+          project={project}
+          onMigrate={(provider, visibility) => switchProjectProvider(project.id, provider, visibility)}
+          onClose={() => setShowMigrate(false)}
+        />
+      )}
+
       {/* In-app folder browser for "Move project…" (replaces the OS chooser) */}
       {movePickerInitial !== null && (
         <FolderPickerDialog
@@ -1108,11 +1334,11 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         style={catColor ? ({ "--cat-color": catColor } as React.CSSProperties) : undefined}
         draggable
         onMouseEnter={handleMouseEnter}
-        onMouseLeave={() => { setPopupPos(null); setTimeToday(null); setCpu(null); }}
+        onMouseLeave={() => hover.close()}
         onContextMenu={handleContextMenu}
         onDragStart={(e) => {
           // Hide the hover popup so it doesn't linger as a drag ghost.
-          setPopupPos(null);
+          hover.close();
           setDragging(true);
           e.dataTransfer.setData(PILL_DRAG_TYPE, project.id);
           e.dataTransfer.effectAllowed = "move";

@@ -339,15 +339,18 @@ pub fn run() {
             commands::projects::move_remote_mirror,
             commands::projects::create_project,
             commands::projects::preview_project_scaffold,
+            commands::projects::project_scaffold_missing,
             commands::projects::repair_project_scaffold,
             commands::projects::repair_all_project_scaffolds,
             commands::projects::import_project,
             commands::projects::extend_project_to_remote,
+            commands::projects::detach_project_from_remote,
             commands::projects::get_time_today,
             commands::projects::archive_project,
             commands::projects::list_archived_projects,
             commands::projects::restore_archived_project,
             commands::projects::delete_archived_project,
+            commands::projects::archived_mirror_unsynced,
             commands::projects::clear_archive,
             // Project boxes (meta-project grouping)
             commands::boxes::get_boxes,
@@ -406,6 +409,9 @@ pub fn run() {
             commands::openvpn::openvpn_list_configs,
             // Git hosting (GitHub / GitLab) publishing
             commands::git_publish::publish_project,
+            commands::git_publish::unpublish_project,
+            commands::git_publish::set_project_visibility,
+            commands::git_publish::switch_project_provider,
             commands::git_hosting::get_project_git_hosting,
             commands::git_hosting::set_project_git_hosting,
             // Timer flush + activity
@@ -488,6 +494,7 @@ pub fn run() {
             commands::project_runtime::save_right_panel_folder,
             // Git
             commands::git::git_status,
+            commands::git::detect_git_providers,
             commands::git::git_add_all,
             commands::git::git_generate_commit_message,
             commands::git::git_commit,

@@ -3698,37 +3698,47 @@ function useNonPassiveWheel(handler: (e: WheelEvent) => void) {
 }
 
 /**
- * Per-type editor font size (text-size +/− control). Reads the persisted
- * `viewer_prefs[type].font_size`, clamps it, and exposes inc/dec/reset that write
- * the new size back through `updateSettings` — merging the whole viewer_prefs map
- * the same way the settings panel does, so it round-trips to settings.json.
+ * Per-TAB editor font size (text-size +/− control, #48). The zoom is tab-local:
+ * changing it resizes only this viewer tab, not every other tab of the same
+ * type. The size is seeded once from the tab's persisted `viewerState.fontSize`
+ * and written back there (like scroll/zoom), so it survives reopening the file
+ * and an Eldrun restart. Until the user zooms this tab it tracks the per-type
+ * `viewer_prefs[type].font_size` default reactively; once zoomed, the tab pins
+ * its own size. `reset` clears the override, dropping back to that default.
  */
-function useEditorFontSize(type: InternalViewer) {
+function useEditorFontSize(tabKey: string | undefined, type: InternalViewer) {
   const pref = useViewerPref(type);
-  const fontSize = clampFontSize(pref?.font_size ?? EDITOR_FONT_DEFAULT);
+  const typeDefault = clampFontSize(pref?.font_size ?? EDITOR_FONT_DEFAULT);
 
-  const setFontSize = useCallback(
-    (next: number) => {
-      const size = clampFontSize(next);
-      const all = useSettingsStore.getState().settings?.viewer_prefs ?? {};
-      const cur = all[type] ?? {};
-      if (cur.font_size === size) return;
-      void useSettingsStore.getState().updateSettings({
-        viewer_prefs: { ...all, [type]: { ...cur, font_size: size } },
-      });
+  // Tab-local override, seeded once from the persisted viewerState. `undefined`
+  // means "no override yet" → fall through to the per-type default above.
+  const [override, setOverride] = useState<number | undefined>(
+    () => seedViewerState(tabKey)?.fontSize,
+  );
+  const fontSize = clampFontSize(override ?? typeDefault);
+
+  const persist = useCallback(
+    (size: number | undefined) => {
+      setOverride(size);
+      if (tabKey) useTabsStore.getState().setViewerState(tabKey, { fontSize: size });
     },
-    [type],
+    [tabKey],
+  );
+  const setFontSize = useCallback(
+    (next: number) => persist(clampFontSize(next)),
+    [persist],
   );
 
   return {
     fontSize,
     lineHeight: Math.round(fontSize * EDITOR_LINE_RATIO),
-    // True once the user has set a size — lets surfaces with their own default
-    // (the markdown preview) leave it alone until then.
-    isCustom: pref?.font_size != null,
+    // True once this tab has set its own size — lets surfaces with their own
+    // default (the markdown preview) leave it alone until then.
+    isCustom: override != null,
     inc: useCallback(() => setFontSize(fontSize + 1), [setFontSize, fontSize]),
     dec: useCallback(() => setFontSize(fontSize - 1), [setFontSize, fontSize]),
-    reset: useCallback(() => setFontSize(EDITOR_FONT_DEFAULT), [setFontSize]),
+    // Clear the tab override so it falls back to the per-type default.
+    reset: useCallback(() => persist(undefined), [persist]),
   };
 }
 
@@ -3831,7 +3841,7 @@ function TextView({
   const ai = useTabAiPrefs(tabKey, type);
   const ac = ai.ac;
   const gc = ai.gc;
-  const font = useEditorFontSize(type);
+  const font = useEditorFontSize(tabKey, type);
   const jump = useEditorJump(path);
   const viewPos = useViewerState(tabKey);
   const persistScroll = useCallback(
@@ -3942,7 +3952,7 @@ function MarkdownView({
   } = useEditableFile(path);
   const scope = useFileScope();
   const [mode, setMode] = useState<"preview" | "edit">("preview");
-  const font = useEditorFontSize("markdown");
+  const font = useEditorFontSize(tabKey, "markdown");
   const wheelRef = useNonPassiveWheel((e) => onCtrlWheelFont(e, font.inc, font.dec));
   const ai = useTabAiPrefs(tabKey, "markdown");
   const ac = ai.ac;
@@ -5158,7 +5168,7 @@ function TexView({
   const ai = useTabAiPrefs(tabKey, "tex");
   const ac = ai.ac;
   const gc = ai.gc;
-  const font = useEditorFontSize("tex");
+  const font = useEditorFontSize(tabKey, "tex");
   const viewPos = useViewerState(tabKey);
   const persistScroll = useCallback(
     (scrollTop: number) => viewPos.persist({ scrollTop }),

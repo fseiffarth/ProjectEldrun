@@ -232,6 +232,13 @@ export interface ProjectEntry {
   /** Hosting provider this project was published to, recorded at publish time.
    *  Absent until published to a remote. */
   git_provider?: GitProvider;
+  /** Provider sniffed from the local `origin` host at load time (host-only, no
+   *  network). Decorates the pill badge for repos pushed to a host outside
+   *  Eldrun's Publish flow. Transient — never persisted to projects.json. */
+  detected_provider?: GitProvider;
+  /** Raw `origin` remote URL sniffed alongside `detected_provider`. Shown as the
+   *  git address in the project hover. Transient — never persisted. */
+  git_origin_url?: string;
   /** User-assigned category tags. Group/color the project in the cloud + pills;
    *  set via the pill / blob-node right-click menu. Stored in the entry's
    *  flattened `extra` (mirrored into project.json). */
@@ -249,6 +256,23 @@ export interface ArchivedProject {
   archived_at: string;
   /** True for remote (SSH) projects — their host tree was never touched. */
   remote: boolean;
+}
+
+/** One local mirror branch carrying commits the host baseline lacks. */
+export interface UnsyncedBranch {
+  name: string;
+  count: number;
+}
+
+/** Whether permanently deleting an archived remote project would discard
+ * local-only mirror history. Computed offline from the archived files. */
+export interface UnsyncedReport {
+  /** Commits on the mirror's local branches not present on the host baseline. */
+  total: number;
+  branches: UnsyncedBranch[];
+  /** False when there was no host baseline to compare against (the count is then
+   * every local commit and should read as "could not verify"). */
+  verified: boolean;
 }
 
 /** Supported git-hosting providers for publishing a project's repo. */

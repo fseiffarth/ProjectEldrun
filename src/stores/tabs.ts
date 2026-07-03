@@ -65,6 +65,11 @@ export interface ViewerState {
   scale?: number;
   offsetX?: number;
   offsetY?: number;
+  // Tab-local editor text size (#48). When set it overrides the per-type
+  // `viewer_prefs[type].font_size` default for THIS tab only, so zooming one
+  // text/markdown/TeX tab no longer resizes every other viewer of that type;
+  // absent means the tab tracks the per-type default. Survives reopen/restart.
+  fontSize?: number;
   // Tab-local AI-assist overrides (#45). When set, they override the per-type
   // `viewer_prefs` default for THIS tab only; when absent the editor falls back
   // to the per-type setting. Toggled from the in-tab AI-assist controls.
@@ -1397,7 +1402,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         cur.scrollLeft === merged.scrollLeft &&
         cur.scale === merged.scale &&
         cur.offsetX === merged.offsetX &&
-        cur.offsetY === merged.offsetY
+        cur.offsetY === merged.offsetY &&
+        cur.fontSize === merged.fontSize &&
+        cur.autocomplete === merged.autocomplete &&
+        cur.autocompleteMode === merged.autocompleteMode &&
+        cur.grammarCheck === merged.grammarCheck
       ) {
         return {};
       }
