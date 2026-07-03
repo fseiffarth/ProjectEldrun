@@ -111,11 +111,12 @@ pub struct OpenVpnSpec {
 }
 
 /// Per-project Docker sandbox config. When present and `enabled`, agent tabs
-/// (Claude/Codex/Gemini/Vibe) for this project are launched inside an ephemeral
-/// Docker container that mounts only the project directory, so an agent cannot
-/// reach host files outside the project. Absent (the default) = agents run on
-/// the host exactly as before. Local projects only.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// (Claude/Codex/Gemini/Vibe) for this project are launched inside an ephemeral,
+/// capability-dropped Docker container that mounts only the project directory plus
+/// the minimal agent auth/state paths (see `services::sandbox`), so an agent
+/// cannot reach unrelated host files. Absent (the default) = agents run on the
+/// host exactly as before. Local projects only.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SandboxSpec {
     /// Whether agent tabs run inside the Docker sandbox.
     pub enabled: bool,
@@ -123,6 +124,27 @@ pub struct SandboxSpec {
     /// absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Max number of processes inside the container (`--pids-limit`). Guards
+    /// against a fork-bombing agent. Falls back to a generous built-in default
+    /// when absent (see `services::sandbox`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pids_limit: Option<u32>,
+    /// Optional hard memory cap (`--memory`, e.g. "4g"). Absent = unlimited, so
+    /// heavy in-container builds are not OOM-killed unless the user opts in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    /// Optional CPU cap (`--cpus`, e.g. "2"). Absent = unlimited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<String>,
+    /// Optional docker network (`--network`, e.g. "none" for no egress, or a
+    /// custom allowlist network). Absent = the default bridge (full egress).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    /// Run the container with a read-only root filesystem (`--read-only` +
+    /// `--tmpfs /tmp`). Off by default because it breaks agents that write
+    /// outside the mounted dirs (e.g. `~/.cache`); opt-in hardening.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub readonly_rootfs: bool,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

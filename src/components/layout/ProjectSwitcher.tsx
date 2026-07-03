@@ -101,7 +101,12 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     () =>
       projects
         .filter((p) => p.status !== "inactive")
-        .map((p) => `${p.id}:${p.position}:${typeof p.box_id === "string" ? p.box_id : ""}`)
+        .map(
+          (p) =>
+            `${p.id}:${p.position}:${typeof p.box_id === "string" ? p.box_id : ""}:${
+              typeof p.git_type === "string" ? p.git_type : ""
+            }`,
+        )
         .sort()
         .join("|"),
     [projects],

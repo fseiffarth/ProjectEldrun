@@ -5,7 +5,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
 import type { ArchivedProject, KeyboardChord, ProjectEntry, Theme } from "../../types";
 import { THEMES } from "../../types";
-import { TERMINAL_OPTIONS } from "../projects/scaffold";
+import { TERMINAL_OPTIONS, summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
 import {
   SHORTCUT_DEFS,
   chordFromEvent,
@@ -408,6 +408,64 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
+function ScaffoldRepairPanel({ onBack }: { onBack: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [results, setResults] = useState<ProjectScaffoldRepair[] | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const repaired = await invoke<ProjectScaffoldRepair[]>("repair_all_project_scaffolds");
+      setResults(repaired);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="settings-title-row">
+        <h2>Repair Project Scaffold</h2>
+        <button type="button" onClick={onBack}>Back</button>
+      </div>
+      <p className="settings-help">
+        Fills in any scaffold file (AGENTS.md, CLAUDE.md, .claude/settings.json, …)
+        or default .gitignore pattern that a project is missing — e.g. because it
+        was created before that file/pattern was added to the default scaffold.
+        Existing files are never overwritten; a pre-existing .gitignore only has
+        missing default lines appended. Runs across every managed project (local
+        directory or, for remote projects, their local mirror).
+      </p>
+      {error && <div className="project-dialog-error">{error}</div>}
+      <div className="settings-link-row">
+        <button type="button" disabled={busy} onClick={() => void run()}>
+          {busy ? "Repairing…" : "Repair all projects now"}
+        </button>
+      </div>
+      {results !== null && (
+        results.length === 0 ? (
+          <p className="settings-help">Every project's scaffold is already up to date.</p>
+        ) : (
+          <ul className="archived-projects-list">
+            {results.map((r) => (
+              <li key={r.projectId} className="archived-project-row">
+                <div className="archived-project-info">
+                  <span className="archived-project-name">{r.name}</span>
+                  <span className="archived-project-date">{summarizeScaffoldRepair(r.report)}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )
+      )}
+    </>
+  );
+}
+
 function HelpPanel({ onBack }: { onBack: () => void }) {
   return (
     <>
@@ -438,7 +496,7 @@ function HelpPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
-export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "archive" | "help";
+export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "archive" | "scaffoldRepair" | "help";
 
 export function SettingsDialog({
   onClose,
@@ -691,6 +749,7 @@ export function SettingsDialog({
               <button type="button" onClick={() => setPanel("agents")}>Manage Agents...</button>
               <button type="button" onClick={() => setPanel("shortcuts")}>Keyboard Shortcuts...</button>
               <button type="button" onClick={() => setPanel("archive")}>Archived Projects...</button>
+              <button type="button" onClick={() => setPanel("scaffoldRepair")}>Repair Project Scaffold...</button>
               <button type="button" onClick={() => setPanel("help")}>Feature Guide...</button>
             </div>
           </>
@@ -702,6 +761,7 @@ export function SettingsDialog({
         {panel === "shortcuts" && <ShortcutsSettings onBack={() => setPanel("main")} />}
         {panel === "git" && <GitHostingSettings onBack={() => setPanel("main")} />}
         {panel === "archive" && <ArchivedProjectsPanel onBack={() => setPanel("main")} />}
+        {panel === "scaffoldRepair" && <ScaffoldRepairPanel onBack={() => setPanel("main")} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} />}
       </div>
     </div>

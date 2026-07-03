@@ -45,9 +45,9 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
     vpnTerm,
     sshTerm,
     startVpnTerm,
-    stopVpnTerm,
+    stopVpn,
     startSshTerm,
-    stopSshTerm,
+    stopSsh,
     tryConnectNow,
     sshError,
     vpnError,
@@ -144,6 +144,16 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
                         ? "Connecting…"
                         : "Connect VPN"}
                   </button>
+                  {vpnStatus === "connecting" && (
+                    <button
+                      type="button"
+                      className="vpn-disconnect-btn"
+                      title="Stop this VPN connection attempt and reset the tunnel state."
+                      onClick={stopVpn}
+                    >
+                      Stop
+                    </button>
+                  )}
                 </label>
                 <label className="remote-connect-remember">
                   <input
@@ -180,7 +190,7 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
                       <span className="ssh-optional-hint">
                         Authenticate the tunnel below — it keeps running for this project.
                       </span>
-                      <button type="button" className="vpn-disconnect-btn" onClick={stopVpnTerm}>
+                      <button type="button" className="vpn-disconnect-btn" onClick={stopVpn}>
                         Disconnect
                       </button>
                     </div>
@@ -232,6 +242,16 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
                 >
                   {connected ? "Connected" : connecting ? "Connecting…" : "Connect"}
                 </button>
+                {connecting && (
+                  <button
+                    type="button"
+                    className="vpn-disconnect-btn"
+                    title="Stop this SSH connection attempt and reset the connection state."
+                    onClick={stopSsh}
+                  >
+                    Stop
+                  </button>
+                )}
               </label>
               <label className="remote-connect-remember">
                 <input
@@ -259,6 +279,16 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
               >
                 {connected ? "Connected" : connecting ? "Connecting…" : "Connect"}
               </button>
+              {connecting && (
+                <button
+                  type="button"
+                  className="vpn-disconnect-btn"
+                  title="Stop this SSH connection attempt and reset the connection state."
+                  onClick={stopSsh}
+                >
+                  Stop
+                </button>
+              )}
               {sshStatus === "error" && sshError && (
                 <div className="project-dialog-error">{sshError}</div>
               )}
@@ -291,7 +321,7 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
                     <span className="ssh-optional-hint">
                       Log in below — the pooled connection comes up once you're authenticated.
                     </span>
-                    <button type="button" className="vpn-disconnect-btn" onClick={stopSshTerm}>
+                    <button type="button" className="vpn-disconnect-btn" onClick={stopSsh}>
                       Disconnect
                     </button>
                   </div>
@@ -317,6 +347,11 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
             <button
               type="button"
               onClick={() => {
+                // Cancellation-aware teardown of both channels (abandons an
+                // in-flight connect too, not just a live pool), then mirror it into
+                // the projects store so a switch-away can't resurrect the pool.
+                stopSsh();
+                if (vpnConfig) stopVpn();
                 disconnectRemote(project.id);
                 close();
               }}

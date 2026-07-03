@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { useProjectsStore } from "./projects";
 
 /** Highest-priority pending git state for a project, by the user's mental model:
  *  uncommitted working-tree changes ▸ staged-not-committed ▸ committed-not-pushed
@@ -54,6 +55,16 @@ export const useGitDirtyStore = create<GitDirtyStore>((set) => ({
         ),
       ]);
       next = gitDirtyState(status, unpushed.length);
+      // `.git` can be deleted outside the app (e.g. `rm -rf .git` in a
+      // terminal tab). Catch that here, on the same poll that already probes
+      // the directory, and flip the project back to "none" so the pill menu
+      // (Enable git / danger-zone Remove git) reflects reality.
+      if (!status.is_repo) {
+        const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
+        if (project && typeof project.git_type === "string" && project.git_type !== "none") {
+          void useProjectsStore.getState().setProjectGitDisabled(projectId, true);
+        }
+      }
     } catch {
       next = "clean";
     }

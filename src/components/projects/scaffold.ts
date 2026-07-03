@@ -9,6 +9,48 @@ export interface ScaffoldPreviewItem {
   kind: string;
 }
 
+export interface ScaffoldRepairReport {
+  createdFiles: string[];
+  gitignoreLinesAdded: string[];
+  gitInitialized: boolean;
+}
+
+export interface ProjectScaffoldRepair {
+  projectId: string;
+  name: string;
+  targetDir: string;
+  report: ScaffoldRepairReport;
+}
+
+export function scaffoldRepairIsEmpty(report: ScaffoldRepairReport) {
+  return (
+    report.createdFiles.length === 0 &&
+    report.gitignoreLinesAdded.length === 0 &&
+    !report.gitInitialized
+  );
+}
+
+/** Human-readable one-line summary of what a repair report changed. */
+export function summarizeScaffoldRepair(report: ScaffoldRepairReport): string {
+  const parts: string[] = [];
+  if (report.createdFiles.length > 0) {
+    parts.push(`added ${report.createdFiles.join(", ")}`);
+  }
+  if (report.gitignoreLinesAdded.length > 0) {
+    parts.push(`.gitignore +${report.gitignoreLinesAdded.join(", ")}`);
+  }
+  if (report.gitInitialized) {
+    parts.push("git init");
+  }
+  return parts.length > 0 ? parts.join("; ") : "already up to date";
+}
+
+/** Same summary, prefixed with the project name — for a toast/log covering
+ *  multiple projects at once. */
+export function describeScaffoldRepair(repair: ProjectScaffoldRepair): string {
+  return `${repair.name}: ${summarizeScaffoldRepair(repair.report)}`;
+}
+
 export const SCAFFOLD_FILL_OPTIONS = [
   { value: "none", label: "No filling" },
   { value: "manual", label: "Manual" },

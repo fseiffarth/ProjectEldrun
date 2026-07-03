@@ -234,6 +234,26 @@ pub async fn pooled_sftp(pool: &RemotePoolState, project_id: &str) -> Option<Arc
     Some(Arc::clone(&conn.sftp))
 }
 
+/// The ids of every project whose pooled SSH connection is currently live.
+/// Evicts any whose ssh child has already exited (same corpse-reaping as
+/// [`is_connected`]) so the background traffic sampler never samples a dead
+/// ControlMaster. Order is unspecified.
+pub async fn connected_ids(pool: &RemotePoolState) -> Vec<String> {
+    let mut guard = pool.lock().await;
+    let dead: Vec<String> = guard
+        .conns
+        .iter_mut()
+        .filter_map(|(id, conn)| match conn.child.try_wait() {
+            Ok(Some(_)) => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    for id in &dead {
+        guard.conns.remove(id);
+    }
+    guard.conns.keys().cloned().collect()
+}
+
 /// Whether a project's pooled SSH connection is live. Like [`pooled_sftp`], this
 /// evicts a child that has already exited so read-only observers never launch a
 /// fallback connection merely to discover that the project is offline.

@@ -299,6 +299,18 @@ pub fn run() {
             if let Err(e) = services::agent_session::install_session_start_hook() {
                 eprintln!("agent_session: install SessionStart hook: {e}");
             }
+            // Start the background per-project SSH-link traffic sampler so each
+            // remote project's daily/monthly/overall usage accrues even when its
+            // Network Traffic tab is closed (see services::net_usage). No-op on
+            // non-Linux.
+            {
+                use tauri::Manager;
+                let pool = _app
+                    .state::<services::remote::RemotePoolState>()
+                    .inner()
+                    .clone();
+                services::net_usage::start(pool);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -327,6 +339,8 @@ pub fn run() {
             commands::projects::move_remote_mirror,
             commands::projects::create_project,
             commands::projects::preview_project_scaffold,
+            commands::projects::repair_project_scaffold,
+            commands::projects::repair_all_project_scaffolds,
             commands::projects::import_project,
             commands::projects::extend_project_to_remote,
             commands::projects::get_time_today,
@@ -365,6 +379,7 @@ pub fn run() {
             // Read-only local/remote host + SSH transport monitoring.
             commands::network::network_host_snapshot,
             commands::network::network_ssh_link_snapshot,
+            commands::net_usage::get_net_usage,
             // SSH-sync (Phase 1): selective local↔remote mirror sync.
             commands::sync::sync_pull,
             commands::sync::sync_whole_project,

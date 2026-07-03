@@ -475,7 +475,7 @@ export const LESSONS: Lesson[] = [
         anchor: ".project-pills-region",
         placement: "top",
         title: "Box the agent in",
-        body: "By default agents run on your host with your full filesystem in reach. A Docker sandbox confines a project's agent tabs to an ephemeral container that mounts only that project's directory — so a misbehaving agent can't wander outside it.",
+        body: "By default agents run on your host with your full filesystem in reach. A Docker sandbox confines a project's agent tabs to an ephemeral, capability-dropped container that mounts only that project's directory plus the agent's own login/session files — so a misbehaving agent can't wander into unrelated host files. (The agent's auth dirs are shared so login and resume keep working; the hook script is read-only and its config is a throwaway per-tab copy, so the sandbox can't make code run on the host.)",
       },
       {
         id: "open-pill-menu",
@@ -539,7 +539,7 @@ export const LESSONS: Lesson[] = [
         anchor: null,
         placement: "bottom",
         title: "Connect to the host",
-        body: "Type the SSH address as user@host or host:2222. Leave the password blank to use your SSH key/agent, or fill it in (needs sshpass). Click Connect — Eldrun verifies it can reach the host.",
+        body: "Type the SSH address as user@host or host:2222. Leave the password blank to use your SSH key/agent, or fill it in for password auth. Click Connect — Eldrun verifies it can reach the host.",
       },
       {
         id: "browse-remote",
@@ -603,7 +603,7 @@ export const LESSONS: Lesson[] = [
         anchor: null,
         placement: "bottom",
         title: "Now connect SSH",
-        body: "With the tunnel up, type the SSH address as user@host or host:2222. Leave the password blank to use your SSH key/agent, or fill it in (needs sshpass). Click Connect — Eldrun reaches the host through the VPN.",
+        body: "With the tunnel up, type the SSH address as user@host or host:2222. Leave the password blank to use your SSH key/agent, or fill it in for password auth. Click Connect — Eldrun reaches the host through the VPN.",
       },
       {
         id: "browse-and-create",

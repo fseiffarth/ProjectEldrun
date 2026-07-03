@@ -34,16 +34,25 @@ pub async fn openvpn_connect(
     else {
         return Err("no VPN password provided and none saved".to_string());
     };
-    openvpn::connect_streaming(&config, &pw, |line| {
-        let _ = app.emit(
-            "openvpn-progress",
-            serde_json::json!({ "config": config, "line": line }),
-        );
-    })?;
-    // Tunnel is up — persist (opt-in) or clear per the checkbox. Best-effort: a
-    // keychain write failure must not fail an already-successful connect.
-    let _ = creds::set(&account, if remember { Some(pw.as_str()) } else { None });
-    Ok(())
+    // Offload to a blocking worker. `connect_streaming` is fully synchronous and
+    // blocks for the whole handshake — up to `CONNECT_TIMEOUT` (45s), and longer
+    // still while `pkexec` waits on the polkit prompt. Awaiting it directly on the
+    // async runtime starves a worker and froze the headless VPN connect; mirror
+    // `ssh_connect`, which spawn_blocks its ssh probe for exactly this reason.
+    tokio::task::spawn_blocking(move || {
+        openvpn::connect_streaming(&config, &pw, |line| {
+            let _ = app.emit(
+                "openvpn-progress",
+                serde_json::json!({ "config": config, "line": line }),
+            );
+        })?;
+        // Tunnel is up — persist (opt-in) or clear per the checkbox. Best-effort: a
+        // keychain write failure must not fail an already-successful connect.
+        let _ = creds::set(&account, if remember { Some(pw.as_str()) } else { None });
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("openvpn connect task failed: {e}"))?
 }
 
 /// Whether a saved VPN passphrase exists for `config`, so the UI can pre-check

@@ -81,8 +81,11 @@ pub async fn pty_spawn(
     // sandbox-enabled local project), wrap the resolved command into a
     // `docker run …` argv; otherwise fall back to ssh wrapping for remote
     // projects. Both run after agent-session resolution so resume args/env ride
-    // into whichever wrapper applies.
-    if opts.sandbox {
+    // into whichever wrapper applies. `local_only` tabs (e.g. Ollama
+    // `local_agent`) must run on the host verbatim, so they take neither path —
+    // the `local_only` guard on the sandbox branch preserves that invariant even
+    // if a tab were ever marked both `sandbox` and `local_only`.
+    if opts.sandbox && !opts.local_only {
         crate::services::sandbox::wrap_pty_options_docker(&mut opts)?;
     } else if !opts.local_only {
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;

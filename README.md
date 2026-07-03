@@ -1,6 +1,4 @@
-<div align="center">
-
-<img src="src/assets/logo-white.svg" alt="Eldrun logo" width="128" height="128" />
+![Eldrun logo](src/assets/logo-white.svg)
 
 # Eldrun
 
@@ -12,7 +10,6 @@
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri)
 
-</div>
 
 > **You don't open applications — you open projects.**
 > Eldrun is a project-centric desktop layer that swaps your whole working

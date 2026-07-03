@@ -50,9 +50,9 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // Whether this is a remote (SSH) project. The whole SSH section — address,
   // password, connect, and the remote browser — only appears when this is on.
   const [isRemoteProject, setIsRemoteProject] = useState(false);
-  // Availability of sshpass/openvpn, fetched the first time the remote
-  // checkbox is enabled so missing tools are flagged up front rather than only
-  // after a connect fails. `null` until probed.
+  // Availability of password-auth/openvpn tooling, fetched the first time the
+  // remote checkbox is enabled so missing tools are flagged up front rather than
+  // only after a connect fails. `null` until probed.
   const [sshTooling, setSshTooling] = useState<SshTooling | null>(null);
   const [sshAddress, setSshAddress] = useState("");
   // Previously-used SSH addresses (newest first), offered for reuse so a host

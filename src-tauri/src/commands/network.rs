@@ -379,7 +379,7 @@ fn parse_master_pid(text: &str) -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_ssh_link(project_id: &str) -> SshLinkSnapshot {
+pub(crate) fn linux_ssh_link(project_id: &str) -> SshLinkSnapshot {
     let Some(target) = remote::remote_target_for(project_id) else {
         return SshLinkSnapshot {
             supported: false,

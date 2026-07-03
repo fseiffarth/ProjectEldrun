@@ -310,6 +310,32 @@ pub fn remote_mkdir_p(spec: &RemoteSpec) -> Result<(), String> {
     }
 }
 
+/// Best-effort `git init` on the host inside `spec.remote_path`, but only when
+/// that dir is not already a git work tree. Used when a remote project is
+/// imported **with git support** (`git_type != "none"`) onto a host tree that
+/// carries no repo: it gives git lockstep a repo on the (authoritative) host to
+/// pair the local mirror from, matching how a fresh remote *create* leaves the
+/// mirror as the repo. Idempotent — a path that is already a repo is left
+/// untouched. The command is handed to the remote `$SHELL -c`, so the path is
+/// single-quoted via `shell_quote` and validated; rides the shared ControlMaster.
+pub fn remote_git_init(spec: &RemoteSpec) -> Result<(), String> {
+    validate_arg("remote path", &spec.remote_path)?;
+    let mut args = ssh_base_args(&spec.user, &spec.host, spec.port)?;
+    let path = shell_quote(&spec.remote_path);
+    args.push(format!(
+        "cd {path} && git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init"
+    ));
+    let out = crate::paths::command_no_window("ssh")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("failed to run git init over ssh: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 /// Build a ready-to-run shell command string that opens an **interactive** ssh
 /// login to `[user@]host[:port]`, sharing the same multiplexing master socket
 /// (`ControlPath`) the terminal/agent tabs use.

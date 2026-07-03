@@ -174,10 +174,23 @@ export interface RemoteSpec {
 }
 
 /** Per-project Docker sandbox config. When `enabled`, agent tabs run inside a
- *  container that mounts only the project directory. Absent = run on host. */
+ *  container that mounts only the project directory (plus minimal agent
+ *  auth/state paths). Absent = run on host. The hardening fields below are
+ *  optional overrides; unset means the built-in default (see `services::sandbox`
+ *  in the backend). */
 export interface SandboxSpec {
   enabled: boolean;
   image?: string;
+  /** `--pids-limit` (fork-bomb guard). Unset = generous built-in default. */
+  pids_limit?: number;
+  /** Hard memory cap, e.g. "4g" (`--memory`). Unset = unlimited. */
+  memory?: string;
+  /** CPU cap, e.g. "2" (`--cpus`). Unset = unlimited. */
+  cpus?: string;
+  /** Docker network, e.g. "none" for no egress (`--network`). Unset = bridge. */
+  network?: string;
+  /** Read-only root filesystem (`--read-only` + tmpfs /tmp). Default false. */
+  readonly_rootfs?: boolean;
 }
 
 export interface RemoteEntry {
@@ -185,12 +198,13 @@ export interface RemoteEntry {
   is_dir: boolean;
 }
 
-/** Availability of the external binaries remote (SSH) projects rely on.
- * Remote projects are SSH/SFTP-native (no FUSE mount), so only password-auth
- * (`sshpass`) and VPN-gated (`openvpn`) tooling is relevant. */
+/** Availability of the remote-project capabilities that depend on the platform.
+ * Remote projects are SSH/SFTP-native (no FUSE mount), so only password auth and
+ * VPN-gated (`openvpn`) hosts need anything beyond a stock `ssh`. */
 export interface SshTooling {
-  /** `sshpass` — required only for password auth. */
-  sshpass: boolean;
+  /** Whether non-interactive password auth works without installing anything.
+   * Always true on Unix (OpenSSH's `SSH_ASKPASS`); needs `sshpass` on Windows. */
+  password_auth: boolean;
   /** `openvpn` + `pkexec` — required only for VPN-gated hosts. */
   openvpn: boolean;
   /** `rsync` on the local machine — enables the SSH-sync bulk fast-path. */

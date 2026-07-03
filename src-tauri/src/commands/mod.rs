@@ -13,6 +13,7 @@ pub mod git;
 pub mod git_hosting;
 pub mod git_peer;
 pub mod git_publish;
+pub mod net_usage;
 pub mod network;
 pub mod ollama;
 pub mod openvpn;

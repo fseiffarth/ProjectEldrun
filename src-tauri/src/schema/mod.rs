@@ -2,6 +2,7 @@ pub mod active_session;
 pub mod boxes;
 pub mod calendar;
 pub mod default_apps;
+pub mod net_usage;
 pub mod project;
 pub mod projects;
 pub mod session;

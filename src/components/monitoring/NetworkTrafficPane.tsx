@@ -104,6 +104,48 @@ export function aggregateInterfaceCounters(
   };
 }
 
+export interface ByteCounts {
+  rx: number;
+  tx: number;
+}
+
+/** Persisted per-project SSH-link usage keyed by UTC date ("YYYY-MM-DD"). */
+export type NetUsageByDay = Record<string, ByteCounts>;
+
+/**
+ * Fold the persisted per-day usage map into today / this-month / overall totals.
+ * Keys are UTC dates (the backend buckets by `today_utc()`), so "today" and the
+ * month prefix are computed in UTC to match — not local time.
+ */
+export function summarizeNetUsage(
+  data: NetUsageByDay,
+  nowMs: number,
+): { today: ByteCounts; month: ByteCounts; overall: ByteCounts } {
+  const iso = new Date(nowMs).toISOString();
+  const todayKey = iso.slice(0, 10); // YYYY-MM-DD (UTC)
+  const monthKey = iso.slice(0, 7); // YYYY-MM (UTC)
+  const acc = {
+    today: { rx: 0, tx: 0 },
+    month: { rx: 0, tx: 0 },
+    overall: { rx: 0, tx: 0 },
+  };
+  for (const [date, counts] of Object.entries(data)) {
+    const rx = counts?.rx ?? 0;
+    const tx = counts?.tx ?? 0;
+    acc.overall.rx += rx;
+    acc.overall.tx += tx;
+    if (date.startsWith(monthKey)) {
+      acc.month.rx += rx;
+      acc.month.tx += tx;
+    }
+    if (date === todayKey) {
+      acc.today.rx += rx;
+      acc.today.tx += tx;
+    }
+  }
+  return acc;
+}
+
 export function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0 B";
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -196,6 +238,7 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
   const [query, setQuery] = useState("");
   const [protocol, setProtocol] = useState<"ALL" | "TCP" | "UDP">("ALL");
   const [error, setError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<NetUsageByDay>({});
   const previous = useRef<CounterSample | null>(null);
 
   useEffect(() => {
@@ -285,8 +328,31 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
     };
   }, [projectId, selectedInterface, view, visible]);
 
+  // Persisted per-project SSH-link usage (accrued in the background by
+  // `services::net_usage`), refreshed slowly since it changes at most every
+  // ~30 s. Independent of the 1 s live poll and of the host/link view.
+  useEffect(() => {
+    if (!visible || !projectId) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const data = await invoke<NetUsageByDay>("get_net_usage", { projectId });
+        if (!cancelled) setUsage(data ?? {});
+      } catch {
+        // Leave the last-known totals in place on a transient failure.
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [projectId, visible]);
+
   const current = history[history.length - 1] ?? { rxRate: 0, txRate: 0 };
   const remote = host?.remote ?? false;
+  const usageTotals = useMemo(() => summarizeNetUsage(usage, Date.now()), [usage]);
   const warning = view === "link" ? link?.warning : host?.warning;
   const available =
     view === "link"
@@ -390,6 +456,24 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
           <small>{formatBytes(sessionTx)} this view</small>
         </div>
       </div>
+
+      {remote && (
+        <div className="network-usage-totals">
+          <span className="network-usage-label">SSH-link usage</span>
+          {(
+            [
+              ["Today", usageTotals.today],
+              ["This month", usageTotals.month],
+              ["Overall", usageTotals.overall],
+            ] as const
+          ).map(([label, counts]) => (
+            <span key={label} className="network-usage-stat">
+              {label} <span className="rx">↓ {formatBytes(counts.rx)}</span>{" "}
+              <span className="tx">↑ {formatBytes(counts.tx)}</span>
+            </span>
+          ))}
+        </div>
+      )}
 
       <TrafficGraph points={history} />
 

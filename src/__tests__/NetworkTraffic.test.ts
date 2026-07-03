@@ -3,6 +3,7 @@ import {
   aggregateInterfaceCounters,
   formatBytes,
   rateFromSamples,
+  summarizeNetUsage,
 } from "../components/monitoring/NetworkTrafficPane";
 
 describe("network traffic calculations", () => {
@@ -44,5 +45,28 @@ describe("network traffic calculations", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(1536)).toBe("1.5 KiB");
     expect(formatBytes(2 * 1024 * 1024)).toBe("2.0 MiB");
+  });
+
+  it("summarizes persisted usage into today / month / overall (UTC)", () => {
+    // 2026-07-03T12:00:00Z → today 2026-07-03, month 2026-07.
+    const now = Date.parse("2026-07-03T12:00:00Z");
+    const totals = summarizeNetUsage(
+      {
+        "2026-07-03": { rx: 100, tx: 40 },
+        "2026-07-01": { rx: 10, tx: 5 },
+        "2026-06-30": { rx: 1_000, tx: 2_000 },
+      },
+      now,
+    );
+    expect(totals.today).toEqual({ rx: 100, tx: 40 });
+    expect(totals.month).toEqual({ rx: 110, tx: 45 });
+    expect(totals.overall).toEqual({ rx: 1_110, tx: 2_045 });
+  });
+
+  it("returns zero totals for an empty usage map", () => {
+    const totals = summarizeNetUsage({}, Date.parse("2026-07-03T12:00:00Z"));
+    expect(totals.today).toEqual({ rx: 0, tx: 0 });
+    expect(totals.month).toEqual({ rx: 0, tx: 0 });
+    expect(totals.overall).toEqual({ rx: 0, tx: 0 });
   });
 });

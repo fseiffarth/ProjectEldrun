@@ -13,7 +13,7 @@ use serde::Serialize;
 // The validation + base-argv helpers live in `services::ssh_common` so every
 // remote path shares a single validated implementation.
 use crate::services::sftp;
-use crate::services::ssh_common::{ssh_base_args, ssh_password_base_args, sshpass_available};
+use crate::services::ssh_common::{ssh_base_args, ssh_password_base_args};
 
 /// One entry in a remote directory listing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -28,8 +28,10 @@ pub struct RemoteEntry {
 /// SSH/SFTP-native (no FUSE mount), so only `sshpass`/`openvpn` are relevant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SshTooling {
-    /// `sshpass` — required only for password auth (key/agent auth needs none).
-    pub sshpass: bool,
+    /// Whether non-interactive password auth works without the user installing
+    /// anything. Always true on Unix (OpenSSH's own `SSH_ASKPASS` carries it);
+    /// on Windows it still depends on `sshpass` being present.
+    pub password_auth: bool,
     /// `openvpn` + `pkexec` — required only for VPN-gated hosts.
     pub openvpn: bool,
     /// `rsync` on the LOCAL machine — enables the SSH-sync bulk fast-path (the
@@ -42,7 +44,7 @@ pub struct SshTooling {
 #[tauri::command]
 pub fn ssh_tooling_status() -> SshTooling {
     SshTooling {
-        sshpass: sshpass_available(),
+        password_auth: crate::services::ssh_common::password_auth_available(),
         openvpn: crate::services::openvpn::openvpn_available(),
         rsync: crate::services::remote_sync::rsync_available_local(),
     }
@@ -181,8 +183,9 @@ fn capture(mut cmd: Command, what: &str) -> Result<String, String> {
 
 /// Run an ssh command against `[user@]host[:port]`, choosing the auth method by
 /// whether a non-empty `password` was supplied:
-///   - password present → `sshpass -e ssh …` (password read from the `SSHPASS`
-///     env var so it never appears in the process's argv), password-only auth;
+///   - password present → password-only auth. On Unix the password is fed through
+///     OpenSSH's own `SSH_ASKPASS` shim (`services::ssh_common::make_askpass`), so
+///     no external binary is needed; on Windows we still shell out to `sshpass -e`.
 ///   - otherwise → key/agent auth in `BatchMode=yes` (the original v1 flow).
 /// Returns ssh stdout on success or the trimmed stderr on failure.
 fn run_ssh_auth(
@@ -194,22 +197,39 @@ fn run_ssh_auth(
 ) -> Result<String, String> {
     match password.filter(|p| !p.is_empty()) {
         Some(pw) => {
-            if !sshpass_available() {
-                return Err(
-                    "sshpass not found — install sshpass to use password auth, or set up SSH keys"
-                        .to_string(),
-                );
-            }
             let base = ssh_password_base_args(user, host, port)?;
-            // `command_no_window` keeps the ssh/sshpass probe from flashing a
-            // console window on Windows (no-op on Linux/macOS).
-            let mut cmd = crate::paths::command_no_window("sshpass");
-            cmd.arg("-e"); // read the password from the SSHPASS env var
-            cmd.env("SSHPASS", pw);
-            cmd.arg("ssh");
-            cmd.args(&base);
-            cmd.args(remote);
-            capture(cmd, "sshpass")
+            #[cfg(unix)]
+            {
+                // Feed the password via OpenSSH's SSH_ASKPASS (no `sshpass`). The
+                // shim guard must outlive the ssh run, so it stays in scope until
+                // `capture` returns.
+                let mut cmd = crate::paths::command_no_window("ssh");
+                cmd.args(&base);
+                cmd.args(remote);
+                let askpass = crate::services::ssh_common::make_askpass(pw)?;
+                for (k, v) in askpass.env_vars() {
+                    cmd.env(k, v);
+                }
+                capture(cmd, "ssh")
+            }
+            #[cfg(not(unix))]
+            {
+                if !crate::services::ssh_common::sshpass_available() {
+                    return Err(
+                        "sshpass not found — install sshpass to use password auth, or set up SSH keys"
+                            .to_string(),
+                    );
+                }
+                // `command_no_window` keeps the ssh/sshpass probe from flashing a
+                // console window on Windows.
+                let mut cmd = crate::paths::command_no_window("sshpass");
+                cmd.arg("-e"); // read the password from the SSHPASS env var
+                cmd.env("SSHPASS", pw);
+                cmd.arg("ssh");
+                cmd.args(&base);
+                cmd.args(remote);
+                capture(cmd, "sshpass")
+            }
         }
         None => {
             let base = ssh_base_args(user, host, port)?;
@@ -236,8 +256,9 @@ pub fn remote_login_command(
 }
 
 /// Verify the remote host is reachable over SSH (non-interactive). With a
-/// non-empty `password`, authenticates via `sshpass`; otherwise uses key/agent
-/// auth. Returns the trimmed ssh stderr as the error on failure.
+/// non-empty `password`, authenticates by feeding it to ssh (via `SSH_ASKPASS` on
+/// Unix, `sshpass` on Windows); otherwise uses key/agent auth. Returns the trimmed
+/// ssh stderr as the error on failure.
 ///
 /// Async + `spawn_blocking`: the ssh probe spawns a subprocess that can block for
 /// up to `ConnectTimeout=10s` (BatchMode key/agent auth against an unreachable or

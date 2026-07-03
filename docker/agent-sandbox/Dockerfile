@@ -1,11 +1,16 @@
 # Reference image for Eldrun's per-project "Run agents in Docker sandbox" toggle.
 #
 # When the toggle is on for a project, Eldrun launches each agent tab as:
-#   docker run --rm -it --user <uid>:<gid> -e HOME=<host-home> -w <project> \
+#   docker run --rm -it --user <uid>:<gid> \
+#     --security-opt no-new-privileges --cap-drop ALL --pids-limit <n> \
+#     -e HOME=<host-home> -w <project> \
 #     -v <project>:<project> \
 #     -v <home>/.claude:<home>/.claude -v <home>/.codex:<home>/.codex \
-#     -v <state_dir>:<state_dir> [optional -v <home>/.config:<home>/.config] \
+#     -v <state_dir>/live_sessions:<state_dir>/live_sessions \
+#     -v <state_dir>/hooks:<state_dir>/hooks:ro \
+#     -v <stage>/..._settings.json:<home>/.claude/settings.json \  # writable copy
 #     -e <agent-auth/env vars> eldrun-agent-sandbox:latest <agent> <args>
+# (see docker/agent-sandbox/README.md and src-tauri/src/services/sandbox.rs).
 #
 # The container therefore needs the agent CLIs on PATH. Auth + session-resume
 # state lives in the bind-mounted host dirs (run as the host uid, with HOME set

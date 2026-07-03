@@ -643,6 +643,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const setProjectGitDisabled = useProjectsStore((s) => s.setProjectGitDisabled);
+  const repairProjectScaffold = useProjectsStore((s) => s.repairProjectScaffold);
   const publishProject = useProjectsStore((s) => s.publishProject);
   const archiveProject = useProjectsStore((s) => s.archiveProject);
 
@@ -912,36 +913,50 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           {/* Git */}
           <div className="context-menu-group">
             <div className="context-menu-group-label">Git</div>
+            {project.git_type === "none" ? (
+              !project.remote && (
+                <button
+                  onClick={() => {
+                    setContextMenu(null);
+                    void setProjectGitDisabled(project.id, false);
+                  }}
+                  title="Run git init to start version-controlling this project"
+                >
+                  Enable git (git init)
+                </button>
+              )
+            ) : (
+              <>
+                <button
+                  onClick={() => {
+                    setContextMenu(null);
+                    setShowPublish(true);
+                  }}
+                >
+                  Publish to GitHub / GitLab…
+                </button>
+                {typeof project.git_type === "string" && project.git_type.startsWith("remote") && (
+                  <button
+                    onClick={() => {
+                      setContextMenu(null);
+                      setShowGitHosting(true);
+                    }}
+                    title="Override the global git hosting (profile URL + token) for this project only"
+                  >
+                    Git hosting…
+                  </button>
+                )}
+              </>
+            )}
             <button
               onClick={() => {
                 setContextMenu(null);
-                setShowPublish(true);
+                void repairProjectScaffold(project.id);
               }}
+              title="Fill in any missing scaffold file, default .gitignore pattern, or .claude/settings.json — never overwrites existing content"
             >
-              Publish to GitHub / GitLab…
+              Repair scaffold files
             </button>
-            {typeof project.git_type === "string" && project.git_type.startsWith("remote") && (
-              <button
-                onClick={() => {
-                  setContextMenu(null);
-                  setShowGitHosting(true);
-                }}
-                title="Override the global git hosting (profile URL + token) for this project only"
-              >
-                Git hosting…
-              </button>
-            )}
-            {!project.remote && project.git_type === "none" && (
-              <button
-                onClick={() => {
-                  setContextMenu(null);
-                  void setProjectGitDisabled(project.id, false);
-                }}
-                title="Run git init to start version-controlling this project"
-              >
-                Enable git (git init)
-              </button>
-            )}
           </div>
 
           {/* Runtime */}

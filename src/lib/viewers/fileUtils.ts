@@ -22,6 +22,7 @@ export const STANDARD_PROJECT_FILES = new Set([
   "DOCUMENTATION.md",
   ".gitignore",
   ".claude",
+  ".git",
 ]);
 
 export const INTERNAL_PROJECT_FILES = new Set([
@@ -347,51 +348,6 @@ export function visibleEntries(
       return shownPaths.has(entryRelPath) || options.showStandardFiles || !STANDARD_PROJECT_FILES.has(entry.name);
     })
     .filter((entry) => !query || entry.name.toLowerCase().includes(query))
-    .sort((a, b) => compareEntries(a, b, sortKey, descending));
-}
-
-/**
- * Dotfiles that `visibleEntries` filters out of the inline tree (the `showHidden`
- * step), surfaced so the panel can gather them into a collapsed "hidden" section.
- *
- * Returns the entries hidden *solely* by the dotfile rule — items removed by the
- * other filters (internal, hiddenEndings, hiddenPaths) stay fully hidden, and
- * `.gitignore`, scaffold/standard files, and explicitly-shown paths are excluded
- * because they already render inline or in the scaffold section. When
- * `showHidden` is on, dotfiles appear inline already, so the bucket is empty.
- */
-export function hiddenEntries(
-  entries: FileEntry[],
-  options: {
-    showHidden: boolean;
-    sortKey?: SortKey;
-    descending?: boolean;
-    hiddenEndings?: string[];
-    relPath?: string;
-    hiddenPaths?: string[];
-    shownPaths?: string[];
-  },
-): FileEntry[] {
-  if (options.showHidden) return [];
-  const sortKey = options.sortKey ?? "name";
-  const descending = options.descending ?? false;
-  const relPath = (options.relPath ?? "").replace(/^\/+|\/+$/g, "");
-  const hiddenEndings = (options.hiddenEndings ?? [])
-    .map((ending) => ending.trim().toLowerCase())
-    .filter(Boolean);
-  const hiddenPaths = new Set((options.hiddenPaths ?? []).map(normalizeRulePath));
-  const shownPaths = new Set((options.shownPaths ?? []).map(normalizeRulePath));
-
-  return entries
-    .filter((entry) => {
-      if (!entry.name.startsWith(".") || entry.name === ".gitignore") return false;
-      if (INTERNAL_PROJECT_FILES.has(entry.name) || STANDARD_PROJECT_FILES.has(entry.name)) return false;
-      const entryRelPath = normalizeRulePath(relPath ? `${relPath}/${entry.name}` : entry.name);
-      if (shownPaths.has(entryRelPath)) return false; // already shown inline
-      if (hiddenPaths.has(entryRelPath)) return false; // user chose to fully hide
-      if (hiddenEndings.some((ending) => entry.name.toLowerCase().endsWith(ending))) return false;
-      return true;
-    })
     .sort((a, b) => compareEntries(a, b, sortKey, descending));
 }
 

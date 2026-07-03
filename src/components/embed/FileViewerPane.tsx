@@ -1584,6 +1584,10 @@ function CodeEditor({
   // hovering a link (no mouse move) can still update the cursor.
   const lastMouse = useRef<{ x: number; y: number } | null>(null);
 
+  // Ctrl/Cmd+wheel resizes the font. Bound non-passively (see useNonPassiveWheel)
+  // so it never falls through to native scrolling.
+  const wheelRef = useNonPassiveWheel((e) => onCtrlWheelFont(e, incFont, decFont));
+
   // Resolve the link affordances for the screen point `x,y`. The link layer is
   // scroll-synced to sit exactly over the textarea text, so its `.file-link` span
   // rects are the on-screen link hit boxes — no glyph metrics needed.
@@ -2812,7 +2816,7 @@ function CodeEditor({
   return (
     <div
       className="file-viewer-code"
-      onWheel={(e) => onCtrlWheelFont(e, incFont, decFont)}
+      ref={wheelRef}
       onKeyDown={onContainerKeyDown}
       style={
         fontSize
@@ -3655,9 +3659,12 @@ export const clampFontSize = (n: number) =>
 /** Shared Ctrl/Cmd+wheel handler for the text viewers (code + markdown): scroll
  *  up grows, down shrinks the font, mirroring the browser zoom gesture and the
  *  Ctrl +/− keyboard shortcuts. A plain wheel (no modifier) falls through to
- *  native scrolling. */
+ *  native scrolling. Typed structurally so both native and synthetic wheel
+ *  events satisfy it. */
 function onCtrlWheelFont(
-  e: React.WheelEvent,
+  e: Pick<WheelEvent, "ctrlKey" | "metaKey" | "deltaY"> & {
+    preventDefault(): void;
+  },
   inc?: () => void,
   dec?: () => void,
 ) {
@@ -3665,6 +3672,29 @@ function onCtrlWheelFont(
   e.preventDefault();
   if (e.deltaY < 0) inc?.();
   else if (e.deltaY > 0) dec?.();
+}
+
+/** Bind `handler` as a NON-passive `wheel` listener through the returned callback
+ *  ref. React registers its synthetic `onWheel` passively at the document root,
+ *  so `preventDefault()` inside a React `onWheel` is ignored: a Ctrl+wheel zoom
+ *  can't stop the element from scrolling, so it scrolls to its limit and only
+ *  then does the zoom visibly "take". Attaching the listener ourselves with
+ *  `{ passive: false }` lets `preventDefault()` cancel the scroll, so Ctrl+wheel
+ *  zooms immediately and never scrolls. The callback ref re-binds cleanly across
+ *  mount/unmount (e.g. conditionally-rendered viewports). */
+function useNonPassiveWheel(handler: (e: WheelEvent) => void) {
+  const cb = useRef(handler);
+  cb.current = handler;
+  const detach = useRef<(() => void) | null>(null);
+  return useCallback((el: HTMLElement | null) => {
+    detach.current?.();
+    detach.current = null;
+    if (el) {
+      const listener = (e: WheelEvent) => cb.current(e);
+      el.addEventListener("wheel", listener, { passive: false });
+      detach.current = () => el.removeEventListener("wheel", listener);
+    }
+  }, []);
 }
 
 /**
@@ -3824,6 +3854,9 @@ function TextView({
   );
 
   const showEditor = !previewKind || mode === "edit";
+  const wheelRef = useNonPassiveWheel((e) => {
+    if (showEditor) onCtrlWheelFont(e, font.inc, font.dec);
+  });
 
   return (
     <div className="file-viewer">
@@ -3854,7 +3887,7 @@ function TextView({
       {showEditor && <ValidationBanner issue={issue} onJump={jumpToLine} />}
       <div
         className={`file-viewer-body${showEditor ? " file-viewer-code-body" : ""}`}
-        onWheel={(e) => showEditor && onCtrlWheelFont(e, font.inc, font.dec)}
+        ref={wheelRef}
       >
         {!showEditor && previewKind ? (
           error != null ? (
@@ -3910,6 +3943,7 @@ function MarkdownView({
   const scope = useFileScope();
   const [mode, setMode] = useState<"preview" | "edit">("preview");
   const font = useEditorFontSize("markdown");
+  const wheelRef = useNonPassiveWheel((e) => onCtrlWheelFont(e, font.inc, font.dec));
   const ai = useTabAiPrefs(tabKey, "markdown");
   const ac = ai.ac;
   const gc = ai.gc;
@@ -4043,7 +4077,7 @@ function MarkdownView({
       )}
       <div
         className={`file-viewer-body${mode === "edit" ? " file-viewer-code-body" : ""}`}
-        onWheel={(e) => onCtrlWheelFont(e, font.inc, font.dec)}
+        ref={wheelRef}
       >
         {mode === "edit" ? (
           // The shared code editor gives markdown the same Tab/undo/save behaviour
@@ -4843,7 +4877,7 @@ function PdfCanvas({
   // native scrolling). Because the canvases resize asynchronously, we only
   // compute the cursor-anchored scroll target here and let the ResizeObserver
   // below apply it once the content has grown/shrunk.
-  const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+  const onWheel = useCallback((e: WheelEvent) => {
     if (!(e.ctrlKey || e.metaKey)) return;
     e.preventDefault();
     const el = scrollRef.current;
@@ -4865,6 +4899,16 @@ function PdfCanvas({
       return next;
     });
   }, []);
+
+  // Bind the zoom wheel non-passively so `preventDefault()` above actually
+  // cancels the native scroll — a React `onWheel` is passive, so Ctrl+wheel
+  // would otherwise scroll the page to its limit before the zoom took hold.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [onWheel]);
 
   // Apply a pending cursor-anchored scroll target once the page content has
   // resized after a zoom (the observer fires when the canvases repaint).
@@ -5006,7 +5050,6 @@ function PdfCanvas({
           className="file-viewer-pdf-scroll"
           ref={scrollRef}
           tabIndex={0}
-          onWheel={onWheel}
           onScroll={onScrollPersist}
         >
           {error != null ? (
@@ -5739,14 +5782,26 @@ function ImageView({
     return () => ro.disconnect();
   }, [fit]);
 
-  const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+  // Wheel zooms toward the cursor. Bound non-passively (see useNonPassiveWheel)
+  // so `preventDefault()` cancels the native scroll instead of the viewport
+  // scrolling to its limit before the zoom takes.
+  const wheelRef = useNonPassiveWheel((e) => {
     if (!natural) return;
     e.preventDefault();
     const rect = viewportRef.current?.getBoundingClientRect();
     const anchor = rect ? { x: e.clientX - rect.left, y: e.clientY - rect.top } : undefined;
     const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
     zoomTo(scale * factor, anchor);
-  };
+  });
+  // Feed the same node to both the object ref (used for measuring/panning) and
+  // the non-passive wheel binding.
+  const setViewport = useCallback(
+    (el: HTMLDivElement | null) => {
+      viewportRef.current = el;
+      wheelRef(el);
+    },
+    [wheelRef],
+  );
 
   // Pointer-drag panning.
   const dragRef = useRef<{ id: number; startX: number; startY: number; ox: number; oy: number } | null>(null);
@@ -5849,9 +5904,8 @@ function ImageView({
           <div className="file-viewer-loading">Loading…</div>
         ) : (
           <div
-            ref={viewportRef}
+            ref={setViewport}
             className={`file-viewer-image-viewport${dragging ? " dragging" : ""}`}
-            onWheel={onWheel}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={endDrag}

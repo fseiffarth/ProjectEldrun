@@ -496,8 +496,7 @@ pub fn set_project_name(project_id: String, name: String) -> Result<String, Stri
 pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<bool, String> {
     let spec = enabled.then(|| SandboxSpec {
         enabled: true,
-        image: None,
-        extra: HashMap::new(),
+        ..Default::default()
     });
 
     // projects.json — mirror into the entry's flattened `sandbox`.
@@ -604,11 +603,13 @@ pub fn set_project_categories(
 /// Enable or disable git version control for an existing project.
 ///
 /// **Destructive when disabling.** Disabling deletes the project's `.git`
-/// directory outright — every commit, branch, stash, and remote is gone and
-/// cannot be recovered — and moves the project to `git_type` `"none"`, the same
-/// state a "No git (local files only)" project starts in. Enabling runs
-/// `git init` (a no-op if a repo already exists) and moves the project to
-/// `git_type` `"local"`.
+/// directory and `.gitignore` file outright — every commit, branch, stash,
+/// and remote is gone and cannot be recovered — and moves the project to
+/// `git_type` `"none"`, the same state a "No git (local files only)" project
+/// starts in. Enabling runs
+/// `git init` (a no-op if a repo already exists), writes the default
+/// `.gitignore` if missing (same as `scaffold_project`), and moves the
+/// project to `git_type` `"local"`.
 ///
 /// Returns the resulting `git_type`. Mirrors the change into both
 /// `projects.json` and `project.json`, like `set_project_sandbox`.
@@ -647,6 +648,11 @@ pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<St
             fs::remove_dir_all(&git_dir)
                 .map_err(|e| format!("failed to remove .git: {e}"))?;
         }
+        let gitignore = directory.join(".gitignore");
+        if gitignore.exists() {
+            fs::remove_file(&gitignore)
+                .map_err(|e| format!("failed to remove .gitignore: {e}"))?;
+        }
         "none".to_string()
     } else {
         if !git_dir.exists() {
@@ -661,6 +667,11 @@ pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<St
                     String::from_utf8_lossy(&output.stderr).trim()
                 ));
             }
+        }
+        let gitignore = directory.join(".gitignore");
+        if !gitignore.exists() {
+            fs::write(&gitignore, GITIGNORE_DEFAULT)
+                .map_err(|e| format!("failed to write .gitignore: {e}"))?;
         }
         "local".to_string()
     };
@@ -883,7 +894,7 @@ const SCAFFOLD_FILES: &[(&str, &str)] = &[
     ("DOCUMENTATION.md", "# Documentation\n"),
 ];
 
-const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\n";
+const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\nproject.json\n";
 
 const CLAUDE_SETTINGS: &str = r#"{"permissions":{"allow":[],"deny":[]}}"#;
 
@@ -926,6 +937,183 @@ pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
             .output();
     }
     Ok(())
+}
+
+/// Append any `GITIGNORE_DEFAULT` pattern missing from `dir/.gitignore` to the
+/// end of the file, creating it fresh if absent. Existing lines are never
+/// reordered or removed — this only ever adds patterns Eldrun scaffolds by
+/// default (e.g. a new one like `project.json` added after the project's
+/// `.gitignore` was first written). Returns the patterns that were added.
+fn ensure_gitignore_defaults(dir: &Path) -> std::io::Result<Vec<String>> {
+    let path = dir.join(".gitignore");
+    let defaults: Vec<&str> = GITIGNORE_DEFAULT.lines().filter(|l| !l.is_empty()).collect();
+    if !path.exists() {
+        fs::write(&path, GITIGNORE_DEFAULT)?;
+        return Ok(defaults.into_iter().map(str::to_string).collect());
+    }
+    let existing = fs::read_to_string(&path)?;
+    let existing_lines: HashSet<&str> = existing.lines().collect();
+    let missing: Vec<&str> = defaults
+        .into_iter()
+        .filter(|l| !existing_lines.contains(l))
+        .collect();
+    if missing.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    for line in &missing {
+        updated.push_str(line);
+        updated.push('\n');
+    }
+    fs::write(&path, updated)?;
+    Ok(missing.into_iter().map(str::to_string).collect())
+}
+
+/// Result of repairing one project's scaffold — which pieces were actually
+/// missing and got filled in, so the caller can report something meaningful
+/// instead of a silent no-op.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScaffoldRepairReport {
+    pub created_files: Vec<String>,
+    pub gitignore_lines_added: Vec<String>,
+    pub git_initialized: bool,
+}
+
+impl ScaffoldRepairReport {
+    fn is_empty(&self) -> bool {
+        self.created_files.is_empty() && self.gitignore_lines_added.is_empty() && !self.git_initialized
+    }
+}
+
+/// Like `scaffold_project`, but for an **already-scaffolded** project whose
+/// scaffold has drifted behind current defaults (e.g. it predates a scaffold
+/// file or a `.gitignore` pattern being added). Fills in whatever is missing —
+/// same never-overwrite rule for existing files — and additionally merges any
+/// missing `GITIGNORE_DEFAULT` pattern into an already-present `.gitignore`
+/// (plain `scaffold_project` leaves a pre-existing `.gitignore` untouched).
+fn repair_project_scaffold_at(dir: &Path, with_git: bool) -> std::io::Result<ScaffoldRepairReport> {
+    fs::create_dir_all(dir)?;
+    let dot_claude = dir.join(".claude");
+    fs::create_dir_all(&dot_claude)?;
+
+    let mut report = ScaffoldRepairReport::default();
+    for (name, content) in SCAFFOLD_FILES {
+        let p = dir.join(name);
+        if !p.exists() {
+            fs::write(&p, content)?;
+            report.created_files.push((*name).to_string());
+        }
+    }
+    report.gitignore_lines_added = ensure_gitignore_defaults(dir)?;
+
+    let cs = dot_claude.join("settings.json");
+    if !cs.exists() {
+        fs::write(&cs, CLAUDE_SETTINGS)?;
+        report.created_files.push(".claude/settings.json".to_string());
+    }
+    if with_git && !dir.join(".git").exists() {
+        let _ = crate::paths::command_no_window("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output();
+        report.git_initialized = dir.join(".git").is_dir();
+    }
+    Ok(report)
+}
+
+/// Resolve the local, on-disk directory a project's scaffold lives in: the
+/// project's own `directory` for a local project, or its local `mirror`
+/// working copy for a mount-free remote project (the remote host tree is
+/// never touched here — see `finish_import`/`create_project`). `None` when
+/// there is no local target to repair (e.g. a remote project with no mirror
+/// recorded yet).
+fn scaffold_target_for_entry(entry: &ProjectEntry) -> Option<(PathBuf, bool)> {
+    let git_type = entry
+        .extra
+        .get("git_type")
+        .and_then(Value::as_str)
+        .unwrap_or("local");
+    let with_git = git_type != "none";
+    let target = if entry_is_remote(entry) {
+        entry_mirror(entry)?
+    } else {
+        entry_directory(entry)?
+    };
+    Some((PathBuf::from(target), with_git))
+}
+
+/// A single project's scaffold-repair outcome, for the "Repair scaffold
+/// files" UI action (per-project or bulk across all managed projects).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectScaffoldRepair {
+    pub project_id: String,
+    pub name: String,
+    pub target_dir: String,
+    pub report: ScaffoldRepairReport,
+}
+
+/// Repair one project's scaffold: fill in any scaffold doc, `.gitignore`
+/// pattern, or `.claude/settings.json` that is missing relative to current
+/// defaults. Safe to run repeatedly — every step is additive/idempotent.
+#[tauri::command]
+pub fn repair_project_scaffold(project_id: String) -> Result<ProjectScaffoldRepair, String> {
+    let list_path = storage::state_dir().join("projects.json");
+    let list: ProjectsList = storage::read_json(&list_path).map_err(|e| e.to_string())?;
+    let entry = list
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+    let (target, with_git) = scaffold_target_for_entry(&entry)
+        .ok_or_else(|| "Project has no local scaffold target".to_string())?;
+    let report = repair_project_scaffold_at(&target, with_git).map_err(|e| e.to_string())?;
+    Ok(ProjectScaffoldRepair {
+        project_id: entry.id,
+        name: entry.name,
+        target_dir: target.to_string_lossy().to_string(),
+        report,
+    })
+}
+
+/// Repair scaffold files across every managed project in one pass — the bulk
+/// counterpart to `repair_project_scaffold`. Projects whose local target
+/// directory doesn't exist yet (e.g. a remote project whose mirror hasn't
+/// materialized) are silently skipped rather than erroring the whole batch.
+/// Returns only the projects that actually needed a repair.
+#[tauri::command]
+pub fn repair_all_project_scaffolds() -> Result<Vec<ProjectScaffoldRepair>, String> {
+    let list_path = storage::state_dir().join("projects.json");
+    if !list_path.exists() {
+        return Ok(vec![]);
+    }
+    let list: ProjectsList = storage::read_json(&list_path).map_err(|e| e.to_string())?;
+    let mut results = Vec::new();
+    for entry in &list {
+        let Some((target, with_git)) = scaffold_target_for_entry(entry) else {
+            continue;
+        };
+        if !target.is_dir() {
+            continue;
+        }
+        match repair_project_scaffold_at(&target, with_git) {
+            Ok(report) if !report.is_empty() => results.push(ProjectScaffoldRepair {
+                project_id: entry.id.clone(),
+                name: entry.name.clone(),
+                target_dir: target.to_string_lossy().to_string(),
+                report,
+            }),
+            Ok(_) => {}
+            Err(e) => eprintln!(
+                "repair_all_project_scaffolds: '{}' ({}) failed: {e}",
+                entry.name, entry.id
+            ),
+        }
+    }
+    Ok(results)
 }
 
 fn scaffold_preview(dir: &Path) -> Vec<ScaffoldPreviewItem> {
@@ -1211,6 +1399,23 @@ fn finish_import(
     // already exists on the host, so no local scaffold is written there.
     if remote.is_none() && !req.skip_scaffold {
         scaffold_project(&target, git_type != "none").map_err(|e| e.to_string())?;
+    }
+
+    // A remote import keeps the host tree as the git authority (it pre-exists on
+    // the host, so we never scaffold or `git init` the local mirror — pairing
+    // pulls the host's history down). But when the user imports **with git
+    // support** onto a host dir that is not yet a repo, there is no history for
+    // lockstep to pair from; initialize a repo on the host so the mirror can be
+    // paired from it. Best-effort + idempotent (skipped if already a repo).
+    if let Some(remote) = &remote {
+        if git_type != "none" {
+            if let Err(e) = crate::services::ssh_exec::remote_git_init(remote) {
+                eprintln!(
+                    "finish_import: remote git init '{}' failed (init it on the host if needed): {e}",
+                    remote.remote_path
+                );
+            }
+        }
     }
 
     let now = chrono_now();
@@ -1588,6 +1793,18 @@ mod tests {
     }
 
     #[test]
+    fn scaffold_project_gitignores_project_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path(), true).unwrap();
+
+        let content = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(
+            content.lines().any(|l| l == "project.json"),
+            "default .gitignore must exclude project.json"
+        );
+    }
+
+    #[test]
     fn scaffold_project_does_not_overwrite_existing_files() {
         let tmp = tempfile::tempdir().unwrap();
         let todo_path = tmp.path().join("TODO.md");
@@ -1659,4 +1876,56 @@ mod tests {
         assert_eq!(present.kind, "directory");
     }
 
+    // ── repair_project_scaffold_at ─────────────────────────────────────────
+
+    #[test]
+    fn repair_fills_missing_scaffold_docs_and_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Simulate a project scaffolded before DOCUMENTATION.md / .claude
+        // settings existed: only a couple of the current scaffold files.
+        std::fs::write(tmp.path().join("TODO.md"), "# TODO\n").unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "node_modules/\n").unwrap();
+
+        let report = repair_project_scaffold_at(tmp.path(), false).unwrap();
+
+        assert!(report.created_files.contains(&"AGENTS.md".to_string()));
+        assert!(report.created_files.contains(&".claude/settings.json".to_string()));
+        assert!(!report.created_files.contains(&"TODO.md".to_string()));
+        assert!(tmp.path().join("DOCUMENTATION.md").exists());
+        assert!(tmp.path().join(".claude/settings.json").exists());
+    }
+
+    #[test]
+    fn repair_merges_missing_gitignore_lines_without_clobbering() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "# my custom rule\nfoo/\n").unwrap();
+
+        let report = repair_project_scaffold_at(tmp.path(), false).unwrap();
+
+        assert!(report.gitignore_lines_added.contains(&"project.json".to_string()));
+        let content = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(content.contains("# my custom rule"));
+        assert!(content.contains("foo/"));
+        assert!(content.lines().any(|l| l == "project.json"));
+    }
+
+    #[test]
+    fn repair_is_a_noop_when_scaffold_is_already_current() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path(), false).unwrap();
+
+        let report = repair_project_scaffold_at(tmp.path(), false).unwrap();
+
+        assert!(report.is_empty());
+    }
+
+    #[test]
+    fn repair_initializes_git_when_missing_and_requested() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let report = repair_project_scaffold_at(tmp.path(), true).unwrap();
+
+        assert!(report.git_initialized);
+        assert!(tmp.path().join(".git").is_dir());
+    }
 }

@@ -10,11 +10,11 @@
 //!     `shell_quote`/`validate_arg` exist to defend against simply cannot occur
 //!     here (a directory named `foo; rm -rf ~` is one inert listing entry).
 //!
-//! Only the *browse* path moves to SFTP. The project **mount** still uses sshfs
-//! (a local mountpoint needs a kernel FUSE driver regardless of language) and
-//! remote **agent/terminal** tabs still run over `ssh -tt` (see #28b). Auth is
-//! shared with those paths: key/agent in `BatchMode=yes`, or `sshpass` reading
-//! the password from `SSHPASS` when one is supplied.
+//! Only the *browse* path moves to SFTP. Remote **agent/terminal** tabs run over
+//! `ssh -tt` (see #28b). Auth is shared with those paths: key/agent in
+//! `BatchMode=yes`, or — when a password is supplied — fed to ssh via OpenSSH's
+//! own `SSH_ASKPASS` on Unix (`services::ssh_common::make_askpass`) / `sshpass` on
+//! Windows.
 
 use std::process::Stdio;
 
@@ -24,7 +24,7 @@ use tokio::process::{Child, Command};
 
 use crate::services::ssh_common::{
     ssh_base_args, ssh_master_base_args, ssh_password_base_args, ssh_password_master_base_args,
-    sshpass_available, validate_arg,
+    validate_arg,
 };
 
 /// One entry in a remote directory listing. Structurally identical to the
@@ -60,37 +60,59 @@ fn sftp_subsystem_args(mut base: Vec<String>) -> Result<Vec<String>, String> {
     Ok(base)
 }
 
-/// Spawn `ssh -s sftp` (optionally via `sshpass`) with piped stdin/stdout and
-/// hand the pipes to an `Sftp` client. Returns the live client plus the child so
-/// the caller can await its exit after dropping the client (dropping closes
-/// stdin, which makes ssh exit).
+/// Spawn `ssh -s sftp` with piped stdin/stdout and hand the pipes to an `Sftp`
+/// client. Returns the live client plus the child so the caller can await its exit
+/// after dropping the client (dropping closes stdin, which makes ssh exit).
+///
+/// For password auth the secret is fed via OpenSSH's `SSH_ASKPASS` on Unix (no
+/// external binary) or `sshpass -e` on Windows. The Unix askpass guard is kept in
+/// scope until the function returns so the shim exists throughout the ssh
+/// handshake (auth happens during `Sftp::new`, not merely at spawn).
 async fn open_session(
     user: &Option<String>,
     host: &str,
     port: Option<u16>,
     password: Option<&str>,
 ) -> Result<(Sftp, Child), String> {
-    let (mut cmd, _via_sshpass) = match password.filter(|p| !p.is_empty()) {
+    #[cfg(unix)]
+    let mut _askpass: Option<crate::services::ssh_common::Askpass> = None;
+    let mut cmd = match password.filter(|p| !p.is_empty()) {
         Some(pw) => {
-            if !sshpass_available() {
-                return Err(
-                    "sshpass not found — install sshpass to use password auth, or set up SSH keys"
-                        .to_string(),
-                );
-            }
             let args = sftp_subsystem_args(ssh_password_base_args(user, host, port)?)?;
-            let mut c = Command::new("sshpass");
-            c.arg("-e"); // read the password from $SSHPASS, never argv
-            c.env("SSHPASS", pw);
-            c.arg("ssh");
-            c.args(&args);
-            (c, true)
+            let c;
+            #[cfg(unix)]
+            {
+                let mut cc = Command::new("ssh");
+                cc.args(&args);
+                let ap = crate::services::ssh_common::make_askpass(pw)?;
+                for (k, v) in ap.env_vars() {
+                    cc.env(k, v);
+                }
+                _askpass = Some(ap);
+                c = cc;
+            }
+            #[cfg(not(unix))]
+            {
+                if !crate::services::ssh_common::sshpass_available() {
+                    return Err(
+                        "sshpass not found — install sshpass to use password auth, or set up SSH keys"
+                            .to_string(),
+                    );
+                }
+                let mut cc = Command::new("sshpass");
+                cc.arg("-e"); // read the password from $SSHPASS, never argv
+                cc.env("SSHPASS", pw);
+                cc.arg("ssh");
+                cc.args(&args);
+                c = cc;
+            }
+            c
         }
         None => {
             let args = sftp_subsystem_args(ssh_base_args(user, host, port)?)?;
             let mut c = Command::new("ssh");
             c.args(&args);
-            (c, false)
+            c
         }
     };
 
@@ -140,20 +162,38 @@ pub async fn open_pooled_session(
     #[cfg(not(target_os = "windows"))]
     let _ = std::fs::create_dir_all(crate::services::ssh_exec::control_dir());
 
+    #[cfg(unix)]
+    let mut _askpass: Option<crate::services::ssh_common::Askpass> = None;
     let mut cmd = match password.filter(|p| !p.is_empty()) {
         Some(pw) => {
-            if !sshpass_available() {
-                return Err(
-                    "sshpass not found — install sshpass to use password auth, or set up SSH keys"
-                        .to_string(),
-                );
-            }
             let args = sftp_subsystem_args(ssh_password_master_base_args(user, host, port)?)?;
-            let mut c = Command::new("sshpass");
-            c.arg("-e"); // read the password from $SSHPASS, never argv
-            c.env("SSHPASS", pw);
-            c.arg("ssh");
-            c.args(&args);
+            let c;
+            #[cfg(unix)]
+            {
+                let mut cc = Command::new("ssh");
+                cc.args(&args);
+                let ap = crate::services::ssh_common::make_askpass(pw)?;
+                for (k, v) in ap.env_vars() {
+                    cc.env(k, v);
+                }
+                _askpass = Some(ap);
+                c = cc;
+            }
+            #[cfg(not(unix))]
+            {
+                if !crate::services::ssh_common::sshpass_available() {
+                    return Err(
+                        "sshpass not found — install sshpass to use password auth, or set up SSH keys"
+                            .to_string(),
+                    );
+                }
+                let mut cc = Command::new("sshpass");
+                cc.arg("-e"); // read the password from $SSHPASS, never argv
+                cc.env("SSHPASS", pw);
+                cc.arg("ssh");
+                cc.args(&args);
+                c = cc;
+            }
             c
         }
         None => {

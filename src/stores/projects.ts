@@ -23,6 +23,7 @@ import { useSettingsStore } from "./settings";
 import { useRemoteStatusStore } from "./remoteStatus";
 import { useConnectDialogStore } from "./connectDialog";
 import { openConnectionInRoot } from "../lib/remoteConnect";
+import { describeScaffoldRepair, type ProjectScaffoldRepair } from "../components/projects/scaffold";
 
 /**
  * If `project` is VPN-gated, ensure its OpenVPN tunnel is up before any sshfs
@@ -258,8 +259,9 @@ interface ProjectsStore {
   loaded: boolean;
   rootDir: string | null;
   switchToast: string | null;
-  /** A transient connection notice (e.g. "VPN connected · proj"). Kept separate
-   *  from `switchToast` so a project switch doesn't clobber it (and vice-versa). */
+  /** A transient one-off action notice (e.g. "VPN connected · proj", a scaffold
+   *  repair summary). Kept separate from `switchToast` so a project switch
+   *  doesn't clobber it (and vice-versa). */
   connToast: string | null;
   rightPanelFolderByProject: Record<string, string>;
   /** Incremented only on explicit setActive calls, never by load(). */
@@ -294,6 +296,11 @@ interface ProjectsStore {
   /** Disable (delete .git → git_type "none") or re-enable (git init → "local")
    * git for an existing project. Destructive when disabling. */
   setProjectGitDisabled: (id: string, disabled: boolean) => Promise<void>;
+  /** Fill in any scaffold file/`.gitignore` pattern this project is missing
+   * relative to current defaults (e.g. it predates that default). Additive
+   * only — never overwrites existing content. Surfaces the result as a
+   * transient toast. */
+  repairProjectScaffold: (id: string) => Promise<ProjectScaffoldRepair>;
   publishProject: (
     id: string,
     provider: GitProvider,
@@ -710,6 +717,12 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
         project.id === id ? { ...project, git_type: gitType } : project,
       ),
     }));
+  },
+
+  repairProjectScaffold: async (id) => {
+    const repair = await invoke<ProjectScaffoldRepair>("repair_project_scaffold", { projectId: id });
+    useProjectsStore.setState({ connToast: describeScaffoldRepair(repair) });
+    return repair;
   },
 
   publishProject: async (id, provider, visibility) => {

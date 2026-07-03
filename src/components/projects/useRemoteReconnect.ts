@@ -115,6 +115,16 @@ export function useRemoteReconnect(project: ProjectEntry) {
     }
   };
 
+  // Per-channel connect "generation". A connect (headless invoke or ControlMaster
+  // poll) captures the current value and only writes its outcome back if it still
+  // matches — so `stopSsh`/`stopVpn` can bump the counter to *abandon* an in-flight
+  // attempt whose backend call can't itself be cancelled (the ssh probe self-times
+  // out at ConnectTimeout=10s; the OpenVPN handshake at CONNECT_TIMEOUT=45s). This
+  // is what makes the Stop button actually resolve a frozen "connecting…" lamp:
+  // without it the stale invoke would later flip the lamp back to error/connected.
+  const sshGen = useRef(0);
+  const vpnGen = useRef(0);
+
   // Tear everything down when the panel unmounts (project switch / reconnect
   // succeeded and the panel is replaced by the restored tabs). The PTYs are NOT
   // killed here — they `persistOnUnmount`, so an authenticated login/tunnel keeps
@@ -168,14 +178,21 @@ export function useRemoteReconnect(project: ProjectEntry) {
     }
   };
 
-  // Tear the embedded VPN terminal down (explicit disconnect). Kills the PTY and
-  // drops the dedupe mark so a later attempt can re-open it.
-  const stopVpnTerm = () => {
+  // Stop the OpenVPN channel: cancel any in-flight connect (headless invoke or the
+  // embedded login terminal) and reset the lamp to off. Bumping the generation
+  // abandons a frozen headless connect; killing the PTY + dropping the dedupe mark
+  // tears down an interactive tunnel; `openvpn_disconnect` best-effort kills a
+  // tunnel that had already come up. Used by both the terminal Disconnect and the
+  // headless Stop button.
+  const stopVpn = () => {
+    vpnGen.current++;
     const term = vpnTermRef.current;
-    if (!term) return;
-    void invoke("pty_kill", { id: term.id }).catch(() => {});
-    forgetConnection(term.key);
-    vpnTermRef.current = null;
+    if (term) {
+      void invoke("pty_kill", { id: term.id }).catch(() => {});
+      forgetConnection(term.key);
+      vpnTermRef.current = null;
+    }
+    if (vpnConfig) void invoke("openvpn_disconnect", { config: vpnConfig }).catch(() => {});
     setVpn(projectId, "off");
     force();
   };
@@ -187,8 +204,8 @@ export function useRemoteReconnect(project: ProjectEntry) {
   // tab restore. Bounded (~2 min) so a never-authenticated login eventually
   // stops; never hard-errors while the terminal is up (the login may just not be
   // authenticated yet).
-  const pollSshReady = (attempt = 0) => {
-    if (!remote) return;
+  const pollSshReady = (attempt = 0, gen = sshGen.current) => {
+    if (!remote || gen !== sshGen.current) return; // stopped mid-poll
     const maxAttempts = 40; // ~2 min at 3s cadence
     void invoke<void>("ssh_connect", {
       user: remote.user ?? null,
@@ -197,22 +214,26 @@ export function useRemoteReconnect(project: ProjectEntry) {
       password: null,
     })
       .then(async () => {
+        if (gen !== sshGen.current) return; // stopped while the probe ran
         clearSshPoll();
         // Master is up; bring the pool up so every later channel rides it.
         try {
           await invoke("remote_connect", { projectId, password: null });
+          if (gen !== sshGen.current) return;
           setSsh(projectId, "connected");
         } catch {
+          if (gen !== sshGen.current) return;
           setSsh(projectId, "error");
         }
       })
       .catch(() => {
+        if (gen !== sshGen.current) return; // stopped while the probe ran
         if (attempt + 1 >= maxAttempts) {
           clearSshPoll();
           setSsh(projectId, "error");
           return;
         }
-        sshPollTimer.current = setTimeout(() => pollSshReady(attempt + 1), 3000);
+        sshPollTimer.current = setTimeout(() => pollSshReady(attempt + 1, gen), 3000);
       });
   };
 
@@ -232,9 +253,10 @@ export function useRemoteReconnect(project: ProjectEntry) {
       const key = `ssh:${target}:${remote.port ?? ""}`;
       markConnectionOpened(key);
       sshTermRef.current = { id: nextReconnectTermId("ssh"), command, key };
+      const gen = ++sshGen.current;
       setSsh(projectId, "connecting");
       force();
-      pollSshReady();
+      pollSshReady(0, gen);
     } catch {
       setSsh(projectId, "error");
     }
@@ -245,8 +267,9 @@ export function useRemoteReconnect(project: ProjectEntry) {
   const tryConnectNow = () => {
     if (!sshTermRef.current) return;
     clearSshPoll();
+    const gen = ++sshGen.current;
     setSsh(projectId, "connecting");
-    pollSshReady();
+    pollSshReady(0, gen);
   };
 
   // ── Headless connect path (Connect modal, `connections_headless` ON) ─────────
@@ -277,14 +300,17 @@ export function useRemoteReconnect(project: ProjectEntry) {
   // headless `connectVpn`.
   const connectVpnHeadless = async (password: string, remember = false) => {
     if (!vpnConfig) return;
+    const gen = ++vpnGen.current;
     setVpn(projectId, "connecting");
     setVpnError("");
     setVpnLog([]);
     try {
       await invoke("openvpn_connect", { config: vpnConfig, password, remember });
+      if (gen !== vpnGen.current) return; // stopped mid-connect
       setVpnSaved(remember);
       setVpn(projectId, "connected");
     } catch (e) {
+      if (gen !== vpnGen.current) return; // stopped — ignore the stale failure
       setVpn(projectId, "error");
       setVpnError(String(e));
     }
@@ -296,6 +322,7 @@ export function useRemoteReconnect(project: ProjectEntry) {
   // but with a user-typed password rather than riding an existing ControlMaster.
   const connectSshHeadless = async (password: string, remember = false) => {
     if (!remote) return;
+    const gen = ++sshGen.current;
     setSsh(projectId, "connecting");
     setSshError("");
     try {
@@ -306,22 +333,32 @@ export function useRemoteReconnect(project: ProjectEntry) {
         password,
         remember,
       });
+      if (gen !== sshGen.current) return; // stopped mid-connect
       await invoke("remote_connect", { projectId, password: null });
+      if (gen !== sshGen.current) return;
       setSshSaved(remember);
       setSsh(projectId, "connected");
     } catch (e) {
+      if (gen !== sshGen.current) return; // stopped — ignore the stale failure
       setSsh(projectId, "error");
       setSshError(String(e));
     }
   };
 
-  const stopSshTerm = () => {
-    const term = sshTermRef.current;
-    if (!term) return;
-    void invoke("pty_kill", { id: term.id }).catch(() => {});
-    forgetConnection(term.key);
-    sshTermRef.current = null;
+  // Stop the SSH channel: cancel any in-flight connect (headless invoke or the
+  // ControlMaster poll), tear down an embedded login terminal, best-effort drop a
+  // half-open pool, and reset the lamp to off. Mirror of `stopVpn`; used by both
+  // the terminal Disconnect and the headless Stop button.
+  const stopSsh = () => {
+    sshGen.current++;
     clearSshPoll();
+    const term = sshTermRef.current;
+    if (term) {
+      void invoke("pty_kill", { id: term.id }).catch(() => {});
+      forgetConnection(term.key);
+      sshTermRef.current = null;
+    }
+    void invoke("remote_disconnect", { projectId }).catch(() => {});
     setSsh(projectId, "off");
     force();
   };
@@ -334,9 +371,9 @@ export function useRemoteReconnect(project: ProjectEntry) {
     vpnTerm: vpnTermRef.current,
     sshTerm: sshTermRef.current,
     startVpnTerm,
-    stopVpnTerm,
+    stopVpn,
     startSshTerm,
-    stopSshTerm,
+    stopSsh,
     tryConnectNow,
     // Headless connect path
     sshError,

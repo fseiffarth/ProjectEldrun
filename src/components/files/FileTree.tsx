@@ -16,15 +16,15 @@ import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore, type SyncFileMeta } from "../../stores/sync";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
-import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, hiddenEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
+import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { basename } from "../../lib/paths";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 
-// Persist whether the collapsed "hidden" files section is expanded, so the
+// Persist whether the collapsed "gitignored" files section is expanded, so the
 // choice survives right-panel hide/show and remounts (FileTree remounts each
 // time the panel reopens). Mirrors GitHistory's localStorage view pref.
-const HIDDEN_EXPANDED_KEY = "eldrun.fileTree.hiddenExpanded";
+const GITIGNORED_EXPANDED_KEY = "eldrun.fileTree.gitignoredExpanded";
 
 function sizeCategory(bytes: number): string {
   if (bytes < 10 * 1024) return "size-small";
@@ -38,7 +38,6 @@ interface Props {
   projectId: string | null;
   /** Path to the project's project.json; enables the project-scoped default app. */
   localFile?: string | null;
-  showHidden?: boolean;
   sortKey?: SortKey;
   descending?: boolean;
   hiddenEndings?: string[];
@@ -131,7 +130,6 @@ export function FileTree({
   projectDir,
   projectId,
   localFile = null,
-  showHidden = false,
   sortKey = "name",
   descending = false,
   hiddenEndings = [],
@@ -153,9 +151,9 @@ export function FileTree({
   const [gitStatuses, setGitStatuses] = useState<GitStatusMap>({});
   const [isDragOver, setIsDragOver] = useState(false);
   const [separateScaffold, setSeparateScaffold] = useState(true);
-  const [hiddenExpanded, setHiddenExpanded] = useState<boolean>(() => {
+  const [gitignoredExpanded, setGitignoredExpanded] = useState<boolean>(() => {
     try {
-      return localStorage.getItem(HIDDEN_EXPANDED_KEY) === "1";
+      return localStorage.getItem(GITIGNORED_EXPANDED_KEY) === "1";
     } catch {
       return false;
     }
@@ -251,9 +249,12 @@ export function FileTree({
   );
   const remoteBlocked = remoteListing && remoteSshState !== "connected";
 
+  // Dotfiles always render inline here — there's no separate "hidden" section;
+  // any that are actually gitignored get pulled into the gitignored section
+  // below instead (see the render below).
   const entries = useMemo(
     () => visibleEntries(rawEntries, {
-      showHidden,
+      showHidden: true,
       showStandardFiles: true,
       sortKey,
       descending,
@@ -262,23 +263,7 @@ export function FileTree({
       hiddenPaths,
       shownPaths,
     }),
-    [rawEntries, showHidden, sortKey, descending, hiddenEndings, relPath, hiddenPaths, shownPaths],
-  );
-
-  // Dotfiles hidden from the inline tree, surfaced in a collapsed section so they
-  // stay discoverable without flooding the tree (TODO group N #29). Shown
-  // independently of the scaffold split — see the render below.
-  const hidden = useMemo(
-    () => hiddenEntries(rawEntries, {
-      showHidden,
-      sortKey,
-      descending,
-      hiddenEndings,
-      relPath,
-      hiddenPaths,
-      shownPaths,
-    }),
-    [rawEntries, showHidden, sortKey, descending, hiddenEndings, relPath, hiddenPaths, shownPaths],
+    [rawEntries, sortKey, descending, hiddenEndings, relPath, hiddenPaths, shownPaths],
   );
 
   // Resolve embed capability for any not-yet-known file extension in view. One
@@ -1347,11 +1332,15 @@ export function FileTree({
       )}
       {(() => {
         const isRoot = !relPath && separateScaffold;
-        const regular = isRoot ? entries.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : entries;
+        const nonStandard = isRoot ? entries.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : entries;
         const standard = isRoot ? entries.filter((e) => STANDARD_PROJECT_FILES.has(e.name)) : [];
+        // Gitignored entries get their own collapsed section instead of an inline
+        // grey ✕ marker — pulled out of the regular list wherever they fall.
+        const regular = nonStandard.filter((e) => gitStatuses[e.name] !== "ignored");
+        const gitignored = nonStandard.filter((e) => gitStatuses[e.name] === "ignored");
 
-        function renderEntry(e: FileEntry, isScaffold = false) {
-          const status = gitStatuses[e.name];
+        function renderEntry(e: FileEntry, isScaffold = false, isGitignored = false) {
+          const status = isGitignored ? undefined : gitStatuses[e.name];
           const sizeClass = !e.is_dir ? sizeCategory(e.size) : "";
           const canRun = !e.is_dir && e.extension === ".sh";
           const isRunning = runningScripts.has(e.path);
@@ -1375,7 +1364,7 @@ export function FileTree({
           return (
             <div
               key={e.path}
-              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold ? " scaffold" : ""}${isMoveTarget ? " move-drop-target" : ""}`}
+              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold || isGitignored ? " scaffold" : ""}${isMoveTarget ? " move-drop-target" : ""}`}
               // Folders are drag-to-move destinations: dropping a dragged file
               // here relocates it (hit-tested by data-move-rel in the drag).
               data-move-rel={e.is_dir ? relForEntry(e) : undefined}
@@ -1507,23 +1496,23 @@ export function FileTree({
                 {scaffoldExpanded && standard.map((e) => renderEntry(e, true))}
               </>
             )}
-            {hidden.length > 0 && (
+            {gitignored.length > 0 && (
               <>
                 <button
                   type="button"
                   className="file-tree-section-divider file-tree-hidden-toggle"
-                  aria-expanded={hiddenExpanded}
-                  onClick={() => setHiddenExpanded((v) => {
+                  aria-expanded={gitignoredExpanded}
+                  onClick={() => setGitignoredExpanded((v) => {
                     const next = !v;
-                    try { localStorage.setItem(HIDDEN_EXPANDED_KEY, next ? "1" : "0"); } catch { /* ignore storage failures */ }
+                    try { localStorage.setItem(GITIGNORED_EXPANDED_KEY, next ? "1" : "0"); } catch { /* ignore storage failures */ }
                     return next;
                   })}
-                  title={hiddenExpanded ? "Collapse hidden files" : "Expand hidden files"}
+                  title={gitignoredExpanded ? "Collapse gitignored files" : "Expand gitignored files"}
                 >
-                  <span className="file-tree-hidden-caret">{hiddenExpanded ? "▾" : "▸"}</span>
-                  hidden ({hidden.length})
+                  <span className="file-tree-hidden-caret">{gitignoredExpanded ? "▾" : "▸"}</span>
+                  gitignored ({gitignored.length})
                 </button>
-                {hiddenExpanded && hidden.map((e) => renderEntry(e, true))}
+                {gitignoredExpanded && gitignored.map((e) => renderEntry(e, false, true))}
               </>
             )}
           </>

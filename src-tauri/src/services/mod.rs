@@ -1,6 +1,7 @@
 pub mod agent_session;
 pub mod git_credentials;
 pub mod git_peer;
+pub mod net_usage;
 pub mod openvpn;
 pub mod project_runtime;
 pub mod remote;
