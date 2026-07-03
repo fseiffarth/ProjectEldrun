@@ -991,14 +991,22 @@ pub fn detect_git_providers() -> Result<HashMap<String, DetectedOrigin>, String>
                 continue;
             }
         }
-        let Some(Value::String(dir)) = entry.extra.get("directory") else {
-            continue;
+        // The project's working directory. Legacy entries (created before
+        // `directory` was persisted — e.g. the self-hosting ProjectEldrun
+        // entry) omit the key; fall back to `local_file`'s parent, which is
+        // always `<directory>/project.json`, so they still get sniffed/badged.
+        let dir: String = match entry.extra.get("directory") {
+            Some(Value::String(d)) => d.clone(),
+            _ => match Path::new(&entry.local_file).parent() {
+                Some(p) => p.to_string_lossy().into_owned(),
+                None => continue,
+            },
         };
-        if !Path::new(dir).join(".git").exists() {
+        if !Path::new(&dir).join(".git").exists() {
             continue;
         }
         let output = crate::paths::command_no_window("git")
-            .args(["-C", dir, "remote", "get-url", "origin"])
+            .args(["-C", &dir, "remote", "get-url", "origin"])
             .output();
         let Ok(output) = output else { continue };
         if !output.status.success() {

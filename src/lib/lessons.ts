@@ -614,4 +614,47 @@ export const LESSONS: Lesson[] = [
       },
     ],
   },
+  {
+    id: "extend-to-remote",
+    category: "Advanced",
+    title: "Extend a local project to a remote",
+    blurb: "Pair an existing local project with an SSH host — files stay local, git keeps the two in lockstep.",
+    steps: [
+      {
+        id: "why-extend",
+        anchor: ".project-pills-region",
+        placement: "top",
+        title: "Take a local project remote",
+        body: "Already have a local project and want a copy on another machine? Extending pairs it with an SSH host without moving your files: your local folder stays put and becomes the mirror, Eldrun creates a matching folder on the host, and git keeps the two in lockstep. It's the reverse of adding a fresh SSH project.",
+      },
+      {
+        id: "right-click-pill",
+        anchor: ".project-pills-region",
+        placement: "top",
+        title: "Right-click the project pill",
+        body: "Right-click the pill of the local project you want to extend to open its context menu, then pick \"Extend to remote…\". (It only shows for local projects — a project that's already remote has nothing to extend.)",
+      },
+      {
+        id: "connect-host",
+        anchor: null,
+        placement: "bottom",
+        title: "Connect to the host",
+        body: "Type the SSH address as user@host or host:2222. Leave the password blank to use your SSH key/agent, or fill it in for password auth. If the host sits behind a VPN, flip \"Connect via OpenVPN\" (off by default) and bring up the tunnel first. Click Connect, then Next.",
+      },
+      {
+        id: "pick-remote-folder",
+        anchor: null,
+        placement: "bottom",
+        title: "Choose the remote folder",
+        body: "A remote file browser appears. Step into the parent directory where the host copy should live and click \"Use this folder\" — Eldrun creates the project's folder there. Hit Next to review.",
+      },
+      {
+        id: "review-and-extend",
+        anchor: null,
+        placement: "bottom",
+        title: "Review Local ↔ Remote, then extend",
+        body: "The summary shows your existing Local path paired with the new Remote path. Click \"Extend to remote\". Your local files aren't touched — they become the git-lockstep mirror, and you push them up to the host through git when you're ready.",
+      },
+    ],
+  },
 ];

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::paths;
-use crate::schema::project::{Project, RemoteSpec, SandboxSpec};
+use crate::schema::project::{OpenVpnSpec, Project, RemoteSpec, SandboxSpec};
 use crate::schema::projects::{ProjectEntry, ProjectsList};
 use crate::storage;
 
@@ -65,20 +65,59 @@ pub fn get_projects() -> Result<ProjectsList, String> {
         return Ok(vec![]);
     }
     let mut list: ProjectsList = storage::read_json(&path).map_err(|e| e.to_string())?;
-    // Migrate legacy git_type values (private/public) to the local/remote model
-    // in-memory so the frontend always sees canonical values. Persisted on the
-    // next natural save (no surprise write from a read command).
+    // Bring legacy entries up to the current shape in-memory so the frontend and
+    // every command see canonical, fully-populated entries regardless of which
+    // Eldrun version first wrote them. Persisted on the next natural save (no
+    // surprise write from a read command).
     for entry in list.iter_mut() {
-        if let Some(Value::String(gt)) = entry.extra.get("git_type") {
-            let norm = normalize_git_type(gt);
-            if &norm != gt {
-                entry
-                    .extra
-                    .insert("git_type".to_string(), Value::String(norm));
+        normalize_entry(entry);
+    }
+    Ok(list)
+}
+
+/// Bring one `projects.json` entry up to the current on-disk shape, in place.
+///
+/// Old Eldrun versions (pre-Group-D) wrote entries that omit fields the current
+/// code and pill/hover UI expect. This backfills those from information the
+/// entry already carries, so a legacy project (e.g. the self-hosting
+/// ProjectEldrun entry, which predates persisted `directory`) becomes
+/// indistinguishable from a freshly-created one. Purely additive/canonicalizing:
+/// it never overwrites a value the entry already sets.
+///
+/// - `directory`: derived from `local_file`'s parent (always `<dir>/project.json`)
+///   when absent. Load-bearing — provider sniffing, archive, and remoteness
+///   checks all key off it.
+/// - `git_type`: legacy `private`/`public` mapped to the `remote-*` model.
+///
+/// Returns `true` when it actually changed something — i.e. the entry was
+/// legacy. Startup uses that as the trigger to also refresh the project's
+/// on-disk scaffold (see `migrate_legacy_projects`).
+pub(crate) fn normalize_entry(entry: &mut ProjectEntry) -> bool {
+    let mut changed = false;
+    // Backfill a missing working directory from `local_file`'s parent.
+    let has_dir = matches!(entry.extra.get("directory"), Some(Value::String(d)) if !d.is_empty());
+    if !has_dir {
+        if let Some(parent) = std::path::Path::new(&entry.local_file).parent() {
+            if !parent.as_os_str().is_empty() {
+                entry.extra.insert(
+                    "directory".to_string(),
+                    Value::String(parent.to_string_lossy().into_owned()),
+                );
+                changed = true;
             }
         }
     }
-    Ok(list)
+    // Canonicalize a legacy git_type value (private/public → remote-*).
+    if let Some(Value::String(gt)) = entry.extra.get("git_type") {
+        let norm = normalize_git_type(gt);
+        if &norm != gt {
+            entry
+                .extra
+                .insert("git_type".to_string(), Value::String(norm));
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// Normalize a `git_type` value to the local/remote model used since Group D.
@@ -659,6 +698,62 @@ pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<bool, St
     }
 
     Ok(enabled)
+}
+
+/// Set (or clear) the OpenVPN client config on a **remote** project's SSH spec,
+/// mirrored into both `projects.json` (the flattened `remote` extra the frontend
+/// reads) and the project's own `project.json`. This exists because a remote
+/// project may be created/extended on a network that needs no VPN (so no config
+/// is stored), then later reconnected from a VPN-gated network — the Connect
+/// dialog attaches the config here so it's remembered for next time.
+///
+/// `config = Some(path)` attaches the tunnel; `None`/blank removes it. Errors if
+/// the project isn't remote. Returns the stored config path ("" when cleared).
+#[tauri::command]
+pub fn set_project_openvpn(project_id: String, config: Option<String>) -> Result<String, String> {
+    let spec = config
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(|c| OpenVpnSpec {
+            config: c.to_string(),
+            extra: HashMap::new(),
+        });
+
+    // projects.json — patch the `openvpn` field inside the flattened `remote` value.
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    let remote_val = entry
+        .extra
+        .get_mut("remote")
+        .ok_or_else(|| "project is not remote".to_string())?;
+    let mut remote: RemoteSpec =
+        serde_json::from_value(remote_val.clone()).map_err(|e| e.to_string())?;
+    remote.openvpn = spec.clone();
+    *remote_val = serde_json::to_value(&remote).map_err(|e| e.to_string())?;
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // project.json — keep the per-project remote spec consistent (best effort).
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            if let Some(r) = project.remote.as_mut() {
+                r.openvpn = spec.clone();
+                storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    Ok(spec.map(|s| s.config).unwrap_or_default())
 }
 
 /// Normalize a list of category tags: trim each, drop blanks, and de-duplicate
@@ -1245,6 +1340,66 @@ pub fn repair_all_project_scaffolds() -> Result<Vec<ProjectScaffoldRepair>, Stri
     Ok(results)
 }
 
+/// One-time-per-entry startup migration that brings legacy `projects.json`
+/// entries fully in line with the current Eldrun version. For each entry:
+///
+/// 1. `normalize_entry` canonicalizes its shape (backfill `directory`, map
+///    legacy `git_type`). Entries it touches are *legacy* — written by an older
+///    Eldrun that predates those fields.
+/// 2. Every legacy entry additionally gets its on-disk scaffold refreshed (the
+///    same additive, never-overwrite repair as the manual "Repair scaffold
+///    files" action), since a legacy project also predates current scaffold
+///    defaults (`.claude/settings.json`, newer docs, `.gitignore` patterns).
+///
+/// The normalized list is persisted once if anything changed, so the migration
+/// is durable rather than re-derived on every load. Runs best-effort at startup
+/// off the UI thread; every failure is logged and non-fatal.
+pub fn migrate_legacy_projects() {
+    let path = storage::state_dir().join("projects.json");
+    if !path.exists() {
+        return;
+    }
+    let mut list: ProjectsList = match storage::read_json(&path) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("migrate_legacy_projects: read projects.json: {e}");
+            return;
+        }
+    };
+    let mut dirty = false;
+    for entry in list.iter_mut() {
+        if !normalize_entry(entry) {
+            continue; // already current — nothing to migrate or repair.
+        }
+        dirty = true;
+        // Legacy entry: also fill in any scaffold piece it predates. Skipped
+        // when there's no materialized local target yet (e.g. a remote project
+        // whose mirror hasn't been created).
+        let Some((target, with_git)) = scaffold_target_for_entry(entry) else {
+            continue;
+        };
+        if !target.is_dir() {
+            continue;
+        }
+        match repair_project_scaffold_at(&target, with_git) {
+            Ok(report) if !report.is_empty() => eprintln!(
+                "migrate_legacy_projects: '{}' ({}) scaffold repaired: {:?}",
+                entry.name, entry.id, report.created_files
+            ),
+            Ok(_) => {}
+            Err(e) => eprintln!(
+                "migrate_legacy_projects: '{}' ({}) scaffold repair failed: {e}",
+                entry.name, entry.id
+            ),
+        }
+    }
+    if dirty {
+        if let Err(e) = storage::write_json(&path, &list) {
+            eprintln!("migrate_legacy_projects: persist projects.json: {e}");
+        }
+    }
+}
+
 fn scaffold_preview(dir: &Path) -> Vec<ScaffoldPreviewItem> {
     let mut items = SCAFFOLD_FILES
         .iter()
@@ -1721,9 +1876,6 @@ pub fn extend_project_to_remote(req: ExtendProjectRemoteRequest) -> Result<Proje
     project.mirror = Some(old_dir.clone());
     let new_project_file = state_dir.join("project.json");
     storage::write_json(&new_project_file, &project).map_err(|e| e.to_string())?;
-    // Remote projects don't keep project.json in the working copy — drop the stale
-    // one so the mirror is clean. Best-effort (a leftover file is harmless).
-    let _ = std::fs::remove_file(&old_project_file);
 
     // Update the same projects.json entry in place, preserving every other extra
     // key (categories, git_provider, git_type, description, sandbox, …).
@@ -1739,7 +1891,16 @@ pub fn extend_project_to_remote(req: ExtendProjectRemoteRequest) -> Result<Proje
         .extra
         .insert("mirror".to_string(), Value::String(old_dir));
     let updated = entry.clone();
+    // Persist the `mirror` pointer to projects.json BEFORE removing the old
+    // project.json. If this crashes mid-way, the worst case is a harmless leftover
+    // project.json in the mirror — never a lost `mirror` pointer (which would make
+    // `mirror_dir` fall back to an empty state dir and desync the lockstep view).
     storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // Now that the remote wiring is durably recorded, drop the stale project.json
+    // from the working copy so the mirror is clean. Best-effort (a leftover is
+    // harmless — the state-dir copy is the source of truth).
+    let _ = std::fs::remove_file(&old_project_file);
     Ok(updated)
 }
 
@@ -2013,6 +2174,58 @@ mod tests {
         assert_eq!(normalize_git_type(""), "local");
         assert_eq!(normalize_git_type("weird"), "local");
         assert_eq!(normalize_git_type("  public  "), "remote-public");
+    }
+
+    // ── normalize_entry ────────────────────────────────────────────────────
+
+    fn legacy_entry() -> ProjectEntry {
+        // A pre-Group-D stub like the real ProjectEldrun entry: core fields only,
+        // no `directory`, no `git_type`.
+        ProjectEntry {
+            id: "legacy-id".to_string(),
+            name: "ProjectEldrun".to_string(),
+            status: "active".to_string(),
+            position: 10,
+            local_file: "/home/u/eldrun/projects/projecteldrun/project.json".to_string(),
+            extra: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn normalize_entry_backfills_directory_from_local_file() {
+        let mut entry = legacy_entry();
+        normalize_entry(&mut entry);
+        assert_eq!(
+            entry.extra.get("directory").and_then(Value::as_str),
+            Some("/home/u/eldrun/projects/projecteldrun"),
+        );
+    }
+
+    #[test]
+    fn normalize_entry_keeps_existing_directory() {
+        let mut entry = legacy_entry();
+        entry.extra.insert(
+            "directory".to_string(),
+            Value::String("/custom/dir".to_string()),
+        );
+        normalize_entry(&mut entry);
+        assert_eq!(
+            entry.extra.get("directory").and_then(Value::as_str),
+            Some("/custom/dir"),
+        );
+    }
+
+    #[test]
+    fn normalize_entry_canonicalizes_legacy_git_type() {
+        let mut entry = legacy_entry();
+        entry
+            .extra
+            .insert("git_type".to_string(), Value::String("public".to_string()));
+        normalize_entry(&mut entry);
+        assert_eq!(
+            entry.extra.get("git_type").and_then(Value::as_str),
+            Some("remote-public"),
+        );
     }
 
     // ── scaffold_project ───────────────────────────────────────────────────

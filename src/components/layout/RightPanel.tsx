@@ -6,6 +6,7 @@ import { FileTree } from "../files/FileTree";
 import { GitHistory } from "../files/GitHistory";
 import { GitChangeTree, type ChangeScope } from "../files/GitChangeTree";
 import { SearchPanel } from "../files/SearchPanel";
+import { Dropdown } from "../common/Dropdown";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore, amberPaths } from "../../stores/sync";
@@ -731,6 +732,9 @@ export function RightPanel({
         {!activeBox && activeProject && (
           <ProjectHoverCard project={activeProject} state={nameHover} showTags={false} />
         )}
+        {/* Static project type tags (git / provider / SSH / scaffold). These are
+            labels only — no interactivity — so they deliberately look nothing
+            like the source switch below. */}
         {!activeBox && typeTags.length > 0 && (
           <span className="right-panel-type-tags">
             {typeTags.map((t) => (
@@ -745,24 +749,37 @@ export function RightPanel({
             ))}
           </span>
         )}
-        {/* Remote/Local source toggle sits right of the project name (remote SSH
-            projects only). It shows the side the files view is currently on —
-            "Remote" = the host tree over SFTP, "Local" = the synced mirror — and
-            one click flips to the other. */}
+        {/* Remote/Local file-source switch (remote SSH projects only). A live
+            segmented control — NOT a tag — that flips the files view between the
+            host tree over SFTP ("Remote") and the synced mirror ("Local"). It's
+            right-aligned and styled as a switch so it never reads as one of the
+            static tags above. */}
         {!activeBox && activeProject?.remote && activeId && (
-          <button
-            type="button"
-            className={`right-panel-source-toggle source-${fileSource}`}
-            aria-label={`File source: ${fileSource === "remote" ? "Remote" : "Local"} — click to switch`}
-            onClick={() => setFileSource((s) => (s === "remote" ? "local" : "remote"))}
-            title={
-              fileSource === "remote"
-                ? "Showing the host tree over SFTP. Click to switch to the local mirror."
-                : "Showing the local mirror copy. Click to switch to the host (remote) tree."
-            }
-          >
-            {fileSource === "remote" ? "Remote" : "Local"}
-          </button>
+          <>
+          {/* Breaker: drop the switch onto its own row so it left-aligns with the
+              pin/name (header padding edge) instead of trailing the tags. */}
+          <span style={{ flexBasis: "100%", width: 0, height: 0 }} />
+          <span className="right-panel-source-switch" role="group" aria-label="File source">
+            <button
+              type="button"
+              className={`source-seg${fileSource === "local" ? " active" : ""}`}
+              aria-pressed={fileSource === "local"}
+              onClick={() => setFileSource("local")}
+              title="Show the local synced mirror copy."
+            >
+              Local
+            </button>
+            <button
+              type="button"
+              className={`source-seg${fileSource === "remote" ? " active" : ""}`}
+              aria-pressed={fileSource === "remote"}
+              onClick={() => setFileSource("remote")}
+              title="Show the host tree over SFTP (remote)."
+            >
+              Remote
+            </button>
+          </span>
+          </>
         )}
         {/* Git status/action buttons drop to their own row below the project name
             (forced by the flex-basis breaker) instead of crowding it. Only
@@ -1295,19 +1312,20 @@ export function RightPanel({
                         </label>
                         {/* #45 default completion-length mode; toggled live
                             in-editor with Shift+Tab while a suggestion shows. */}
-                        <select
+                        <Dropdown
                           className="viewer-pref-mode"
                           value={pref.autocomplete_mode ?? "sentence"}
                           disabled={!enabled || pref.autocomplete !== true}
                           title="Default completion length (toggle live with Shift+Tab)"
-                          onChange={(e) =>
-                            patch({ autocomplete_mode: e.target.value as ViewerPref["autocomplete_mode"] })
+                          onChange={(v) =>
+                            patch({ autocomplete_mode: v as ViewerPref["autocomplete_mode"] })
                           }
-                        >
-                          <option value="sentence">Sentence</option>
-                          <option value="block">Block</option>
-                          <option value="scope">Scope</option>
-                        </select>
+                          options={[
+                            { value: "sentence", label: "Sentence" },
+                            { value: "block", label: "Block" },
+                            { value: "scope", label: "Scope" },
+                          ]}
+                        />
                         {/* Local-model grammar/spelling check — underlines typos
                             (red), grammar (blue), style (green) in the editor. */}
                         <label className="viewer-pref-toggle">

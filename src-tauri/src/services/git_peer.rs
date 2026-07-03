@@ -72,6 +72,11 @@ pub struct PeerSnapshot {
     /// True only for staged/unstaged **tracked** changes (blocks a clean checkout);
     /// untracked/ignored files never count (they remain file-sync's domain).
     pub dirty_tracked: bool,
+    /// True when the repo check could not be *executed* over an existing tree
+    /// (git missing / spawn failure), as opposed to a clean "not a repo" answer.
+    /// A side with `probe_error` must never be treated as an empty pairing dest —
+    /// a transient failure must not license a `reset --hard` that wipes a real repo.
+    pub probe_error: bool,
 }
 
 /// Overall lockstep status for a project.
@@ -323,12 +328,24 @@ pub fn save_state(project_id: &str, state: &GitPeerState) -> Result<(), String> 
 /// Read a peer's git state (HEAD, branches, tags, tracked-dirty). A non-repo or any
 /// probe failure yields `is_repo == false` so the caller degrades gracefully.
 pub fn probe(peer: &Peer) -> PeerSnapshot {
-    let is_repo = peer
-        .run(&["rev-parse", "--is-inside-work-tree"])
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let res = peer.run(&["rev-parse", "--is-inside-work-tree"]);
+    let is_repo = res.as_ref().map(|o| o.status.success()).unwrap_or(false);
     if !is_repo {
-        return PeerSnapshot::default();
+        // Distinguish a clean "not a repo" (git ran, said no — a legitimately empty
+        // side we may safely initialize) from a probe that could not run at all. A
+        // missing local dir is *not* an error: there is no repo there to destroy, so
+        // pairing may create the mirror. But an execution failure over an existing
+        // tree must NOT read as "empty" — that would let a `reset --hard` wipe a real
+        // repo on a transient git hiccup. `remote_target_for`-side connection drops
+        // surface as a non-zero ssh exit (Ok), so only a true spawn error flags here.
+        let probe_error = match peer {
+            Peer::Local(dir) => dir.exists() && res.is_err(),
+            Peer::Remote(_) => res.is_err(),
+        };
+        return PeerSnapshot {
+            probe_error,
+            ..Default::default()
+        };
     }
 
     let symbolic = peer
@@ -370,6 +387,7 @@ pub fn probe(peer: &Peer) -> PeerSnapshot {
         branches,
         tags,
         dirty_tracked,
+        probe_error: false,
     }
 }
 
@@ -689,6 +707,20 @@ async fn init_pairing(
         let _ = std::fs::create_dir_all(dir);
     }
 
+    // Defense-in-depth: init_pairing's contract is that `dest` is the *empty* side.
+    // If a misprobe/race routed us here with a dest that actually already holds
+    // commits, back every existing branch tip up to `refs/eldrun/backup/*` BEFORE the
+    // `reset --hard` below can move them — so an unexpected non-empty dest is always
+    // recoverable rather than silently wiped. Truly-empty dests probe clean and skip.
+    let pre = probe(&dest_peer);
+    if !pre.branches.is_empty() {
+        let ts = now_secs();
+        for b in &pre.branches {
+            let backup = backup_ref_name(&b.name, ts);
+            let _ = dest_peer.run(&["update-ref", &backup, &b.sha]);
+        }
+    }
+
     // `git init` the empty side (idempotent on an existing repo, but we only reach
     // here when the dest is not yet a repo).
     let out = dest_peer.run(&["init"])?;
@@ -739,6 +771,10 @@ pub async fn reconcile(pool: &RemotePoolState, project_id: &str, spec: &RemoteSp
 
     let mut diverged: Vec<String> = Vec::new();
     let mut dirty_blocked = false;
+    // Set when we deliberately refuse to auto-pair because the local side (the one
+    // that would be `git init`+`reset --hard`ed) couldn't be read — forces a
+    // Desynchronized state instead of a wipe (checked first in the status decision).
+    let mut pairing_blocked: Option<String> = None;
 
     if local.is_repo && remote.is_repo {
         // Local → remote, then remote → local (each catches the side that is ahead).
@@ -763,14 +799,30 @@ pub async fn reconcile(pool: &RemotePoolState, project_id: &str, spec: &RemoteSp
     } else if local.is_repo != remote.is_repo {
         // Exactly one side is a repo → initialize the other from it (initial pairing).
         let source_is_local = local.is_repo;
-        let source = if source_is_local { &local } else { &remote };
-        let _ = init_pairing(pool, project_id, spec, source_is_local, source).await;
+        if !source_is_local && local.probe_error {
+            // The local mirror would be the side we `git init` + `reset --hard`, but
+            // its probe *errored* (dir exists, yet git couldn't confirm a repo). Refuse
+            // to treat it as empty: a transient local-git failure must never license a
+            // wipe of a real local repo. Surface it for the user to retry/resolve.
+            pairing_blocked = Some(
+                "Local repository could not be read; refusing to auto-initialize it \
+                 from the host. Retry once local git is reachable."
+                    .to_string(),
+            );
+        } else {
+            let source = if source_is_local { &local } else { &remote };
+            let _ = init_pairing(pool, project_id, spec, source_is_local, source).await;
+        }
     }
 
     let final_local = probe(&Peer::Local(mirror_dir(project_id)));
     let final_remote = probe(&Peer::Remote(spec.clone()));
 
-    let (status, detail) = if !final_local.is_repo || !final_remote.is_repo {
+    let (status, detail) = if let Some(msg) = pairing_blocked {
+        // We refused to auto-initialize an unreadable local side — report it (must be
+        // checked before the "one side has no repo" branch, which would mask it).
+        (SyncStatus::Desynchronized, Some(msg))
+    } else if !final_local.is_repo || !final_remote.is_repo {
         // Still one side without a repo (source was unborn, or init failed) — nothing
         // to lock-step yet.
         (SyncStatus::Synchronized, None)
@@ -1230,6 +1282,42 @@ pub async fn detect_and_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Returns true when `git` is on PATH; probe tests skip gracefully otherwise.
+    fn git_available() -> bool {
+        crate::paths::command_no_window("git")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn probe_missing_local_dir_is_clean_empty_not_error() {
+        // A local dir that does not exist is a legitimately-empty side (nothing to
+        // destroy) — it must NOT flag `probe_error`, so pairing can still create it.
+        let missing = std::path::PathBuf::from("/definitely/not/a/real/eldrun/dir/xyz");
+        let snap = probe(&Peer::Local(missing));
+        assert!(!snap.is_repo);
+        assert!(!snap.probe_error, "missing dir must read as clean-empty");
+    }
+
+    #[test]
+    fn probe_existing_non_repo_dir_is_clean_empty() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping probe_existing_non_repo_dir_is_clean_empty");
+            return;
+        }
+        // An existing directory that is not a git repo: git runs and cleanly says
+        // "no" → is_repo=false, but probe_error=false (safe to initialize).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let snap = probe(&Peer::Local(tmp.path().to_path_buf()));
+        assert!(!snap.is_repo);
+        assert!(
+            !snap.probe_error,
+            "an existing non-repo dir must be a clean-empty, not a probe error"
+        );
+    }
 
     #[test]
     fn parse_refs_reads_sha_and_short_name() {

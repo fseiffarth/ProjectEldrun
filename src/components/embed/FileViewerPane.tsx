@@ -3617,17 +3617,17 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
         Autocomplete
       </button>
       {ai.autocomplete && (
-        <select
+        <Dropdown
           className="file-viewer-ai-mode"
           value={ai.mode}
           title="Completion length (Ctrl+Shift+Space cycles it live)"
-          aria-label="Completion length"
-          onChange={(e) => ai.setMode(e.target.value as AutocompleteMode)}
-        >
-          <option value="sentence">Sentence</option>
-          <option value="block">Block</option>
-          <option value="scope">Scope</option>
-        </select>
+          onChange={(v) => ai.setMode(v as AutocompleteMode)}
+          options={[
+            { value: "sentence", label: "Sentence" },
+            { value: "block", label: "Block" },
+            { value: "scope", label: "Scope" },
+          ]}
+        />
       )}
       <button
         type="button"

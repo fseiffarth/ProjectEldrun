@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import type { ProjectEntry } from "../../types";
+import { invoke } from "@tauri-apps/api/core";
+import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { useProjectsStore } from "../../stores/projects";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { joinRemotePath, sanitizeName } from "./scaffold";
-import { useRemoteSession } from "./useRemoteSession";
+import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
 
 /**
@@ -33,6 +35,8 @@ export function ExtendToRemoteDialog({
   const {
     isRemoteProject,
     toggleRemoteProject,
+    winManual,
+    isRemote,
     step,
     setStep,
     remoteBrowsePath,
@@ -44,6 +48,25 @@ export function ExtendToRemoteDialog({
 
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Footer step machine, borrowed verbatim from the new-project dialog so the
+  // extend flow gets the same Back/Next navigation (the details step must be
+  // able to step back to re-pick the remote folder). Windows non-headless skips
+  // the browse step (it types the path in connect).
+  const remoteSteps: RemoteStep[] = winManual
+    ? ["connect", "details"]
+    : ["connect", "browse", "details"];
+  const stepIdx = remoteSteps.indexOf(step);
+  const goBack = () => setStep(remoteSteps[Math.max(0, stepIdx - 1)]);
+  const goNext = () => setStep(remoteSteps[Math.min(remoteSteps.length - 1, stepIdx + 1)]);
+  const canNext =
+    step === "connect"
+      ? winManual
+        ? remoteChosenPath.trim() !== ""
+        : isRemote
+      : step === "browse"
+        ? remoteChosenPath.trim() !== ""
+        : false;
 
   // This dialog is always remote — enable remote mode on mount so the tooling
   // probe + recent addresses/configs load and RemoteProjectSection renders.
@@ -69,6 +92,20 @@ export function ExtendToRemoteDialog({
     setError("");
     try {
       await extendProjectToRemote(project.id, spec);
+      // Reaching this step required a live, authenticated SSH session (the flow
+      // browsed/created the remote folder over it), so the host's ControlMaster
+      // is already up. Carry that straight over to the now-remote project rather
+      // than dropping it to a "Connect" prompt: open its pooled SSH/SFTP channel
+      // (rides the existing master, password-less) and light the SSH lamp green.
+      // Fire-and-forget — the lamp reflects connecting → connected as it resolves.
+      const status = useRemoteStatusStore.getState();
+      status.setSsh(project.id, "connecting");
+      void invoke("remote_connect", { projectId: project.id, password: null })
+        .then(() => useRemoteStatusStore.getState().setSsh(project.id, "connected"))
+        .catch((err) => {
+          console.warn("remote_connect after extend failed", err);
+          useRemoteStatusStore.getState().setSsh(project.id, "error");
+        });
       onClose();
     } catch (e) {
       setError(String(e));
@@ -77,6 +114,8 @@ export function ExtendToRemoteDialog({
   };
 
   const remotePath = joinRemotePath(remoteChosenPath || "/", safeName || project.name);
+  // The local files stay in place, so the mirror is the project's current dir.
+  const localPath = resolveProjectDirectory(project);
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -97,9 +136,16 @@ export function ExtendToRemoteDialog({
         />
 
         {step === "details" && (
-          <div className="project-dialog-path">
-            Will create <code>{remotePath}</code> on the host and pair it with this
-            project’s local files.
+          <div className="project-dialog-path extend-summary">
+            <span>Creates the remote folder and pairs it with this project’s existing local files:</span>
+            <div className="extend-path-row">
+              <span className="extend-path-label">Local</span>
+              <code className="extend-remote-path">{localPath}</code>
+            </div>
+            <div className="extend-path-row">
+              <span className="extend-path-label">Remote</span>
+              <code className="extend-remote-path">{remotePath}</code>
+            </div>
           </div>
         )}
 
@@ -109,18 +155,29 @@ export function ExtendToRemoteDialog({
           <button type="button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button
-            type="button"
-            onClick={() => void submit()}
-            disabled={busy || !remoteReady}
-            title={
-              remoteReady
-                ? "Attach the remote host to this project"
-                : "Connect and choose a remote folder first"
-            }
-          >
-            {busy ? "Extending…" : "Extend to remote"}
-          </button>
+          {stepIdx > 0 && (
+            <button type="button" disabled={busy} onClick={goBack}>
+              Back
+            </button>
+          )}
+          {step !== "details" ? (
+            <button type="button" disabled={!canNext || busy} onClick={goNext}>
+              Next
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={busy || !remoteReady}
+              title={
+                remoteReady
+                  ? "Attach the remote host to this project"
+                  : "Connect and choose a remote folder first"
+              }
+            >
+              {busy ? "Extending…" : "Extend to remote"}
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { TerminalView } from "../terminal/TerminalView";
 import { ConnLamp } from "../common/ConnLamp";
 import { ConnectionLog } from "../common/ConnectionLog";
+import { Dropdown } from "../common/Dropdown";
 import { useRemoteReconnect } from "./useRemoteReconnect";
 import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useProjectsStore, disconnectRemote } from "../../stores/projects";
@@ -41,6 +42,9 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
     sshStatus,
     vpnStatus,
     vpnConfig,
+    vpnConfigs,
+    selectVpnConfig,
+    browseVpnConfig,
     winManual,
     vpnTerm,
     sshTerm,
@@ -60,6 +64,10 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
 
   const [sshPassword, setSshPassword] = useState("");
   const [vpnPassword, setVpnPassword] = useState("");
+  // "Connect via OpenVPN" opt-in, default OFF: this project is VPN-gated, but on
+  // the right network the tunnel is unnecessary and SSH connects directly. The
+  // VPN fields stay collapsed until the user turns this on.
+  const [vpnEnabled, setVpnEnabled] = useState(false);
   // "Save password" opt-in (default off). Pre-checked when a credential is
   // already saved for this target, so it reflects the true keychain state.
   const [sshRemember, setSshRemember] = useState(false);
@@ -110,14 +118,64 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
           )}
         </div>
 
-        {/* ── OpenVPN (only for VPN-gated projects) ─────────────────────────── */}
-        {vpnConfig && (
-          <div className="remote-reconnect-section" role="group" aria-label="OpenVPN tunnel">
-            <div className="remote-field-label">
-              <ConnLamp status={vpnStatus} label="OpenVPN" />
-              Connect via OpenVPN
+        {/* ── OpenVPN (always offered; opt-in, default off) ─────────────────────
+            Shown for every remote project, not only ones that stored a config at
+            create time: a project made on a no-VPN network may need a tunnel when
+            reconnected from a VPN-gated one. With no config yet, enabling the
+            toggle reveals a picker; the choice is persisted to the project. */}
+        <div className="remote-reconnect-section" role="group" aria-label="OpenVPN tunnel">
+          <label className={`toggle-card${vpnEnabled ? " is-on" : ""}`}>
+            <span className="toggle-card-body">
+              <span className="toggle-card-title">
+                <ConnLamp status={vpnStatus} label="OpenVPN" />
+                Connect via OpenVPN
+              </span>
+              <span className="toggle-card-desc">
+                Bring up a tunnel first if this host is VPN-gated. Skip it when
+                you're already on the right network — SSH connects directly.
+              </span>
+            </span>
+            <span className="eld-switch">
+              <input
+                type="checkbox"
+                checked={vpnEnabled}
+                disabled={vpnStatus === "connecting" || vpnStatus === "connected"}
+                onChange={(e) => setVpnEnabled(e.target.checked)}
+              />
+              <span className="eld-switch-track" aria-hidden="true" />
+            </span>
+          </label>
+          {vpnEnabled && !vpnConfig && (
+            <div className="vpn-config-pick">
+              <span className="ssh-optional-hint">
+                Choose the OpenVPN config for this host — it's saved to the project
+                so you only pick it once.
+              </span>
+              {vpnConfigs.length > 0 && (
+                <div className="folder-picker-row">
+                  <Dropdown
+                    className="dropdown-block vpn-config-recent"
+                    value=""
+                    placeholder="Recently used…"
+                    title="Reuse a previously-used OpenVPN config"
+                    onChange={(v) => {
+                      if (v) selectVpnConfig(v);
+                    }}
+                    options={vpnConfigs.map((c) => ({ value: c.path, label: c.name }))}
+                  />
+                </div>
+              )}
+              <div className="folder-picker-row">
+                <button type="button" className="dialog-connect-btn" onClick={() => void browseVpnConfig()}>
+                  Choose .ovpn config…
+                </button>
+              </div>
+              {vpnStatus === "error" && vpnError && (
+                <div className="project-dialog-error">{vpnError}</div>
+              )}
             </div>
-            {headless ? (
+          )}
+          {vpnEnabled && vpnConfig && (headless ? (
               <>
                 <label className="remote-connect-field">
                   VPN passphrase
@@ -208,9 +266,8 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
                   </div>
                 )}
               </div>
-            )}
-          </div>
-        )}
+            ))}
+        </div>
 
         {/* ── SSH ───────────────────────────────────────────────────────────── */}
         <div className="remote-reconnect-section" role="group" aria-label="SSH login">

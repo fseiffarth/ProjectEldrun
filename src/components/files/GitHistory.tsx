@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Dropdown } from "../common/Dropdown";
 
 interface GitCommit {
   hash: string;
@@ -614,17 +615,12 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
         )}
         {wtForm && (
           <div className="git-worktree-form">
-            <select
+            <Dropdown
               value={wtForm.branch}
-              onChange={(e) => setWtForm({ ...wtForm, branch: e.target.value })}
-              aria-label="Branch"
-            >
-              {localBranches.map((b) => (
-                <option key={b.name} value={b.name}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
+              title="Branch"
+              onChange={(v) => setWtForm({ ...wtForm, branch: v })}
+              options={localBranches.map((b) => ({ value: b.name, label: b.name }))}
+            />
             <input
               type="text"
               placeholder="Worktree path"

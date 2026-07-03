@@ -23,6 +23,7 @@ describe("LESSONS catalog", () => {
       "docker-sandbox",
       "add-ssh-project",
       "ssh-via-openvpn",
+      "extend-to-remote",
     ]);
   });
 

@@ -103,8 +103,17 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         .filter((p) => p.status !== "inactive")
         .map(
           (p) =>
+            // Include the git-provider axis (explicit `git_provider` and the
+            // async-sniffed `detected_provider`) so a pill's type tags refresh
+            // when `detect_git_providers` fills them in after load — otherwise
+            // the memo pins a stale project object and the hover shows only the
+            // base "git" tag while the right panel (which reads the live store)
+            // shows git + GitHub. Both feed the same `projectTypeTags`; keep
+            // their inputs in sync.
             `${p.id}:${p.position}:${typeof p.box_id === "string" ? p.box_id : ""}:${
               typeof p.git_type === "string" ? p.git_type : ""
+            }:${typeof p.git_provider === "string" ? p.git_provider : ""}:${
+              typeof p.detected_provider === "string" ? p.detected_provider : ""
             }`,
         )
         .sort()

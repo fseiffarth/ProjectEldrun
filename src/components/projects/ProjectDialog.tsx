@@ -20,6 +20,7 @@ import {
 } from "./scaffold";
 import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
+import { Dropdown } from "../common/Dropdown";
 
 export function ProjectDialog({
   kind,
@@ -188,11 +189,16 @@ export function ProjectDialog({
   // Commit the currently-browsed remote folder. On import with an empty name,
   // default the name to the chosen folder's last segment.
   const useThisRemoteFolder = () => {
-    setRemoteChosenPath(remoteBrowsePath || "/");
+    const chosen = remoteBrowsePath || "/";
+    setRemoteChosenPath(chosen);
     if (kind === "import" && !name.trim()) {
-      const segs = (remoteBrowsePath || "").split("/").filter(Boolean);
+      const segs = chosen.split("/").filter(Boolean);
       if (segs.length) setName(segs[segs.length - 1]);
     }
+    // Persist the committed folder against this host now (not only at submit),
+    // so it's offered in the "Recently used…" lists for the next SSH project on
+    // the same remote — even if this dialog is later cancelled.
+    rememberChosenPath(chosen);
     // Committing the folder is the natural end of the browse step.
     setStep("details");
   };
@@ -374,18 +380,19 @@ export function ProjectDialog({
     <label className="project-description-field">
       <div className="project-description-header">
         <span>Project description</span>
-        <select
-          aria-label="Project description fill mode"
+        <Dropdown
+          title="Project description fill mode"
           value={descriptionFillMode}
-          onChange={(e) => setDescriptionFillMode(e.target.value)}
-        >
-          <option value="manual">Manual</option>
-          <option value="agent_choice">Agent choice</option>
-          <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
-          <option value="gemini">Gemini</option>
-          <option value="vibe">Mistral</option>
-        </select>
+          onChange={setDescriptionFillMode}
+          options={[
+            { value: "manual", label: "Manual" },
+            { value: "agent_choice", label: "Agent choice" },
+            { value: "claude", label: "Claude" },
+            { value: "codex", label: "Codex" },
+            { value: "gemini", label: "Gemini" },
+            { value: "vibe", label: "Mistral" },
+          ]}
+        />
       </div>
       <textarea
         value={description}
@@ -481,12 +488,17 @@ export function ProjectDialog({
 
         <label>
           Git hosting
-          <select value={gitType} onChange={(e) => setGitType(e.target.value)}>
-            <option value="none">No git (plain files, no repo)</option>
-            <option value="local">Local repo only (not pushed anywhere)</option>
-            <option value="remote-private">Push to GitHub/GitLab · private</option>
-            <option value="remote-public">Push to GitHub/GitLab · public</option>
-          </select>
+          <Dropdown
+            className="dropdown-block"
+            value={gitType}
+            onChange={setGitType}
+            options={[
+              { value: "none", label: "No git (plain files, no repo)" },
+              { value: "local", label: "Local repo only (not pushed anywhere)" },
+              { value: "remote-private", label: "Push to GitHub/GitLab · private" },
+              { value: "remote-public", label: "Push to GitHub/GitLab · public" },
+            ]}
+          />
           <span className="ssh-optional-hint">
             “Push to GitHub/GitLab” publishes the repo to a hosting service
             {isRemoteProject
@@ -510,11 +522,16 @@ export function ProjectDialog({
         {kind === "import" && !isRemoteProject && (
           <label>
             Import mode
-            <select value={mode} onChange={(e) => setMode(e.target.value)}>
-              <option value="keep">Keep location (register in place)</option>
-              <option value="copy">Copy into Eldrun's projects folder</option>
-              <option value="move">Move into Eldrun's projects folder</option>
-            </select>
+            <Dropdown
+              className="dropdown-block"
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: "keep", label: "Keep location (register in place)" },
+                { value: "copy", label: "Copy into Eldrun's projects folder" },
+                { value: "move", label: "Move into Eldrun's projects folder" },
+              ]}
+            />
           </label>
         )}
 
@@ -562,18 +579,15 @@ export function ProjectDialog({
 
             <label className="scaffold-fill-all-row">
               <span>Fill all</span>
-              <select
+              <Dropdown
                 value=""
+                placeholder={missingFillableScaffoldCount === 0 ? "No missing files" : "Choose fill mode..."}
                 disabled={missingFillableScaffoldCount === 0}
-                onChange={(e) => applyScaffoldFillAll(e.target.value)}
-              >
-                <option value="" disabled>
-                  {missingFillableScaffoldCount === 0 ? "No missing files" : "Choose fill mode..."}
-                </option>
-                {SCAFFOLD_FILL_OPTIONS.map((option) => (
-                  <option value={option.value} key={option.value}>{option.label}</option>
-                ))}
-              </select>
+                onChange={(v) => {
+                  if (v) applyScaffoldFillAll(v);
+                }}
+                options={SCAFFOLD_FILL_OPTIONS}
+              />
             </label>
 
             <div className="scaffold-list">
@@ -584,17 +598,14 @@ export function ProjectDialog({
                     <small>{scaffoldStatusText(item)}</small>
                   </div>
                   {item.kind === "file" ? (
-                    <select
+                    <Dropdown
                       value={item.exists ? "none" : scaffoldFillModes[item.path] ?? "none"}
                       disabled={item.exists}
-                      onChange={(e) =>
-                        setScaffoldFillModes((current) => ({ ...current, [item.path]: e.target.value }))
+                      onChange={(v) =>
+                        setScaffoldFillModes((current) => ({ ...current, [item.path]: v }))
                       }
-                    >
-                      {SCAFFOLD_FILL_OPTIONS.map((option) => (
-                        <option value={option.value} key={option.value}>{option.label}</option>
-                      ))}
-                    </select>
+                      options={SCAFFOLD_FILL_OPTIONS}
+                    />
                   ) : (
                     <span className="scaffold-row-status">Status only</span>
                   )}
@@ -610,19 +621,42 @@ export function ProjectDialog({
         )}
 
         <div className="project-dialog-path">
-          {isRemoteProject
-            ? remoteChosenPath
-              ? kind === "new"
-                ? `Remote destination: ${joinRemotePath(remoteChosenPath, safeName || "<name>")}`
-                : `Remote location: ${remoteChosenPath}`
-              : ""
-            : kind === "new" || mode !== "keep"
-              ? targetDir
-                ? `Destination: ${targetDir}`
-                : ""
-              : sourceDir
-                ? `Location: ${sourceDir}`
-                : ""}
+          {isRemoteProject ? (
+            remoteChosenPath ? (
+              <span className="remote-chosen-summary">
+                <span className="remote-chosen-text">
+                  {kind === "new"
+                    ? `Remote destination: ${joinRemotePath(remoteChosenPath, safeName || "<name>")}`
+                    : `Remote location: ${remoteChosenPath}`}
+                </span>
+                {/* Wrong folder committed at the browse step? Jump straight back
+                    to it (the browser keeps its place) to pick another — without
+                    hunting for the footer's generic Back button. Windows manual
+                    has no browse step, so Back lands on the connect path field. */}
+                <button
+                  type="button"
+                  className="remote-change-folder-btn"
+                  disabled={busy}
+                  onClick={goBack}
+                  title={
+                    winManual
+                      ? "Go back to change the remote path"
+                      : "Go back to the remote browser to pick a different folder"
+                  }
+                >
+                  Change folder
+                </button>
+              </span>
+            ) : (
+              ""
+            )
+          ) : kind === "new" || mode !== "keep" ? (
+            targetDir ? `Destination: ${targetDir}` : ""
+          ) : sourceDir ? (
+            `Location: ${sourceDir}`
+          ) : (
+            ""
+          )}
         </div>
         {error && <div className="project-dialog-error">{error}</div>}
         </>

@@ -41,3 +41,8 @@ src-tauri/WixTools/
 
 # JSON backup files created by storage layer
 *.bak.json
+.env
+.env.local
+*.swp
+*.swo
+.idea/

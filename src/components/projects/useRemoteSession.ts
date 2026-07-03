@@ -79,10 +79,13 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // Refreshed whenever the resolved host changes; see the effect below.
   const [remotePaths, setRemotePaths] = useState<string[]>([]);
   // --- Optional OpenVPN tunnel for VPN-gated remote hosts ---
+  // "Connect via OpenVPN" opt-in, default OFF. Most hosts are reached directly
+  // when you're already on the right network, so the VPN section stays collapsed
+  // (and no config is stored on the project) until the user turns this on.
+  const [vpnEnabled, setVpnEnabled] = useState(false);
   // `vpnConfig` holds the Eldrun-stored `.ovpn` path (the picked file is copied
   // into Eldrun on selection). The password is transient — never persisted.
-  // OpenVPN is the only tunnel type, so there's no separate enable toggle: the
-  // tunnel is "used" exactly when a config is selected (`vpnConfig` non-empty).
+  // A tunnel is "used" only when the toggle is on AND a config is selected.
   const [vpnConfig, setVpnConfig] = useState("");
   const [vpnPassword, setVpnPassword] = useState("");
   const [vpnStatus, setVpnStatus] = useState<ConnStatus>("idle");
@@ -255,12 +258,17 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [suggestionHost]);
 
-  // Remember the currently-chosen remote path against the resolved host. Called
-  // right before a remote project is actually created/imported (see
-  // `buildRemoteSpec`'s call site), so only paths a user committed to persist.
-  const rememberChosenPath = () => {
-    if (!suggestionHost || !remoteChosenPath.trim()) return;
-    rememberRemotePath(suggestionHost, remoteChosenPath);
+  // Remember a chosen remote path against the resolved host so it's offered in
+  // the "Recently used…" lists on the next SSH project for the same host. Called
+  // both when a browsed folder is committed ("Use this folder") and right before
+  // a remote project is actually created/imported (see `buildRemoteSpec`'s call
+  // site). `path` defaults to the committed `remoteChosenPath`; the browse commit
+  // passes the just-browsed path explicitly, since the `remoteChosenPath` state
+  // update from the same click isn't visible yet.
+  const rememberChosenPath = (path?: string) => {
+    const target = (path ?? remoteChosenPath).trim();
+    if (!suggestionHost || !target) return;
+    rememberRemotePath(suggestionHost, target);
   };
 
   // Stream the live OpenVPN handshake into `vpnLog` while the VPN section is
@@ -641,7 +649,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // manually-entered remote path.
   const buildRemoteSpec = (safeName: string) => {
     if (!isRemoteProject) return undefined;
-    const openvpn = vpnConfig ? { config: vpnConfig } : undefined;
+    const openvpn = vpnEnabled && vpnConfig ? { config: vpnConfig } : undefined;
     // Both modes now browse to a real folder over a live session (headless via
     // connectSsh, non-headless by riding the embedded login's ControlMaster), so a
     // committed remoteConn + chosen path is the single source of truth.
@@ -701,6 +709,8 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setRemoteChosenPath,
     remotePaths,
     rememberChosenPath,
+    vpnEnabled,
+    setVpnEnabled,
     vpnConfig,
     vpnConfigs,
     selectVpnConfig,

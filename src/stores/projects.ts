@@ -290,6 +290,11 @@ interface ProjectsStore {
    * which is a disconnected remote project (user reconnects via the pill lamp). */
   extendProjectToRemote: (id: string, remote: RemoteSpec) => Promise<void>;
   setProjectSandbox: (id: string, enabled: boolean) => Promise<void>;
+  /** Attach (or clear) an OpenVPN config on a remote project's SSH spec, so a
+   *  project created without a VPN can gain one later when reconnecting from a
+   *  VPN-gated network. `config = null`/"" clears it. Mirrors the stored path
+   *  into local state so the Connect dialog picks it up immediately. */
+  setProjectOpenvpn: (id: string, config: string | null) => Promise<void>;
   /** Replace a project's category tags (color/group it in the cloud + pills).
    * Backend cleans + dedupes; mirrors the cleaned list into local state. */
   setProjectCategories: (id: string, categories: string[]) => Promise<void>;
@@ -715,6 +720,29 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projects: state.projects.map((project) =>
         project.id === id
           ? { ...project, sandbox: result ? { enabled: true } : undefined }
+          : project,
+      ),
+    }));
+  },
+
+  setProjectOpenvpn: async (id, config) => {
+    // Backend patches the `openvpn` field on the remote spec in both projects.json
+    // and project.json and returns the stored config path (""=cleared); mirror it
+    // into the entry's `remote.openvpn` so the Connect dialog reflects it at once.
+    const stored = await invoke<string>("set_project_openvpn", {
+      projectId: id,
+      config: config && config.trim() ? config : null,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id && project.remote
+          ? {
+              ...project,
+              remote: {
+                ...project.remote,
+                openvpn: stored ? { config: stored } : undefined,
+              },
+            }
           : project,
       ),
     }));

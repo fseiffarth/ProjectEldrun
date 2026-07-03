@@ -4,6 +4,7 @@ import { fileIcon, folderIcon } from "../../lib/viewers/fileUtils";
 import { TerminalView } from "../terminal/TerminalView";
 import { ConnectionLog } from "../common/ConnectionLog";
 import { ConnLamp } from "../common/ConnLamp";
+import { Dropdown } from "../common/Dropdown";
 import type { ConnState } from "../../stores/remoteStatus";
 import type { useRemoteSession } from "./useRemoteSession";
 
@@ -89,6 +90,8 @@ export function RemoteProjectSection({
     setRemoteChosenPath,
     remotePaths,
     jumpToRemotePath,
+    vpnEnabled,
+    setVpnEnabled,
     vpnConfig,
     vpnConfigs,
     selectVpnConfig,
@@ -160,7 +163,7 @@ export function RemoteProjectSection({
                   "sshpass not found — password auth won't work on this platform. Install sshpass, or use SSH keys (leave the password blank).",
                 );
               }
-              if (vpnConfig && !sshTooling.openvpn) {
+              if (vpnEnabled && vpnConfig && !sshTooling.openvpn) {
                 warnings.push(
                   "openvpn/pkexec not found — VPN-gated hosts can't connect. Install openvpn and polkit.",
                 );
@@ -176,40 +179,47 @@ export function RemoteProjectSection({
             })()}
 
           <div className="ssh-connect-fields" role="group" aria-label="OpenVPN tunnel">
-            {/* OpenVPN is the only tunnel type, so there's no on/off toggle: the
-                config is shown directly and a tunnel is used only when a config is
-                selected (leave it empty for hosts that need no VPN). */}
-            <div className="vpn-section-header">
-              <span className="toggle-card-title">
-                <ConnLamp status={lampOf(vpnStatus)} label="OpenVPN" />
-                Connect via OpenVPN
+            {/* OpenVPN is opt-in (default off): reaching the host directly needs
+                no tunnel when you're already on the right network. Flip the toggle
+                only for a VPN-gated host; the config + connect UI stays collapsed
+                otherwise, and no VPN config is stored on the project. */}
+            <label className={`toggle-card${vpnEnabled ? " is-on" : ""}`}>
+              <span className="toggle-card-body">
+                <span className="toggle-card-title">
+                  <ConnLamp status={lampOf(vpnStatus)} label="OpenVPN" />
+                  Connect via OpenVPN
+                </span>
+                <span className="toggle-card-desc">
+                  Only needed for a VPN-gated host — leave off when you're already on
+                  the right network.
+                </span>
               </span>
-              <span className="toggle-card-desc">
-                Optional — pick an OpenVPN config to reach a VPN-gated host, or leave
-                it empty if the host needs no tunnel.
+              <span className="eld-switch">
+                <input
+                  type="checkbox"
+                  checked={vpnEnabled}
+                  onChange={(e) => setVpnEnabled(e.target.checked)}
+                />
+                <span className="eld-switch-track" aria-hidden="true" />
               </span>
-            </div>
+            </label>
+            {vpnEnabled && (
             <div className="vpn-details">
                 <label>
                   OpenVPN config{" "}
                   <span className="ssh-optional-hint">(copied into Eldrun on selection)</span>
                   {vpnConfigs.length > 0 && (
                     <div className="folder-picker-row">
-                      <select
-                        className="ssh-address-input vpn-config-recent"
+                      <Dropdown
+                        className="dropdown-block vpn-config-recent"
                         value={vpnConfigs.some((c) => c.path === vpnConfig) ? vpnConfig : ""}
+                        placeholder="Recently used…"
                         title="Reuse a previously-used OpenVPN config"
-                        onChange={(e) => {
-                          if (e.target.value) selectVpnConfig(e.target.value);
+                        onChange={(v) => {
+                          if (v) selectVpnConfig(v);
                         }}
-                      >
-                        <option value="">Recently used…</option>
-                        {vpnConfigs.map((c) => (
-                          <option key={c.path} value={c.path} title={c.path}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
+                        options={vpnConfigs.map((c) => ({ value: c.path, label: c.name }))}
+                      />
                     </div>
                   )}
                   <div className="folder-picker-row">
@@ -322,6 +332,7 @@ export function RemoteProjectSection({
                   </div>
                 )}
               </div>
+            )}
             <label>
               <span className="remote-field-label">
                 <ConnLamp status={sshLamp} label="SSH" />
@@ -329,21 +340,16 @@ export function RemoteProjectSection({
               </span>
               {sshAddresses.length > 0 && (
                 <div className="folder-picker-row">
-                  <select
-                    className="ssh-address-input vpn-config-recent"
+                  <Dropdown
+                    className="dropdown-block vpn-config-recent"
                     value={sshAddresses.includes(sshAddress) ? sshAddress : ""}
+                    placeholder="Recently used…"
                     title="Reuse a previously-used SSH address"
-                    onChange={(e) => {
-                      if (e.target.value) onSshAddressChange(e.target.value);
+                    onChange={(v) => {
+                      if (v) onSshAddressChange(v);
                     }}
-                  >
-                    <option value="">Recently used…</option>
-                    {sshAddresses.map((addr) => (
-                      <option key={addr} value={addr} title={addr}>
-                        {addr}
-                      </option>
-                    ))}
-                  </select>
+                    options={sshAddresses.map((addr) => ({ value: addr, label: addr }))}
+                  />
                 </div>
               )}
               <input
@@ -411,21 +417,16 @@ export function RemoteProjectSection({
                     </span>
                     {remotePaths.length > 0 && (
                       <div className="folder-picker-row">
-                        <select
-                          className="ssh-address-input vpn-config-recent"
+                        <Dropdown
+                          className="dropdown-block vpn-config-recent"
                           value={remotePaths.includes(remoteChosenPath) ? remoteChosenPath : ""}
+                          placeholder="Recently used…"
                           title="Reuse a previously-used remote path for this host"
-                          onChange={(e) => {
-                            if (e.target.value) setRemoteChosenPath(e.target.value);
+                          onChange={(v) => {
+                            if (v) setRemoteChosenPath(v);
                           }}
-                        >
-                          <option value="">Recently used…</option>
-                          {remotePaths.map((p) => (
-                            <option key={p} value={p} title={p}>
-                              {p}
-                            </option>
-                          ))}
-                        </select>
+                          options={remotePaths.map((p) => ({ value: p, label: p }))}
+                        />
                       </div>
                     )}
                     <input
@@ -515,21 +516,16 @@ export function RemoteProjectSection({
               {remoteBrowsePath || "/"}
             </span>
             {remotePaths.length > 0 && (
-              <select
-                className="ssh-address-input vpn-config-recent"
+              <Dropdown
+                className="vpn-config-recent"
                 value=""
+                placeholder="Recently used…"
                 title="Jump to a previously-used remote path for this host"
-                onChange={(e) => {
-                  if (e.target.value) jumpToRemotePath(e.target.value);
+                onChange={(v) => {
+                  if (v) jumpToRemotePath(v);
                 }}
-              >
-                <option value="">Recently used…</option>
-                {remotePaths.map((p) => (
-                  <option key={p} value={p} title={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
+                options={remotePaths.map((p) => ({ value: p, label: p }))}
+              />
             )}
             <button type="button" onClick={onUseThisFolder}>
               Use this folder

@@ -19,6 +19,7 @@ import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
 import { OrbitSpinner } from "../common/OrbitSpinner";
+import { Dropdown } from "../common/Dropdown";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
 import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
@@ -268,25 +269,29 @@ function PublishWindow({
         </div>
         <label>
           Hosting provider
-          <select
+          <Dropdown
+            className="dropdown-block"
             value={provider}
             disabled={busy || Boolean(result)}
-            onChange={(e) => setProvider(e.target.value as GitProvider)}
-          >
-            <option value="github">GitHub</option>
-            <option value="gitlab">GitLab</option>
-          </select>
+            onChange={(v) => setProvider(v as GitProvider)}
+            options={[
+              { value: "github", label: "GitHub" },
+              { value: "gitlab", label: "GitLab" },
+            ]}
+          />
         </label>
         <label>
           Repository visibility
-          <select
+          <Dropdown
+            className="dropdown-block"
             value={visibility}
             disabled={busy || Boolean(result)}
-            onChange={(e) => setVisibility(e.target.value as "public" | "private")}
-          >
-            <option value="private">private</option>
-            <option value="public">public</option>
-          </select>
+            onChange={(v) => setVisibility(v as "public" | "private")}
+            options={[
+              { value: "private", label: "private" },
+              { value: "public", label: "public" },
+            ]}
+          />
         </label>
         <div className="project-dialog-path">
           Runs <code>{createPreview}</code>. Requires <code>{cli}</code> installed and
@@ -781,25 +786,29 @@ function MigrateProviderWindow({
         </div>
         <label>
           New provider
-          <select
+          <Dropdown
+            className="dropdown-block"
             value={provider}
             disabled={busy || Boolean(result)}
-            onChange={(e) => setProvider(e.target.value as GitProvider)}
-          >
-            <option value="github">GitHub</option>
-            <option value="gitlab">GitLab</option>
-          </select>
+            onChange={(v) => setProvider(v as GitProvider)}
+            options={[
+              { value: "github", label: "GitHub" },
+              { value: "gitlab", label: "GitLab" },
+            ]}
+          />
         </label>
         <label>
           Repository visibility
-          <select
+          <Dropdown
+            className="dropdown-block"
             value={visibility}
             disabled={busy || Boolean(result)}
-            onChange={(e) => setVisibility(e.target.value as "public" | "private")}
-          >
-            <option value="private">private</option>
-            <option value="public">public</option>
-          </select>
+            onChange={(v) => setVisibility(v as "public" | "private")}
+            options={[
+              { value: "private", label: "private" },
+              { value: "public", label: "public" },
+            ]}
+          />
         </label>
         <p className="settings-help">
           Creates the repo on {providerName(provider)}, re-points{" "}
@@ -964,11 +973,13 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
     e.preventDefault();
     e.stopPropagation();
     hover.close();
-    // Anchor to the bottom of the pill so the menu opens downward, below the bar
-    const y = pillRef.current
-      ? pillRef.current.getBoundingClientRect().bottom
-      : e.clientY;
-    setContextMenu({ x: e.clientX, y });
+    // Anchor to the pill's bottom-left corner so the menu opens downward, below
+    // the bar, with its left edge flush to the pill's left border.
+    const rect = pillRef.current?.getBoundingClientRect();
+    setContextMenu({
+      x: rect ? rect.left : e.clientX,
+      y: rect ? rect.bottom : e.clientY,
+    });
   };
 
   return (
@@ -1042,17 +1053,6 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 Detach SSH host…
               </button>
             )}
-            {!project.remote && (
-              <button
-                onClick={() => {
-                  setContextMenu(null);
-                  setExtendRemote(true);
-                }}
-                title="Attach a remote SSH host to this local project — files stay put; push them up manually"
-              >
-                Extend to remote…
-              </button>
-            )}
             <button
               onClick={() => {
                 setContextMenu(null);
@@ -1070,6 +1070,26 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
             >
               Categories…
             </button>
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                void repairProjectScaffold(project.id);
+              }}
+              title="Fill in any missing scaffold file, default .gitignore pattern, or .claude/settings.json — never overwrites existing content"
+            >
+              Repair scaffold files
+            </button>
+            {!project.remote && (
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  setExtendRemote(true);
+                }}
+                title="Attach a remote SSH host to this local project — files stay put; push them up manually"
+              >
+                Extend to remote…
+              </button>
+            )}
           </div>
 
           {/* Git */}
@@ -1138,15 +1158,6 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 Publish to GitHub / GitLab…
               </button>
             )}
-            <button
-              onClick={() => {
-                setContextMenu(null);
-                void repairProjectScaffold(project.id);
-              }}
-              title="Fill in any missing scaffold file, default .gitignore pattern, or .claude/settings.json — never overwrites existing content"
-            >
-              Repair scaffold files
-            </button>
           </div>
 
           {/* Runtime */}
@@ -1166,10 +1177,17 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
             <button
               onClick={() => {
                 setContextMenu(null);
-                // Clear this project's tabs in memory. For the ACTIVE project the
+                const tabsStore = useTabsStore.getState();
+                // Tear down every detached popout for this project first: each
+                // one kills its tabs' PTYs and closes its OS window (in-window
+                // closeAllTabs below never touches detached groups).
+                for (const g of tabsStore.detachedGroupsByScope[project.id] ?? []) {
+                  tabsStore.closeDetachedGroup(project.id, g.id);
+                }
+                // Clear this project's in-window tabs. For the ACTIVE project the
                 // debounced saveLayout effect persists the empty layout; for a
                 // non-active project nothing else writes it, so persist explicitly.
-                useTabsStore.getState().closeAllTabs(project.id);
+                tabsStore.closeAllTabs(project.id);
                 if (project.local_file) {
                   void invoke("save_tab_layout", {
                     localFile: project.local_file,
@@ -1180,7 +1198,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 }
               }}
             >
-              Close all tabs
+              Close all tabs and windows
             </button>
           </div>
 

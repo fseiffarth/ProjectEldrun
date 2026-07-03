@@ -1,9 +1,11 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ProjectEntry } from "../../types";
+import { open } from "@tauri-apps/plugin-dialog";
+import type { ProjectEntry, StoredVpnConfig } from "../../types";
 import { IS_WINDOWS } from "../../lib/platform";
 import { forgetConnection, markConnectionOpened } from "../../lib/remoteConnect";
+import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore, type ConnState } from "../../stores/remoteStatus";
 import type { LogLine } from "../common/ConnectionLog";
 
@@ -50,7 +52,16 @@ type LoginTerm = { id: string; command: string; key: string };
 export function useRemoteReconnect(project: ProjectEntry) {
   const projectId = project.id;
   const remote = project.remote;
-  const vpnConfig = remote?.openvpn?.config ?? "";
+  // The project's OpenVPN config path. Stateful (not just `remote.openvpn.config`)
+  // because a project may have been created/extended on a no-VPN network with no
+  // config, then need one attached here when reconnecting from a VPN-gated network
+  // (see selectVpnConfig/browseVpnConfig, which also persist it to the project).
+  // Seeded from the stored spec; the dialog is keyed by project id so this resets
+  // per project rather than leaking a picked config across projects.
+  const [vpnConfig, setVpnConfig] = useState(remote?.openvpn?.config ?? "");
+  // Previously-stored `.ovpn` configs (newest first) offered for reuse when the
+  // project carries none yet. Loaded on mount.
+  const [vpnConfigs, setVpnConfigs] = useState<StoredVpnConfig[]>([]);
 
   const status = useRemoteStatusStore((s) => s.byProject[projectId]);
   const sshStatus: ConnState = status?.ssh ?? "off";
@@ -98,6 +109,54 @@ export function useRemoteReconnect(project: ProjectEntry) {
       cancelled = true;
     };
   }, [projectId, remote, vpnConfig]);
+
+  // Load the recently-used OpenVPN configs so a project that carries none yet can
+  // reuse one without re-browsing. Best-effort.
+  const refreshVpnConfigs = () => {
+    invoke<StoredVpnConfig[]>("openvpn_list_configs")
+      .then(setVpnConfigs)
+      .catch(() => setVpnConfigs([]));
+  };
+  useEffect(refreshVpnConfigs, []);
+
+  // Persist the chosen config onto the project's remote spec (best-effort) so a
+  // VPN attached here from a VPN-gated network is remembered for next time. The
+  // opt-in toggle stays default-off, so remembering the config never forces the
+  // tunnel on the networks that don't need it.
+  const persistVpnConfig = (path: string) => {
+    void useProjectsStore
+      .getState()
+      .setProjectOpenvpn(projectId, path)
+      .catch((e) => console.warn("persist openvpn config failed", e));
+  };
+
+  // Select a previously-stored config (its path is already an Eldrun-stored copy).
+  const selectVpnConfig = (path: string) => {
+    setVpnConfig(path);
+    setVpnError("");
+    setVpnLog([]);
+    persistVpnConfig(path);
+  };
+
+  // Pick a `.ovpn` file and copy it into Eldrun's store, then adopt it. Joins the
+  // recents list for future reuse.
+  const browseVpnConfig = async () => {
+    const picked = await open({
+      multiple: false,
+      filters: [{ name: "OpenVPN config", extensions: ["ovpn", "conf"] }],
+    });
+    if (typeof picked !== "string") return;
+    try {
+      const stored = await invoke<string>("openvpn_store_config", { config: picked });
+      setVpnConfig(stored);
+      setVpnError("");
+      setVpnLog([]);
+      persistVpnConfig(stored);
+      refreshVpnConfigs();
+    } catch (e) {
+      setVpnError(String(e));
+    }
+  };
 
   const vpnTermRef = useRef<LoginTerm | null>(null);
   const sshTermRef = useRef<LoginTerm | null>(null);
@@ -367,6 +426,9 @@ export function useRemoteReconnect(project: ProjectEntry) {
     sshStatus,
     vpnStatus,
     vpnConfig,
+    vpnConfigs,
+    selectVpnConfig,
+    browseVpnConfig,
     winManual,
     vpnTerm: vpnTermRef.current,
     sshTerm: sshTermRef.current,

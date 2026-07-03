@@ -15,6 +15,7 @@ import {
   type ShortcutMap,
 } from "../../lib/shortcuts";
 import { AgentsPanel, FileTypeSettings, GlobalAppsSettings, OllamaPanel } from "./SettingsSubPanels";
+import { Dropdown } from "../common/Dropdown";
 import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
 
@@ -564,29 +565,21 @@ export function SettingsDialog({
             </div>
 
             <div className="settings-row">
-              <label htmlFor="terminal-command">Terminal</label>
-              <select
-                id="terminal-command"
+              <label>Terminal</label>
+              <Dropdown
                 value={terminal}
-                onChange={(e) => void updateSettings({ terminal_command: e.target.value })}
-              >
-                {TERMINAL_OPTIONS.map((cmd) => (
-                  <option key={cmd} value={cmd}>{cmd}</option>
-                ))}
-              </select>
+                onChange={(v) => void updateSettings({ terminal_command: v })}
+                options={TERMINAL_OPTIONS.map((cmd) => ({ value: cmd, label: cmd }))}
+              />
             </div>
 
             <div className="settings-row">
-              <label htmlFor="color-scheme">Theme</label>
-              <select
-                id="color-scheme"
+              <label>Theme</label>
+              <Dropdown
                 value={currentTheme}
-                onChange={(e) => void setTheme(e.target.value as Theme)}
-              >
-                {THEMES.map((theme) => (
-                  <option key={theme.value} value={theme.value}>{theme.label}</option>
-                ))}
-              </select>
+                onChange={(v) => void setTheme(v as Theme)}
+                options={THEMES.map((theme) => ({ value: theme.value, label: theme.label }))}
+              />
             </div>
 
             <label className="settings-switch-row">
@@ -725,25 +718,22 @@ export function SettingsDialog({
               high-DPI monitors. 100% is the default.
             </p>
             <div className="settings-row">
-              <label htmlFor="ui-zoom">Global zoom</label>
-              <select
-                id="ui-zoom"
+              <label>Global zoom</label>
+              <Dropdown
                 value={String(clampZoom(settings?.ui_zoom))}
-                onChange={(e) => {
-                  const z = parseFloat(e.target.value);
+                onChange={(v) => {
+                  const z = parseFloat(v);
                   void updateSettings({
                     ui_zoom: z === 1 ? undefined : clampZoom(z),
                   });
                 }}
-              >
-                {[0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
+                options={[0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
                   .filter((z) => z >= MIN_UI_ZOOM && z <= MAX_UI_ZOOM)
-                  .map((z) => (
-                    <option key={z} value={String(z)}>
-                      {Math.round(z * 100)}%{z === 1 ? " (default)" : ""}
-                    </option>
-                  ))}
-              </select>
+                  .map((z) => ({
+                    value: String(z),
+                    label: `${Math.round(z * 100)}%${z === 1 ? " (default)" : ""}`,
+                  }))}
+              />
             </div>
             <p className="settings-help">
               Smallest a subwindow may be made by dragging a split divider.

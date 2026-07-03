@@ -299,6 +299,11 @@ pub fn run() {
             if let Err(e) = services::agent_session::install_session_start_hook() {
                 eprintln!("agent_session: install SessionStart hook: {e}");
             }
+            // Bring legacy `projects.json` entries (written by older Eldrun
+            // versions) up to the current shape and refresh their scaffold, then
+            // persist. Off-thread so file I/O never blocks startup; additive and
+            // idempotent, so a race with the frontend's first load is benign.
+            std::thread::spawn(commands::projects::migrate_legacy_projects);
             // Start the background per-project SSH-link traffic sampler so each
             // remote project's daily/monthly/overall usage accrues even when its
             // Network Traffic tab is closed (see services::net_usage). No-op on
@@ -327,6 +332,7 @@ pub fn run() {
             commands::projects::set_project_description,
             commands::projects::set_project_name,
             commands::projects::set_project_sandbox,
+            commands::projects::set_project_openvpn,
             commands::projects::set_project_categories,
             commands::projects::set_project_git_disabled,
             commands::projects::save_tab_layout,

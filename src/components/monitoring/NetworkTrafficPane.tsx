@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Dropdown } from "../common/Dropdown";
 
 export interface NetworkInterfaceSnapshot {
   name: string;
@@ -428,18 +429,17 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
         {view === "host" && (
           <label className="network-interface-select">
             Interface
-            <select
+            <Dropdown
               value={selectedInterface}
-              onChange={(event) => setSelectedInterface(event.target.value)}
-            >
-              <option value="aggregate">Active non-loopback</option>
-              {(host?.interfaces ?? []).map((iface) => (
-                <option key={iface.name} value={iface.name}>
-                  {iface.name}
-                  {!iface.up ? " (down)" : ""}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedInterface}
+              options={[
+                { value: "aggregate", label: "Active non-loopback" },
+                ...(host?.interfaces ?? []).map((iface) => ({
+                  value: iface.name,
+                  label: `${iface.name}${!iface.up ? " (down)" : ""}`,
+                })),
+              ]}
+            />
           </label>
         )}
       </div>
@@ -494,15 +494,16 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
                 placeholder="Search endpoint, process, PID…"
                 aria-label="Search network connections"
               />
-              <select
+              <Dropdown
                 value={protocol}
-                onChange={(event) => setProtocol(event.target.value as "ALL" | "TCP" | "UDP")}
-                aria-label="Filter connection protocol"
-              >
-                <option value="ALL">TCP + UDP</option>
-                <option value="TCP">TCP</option>
-                <option value="UDP">UDP</option>
-              </select>
+                title="Filter connection protocol"
+                onChange={(v) => setProtocol(v as "ALL" | "TCP" | "UDP")}
+                options={[
+                  { value: "ALL", label: "TCP + UDP" },
+                  { value: "TCP", label: "TCP" },
+                  { value: "UDP", label: "UDP" },
+                ]}
+              />
             </div>
           </div>
           <div className="network-table-wrap">

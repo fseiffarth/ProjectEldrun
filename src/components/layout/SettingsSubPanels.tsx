@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
+import { Dropdown } from "../common/Dropdown";
 import { useSettingsStore } from "../../stores/settings";
 import { IS_WINDOWS, PLATFORM } from "../../lib/platform";
 import { runInstallInTab, type InstallShellKind } from "../../lib/installCommand";
@@ -1528,17 +1529,12 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
         />
         <label className="ollama-sort-label" title="Sort the results">
           Sort by
-          <select
+          <Dropdown
             className="ollama-catalog-sort"
             value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as SortKey)}
-          >
-            {SORT_OPTIONS.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => setSortBy(v as SortKey)}
+            options={SORT_OPTIONS.map((o) => ({ value: o.key, label: o.label }))}
+          />
         </label>
       </div>
 
