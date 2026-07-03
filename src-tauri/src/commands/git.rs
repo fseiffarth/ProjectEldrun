@@ -274,6 +274,16 @@ fn git_file_statuses_blocking(
         let top = rel.split('/').next().unwrap_or(rel);
         if top.is_empty() { return; }
 
+        // "ignored" must not bubble up from a descendant: git reports a wholly
+        // ignored path as `foo` (file) or `foo/` (whole dir), but an ignored
+        // file inside an otherwise-tracked dir as `foo/bar`. Only mark the
+        // top-level entry ignored when the ignored path IS that entry — else a
+        // single ignored child would drag the whole folder into the gitignored
+        // section. Other statuses still bubble up so a dir reflects its changes.
+        if status == "ignored" && rel.trim_end_matches('/') != top {
+            return;
+        }
+
         let cur = map.get(top).map(|s| priority(s.as_str())).unwrap_or(0);
         if priority(status) > cur {
             map.insert(top.to_string(), status.to_string());
@@ -1018,6 +1028,47 @@ mod tests {
         assert!(
             diff.contains("brand new content"),
             "expected file content in fallback diff, got: {diff}"
+        );
+    }
+
+    #[test]
+    fn ignored_child_does_not_mark_whole_folder_ignored() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping ignored_child_does_not_mark_whole_folder_ignored");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+
+        // `partial/` has one ignored file and one tracked file → the folder
+        // itself is NOT ignored. `whole/` is ignored in its entirety.
+        fs::write(dir.join(".gitignore"), "partial/ignored.log\nwhole/\n").expect("write .gitignore");
+        fs::create_dir(dir.join("partial")).expect("mkdir partial");
+        fs::write(dir.join("partial/ignored.log"), "log\n").expect("write log");
+        fs::write(dir.join("partial/keep.txt"), "keep\n").expect("write keep");
+        fs::create_dir(dir.join("whole")).expect("mkdir whole");
+        fs::write(dir.join("whole/a.txt"), "a\n").expect("write a");
+
+        let statuses = git_file_statuses_blocking(
+            dir.to_string_lossy().to_string(),
+            String::new(),
+        )
+        .expect("git_file_statuses should succeed");
+
+        // A folder with only some ignored content stays out of the ignored bucket.
+        assert_ne!(
+            statuses.get("partial").map(String::as_str),
+            Some("ignored"),
+            "partial/ must not be marked ignored (got {:?})",
+            statuses.get("partial")
+        );
+        // A wholly-ignored folder is still reported as ignored.
+        assert_eq!(
+            statuses.get("whole").map(String::as_str),
+            Some("ignored"),
+            "whole/ should be ignored (got {:?})",
+            statuses.get("whole")
         );
     }
 
