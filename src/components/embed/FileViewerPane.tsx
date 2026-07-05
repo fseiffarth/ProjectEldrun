@@ -28,7 +28,16 @@ import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
 import { renderMarkdown } from "../../lib/viewers/markdown";
 import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
-import { highlight, languageForPath } from "../../lib/viewers/highlight";
+import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
+import {
+  printDocument,
+  printHtmlBody,
+  renderPdfToPrintImages,
+  MARKDOWN_PRINT_CSS,
+  TEXT_PRINT_CSS,
+  IMAGE_PRINT_CSS,
+  PDF_PRINT_CSS,
+} from "../../lib/viewers/print";
 import {
   formatJsonText,
   isInProcessJson,
@@ -3178,6 +3187,32 @@ function SaveButton({
   );
 }
 
+/** Print button shared by every content viewer. Renders the viewer's content to
+ *  a clean paginated document and hands it to the platform print dialog (which
+ *  offers "Save as PDF") — see `lib/viewers/print`. `busy` covers async sources
+ *  like the PDF viewer, which rasterises its pages before printing. */
+function PrintButton({
+  onPrint,
+  busy = false,
+  disabled = false,
+}: {
+  onPrint: () => void;
+  busy?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      className={`file-viewer-print${busy ? " is-busy" : ""}`}
+      onClick={onPrint}
+      disabled={disabled || busy}
+      title={busy ? "Preparing…" : "Print"}
+      aria-label="Print"
+    >
+      {busy ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : "🖨"}
+    </button>
+  );
+}
+
 /** Undo/redo toolbar buttons shared by the editable viewers (#46). */
 function UndoRedoButtons({
   undo,
@@ -3868,6 +3903,20 @@ function TextView({
     if (showEditor) onCtrlWheelFont(e, font.inc, font.dec);
   });
 
+  // Print: HTML/SVG/CSS print their rendered preview document; plain text and
+  // source print as a wrapped monospace block.
+  const handlePrint = useCallback(() => {
+    if (previewKind) {
+      void printDocument(buildPreviewDoc(previewKind, draft));
+      return;
+    }
+    void printHtmlBody(
+      `<pre class="print-pre">${escapeHtml(draft)}</pre>`,
+      TEXT_PRINT_CSS,
+      fileName,
+    );
+  }, [previewKind, draft, fileName]);
+
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
@@ -3889,6 +3938,7 @@ function TextView({
         {showEditor && (
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         )}
+        <PrintButton onPrint={handlePrint} disabled={!loaded} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
@@ -4021,6 +4071,18 @@ function MarkdownView({
     };
   }, [html, mode, path, scope]);
 
+  // Print the rendered Markdown. Prefer the live preview DOM (it carries the
+  // enriched mermaid/KaTeX output and inlined local images); fall back to a fresh
+  // render of the current draft when Edit mode has the preview unmounted.
+  const handlePrint = useCallback(() => {
+    const inner = previewRef.current?.innerHTML || html || renderMarkdown(draft);
+    void printHtmlBody(
+      `<div class="markdown-body">${inner}</div>`,
+      MARKDOWN_PRINT_CSS,
+      basename(path),
+    );
+  }, [html, draft, path]);
+
   const onPreviewMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const a = (e.target as HTMLElement).closest?.("a.file-link") as HTMLElement | null;
     if (!a) {
@@ -4078,6 +4140,7 @@ function MarkdownView({
         {mode === "edit" && (
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         )}
+        <PrintButton onPrint={handlePrint} disabled={!loaded} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
       </ViewerHeader>
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
@@ -4534,6 +4597,23 @@ function PdfCanvas({
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [current, setCurrent] = useState(0);
   const findInputRef = useRef<HTMLInputElement>(null);
+  // Print: the webview can't print a PDF directly, so rasterise the already-open
+  // pages to images and print those through the shared pipeline. `printing`
+  // disables the button while the (async) render runs.
+  const [printing, setPrinting] = useState(false);
+  const handlePrint = useCallback(async () => {
+    if (!doc || printing) return;
+    setPrinting(true);
+    try {
+      const images = await renderPdfToPrintImages(doc);
+      const body = images
+        .map((src) => `<div class="print-page"><img src="${src}" alt=""></div>`)
+        .join("");
+      await printHtmlBody(body, PDF_PRINT_CSS);
+    } finally {
+      setPrinting(false);
+    }
+  }, [doc, printing]);
   // The current document's per-page text runs, extracted lazily the first time
   // the find bar is used and cached for the life of the document. `null` until
   // extracted; reset to null whenever the document changes.
@@ -4989,6 +5069,15 @@ function PdfCanvas({
         >
           🔍
         </button>
+        <button
+          className={`file-viewer-print file-viewer-pdf-print${printing ? " is-busy" : ""}`}
+          onClick={() => void handlePrint()}
+          disabled={!doc || printing}
+          title={printing ? "Preparing…" : "Print"}
+          aria-label="Print"
+        >
+          {printing ? <span className="file-viewer-save-spinner" aria-hidden="true" /> : "🖨"}
+        </button>
         {onOpenExternally && (
           <button
             className="file-viewer-open-external file-viewer-pdf-external"
@@ -5174,6 +5263,16 @@ function TexView({
     (scrollTop: number) => viewPos.persist({ scrollTop }),
     [viewPos],
   );
+
+  // Print the .tex source as a wrapped monospace block. (The compiled PDF, once
+  // built, opens in the PDF viewer and prints from there.)
+  const handlePrint = useCallback(() => {
+    void printHtmlBody(
+      `<pre class="print-pre">${escapeHtml(draft)}</pre>`,
+      TEXT_PRINT_CSS,
+      basename(path),
+    );
+  }, [draft, path]);
 
   // null while still probing; the editor renders regardless so there is no flash.
   const [cap, setCap] = useState<TexCapability | null>(null);
@@ -5416,6 +5515,7 @@ function TexView({
           <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
           <EditorAiControls ai={ai} />
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
+          <PrintButton onPrint={handlePrint} disabled={!loaded} />
           <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
         </ViewerHeader>
         {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
@@ -5528,6 +5628,7 @@ function TexView({
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
         <EditorAiControls ai={ai} />
         <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
+        <PrintButton onPrint={handlePrint} disabled={!loaded} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
       </ViewerHeader>
       {compiling && (
@@ -5682,6 +5783,16 @@ function ImageView({
 }) {
   const viewPos = useViewerState(tabKey);
   const { url, error } = useBlobUrl(path, "");
+  // Print the image, fit to the page. The blob URL resolves in the print iframe
+  // because a srcdoc iframe shares this document's origin.
+  const handlePrint = useCallback(() => {
+    if (!url) return;
+    void printHtmlBody(
+      `<div class="print-page"><img src="${url}" alt="${escapeHtml(fileName)}"></div>`,
+      IMAGE_PRINT_CSS,
+      fileName,
+    );
+  }, [url, fileName]);
   // #annotate (Dev F): when true, an editing overlay covers the viewer letting the
   // user draw on the image and save the result. Gated to raster images we can
   // re-encode to PNG.
@@ -5898,6 +6009,7 @@ function ImageView({
             ✎ Annotate
           </button>
         </div>
+        <PrintButton onPrint={handlePrint} disabled={!url} />
       </ViewerHeader>
       <div className="file-viewer-body file-viewer-image-body">
         {annotating && url != null && (

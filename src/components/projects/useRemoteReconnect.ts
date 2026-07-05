@@ -62,6 +62,25 @@ export function useRemoteReconnect(project: ProjectEntry) {
   // Previously-stored `.ovpn` configs (newest first) offered for reuse when the
   // project carries none yet. Loaded on mount.
   const [vpnConfigs, setVpnConfigs] = useState<StoredVpnConfig[]>([]);
+  // Auth username for `auth-user-pass` configs (see the backend's
+  // `config_requires_userpass`). Seeded from the stored spec; `vpnNeedsUsername`
+  // (queried when the config changes) says whether the field must be shown and
+  // filled — without it OpenVPN would prompt for the username on stdin and hang.
+  const [vpnUsername, setVpnUsername] = useState(remote?.openvpn?.username ?? "");
+  const [vpnNeedsUsername, setVpnNeedsUsername] = useState(false);
+  useEffect(() => {
+    if (!vpnConfig) {
+      setVpnNeedsUsername(false);
+      return;
+    }
+    let cancelled = false;
+    void invoke<boolean>("openvpn_needs_username", { config: vpnConfig })
+      .then((v) => !cancelled && setVpnNeedsUsername(v))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [vpnConfig]);
 
   const status = useRemoteStatusStore((s) => s.byProject[projectId]);
   const sshStatus: ConnState = status?.ssh ?? "off";
@@ -126,7 +145,7 @@ export function useRemoteReconnect(project: ProjectEntry) {
   const persistVpnConfig = (path: string) => {
     void useProjectsStore
       .getState()
-      .setProjectOpenvpn(projectId, path)
+      .setProjectOpenvpn(projectId, path, vpnUsername || null)
       .catch((e) => console.warn("persist openvpn config failed", e));
   };
 
@@ -364,8 +383,16 @@ export function useRemoteReconnect(project: ProjectEntry) {
     setVpnError("");
     setVpnLog([]);
     try {
-      await invoke("openvpn_connect", { config: vpnConfig, password, remember });
+      await invoke("openvpn_connect", {
+        config: vpnConfig,
+        username: vpnUsername || null,
+        password,
+        remember,
+      });
       if (gen !== vpnGen.current) return; // stopped mid-connect
+      // Persist the (non-secret) username so a later silent activation can reuse
+      // it from the keychained password with no prompt.
+      if (vpnNeedsUsername && vpnUsername) persistVpnConfig(vpnConfig);
       setVpnSaved(remember);
       setVpn(projectId, "connected");
     } catch (e) {
@@ -427,6 +454,9 @@ export function useRemoteReconnect(project: ProjectEntry) {
     vpnStatus,
     vpnConfig,
     vpnConfigs,
+    vpnUsername,
+    setVpnUsername,
+    vpnNeedsUsername,
     selectVpnConfig,
     browseVpnConfig,
     winManual,

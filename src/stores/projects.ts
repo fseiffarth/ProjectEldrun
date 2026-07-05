@@ -75,12 +75,20 @@ async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<voi
       return;
     }
     status.setVpn(projectId, "connecting");
+    // `auth-user-pass` configs need a username too; it's stored on the spec (not a
+    // secret) and passed to both the silent connect and the prompt.
+    const vpnUser = project!.remote?.openvpn?.username;
     // Silent auto-connect: if the user opted to save this VPN's passphrase, the
     // backend brings the tunnel up from the OS keychain with no prompt. A missing
     // (or no-longer-valid) saved passphrase errors out cheaply, so we fall through
     // to the modal below.
     try {
-      await invoke("openvpn_connect", { config, password: null, remember: false });
+      await invoke("openvpn_connect", {
+        config,
+        username: vpnUser ?? null,
+        password: null,
+        remember: false,
+      });
       useRemoteStatusStore.getState().setVpn(projectId, "connected");
       useProjectsStore.setState({ connToast: `VPN connected · ${project!.name}` });
       return;
@@ -90,7 +98,7 @@ async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<voi
     // The prompt store now owns the connect, so a failed tunnel is shown in the
     // modal (with a retry) rather than failing silently here. `request` resolves
     // only once the tunnel is up; a cancel rejects and we fall through.
-    await useVpnPromptStore.getState().request(config, project!.name);
+    await useVpnPromptStore.getState().request(config, project!.name, projectId, vpnUser);
     useRemoteStatusStore.getState().setVpn(projectId, "connected");
     useProjectsStore.setState({ connToast: `VPN connected · ${project!.name}` });
   } catch (error) {
@@ -294,7 +302,7 @@ interface ProjectsStore {
    *  project created without a VPN can gain one later when reconnecting from a
    *  VPN-gated network. `config = null`/"" clears it. Mirrors the stored path
    *  into local state so the Connect dialog picks it up immediately. */
-  setProjectOpenvpn: (id: string, config: string | null) => Promise<void>;
+  setProjectOpenvpn: (id: string, config: string | null, username?: string | null) => Promise<void>;
   /** Replace a project's category tags (color/group it in the cloud + pills).
    * Backend cleans + dedupes; mirrors the cleaned list into local state. */
   setProjectCategories: (id: string, categories: string[]) => Promise<void>;
@@ -725,13 +733,17 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     }));
   },
 
-  setProjectOpenvpn: async (id, config) => {
+  setProjectOpenvpn: async (id, config, username) => {
     // Backend patches the `openvpn` field on the remote spec in both projects.json
     // and project.json and returns the stored config path (""=cleared); mirror it
     // into the entry's `remote.openvpn` so the Connect dialog reflects it at once.
+    // `username` (for `auth-user-pass` configs) is stored alongside; undefined
+    // leaves it untouched here by re-sending the current value.
+    const cleanUser = username?.trim() || undefined;
     const stored = await invoke<string>("set_project_openvpn", {
       projectId: id,
       config: config && config.trim() ? config : null,
+      username: cleanUser ?? null,
     });
     set((state) => ({
       projects: state.projects.map((project) =>
@@ -740,7 +752,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
               ...project,
               remote: {
                 ...project.remote,
-                openvpn: stored ? { config: stored } : undefined,
+                openvpn: stored ? { config: stored, username: cleanUser } : undefined,
               },
             }
           : project,

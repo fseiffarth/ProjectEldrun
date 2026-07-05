@@ -168,12 +168,15 @@ pub async fn sync_mark_selected(
     remote_sync::save_manifest(&project_id, m)
 }
 
-/// Toggle auto-sync for one or more project-relative paths. Turning it ON implies
-/// `selected = true` (auto-sync tracks the path). On a directory the marker covers
-/// the whole subtree (resolved by `remote_sync::is_auto`); no bytes transfer here
-/// — the background reconcile engine (`services::sync_auto`) picks it up on its
-/// next pass. Turning it OFF leaves `selected` as-is (manual tracking continues),
-/// matching the deselect-leaves-bytes convention.
+/// Toggle auto-sync for one or more project-relative paths. Turning it ON sets
+/// `auto_sync` (and implies `selected = true`, clearing any exclusion). On a
+/// directory the marker covers the whole subtree (resolved by
+/// `remote_sync::is_auto`); the empty path `""` is the project-wide "auto-sync
+/// all" root marker. Turning it OFF records an explicit `auto_off` EXCLUSION
+/// (clearing `auto_sync`) so a path can be carved out of an ancestor's — or the
+/// project-wide — auto-sync; `selected` is left as-is (manual tracking continues),
+/// matching the deselect-leaves-bytes convention. No bytes transfer here — the
+/// background reconcile engine (`services::sync_auto`) acts on its next pass.
 #[tauri::command]
 pub async fn sync_set_auto(
     project_id: String,
@@ -187,6 +190,9 @@ pub async fn sync_set_auto(
     for rel in &rel_paths {
         let entry = m.entry(rel.clone()).or_default();
         entry.auto_sync = auto;
+        // OFF writes an explicit exclusion (overrides an ancestor/project-wide
+        // auto); ON clears any prior exclusion and marks the path tracked.
+        entry.auto_off = !auto;
         if auto {
             entry.selected = true;
         }

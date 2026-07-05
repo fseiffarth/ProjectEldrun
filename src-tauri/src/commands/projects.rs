@@ -707,16 +707,26 @@ pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<bool, St
 /// is stored), then later reconnected from a VPN-gated network — the Connect
 /// dialog attaches the config here so it's remembered for next time.
 ///
-/// `config = Some(path)` attaches the tunnel; `None`/blank removes it. Errors if
-/// the project isn't remote. Returns the stored config path ("" when cleared).
+/// `config = Some(path)` attaches the tunnel; `None`/blank removes it. `username`
+/// is stored alongside for `auth-user-pass` configs (it is not a secret); blank
+/// clears it. Errors if the project isn't remote. Returns the stored config path
+/// ("" when cleared).
 #[tauri::command]
-pub fn set_project_openvpn(project_id: String, config: Option<String>) -> Result<String, String> {
+pub fn set_project_openvpn(
+    project_id: String,
+    config: Option<String>,
+    username: Option<String>,
+) -> Result<String, String> {
+    let username = username
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
     let spec = config
         .as_deref()
         .map(str::trim)
         .filter(|c| !c.is_empty())
         .map(|c| OpenVpnSpec {
             config: c.to_string(),
+            username: username.clone(),
             extra: HashMap::new(),
         });
 
@@ -1157,8 +1167,63 @@ pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
             .args(["init"])
             .current_dir(dir)
             .output();
+        // Give the fresh repo an initial commit so the scaffold (`.claude`, docs,
+        // `.gitignore`) is TRACKED, not merely present. This is what makes a later
+        // remote `extend` seed the host: git lockstep pairs by transferring
+        // *committed* state (`init_pairing` → `reset --hard`), so an unborn HEAD
+        // would leave the freshly-paired remote empty and untracked files (like
+        // `.claude/settings.json`) never ride the bundle. Only runs for a repo we
+        // just created — an imported repo already has `.git`, so its history is
+        // never touched.
+        git_scaffold_commit(dir);
     }
     Ok(())
+}
+
+/// Stage everything the `.gitignore` permits and create a single scaffold commit.
+/// Best-effort: staging or the commit failing just leaves HEAD as it was. Respects
+/// the user's configured git identity, falling back to an Eldrun identity only when
+/// git can't resolve one (fresh machine, no global `user.name`/`user.email`) so the
+/// commit never silently fails for lack of a committer and leaves HEAD unborn.
+fn git_scaffold_commit(dir: &Path) {
+    let _ = crate::paths::command_no_window("git")
+        .args(["add", "-A"])
+        .current_dir(dir)
+        .output();
+    const MSG: &str = "Initial Eldrun scaffold";
+    let committed = crate::paths::command_no_window("git")
+        .args(["commit", "-m", MSG])
+        .current_dir(dir)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !committed {
+        let _ = crate::paths::command_no_window("git")
+            .args([
+                "-c",
+                "user.name=Eldrun",
+                "-c",
+                "user.email=eldrun@localhost",
+                "commit",
+                "-m",
+                MSG,
+            ])
+            .current_dir(dir)
+            .output();
+    }
+}
+
+/// True when `dir` is a git repo whose current branch is **unborn** (no commits
+/// yet — `rev-parse HEAD` fails). Used to decide whether `extend` must seed an
+/// initial commit before lockstep pairing. A missing/erroring git returns `false`
+/// (don't force a commit when we can't tell), never a wipe.
+fn git_head_unborn(dir: &Path) -> bool {
+    crate::paths::command_no_window("git")
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(false)
 }
 
 /// Append any `GITIGNORE_DEFAULT` pattern missing from `dir/.gitignore` to the
@@ -1841,6 +1906,15 @@ pub fn extend_project_to_remote(req: ExtendProjectRemoteRequest) -> Result<Proje
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| "Project has no local directory".to_string())?;
+
+    // Whether this project carries git — only then is lockstep meaningful. `none`
+    // (or a missing tag) means no repo to keep in step, so we leave lockstep off.
+    let git_backed = list[idx]
+        .extra
+        .get("git_type")
+        .and_then(Value::as_str)
+        .map(|t| t != "none")
+        .unwrap_or(false);
     let old_path = PathBuf::from(&old_dir);
     if !old_path.is_dir() {
         return Err(format!("Local directory '{old_dir}' does not exist"));
@@ -1896,6 +1970,34 @@ pub fn extend_project_to_remote(req: ExtendProjectRemoteRequest) -> Result<Proje
     // project.json in the mirror — never a lost `mirror` pointer (which would make
     // `mirror_dir` fall back to an empty state dir and desync the lockstep view).
     storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // Extend is an explicit "keep these two in step" action, and at this instant the
+    // remote root was just created empty — so the first lockstep sync can only be a
+    // one-directional seed (never a divergence). Enable lockstep by default for a
+    // git-backed project so the pairing stays live without the user hunting for the
+    // toggle; a non-git project has nothing to sync, so it stays off. Best-effort:
+    // a write failure just leaves lockstep off (its default), never blocks extend.
+    if git_backed {
+        // A project scaffolded before initial-commit support (`git init` only) has
+        // an unborn HEAD: nothing is committed, so lockstep's `init_pairing` would
+        // find no tree to check out and leave the remote empty. Seed a commit of the
+        // current mirror tree now (identity-safe, gitignore-honouring) so pairing has
+        // committed state to transfer. Repos that already have history are untouched.
+        if git_head_unborn(&old_path) {
+            git_scaffold_commit(&old_path);
+        }
+        let state = crate::services::git_peer::GitPeerState {
+            enabled: true,
+            ..Default::default()
+        };
+        if let Err(e) = crate::services::git_peer::save_state(&req.project_id, &state) {
+            eprintln!(
+                "extend_project_to_remote: could not enable lockstep for '{}' \
+                 (leaving it off; user can toggle it on): {e}",
+                req.project_id
+            );
+        }
+    }
 
     // Now that the remote wiring is durably recorded, drop the stale project.json
     // from the working copy so the mirror is clean. Best-effort (a leftover is
@@ -2299,6 +2401,32 @@ mod tests {
         scaffold_project(tmp.path(), true).unwrap();
         scaffold_project(tmp.path(), true).unwrap(); // second call must not error
         assert!(tmp.path().join("TODO.md").exists());
+    }
+
+    #[test]
+    fn scaffold_project_commits_scaffold_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path(), true).unwrap();
+
+        // A commit exists (HEAD is born) so lockstep pairing has a tree to check out.
+        let head = crate::paths::command_no_window("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert!(head.status.success(), "scaffold must create an initial commit");
+
+        // The .claude settings and docs are TRACKED, not just present on disk — that
+        // is what lets `extend` seed them onto the remote via the lockstep bundle.
+        for path in &[".claude/settings.json", "CLAUDE.md", ".gitignore"] {
+            let tracked = crate::paths::command_no_window("git")
+                .args(["ls-files", "--error-unmatch", path])
+                .current_dir(tmp.path())
+                .output()
+                .unwrap();
+            assert!(tracked.status.success(), "{path} must be tracked by git");
+        }
+        assert!(!git_head_unborn(tmp.path()), "HEAD must be born after scaffold");
     }
 
     #[test]

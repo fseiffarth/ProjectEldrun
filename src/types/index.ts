@@ -153,6 +153,9 @@ export interface Settings {
 export interface OpenVpnSpec {
   /** Absolute path to the local `.ovpn` client config file. */
   config: string;
+  /** Auth username for `auth-user-pass` configs (server-side username+password
+   *  auth). Persisted (not a secret); the password is still prompted separately. */
+  username?: string;
 }
 
 /** A previously-used `.ovpn` config copied into Eldrun's store, offered for
@@ -372,11 +375,17 @@ export function resolveLocalMirror(project: ProjectEntry | null | undefined): st
   return typeof mirror === "string" && mirror.trim() ? mirror : null;
 }
 
-export type Theme = "fancy_dark" | "dark" | "light" | "fancy_light";
+export type Theme =
+  | "fancy_dark"
+  | "dark"
+  | "light"
+  | "fancy_light"
+  | "light_lavender";
 
 export const THEMES: { value: Theme; label: string }[] = [
   { value: "fancy_dark", label: "Fancy Dark" },
   { value: "dark", label: "Plain Dark" },
   { value: "light", label: "Plain Light" },
   { value: "fancy_light", label: "Fancy Light" },
+  { value: "light_lavender", label: "Light Lavender" },
 ];

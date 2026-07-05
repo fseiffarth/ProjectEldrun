@@ -248,19 +248,34 @@ pub fn openvpn_available() -> bool {
 /// Build the `openvpn` argv (without the leading `pkexec`/`openvpn`) for a
 /// connect. Returned as `Vec<String>` so it is unit-testable without launching.
 ///
-/// Shape: `--config <cfg> --askpass <credfile> --auth-nocache
+/// `credfile` holds the secret OpenVPN reads non-interactively. `userpass`
+/// selects *which* credential the file is:
+/// - `true`  → `--auth-user-pass <credfile>` (a two-line `username\npassword`
+///   file), for configs with a bare `auth-user-pass` directive (server-side
+///   username+password auth). Without this OpenVPN would prompt for the username
+///   on stdin and, with stdin closed, hang until the connect times out.
+/// - `false` → `--askpass <credfile>` (a one-line passphrase file), for an
+///   encrypted private key.
+///
+/// Shape: `--config <cfg> {--auth-user-pass|--askpass} <credfile> --auth-nocache
 ///         --writepid <pidfile> --connect-timeout 20 --connect-retry-max 3`.
-pub fn openvpn_args(config: &str, askpass: &Path, pidfile: &Path) -> Result<Vec<String>, String> {
+pub fn openvpn_args(
+    config: &str,
+    userpass: bool,
+    credfile: &Path,
+    pidfile: &Path,
+) -> Result<Vec<String>, String> {
     let config = config.trim();
     if config.is_empty() {
         return Err("OpenVPN config path must not be empty".to_string());
     }
     validate_arg("OpenVPN config", config)?;
+    let cred_flag = if userpass { "--auth-user-pass" } else { "--askpass" };
     Ok(vec![
         "--config".to_string(),
         config.to_string(),
-        "--askpass".to_string(),
-        askpass.to_string_lossy().into_owned(),
+        cred_flag.to_string(),
+        credfile.to_string_lossy().into_owned(),
         "--auth-nocache".to_string(),
         "--writepid".to_string(),
         pidfile.to_string_lossy().into_owned(),
@@ -269,6 +284,32 @@ pub fn openvpn_args(config: &str, askpass: &Path, pidfile: &Path) -> Result<Vec<
         "--connect-retry-max".to_string(),
         "3".to_string(),
     ])
+}
+
+/// Whether `config` uses server-side username+password auth that OpenVPN would
+/// otherwise prompt for interactively — i.e. it contains a bare `auth-user-pass`
+/// directive with **no** inline credentials file argument. Such configs need a
+/// username (collected in the UI, stored in [`OpenVpnSpec`]) fed via
+/// `--auth-user-pass`; a directive that already names a file (`auth-user-pass
+/// creds.txt`) supplies its own and is treated as not needing one.
+///
+/// Best-effort: an unreadable config returns `false` (the connect then falls back
+/// to the `--askpass` path, matching the pre-username behaviour). Comment lines
+/// (`#`/`;`) and inline trailing comments are ignored.
+pub fn config_requires_userpass(config: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(config.trim()) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        // Strip trailing `# ...` / `; ...` comments, then tokenize on whitespace.
+        let body = line
+            .split(['#', ';'])
+            .next()
+            .unwrap_or("")
+            .trim();
+        let mut tok = body.split_whitespace();
+        tok.next() == Some("auth-user-pass") && tok.next().is_none()
+    })
 }
 
 /// Derive a filesystem-safe stem from a config path for naming its runtime
@@ -316,6 +357,31 @@ fn write_askpass(stem: &str, password: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Write a two-line `username\npassword` credentials file (owner-only, 0600) for
+/// `--auth-user-pass` and return its path. Same lifetime/permissions story as
+/// [`write_askpass`]: it lives under the per-user runtime dir and is deleted as
+/// soon as OpenVPN has read it. A newline in either field would forge extra lines
+/// OpenVPN misreads, so both are rejected (they can't occur in a real credential
+/// anyway).
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn write_userpass(stem: &str, username: &str, password: &str) -> Result<PathBuf, String> {
+    if username.contains(['\n', '\r']) || password.contains(['\n', '\r']) {
+        return Err("VPN username/password must not contain newlines".to_string());
+    }
+    let dir = runtime_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create openvpn dir: {e}"))?;
+    let path = dir.join(format!("{stem}.auth"));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    let mut f = opts
+        .open(&path)
+        .map_err(|e| format!("create auth-user-pass file: {e}"))?;
+    writeln!(f, "{username}\n{password}").map_err(|e| format!("write auth-user-pass file: {e}"))?;
+    Ok(path)
+}
+
 /// True if a tunnel for `config` is currently up (registered and its process is
 /// still alive). Shared by Linux and Windows since both track the spawned child
 /// in [`registry`].
@@ -346,8 +412,8 @@ pub fn is_connected(_config: &str) -> bool {
 /// No-op (returns `Ok`) if already connected. Blocks until OpenVPN reports the
 /// tunnel up, the process exits, or `CONNECT_TIMEOUT` elapses.
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-pub fn connect(config: &str, password: &str) -> Result<(), String> {
-    connect_streaming(config, password, |_| {})
+pub fn connect(config: &str, username: Option<&str>, password: &str) -> Result<(), String> {
+    connect_streaming(config, username, password, |_| {})
 }
 
 /// Like [`connect`], but invokes `on_line` for every line OpenVPN emits while the
@@ -357,6 +423,7 @@ pub fn connect(config: &str, password: &str) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 pub fn connect_streaming(
     config: &str,
+    username: Option<&str>,
     password: &str,
     on_line: impl Fn(&str),
 ) -> Result<(), String> {
@@ -376,9 +443,16 @@ pub fn connect_streaming(
     }
 
     let stem = safe_stem(config);
-    let askpass = write_askpass(&stem, password)?;
+    // Feed the secret through the channel the config actually reads: a two-line
+    // user+pass file for `auth-user-pass` configs, else a one-line key passphrase.
+    let userpass = config_requires_userpass(config);
+    let credfile = if userpass {
+        write_userpass(&stem, username.unwrap_or(""), password)?
+    } else {
+        write_askpass(&stem, password)?
+    };
     let pidfile = runtime_dir().join(format!("{stem}.pid"));
-    let args = openvpn_args(config, &askpass, &pidfile)?;
+    let args = openvpn_args(config, userpass, &credfile, &pidfile)?;
 
     let spawn_result = Command::new("pkexec")
         .arg("openvpn")
@@ -391,15 +465,15 @@ pub fn connect_streaming(
     let mut child = match spawn_result {
         Ok(c) => c,
         Err(e) => {
-            let _ = std::fs::remove_file(&askpass);
+            let _ = std::fs::remove_file(&credfile);
             return Err(format!("failed to launch pkexec openvpn: {e}"));
         }
     };
 
     // Stream stdout/stderr until the ready marker, EOF, or timeout.
     let ready = wait_for_ready(&mut child, &on_line);
-    // The passphrase has been read by now; remove it regardless of outcome.
-    let _ = std::fs::remove_file(&askpass);
+    // The credential has been read by now; remove it regardless of outcome.
+    let _ = std::fs::remove_file(&credfile);
 
     match ready {
         Ok(()) => {
@@ -607,6 +681,7 @@ fn resolve_openvpn() -> Option<PathBuf> {
 #[cfg(target_os = "windows")]
 pub fn connect_streaming(
     config: &str,
+    username: Option<&str>,
     password: &str,
     on_line: impl Fn(&str),
 ) -> Result<(), String> {
@@ -621,9 +696,16 @@ pub fn connect_streaming(
     let exe = resolve_openvpn().ok_or_else(|| OPENVPN_MISSING.to_string())?;
 
     let stem = safe_stem(config);
-    let askpass = write_askpass(&stem, password)?;
+    // Feed the secret through the channel the config actually reads: a two-line
+    // user+pass file for `auth-user-pass` configs, else a one-line key passphrase.
+    let userpass = config_requires_userpass(config);
+    let credfile = if userpass {
+        write_userpass(&stem, username.unwrap_or(""), password)?
+    } else {
+        write_askpass(&stem, password)?
+    };
     let pidfile = runtime_dir().join(format!("{stem}.pid"));
-    let args = openvpn_args(config, &askpass, &pidfile)?;
+    let args = openvpn_args(config, userpass, &credfile, &pidfile)?;
 
     // `command_no_window` adds CREATE_NO_WINDOW so the long-lived openvpn.exe
     // does not own a flashing console window.
@@ -637,7 +719,7 @@ pub fn connect_streaming(
     let mut child = match spawn_result {
         Ok(c) => c,
         Err(e) => {
-            let _ = std::fs::remove_file(&askpass);
+            let _ = std::fs::remove_file(&credfile);
             return Err(format!(
                 "failed to launch openvpn.exe: {e} — creating the VPN adapter usually \
                  requires running Eldrun as Administrator"
@@ -647,8 +729,8 @@ pub fn connect_streaming(
 
     // Stream stdout/stderr until the ready marker, EOF, or timeout.
     let ready = wait_for_ready(&mut child, &on_line);
-    // The passphrase has been read by now; remove it regardless of outcome.
-    let _ = std::fs::remove_file(&askpass);
+    // The credential has been read by now; remove it regardless of outcome.
+    let _ = std::fs::remove_file(&credfile);
 
     match ready {
         Ok(()) => {
@@ -702,6 +784,7 @@ pub fn disconnect(config: &str) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 pub fn connect_streaming(
     _config: &str,
+    _username: Option<&str>,
     _password: &str,
     _on_line: impl Fn(&str),
 ) -> Result<(), String> {
@@ -749,9 +832,10 @@ mod tests {
     }
 
     #[test]
-    fn openvpn_args_basic_shape() {
+    fn openvpn_args_askpass_shape() {
         let args = openvpn_args(
             "/home/u/work.ovpn",
+            false,
             Path::new("/run/eldrun/openvpn/x.pass"),
             Path::new("/run/eldrun/openvpn/x.pid"),
         )
@@ -759,26 +843,82 @@ mod tests {
         // --config then the path as a single item.
         let ci = args.iter().position(|a| a == "--config").unwrap();
         assert_eq!(args[ci + 1], "/home/u/work.ovpn");
+        // Passphrase-only configs feed the secret via --askpass.
         let ai = args.iter().position(|a| a == "--askpass").unwrap();
         assert_eq!(args[ai + 1], "/run/eldrun/openvpn/x.pass");
+        assert!(!args.iter().any(|a| a == "--auth-user-pass"));
         let pi = args.iter().position(|a| a == "--writepid").unwrap();
         assert_eq!(args[pi + 1], "/run/eldrun/openvpn/x.pid");
         assert!(args.iter().any(|a| a == "--auth-nocache"));
     }
 
     #[test]
+    fn openvpn_args_userpass_uses_auth_user_pass() {
+        let args = openvpn_args(
+            "/home/u/work.ovpn",
+            true,
+            Path::new("/run/eldrun/openvpn/x.auth"),
+            Path::new("/run/eldrun/openvpn/x.pid"),
+        )
+        .unwrap();
+        // auth-user-pass configs feed username+password via --auth-user-pass,
+        // never --askpass (which OpenVPN only reads for an encrypted key).
+        let ai = args.iter().position(|a| a == "--auth-user-pass").unwrap();
+        assert_eq!(args[ai + 1], "/run/eldrun/openvpn/x.auth");
+        assert!(!args.iter().any(|a| a == "--askpass"));
+    }
+
+    #[test]
     fn openvpn_args_rejects_leading_dash_config() {
-        assert!(openvpn_args("-evil", Path::new("/a"), Path::new("/b")).is_err());
+        assert!(openvpn_args("-evil", false, Path::new("/a"), Path::new("/b")).is_err());
     }
 
     #[test]
     fn openvpn_args_rejects_control_chars() {
-        assert!(openvpn_args("/a\nb.ovpn", Path::new("/a"), Path::new("/b")).is_err());
+        assert!(openvpn_args("/a\nb.ovpn", false, Path::new("/a"), Path::new("/b")).is_err());
     }
 
     #[test]
     fn openvpn_args_rejects_empty_config() {
-        assert!(openvpn_args("   ", Path::new("/a"), Path::new("/b")).is_err());
+        assert!(openvpn_args("   ", false, Path::new("/a"), Path::new("/b")).is_err());
+    }
+
+    #[test]
+    fn config_requires_userpass_detects_bare_directive() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("eldrun-ovpn-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Bare `auth-user-pass` → needs a username.
+        let bare = dir.join("bare.ovpn");
+        let mut f = std::fs::File::create(&bare).unwrap();
+        writeln!(f, "client\nremote vpn.example.com 1194\nauth-user-pass\nauth-nocache").unwrap();
+        assert!(config_requires_userpass(bare.to_str().unwrap()));
+
+        // `auth-user-pass creds.txt` supplies its own file → does not.
+        let withfile = dir.join("withfile.ovpn");
+        let mut f = std::fs::File::create(&withfile).unwrap();
+        writeln!(f, "client\nauth-user-pass /etc/creds.txt").unwrap();
+        assert!(!config_requires_userpass(withfile.to_str().unwrap()));
+
+        // Commented-out directive → does not.
+        let commented = dir.join("commented.ovpn");
+        let mut f = std::fs::File::create(&commented).unwrap();
+        writeln!(f, "client\n# auth-user-pass\n;auth-user-pass").unwrap();
+        assert!(!config_requires_userpass(commented.to_str().unwrap()));
+
+        // Cert-only config → does not.
+        let cert = dir.join("cert.ovpn");
+        let mut f = std::fs::File::create(&cert).unwrap();
+        writeln!(f, "client\nremote vpn.example.com 1194\ncert a.crt\nkey a.key").unwrap();
+        assert!(!config_requires_userpass(cert.to_str().unwrap()));
+
+        // Missing file → false (best-effort fallback).
+        assert!(!config_requires_userpass(
+            dir.join("nope.ovpn").to_str().unwrap()
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

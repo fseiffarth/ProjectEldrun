@@ -67,6 +67,42 @@ interface Props {
 }
 
 function terminalTheme(scheme: string | undefined) {
+  if (scheme === "light_lavender") {
+    // Neutral slots form a wide lavender ramp (not grey) so Claude Code's ANSI
+    // theme reads as lavender with strong contrast: `black` is a deep saturated
+    // lavender for the emphasized sent-message block / removed-diff background,
+    // `brightBlack` a clearly lighter lavender for dimmed previous messages /
+    // added-diff background, and `white` a light lavender for borders/dim text.
+    // The gap between black↔brightBlack↔white is deliberately large so the
+    // states are easy to tell apart. green/red are kept saturated so the +/-
+    // diff markers stay legible on top of the lavender line backgrounds.
+    // selection* + cursorAccent are set (xterm otherwise defaults them to a
+    // blue-grey) so selection/cursor also pick up the lavender hue.
+    return {
+      background: "#faf9fe",
+      foreground: "#2c2348",
+      cursor: "#7c5cdb",
+      cursorAccent: "#faf9fe",
+      selectionBackground: "#dccff2",
+      selectionForeground: "#241d38",
+      black: "#2f2358",
+      red: "#d1242f",
+      green: "#0f5a26",
+      yellow: "#9a6700",
+      blue: "#0969da",
+      magenta: "#7c5cdb",
+      cyan: "#1b7c83",
+      white: "#cbc0ec",
+      brightBlack: "#8878c4",
+      brightRed: "#cf222e",
+      brightGreen: "#1c7a39",
+      brightYellow: "#bf8700",
+      brightBlue: "#0550ae",
+      brightMagenta: "#b48cf0",
+      brightCyan: "#3192aa",
+      brightWhite: "#2c2348",
+    };
+  }
   if (scheme === "light" || scheme === "fancy_light") {
     return {
       background: "#ffffff",
@@ -527,7 +563,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         position: "relative",
         display: "flex",
         flexDirection: "column",
-        background: colorScheme === "light" || colorScheme === "fancy_light" ? "#ffffff" : "#0d1117",
+        background:
+          colorScheme === "light_lavender"
+            ? "#faf9fe"
+            : colorScheme === "light" || colorScheme === "fancy_light"
+              ? "#ffffff"
+              : "#0d1117",
       }}
     />
   );

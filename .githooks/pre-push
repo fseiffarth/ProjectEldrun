@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+#
+# Auto-bump the patch version on every push of a branch, so each pushed build
+# is a distinct version. Releases stay manual (they are cut by pushing a v* tag,
+# which this hook deliberately skips).
+#
+# git can't add a commit to a push that is already in flight, so this hook:
+#   1. bumps package.json / Cargo.toml / tauri.conf.json,
+#   2. commits the bump onto the current branch,
+#   3. re-runs the push (which carries the bump), and
+#   4. aborts the original push, now superseded by the re-push.
+#
+# Enable once with:  git config core.hooksPath .githooks
+set -euo pipefail
+
+# Guard against the recursion from our own re-push below.
+[ -n "${ELDRUN_BUMPING:-}" ] && exit 0
+
+remote="$1"
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+# stdin: <local-ref> <local-sha> <remote-ref> <remote-sha> per pushed ref.
+# Bump only when pushing a branch whose version still matches what is already on
+# the remote (or a brand-new remote branch). This skips:
+#   - pure tag / deletion pushes (e.g. `git push origin v0.1.8` to cut a release),
+#   - pushes where the version was already advanced manually (minor/major bump),
+# so the version on the remote strictly increases on each push without ever
+# double-bumping.
+pkg_version() { git show "$1:package.json" 2>/dev/null | jq -r '.version // empty' 2>/dev/null; }
+
+bump=0
+while read -r local_ref local_sha _remote_ref remote_sha; do
+  case "$local_ref" in
+    refs/tags/*|"") continue ;;   # tag or deletion — leave version alone
+    refs/*) : ;;
+    *) continue ;;
+  esac
+  if [[ "$remote_sha" =~ ^0+$ ]]; then
+    bump=1                        # new branch on the remote — give it a fresh version
+  elif [ "$(pkg_version "$local_sha")" = "$(pkg_version "$remote_sha")" ]; then
+    bump=1                        # version unchanged since last push — bump it
+  fi
+done
+
+[ "$bump" -eq 0 ] && exit 0
+
+new="$("$repo_root/scripts/bump-version.sh" patch)"
+
+git -C "$repo_root" add \
+  package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json
+git -C "$repo_root" commit -m "chore: bump version to v${new}" >/dev/null
+
+echo "pre-push: bumped version to v${new}; pushing with the bump included…" >&2
+ELDRUN_BUMPING=1 git push "$remote" HEAD
+echo "pre-push: pushed v${new}. The 'failed to push' line below is the original" >&2
+echo "          pre-bump push being intentionally aborted — the push succeeded." >&2
+
+# The re-push above already sent the bump commit; stop the original (stale) push.
+exit 1

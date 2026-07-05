@@ -5,6 +5,7 @@ import { TerminalView } from "../terminal/TerminalView";
 import { ConnectionLog } from "../common/ConnectionLog";
 import { ConnLamp } from "../common/ConnLamp";
 import { Dropdown } from "../common/Dropdown";
+import { PasswordInput } from "../common/PasswordInput";
 import type { ConnState } from "../../stores/remoteStatus";
 import type { useRemoteSession } from "./useRemoteSession";
 
@@ -94,6 +95,9 @@ export function RemoteProjectSection({
     setVpnEnabled,
     vpnConfig,
     vpnConfigs,
+    vpnUsername,
+    setVpnUsername,
+    vpnNeedsUsername,
     selectVpnConfig,
     vpnPassword,
     setVpnPassword,
@@ -237,15 +241,30 @@ export function RemoteProjectSection({
                 </label>
                 {headless ? (
                   <>
-                    <label>
-                      VPN password{" "}
-                      <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
-                      <div className="folder-picker-row">
+                    {vpnNeedsUsername && (
+                      <label>
+                        VPN username{" "}
+                        <span className="ssh-optional-hint">(stored with the project)</span>
                         <input
                           className="ssh-password-input"
-                          type="password"
+                          type="text"
+                          value={vpnUsername}
+                          placeholder="OpenVPN account username"
+                          onChange={(e) => {
+                            setVpnUsername(e.target.value);
+                            if (vpnStatus !== "idle") setVpnStatus("idle");
+                          }}
+                        />
+                      </label>
+                    )}
+                    <label>
+                      {vpnNeedsUsername ? "VPN password" : "VPN passphrase"}{" "}
+                      <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
+                      <div className="folder-picker-row">
+                        <PasswordInput
+                          className="ssh-password-input"
                           value={vpnPassword}
-                          placeholder="VPN passphrase"
+                          placeholder={vpnNeedsUsername ? "OpenVPN account password" : "VPN passphrase"}
                           onChange={(e) => {
                             setVpnPassword(e.target.value);
                             if (vpnStatus !== "idle") setVpnStatus("idle");
@@ -374,9 +393,8 @@ export function RemoteProjectSection({
                     (not stored; blank uses SSH key)
                   </span>
                   <div className="folder-picker-row">
-                    <input
+                    <PasswordInput
                       className="ssh-password-input"
-                      type="password"
                       value={sshPassword}
                       placeholder="leave empty for key/agent auth"
                       onChange={(e) => onSshPasswordChange(e.target.value)}

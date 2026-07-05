@@ -1072,6 +1072,36 @@ export function RightPanel({
               need a live connection, so the row is gated on !remoteBlocked. */}
           {!activeBox && activeProject?.remote && activeId && !remoteBlocked && (
             <div className="right-panel-source">
+              {/* Project-wide auto-sync toggle: the root "" marker. When on, the
+                  whole tree bidirectionally auto-syncs; individual files/folders
+                  can still be carved out (or opted in) from their own context
+                  menu, which overrides this. */}
+              {(() => {
+                const autoAll = !!syncMap?.[""]?.auto;
+                return (
+                  <button
+                    className="tab-add-btn"
+                    style={{
+                      fontSize: 10,
+                      padding: "1px 6px",
+                      height: 20,
+                      ...(autoAll
+                        ? { color: "var(--accent)", borderColor: "var(--accent)" }
+                        : {}),
+                    }}
+                    onClick={() =>
+                      void useSyncStore.getState().setAuto(activeId, [""], !autoAll, true)
+                    }
+                    title={
+                      autoAll
+                        ? "Auto-syncing the whole project (⟳). Click to stop. Individual files/folders can still be excluded or included from their right-click menu."
+                        : "Auto-sync the whole project bidirectionally (host ⇄ local mirror). Diverged files are left for manual resolution; per-file/folder toggles override this."
+                    }
+                  >
+                    {autoAll ? "⟳ Auto-sync: all" : "Auto-sync all"}
+                  </button>
+                );
+              })()}
               {fileSource === "remote" ? (
                 <button
                   className="tab-add-btn"

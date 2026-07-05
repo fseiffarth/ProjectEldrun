@@ -18,10 +18,17 @@ use tauri::{AppHandle, Emitter};
 /// the caller can then show the prompt. `remember` opts into saving the working
 /// passphrase in the OS keychain (keyed by config path), written **only after the
 /// tunnel is up**; unticking clears any previously-saved one.
+///
+/// `username` is the auth username for configs that use `auth-user-pass`
+/// (server-side username+password auth). It is fed to OpenVPN via
+/// `--auth-user-pass` together with `password`; without it such a config would
+/// prompt for the username on stdin and hang. Ignored for configs that don't need
+/// it (the backend inspects the config and picks the credential channel).
 #[tauri::command]
 pub async fn openvpn_connect(
     app: AppHandle,
     config: String,
+    username: Option<String>,
     password: Option<String>,
     remember: Option<bool>,
 ) -> Result<(), String> {
@@ -34,13 +41,14 @@ pub async fn openvpn_connect(
     else {
         return Err("no VPN password provided and none saved".to_string());
     };
+    let username = username.filter(|u| !u.is_empty());
     // Offload to a blocking worker. `connect_streaming` is fully synchronous and
     // blocks for the whole handshake — up to `CONNECT_TIMEOUT` (45s), and longer
     // still while `pkexec` waits on the polkit prompt. Awaiting it directly on the
     // async runtime starves a worker and froze the headless VPN connect; mirror
     // `ssh_connect`, which spawn_blocks its ssh probe for exactly this reason.
     tokio::task::spawn_blocking(move || {
-        openvpn::connect_streaming(&config, &pw, |line| {
+        openvpn::connect_streaming(&config, username.as_deref(), &pw, |line| {
             let _ = app.emit(
                 "openvpn-progress",
                 serde_json::json!({ "config": config, "line": line }),
@@ -53,6 +61,15 @@ pub async fn openvpn_connect(
     })
     .await
     .map_err(|e| format!("openvpn connect task failed: {e}"))?
+}
+
+/// Whether `config` needs an auth **username** — i.e. it uses `auth-user-pass`
+/// (server-side username+password auth) with no inline credentials file. The UI
+/// calls this when a config is chosen to decide whether to show the username
+/// field (and require it before connecting).
+#[tauri::command]
+pub async fn openvpn_needs_username(config: String) -> bool {
+    openvpn::config_requires_userpass(&config)
 }
 
 /// Whether a saved VPN passphrase exists for `config`, so the UI can pre-check

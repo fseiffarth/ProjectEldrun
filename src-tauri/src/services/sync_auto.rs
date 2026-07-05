@@ -259,6 +259,8 @@ async fn reconcile_pass(
 
     // Candidate files = auto single-file entries ∪ host walk of each auto dir ∪
     // mirror walk of each auto dir (so new files on EITHER side are picked up).
+    // An auto dir may be the project root (""), i.e. project-wide auto-sync-all,
+    // in which case the walks cover the whole tree.
     let mut candidates: BTreeSet<String> = auto_files.into_iter().collect();
     for d in &auto_dirs {
         match remote_sync::walk_host_files(&sftp, &target.spec.remote_path, d).await {
@@ -269,6 +271,10 @@ async fn reconcile_pass(
             candidates.extend(local);
         }
     }
+    // Drop paths carved out by a local OFF override (an `auto_off` on the file or a
+    // nearer directory marker): the reconcile only touches paths whose *effective*
+    // auto-sync is on, so a project-wide auto can still exclude individual subtrees.
+    candidates.retain(|rel| remote_sync::is_auto(&snapshot, rel));
 
     let mut pulled = 0usize;
     let mut pushed = 0usize;

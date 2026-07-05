@@ -4,6 +4,7 @@ import { TerminalView } from "../terminal/TerminalView";
 import { ConnLamp } from "../common/ConnLamp";
 import { ConnectionLog } from "../common/ConnectionLog";
 import { Dropdown } from "../common/Dropdown";
+import { PasswordInput } from "../common/PasswordInput";
 import { useRemoteReconnect } from "./useRemoteReconnect";
 import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useProjectsStore, disconnectRemote } from "../../stores/projects";
@@ -43,6 +44,9 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
     vpnStatus,
     vpnConfig,
     vpnConfigs,
+    vpnUsername,
+    setVpnUsername,
+    vpnNeedsUsername,
     selectVpnConfig,
     browseVpnConfig,
     winManual,
@@ -177,13 +181,25 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
           )}
           {vpnEnabled && vpnConfig && (headless ? (
               <>
+                {vpnNeedsUsername && (
+                  <label className="remote-connect-field">
+                    VPN username
+                    <input
+                      type="text"
+                      value={vpnUsername}
+                      autoComplete="off"
+                      placeholder="OpenVPN account username…"
+                      disabled={vpnStatus === "connecting" || vpnStatus === "connected"}
+                      onChange={(e) => setVpnUsername(e.target.value)}
+                    />
+                  </label>
+                )}
                 <label className="remote-connect-field">
-                  VPN passphrase
-                  <input
-                    type="password"
+                  {vpnNeedsUsername ? "VPN password" : "VPN passphrase"}
+                  <PasswordInput
                     value={vpnPassword}
                     autoComplete="off"
-                    placeholder="OpenVPN passphrase…"
+                    placeholder={vpnNeedsUsername ? "OpenVPN account password…" : "OpenVPN passphrase…"}
                     disabled={vpnStatus === "connecting" || vpnStatus === "connected"}
                     onChange={(e) => setVpnPassword(e.target.value)}
                     onKeyDown={(e) => {
@@ -279,8 +295,7 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
             <>
               <label className="remote-connect-field">
                 Password
-                <input
-                  type="password"
+                <PasswordInput
                   value={sshPassword}
                   autoFocus
                   autoComplete="off"

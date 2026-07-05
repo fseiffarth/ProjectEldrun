@@ -179,6 +179,32 @@ html, body, #root {
 /* ── Activity calendar color levels (shared across themes) ──────────── */
 /* Override per-theme below where contrast requires it. */
 
+/* ─────────────────────────────────────────────────────────────────────
+   HOW TO ADD A THEME (quick reference)
+   1. Copy one of the [data-theme="..."] blocks below (start from `light`
+      or `dark` — the "fancy" ones add gradients/token overrides).
+   2. Rename the selector: [data-theme="my_theme"] { ... }
+   3. Register it so the Settings → Theme picker shows it, in
+      src/types/index.ts: add to the `Theme` union AND the `THEMES` array.
+   No other file needs changing — settings just stores the id string and
+   App.tsx puts it on <html data-theme="...">.
+
+   The variables you actually recolor (everything else can be left alone):
+     --bg-main / --bg-panel / --bg-header  → window, panels, header
+     --border-color / --border-subtle       → separators, outlines
+     --text-primary / --text-secondary / --text-muted → text tiers
+     --accent / --accent-hover / --accent-active      → the theme's hue
+       (buttons, active pill, links, scrollbar thumb, focus rings)
+     --accent-secondary                     → secondary highlight hue
+     --control-bg / --control-hover-bg / --control-border → inputs/buttons
+     --pill-active-bg / --pill-active-border / --pill-hover-bg → project pills
+     --success / --warning / --danger        → status colors (usually keep)
+     --wm-close / --wm-minimize / --wm-maximize → window-control dots
+     --activity-0..4                         → calendar heatmap ramp (light→dark)
+   Tip: pick one --accent, then derive -hover (darker), -active (darker
+   still), and the pill-active-* rgba() from that same hue.
+   ───────────────────────────────────────────────────────────────────── */
+
 /* ── Theme: fancy_dark (default) ─────────────────────────────────────── */
 :root,
 [data-theme="fancy_dark"] {
@@ -194,6 +220,7 @@ html, body, #root {
   --accent-hover: #5edcff;
   --accent-active: #1ca7d8;
   --accent-secondary: #b388ff;
+  --info: #6cb6ff;
   /* Text color for solid-accent-filled controls (e.g. .dialog-connect-btn,
      .how-to-start-num). One constant across themes (not redeclared per theme,
      so it cascades from :root everywhere). NOTE: this fixed white gives poor
@@ -253,6 +280,7 @@ html, body, #root {
   --accent-hover: #58a6ff;
   --accent-active: #1f6feb;
   --accent-secondary: #d29922;
+  --info: #58a6ff;
   --control-bg: #1c2128;
   --control-hover-bg: #262d36;
   --control-border: #30363d;
@@ -290,6 +318,7 @@ html, body, #root {
   --accent-hover: #0550ae;
   --accent-active: #054da7;
   --accent-secondary: #bf8700;
+  --info: #0969da;
   --control-bg: #ffffff;
   --control-hover-bg: #f6f8fa;
   --control-border: #d0d7de;
@@ -327,6 +356,7 @@ html, body, #root {
   --accent-hover: #0550ae;
   --accent-active: #054da7;
   --accent-secondary: #14b8a6;
+  --info: #0ea5e9;
   --control-bg: #ffffff;
   --control-hover-bg: #f6f8fa;
   --control-border: #c9d7e5;
@@ -348,6 +378,44 @@ html, body, #root {
   --activity-2: #40c463;
   --activity-3: #30a14e;
   --activity-4: #216e39;
+}
+
+/* ── Theme: light_lavender ──────────────────────────────────────────── */
+[data-theme="light_lavender"] {
+  --bg-main: #faf9fe;
+  --bg-panel: #f2effa;
+  --bg-header: #f2effa;
+  --border-color: #ddd6f0;
+  --border-subtle: #ebe7f6;
+  --text-primary: #2e2a3d;
+  --text-secondary: #5f5878;
+  --text-muted: #938bab;
+  --accent: #7c5cdb;
+  --accent-hover: #6a49c8;
+  --accent-active: #5d3eb8;
+  --accent-secondary: #9d6ecb;
+  --info: #6d7fd4;
+  --control-bg: #ffffff;
+  --control-hover-bg: #f2effa;
+  --control-border: #ddd6f0;
+  --success: #2e7d5b;
+  --warning: #9a6700;
+  --danger: #d1242f;
+  --helix-orange: #d6492f;
+  --helix-green: #2e7d32;
+  --pill-bg: transparent;
+  --pill-active-bg: rgba(124, 92, 219, 0.12);
+  --pill-active-border: rgba(124, 92, 219, 0.28);
+  --pill-hover-bg: rgba(95, 88, 120, 0.08);
+  --offline-bg: rgba(209, 36, 47, 0.88);
+  --wm-close: #f85149;
+  --wm-minimize: #e3b341;
+  --wm-maximize: #3fb950;
+  --activity-0: #ece8f5;
+  --activity-1: #cdbdf0;
+  --activity-2: #a98fe0;
+  --activity-3: #8968cf;
+  --activity-4: #6344ab;
 }
 
 /* ── App layout shell ─────────────────────────────────────────────────── */
@@ -545,7 +613,7 @@ select option {
 .root-logo-btn.active {
   background: var(--pill-active-bg);
   border-color: var(--pill-active-border);
-  box-shadow: inset 0 3px 0 var(--accent);
+  box-shadow: inset 0 4px 0 var(--accent);
 }
 
 /* ── Version / debug / conn-type ─────────────────────────────────────── */
@@ -575,8 +643,8 @@ select option {
   height: 32px;
   min-width: 82px;
   padding: 0 6px;
-  border: 1px solid var(--control-border);
-  background: var(--control-bg);
+  border: none;
+  background: transparent;
   color: var(--text-secondary);
   display: inline-flex;
   flex-direction: column;
@@ -737,6 +805,33 @@ select option {
 .file-viewer-open-external:hover {
   color: var(--text-primary);
   border-color: var(--text-muted);
+}
+
+/* Print button — shared across the viewers, mirrors the open-external icon. */
+.file-viewer-print {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 0;
+  width: 22px;
+  height: 18px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-viewer-print:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.file-viewer-print:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Auto-sync toggle in the viewer header (remote projects only). Off = muted
@@ -4339,7 +4434,7 @@ select option {
   font-weight: 500;
   color: var(--text-secondary);
   background-color: var(--control-bg);
-  box-shadow: inset 0 3px 0 var(--warning);
+  box-shadow: inset 0 4px 0 var(--warning);
   transition: background-color 0.1s, color 0.1s;
   flex-shrink: 0;
   white-space: nowrap;
@@ -4421,17 +4516,21 @@ select option {
 }
 
 .project-pill.active {
-  background-color: var(--pill-active-bg);
+  /* Same accent-tinted fill as the current tab, so the active project pill and
+     the active tab read as the same "current" treatment across the app. */
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--accent) 42%, var(--bg-main)) 0%,
+    color-mix(in srgb, var(--accent) 26%, var(--bg-main)) 100%);
   border-color: var(--pill-active-border);
   color: var(--text-primary);
-  box-shadow: inset 0 3px 0 var(--accent);
+  box-shadow: inset 0 4px 0 var(--accent);
 }
 
 /* Category-tinted top bar: the project's primary category color replaces the
    default status stripe so projects sharing a category read as a group. The
    active pill keeps the accent stripe (its current-scope signal wins). */
 .project-pill.has-category:not(.active):not(.timer-paused) {
-  box-shadow: inset 0 3px 0 var(--cat-color);
+  box-shadow: inset 0 4px 0 var(--cat-color);
 }
 /* Small per-category swatches inside the pill (one dot per category). */
 .pill-category-dots {
@@ -5072,7 +5171,12 @@ select option {
   color: var(--text-muted);
   white-space: nowrap;
   flex-shrink: 0;
+  /* Every tab shows a 3px group-colour top stripe, always (not just the current
+     tab) — the same slot on all tabs, so the stripe lands at an identical
+     height with no offset between neighbours. The current tab is marked by a
+     darker background (below), not by whether the stripe is present. */
   border: 1px solid transparent;
+  border-top: 3px solid var(--tab-accent, var(--accent));
   border-bottom: none;
   border-radius: 0;
   margin-bottom: 0;
@@ -5088,19 +5192,26 @@ select option {
 .tab:hover {
   background-color: var(--pill-hover-bg);
   color: var(--text-primary);
-  border-top-color: var(--accent);
+  /* Stripe colour is unchanged on hover (it's always the group colour); hover
+     just warms the tab body. */
   border-left-color: var(--control-border);
   border-right-color: var(--control-border);
 }
 
 .tab.active {
-  background: linear-gradient(180deg, var(--control-hover-bg) 0%, var(--bg-main) 100%);
+  /* The current tab is marked by a darker, accent-tinted background — a darker
+     lavender in the lavender theme, and the equivalent theme-accent tint in the
+     others (dark themes deepen, light themes take on the accent hue). The stripe
+     itself is on every tab, so the background is what signals "current". */
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--accent) 42%, var(--bg-main)) 0%,
+    color-mix(in srgb, var(--accent) 26%, var(--bg-main)) 100%);
   color: var(--text-primary);
-  border-top: 2px solid var(--tab-accent, var(--accent));
+  /* The 2px top border is the stripe (coloured by the tab group). */
+  border-top-color: var(--tab-accent, var(--accent));
   border-left-color: var(--border-color);
   border-right-color: var(--border-color);
   border-bottom-color: var(--bg-main);
-  box-shadow: inset 0 3px 0 var(--tab-accent, var(--accent));
   position: relative;
   z-index: 11;
   /* Overlap the bar's bottom border so the active tab merges into the pane
@@ -5111,9 +5222,11 @@ select option {
 .tab-label {
   flex: 1;
   min-width: 0;
-  /* Helix green for tab text; inactive tabs dim slightly to keep the active tab
-     foremost (the fancy themes override the active label with a gradient below). */
-  color: var(--helix-green);
+  /* Tab text is never accent-coloured — it takes the theme foreground (white in
+     dark themes, near-black in light, dark-lavender in the lavender theme). The
+     tab-group identity is carried by the top stripe, not the label. Inactive
+     tabs dim slightly so the active tab still reads as foremost. */
+  color: var(--text-primary);
 }
 
 .tab:not(.active):not(:hover) .tab-label {
@@ -6705,7 +6818,7 @@ select option {
   background: var(--pill-active-bg);
   color: var(--text-primary);
   border-color: var(--pill-active-border);
-  box-shadow: inset 0 3px 0 var(--accent);
+  box-shadow: inset 0 4px 0 var(--accent);
 }
 
 .project-switcher-add-btn {
@@ -6827,6 +6940,24 @@ select option {
   /* Helix apricot for the project name; inactive pills dim a touch so the active
      scope still reads as foremost (its background/stripe also signal it). */
   color: var(--helix-orange);
+}
+
+/* In the lavender theme the project name reads as dark lavender rather than
+   the default Helix apricot, so it stays in-palette with the rest of the UI. */
+[data-theme="light_lavender"] .project-pill-label {
+  color: #5d3eb8;
+}
+
+/* Project-pill top stripe in the lavender theme. The base stripe uses --warning
+   (a brown/amber) — replace it with lavender: open projects get a light-lavender
+   stripe, and the current (active) project gets a saturated dark-lavender one so
+   it clearly stands out. Category-tinted pills keep their category colour (that
+   rule is more specific). */
+[data-theme="light_lavender"] .project-pill {
+  box-shadow: inset 0 4px 0 #cdbdf0;
+}
+[data-theme="light_lavender"] .project-pill.active {
+  box-shadow: inset 0 4px 0 #5d3eb8;
 }
 
 .project-pill:not(.active):not(:hover) .project-pill-label {
@@ -7479,6 +7610,48 @@ select option {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Masked input + show/hide eye toggle (see common/PasswordInput.tsx). The wrap
+   takes the input's place in every layout: it stretches to full width in the
+   column/label contexts (flex cross-axis stretch) and grows to fill a
+   `.folder-picker-row`. The reveal button floats over the trailing edge, so the
+   input reserves room for it via padding-right. */
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+.password-input-wrap > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 30px;
+}
+.folder-picker-row > .password-input-wrap {
+  flex: 1;
+  overflow: visible;
+}
+.password-reveal-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.password-reveal-btn:hover {
+  color: var(--text-primary);
+}
+.password-reveal-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 /* OpenVPN activation password prompt */
@@ -9913,16 +10086,9 @@ select option {
     inset 0 -3px 0 var(--tab-accent, var(--accent));
 }
 
-/* Gradient-text label on the active tab — matches the fancy dialog headings. */
-[data-theme="fancy_dark"] .tab.active .tab-label,
-[data-theme="fancy_light"] .tab.active .tab-label {
-  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-secondary) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  font-weight: 700;
-}
+/* Tab text stays uncoloured in the fancy themes too — fancy_dark labels are
+   plain white (below), fancy_light labels fall through to the theme foreground.
+   (No accent gradient on the active tab; the top/bottom rail carries the kind.) */
 
 /* Keep project and tab names plain white in fancy dark mode. */
 [data-theme="fancy_dark"] .project-pill-label,

@@ -72,9 +72,18 @@ pub struct SyncEntry {
     /// `selected`. On a **directory** marker it applies to the whole subtree; the
     /// per-file entries the engine creates on transfer are NOT stamped (auto-ness
     /// is derived from the nearest marker by `is_auto`), so a file synced under a
-    /// manually-selected folder stays non-auto.
+    /// manually-selected folder stays non-auto. The project root (`""`) carries
+    /// this flag as the project-wide "auto-sync all" toggle.
     #[serde(default)]
     pub auto_sync: bool,
+    /// Explicit auto-sync EXCLUSION. Set when the user turns auto **off** for a
+    /// path that would otherwise inherit it from an ancestor marker (a folder or
+    /// the project-wide root). It overrides an ancestor's `auto_sync` for this
+    /// path and its subtree — the "local toggles win" override — so a project-wide
+    /// auto-sync can carve out individual files/folders. Nearest marker wins
+    /// (`is_auto`); a plain off with no ancestor auto is a harmless no-op marker.
+    #[serde(default)]
+    pub auto_off: bool,
 }
 
 /// A project's manifest: project-relative path → record.
@@ -245,25 +254,43 @@ pub fn divergence(
     (host_diverged, local_diverged)
 }
 
-/// Whether `rel` auto-syncs: its own entry, or any ancestor **directory** entry,
-/// carries `auto_sync`. Folder markers imply their whole subtree, so a file with
-/// no entry of its own is auto when it lives under an auto folder. Pure.
+/// Whether `rel` auto-syncs, by **nearest explicit marker wins**. A marker is an
+/// entry carrying `auto_sync` (on) or `auto_off` (excluded). We consult, closest
+/// first: the path's own entry, then each ancestor **directory** marker, ending at
+/// the project root (`""`) — whose marker is the project-wide "auto-sync all"
+/// toggle. The first explicit decision found wins, so a per-file/folder toggle
+/// overrides an ancestor (including project-wide) in either direction. A folder
+/// marker only applies to descendants when it is `is_dir`. Pure.
 pub fn is_auto(manifest: &Manifest, rel: &str) -> bool {
-    if manifest.get(rel).map(|e| e.auto_sync).unwrap_or(false) {
-        return true;
-    }
-    let mut cur = rel;
-    while let Some(idx) = cur.rfind('/') {
-        cur = &cur[..idx];
-        if manifest
-            .get(cur)
-            .map(|e| e.auto_sync && e.is_dir)
-            .unwrap_or(false)
-        {
+    // The path's own entry decides for itself regardless of is_dir.
+    if let Some(e) = manifest.get(rel) {
+        if e.auto_off {
+            return false;
+        }
+        if e.auto_sync {
             return true;
         }
     }
-    false
+    // Ancestor directory markers, nearest first, finally the root "" marker (which
+    // `rfind('/')` never reaches on its own).
+    let mut cur = rel;
+    loop {
+        cur = match cur.rfind('/') {
+            Some(idx) => &cur[..idx],
+            None if !cur.is_empty() => "", // consult the project root last
+            None => return false,          // consumed the root: no decision
+        };
+        if let Some(e) = manifest.get(cur) {
+            if e.is_dir {
+                if e.auto_off {
+                    return false;
+                }
+                if e.auto_sync {
+                    return true;
+                }
+            }
+        }
+    }
 }
 
 /// Borrow (loading from disk on first touch) the project's manifest from the
@@ -1003,5 +1030,53 @@ mod tests {
             SyncEntry { selected: true, auto_sync: true, is_dir: false, ..Default::default() },
         );
         assert!(!is_auto(&m, "notadir/child.rs"));
+    }
+
+    #[test]
+    fn is_auto_project_wide_root_marker_and_exclusions() {
+        let mut m = Manifest::new();
+        // Project-wide "auto-sync all": the root "" directory marker.
+        m.insert(
+            "".to_string(),
+            SyncEntry { selected: true, is_dir: true, auto_sync: true, ..Default::default() },
+        );
+        // Everything is auto under the project-wide marker, at any depth and for
+        // top-level files (which `rfind('/')` never resolves to the root).
+        assert!(is_auto(&m, "README.md"));
+        assert!(is_auto(&m, "src/main.rs"));
+        assert!(is_auto(&m, "a/b/c/deep.rs"));
+
+        // A local OFF override carves a subtree out of the project-wide auto.
+        m.insert(
+            "vendor".to_string(),
+            SyncEntry { selected: true, is_dir: true, auto_off: true, ..Default::default() },
+        );
+        assert!(!is_auto(&m, "vendor/lib.rs"));
+        assert!(!is_auto(&m, "vendor")); // the folder itself
+        assert!(is_auto(&m, "src/main.rs")); // siblings unaffected
+
+        // A single excluded file under an otherwise-auto tree.
+        m.insert(
+            "src/secret.rs".to_string(),
+            SyncEntry { selected: true, auto_off: true, ..Default::default() },
+        );
+        assert!(!is_auto(&m, "src/secret.rs"));
+        assert!(is_auto(&m, "src/other.rs"));
+
+        // A local ON override wins over an ancestor exclusion (nearest marker).
+        m.insert(
+            "vendor/keep".to_string(),
+            SyncEntry { selected: true, is_dir: true, auto_sync: true, ..Default::default() },
+        );
+        assert!(is_auto(&m, "vendor/keep/x.rs"));
+        assert!(!is_auto(&m, "vendor/other/y.rs")); // still excluded
+
+        // Project-wide OFF (root auto_off): nothing auto except explicit ON paths.
+        m.insert(
+            "".to_string(),
+            SyncEntry { selected: true, is_dir: true, auto_off: true, ..Default::default() },
+        );
+        assert!(!is_auto(&m, "README.md"));
+        assert!(is_auto(&m, "vendor/keep/x.rs")); // explicit ON still wins
     }
 }

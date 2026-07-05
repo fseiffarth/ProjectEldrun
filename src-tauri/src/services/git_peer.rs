@@ -764,7 +764,12 @@ async fn init_pairing(
 /// populated from it (remote import → mirror from remote; extend-local → remote from
 /// local). If *both* already exist and diverge, no side is guessed — that is the
 /// normal diverged→`Desynchronized` path, resolved by the explicit authority choice.
-pub async fn reconcile(pool: &RemotePoolState, project_id: &str, spec: &RemoteSpec) -> GitPeerState {
+pub async fn reconcile(
+    pool: &RemotePoolState,
+    manifest: &remote_sync::SyncManifestState,
+    project_id: &str,
+    spec: &RemoteSpec,
+) -> GitPeerState {
     let prior = load_state(project_id);
     let local = probe(&Peer::Local(mirror_dir(project_id)));
     let remote = probe(&Peer::Remote(spec.clone()));
@@ -811,7 +816,19 @@ pub async fn reconcile(pool: &RemotePoolState, project_id: &str, spec: &RemoteSp
             );
         } else {
             let source = if source_is_local { &local } else { &remote };
-            let _ = init_pairing(pool, project_id, spec, source_is_local, source).await;
+            if init_pairing(pool, project_id, spec, source_is_local, source)
+                .await
+                .is_ok()
+            {
+                // Pairing just materialized both sides to the same HEAD, so every
+                // tracked file is byte-identical across host and mirror. Seed the
+                // selective-sync manifest for them so the file tree shows them green
+                // (in sync) rather than red (untracked by SFTP sync) — there is
+                // nothing to transfer. This branch only fires at the pairing moment
+                // (exactly one side a repo), so it runs once and never re-selects a
+                // file the user later deselects.
+                seed_manifest_after_pairing(pool, manifest, project_id, spec).await;
+            }
         }
     }
 
@@ -909,6 +926,56 @@ async fn restamp_after_checkout(
     let _ = remote_sync::save_manifest(project_id, m);
 }
 
+/// Seed the file-sync manifest for every git-tracked file right after an INITIAL
+/// PAIRING materialized both peers to the same HEAD (so each tracked path is now
+/// byte-identical across host and mirror). Marks each path selected and stamps its
+/// host + local bases, so `compute_state` reads them green (in sync) instead of the
+/// red "not tracked by selective sync" a freshly-extended/imported project would
+/// otherwise show — there is nothing to transfer. This mirrors what
+/// `restamp_after_checkout` does for a checkout, applied to the pairing moment.
+/// Best-effort; needs the pooled SFTP for host stats (falls back to the local base
+/// when the host can't be stat'd, matching `restamp_after_checkout`).
+async fn seed_manifest_after_pairing(
+    pool: &RemotePoolState,
+    manifest: &remote_sync::SyncManifestState,
+    project_id: &str,
+    spec: &RemoteSpec,
+) {
+    let local = Peer::Local(mirror_dir(project_id));
+    // NUL-delimited so paths with spaces/quotes survive verbatim (no core.quotePath
+    // escaping). `.git` is never listed by ls-files; a gitignored `.eldrun` won't be
+    // either — both stay out of byte-sync, as elsewhere.
+    let tracked = match local.run(&["ls-files", "-z"]) {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return,
+    };
+    let paths: Vec<String> = tracked
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).replace('\\', "/"))
+        .collect();
+    if paths.is_empty() {
+        return;
+    }
+    let sftp = crate::services::remote::pooled_sftp(pool, project_id).await;
+
+    let mut g = manifest.lock().await;
+    let m = remote_sync::ensure_loaded(&mut g, project_id);
+    for rel in paths {
+        let local_path = mirror_local_path(project_id, &rel);
+        let (ls, lm) = remote_sync::local_size_mtime(std::fs::metadata(&local_path).ok());
+        let (hs, hm) = match &sftp {
+            Some(s) => {
+                let host_abs = remote_sync::join_remote(&spec.remote_path, &rel);
+                sftp::metadata_on(s, &host_abs).await.unwrap_or((ls, lm))
+            }
+            None => (ls, lm),
+        };
+        remote_sync::record_pull(m, &rel, hs, hm, ls, lm);
+    }
+    let _ = remote_sync::save_manifest(project_id, m);
+}
+
 /// Coordinated checkout: pause file auto-sync, check the target out on the initiating
 /// side (unless already done), reconcile so the peer has the commits, check the same
 /// target out on the peer (a **guarded** checkout — never `-f`), re-stamp file-sync
@@ -964,7 +1031,7 @@ async fn checkout_lockstep_inner(
     }
 
     // 2. Bring commits/refs into step so the peer has the target commit.
-    let mut state = reconcile(pool, project_id, spec).await;
+    let mut state = reconcile(pool, manifest, project_id, spec).await;
 
     // 3. Guarded checkout on the peer (the side that did NOT initiate).
     let peer = if initiating_side == "remote" { &local } else { &remote };
@@ -1029,7 +1096,7 @@ async fn resolve_inner(
     let remote = probe(&Peer::Remote(spec.clone()));
     if !local.is_repo || !remote.is_repo {
         // Nothing paired to resolve; a plain reconcile may still initial-pair.
-        return Ok(reconcile(pool, project_id, spec).await);
+        return Ok(reconcile(pool, manifest, project_id, spec).await);
     }
 
     let old_local_sha = head_sha(&local).unwrap_or_default();
@@ -1049,7 +1116,7 @@ async fn resolve_inner(
     restamp_after_checkout(pool, manifest, project_id, spec, &old_local_sha).await;
 
     // Recompute status; the forced side is now in sync, so this should read Synchronized.
-    Ok(reconcile(pool, project_id, spec).await)
+    Ok(reconcile(pool, manifest, project_id, spec).await)
 }
 
 /// Build + persist a `Desynchronized` state with a message (probes current heads).
@@ -1276,7 +1343,7 @@ pub async fn detect_and_sync(
             }
         }
     }
-    reconcile(pool, project_id, spec).await
+    reconcile(pool, manifest, project_id, spec).await
 }
 
 #[cfg(test)]

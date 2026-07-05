@@ -20,6 +20,7 @@ import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
 import { OrbitSpinner } from "../common/OrbitSpinner";
 import { Dropdown } from "../common/Dropdown";
+import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
 import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
@@ -399,8 +400,7 @@ function GitHostingWindow({
 
         <label>
           {info?.has_token ? "Replace access token" : "Access token"}
-          <input
-            type="password"
+          <PasswordInput
             value={newToken}
             placeholder={info?.has_token ? "Enter a new token to replace…" : "ghp_… / glpat-…"}
             onChange={(e) => {

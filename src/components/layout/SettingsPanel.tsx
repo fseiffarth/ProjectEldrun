@@ -16,6 +16,7 @@ import {
 } from "../../lib/shortcuts";
 import { AgentsPanel, FileTypeSettings, GlobalAppsSettings, OllamaPanel } from "./SettingsSubPanels";
 import { Dropdown } from "../common/Dropdown";
+import { PasswordInput } from "../common/PasswordInput";
 import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
 
@@ -215,8 +216,7 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
       </label>
       <label className="settings-field">
         Access token
-        <input
-          type="password"
+        <PasswordInput
           value={gitToken}
           placeholder="ghp_... / glpat-..."
           onChange={(e) => setGitToken(e.target.value)}

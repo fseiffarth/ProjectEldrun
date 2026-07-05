@@ -62,7 +62,7 @@ const TAB_ACCENT: Record<TabKind, string> = {
   agent: "var(--accent)",
   local_agent: "var(--warning)",
   shell: "var(--success)",
-  files: "#888",
+  files: "var(--text-muted)",
   embed: "var(--info, #4aa3df)",
   projects3d: "var(--accent-secondary)",
   network: "var(--info, #4aa3df)",
@@ -808,12 +808,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         const showMarkerBefore = isDropTarget && reorderIndex === index;
         // Only PTY-backed tabs can register terminal output activity.
         const working = isPtyTabKind(tab.kind) && !!busyByTab[tab.key];
-        // Expose the kind colour to CSS instead of setting box-shadow inline:
-        // plain themes draw the active rail above, while fancy themes move it
-        // below without losing the per-kind colour.
-        const style = isActive
-          ? ({ "--tab-accent": TAB_ACCENT[tab.kind] } as React.CSSProperties)
-          : undefined;
+        // Expose the kind colour to CSS on every tab (not just the active one)
+        // so the top stripe reads as the tab-group colour consistently — plain
+        // themes draw the rail above, fancy themes move it below. Inactive tabs
+        // keep a transparent stripe slot; hover/active tint it with this colour.
+        const style = { "--tab-accent": TAB_ACCENT[tab.kind] } as React.CSSProperties;
         // Agent tabs launched with a deterministic session id show it on hover.
         // This is the launch id (`--session-id <uuid>`): stable and unique per
         // tab. It does NOT follow a `/clear` (which rolls onto a new id) — that
@@ -831,6 +830,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             className={`tab ${isActive ? "active" : ""}${working ? " working" : ""}${isDragging ? " dragging" : ""}${editing ? " editing" : ""}${landing ? " landing" : ""}`}
             style={style}
             data-tab-index={index}
+            data-kind={tab.kind}
             title={editing ? undefined : title}
             onContextMenu={(e) => startInlineRename(e, tab.key)}
             onPointerDown={(e) => onTabPointerDown(e, tab)}

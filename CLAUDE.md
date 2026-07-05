@@ -258,9 +258,21 @@ cargo test --manifest-path src-tauri/Cargo.toml
 5. Every push to GitHub should produce a fresh packaged artifact from the
    workflow in `.github/workflows/ci-cd.yml`; use `npm run package` locally if
    you need to install the same release build under `~/.local/share/eldrun/`.
-   A GitHub Release is published for **every** `v*` tag (e.g. `v0.1.5`), so each
-   version bump should bump `package.json`, `src-tauri/Cargo.toml`, and
-   `src-tauri/tauri.conf.json` together, then tag `v<version>` to ship a release.
+
+   **Version bumping is automatic on push.** The tracked `pre-push` hook in
+   `.githooks/` auto-bumps the patch version across `package.json`,
+   `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` (via
+   `scripts/bump-version.sh`), commits it, and re-pushes so every push carries a
+   distinct version. Enable it once per clone with
+   `git config core.hooksPath .githooks` (`core.hooksPath` is not itself tracked).
+   To bump minor/major instead, run `scripts/bump-version.sh minor|major` and
+   commit before pushing (the hook only patch-bumps when the version is otherwise
+   unchanged for that push).
+
+   **Releases are cut manually.** A GitHub Release is published only when a `v*`
+   tag is pushed (e.g. `v0.1.5`) — the `release` job is gated on `refs/tags/v*`,
+   so ordinary branch pushes never publish. The hook deliberately skips tag
+   pushes, so to ship a release: `git tag v<version> && git push origin v<version>`.
 
 6. Do not start Eldrun from Claude. Frontend (`src/`) edits hot-reload in the
    running instance — no restart needed. Only ask the user to rebuild/restart

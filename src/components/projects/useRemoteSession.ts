@@ -87,6 +87,12 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // into Eldrun on selection). The password is transient — never persisted.
   // A tunnel is "used" only when the toggle is on AND a config is selected.
   const [vpnConfig, setVpnConfig] = useState("");
+  // Auth username for `auth-user-pass` configs (server-side username+password
+  // auth). `vpnNeedsUsername` (queried when the config changes) decides whether
+  // the field is shown and required; the value is persisted onto the new
+  // project's OpenVpnSpec (it is not a secret). See `config_requires_userpass`.
+  const [vpnUsername, setVpnUsername] = useState("");
+  const [vpnNeedsUsername, setVpnNeedsUsername] = useState(false);
   const [vpnPassword, setVpnPassword] = useState("");
   const [vpnStatus, setVpnStatus] = useState<ConnStatus>("idle");
   const [vpnError, setVpnError] = useState("");
@@ -292,6 +298,22 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     };
   }, [vpnConfig]);
 
+  // Does the chosen config need an auth username (bare `auth-user-pass`)? Drives
+  // whether the username field is shown/required.
+  useEffect(() => {
+    if (!vpnConfig) {
+      setVpnNeedsUsername(false);
+      return;
+    }
+    let cancelled = false;
+    void invoke<boolean>("openvpn_needs_username", { config: vpnConfig })
+      .then((v) => !cancelled && setVpnNeedsUsername(v))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [vpnConfig]);
+
   // Select one of the previously-stored configs (its path is already an
   // Eldrun-stored copy, so it's used as-is — no re-copy needed).
   const selectVpnConfig = (path: string) => {
@@ -329,7 +351,11 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setVpnError("");
     setVpnLog([]);
     try {
-      await invoke("openvpn_connect", { config: vpnConfig, password: vpnPassword });
+      await invoke("openvpn_connect", {
+        config: vpnConfig,
+        username: vpnUsername || null,
+        password: vpnPassword,
+      });
       setVpnStatus("connected");
     } catch (e) {
       setVpnStatus("error");
@@ -649,7 +675,10 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // manually-entered remote path.
   const buildRemoteSpec = (safeName: string) => {
     if (!isRemoteProject) return undefined;
-    const openvpn = vpnEnabled && vpnConfig ? { config: vpnConfig } : undefined;
+    const openvpn =
+      vpnEnabled && vpnConfig
+        ? { config: vpnConfig, username: vpnUsername.trim() || undefined }
+        : undefined;
     // Both modes now browse to a real folder over a live session (headless via
     // connectSsh, non-headless by riding the embedded login's ControlMaster), so a
     // committed remoteConn + chosen path is the single source of truth.
@@ -713,6 +742,9 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setVpnEnabled,
     vpnConfig,
     vpnConfigs,
+    vpnUsername,
+    setVpnUsername,
+    vpnNeedsUsername,
     selectVpnConfig,
     vpnPassword,
     setVpnPassword,

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useVpnPromptStore } from "../../stores/vpnPrompt";
 import { ConnectionLog, type LogLine } from "../common/ConnectionLog";
+import { PasswordInput } from "../common/PasswordInput";
 
 /**
  * Activation-time OpenVPN password prompt. Rendered once at the app root; shows
@@ -18,6 +19,11 @@ export function VpnPasswordPrompt() {
   const submit = useVpnPromptStore((s) => s.submit);
   const cancel = useVpnPromptStore((s) => s.cancel);
   const [password, setPassword] = useState("");
+  // Auth username for `auth-user-pass` configs. `needsUsername` (queried per
+  // prompt) decides whether the field is shown; seeded from the pending prompt's
+  // stored spec username.
+  const [username, setUsername] = useState("");
+  const [needsUsername, setNeedsUsername] = useState(false);
   // Opt-in "Save passphrase" (default off). Pre-checked when a credential is
   // already saved for this config, so the box mirrors the true keychain state.
   const [remember, setRemember] = useState(false);
@@ -36,12 +42,16 @@ export function VpnPasswordPrompt() {
   useEffect(() => {
     if (pending) {
       setPassword("");
+      setUsername(pending.username ?? "");
       setLog([]);
       inputRef.current?.focus();
       const config = pending.config;
       let cancelled = false;
       void invoke<boolean>("vpn_has_saved_password", { config })
         .then((v) => !cancelled && setRemember(v))
+        .catch(() => {});
+      void invoke<boolean>("openvpn_needs_username", { config })
+        .then((v) => !cancelled && setNeedsUsername(v))
         .catch(() => {});
       return () => {
         cancelled = true;
@@ -74,7 +84,7 @@ export function VpnPasswordPrompt() {
   const onSubmit = () => {
     if (!connecting) {
       setLog([]);
-      void submit(password, remember);
+      void submit(password, remember, username);
     }
   };
 
@@ -85,14 +95,36 @@ export function VpnPasswordPrompt() {
         <p className="vpn-prompt-text">
           Connecting OpenVPN for <strong>{pending.projectName}</strong>.
         </p>
+        {needsUsername && (
+          <label>
+            Username
+            <input
+              type="text"
+              value={username}
+              autoComplete="off"
+              placeholder="OpenVPN account username…"
+              disabled={connecting}
+              onChange={(e) => setUsername(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  onSubmit();
+                }
+                if (e.key === "Escape" && !connecting) {
+                  e.preventDefault();
+                  cancel();
+                }
+              }}
+            />
+          </label>
+        )}
         <label>
-          Password{" "}
+          {needsUsername ? "Password" : "Passphrase"}{" "}
           <span className="ssh-optional-hint">
             {remember ? "(saved in OS keychain)" : "(not stored)"}
           </span>
-          <input
+          <PasswordInput
             ref={inputRef}
-            type="password"
             value={password}
             autoFocus
             disabled={connecting}

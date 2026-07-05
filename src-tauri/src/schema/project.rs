@@ -99,13 +99,22 @@ pub struct RemoteSpec {
     pub extra: HashMap<String, Value>,
 }
 
-/// Optional OpenVPN tunnel for reaching a remote project's host. Only the
-/// client config path is persisted; the password is prompted each time the
-/// tunnel is brought up and is never written to disk.
+/// Optional OpenVPN tunnel for reaching a remote project's host. The client
+/// config path and (for `auth-user-pass` configs) the auth username are
+/// persisted; the password/passphrase is prompted each time the tunnel is
+/// brought up and is never written to disk (unless the user opts into the OS
+/// keychain via "Save password").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenVpnSpec {
     /// Absolute path to the local `.ovpn` client config file.
     pub config: String,
+    /// Auth username for configs that use `auth-user-pass` (server-side
+    /// username+password auth). Persisted (it is not a secret, like the SSH
+    /// `user`); the matching password is still prompted/keychained separately and
+    /// never written here. `None` for configs that don't need a username (e.g.
+    /// certificate-only or encrypted-key-passphrase configs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
