@@ -289,6 +289,29 @@ pub fn run_remote_shell(spec: &RemoteSpec, command: &str) -> Result<std::process
         .map_err(|e| format!("failed to run command over ssh: {e}"))
 }
 
+/// Best-effort recursive byte size of a directory on the host, over SSH.
+///
+/// Runs `du` on the host (riding the shared ControlMaster) for the given
+/// absolute remote dir. `du -sk` reports the total in 1024-byte units, which is
+/// portable across GNU and BSD/macOS `du` (unlike GNU-only `-b`); we multiply
+/// back to bytes so the frontend's byte-based formatter matches file sizes. The
+/// path is validated + single-quoted; a `du` error (e.g. unreadable dir) yields
+/// 0 rather than failing the whole listing.
+pub fn remote_dir_size(spec: &RemoteSpec, remote_dir: &str) -> Result<u64, String> {
+    validate_arg("remote path", remote_dir)?;
+    let cmd = format!("du -sk {} 2>/dev/null | cut -f1", shell_quote(remote_dir));
+    let out = run_remote_shell(spec, &cmd)?;
+    let kb: u64 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    Ok(kb.saturating_mul(1024))
+}
+
 /// Best-effort create `spec.remote_path` (and parents) on the host over SSH,
 /// riding the shared ControlMaster. Used when a new remote project is created so
 /// agent tabs / git can `cd` into the project root. `mkdir -p <path>` is handed

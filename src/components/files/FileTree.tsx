@@ -140,6 +140,15 @@ export function FileTree({
   syncSource,
 }: Props) {
   const [rawEntries, setRawEntries] = useState<FileEntry[]>([]);
+  // Recursive folder sizes (bytes), keyed by absolute folder path. Filled in
+  // lazily by a per-folder backend `dir_size` call so a big subtree never blocks
+  // the listing — the tree renders immediately and each folder's size appears
+  // once it resolves. `requestedSizes` guards against re-dispatching the same
+  // folder while it's in flight (or after it failed), so fs-watch churn doesn't
+  // trigger a request storm; both reset in `load()` (navigation / refresh) so a
+  // re-listed folder recomputes.
+  const [dirSizes, setDirSizes] = useState<Record<string, number>>({});
+  const requestedSizes = useRef<Set<string>>(new Set());
   // Which files can be embedded as a frameless in-tab app (Group K #40). Keyed
   // by extension (default-app resolution is per-mime/extension), so we only
   // query the backend once per distinct extension. Only embeddable files get the
@@ -297,6 +306,29 @@ export function FileTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries]);
 
+  // Lazily compute the recursive size of each visible folder. Fires one backend
+  // call per not-yet-requested folder (concurrently — they're independent) and
+  // fills `dirSizes` as each resolves. A failed call is left unresolved; the
+  // `requestedSizes` guard keeps it (and steady-state re-renders / fs-watch
+  // reloads) from re-dispatching.
+  useEffect(() => {
+    const pending = entries.filter((e) => e.is_dir && !requestedSizes.current.has(e.path));
+    if (pending.length === 0) return;
+    pending.forEach((e) => requestedSizes.current.add(e.path));
+    let cancelled = false;
+    for (const e of pending) {
+      invoke<number>("dir_size", { projectDir, relPath: relForEntry(e) })
+        .then((bytes) => {
+          if (!cancelled) setDirSizes((m) => ({ ...m, [e.path]: bytes }));
+        })
+        .catch(() => {
+          /* best-effort display aid — leave unresolved on failure */
+        });
+    }
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries]);
+
   const isEmbeddable = (e: FileEntry): boolean =>
     !e.is_dir && embedByExt[e.extension ?? ""] === true;
 
@@ -424,6 +456,12 @@ export function FileTree({
     if (remoteBlocked) return;
     setLoading(true);
     setError(null);
+    // Re-listing (navigation or an explicit refresh) recomputes folder sizes:
+    // drop the cache + in-flight guard so the effect re-requests them fresh. The
+    // quiet fs-watch `refresh()` deliberately does NOT do this — folder sizes
+    // stay put through watch churn.
+    requestedSizes.current.clear();
+    setDirSizes({});
     try {
       const result = await invoke<FileEntry[]>("list_dir", {
         projectDir,
@@ -1471,9 +1509,13 @@ export function FileTree({
               )}
               <span className="file-icon">{e.is_dir ? folderIcon() : fileIcon(e.extension)}</span>
               <span className="file-name" title={e.name}>{e.name}</span>
-              {!e.is_dir && (
-                <span className={`file-size ${sizeClass}`}>{fmtSize(e.size)}</span>
-              )}
+              {e.is_dir
+                ? dirSizes[e.path] !== undefined && (
+                    <span className={`file-size ${sizeCategory(dirSizes[e.path])}`}>
+                      {fmtSize(dirSizes[e.path])}
+                    </span>
+                  )
+                : <span className={`file-size ${sizeClass}`}>{fmtSize(e.size)}</span>}
             </div>
           );
         }

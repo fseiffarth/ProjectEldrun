@@ -407,6 +407,7 @@ pub fn run() {
             commands::ssh::open_external_url,
             // OpenVPN tunnels for VPN-gated remote projects
             commands::openvpn::openvpn_connect,
+            commands::openvpn::openvpn_needs_username,
             commands::openvpn::vpn_has_saved_password,
             commands::openvpn::openvpn_login_command,
             commands::openvpn::openvpn_disconnect,
@@ -426,6 +427,7 @@ pub fn run() {
             commands::timer::get_project_activity,
             // File tree + file I/O (commands::fs)
             commands::fs::list_dir,
+            commands::fs::dir_size,
             commands::fs::list_dirs,
             commands::fs::list_project_endings,
             commands::fs::list_project_paths,

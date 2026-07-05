@@ -158,6 +158,75 @@ async fn list_dir_remote(
         .collect())
 }
 
+/// Recursive byte size of a single directory — project-aware, mirroring
+/// [`list_dir`]. Computed lazily by the file tree (one call per folder shown), so
+/// it is kept off the listing hot path: the tree renders immediately and folder
+/// sizes fill in as they resolve.
+///
+/// - **Remote project** → `du` on the host over SSH (`remote_dir_size`).
+/// - **Local project** → walk the subtree on a blocking thread so a large folder
+///   (e.g. `node_modules`) never stalls the async runtime.
+///
+/// A folder that can't be fully read yields the partial total rather than an
+/// error, since this is a best-effort display aid.
+#[tauri::command]
+pub async fn dir_size(
+    project_dir: String,
+    rel_path: String,
+    pool: tauri::State<'_, crate::services::remote::RemotePoolState>,
+) -> Result<u64, String> {
+    let _ = &pool; // remote path uses SSH exec, not the SFTP pool; keep the arg for symmetry
+    if let Some(target) = crate::services::remote::remote_target_for_dir(&project_dir) {
+        let remote_dir = join_remote_dir(&target.spec.remote_path, &rel_path);
+        let spec = target.spec.clone();
+        return tokio::task::spawn_blocking(move || {
+            crate::services::ssh_exec::remote_dir_size(&spec, &remote_dir)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    tokio::task::spawn_blocking(move || dir_size_local(&project_dir, &rel_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Local-fs recursive directory size (bytes). Confinement-checked like the local
+/// lister, then a symlink-skipping walk (so a symlink cycle can't loop forever).
+pub fn dir_size_local(project_dir: &str, rel_path: &str) -> Result<u64, String> {
+    let root = canonical(project_dir)?;
+    let target = if rel_path.is_empty() {
+        root.clone()
+    } else {
+        canonical(&root.join(rel_path).to_string_lossy().to_string())?
+    };
+    enforce_confinement(&root, &target)?;
+    Ok(walk_dir_size(&target))
+}
+
+/// Sum file sizes under `dir`, recursing into subdirectories. Symlinks are never
+/// followed (avoids cycles and double-counting); unreadable dirs/entries are
+/// skipped, so the result is a best-effort total.
+fn walk_dir_size(dir: &Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(rd) = fs::read_dir(dir) else {
+        return 0;
+    };
+    for entry in rd.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
+            total = total.saturating_add(walk_dir_size(&entry.path()));
+        } else if ft.is_file() {
+            if let Ok(m) = entry.metadata() {
+                total = total.saturating_add(m.len());
+            }
+        }
+    }
+    total
+}
+
 /// Join a remote project root (`remote_path`) with a project-relative path,
 /// mirroring `ssh_exec::remote_subdir`-style joining: trim a trailing '/', then
 /// append the non-empty rel. Pure, so it is unit-tested without a live host.
