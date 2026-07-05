@@ -1194,6 +1194,58 @@ export const CHANGE_TIERS = 18;
  *  the trail fades a tier at a time over CHANGE_TIERS × this. */
 const CHANGE_DECAY_MS = 1800;
 
+/** How long a red strike-through ghost of just-deleted text lingers before it
+ *  fades out and is dropped, in ms. Must match the `fv-delete-fade` animation
+ *  duration in `themes.css` — the CSS drives the visual fade, this drives the
+ *  state cleanup, and they retire the ghost together. */
+export const DELETE_GHOST_MS = 2600;
+
+/** A run of text that was just removed from the draft, kept around briefly so it
+ *  can be shown struck-through in red at the spot it vanished from before fading
+ *  out. `pos` is the anchor in *current* draft coordinates (re-mapped through
+ *  later edits like a change range); `text` is the removed characters; `born` is
+ *  the `Date.now()` clock the fade animation is offset against so it keeps
+ *  elapsing correctly even as the overlay is rebuilt on each keystroke. */
+export interface DeleteGhost {
+  id: number;
+  pos: number;
+  text: string;
+  born: number;
+}
+
+/**
+ * Build the transparent deletion overlay: the removed text of each ghost is
+ * *injected* back into the source at its anchor, wrapped in
+ * `<span class="file-viewer-delete-mark">`, so it paints a red strike-through
+ * (over an opaque background that masks the live text it now overlays) right
+ * where it was deleted. The surrounding source is emitted plain/transparent —
+ * like the autocomplete ghost, this layer intentionally reflows: only the
+ * injected marks are meant to show. Each mark's `animation-delay` is set to the
+ * negative elapsed time so its fade resumes at the right point across rebuilds.
+ * SECURITY: every run (source and injected text) is HTML-escaped.
+ */
+export function decorateDeleteRanges(
+  source: string,
+  ghosts: DeleteGhost[],
+  now: number,
+): string {
+  const sorted = ghosts
+    .map((g) => ({ ...g, pos: Math.max(0, Math.min(g.pos, source.length)) }))
+    .sort((a, b) => a.pos - b.pos || a.born - b.born);
+  let out = "";
+  let pos = 0;
+  for (const g of sorted) {
+    out += escapeHtmlText(source.slice(pos, g.pos));
+    pos = g.pos;
+    const elapsed = Math.max(0, now - g.born);
+    out += `<span class="file-viewer-delete-mark" style="animation-delay:-${elapsed}ms">${escapeHtmlText(
+      g.text,
+    )}</span>`;
+  }
+  out += escapeHtmlText(source.slice(pos));
+  return out;
+}
+
 /** One run of recently typed text in the change-tint trail. `tier` is its age:
  *  0 is the newest edit, higher tiers are progressively older (and fainter). */
 export interface ChangeRange {
@@ -1498,6 +1550,8 @@ function CodeEditor({
   onCaretChange,
   caretApiRef,
   editorApiRef,
+  showBlame,
+  blame,
   initialScrollTop,
   onScrollPersist,
 }: {
@@ -1562,6 +1616,12 @@ function CodeEditor({
    *  (used by the LaTeX viewer, whose prose lines run wide). The highlight/link/
    *  ghost overlays wrap in lockstep via the `is-wrapped` class. */
   wrap?: boolean;
+  /** Git-blame overlay (#blame). When `showBlame` is set, a per-line blame column
+   *  is painted in the gutter (scroll-locked with the line numbers) and the
+   *  caret's line gets a faint inline attribution; hovering a blame cell shows a
+   *  hovercard. `blame` maps 1-based line numbers to their attribution. */
+  showBlame?: boolean;
+  blame?: Map<number, BlameLine>;
   /** Persisted vertical scroll (px) to restore once the file loads, so reopening
    *  it (or an Eldrun restart) lands the reader where they left off (#viewerpos).
    *  Applied once on first load; user scrolling thereafter reports via
@@ -1573,10 +1633,13 @@ function CodeEditor({
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterInnerRef = useRef<HTMLDivElement>(null);
+  const blameInnerRef = useRef<HTMLDivElement>(null);
+  const blameInlineRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HTMLPreElement>(null);
   const linkLayerRef = useRef<HTMLPreElement>(null);
   const searchLayerRef = useRef<HTMLPreElement>(null);
   const changeLayerRef = useRef<HTMLPreElement>(null);
+  const deleteLayerRef = useRef<HTMLPreElement>(null);
   const grammarLayerRef = useRef<HTMLPreElement>(null);
   const ghostRef = useRef<HTMLPreElement>(null);
   const measureRef = useRef<HTMLPreElement>(null);
@@ -1786,12 +1849,21 @@ function CodeEditor({
     if (gutterInnerRef.current) {
       gutterInnerRef.current.style.transform = `translateY(${-scrollTop}px)`;
     }
+    // Blame column + current-line inline hint scroll-lock vertically with the
+    // numbers (they never shift horizontally, so translateY only).
+    if (blameInnerRef.current) {
+      blameInnerRef.current.style.transform = `translateY(${-scrollTop}px)`;
+    }
+    if (blameInlineRef.current) {
+      blameInlineRef.current.style.transform = `translateY(${-scrollTop}px)`;
+    }
     const transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
     for (const ref of [
       highlightRef,
       linkLayerRef,
       searchLayerRef,
       changeLayerRef,
+      deleteLayerRef,
       grammarLayerRef,
     ]) {
       if (ref.current) ref.current.style.transform = transform;
@@ -1875,6 +1947,58 @@ function CodeEditor({
     return m ? offsetToLineCol(draft, m.start).line : 0;
   }, [matches, current, draft]);
 
+  // ── Git blame overlay (#blame) ─────────────────────────────────────────────
+  // When `showBlame` is set, the gutter grows a per-line blame column (its own
+  // inner, scroll-synced with the numbers), the caret's line gets a faint inline
+  // attribution, and hovering a blame cell shows a hovercard. All read-only —
+  // nothing here touches the editable textarea/highlight/save path.
+  const [caretLine, setCaretLine] = useState(1);
+  const [blameTip, setBlameTip] = useState<{ left: number; top: number; line: number } | null>(null);
+  const effectiveLineHeight = lineHeight ?? Math.round((fontSize ?? 12) * 1.5);
+
+  // Top offset (px, before scroll) of a 1-based line's first row. Mirrors the
+  // gutter/editor 10px top padding and the wrap-mode measured `lineHeights`.
+  const lineTop = useCallback(
+    (line: number) => {
+      let top = 10; // `.file-viewer-highlight/-editor` padding-top
+      const idx = Math.max(0, line - 1);
+      if (wrap && lineHeights.length) {
+        for (let i = 0; i < idx && i < lineHeights.length; i++) top += lineHeights[i];
+      } else {
+        top += idx * effectiveLineHeight;
+      }
+      return top;
+    },
+    [wrap, lineHeights, effectiveLineHeight],
+  );
+
+  const caretBlame = showBlame ? blame?.get(caretLine) : undefined;
+
+  // Age-tint a blame cell: newer commits are more saturated, decaying with age
+  // so the column reads as a heat-map of recent activity. No tint for
+  // uncommitted/unknown lines.
+  const blameTint = useCallback((b: BlameLine | undefined): string | undefined => {
+    if (!b || isUncommitted(b) || !b.author_time) return undefined;
+    const ageDays = Math.max(0, (Date.now() / 1000 - b.author_time) / 86400);
+    const a = 0.16 * Math.exp(-ageDays / 180);
+    if (a < 0.01) return undefined;
+    return `rgba(120, 150, 220, ${a.toFixed(3)})`;
+  }, []);
+
+  const onBlameMove = useCallback(
+    (e: React.MouseEvent) => {
+      const cell = (e.target as HTMLElement).closest<HTMLElement>(".file-viewer-blame-line");
+      const line = cell ? Number(cell.dataset.line) : 0;
+      const b = line ? blame?.get(line) : undefined;
+      if (!cell || !b || isUncommitted(b)) {
+        setBlameTip(null);
+        return;
+      }
+      setBlameTip({ left: e.clientX, top: e.clientY, line });
+    },
+    [blame],
+  );
+
   // Keep the current index in range as the draft (and so the match set) changes.
   useEffect(() => {
     if (current > 0 && current >= matches.length) {
@@ -1952,6 +2076,24 @@ function CodeEditor({
   const changeTintRef = useRef(changeTint);
   changeTintRef.current = changeTint;
   const [changes, setChanges] = useState<ChangeRange[]>([]);
+  // Red strike-through ghosts of just-deleted text (mirrors the green change
+  // trail on the removal side). Each is retired on its own timer after
+  // DELETE_GHOST_MS; `deleteIdRef` mints ids and `deleteTimersRef` tracks the
+  // pending timeouts so they can be cleared on unmount / trail reset.
+  const [deletes, setDeletes] = useState<DeleteGhost[]>([]);
+  const deleteIdRef = useRef(0);
+  const deleteTimersRef = useRef<number[]>([]);
+  const clearDeleteTimers = useCallback(() => {
+    deleteTimersRef.current.forEach((t) => window.clearTimeout(t));
+    deleteTimersRef.current = [];
+  }, []);
+  const scheduleDeleteRemoval = useCallback((id: number) => {
+    const t = window.setTimeout(() => {
+      setDeletes((prev) => prev.filter((g) => g.id !== id));
+    }, DELETE_GHOST_MS);
+    deleteTimersRef.current.push(t);
+  }, []);
+  useEffect(() => () => clearDeleteTimers(), [clearDeleteTimers]);
   const lastEditRef = useRef<string | null>(null);
   const edit = useCallback(
     (next: string) => {
@@ -1970,25 +2112,50 @@ function CodeEditor({
               // newest-first → re-index so tier === age (0 = newest).
               return merged.slice(0, CHANGE_TIERS).map((r, i) => ({ ...r, tier: i }));
             });
+            // Removed text (if any) becomes a red strike-through ghost anchored
+            // where it vanished; existing ghosts are re-mapped through this edit
+            // (dropped if their anchor sat inside the edited run) so they keep
+            // pointing at the right spot.
+            const removed = draftRef.current.slice(span.start, span.endPrev);
+            const ghost: DeleteGhost | null =
+              removed.length > 0
+                ? { id: deleteIdRef.current++, pos: span.endNext, text: removed, born: Date.now() }
+                : null;
+            if (ghost) scheduleDeleteRemoval(ghost.id);
+            setDeletes((prev) => {
+              const remapped = prev
+                .map((g) => {
+                  const r = remapChangeRange({ start: g.pos, end: g.pos }, span);
+                  return r ? { ...g, pos: r.start } : null;
+                })
+                .filter((g): g is DeleteGhost => g != null);
+              return ghost ? [...remapped, ghost] : remapped;
+            });
           }
         }
         lastEditRef.current = next;
       }
       setDraft(next);
     },
-    [setDraft],
+    [setDraft, scheduleDeleteRemoval],
   );
   // Drop a stale trail when the draft changes by some path other than our own
   // `edit` (disk reload, undo/redo), and clear it when the feature is turned off.
   useEffect(() => {
     if (lastEditRef.current !== null && draft !== lastEditRef.current) {
       setChanges([]);
+      setDeletes([]);
+      clearDeleteTimers();
       lastEditRef.current = null;
     }
-  }, [draft]);
+  }, [draft, clearDeleteTimers]);
   useEffect(() => {
-    if (!changeTint) setChanges([]);
-  }, [changeTint]);
+    if (!changeTint) {
+      setChanges([]);
+      setDeletes([]);
+      clearDeleteTimers();
+    }
+  }, [changeTint, clearDeleteTimers]);
   // Idle decay: each keystroke resets this timer (re-runs on every `changes`
   // update), so while typing the trail stays; once typing stops it retires the
   // oldest run every CHANGE_DECAY_MS until the trail is gone.
@@ -2002,6 +2169,13 @@ function CodeEditor({
   const changeHtml = useMemo(
     () => (loaded && changeTint && changes.length ? decorateChangeRanges(draft, changes) : null),
     [loaded, draft, changes, changeTint],
+  );
+  // Companion overlay for the red deletion ghosts. `Date.now()` here stamps each
+  // mark's fade offset; it re-evaluates on every draft/deletes change (i.e. every
+  // keystroke), which is exactly when the layer is rebuilt.
+  const deleteHtml = useMemo(
+    () => (loaded && changeTint && deletes.length ? decorateDeleteRanges(draft, deletes, Date.now()) : null),
+    [loaded, draft, deletes, changeTint],
   );
 
   // ── #45 follow-up: local-model grammar/spelling check ──────────────────────
@@ -2041,6 +2215,26 @@ function CodeEditor({
     () => (grammarRanges.length ? decorateGrammarRanges(draft, grammarRanges) : null),
     [draft, grammarRanges],
   );
+
+  // Re-apply the scroll transform whenever an overlay layer's presence changes.
+  // syncScroll only runs on scroll events and the one-shot restore, but the
+  // change/delete trails (and the search layer) mount lazily — only once there's
+  // an edit or an active find. A layer that first mounts while the textarea is
+  // already scrolled starts at translate(0,0), i.e. `scrollTop` px too low, and
+  // stays out of register until the next scroll. Syncing on mount pins it to the
+  // current offset immediately. useLayoutEffect so it lands before paint.
+  useLayoutEffect(() => {
+    syncScroll();
+  }, [
+    loaded,
+    highlighted,
+    linkHtml,
+    searchHtml,
+    changeHtml,
+    deleteHtml,
+    grammarHtml,
+    syncScroll,
+  ]);
 
   // Auto-dismiss a finished grammar status; keep an in-flight "…" message.
   useEffect(() => {
@@ -2305,11 +2499,21 @@ function CodeEditor({
   // the textarea is actually focused so a blur-time reset is ignored.
   const emitCaret = useCallback(() => {
     const el = textareaRef.current;
-    if (el && document.activeElement === el && onCaretChange) {
-      onCaretChange(el.selectionStart);
+    if (el) {
+      if (document.activeElement === el && onCaretChange) onCaretChange(el.selectionStart);
+      // Track the caret's line for the blame inline hint (cheap; only read).
+      setCaretLine(offsetToLineCol(el.value, el.selectionStart).line);
     }
     bumpCaret();
   }, [onCaretChange, bumpCaret]);
+
+  // Re-apply the scroll transform to the blame layers whenever they (re)mount or
+  // the caret line changes: a freshly-mounted node starts at translateY(0), so
+  // without this the column/inline hint would sit un-scrolled until the next
+  // scroll event. syncScroll reads the live textarea scrollTop.
+  useEffect(() => {
+    if (showBlame) syncScroll();
+  }, [showBlame, caretLine, blame, syncScroll]);
 
   // Publish a live caret getter so the viewer can read the *current* cursor at
   // compile time rather than relying on the last-reported snapshot. The Compile
@@ -2839,6 +3043,49 @@ function CodeEditor({
           : undefined
       }
     >
+      {/* Git-blame column (#blame). Sits left of the numbers, shares their cell
+          heights (incl. wrap-mode `lineHeights`) and is scroll-locked via its own
+          inner transform. Each cell shows the last author + relative date;
+          uncommitted/unknown lines get a muted dot. Age-tinted like a heat-map. */}
+      {showBlame && (
+        <div
+          className="file-viewer-blame-gutter"
+          aria-hidden="true"
+          onMouseMove={onBlameMove}
+          onMouseLeave={() => setBlameTip(null)}
+        >
+          <div className="file-viewer-blame-inner" ref={blameInnerRef}>
+            {Array.from({ length: lineCount }, (_, i) => {
+              const b = blame?.get(i + 1);
+              const h = wrap ? lineHeights[i] : undefined;
+              const known = b != null && !isUncommitted(b);
+              const style: React.CSSProperties = {};
+              if (h != null) style.height = h;
+              const tint = blameTint(b);
+              if (tint) style.background = tint;
+              return (
+                <div
+                  key={i}
+                  className={`file-viewer-blame-line${known ? "" : " uncommitted"}${
+                    i + 1 === caretLine ? " current" : ""
+                  }`}
+                  data-line={i + 1}
+                  style={style}
+                >
+                  {known ? (
+                    <>
+                      <span className="fv-blame-author">{authorAbbrev(b!.author)}</span>
+                      <span className="fv-blame-date">{blameRelDate(b!.author_time)}</span>
+                    </>
+                  ) : (
+                    <span className="fv-blame-none">·</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {/* Line-number gutter. Fixed-height rows normally; in wrap mode (the LaTeX
           viewer) a logical line can span several visual rows, so each cell is
           sized to its measured wrapped height (`lineHeights`). Lines holding a
@@ -2922,6 +3169,15 @@ function CodeEditor({
             dangerouslySetInnerHTML={{ __html: linkHtml + "\n" }}
           />
         )}
+        {deleteHtml != null && (
+          <pre
+            ref={deleteLayerRef}
+            className="file-viewer-delete-layer"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+            dangerouslySetInnerHTML={{ __html: deleteHtml + "\n" }}
+          />
+        )}
         {hasGhost && (
           <pre
             ref={ghostRef}
@@ -2950,6 +3206,19 @@ function CodeEditor({
           onSelect={emitCaret}
           onScroll={onScroll}
         />
+        {/* Current-line blame hint (#blame): a faint, right-aligned annotation on
+            the caret's line. Absolutely positioned at the line's top offset and
+            scroll-locked with the blame column. */}
+        {showBlame && caretBlame && !isUncommitted(caretBlame) && (
+          <div
+            ref={blameInlineRef}
+            className="file-viewer-blame-inline"
+            aria-hidden="true"
+            style={{ top: lineTop(caretLine), lineHeight: `${effectiveLineHeight}px` }}
+          >
+            {caretBlame.author} · {blameRelDate(caretBlame.author_time)} · {caretBlame.summary}
+          </div>
+        )}
       </div>
       {onFollowLink && <LinkOpenHint at={linkTip} />}
       {acStatus && (
@@ -2993,6 +3262,25 @@ function CodeEditor({
           )}
         </div>
       )}
+      {/* Blame hovercard (#blame): full attribution for the hovered gutter cell. */}
+      {blameTip && (() => {
+        const b = blame?.get(blameTip.line);
+        if (!b || isUncommitted(b)) return null;
+        return (
+          <div
+            className="file-viewer-blame-tip"
+            style={{ left: blameTip.left, top: blameTip.top }}
+            role="tooltip"
+          >
+            <div className="file-viewer-blame-tip-head">
+              <span className="file-viewer-blame-tip-hash">{b.short}</span>
+              <span className="file-viewer-blame-tip-author">{b.author}</span>
+            </div>
+            <div className="file-viewer-blame-tip-date">{blameRelDate(b.author_time)} ago</div>
+            <div className="file-viewer-blame-tip-summary">{b.summary}</div>
+          </div>
+        );
+      })()}
       {/* #45 context files: a button to attach project files plus chips for the
           attached ones, shown only when autocomplete is enabled for this type. */}
       {autocomplete?.enabled && (
@@ -3846,6 +4134,106 @@ function useEditorJump(path: string) {
   };
 }
 
+/** One source line's git-blame attribution; mirrors the Rust `GitBlameLine`
+ *  (snake_case, read verbatim). */
+interface BlameLine {
+  line_no: number;
+  hash: string;
+  short: string;
+  author: string;
+  author_time: number;
+  summary: string;
+}
+
+/** True for git's working-tree "Not Committed Yet" pseudo-commit (all-zeros or
+ *  empty sha) — those lines get no attribution / hovercard. */
+function isUncommitted(b: BlameLine): boolean {
+  return b.hash === "" || /^0+$/.test(b.hash);
+}
+
+/** Compact relative age ("now", "3d", "2mo", "5y") from a unix epoch (seconds). */
+function blameRelDate(epochSecs: number): string {
+  if (!epochSecs) return "";
+  const secs = Math.max(0, Date.now() / 1000 - epochSecs);
+  const day = 86400;
+  if (secs < 60) return "now";
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  if (secs < day) return `${Math.floor(secs / 3600)}h`;
+  if (secs < day * 30) return `${Math.floor(secs / day)}d`;
+  if (secs < day * 365) return `${Math.floor(secs / (day * 30))}mo`;
+  return `${Math.floor(secs / (day * 365))}y`;
+}
+
+/** Shorten an author for the narrow gutter ("Ada Lovelace" → "A. Lovelace"). */
+function authorAbbrev(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length < 2 || !parts[0]) return name;
+  return `${parts[0][0]}. ${parts[parts.length - 1]}`;
+}
+
+/** Fetches per-line git blame for `path` when `enabled`, keyed by 1-based line
+ *  number. Resolves the owning project directory exactly like the autocomplete
+ *  path (longest project dir that prefixes `path`, falling back to the active
+ *  project) and calls the backend `git_blame` — which dispatches local vs remote
+ *  (SSH) transparently. A non-repo dir, a disconnected remote, or any error
+ *  yields an empty map (blame just shows nothing); it never throws. */
+function useBlame(path: string, enabled: boolean): Map<number, BlameLine> {
+  const [byLine, setByLine] = useState<Map<number, BlameLine>>(() => new Map());
+  useEffect(() => {
+    if (!enabled) {
+      setByLine(new Map());
+      return;
+    }
+    const { projects, activeId } = useProjectsStore.getState();
+    let projectDir = "";
+    for (const p of projects) {
+      const dir = resolveProjectDirectory(p);
+      if (dir && isPathWithin(path, dir) && dir.length > projectDir.length) projectDir = dir;
+    }
+    if (!projectDir) {
+      const active = projects.find((p) => p.id === activeId);
+      projectDir = active ? resolveProjectDirectory(active) : "";
+    }
+    if (!projectDir) {
+      setByLine(new Map());
+      return;
+    }
+    const relPath = relFromAbs(projectDir, path);
+    let cancelled = false;
+    invoke<BlameLine[]>("git_blame", { projectDir, relPath })
+      .then((lines) => {
+        if (cancelled) return;
+        const map = new Map<number, BlameLine>();
+        for (const l of lines) map.set(l.line_no, l);
+        setByLine(map);
+      })
+      .catch(() => {
+        if (!cancelled) setByLine(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, enabled]);
+  return byLine;
+}
+
+/** "Blame" toolbar toggle. When active the code editor paints a per-line blame
+ *  column in the gutter plus a faint current-line inline annotation. */
+function BlameButton({ active, toggle }: { active: boolean; toggle: () => void }) {
+  return (
+    <button
+      className={`file-viewer-format-btn file-viewer-blame-btn${active ? " active" : ""}`}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={toggle}
+      title={active ? "Hide git blame" : "Show git blame"}
+      aria-label="Toggle git blame"
+      aria-pressed={active}
+    >
+      Blame
+    </button>
+  );
+}
+
 /**
  * The capability-driven base editor for every text/source file. Beyond the
  * shared code editor (highlight, line numbers, Tab indent, undo/redo, save,
@@ -3878,6 +4266,8 @@ function TextView({
   const gc = ai.gc;
   const font = useEditorFontSize(tabKey, type);
   const jump = useEditorJump(path);
+  const [showBlame, setShowBlame] = useState(false);
+  const blame = useBlame(path, showBlame);
   const viewPos = useViewerState(tabKey);
   const persistScroll = useCallback(
     (scrollTop: number) => viewPos.persist({ scrollTop }),
@@ -3936,6 +4326,9 @@ function TextView({
           <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
         )}
         {showEditor && (
+          <BlameButton active={showBlame} toggle={() => setShowBlame((v) => !v)} />
+        )}
+        {showEditor && (
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         )}
         <PrintButton onPrint={handlePrint} disabled={!loaded} />
@@ -3978,6 +4371,8 @@ function TextView({
             wrap
             gotoLine={jump.gotoLine}
             onGotoApplied={jump.onGotoApplied}
+            showBlame={showBlame}
+            blame={blame}
             initialScrollTop={viewPos.initial?.scrollTop}
             onScrollPersist={persistScroll}
           />

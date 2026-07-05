@@ -221,6 +221,9 @@ html, body, #root {
   --accent-active: #1ca7d8;
   --accent-secondary: #b388ff;
   --info: #6cb6ff;
+  /* Header logo: pure black on light themes, pure white on dark. Defaulted on
+     :root so the plain `dark` theme inherits #fff without redeclaring it. */
+  --logo-color: #fff;
   /* Text color for solid-accent-filled controls (e.g. .dialog-connect-btn,
      .how-to-start-num). One constant across themes (not redeclared per theme,
      so it cascades from :root everywhere). NOTE: this fixed white gives poor
@@ -319,6 +322,7 @@ html, body, #root {
   --accent-active: #054da7;
   --accent-secondary: #bf8700;
   --info: #0969da;
+  --logo-color: #000;
   --control-bg: #ffffff;
   --control-hover-bg: #f6f8fa;
   --control-border: #d0d7de;
@@ -357,6 +361,7 @@ html, body, #root {
   --accent-active: #054da7;
   --accent-secondary: #14b8a6;
   --info: #0ea5e9;
+  --logo-color: #000;
   --control-bg: #ffffff;
   --control-hover-bg: #f6f8fa;
   --control-border: #c9d7e5;
@@ -395,6 +400,7 @@ html, body, #root {
   --accent-active: #5d3eb8;
   --accent-secondary: #9d6ecb;
   --info: #6d7fd4;
+  --logo-color: #000;
   --control-bg: #ffffff;
   --control-hover-bg: #f2effa;
   --control-border: #ddd6f0;
@@ -586,8 +592,9 @@ select option {
   object-fit: contain;
   flex-shrink: 0;
   /* Ring/branch strokes use currentColor so the logo stays legible on every
-     theme (the dark-green original vanished on the dark background). */
-  color: var(--text-primary);
+     theme (the dark-green original vanished on the dark background). Pure
+     black on light themes, pure white on dark, via the per-theme token. */
+  color: var(--logo-color, var(--text-primary));
 }
 
 /* The logo doubles as the root-terminal switch button. */
@@ -1529,6 +1536,7 @@ select option {
 .file-viewer-link-layer,
 .file-viewer-search-layer,
 .file-viewer-change-layer,
+.file-viewer-delete-layer,
 .file-viewer-grammar-layer,
 .file-viewer-ghost {
   position: absolute;
@@ -1557,6 +1565,7 @@ select option {
 .file-viewer-link-layer,
 .file-viewer-search-layer,
 .file-viewer-change-layer,
+.file-viewer-delete-layer,
 .file-viewer-grammar-layer {
   inset: auto;
   top: 0;
@@ -1642,6 +1651,124 @@ select option {
   color: var(--accent, #4493f8);
 }
 
+/* ── Git blame (#blame) ─────────────────────────────────────────────────────
+   A per-line attribution column left of the numbers, a faint current-line inline
+   hint, and a hovercard. The column shares the gutter's font metrics and cell
+   heights (incl. wrap mode) so its rows line up with the numbers and the code. */
+.file-viewer-blame-gutter {
+  flex-shrink: 0;
+  overflow: hidden;
+  max-width: 22ch;
+  padding: 10px 6px 10px 8px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: var(--code-font-size, 12px);
+  line-height: var(--code-line-height, 18px);
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border-subtle);
+  user-select: none;
+  cursor: default;
+}
+/* Scroll-locked as a block, mirroring the number gutter (see syncScroll). */
+.file-viewer-blame-inner {
+  will-change: transform;
+}
+.file-viewer-blame-line {
+  height: var(--code-line-height, 18px);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  border-radius: 2px;
+}
+.file-viewer-blame-line.current {
+  color: var(--text-primary);
+  outline: 1px solid var(--border-subtle);
+}
+.file-viewer-blame-line .fv-blame-author {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-viewer-blame-line .fv-blame-date {
+  flex-shrink: 0;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+.file-viewer-blame-line.uncommitted {
+  opacity: 0.4;
+}
+.file-viewer-blame-line .fv-blame-none {
+  opacity: 0.5;
+}
+
+/* Faint right-aligned annotation on the caret's line, over the code area but not
+   interactive (no pointer events). Scroll-locked with the blame column. */
+.file-viewer-blame-inline {
+  position: absolute;
+  right: 12px;
+  z-index: 2;
+  max-width: 60%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  font-size: calc(var(--code-font-size, 12px) - 1px);
+  color: var(--text-muted);
+  opacity: 0.8;
+  font-style: italic;
+  will-change: transform;
+}
+
+/* Blame hovercard: same chrome as the grammar tooltip. Explicit color so it
+   reads correctly regardless of surrounding context (canonical menu scheme). */
+.file-viewer-blame-tip {
+  position: fixed;
+  z-index: 60;
+  transform: translateY(-100%);
+  margin-top: -8px;
+  max-width: 360px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: var(--bg-main, #1f2430);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--accent, #4493f8);
+  font-size: 11px;
+  line-height: 1.45;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.file-viewer-blame-tip-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 2px;
+}
+.file-viewer-blame-tip-hash {
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  color: var(--accent, #4493f8);
+}
+.file-viewer-blame-tip-author {
+  font-weight: 600;
+}
+.file-viewer-blame-tip-date {
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+.file-viewer-blame-tip-summary {
+  white-space: normal;
+}
+
+/* The Blame toggle reuses the format-button chrome; the active state is accented
+   like the other in-editor toggles. */
+.file-viewer-blame-btn.active {
+  border-color: var(--accent, #4493f8);
+  color: var(--accent, #4493f8);
+}
+
 /* #67 in-editor search: the match spans paint a translucent highlight behind the
    editable text (the layer sits below the textarea), the current match brighter —
    like a find highlight. Fixed rgba so it reads on both light and dark themes. */
@@ -1716,6 +1843,31 @@ select option {
 }
 .file-viewer-change-layer .file-viewer-change-mark.tier-17 {
   background: rgba(78, 116, 210, 0.09);
+}
+
+/* Deletion ghosts: the counterpart to the green change trail on the removal
+   side. Just-deleted text is injected back at the spot it vanished and shown in
+   red with a strike-through, then fades out over DELETE_GHOST_MS (kept in sync
+   with `fv-delete-fade` below). The mark carries an OPAQUE panel background so it
+   cleanly masks whatever live text now occupies that position (the rest of the
+   injected layer reflows transparently and never paints). Fixed red so it reads
+   on both light and dark themes, matching the grammar spelling red. */
+.file-viewer-delete-layer .file-viewer-delete-mark {
+  color: #f85149;
+  background: var(--bg-panel, #1f2430);
+  text-decoration: line-through;
+  text-decoration-color: #f85149;
+  border-radius: 2px;
+  animation: fv-delete-fade 2600ms ease-out forwards;
+}
+@keyframes fv-delete-fade {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 /* #49: recognised file links read as clickable — a dotted underline in the link
@@ -1883,6 +2035,7 @@ select option {
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-change-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-delete-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   white-space: pre-wrap;
@@ -1897,6 +2050,7 @@ select option {
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-change-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-delete-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   min-width: 0;

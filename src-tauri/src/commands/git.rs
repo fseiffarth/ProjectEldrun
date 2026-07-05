@@ -756,6 +756,124 @@ fn git_diff_file_blocking(project_dir: String, rel_path: String) -> Result<Strin
     Ok(stdout)
 }
 
+// ── Git blame ────────────────────────────────────────────────────────────────
+
+/// One source line's blame attribution. Mirrored field-for-field by the
+/// frontend `BlameLine` interface (snake_case, no serde renames).
+#[derive(serde::Serialize)]
+pub struct GitBlameLine {
+    /// 1-based final line number in the current file.
+    pub line_no: u32,
+    /// Full commit sha. All-zeros ⇒ the line is uncommitted (working tree).
+    pub hash: String,
+    /// First 8 chars of `hash`.
+    pub short: String,
+    pub author: String,
+    /// Author time as unix epoch seconds; the frontend renders the relative date.
+    pub author_time: i64,
+    /// Commit subject (first line of the message).
+    pub summary: String,
+}
+
+#[derive(Clone, Default)]
+struct BlameMeta {
+    author: String,
+    author_time: i64,
+    summary: String,
+}
+
+/// Parses `git blame --porcelain` output into one `GitBlameLine` per source
+/// line. In porcelain form each line begins with a header
+/// `<40-hex-sha> <orig-lineno> <final-lineno>[ <group-size>]`, followed — only
+/// the **first** time a given commit appears — by its metadata (`author`,
+/// `author-time`, `summary`, …), and always ends with a `\t`-prefixed content
+/// line. Later lines of an already-seen commit carry only the header + content,
+/// so commit metadata is cached by sha and reused.
+fn parse_blame_porcelain(text: &str) -> Vec<GitBlameLine> {
+    let mut cache: HashMap<String, BlameMeta> = HashMap::new();
+    let mut lines: Vec<GitBlameLine> = Vec::new();
+
+    let mut cur_hash: Option<String> = None;
+    let mut cur_line_no: u32 = 0;
+    let mut building = BlameMeta::default();
+
+    let is_header = |l: &str| -> Option<(String, u32)> {
+        let mut it = l.split(' ');
+        let sha = it.next()?;
+        if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let _orig = it.next()?; // original line number (unused)
+        let final_no: u32 = it.next()?.parse().ok()?;
+        Some((sha.to_string(), final_no))
+    };
+
+    for line in text.lines() {
+        if let Some((sha, final_no)) = is_header(line) {
+            // Start a new line record; seed metadata from cache if this commit
+            // was already described earlier in the stream.
+            building = cache.get(&sha).cloned().unwrap_or_default();
+            cur_hash = Some(sha);
+            cur_line_no = final_no;
+        } else if let Some(rest) = line.strip_prefix("author-time ") {
+            building.author_time = rest.trim().parse().unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("author ") {
+            building.author = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("summary ") {
+            building.summary = rest.to_string();
+        } else if line.starts_with('\t') {
+            // Content line — finalizes the current record.
+            if let Some(hash) = cur_hash.take() {
+                cache.entry(hash.clone()).or_insert_with(|| building.clone());
+                let short = hash.chars().take(8).collect();
+                lines.push(GitBlameLine {
+                    line_no: cur_line_no,
+                    short,
+                    author: building.author.clone(),
+                    author_time: building.author_time,
+                    summary: building.summary.clone(),
+                    hash,
+                });
+            }
+        }
+    }
+
+    lines
+}
+
+/// Per-line git blame for a file, ordered by line number. Returns an empty vec
+/// for a non-git dir or a path with no blame (e.g. never committed and no
+/// working-tree content). Local and remote (SSH) projects both work via the
+/// shared `run_git` dispatch.
+#[tauri::command]
+pub async fn git_blame(project_dir: String, rel_path: String) -> Result<Vec<GitBlameLine>, String> {
+    run_off_thread(move || git_blame_blocking(project_dir, rel_path)).await
+}
+
+fn git_blame_blocking(project_dir: String, rel_path: String) -> Result<Vec<GitBlameLine>, String> {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
+        return Ok(vec![]);
+    }
+    // `--porcelain` emits commit metadata once per commit; `-w` ignores
+    // whitespace-only changes so reformatting doesn't reassign blame.
+    let out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["blame", "--porcelain", "-w", "--", &rel_path],
+    )?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // An unmodified/untracked-but-blamable file blames fine; genuinely
+        // un-blamable paths (never committed, no HEAD) just yield nothing.
+        if stderr.is_empty() {
+            return Ok(vec![]);
+        }
+        return Err(stderr);
+    }
+    Ok(parse_blame_porcelain(&String::from_utf8_lossy(&out.stdout)))
+}
+
 // ── Git worktrees (#23) ──────────────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
@@ -1123,6 +1241,112 @@ mod tests {
             diff.contains("brand new content"),
             "expected file content in fallback diff, got: {diff}"
         );
+    }
+
+    #[test]
+    fn parse_blame_porcelain_maps_lines_and_caches_metadata() {
+        // Two commits: `aaa…` owns lines 1 & 3 (its metadata appears once, on
+        // line 1, and is reused for line 3), `bbb…` owns line 2, and line 4 is
+        // uncommitted (all-zeros sha, "Not Committed Yet").
+        let sample = "\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 1 1
+author Alice
+author-mail <alice@example.com>
+author-time 1000000000
+author-tz +0000
+summary first commit
+filename note.txt
+\tline one
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 2 1
+author Bob
+author-mail <bob@example.com>
+author-time 1600000000
+author-tz +0000
+summary second commit
+filename note.txt
+\tline two
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 3 3 1
+filename note.txt
+\tline three
+0000000000000000000000000000000000000000 4 4 1
+author Not Committed Yet
+author-mail <not.committed.yet>
+author-time 1700000000
+author-tz +0000
+summary Version of note.txt from note.txt
+filename note.txt
+\tline four
+";
+        let blame = parse_blame_porcelain(sample);
+        assert_eq!(blame.len(), 4, "one entry per source line");
+
+        assert_eq!(blame[0].line_no, 1);
+        assert_eq!(blame[0].short, "aaaaaaaa");
+        assert_eq!(blame[0].author, "Alice");
+        assert_eq!(blame[0].author_time, 1_000_000_000);
+        assert_eq!(blame[0].summary, "first commit");
+
+        assert_eq!(blame[1].line_no, 2);
+        assert_eq!(blame[1].author, "Bob");
+        assert_eq!(blame[1].author_time, 1_600_000_000);
+
+        // Line 3 reuses `aaa…`'s cached metadata even though it wasn't repeated.
+        assert_eq!(blame[2].line_no, 3);
+        assert_eq!(blame[2].hash, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(blame[2].author, "Alice");
+        assert_eq!(blame[2].summary, "first commit");
+
+        // Line 4 is uncommitted.
+        assert_eq!(blame[3].line_no, 4);
+        assert_eq!(blame[3].hash, "0000000000000000000000000000000000000000");
+        assert_eq!(blame[3].author, "Not Committed Yet");
+    }
+
+    #[test]
+    fn git_blame_blocking_attributes_lines() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping git_blame_blocking_attributes_lines");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+
+        let file = dir.join("note.txt");
+        fs::write(&file, "first line\nsecond line\n").expect("write");
+        for args in [&["add", "note.txt"][..], &["commit", "-m", "init"][..]] {
+            let ok = crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git runs")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        }
+
+        let blame = git_blame_blocking(
+            dir.to_string_lossy().to_string(),
+            "note.txt".to_string(),
+        )
+        .expect("git_blame should succeed");
+        assert_eq!(blame.len(), 2, "two committed lines");
+        assert_eq!(blame[0].line_no, 1);
+        assert_eq!(blame[0].author, "Test User");
+        assert_ne!(blame[0].hash, "0000000000000000000000000000000000000000");
+    }
+
+    #[test]
+    fn git_blame_blocking_empty_for_non_repo() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        // No `git init` → local_non_repo short-circuits to an empty vec.
+        let blame = git_blame_blocking(
+            dir.to_string_lossy().to_string(),
+            "whatever.txt".to_string(),
+        )
+        .expect("non-repo blame is empty, not an error");
+        assert!(blame.is_empty());
     }
 
     #[test]

@@ -522,6 +522,7 @@ pub fn run() {
             commands::git_peer::git_peer_checkout,
             commands::git_peer::git_peer_resolve,
             commands::git::git_diff_file,
+            commands::git::git_blame,
             // Project-wide content search
             commands::search::project_search,
             // SQLite database browser (Dev C)
