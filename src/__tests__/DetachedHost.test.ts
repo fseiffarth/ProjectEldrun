@@ -138,6 +138,43 @@ describe("detached host (#42)", () => {
     expect(useTabsStore.getState().detachedGroupsByScope["p"]).toHaveLength(1);
   });
 
+  it("an 'add' edit mints a tab into the popout's subtree, keeps the PTY in the main store, and re-seeds", async () => {
+    const { groupId, label, bKey } = detachSecond();
+    await listenDetachedHost();
+    emitted.length = 0;
+
+    handlers.get(DETACHED_EDIT)!({
+      payload: {
+        scope: "p",
+        groupId,
+        edit: {
+          kind: "add",
+          targetGroupId: groupId,
+          tab: { label: "new", cmd: "bash", cwd: "/p", kind: "shell" },
+        },
+      },
+    });
+
+    // The popout's subtree now holds the original tab + the freshly-minted one.
+    const rec = useTabsStore.getState().detachedGroupsByScope["p"]![0];
+    const subKeys = (rec.subtree as GroupNode).tabKeys;
+    expect(subKeys).toHaveLength(2);
+    expect(subKeys[0]).toBe(bKey);
+    const newKey = subKeys[1];
+    // It became the active tab of the popout group.
+    expect((rec.subtree as GroupNode).activeKey).toBe(newKey);
+    // The payload lives in the main store (its pane mounts + owns the PTY there).
+    const payload = useTabsStore.getState().tabsByScope["p"]!.find((t) => t.key === newKey);
+    expect(payload).toMatchObject({ label: "new", cmd: "bash", kind: "shell", scope: "p" });
+    // The popout is re-seeded so it renders (+ attaches to) the new tab, tagged
+    // as the landed key so it plays the drop-in flourish.
+    const seed = emitted.find((e) => e.event === detachedSeedEvent(label));
+    expect(seed).toBeDefined();
+    const payloadSeed = seed!.payload as DetachedSeed & { landedKey?: string };
+    expect(payloadSeed.landedKey).toBe(newKey);
+    expect(payloadSeed.tabs.map((t) => t.key)).toEqual([bKey, newKey]);
+  });
+
   it("an active-scope dock re-docks the group and closes the OS window", async () => {
     const { groupId, label } = detachSecond();
     await listenDetachedHost();

@@ -35,6 +35,7 @@ import { CalendarPane } from "../calendar/CalendarPane";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
+import { NewTabMenu } from "../tabs/NewTabMenu";
 import { pickEdge } from "../tabs/dragGeometry";
 import { useDragStore } from "../../stores/drag";
 import { useTabLandStore } from "../../stores/tabLand";
@@ -83,6 +84,10 @@ interface Props {
   /** Merge `key` into `targetGroupId` (at `index`, else append) — a tab dragged
    *  onto ANOTHER group's bar (or body center) inside a split popout. */
   onMove: (key: string, targetGroupId: string, index?: number) => void;
+  /** Create a new tab (from the popout's own "+" menu) in `targetGroupId`. The
+   *  detached window can't mint the key/own the PTY, so it streams the resolved
+   *  payload to the main window, which creates the tab and re-seeds. */
+  onAddTab: (tab: Omit<TabEntry, "key">, targetGroupId: string) => void;
 }
 
 /**
@@ -104,7 +109,10 @@ export function DetachedCenterPanel({
   onSplit,
   onResize,
   onMove,
+  onAddTab,
 }: Props) {
+  // The popout's "+" add-tab menu: which group opened it + where to anchor it.
+  const [addMenu, setAddMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
   // One bar element per group, so a per-tab drag can hit-test the bar it's over.
   const barRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   // One body element per group, for resolving an edge-split drop target.
@@ -893,6 +901,29 @@ export function DetachedCenterPanel({
           {isDropTarget && localReorder === orderedTabs.length && orderedTabs.length > 0 && (
             <Fragment key="drop-marker-end">{dropPlaceholder}</Fragment>
           )}
+          {/* #42: the popout's own "+" — the detached window had no way to add
+              tabs. Streams an "add" edit to the main window (which owns tab
+              creation + the PTY) via onAddTab. */}
+          <div className="tab-new-wrap">
+            <button
+              className="tab-new-btn"
+              title="New tab"
+              // The bar's pointerdown starts a window-move/dock drag; keep the
+              // button's press out of it (it also excludes buttons, but be explicit).
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setAddMenu((cur) =>
+                  cur && cur.groupId === group.id
+                    ? null
+                    : { groupId: group.id, x: r.left, y: r.bottom + 4 },
+                );
+              }}
+            >
+              +
+            </button>
+          </div>
         </div>
         <div
           className="subwindow-body"
@@ -1042,6 +1073,29 @@ export function DetachedCenterPanel({
         )}
       </div>
       {dropActive && <div className="detached-drop-target" />}
+      {/* #42: the "+" add-tab menu for the group that opened it. cwd comes from a
+          tab already in that group (the popout's project directory). */}
+      {addMenu &&
+        (() => {
+          const g = findGroup(tree, addMenu.groupId);
+          if (!g) return null;
+          const cwd =
+            byKey.get(g.activeKey ?? g.tabKeys[0] ?? "")?.cwd ??
+            g.tabKeys.map((k) => byKey.get(k)?.cwd).find(Boolean) ??
+            "";
+          return (
+            <NewTabMenu
+              scope={scope}
+              projectCwd={cwd}
+              // The detached window is inert to the projects store, so there's no
+              // project name to auto-name an agent session with — skip it.
+              projectName=""
+              anchor={{ x: addMenu.x, y: addMenu.y }}
+              onPick={(tab) => onAddTab(tab, addMenu.groupId)}
+              onClose={() => setAddMenu(null)}
+            />
+          );
+        })()}
       <DragGhost />
     </div>
   );

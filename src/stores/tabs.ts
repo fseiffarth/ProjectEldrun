@@ -459,6 +459,18 @@ interface TabsStore {
     groupId: string,
     edit: DetachedEditPayload,
   ) => void;
+  // #42: create a NEW tab inside a detached popout, from its own "+" menu. The
+  // main window mints the key + owns the PTY, so this appends the payload to
+  // `tabsByScope[scope]` (spawning its pane in the main window's flat pane layer)
+  // and inserts the key into `targetGroupId` within the popout's subtree,
+  // activating it. Returns the minted key (or null if the popout/group is gone),
+  // so the caller can re-seed the popout to render + attach to the new tab.
+  addDetachedTab: (
+    scope: string,
+    detachedGroupId: string,
+    tab: Omit<TabEntry, "key">,
+    targetGroupId: string,
+  ) => string | null;
   // Multi-pane popouts: split a tab inside a detached popout's own subtree,
   // carving a new pane at `edge` of `targetGroupId` (a group WITHIN the
   // popout's subtree). Mirrors `splitWithTab` but mutates
@@ -2053,6 +2065,47 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       }
       return patch;
     });
+  },
+
+  addDetachedTab: (scope, detachedGroupId, tab, targetGroupId) => {
+    const key = nextKey(tab.kind);
+    // Spread first so a stray `key` on the payload can't shadow the minted one;
+    // stamp the owning scope (this path never touches the in-window layout, so it
+    // does writeScope's scope-stamp itself).
+    const entry: TabEntry = { ...tab, key, scope };
+    let created: string | null = null;
+    set((s) => {
+      const entries = s.detachedGroupsByScope[scope] ?? [];
+      const idx = entries.findIndex((d) => d.id === detachedGroupId);
+      if (idx < 0) return {};
+      const rec = entries[idx];
+      // Land the tab in the requested pane; fall back to the popout's first group
+      // (a single-pane popout, or a stale target id).
+      const target = findGroup(rec.subtree, targetGroupId) ?? allGroups(rec.subtree)[0];
+      if (!target) return {};
+      const nextSub = mapGroup(rec.subtree, target.id, (g) => ({
+        ...g,
+        tabKeys: [...g.tabKeys, key],
+        activeKey: key,
+      }));
+      const nextEntries = [...entries];
+      nextEntries[idx] = { ...rec, subtree: nextSub };
+      // Append the payload so the MAIN window's pane layer mounts + owns the PTY;
+      // the detached window attaches to it after the re-seed.
+      const nextTabs = [...(s.tabsByScope[scope] ?? []), entry];
+      created = key;
+      return {
+        tabsByScope: { ...s.tabsByScope, [scope]: nextTabs },
+        // Mirror the current-scope convenience copy (writeScope normally does
+        // this, but this path leaves the in-window layout untouched and skips it).
+        ...(s.scope === scope ? { tabs: nextTabs } : {}),
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: nextEntries,
+        },
+      };
+    });
+    return created;
   },
 
   splitDetachedGroup: (scope, detachedGroupId, key, targetGroupId, edge) => {

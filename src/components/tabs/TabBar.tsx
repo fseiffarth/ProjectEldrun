@@ -5,7 +5,6 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   BLOB_TAB_CMD,
   CALENDAR_TAB_CMD,
-  FILES_TAB_CMD,
   NETWORK_TAB_CMD,
   effectiveTabLocation,
   isLocatableKind,
@@ -13,14 +12,19 @@ import {
   useTabsStore,
   useGroup,
   useGroupTabs,
-  TabKind,
-  RESUMABLE_AGENTS,
 } from "../../stores/tabs";
 import { useDragStore } from "../../stores/drag";
 import { useTabLandStore } from "../../stores/tabLand";
 import { useDetachAnimStore, flyVector } from "../../stores/detachAnim";
 import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
+import {
+  AGENT_ITEMS,
+  SHELL_ITEMS,
+  TAB_ACCENT,
+  buildStaticTabSpec,
+  type StaticMenuItem,
+} from "./newTabItems";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
@@ -57,60 +61,6 @@ function playDetachFlyOut(
     dy,
   });
 }
-
-const TAB_ACCENT: Record<TabKind, string> = {
-  agent: "var(--accent)",
-  local_agent: "var(--warning)",
-  shell: "var(--success)",
-  files: "var(--text-muted)",
-  embed: "var(--info, #4aa3df)",
-  projects3d: "var(--accent-secondary)",
-  network: "var(--info, #4aa3df)",
-  calendar: "var(--accent)",
-};
-
-interface StaticMenuItem {
-  label: string;
-  cmd: string;
-  kind: TabKind;
-  env?: Record<string, string>;
-  // Optional template for a command typed into the agent on launch to name its
-  // own session after the project. Only set for agents with a known
-  // session-rename command; others are skipped to avoid typing junk into them.
-  sessionRename?: (projectName: string) => string;
-  // When set, Eldrun mints a UUID at launch and passes it to the agent so it
-  // owns a deterministic session id (e.g. Claude's `--session-id <uuid>`). The
-  // returned strings are appended to the spawn args. Lets us surface the
-  // session id on hover and later resume the session.
-  sessionIdArgs?: (uuid: string) => string[];
-}
-
-// Only Claude and Gemini accept a caller-supplied session UUID at launch
-// (both via `--session-id <uuid>`), so only those get `sessionIdArgs`. Codex
-// (`codex resume <id>`) and Mistral/vibe (`--resume [id]`) mint their own ids
-// and only accept one when resuming, so there's no deterministic id to capture
-// up front — passing `--session-id` would just error and break the tab.
-const AGENT_ITEMS: StaticMenuItem[] = [
-  { label: "Claude",   cmd: "claude",       kind: "agent", sessionRename: (n) => `/rename ${n}`, sessionIdArgs: (id) => ["--session-id", id] },
-  { label: "Codex",    cmd: "codex",        kind: "agent" },
-  { label: "Gemini",   cmd: "gemini",       kind: "agent", sessionIdArgs: (id) => ["--session-id", id] },
-  { label: "Mistral",  cmd: "vibe",         kind: "agent" },
-  { label: "Aider",    cmd: "aider",        kind: "agent" },
-  { label: "OpenCode", cmd: "opencode",     kind: "agent" },
-  { label: "Cursor",   cmd: "cursor-agent", kind: "agent" },
-  { label: "Copilot",  cmd: "copilot",      kind: "agent" },
-  { label: "Grok",     cmd: "grok",         kind: "agent" },
-  { label: "Qwen",     cmd: "qwen",         kind: "agent" },
-  { label: "OpenClaw", cmd: "openclaw",     kind: "agent" },
-];
-
-const SHELL_ITEMS: StaticMenuItem[] = [
-  // Empty cmd → backend `default_shell()` picks the OS-appropriate shell
-  // (cmd.exe on Windows, zsh on macOS, bash on Linux). Hardcoding "bash" here
-  // fails to spawn on Windows where bash isn't on PATH.
-  { label: "Shell", cmd: "",              kind: "shell" },
-  { label: "Files", cmd: FILES_TAB_CMD,   kind: "files" },
-];
 
 interface Props {
   groupId: string;
@@ -347,27 +297,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       setMenuPos(null);
       return;
     }
-    // For agents that support it, type their session-rename command on launch
-    // so the agent's own session is named after the project.
-    const initialInput =
-      item.sessionRename && projectName ? item.sessionRename(projectName) : undefined;
-    // Mint a per-tab UUID for any agent we can resume (`cmd` in RESUMABLE_AGENTS)
-    // or that takes a deterministic launch id (`sessionIdArgs`). It is the tab's
-    // stable key for the whole session-tracking machinery.
-    const tracked = item.cmd in RESUMABLE_AGENTS;
-    const sessionId = tracked || item.sessionIdArgs ? crypto.randomUUID() : undefined;
-    // Launch args: only agents with `sessionIdArgs` (Claude, Gemini) pass the id
-    // at launch (`--session-id`). Codex mints its own id, so it launches bare and
-    // the backend injects `resume <live-id>` on a later restore.
-    const args = sessionId && item.sessionIdArgs ? item.sessionIdArgs(sessionId) : [];
-    // Resumable agents get `ELDRUN_TAB_UID` so the SessionStart hook records their
-    // live session id under this tab's key (see services::agent_session). Persisted
-    // in env, so it round-trips across restart.
-    const env = {
-      ...(item.env ?? {}),
-      ...(tracked && sessionId ? { ELDRUN_TAB_UID: sessionId } : {}),
-    };
-    addTab({ label: item.label, cmd: item.cmd, args, env, cwd: projectCwd, kind: item.kind, initialInput, sessionId });
+    // Build the full launch spec (session-id minting, ELDRUN_TAB_UID, args,
+    // session-rename input) via the shared helper so the main and detached add
+    // menus can never drift.
+    addTab(buildStaticTabSpec(item, projectCwd, projectName));
     setMenuPos(null);
   }
 
