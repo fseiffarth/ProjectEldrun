@@ -15,7 +15,7 @@ import { openLinkedFile } from "../embed/FileViewerPane";
 import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useWindowsStore } from "../../stores/windows";
 import { useSettingsStore } from "../../stores/settings";
-import { useTabsStore } from "../../stores/tabs";
+import { useTabsStore, orderedTabKeys } from "../../stores/tabs";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
@@ -249,6 +249,12 @@ export function RightPanel({
   // Whether the active project is missing scaffold files — drives the "no
   // scaffold" type tag shown beside its name, mirroring ProjectPill's hover tags.
   const [scaffoldMissing, setScaffoldMissing] = useState(false);
+  // Nested-repo detection: when the browsed folder lives in a git repo distinct
+  // from the project's own repo, `nestedRoot` holds that repo's root and the git
+  // section re-roots at it. `preferProjectRepo` is the manual toggle override
+  // back to the project repo.
+  const [nestedRoot, setNestedRoot] = useState<string | null>(null);
+  const [preferProjectRepo, setPreferProjectRepo] = useState(false);
   const commitRef = useRef<HTMLTextAreaElement>(null);
   const actionBarRef = useRef<HTMLDivElement>(null);
   const refreshGitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -266,7 +272,9 @@ export function RightPanel({
       // Keep the active project's pill dot in sync from the data we just fetched
       // (no extra git subprocesses), so edits/commits/pushes reflect immediately
       // instead of waiting for the switcher's periodic poll.
-      if (activeId && status) {
+      // Don't let a nested repo's status pollute the project pill's dirty dot —
+      // that dot tracks the project repo (the switcher's poll recomputes it).
+      if (activeId && status && !onNestedRepo) {
         useGitDirtyStore.getState().set(activeId, gitDirtyState(status, unpushed.length));
       }
     });
@@ -325,6 +333,45 @@ export function RightPanel({
   const remoteBlocked = !!activeProject?.remote && remoteSshState !== "connected";
   const rightPanelFolder = activeId ? rightPanelFolderByProject[activeId] ?? "" : "";
 
+  // Detect a nested git repo: if the folder currently browsed in the file tree
+  // lives inside a git repo distinct from the project's own repo, re-root the
+  // git section at it (auto-switch). Local projects only — the backend returns
+  // null for remote ones, so `nestedRoot` stays null and behavior is unchanged.
+  useEffect(() => {
+    if (!projectDir || activeProject?.remote) {
+      setNestedRoot(null);
+      return;
+    }
+    let cancelled = false;
+    void Promise.all([
+      invoke<string | null>("git_repo_root", { projectDir, relPath: "" }).catch(() => null),
+      invoke<string | null>("git_repo_root", { projectDir, relPath: rightPanelFolder }).catch(() => null),
+    ]).then(([projRoot, folderRoot]) => {
+      if (cancelled) return;
+      const norm = (p: string | null) => (p ? p.replace(/[/\\]+$/, "") : null);
+      const pr = norm(projRoot);
+      const fr = norm(folderRoot);
+      setNestedRoot(fr && fr !== pr ? fr : null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectDir, rightPanelFolder, activeProject?.remote]);
+
+  // Default to auto-switch: reset the manual override on a project switch or
+  // whenever we leave the nested repo, so entering one always shows it first.
+  useEffect(() => {
+    setPreferProjectRepo(false);
+  }, [activeId]);
+  useEffect(() => {
+    if (!nestedRoot) setPreferProjectRepo(false);
+  }, [nestedRoot]);
+
+  // The repo root the whole git section (status, commit, push, history) operates
+  // on: the nested repo when detected and not overridden, else the project repo.
+  const effectiveGitRoot = nestedRoot && !preferProjectRepo ? nestedRoot : projectDir;
+  const onNestedRepo = !!nestedRoot && effectiveGitRoot !== projectDir;
+
   // Diverged (amber/orange) files for the active remote project, from the cached
   // sync status — backs the toolbar count badge and the "Orange" list view. These
   // are exactly the files auto-sync refuses to touch (both sides changed), so they
@@ -372,6 +419,15 @@ export function RightPanel({
   // folder plus every member project's root. Detected from the current tab scope
   // (disjoint `box:<id>` prefix) rather than the project store's activeId.
   const scope = useTabsStore((s) => s.scope);
+  // Subwindows the user has hidden in the current scope, surfaced as an
+  // auto-pinned section above the toolbar. Their tabs still live in
+  // `tabsByScope[scope]` (PTYs mounted, hidden), so the chips resolve labels
+  // from there. `unhideGroup`/`closeHiddenGroup` restore or discard them.
+  const hiddenGroups = useTabsStore((s) => s.hiddenGroupsByScope[s.scope]);
+  const scopeTabs = useTabsStore((s) => s.tabsByScope[s.scope]);
+  const unhideGroup = useTabsStore((s) => s.unhideGroup);
+  const closeHiddenGroup = useTabsStore((s) => s.closeHiddenGroup);
+  const [hiddenCollapsed, setHiddenCollapsed] = useState(false);
   const boxes = useBoxesStore((s) => s.boxes);
   const activeBox = useMemo(
     () =>
@@ -463,7 +519,7 @@ export function RightPanel({
       }
       // FileTree auto-reloads via its fs-watch; refresh git so new untracked
       // files show in the status counts immediately.
-      refreshGit(projectDir);
+      refreshGit(effectiveGitRoot);
     })();
   };
 
@@ -505,12 +561,12 @@ export function RightPanel({
   }, [open, activeId]);
 
   useEffect(() => {
-    if (open && projectDir && !remoteBlocked) {
-      refreshGit(projectDir);
+    if (open && effectiveGitRoot && !remoteBlocked) {
+      refreshGit(effectiveGitRoot);
     } else {
       setGitStatus(null);
     }
-  }, [open, projectDir, remoteBlocked]);
+  }, [open, effectiveGitRoot, remoteBlocked]);
 
   useEffect(() => {
     setShowSettings(false);
@@ -554,12 +610,12 @@ export function RightPanel({
   }, [localFile, projectDir, remoteBlocked]);
 
   const handleAdd = async () => {
-    if (!projectDir) return;
+    if (!effectiveGitRoot) return;
     setGitBusy(true);
     setGitError(null);
     try {
-      await invoke("git_add_all", { projectDir });
-      refreshGit(projectDir);
+      await invoke("git_add_all", { projectDir: effectiveGitRoot });
+      refreshGit(effectiveGitRoot);
     } catch (e) {
       setGitError(String(e));
     } finally {
@@ -568,11 +624,11 @@ export function RightPanel({
   };
 
   const handleCommitOpen = async () => {
-    if (!projectDir) return;
+    if (!effectiveGitRoot) return;
     setGitBusy(true);
     setGitError(null);
     try {
-      const msg = await invoke<string>("git_generate_commit_message", { projectDir });
+      const msg = await invoke<string>("git_generate_commit_message", { projectDir: effectiveGitRoot });
       setCommitMsg(msg);
       setTimeout(() => commitRef.current?.focus(), 50);
     } catch (e) {
@@ -583,13 +639,13 @@ export function RightPanel({
   };
 
   const handleCommitConfirm = async () => {
-    if (!projectDir || commitMsg === null) return;
+    if (!effectiveGitRoot || commitMsg === null) return;
     setGitBusy(true);
     setGitError(null);
     try {
-      await invoke("git_commit", { projectDir, message: commitMsg });
+      await invoke("git_commit", { projectDir: effectiveGitRoot, message: commitMsg });
       setCommitMsg(null);
-      refreshGit(projectDir);
+      refreshGit(effectiveGitRoot);
     } catch (e) {
       setGitError(String(e));
     } finally {
@@ -598,12 +654,17 @@ export function RightPanel({
   };
 
   const handlePush = async () => {
-    if (!projectDir) return;
+    if (!effectiveGitRoot) return;
     setGitBusy(true);
     setGitError(null);
     try {
-      await invoke("git_push", { projectDir, projectId: activeId ?? null });
-      refreshGit(projectDir);
+      // On a nested repo, push to its own configured remote (no project id →
+      // plain `git push`), not the project's GitHub/GitLab provider flow.
+      await invoke("git_push", {
+        projectDir: effectiveGitRoot,
+        projectId: onNestedRepo ? null : activeId ?? null,
+      });
+      refreshGit(effectiveGitRoot);
     } catch (e) {
       setGitError(String(e));
     } finally {
@@ -909,6 +970,64 @@ export function RightPanel({
           )}
       </div>
 
+      {hiddenGroups && hiddenGroups.length > 0 && (
+        <div className="hidden-subwindows">
+          <button
+            type="button"
+            className="hidden-sw-header"
+            onClick={() => setHiddenCollapsed((c) => !c)}
+            title={hiddenCollapsed ? "Show hidden subwindows" : "Collapse"}
+          >
+            <span className="hidden-sw-caret">{hiddenCollapsed ? "▸" : "▾"}</span>
+            Hidden ({hiddenGroups.length})
+          </button>
+          {!hiddenCollapsed && (
+            <div className="hidden-sw-list">
+              {hiddenGroups.map((h) => {
+                const keys = orderedTabKeys(h.subtree);
+                return (
+                  <div key={h.id} className="hidden-sw-row">
+                    <span className="hidden-sw-icon">⊞</span>
+                    <div className="hidden-sw-chips">
+                      {keys.map((k) => {
+                        const label = scopeTabs?.find((t) => t.key === k)?.label ?? k;
+                        return (
+                          <button
+                            key={k}
+                            type="button"
+                            className="hidden-sw-chip"
+                            title={`Restore focused on “${label}”`}
+                            onClick={() => unhideGroup(h.id, { activeKey: k })}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button
+                      type="button"
+                      className="hidden-sw-btn"
+                      title="Restore subwindow"
+                      onClick={() => unhideGroup(h.id)}
+                    >
+                      ↩
+                    </button>
+                    <button
+                      type="button"
+                      className="hidden-sw-btn hidden-sw-close"
+                      title="Close subwindow (discard its tabs)"
+                      onClick={() => closeHiddenGroup(h.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="right-panel-toolbar">
         {(["files", "git", "search", "windows"] as View[]).map((v) => (
           <button
@@ -1016,11 +1135,31 @@ export function RightPanel({
 
       {view === "git" && (
         <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
+          {nestedRoot && (
+            <div className="nested-repo-toggle" role="group" aria-label="Git repository">
+              <button
+                type="button"
+                className={`nested-repo-pill${!onNestedRepo ? " active" : ""}`}
+                title={projectDir}
+                onClick={() => setPreferProjectRepo(true)}
+              >
+                {activeProject?.name || "Project"}
+              </button>
+              <button
+                type="button"
+                className={`nested-repo-pill${onNestedRepo ? " active" : ""}`}
+                title={nestedRoot}
+                onClick={() => setPreferProjectRepo(false)}
+              >
+                {basename(nestedRoot) || nestedRoot}
+              </button>
+            </div>
+          )}
           <GitHistory
-            projectDir={projectDir}
-            projectId={activeProject?.remote ? activeId ?? undefined : undefined}
-            remote={!!activeProject?.remote}
-            onChanged={() => projectDir && refreshGit(projectDir)}
+            projectDir={effectiveGitRoot}
+            projectId={onNestedRepo ? undefined : activeProject?.remote ? activeId ?? undefined : undefined}
+            remote={!onNestedRepo && !!activeProject?.remote}
+            onChanged={() => effectiveGitRoot && refreshGit(effectiveGitRoot)}
           />
         </div>
       )}

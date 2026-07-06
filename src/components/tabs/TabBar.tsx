@@ -6,6 +6,7 @@ import {
   BLOB_TAB_CMD,
   CALENDAR_TAB_CMD,
   NETWORK_TAB_CMD,
+  EMPTY_GROUP_ID,
   effectiveTabLocation,
   isLocatableKind,
   isPtyTabKind,
@@ -93,6 +94,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const removeTab = useTabsStore((s) => s.removeTab);
   const setTabLocation = useTabsStore((s) => s.setTabLocation);
   const closeGroup = useTabsStore((s) => s.closeGroup);
+  const hideGroup = useTabsStore((s) => s.hideGroup);
   // SSH-sync Phase 0: the local/remote locality toggle is only meaningful for a
   // remote (SSH) project's agent/shell tabs. Subscribe to a single boolean so a
   // project edit elsewhere doesn't re-render every bar.
@@ -649,18 +651,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     bindDragRelease({ onCommit: (shiftKey) => void onCommit(shiftKey), onAbort });
   }
 
-  // #42: grab the subwindow's top frame (the empty tab-bar area) and drag it out
-  // to pop the group into its own OS window — replacing the old ⧉ button. Focuses
-  // immediately on press; once the pointer crosses a small threshold the group
-  // detaches at the cursor and the window manager takes over the move
-  // (`startDragging`), so the popout follows the cursor natively until release.
+  // #42: drag the left-edge grip to pop the group into its own OS window —
+  // replacing the old ⧉ button. Focuses immediately on press; once the pointer
+  // crosses a small threshold the group detaches at the cursor and the window
+  // manager takes over the move (`startDragging`), so the popout follows the
+  // cursor natively until release. Only the explicit `.tab-drag-grip` triggers
+  // this — grabbing empty bar space no longer detaches, so a stray bar drag can't
+  // accidentally pop a subwindow out.
   function onBarPointerDown(e: React.PointerEvent) {
     focusGroup(groupId);
     if (e.button !== 0) return;
-    // Only the empty bar area is a detach handle — not tabs, the +/close
-    // controls, or an inline rename input.
     const target = e.target as HTMLElement;
-    if (target.closest(".tab, .tab-new-wrap, button, .tab-label-edit")) return;
+    if (!target.closest(".tab-drag-grip")) return;
     e.preventDefault();
     const startX = e.clientX;
     const startY = e.clientY;
@@ -717,6 +719,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       data-group-id={groupId}
       onPointerDown={onBarPointerDown}
     >
+      {/* Explicit detach grip — the sole handle for popping this subwindow out.
+          Always pinned at the far left (outside the scrolling strip) so it stays
+          grabbable no matter how many tabs fill the bar. A plain (non-button)
+          element, so its pointerdown bubbles to `onBarPointerDown`, which now
+          fires only when the grip is the target. */}
+      <div
+        className="tab-drag-grip"
+        title="Drag to pop this subwindow into its own window"
+        aria-hidden="true"
+      >
+        ⠿
+      </div>
       {canScrollLeft && (
         <button
           className="tab-scroll-btn left"
@@ -892,6 +906,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           onClick={() => scrollStrip(1)}
         >
           ›
+        </button>
+      )}
+      {groupId !== EMPTY_GROUP_ID && (
+        <button
+          className="subwindow-hide"
+          title="Hide subwindow (bring it back from the right panel)"
+          // Same self-contained interaction discipline as the close button below:
+          // stop the bar's focusGroup mousedown and don't let the click bubble.
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); hideGroup(groupId); }}
+        >
+          –
         </button>
       )}
       {showGroupClose && (

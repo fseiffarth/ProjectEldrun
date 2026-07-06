@@ -510,6 +510,29 @@ select option {
 
 }
 
+/* Explicit window-move grip at the top-left of the header, mirroring the
+   subwindow `.tab-drag-grip`. The header is already a drag region, but this is
+   an always-present, obvious handle. */
+.app-drag-grip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  user-select: none;
+  opacity: 0.6;
+  cursor: grab;
+  transition: opacity 0.1s, color 0.1s;
+}
+.app-drag-grip:hover {
+  opacity: 1;
+  color: var(--text-primary);
+}
+.app-drag-grip:active { cursor: grabbing; }
+
 .header-center {
   flex: 1;
   min-width: 0;
@@ -2564,25 +2587,34 @@ select option {
   position: absolute;
   top: 0;
   right: 0;
-  width: 14px;
+  width: 16px;
   height: 100%;
   pointer-events: none;
   z-index: 2;
 }
+/* Ticks are wider than the 8px scrollbar so they protrude past the thumb into
+   the page margin (a clear notch), and carry a 1px dark ring so the fixed yellow
+   reads over both the light PDF area and the accent-coloured scrollbar thumb. */
 .file-viewer-pdf-search-tick {
   position: absolute;
-  right: 2px;
-  width: 8px;
-  height: 2px;
-  border-radius: 1px;
-  background: rgba(255, 213, 0, 0.85);
-  transform: translateY(-1px);
-}
-.file-viewer-pdf-search-tick.current {
   right: 1px;
-  width: 11px;
-  height: 3px;
+  width: 12px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 213, 0, 1);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+  transform: translateY(-2px);
+}
+/* The current match spans the full rail, is taller/orange, and sits above the
+   normal ticks so an adjacent hit never hides it. */
+.file-viewer-pdf-search-tick.current {
+  right: 0;
+  width: 16px;
+  height: 5px;
   background: rgba(229, 110, 0, 1);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7);
+  transform: translateY(-2.5px);
+  z-index: 1;
 }
 
 /* #71: the Ctrl+F bar for the native PDF viewer renders as a static row
@@ -3134,11 +3166,10 @@ select option {
   overflow: hidden;
   background-color: var(--bg-main);
 }
-.subwindow.focused {
-  /* Accent focus edge on top/bottom only — left/right stay borderless. An
-     outline can't be applied per-side, so use inset box-shadows instead. */
-  box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent);
-}
+/* The focused-subwindow frame + Shift-nav numbering are drawn by
+   FocusFrameOverlay above the pane layer (.focus-frame / .subwindow-number
+   below), not on .subwindow itself — an opaque pane (z-index:2) would paint
+   over an in-body frame. */
 
 .subwindow-body {
   position: relative;
@@ -3563,6 +3594,40 @@ select option {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   transition: left 0.12s ease, top 0.12s ease, width 0.12s ease, height 0.12s ease;
+}
+
+/* ── Focused-subwindow frame + Shift+↑/↓ subwindow numbering ──────────────── */
+/* FocusFrameOverlay draws both above the pane layer (z-index:2) in panel-
+   relative px — an in-body frame would be hidden by the opaque panes. The frame
+   is outline-only (no fill) so it reads as a light, theme-fitting marker rather
+   than the split preview's dark wash; it glides between subwindows as focus (or
+   the Shift preview) moves. */
+.focus-frame {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 2px;
+  transition: left 0.1s ease, top 0.1s ease, width 0.1s ease, height 0.1s ease;
+}
+.subwindow-number {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--bg-main);
+  background: var(--accent);
+  border-radius: 9px;
 }
 
 /* Floating label following the pointer during a tab drag. */
@@ -4213,6 +4278,107 @@ select option {
   gap: 2px;
   padding: 4px 12px;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Auto-pinned "Hidden subwindows" section: shown above the view toolbar only
+   when the current scope has ≥1 hidden subwindow, so a hidden pane is always one
+   click from coming back regardless of the active view. */
+.hidden-subwindows {
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+.hidden-sw-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, var(--text-muted));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.hidden-sw-header:hover {
+  color: var(--text-primary);
+}
+.hidden-sw-caret {
+  font-size: 9px;
+  width: 10px;
+  display: inline-block;
+}
+.hidden-sw-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 6px 4px;
+  gap: 2px;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.hidden-sw-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.hidden-sw-row:hover {
+  background: var(--pill-hover-bg);
+}
+.hidden-sw-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.hidden-sw-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.hidden-sw-chip {
+  max-width: 100%;
+  padding: 0 6px;
+  height: 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.hidden-sw-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.hidden-sw-btn {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.hidden-sw-btn:hover {
+  background: var(--bg-panel);
+  color: var(--accent);
+}
+.hidden-sw-close:hover {
+  color: var(--danger);
 }
 
 /* Inline variant of the git action bar when it lives in the header row, on its
@@ -5412,14 +5578,34 @@ select option {
      bottom border + the active tab's `--bg-main` blend keep the divide crisp. */
   background-color: var(--bg-panel);
   border-bottom: 1px solid var(--border-color);
-  /* #42: the empty bar area is a drag handle — grab it to pop the subwindow out
-     into its own OS window. Tabs/buttons reset the cursor to their own. */
-  cursor: grab;
 }
-.tab-bar:active { cursor: grabbing; }
-.tab-bar .tab,
-.tab-bar button,
-.tab-bar .tab-new-wrap { cursor: default; }
+
+/* Explicit drag grip pinned at the far left of every subwindow bar. It sits
+   outside the scrolling `.tab-strip`, so it stays grabbable no matter how many
+   tabs fill (and overflow) the bar. Inherits the bar's grab cursor; brightens on
+   hover so it reads as an affordance. */
+.tab-drag-grip {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 26px;
+  padding: 0 1px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  user-select: none;
+  opacity: 0.6;
+  cursor: grab;
+  transition: opacity 0.1s, color 0.1s;
+}
+.tab-drag-grip:hover {
+  opacity: 1;
+  color: var(--text-primary);
+}
+.tab-drag-grip:active { cursor: grabbing; }
 
 /* The horizontally-scrolling tab container. Grows to fill the bar between the
    chevrons and close controls and carries the + directly after the final tab;
@@ -5655,6 +5841,38 @@ select option {
 .subwindow-close:hover {
   background: var(--pill-hover-bg);
   color: var(--danger);
+}
+
+/* Hide-subwindow button: parks the subwindow into the right-panel Hidden list.
+   Sits just left of the close button (both margin-left:auto stack at the right
+   end; when close is absent for a single subwindow, hide still pins right). */
+.subwindow-hide {
+  margin-left: auto;
+  align-self: center;
+  position: sticky;
+  right: 0;
+  flex-shrink: 0;
+  z-index: 12;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
+/* When both render, the close button owns the far-right slot; hide sits snug to
+   its left (its own auto-margin has no free space left to consume). */
+.subwindow-hide + .subwindow-close {
+  margin-left: 0;
+}
+.subwindow-hide:hover {
+  background: var(--pill-hover-bg);
+  color: var(--accent);
 }
 
 /* #42: detached ("pop out") window title-bar controls — the native
@@ -6608,6 +6826,43 @@ select option {
 .orange-file-act:disabled {
   cursor: default;
   opacity: 0.5;
+}
+
+/* Nested-repo toggle: segmented control shown atop the git view when the browsed
+   folder resolves to a git repo distinct from the project's repo (#nested-git). */
+.nested-repo-toggle {
+  display: flex;
+  gap: 2px;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-panel);
+}
+
+.nested-repo-pill {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nested-repo-pill:hover:not(.active) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.nested-repo-pill.active {
+  color: var(--text-primary);
+  border-color: var(--accent, #58a6ff);
+  background: color-mix(in srgb, var(--accent, #58a6ff) 18%, transparent);
+  cursor: default;
 }
 
 .file-tree-section-divider {

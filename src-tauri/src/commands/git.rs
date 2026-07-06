@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::services::remote::{remote_target_for_dir, RemoteTarget};
 
@@ -117,6 +117,47 @@ fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
         .unwrap_or(false);
 
     Ok(GitStatus { staged, unstaged, untracked, has_remote, is_repo: true })
+}
+
+/// Resolve the git top-level enclosing `project_dir`/`rel_path` (the folder the
+/// user is currently browsing in the file tree). Returns the absolute repo root
+/// path, or `None` when the folder isn't inside any git repo. The right panel
+/// uses this to detect a **nested** repo — a subfolder that is its own git repo
+/// distinct from the project's repo — and re-root its git section at it.
+///
+/// Local only for now: a remote project's tree lives on the host, and a nested
+/// host toplevel can't be reverse-mapped back to the project's `RemoteSpec` by
+/// `remote_target_for_dir`, so remote projects short-circuit to `None` and keep
+/// their existing project-scoped behavior.
+#[tauri::command]
+pub async fn git_repo_root(project_dir: String, rel_path: String) -> Result<Option<String>, String> {
+    run_off_thread(move || git_repo_root_blocking(project_dir, rel_path)).await
+}
+
+fn git_repo_root_blocking(project_dir: String, rel_path: String) -> Result<Option<String>, String> {
+    // Remote projects keep project-scoped git (see doc comment).
+    if remote_target_for_dir(&project_dir).is_some() {
+        return Ok(None);
+    }
+    let dir: PathBuf = if rel_path.is_empty() {
+        PathBuf::from(&project_dir)
+    } else {
+        Path::new(&project_dir).join(&rel_path)
+    };
+    // `--show-toplevel` prints the absolute root of the innermost repo enclosing
+    // `dir`. Any failure (not a repo, missing dir) maps to `None`, not an error,
+    // so the UI treats it as "no repo here" rather than flashing a banner.
+    let out = crate::paths::command_no_window("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&dir)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let top = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            Ok(if top.is_empty() { None } else { Some(top) })
+        }
+        _ => Ok(None),
+    }
 }
 
 #[tauri::command]

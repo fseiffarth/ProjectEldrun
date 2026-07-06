@@ -41,6 +41,7 @@ import {
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useDragStore } from "../../stores/drag";
+import { useSubwindowNavStore } from "../../stores/subwindowNav";
 import { useWindowMoveStore } from "../../stores/windowMove";
 import { useDetachAnimStore } from "../../stores/detachAnim";
 import { useTabLandStore } from "../../stores/tabLand";
@@ -854,6 +855,16 @@ export function CenterPanel() {
               // thumbnail into the drag ghost (see DragGhost / startTabDrag).
               data-scope-key={scopeKey}
               data-tab-key={tab.key}
+              // Clicking anywhere in a pane focuses its subwindow. The panes sit
+              // in this layer ABOVE the .subwindow frame, so Subwindow's own
+              // mousedown-capture only sees clicks on its tab bar — the body
+              // clicks land here. Capture-phase + no preventDefault so the
+              // terminal/viewer still receives the click for focus/selection.
+              onMouseDownCapture={() => {
+                if (!groupId) return;
+                const t = useTabsStore.getState();
+                if (t.focusedGroupId !== groupId) t.focusGroup(groupId);
+              }}
               style={style}
             >
               {tab.kind === "projects3d" ? (
@@ -977,6 +988,14 @@ export function CenterPanel() {
           a subwindow body. Coordinates come from the same measured group rects. */}
       <SplitPreviewOverlay groupRects={groupRects} />
 
+      {/* Focus frame (always) + Shift+↑/↓ subwindow numbering (transient), drawn
+          above the pane layer for the same reason as the split preview — the
+          opaque panes (z-index:2) would otherwise cover an in-body frame. */}
+      <FocusFrameOverlay
+        groupRects={groupRects}
+        orderedIds={allGroups(layoutByScope[scope] ?? null).map((g) => g.id)}
+      />
+
       {/* Floating ghost following the pointer during a drag. */}
       <DragGhost />
 
@@ -1043,6 +1062,68 @@ export function SplitPreviewOverlay({ groupRects }: { groupRects: Record<string,
   const width = r.width * (1 - ins.left - ins.right);
   const height = r.height * (1 - ins.top - ins.bottom);
   return <div className="split-preview" style={{ left, top, width, height }} />;
+}
+
+/**
+ * The focused-subwindow marker, drawn above the pane layer (see the render site
+ * for why). Two roles:
+ *  - Always: a light accent frame around the focused subwindow's pane rect.
+ *  - While Shift+↑/↓ subwindow-nav is active: the frame follows the previewed
+ *    group and every subwindow shows a numbered badge — the committed focus is
+ *    0, others numbered in document order (wrapping) so ↑/↓ read as relative
+ *    steps. Focus commits (moving the frame's committed home) on Shift release.
+ * `pointer-events: none`, panel-relative coords from the same measured rects.
+ */
+export function FocusFrameOverlay({
+  groupRects,
+  orderedIds,
+}: {
+  groupRects: Record<string, Rect>;
+  orderedIds: string[];
+}) {
+  const focusedGroupId = useTabsStore((s) => s.focusedGroupId);
+  const navActive = useSubwindowNavStore((s) => s.active);
+  const previewGroupId = useSubwindowNavStore((s) => s.previewGroupId);
+
+  const frameId = navActive && previewGroupId ? previewGroupId : focusedGroupId;
+  const frameRect = frameId ? groupRects[frameId] : undefined;
+  const n = orderedIds.length;
+  const f = frameId ? orderedIds.indexOf(frameId) : -1;
+
+  return (
+    <>
+      {frameRect && (
+        <div
+          className="focus-frame"
+          style={{
+            left: frameRect.left,
+            top: frameRect.top,
+            width: frameRect.width,
+            height: frameRect.height,
+          }}
+        />
+      )}
+      {navActive &&
+        f >= 0 &&
+        orderedIds.map((id, p) => {
+          const r = groupRects[id];
+          if (!r) return null;
+          const down = (p - f + n) % n;
+          const up = (n - down) % n;
+          const label =
+            down === 0 ? "0" : down <= up ? `${down}↓` : `${up}↑`;
+          return (
+            <div
+              key={id}
+              className="subwindow-number"
+              style={{ left: r.left + 6, top: r.top + 6 }}
+            >
+              {label}
+            </div>
+          );
+        })}
+    </>
+  );
 }
 
 /**

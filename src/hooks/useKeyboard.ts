@@ -2,15 +2,10 @@ import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../lib/dragPlatform";
 import { IS_MAC } from "../lib/platform";
-import {
-  allGroups,
-  findGroup,
-  neighborGroup,
-  useTabsStore,
-  type NavDirection,
-} from "../stores/tabs";
+import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
+import { useSubwindowNavStore } from "../stores/subwindowNav";
 import {
   chordMatches,
   resolveChord,
@@ -36,14 +31,6 @@ function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
-/** Focus actions → the direction they move the focused subwindow. */
-const FOCUS_DIR: Record<string, NavDirection> = {
-  focusLeft: "left",
-  focusRight: "right",
-  focusUp: "up",
-  focusDown: "down",
-};
-
 /**
  * #62: fast keyboard navigation across projects / subwindows / tabs, plus an
  * app-internal fullscreen toggle and keyboard close. Chords are deliberately
@@ -51,16 +38,18 @@ const FOCUS_DIR: Record<string, NavDirection> = {
  * shadowed; we only `preventDefault` when we actually act, and never while a
  * text field (e.g. an inline tab rename) is focused.
  *
- * The eight navigation chords are user-rebindable (see `src/lib/shortcuts.ts`
- * and the "Keyboard Shortcuts" settings panel); the defaults below are applied
- * when `settings.keyboard_shortcuts` has no override for an action. F11 (OS
+ * The navigation chords are user-rebindable (see `src/lib/shortcuts.ts` and the
+ * "Keyboard Shortcuts" settings panel); the defaults below are applied when
+ * `settings.keyboard_shortcuts` has no override for an action. F11 (OS
  * fullscreen), Super (panels) and Escape (exit fullscreen) are fixed.
  *
  * Default bindings:
  *   - Ctrl+Enter           → toggle fullscreen for the focused subwindow
  *   - Escape               → exit fullscreen (when active) [fixed]
  *   - Shift+Ctrl+Tab       → cycle to the next active project
- *   - Shift+Arrow{L/R/U/D} → focus the neighbouring subwindow in that direction
+ *   - Shift+Left/Right     → previous / next tab within the focused subwindow
+ *   - Shift+Up/Down        → cycle the focused subwindow (numbered preview shown
+ *                            while Shift is held; focus commits on Shift release)
  *   - Shift+Tab            → cycle tabs within the focused subwindow
  *   - Shift+Ctrl+W         → close the focused subwindow
  *   - Ctrl+W               → close the active tab
@@ -145,6 +134,18 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
+      // Hide the focused subwindow (park it in the right-panel Hidden list,
+      // keeping its tabs/PTYs alive). Unlike closeSubwindow this is allowed even
+      // for the last remaining subwindow — hiding it just shows the +-placeholder.
+      if (is("hideSubwindow")) {
+        const focused = tabs.focusedGroupId;
+        if (focused) {
+          e.preventDefault();
+          tabs.hideGroup(focused);
+        }
+        return;
+      }
+
       // Close the active tab.
       if (is("closeTab")) {
         if (tabs.activeKey) {
@@ -164,39 +165,71 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Focus the neighbouring subwindow in a direction.
-      for (const action of Object.keys(FOCUS_DIR) as ShortcutAction[]) {
-        if (is(action)) {
-          const focused = tabs.focusedGroupId;
-          if (focused) {
-            const next = neighborGroup(tabs.layout, focused, FOCUS_DIR[action]);
-            if (next) {
-              e.preventDefault();
-              tabs.focusGroup(next);
-            }
-          }
-          return;
-        }
-      }
-
-      // Cycle tabs within the focused subwindow.
-      if (is("cycleTabs")) {
+      // Previous / next tab within the focused subwindow, and the equivalent
+      // Shift+Tab cycle. All three step the focused group's active tab.
+      const prev = is("prevTab");
+      if (prev || is("nextTab") || is("cycleTabs")) {
         const focused = tabs.focusedGroupId;
         const group = focused ? findGroup(tabs.layout, focused) : null;
         if (group && group.tabKeys.length > 1) {
           e.preventDefault();
+          const len = group.tabKeys.length;
           const cur = group.activeKey
             ? group.tabKeys.indexOf(group.activeKey)
             : 0;
-          const next = group.tabKeys[(cur + 1) % group.tabKeys.length];
+          const delta = prev ? -1 : 1;
+          const next = group.tabKeys[(cur + delta + len) % len];
           tabs.setGroupActive(group.id, next);
+        }
+        return;
+      }
+
+      // Cycle the focused subwindow. Enters a Shift-held preview: the frame moves
+      // to the previewed group and numbered badges show over every subwindow;
+      // focus only commits on Shift release (keyup below). Numbering is anchored
+      // to the committed focus (id 0), so stepping wraps in document order.
+      const down = is("subwindowDown");
+      if (down || is("subwindowUp")) {
+        const ids = allGroups(tabs.layout).map((g) => g.id);
+        const n = ids.length;
+        if (n >= 2) {
+          e.preventDefault();
+          const nav = useSubwindowNavStore.getState();
+          const base =
+            nav.active && nav.previewGroupId
+              ? nav.previewGroupId
+              : tabs.focusedGroupId;
+          const baseIdx = base ? ids.indexOf(base) : -1;
+          const from = baseIdx >= 0 ? baseIdx : 0;
+          const nextIdx = (from + (down ? 1 : -1) + n) % n;
+          nav.preview(ids[nextIdx]);
         }
         return;
       }
     }
 
+    // Commit the previewed subwindow focus when Shift is released; cancel (no
+    // focus move) if the window loses focus mid-preview.
+    function onKeyUp(e: KeyboardEvent) {
+      const nav = useSubwindowNavStore.getState();
+      if (nav.active && (e.key === "Shift" || !e.shiftKey)) {
+        if (nav.previewGroupId) useTabsStore.getState().focusGroup(nav.previewGroupId);
+        nav.end();
+      }
+    }
+    function onBlur() {
+      const nav = useSubwindowNavStore.getState();
+      if (nav.active) nav.end();
+    }
+
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
   }, [onTogglePanels]);
 }
 

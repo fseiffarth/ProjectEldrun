@@ -696,7 +696,9 @@ export function DetachedCenterPanel({
   const onGroupBarPointerDown = (e: React.PointerEvent, group: GroupNode) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    if (target.closest(".tab, .detached-titlebar-controls, button")) return;
+    // Only the explicit `.tab-drag-grip` moves/docks the popout from the tab bar —
+    // grabbing empty bar space no longer does (the titlebar remains a move handle).
+    if (!target.closest(".tab-drag-grip")) return;
     e.preventDefault();
     const activeLabel =
       group.tabKeys
@@ -853,6 +855,19 @@ export function DetachedCenterPanel({
           data-group-id={group.id}
           onPointerDown={(e) => onGroupBarPointerDown(e, group)}
         >
+          {/* Move grip — the sole tab-bar handle for moving/docking this popout
+              (the titlebar still moves it too). Always pinned at the far left so
+              it stays grabbable however many tabs fill the bar. A plain
+              (non-button) element, so its pointerdown bubbles to
+              `onGroupBarPointerDown`, which now fires only when the grip is the
+              target. */}
+          <div
+            className="tab-drag-grip"
+            title="Drag to move this window"
+            aria-hidden="true"
+          >
+            ⠿
+          </div>
           {/* Empty bar that's a drop target: the placeholder is the only slot. */}
           {isDropTarget && orderedTabs.length === 0 && (
             <Fragment key="drop-marker">{dropPlaceholder}</Fragment>

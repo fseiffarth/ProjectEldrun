@@ -29,11 +29,14 @@ pub fn detached_label(scope: &str, group_id: &str) -> String {
     format!("detached-{scope}-{group_id}")
 }
 
-/// Unique `_NET_WM_NAME` title for a detached window — the resolver in
-/// `platform::x11::find_window_for_title` matches on this exact string. The
-/// embedded `scope:group` avoids title collisions across detached windows.
-pub fn detached_title(scope: &str, group_id: &str) -> String {
-    format!("Eldrun — {scope} — {group_id}")
+/// Human-friendly, per-session-unique OS window title for a detached group,
+/// e.g. "Eldrun win-1". This string is load-bearing on X11: the resolver in
+/// `platform::x11::find_window_for_title` matches on it exactly to recover the
+/// native window id, so it must stay unique among live detached windows.
+/// Uniqueness comes from the caller assigning a distinct sequence number per
+/// live window (lowest free positive int); see `detach_subwindow`.
+pub fn detached_title(seq: u32) -> String {
+    format!("Eldrun win-{seq}")
 }
 
 /// The query string the DetachedApp renderer reads to mount a single group.
@@ -106,12 +109,26 @@ pub async fn detach_subwindow(
     height: Option<f64>,
 ) -> Result<String, String> {
     let label = detached_label(&project_id, &group_id);
-    let title = detached_title(&project_id, &group_id);
 
     // If a window with this label already exists, treat the call as idempotent.
+    // (Before reserving a number, so re-detaching a live label never burns one.)
     if app.get_webview_window(&label).is_some() {
         return Ok(label);
     }
+
+    // Reserve the lowest free display number under the registry lock so a
+    // concurrent detach (or a restart batch respawning several popouts) can't
+    // pick the same one. The number becomes the OS title "Eldrun win-N" and, on
+    // X11, the resolver key — hence it must be unique per live window. It's freed
+    // in `attach_subwindow` on dock-back/close, so freed numbers get reused.
+    let seq = {
+        let mut reg = win_registry.lock().unwrap();
+        let used: std::collections::HashSet<u32> = reg.detached_seqs.values().copied().collect();
+        let n = (1u32..).find(|n| !used.contains(n)).expect("a free u32 always exists");
+        reg.detached_seqs.insert(label.clone(), n);
+        n
+    };
+    let title = detached_title(seq);
 
     let mut builder = WebviewWindowBuilder::new(
         &app,
@@ -138,9 +155,15 @@ pub async fn detach_subwindow(
     // scale != 1.0 display, which is why detach worked on the scale-1.0 Linux dev
     // box but spawned an invisible, off-screen window on scaled Windows (#42).
     builder = builder.inner_size(900.0, 640.0);
-    let win = builder
-        .build()
-        .map_err(|e| format!("build detached window: {e}"))?;
+    let win = match builder.build() {
+        Ok(win) => win,
+        Err(e) => {
+            // Release the reserved number so a rare failed build doesn't
+            // permanently skip a slot.
+            win_registry.lock().unwrap().detached_seqs.remove(&label);
+            return Err(format!("build detached window: {e}"));
+        }
+    };
 
     // Apply restore geometry in PHYSICAL px. Missing/zero bounds keep the logical
     // default size and let the WM place the window. Size before position so a
@@ -253,7 +276,12 @@ pub fn attach_subwindow(
     registry_id: String,
 ) -> Result<(), String> {
     // Drop the parkable override first so a stray park can't target a closing id.
-    let removed = win_registry.lock().unwrap().windows.remove(&registry_id);
+    // Free the display number in the same critical section so it can be reused.
+    let removed = {
+        let mut reg = win_registry.lock().unwrap();
+        reg.detached_seqs.remove(&registry_id);
+        reg.windows.remove(&registry_id)
+    };
     if let Some(win) = removed {
         if let Some(wid) = win.window_id {
             workspace.lock().unwrap().backend.unset_parkable(wid);
@@ -331,12 +359,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn label_and_title_embed_scope_and_group() {
+    fn label_embeds_scope_and_group() {
         assert_eq!(detached_label("p1", "g-3"), "detached-p1-g-3");
-        assert_eq!(detached_title("p1", "g-3"), "Eldrun — p1 — g-3");
-        // Different groups produce different titles (no collision).
-        assert_ne!(detached_title("p1", "g-3"), detached_title("p1", "g-4"));
-        assert_ne!(detached_title("p1", "g-3"), detached_title("p2", "g-3"));
+    }
+
+    #[test]
+    fn title_is_a_human_friendly_sequence_name() {
+        assert_eq!(detached_title(1), "Eldrun win-1");
+        assert_eq!(detached_title(2), "Eldrun win-2");
+        // Distinct numbers produce distinct titles (the X11 resolver key must be
+        // unique per live window).
+        assert_ne!(detached_title(1), detached_title(2));
     }
 
     #[test]

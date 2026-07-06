@@ -1640,6 +1640,18 @@ auth) and the local/remote git push axis (#21).*
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test
 
+65. **Nested-repo git view: remote support.** The right panel's git section now
+    auto-detects a nested git repo under the browsed folder (`git_repo_root`) and
+    re-roots status/commit/push/history at it, with a toggle back to the project
+    repo — but **local projects only**. Extend to remote (SSH) projects: run
+    `git rev-parse --show-toplevel` over SSH in `remote_path/rel`, and give
+    `remote_target_for_dir` a way to map a nested host toplevel back to the
+    project's `RemoteSpec` (currently a directory reverse-lookup that won't match
+    a deeper subpath). Related out-of-scope note: per-file tree git markers stay
+    project-scoped, not re-rooted per nested repo.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
 ## Group S — Local Agents via Ollama Integrations (`ollama launch`)
 *New feature. Generalizes the existing single "Local Model" tab (Mistral `vibe`)
 into a family of local, Ollama-backed agent tabs — Claude Code, Hermes, OpenClaw,

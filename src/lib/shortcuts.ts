@@ -28,11 +28,12 @@ export interface ChordDescriptor {
 export type ShortcutAction =
   | "toggleFullscreen"
   | "cycleProject"
-  | "focusLeft"
-  | "focusRight"
-  | "focusUp"
-  | "focusDown"
+  | "prevTab"
+  | "nextTab"
+  | "subwindowUp"
+  | "subwindowDown"
   | "cycleTabs"
+  | "hideSubwindow"
   | "closeSubwindow"
   | "closeTab"
   | "closeAllTabs";
@@ -61,29 +62,34 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     default: { key: "Tab", ctrl: true, shift: true },
   },
   {
-    action: "focusLeft",
-    label: "Focus subwindow left",
+    action: "prevTab",
+    label: "Previous tab in subwindow",
     default: { key: "ArrowLeft", shift: true },
   },
   {
-    action: "focusRight",
-    label: "Focus subwindow right",
+    action: "nextTab",
+    label: "Next tab in subwindow",
     default: { key: "ArrowRight", shift: true },
   },
   {
-    action: "focusUp",
-    label: "Focus subwindow up",
+    action: "subwindowUp",
+    label: "Cycle focused subwindow up",
     default: { key: "ArrowUp", shift: true },
   },
   {
-    action: "focusDown",
-    label: "Focus subwindow down",
+    action: "subwindowDown",
+    label: "Cycle focused subwindow down",
     default: { key: "ArrowDown", shift: true },
   },
   {
     action: "cycleTabs",
     label: "Cycle tabs in subwindow",
     default: { key: "Tab", shift: true },
+  },
+  {
+    action: "hideSubwindow",
+    label: "Hide focused subwindow",
+    default: { key: "h", ctrl: true, shift: true },
   },
   {
     action: "closeSubwindow",

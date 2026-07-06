@@ -503,6 +503,7 @@ pub fn run() {
             commands::project_runtime::save_right_panel_folder,
             // Git
             commands::git::git_status,
+            commands::git::git_repo_root,
             commands::git::detect_git_providers,
             commands::git::git_add_all,
             commands::git::git_generate_commit_message,

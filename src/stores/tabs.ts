@@ -206,6 +206,23 @@ export interface DetachedGroup {
 }
 
 /**
+ * A tab group that has been HIDDEN from the in-window layout tree. Mechanically
+ * this is "detach minus the OS window": the group's node leaves
+ * `layoutByScope[scope]` while its tab PAYLOADS stay in `tabsByScope` (so PTYs
+ * never unmount — `CenterPanel`'s flat pane layer keeps them mounted but
+ * `display:none`, since no live layout node references their keys). The user
+ * brings it back from the right-panel Hidden list (`unhideGroup`). Unlike a
+ * detached popout there is no OS window and thus no `bounds`/`label` handoff.
+ */
+export interface HiddenGroup {
+  id: string; // the hidden group's identity (the original group's id)
+  // The hidden subtree. Usually a single GroupNode, but can be a SplitNode when
+  // a multi-pane split was hidden whole.
+  subtree: LayoutNode;
+  label: string; // debug/label tag, mirrors DetachedGroup.label
+}
+
+/**
  * The edit shape a detached window streams back. Defined here (not imported from
  * `detached.ts`) so `tabs.ts` stays free of a circular import; `detached.ts`'s
  * `DetachedEdit` is structurally identical.
@@ -262,6 +279,11 @@ export type SavedLayoutTree =
       // floating popout (see withDetachedDocked / deserializeTree / detachGroup).
       detached?: boolean;
       bounds?: WindowBounds;
+      // When true, this split subtree was HIDDEN (parked out of the tiled layout).
+      // Persisted as a docked node so its tabs survive, but tagged so restore
+      // routes it back into `hiddenGroupsByScope` instead of the live tree.
+      // See withHiddenDocked / deserializeTree / loadFromLayout.
+      hidden?: boolean;
     }
   | {
       type: "group";
@@ -273,6 +295,9 @@ export type SavedLayoutTree =
       // at `bounds` instead of docking it. See withDetachedDocked / loadFromLayout.
       detached?: boolean;
       bounds?: WindowBounds;
+      // When true, this group was HIDDEN (see the split variant's note). Restore
+      // moves it into `hiddenGroupsByScope` rather than docking it live.
+      hidden?: boolean;
     };
 
 /**
@@ -300,6 +325,12 @@ interface TabsStore {
   // Their tab payloads still live in `tabsByScope[scope]`; only their layout
   // node has left `layoutByScope[scope]`.
   detachedGroupsByScope: Record<string, DetachedGroup[]>;
+  // Per-scope groups the user has HIDDEN (parked out of the tiled layout while
+  // keeping their tabs/PTYs alive — detach minus the OS window). Like the
+  // detached map, the payloads stay in `tabsByScope[scope]`; only the layout
+  // node lives here. Surfaced by the right-panel Hidden list; restored via
+  // `unhideGroup`. Persists across restart via the SavedLayoutTree `hidden` tag.
+  hiddenGroupsByScope: Record<string, HiddenGroup[]>;
   // #42: per-scope groups that were detached when the scope was last saved and
   // must be re-opened as floating popouts once the scope's layout is live and its
   // panes (PTYs) have mounted. Populated by loadFromLayout, drained by
@@ -413,6 +444,22 @@ interface TabsStore {
     detachedId: string,
     opts?: { targetGroupId?: string; edge?: DropEdge; skipBackend?: boolean },
   ) => void;
+  // Hide a subwindow (group) from the tiled layout without killing it: strips its
+  // node from `layoutByScope`, keeps its tab payloads in `tabsByScope` (PTYs stay
+  // mounted-but-hidden), and parks the subtree in `hiddenGroupsByScope`. Unlike
+  // `detachGroup` it allows hiding the LAST group (the scope then shows the
+  // +-placeholder) and spawns no OS window. No-op if the group isn't found.
+  hideGroup: (groupId: string) => void;
+  // Restore a hidden group into the live layout (the reverse of `hideGroup`,
+  // modeled on `attachGroup`): regenerates the subtree's ids, injects it as a new
+  // pane (or as the root if the layout emptied), drops the hidden record, and
+  // focuses it. `opts.activeKey` restores it focused on a specific tab (tab-chip
+  // click in the Hidden list). No-op if the hidden entry is gone.
+  unhideGroup: (hiddenId: string, opts?: { activeKey?: string }) => void;
+  // Permanently close a hidden group: drops the hidden record AND its tab
+  // payloads from `tabsByScope` (killing the PTYs, mirroring `closeGroup`). Used
+  // by the ✕ on a Hidden-list row. No-op if the hidden entry is gone.
+  closeHiddenGroup: (hiddenId: string) => void;
   // #42: dock a SINGLE tab out of a popout back into a scope's layout (the
   // per-tab analog of attachGroup, used when one tab — not the whole group — is
   // dragged onto the main window). Inserts the tab at `targetGroupId`/`edge`
@@ -1108,11 +1155,16 @@ export interface RespawnTarget {
  * is pushed onto `detachedOut` so the caller can re-open it as a floating popout
  * after the layout is live (loadFromLayout). The node is still built into the
  * tree (docked) so its tabs mount and spawn their PTYs before the re-detach.
+ *
+ * A `hidden`-tagged node works the same way but pushes its fresh id onto
+ * `hiddenOut`; the caller then strips it from the built tree into
+ * `hiddenGroupsByScope` (see loadFromLayout).
  */
 function deserializeTree(
   saved: SavedLayoutTree,
   keyMap: Map<string, string>,
   detachedOut?: RespawnTarget[],
+  hiddenOut?: string[],
 ): LayoutNode | null {
   if (saved.type === "group") {
     const tabKeys = saved.tabKeys
@@ -1127,10 +1179,13 @@ function deserializeTree(
     if (saved.detached && detachedOut) {
       detachedOut.push({ id, bounds: saved.bounds });
     }
+    if (saved.hidden && hiddenOut) {
+      hiddenOut.push(id);
+    }
     return { type: "group", id, tabKeys, activeKey };
   }
   const children = saved.children
-    .map((c) => deserializeTree(c, keyMap, detachedOut))
+    .map((c) => deserializeTree(c, keyMap, detachedOut, hiddenOut))
     .filter((c): c is LayoutNode => c != null);
   if (children.length === 0) return null;
   if (children.length === 1) {
@@ -1138,6 +1193,10 @@ function deserializeTree(
     // popout, the survivor inherits the respawn so the popout still re-opens.
     if (saved.detached && detachedOut) {
       detachedOut.push({ id: children[0].id, bounds: saved.bounds });
+    }
+    // Likewise inherit a hidden tag so the survivor is parked, not docked live.
+    if (saved.hidden && hiddenOut) {
+      hiddenOut.push(children[0].id);
     }
     return children[0];
   }
@@ -1156,6 +1215,10 @@ function deserializeTree(
   if (saved.detached && detachedOut) {
     detachedOut.push({ id, bounds: saved.bounds });
   }
+  // A hidden split is parked whole by its root id (same one-target logic).
+  if (saved.hidden && hiddenOut) {
+    hiddenOut.push(id);
+  }
   return { type: "split", id, dir: saved.dir, children, sizes };
 }
 
@@ -1167,6 +1230,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   layoutByScope: {},
   focusedGroupByScope: {},
   detachedGroupsByScope: {},
+  hiddenGroupsByScope: {},
   pendingRespawnByScope: {},
   tabs: [],
   layout: null,
@@ -1855,6 +1919,116 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     }
   },
 
+  hideGroup: (groupId) => {
+    const scope = get().scope;
+    const layout = get().layoutByScope[scope] ?? null;
+    // Mirror detachGroup's node resolution: usually a GROUP, but can be a SPLIT
+    // node (a multi-pane subtree hidden whole).
+    const group = findGroup(layout, groupId);
+    const split = group ? null : findSplit(layout, groupId);
+    if (!group && !split) return;
+    // Unlike detachGroup we DO allow hiding the only group: hiding everything
+    // leaves the scope empty (the +-placeholder), a valid resting state.
+
+    const label = `hidden-${scope}-${groupId}`;
+    const subtree: LayoutNode = group
+      ? { type: "group", id: group.id, tabKeys: [...group.tabKeys], activeKey: group.activeKey }
+      : (split as SplitNode);
+    const hiddenGroupIds = new Set(allGroups(subtree).map((g) => g.id));
+
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      const focus = s.focusedGroupByScope[scope] ?? null;
+      // Strip the hidden subtree from the live layout WITHOUT dropping its tab
+      // payloads (they stay in tabsByScope so the flat pane layer keeps their
+      // PTYs mounted, just display:none). Mirrors detachGroup minus the OS window.
+      const stripped = !layout
+        ? null
+        : group
+          ? mapGroup(layout, groupId, (g) => ({ ...g, tabKeys: [], activeKey: null }))
+          : removeNodeById(layout, groupId);
+      const nextFocus = focus && hiddenGroupIds.has(focus) ? null : focus;
+      const base = writeScope(s, scope, tabs, stripped, nextFocus);
+      const existing = s.hiddenGroupsByScope[scope] ?? [];
+      return {
+        ...base,
+        hiddenGroupsByScope: {
+          ...s.hiddenGroupsByScope,
+          [scope]: [...existing, { id: groupId, subtree, label }],
+        },
+      };
+    });
+  },
+
+  unhideGroup: (hiddenId, opts) => {
+    const scope = get().scope;
+    const entries = get().hiddenGroupsByScope[scope] ?? [];
+    const entry = entries.find((h) => h.id === hiddenId);
+    if (!entry) return;
+
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      let layout = s.layoutByScope[scope] ?? null;
+      // Regenerate ids so a hidden-then-restored group never collides with a live
+      // node id (mirrors attachGroup). regenIds rewrites GROUP ids but keeps tab
+      // KEYS, so an activeKey maps straight through.
+      let fresh = regenIds(entry.subtree);
+      if (opts?.activeKey) {
+        const target = findGroupOfTab(fresh, opts.activeKey);
+        if (target) {
+          fresh = mapGroup(fresh, target.group.id, (g) => ({ ...g, activeKey: opts.activeKey! }));
+        }
+      }
+      if (!layout) {
+        // The tree emptied while hidden → install the restored subtree as root.
+        layout = fresh;
+      } else {
+        const target = allGroups(layout)[0];
+        if (!target) {
+          layout = fresh;
+        } else {
+          // Inject the whole subtree as a new pane to the right of the first group.
+          layout = insertAdjacent(layout, target.id, fresh, "row", false);
+        }
+      }
+      const remaining = entries.filter((h) => h.id !== hiddenId);
+      const base = writeScope(s, scope, tabs, layout, firstGroup(fresh).id);
+      return {
+        ...base,
+        hiddenGroupsByScope: {
+          ...s.hiddenGroupsByScope,
+          [scope]: remaining,
+        },
+      };
+    });
+  },
+
+  closeHiddenGroup: (hiddenId) => {
+    set((s) => {
+      const scope = s.scope;
+      const entries = s.hiddenGroupsByScope[scope] ?? [];
+      const entry = entries.find((h) => h.id === hiddenId);
+      if (!entry) return {};
+      // Kill the hidden group's tabs for good: drop their payloads (the flat pane
+      // layer then unmounts each pane → pty_kill) and purge their link routes,
+      // mirroring closeGroup. The subtree may be a split, so collect every key.
+      const removing = new Set(orderedTabKeys(entry.subtree));
+      const purge = useLinkRoutingStore.getState().purgeForTab;
+      removing.forEach((k) => purge(k));
+      const nextTabs = (s.tabsByScope[scope] ?? []).filter((t) => !removing.has(t.key));
+      const remaining = entries.filter((h) => h.id !== hiddenId);
+      const { layout, focusedGroupId } = currentScopeState(s);
+      const base = writeScope(s, scope, nextTabs, layout, focusedGroupId);
+      return {
+        ...base,
+        hiddenGroupsByScope: {
+          ...s.hiddenGroupsByScope,
+          [scope]: remaining,
+        },
+      };
+    });
+  },
+
   attachDetachedTab: (scope, detachedGroupId, tabKey, opts) => {
     const entries = get().detachedGroupsByScope[scope] ?? [];
     const entry = entries.find((d) => d.id === detachedGroupId);
@@ -2294,9 +2468,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     );
     // #42: re-dock detached groups into the persisted tree (detach is
     // session-only; a restart restores them docked), merge BEFORE pruning so
-    // dropped tabs prune out consistently.
+    // dropped tabs prune out consistently. Hidden groups are folded in the same
+    // way but tagged `hidden` so they restore still-hidden (not docked live).
     const detached = s.detachedGroupsByScope[scope];
-    const merged = withDetachedDocked(serializeTree(layout), detached);
+    const hidden = s.hiddenGroupsByScope[scope];
+    const merged = withHiddenDocked(
+      withDetachedDocked(serializeTree(layout), detached),
+      hidden,
+    );
     const tabGroups = pruneSavedTree(merged, keepKeys);
     return { tabs, tabGroups, activeTabIndex };
   },
@@ -2349,8 +2528,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // re-open them as floating popouts once their panes have mounted.
     let root: LayoutNode | null = null;
     const respawn: RespawnTarget[] = [];
+    // Fresh ids of groups/splits tagged `hidden` in the saved tree. They are
+    // built into the tree (so their tabs mint payloads/PTYs) then stripped out
+    // into `hiddenGroupsByScope` below, so they restore parked, not docked.
+    const hiddenIds: string[] = [];
     if (groups) {
-      root = deserializeTree(groups, keyMap, respawn);
+      root = deserializeTree(groups, keyMap, respawn, hiddenIds);
     }
     if (!root && tabs.length > 0) {
       root = {
@@ -2377,6 +2560,25 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       }
     }
     root = collapse(root);
+
+    // Extract hidden-tagged subtrees out of the live tree into parked
+    // HiddenGroups (the restore-time mirror of `hideGroup`). Snapshot every node
+    // first (ids are stable across sibling strips), then remove them so the tabs
+    // stay in `tabsByScope` (payloads/PTYs mounted, hidden) but leave the layout.
+    const hiddenGroups: HiddenGroup[] = [];
+    for (const id of hiddenIds) {
+      const g = findGroup(root, id);
+      const sp = g ? null : findSplit(root, id);
+      if (!g && !sp) continue;
+      const subtree: LayoutNode = g
+        ? { type: "group", id: g.id, tabKeys: [...g.tabKeys], activeKey: g.activeKey }
+        : (sp as SplitNode);
+      hiddenGroups.push({ id, subtree, label: `hidden-${targetScope ?? get().scope}-${id}` });
+    }
+    for (const h of hiddenGroups) {
+      root = removeNodeById(root, h.id);
+    }
+
     const focus = allGroups(root)[0]?.id ?? null;
 
     // Only respawn targets still present in the (possibly pruned/healed) tree: a
@@ -2399,6 +2601,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           pending.length > 0
             ? { ...s.pendingRespawnByScope, [scope]: pending }
             : s.pendingRespawnByScope,
+        hiddenGroupsByScope:
+          hiddenGroups.length > 0
+            ? { ...s.hiddenGroupsByScope, [scope]: hiddenGroups }
+            : s.hiddenGroupsByScope,
       };
     });
   },
@@ -2648,6 +2854,9 @@ export function pruneSavedTree(
       tabKeys,
       activeKey,
       ...(tree.detached ? { detached: true, bounds: tree.bounds } : {}),
+      // Carry the hidden tag through pruning so a hidden group stays parked on
+      // restore rather than docking live (mirrors the detached tag).
+      ...(tree.hidden ? { hidden: true } : {}),
     };
   }
   const kept = tree.children
@@ -2657,11 +2866,15 @@ export function pruneSavedTree(
   // #42: carry a multi-pane popout's detached tag + bounds through pruning, just
   // like the group branch — else the split would persist as a plain docked node
   // and the popout would restore inside the main panel.
-  const tag = tree.detached ? { detached: true as const, bounds: tree.bounds } : {};
+  const tag = tree.detached
+    ? { detached: true as const, bounds: tree.bounds }
+    : tree.hidden
+      ? { hidden: true as const }
+      : {};
   if (kept.length === 1) {
     // Collapsed to a single surviving child: it inherits the popout's detached
-    // tag so it still respawns as a floating window.
-    return tree.detached ? { ...kept[0].child, ...tag } : kept[0].child;
+    // tag (so it respawns floating) or the hidden tag (so it stays parked).
+    return tree.detached || tree.hidden ? { ...kept[0].child, ...tag } : kept[0].child;
   }
   const total = kept.reduce((a, e) => a + e.size, 0) || 1;
   return {
@@ -2779,6 +2992,38 @@ export function withDetachedDocked(
 /** #42: the tab keys held by a scope's detached groups (for owned-keys unions). */
 export function detachedTabKeys(detached: DetachedGroup[] | undefined): string[] {
   return (detached ?? []).flatMap((d) => orderedTabKeys(d.subtree));
+}
+
+/**
+ * Fold a scope's HIDDEN groups back into its serialized tree, each tagged
+ * `hidden: true`, so a restart persists them (their tabs survive) and restore
+ * re-parks them into `hiddenGroupsByScope` rather than docking them live. Mirrors
+ * `withDetachedDocked`, minus bounds (a hidden group has no OS window).
+ */
+export function withHiddenDocked(
+  inWindow: SavedLayoutTree | null,
+  hidden: HiddenGroup[] | undefined,
+): SavedLayoutTree | null {
+  const docked: SavedLayoutTree[] = [];
+  for (const h of hidden ?? []) {
+    const t = serializeTree(h.subtree);
+    if (!t) continue;
+    docked.push({ ...t, hidden: true });
+  }
+  if (docked.length === 0) return inWindow;
+  const all = inWindow ? [inWindow, ...docked] : docked;
+  if (all.length === 1) return all[0];
+  return {
+    type: "split",
+    dir: "row",
+    children: all,
+    sizes: all.map(() => 1 / all.length),
+  };
+}
+
+/** The tab keys held by a scope's hidden groups (for owned-keys unions). */
+export function hiddenTabKeys(hidden: HiddenGroup[] | undefined): string[] {
+  return (hidden ?? []).flatMap((h) => orderedTabKeys(h.subtree));
 }
 
 // Re-export the id regeneration helper so consumers / tests that build trees

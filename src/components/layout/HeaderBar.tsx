@@ -98,6 +98,18 @@ export function HeaderBar() {
       onMouseDown={handleDrag}
     >
       <div className="header-left" data-tauri-drag-region>
+        {/* Explicit window-move grip. The whole header is already a drag region
+            (`handleDrag`), but a crowded header can leave nothing obvious to grab —
+            this grip is an always-present handle. A plain (non-button) element in a
+            drag-eligible area, so its mousedown bubbles to `handleDrag` (it doesn't
+            match NON_DRAG_SELECTOR), driving the same `startDragging()`. */}
+        <span
+          className="app-drag-grip"
+          title="Drag to move the Eldrun window"
+          aria-hidden="true"
+        >
+          ⠿
+        </span>
         <button
           type="button"
           className={`root-logo-btn no-drag ${activeId === null ? "active" : ""}`}

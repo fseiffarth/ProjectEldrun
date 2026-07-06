@@ -4967,6 +4967,10 @@ function PdfCanvas({
   // Restore the saved zoom if there is one; otherwise the load effect fits the
   // page width. `1.2` is only the pre-load placeholder.
   const [scale, setScale] = useState(viewPos.initial?.scale ?? 1.2);
+  // True while the PDF is at the fit-to-width baseline, so a pane/tab resize
+  // re-fits. A manual zoom (buttons / Ctrl+wheel) clears it; the "Fit width"
+  // button and the initial fit restore it. Mirrors ImageViewer's `fittedRef`.
+  const fittedRef = useRef(viewPos.initial?.scale == null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   // True once the first document load has run, so only that load restores the
@@ -5353,7 +5357,10 @@ function PdfCanvas({
     const page = await d.getPage(1);
     const vp = page.getViewport({ scale: 1 });
     const avail = el.clientWidth - 24; // leave room for page margins
-    if (avail > 0 && vp.width > 0) setScale(clampPdfScale(avail / vp.width));
+    if (avail > 0 && vp.width > 0) {
+      setScale(clampPdfScale(avail / vp.width));
+      fittedRef.current = true;
+    }
   }, []);
 
   // Fit to width when a document loads — UNLESS this is the first load and a zoom
@@ -5372,6 +5379,20 @@ function PdfCanvas({
     }
     void fitWidth(doc);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, fitWidth]);
+
+  // Re-fit to width when the pane/tab resizes, but only while at the fit
+  // baseline — a manual zoom opts out. Same contract as ImageViewer's resize
+  // re-fit. `fitWidth` reads scrollRef.clientWidth, so the pane width alone
+  // drives it; a scale change doesn't alter the pane width, so no feedback loop.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!doc || !el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (fittedRef.current) void fitWidth(doc);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
   }, [doc, fitWidth]);
 
   // #viewerpos: persist the zoom whenever it changes (only once a document is up,
@@ -5422,6 +5443,7 @@ function PdfCanvas({
       const factor = e.deltaY < 0 ? PDF_ZOOM_STEP : 1 / PDF_ZOOM_STEP;
       const next = clampPdfScale(prev * factor);
       if (next === prev) return prev;
+      fittedRef.current = false; // manual zoom opts out of resize re-fit
       const eff = next / prev;
       pendingScroll.current = {
         top: (el.scrollTop + cursorY) * eff - cursorY,
@@ -5475,7 +5497,10 @@ function PdfCanvas({
       <div className="file-viewer-pdf-toolbar" role="group" aria-label="PDF zoom controls">
         <button
           className="file-viewer-zoom-btn"
-          onClick={() => setScale((s) => clampPdfScale(s / PDF_ZOOM_STEP))}
+          onClick={() => {
+            fittedRef.current = false;
+            setScale((s) => clampPdfScale(s / PDF_ZOOM_STEP));
+          }}
           disabled={!doc || scale <= PDF_MIN_SCALE}
           title="Zoom out"
           aria-label="Zoom out"
@@ -5485,7 +5510,10 @@ function PdfCanvas({
         <span className="file-viewer-zoom-level">{Math.round(scale * 100)}%</span>
         <button
           className="file-viewer-zoom-btn"
-          onClick={() => setScale((s) => clampPdfScale(s * PDF_ZOOM_STEP))}
+          onClick={() => {
+            fittedRef.current = false;
+            setScale((s) => clampPdfScale(s * PDF_ZOOM_STEP));
+          }}
           disabled={!doc || scale >= PDF_MAX_SCALE}
           title="Zoom in"
           aria-label="Zoom in"
