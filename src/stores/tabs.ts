@@ -338,6 +338,16 @@ interface TabsStore {
     matches: (tab: TabEntry) => boolean,
   ) => TabEntry;
   renameTab: (key: string, label: string) => void;
+  // Rewrite the embedPath (and label) of every in-app "embed" tab in the CURRENT
+  // scope whose file was renamed/moved on disk — an exact match (`embedPath ===
+  // oldAbs`) or, for a directory rename/move, any tab UNDER it (`embedPath`
+  // starts with `oldAbs + "/"`, prefix-swapped to `newAbs`). Payload-only (keys
+  // unchanged), so the main CenterPanel re-renders from the store and the updated
+  // payloads are what a subsequent reseed ships to any detached popout. On an
+  // exact match the label is refreshed to the new basename only when it still
+  // equals the old basename (so a user-renamed tab keeps its label). No-op when
+  // nothing matches. Delete/rename tab-sync lives in components/files/fileTabSync.
+  retargetTabs: (oldAbs: string, newAbs: string) => void;
   removeTab: (key: string) => void; // drop; collapse empty groups/splits
   closeGroup: (groupId: string) => void; // close a whole subwindow; siblings resize
   // Close EVERY tab/subwindow in a scope (defaults to the current scope),
@@ -1308,6 +1318,39 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         t.key === key ? { ...t, label: nextLabel } : t,
       );
       return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  retargetTabs: (oldAbs, newAbs) => {
+    set((s) => {
+      const scope = s.scope;
+      const tabs = s.tabsByScope[scope] ?? [];
+      const oldBase = oldAbs.slice(oldAbs.lastIndexOf("/") + 1);
+      const newBase = newAbs.slice(newAbs.lastIndexOf("/") + 1);
+      let changed = false;
+      const nextTabs = tabs.map((t) => {
+        if (t.kind !== "embed" || !t.embedPath) return t;
+        if (t.embedPath === oldAbs) {
+          changed = true;
+          // Refresh the label to the new basename only when it still shows the
+          // old one — don't clobber a tab the user renamed.
+          const label = t.label === oldBase ? newBase : t.label;
+          return { ...t, embedPath: newAbs, label };
+        }
+        if (t.embedPath.startsWith(`${oldAbs}/`)) {
+          // A tab under a renamed/moved directory: prefix-swap, keep the label.
+          changed = true;
+          return { ...t, embedPath: `${newAbs}${t.embedPath.slice(oldAbs.length)}` };
+        }
+        return t;
+      });
+      if (!changed) return {};
+      const patch: Partial<TabsStore> = {
+        tabsByScope: { ...s.tabsByScope, [scope]: nextTabs },
+      };
+      // Keep the flat mirror in sync so the active scope's CenterPanel re-renders.
+      patch.tabs = nextTabs;
+      return patch;
     });
   },
 

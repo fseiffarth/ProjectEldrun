@@ -112,6 +112,12 @@ pub struct Settings {
     /// fall back to the built-in defaults in the frontend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyboard_shortcuts: Option<HashMap<String, ChordDescriptor>>,
+    /// Download *source* folders scanned by the right-panel Downloads section
+    /// (fast-copy of freshly downloaded files into a project). A machine-wide
+    /// list, read-only — Eldrun never changes any browser's download path.
+    /// Unset/empty → the frontend falls back to the user's `~/Downloads`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_sources: Option<Vec<String>>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

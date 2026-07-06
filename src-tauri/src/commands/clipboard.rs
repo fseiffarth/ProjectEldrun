@@ -11,12 +11,23 @@ use crate::commands::fs::enforce_confinement;
 /// file tree's context menu should offer "Paste screenshot". Any failure
 /// (no clipboard, no image, unsupported platform) reports `false` rather than
 /// erroring so the menu simply omits the option.
+///
+/// Runs on a blocking worker rather than the main thread: on X11 the `arboard`
+/// probe stalls while negotiating the clipboard selection (notably when there is
+/// *no* image, where it waits out a transfer timeout). A synchronous Tauri
+/// command executes on the main thread and would freeze the webview for that
+/// whole stall — which made the file-tree context menu take a long time to
+/// appear, since it fires this probe as it opens. Keeping the work off-thread
+/// lets the menu paint immediately and the "Paste screenshot" item appear once
+/// the probe resolves.
 #[tauri::command]
-pub fn clipboard_has_image() -> bool {
-    match arboard::Clipboard::new() {
+pub async fn clipboard_has_image() -> bool {
+    tauri::async_runtime::spawn_blocking(|| match arboard::Clipboard::new() {
         Ok(mut cb) => cb.get_image().is_ok(),
         Err(_) => false,
-    }
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Read the clipboard image and write it as a PNG at `project_dir`/`rel_path`.

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore, clampZoom, MIN_UI_ZOOM, MAX_UI_ZOOM } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
@@ -772,6 +773,70 @@ export function SettingsDialog({
                   });
                 }}
               />
+            </div>
+
+            <div className="settings-section-title">Downloads</div>
+            <p className="settings-help">
+              Folders scanned by the right-panel Downloads section (the 📥 toggle),
+              for quickly copying freshly downloaded files into a project. Read-only
+              — Eldrun never changes any browser's download path. Defaults to your
+              system Downloads folder when empty.
+            </p>
+            <div className="settings-list">
+              {(settings?.download_sources ?? []).length === 0 ? (
+                <div className="settings-empty">
+                  No folders added — the system Downloads folder is used.
+                </div>
+              ) : (
+                (settings?.download_sources ?? []).map((dir) => (
+                  <div key={dir} className="settings-row" style={{ gap: 6 }}>
+                    <span
+                      style={{
+                        flex: 1,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        fontSize: 12,
+                      }}
+                      title={dir}
+                    >
+                      {dir}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void updateSettings({
+                          download_sources: (settings?.download_sources ?? []).filter(
+                            (d) => d !== dir,
+                          ),
+                        })
+                      }
+                      title="Remove this folder"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="settings-link-row">
+              <button
+                type="button"
+                onClick={() => {
+                  void (async () => {
+                    const picked = await openDialog({
+                      directory: true,
+                      multiple: false,
+                    }).catch(() => null);
+                    if (!picked || Array.isArray(picked)) return;
+                    const current = settings?.download_sources ?? [];
+                    if (current.includes(picked)) return;
+                    void updateSettings({ download_sources: [...current, picked] });
+                  })();
+                }}
+              >
+                Add download folder...
+              </button>
             </div>
 
             <div className="settings-link-row">

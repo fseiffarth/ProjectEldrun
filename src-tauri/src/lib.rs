@@ -427,6 +427,7 @@ pub fn run() {
             commands::timer::get_project_activity,
             // File tree + file I/O (commands::fs)
             commands::fs::list_dir,
+            commands::fs::list_recent_downloads,
             commands::fs::dir_size,
             commands::fs::list_dirs,
             commands::fs::list_project_endings,
@@ -523,6 +524,8 @@ pub fn run() {
             commands::git_peer::git_peer_resolve,
             commands::git::git_diff_file,
             commands::git::git_blame,
+            commands::git::git_file_log,
+            commands::git::git_file_at_rev,
             // Project-wide content search
             commands::search::project_search,
             // SQLite database browser (Dev C)

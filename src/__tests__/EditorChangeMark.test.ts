@@ -11,6 +11,7 @@ import {
   editSpan,
   remapChangeRange,
   decorateChangeRanges,
+  decorateDeleteRanges,
 } from "../components/embed/FileViewerPane";
 
 describe("diffRange", () => {
@@ -125,5 +126,48 @@ describe("decorateChangeRanges", () => {
 
   it("emits plain escaped text when there are no usable ranges", () => {
     expect(decorateChangeRanges("a<b", [{ start: 2, end: 2, tier: 0 }])).toBe("a&lt;b");
+  });
+});
+
+describe("decorateDeleteRanges", () => {
+  it("injects the deleted text at its anchor with a zero fade offset", () => {
+    // "hello world" had "world" removed → draft is "hello ", ghost anchored at 6.
+    expect(
+      decorateDeleteRanges("hello ", [{ id: 1, pos: 6, text: "world", born: 1000 }], 1000),
+    ).toBe(
+      'hello <span class="file-viewer-delete-mark" style="animation-delay:-0ms">world</span>',
+    );
+  });
+
+  it("offsets the fade by the elapsed time since the ghost was born", () => {
+    expect(
+      decorateDeleteRanges("ab", [{ id: 1, pos: 2, text: "c", born: 500 }], 1700),
+    ).toBe(
+      'ab<span class="file-viewer-delete-mark" style="animation-delay:-1200ms">c</span>',
+    );
+  });
+
+  it("escapes HTML in both the surrounding source and the deleted text", () => {
+    expect(
+      decorateDeleteRanges("x&y", [{ id: 1, pos: 1, text: "<b>", born: 0 }], 0),
+    ).toBe(
+      'x<span class="file-viewer-delete-mark" style="animation-delay:-0ms">&lt;b&gt;</span>&amp;y',
+    );
+  });
+
+  it("orders several ghosts by anchor and clamps an out-of-range anchor", () => {
+    expect(
+      decorateDeleteRanges(
+        "abc",
+        [
+          { id: 2, pos: 99, text: "Z", born: 0 },
+          { id: 1, pos: 1, text: "Y", born: 0 },
+        ],
+        0,
+      ),
+    ).toBe(
+      'a<span class="file-viewer-delete-mark" style="animation-delay:-0ms">Y</span>bc' +
+        '<span class="file-viewer-delete-mark" style="animation-delay:-0ms">Z</span>',
+    );
   });
 });

@@ -36,64 +36,106 @@ export function buildPrintDoc(bodyHtml: string, css: string, title = "Print"): s
 }
 
 /**
- * Render a complete HTML document via the platform print dialog. Mounts an
- * off-screen iframe, waits for its images to decode, then calls `print()` on the
- * iframe's own window so only the document — not the surrounding app — prints.
- * The iframe is torn down on `afterprint` and, as a backstop, a timeout.
+ * Show a print preview and, on confirmation, hand the document to the platform
+ * print dialog. Mounts a modal overlay whose visible iframe renders the exact
+ * standalone document that will print (WYSIWYG for paper), plus a toolbar with a
+ * Print button that calls `print()` on the iframe's own window — so only the
+ * document, not the surrounding app, prints. The overlay stays open after the
+ * dialog closes (so the user can adjust and print again) and tears down on
+ * Close / backdrop click / Escape, which is when the returned promise resolves.
  */
 export function printDocument(fullHtml: string): Promise<void> {
   return new Promise<void>((resolve) => {
-    const iframe = document.createElement("iframe");
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.style.position = "fixed";
-    iframe.style.right = "0";
-    iframe.style.bottom = "0";
-    iframe.style.width = "0";
-    iframe.style.height = "0";
-    iframe.style.border = "0";
-    iframe.style.opacity = "0";
-    iframe.style.pointerEvents = "none";
+    // ── Overlay chrome (reuses the app's shared modal classes) ──────────────
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop print-preview-backdrop";
 
+    const dialog = document.createElement("div");
+    dialog.className = "settings-dialog print-preview-dialog";
+
+    const titlebar = document.createElement("div");
+    titlebar.className = "print-preview-titlebar";
+
+    const title = document.createElement("span");
+    title.className = "print-preview-title";
+    title.textContent = "Print preview";
+
+    const actions = document.createElement("div");
+    actions.className = "print-preview-actions";
+
+    const printBtn = document.createElement("button");
+    printBtn.className = "print-preview-print";
+    printBtn.type = "button";
+    // Disabled with a "Preparing…" affordance until images decode; mirrors the
+    // viewer toolbar's PrintButton busy state.
+    printBtn.disabled = true;
+    printBtn.innerHTML =
+      `<span class="file-viewer-save-spinner" aria-hidden="true"></span>Preparing…`;
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "dialog-close-btn print-preview-close";
+    closeBtn.type = "button";
+    closeBtn.textContent = "Close";
+
+    const iframe = document.createElement("iframe");
+    iframe.className = "print-preview-frame";
+    iframe.setAttribute("title", "Print preview");
+
+    actions.append(printBtn, closeBtn);
+    titlebar.append(title, actions);
+    dialog.append(titlebar, iframe);
+    backdrop.append(dialog);
+
+    // ── Teardown (single-shot) ──────────────────────────────────────────────
     let done = false;
-    let cleanupTimer: number | null = null;
     const cleanup = () => {
       if (done) return;
       done = true;
-      if (cleanupTimer != null) window.clearTimeout(cleanupTimer);
-      iframe.remove();
+      document.removeEventListener("keydown", onKeyDown);
+      backdrop.remove();
       resolve();
     };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        cleanup();
+      }
+    };
+
+    closeBtn.addEventListener("click", cleanup);
+    // Backdrop click closes; clicks inside the dialog must not bubble to it.
+    backdrop.addEventListener("mousedown", (e) => {
+      if (e.target === backdrop) cleanup();
+    });
+    document.addEventListener("keydown", onKeyDown);
 
     iframe.onload = () => {
       const win = iframe.contentWindow;
       const doc = iframe.contentDocument;
-      if (!win || !doc) {
-        cleanup();
-        return;
-      }
+      if (!win || !doc) return;
       const imgs = Array.from(doc.images);
       Promise.all(
         imgs.map((img) =>
           img.decode().catch(() => {
-            /* broken/missing image: print what loaded rather than block */
+            /* broken/missing image: preview what loaded rather than block */
           }),
         ),
       ).then(() => {
-        // `afterprint` removes the iframe once the dialog closes; the timeout is
-        // a backstop for engines that don't fire it (WebKitGTK's print() blocks
-        // until dismissed, so by the time it returns we can also clean up).
-        win.addEventListener("afterprint", cleanup);
-        try {
-          win.focus();
-          win.print();
-        } catch {
-          /* printing unsupported / dialog refused: still tear the iframe down */
-        }
-        cleanupTimer = window.setTimeout(cleanup, 60_000);
+        if (done) return;
+        printBtn.disabled = false;
+        printBtn.textContent = "🖨 Print";
+        printBtn.addEventListener("click", () => {
+          try {
+            win.focus();
+            win.print();
+          } catch {
+            /* printing unsupported / dialog refused: leave preview open */
+          }
+        });
       });
     };
 
-    document.body.appendChild(iframe);
+    document.body.appendChild(backdrop);
     iframe.srcdoc = fullHtml;
   });
 }
@@ -137,6 +179,7 @@ function escapeAttr(s: string): string {
 
 /** Print styling for `renderMarkdown` output wrapped in `.markdown-body`. */
 export const MARKDOWN_PRINT_CSS = `
+@page{margin:2.54cm}
 .markdown-body{max-width:100%;color:#111}
 .markdown-body h1,.markdown-body h2,.markdown-body h3,
 .markdown-body h4,.markdown-body h5,.markdown-body h6{
@@ -165,6 +208,7 @@ export const MARKDOWN_PRINT_CSS = `
 
 /** Print styling for plain text / source shown in a single `<pre>`. */
 export const TEXT_PRINT_CSS = `
+@page{margin:2.54cm}
 pre.print-pre{
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:11px;line-height:1.45;color:#111;margin:0;

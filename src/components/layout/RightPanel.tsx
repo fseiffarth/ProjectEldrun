@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileTree } from "../files/FileTree";
+import { DownloadsSection } from "../files/DownloadsSection";
 import { GitHistory } from "../files/GitHistory";
 import { GitChangeTree, type ChangeScope } from "../files/GitChangeTree";
 import { SearchPanel } from "../files/SearchPanel";
@@ -227,6 +228,9 @@ export function RightPanel({
   const [conflictAll, setConflictAll] = useState(false);
   const dropFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  // Toggles the Downloads section stacked below the file tree (fast-copy of
+  // recent downloads into the project). Toolbar ⬇⬇ button; files view only.
+  const [showDownloads, setShowDownloads] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [descending, setDescending] = useState(false);
   const [localProjectSettings, setLocalProjectSettings] = useState<ProjectJson | null>(null);
@@ -951,6 +955,21 @@ export function RightPanel({
             ⧉
           </button>
         )}
+        {!activeBox && projectDir && (
+          <button
+            className={`tab-add-btn${showDownloads ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            aria-pressed={showDownloads}
+            onClick={() => {
+              setShowDownloads((v) => !v);
+              // The section lives in the files view; jump there when revealing it.
+              if (!showDownloads) setView("files");
+            }}
+            title="Show recent downloads (copy into this project)"
+          >
+            📥
+          </button>
+        )}
         {activeId && (
           <button
             className="tab-add-btn"
@@ -1219,6 +1238,15 @@ export function RightPanel({
               })()
             )}
           </div>
+          {showDownloads && !activeBox && projectDir && (
+            <DownloadsSection
+              projectDir={projectDir}
+              projectId={activeId}
+              targetFolder={rightPanelFolder}
+              isRemote={!!activeProject?.remote}
+              onClose={() => setShowDownloads(false)}
+            />
+          )}
         </>
       )}
 

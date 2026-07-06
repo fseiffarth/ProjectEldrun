@@ -26,6 +26,7 @@ import {
 import { usePdfSyncStore } from "../../stores/pdfSync";
 import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
+import { CompareView } from "./CompareView";
 import { renderMarkdown } from "../../lib/viewers/markdown";
 import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
 import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
@@ -965,7 +966,7 @@ const INDENT = "    "; // 4 spaces — what Tab inserts and Shift+Tab strips.
 
 /** Apply Tab / Shift+Tab indentation to a code textarea, preserving selection.
  *  Returns the next value + selection, or null to let the key fall through. */
-function applyIndent(
+export function applyIndent(
   el: HTMLTextAreaElement,
   outdent: boolean,
 ): { value: string; selStart: number; selEnd: number } | null {
@@ -1451,7 +1452,7 @@ function useDevicePixelRatio(): number {
  * grid, so the per-line advance is identical and nothing accumulates. A no-op at
  * an integer dpr (e.g. 1.0 or 2.0), where the drift never appeared.
  */
-function snapToDevicePx(cssPx: number, dpr: number): number {
+export function snapToDevicePx(cssPx: number, dpr: number): number {
   return Math.round(cssPx * dpr) / dpr;
 }
 
@@ -4234,6 +4235,23 @@ function BlameButton({ active, toggle }: { active: boolean; toggle: () => void }
   );
 }
 
+/** "Compare" toolbar toggle. When active the editor body is replaced by the
+ *  three-column compare/merge view (old commit ⇄ live content ⇄ editable result). */
+function CompareButton({ active, toggle }: { active: boolean; toggle: () => void }) {
+  return (
+    <button
+      className={`file-viewer-format-btn file-viewer-compare-btn${active ? " active" : ""}`}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={toggle}
+      title={active ? "Close compare view" : "Compare with a previous version"}
+      aria-label="Toggle compare view"
+      aria-pressed={active}
+    >
+      Compare
+    </button>
+  );
+}
+
 /**
  * The capability-driven base editor for every text/source file. Beyond the
  * shared code editor (highlight, line numbers, Tab indent, undo/redo, save,
@@ -4268,6 +4286,7 @@ function TextView({
   const jump = useEditorJump(path);
   const [showBlame, setShowBlame] = useState(false);
   const blame = useBlame(path, showBlame);
+  const [compareOpen, setCompareOpen] = useState(false);
   const viewPos = useViewerState(tabKey);
   const persistScroll = useCallback(
     (scrollTop: number) => viewPos.persist({ scrollTop }),
@@ -4329,6 +4348,9 @@ function TextView({
           <BlameButton active={showBlame} toggle={() => setShowBlame((v) => !v)} />
         )}
         {showEditor && (
+          <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
+        )}
+        {showEditor && (
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         )}
         <PrintButton onPrint={handlePrint} disabled={!loaded} />
@@ -4351,6 +4373,16 @@ function TextView({
             // Preview reflects the live draft, so it tracks unsaved edits.
             <RenderedPreview kind={previewKind} content={draft} fileName={fileName} />
           )
+        ) : compareOpen ? (
+          <CompareView
+            path={path}
+            rightText={draft}
+            onApply={(merged) => {
+              setDraft(merged);
+              setCompareOpen(false);
+            }}
+            onClose={() => setCompareOpen(false)}
+          />
         ) : (
           <CodeEditor
             path={path}
@@ -4397,6 +4429,7 @@ function MarkdownView({
   } = useEditableFile(path);
   const scope = useFileScope();
   const [mode, setMode] = useState<"preview" | "edit">("preview");
+  const [compareOpen, setCompareOpen] = useState(false);
   const font = useEditorFontSize(tabKey, "markdown");
   const wheelRef = useNonPassiveWheel((e) => onCtrlWheelFont(e, font.inc, font.dec));
   const ai = useTabAiPrefs(tabKey, "markdown");
@@ -4533,6 +4566,9 @@ function MarkdownView({
           <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
         )}
         {mode === "edit" && (
+          <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
+        )}
+        {mode === "edit" && (
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         )}
         <PrintButton onPrint={handlePrint} disabled={!loaded} />
@@ -4547,7 +4583,17 @@ function MarkdownView({
         className={`file-viewer-body${mode === "edit" ? " file-viewer-code-body" : ""}`}
         ref={wheelRef}
       >
-        {mode === "edit" ? (
+        {mode === "edit" && compareOpen ? (
+          <CompareView
+            path={path}
+            rightText={draft}
+            onApply={(merged) => {
+              setDraft(merged);
+              setCompareOpen(false);
+            }}
+            onClose={() => setCompareOpen(false)}
+          />
+        ) : mode === "edit" ? (
           // The shared code editor gives markdown the same Tab/undo/save behaviour
           // as the text/tex viewers — and local autocomplete (#45). `wrap` so prose
           // soft-wraps. It renders its own load/error states.
@@ -5652,6 +5698,7 @@ function TexView({
   const ai = useTabAiPrefs(tabKey, "tex");
   const ac = ai.ac;
   const gc = ai.gc;
+  const [compareOpen, setCompareOpen] = useState(false);
   const font = useEditorFontSize(tabKey, "tex");
   const viewPos = useViewerState(tabKey);
   const persistScroll = useCallback(
@@ -5909,6 +5956,7 @@ function TexView({
         <ViewerHeader onOpenExternally={onOpenExternally}>
           <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
           <EditorAiControls ai={ai} />
+          <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
           <PrintButton onPrint={handlePrint} disabled={!loaded} />
           <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
@@ -5934,33 +5982,45 @@ function TexView({
           </div>
         )}
         <div className="file-viewer-body file-viewer-code-body">
-          <CodeEditor
-            path={path}
-            error={error}
-            draft={draft}
-            setDraft={setDraft}
-            loaded={loaded}
-            save={() => void save()}
-            onFollowLink={onEditorFollow}
-            linkRanges={linkRanges}
-            undo={undo}
-            redo={redo}
-            autocomplete={ac}
-            grammarCheck={gc}
-            texCompletions={completions}
-            fontSize={font.fontSize}
-            lineHeight={font.lineHeight}
-            incFont={font.inc}
-            decFont={font.dec}
-            resetFont={font.reset}
-            gotoLine={jump.gotoLine}
-            onGotoApplied={jump.onGotoApplied}
-            onCaretChange={onCaret}
-            caretApiRef={caretApiRef}
-            initialScrollTop={viewPos.initial?.scrollTop}
-            onScrollPersist={persistScroll}
-            wrap
-          />
+          {compareOpen ? (
+            <CompareView
+              path={path}
+              rightText={draft}
+              onApply={(merged) => {
+                setDraft(merged);
+                setCompareOpen(false);
+              }}
+              onClose={() => setCompareOpen(false)}
+            />
+          ) : (
+            <CodeEditor
+              path={path}
+              error={error}
+              draft={draft}
+              setDraft={setDraft}
+              loaded={loaded}
+              save={() => void save()}
+              onFollowLink={onEditorFollow}
+              linkRanges={linkRanges}
+              undo={undo}
+              redo={redo}
+              autocomplete={ac}
+              grammarCheck={gc}
+              texCompletions={completions}
+              fontSize={font.fontSize}
+              lineHeight={font.lineHeight}
+              incFont={font.inc}
+              decFont={font.dec}
+              resetFont={font.reset}
+              gotoLine={jump.gotoLine}
+              onGotoApplied={jump.onGotoApplied}
+              onCaretChange={onCaret}
+              caretApiRef={caretApiRef}
+              initialScrollTop={viewPos.initial?.scrollTop}
+              onScrollPersist={persistScroll}
+              wrap
+            />
+          )}
         </div>
       </div>
     );
@@ -6022,6 +6082,7 @@ function TexView({
         )}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
         <EditorAiControls ai={ai} />
+        <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
         <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         <PrintButton onPrint={handlePrint} disabled={!loaded} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
@@ -6112,35 +6173,47 @@ function TexView({
         </div>
       )}
       <div className="file-viewer-body file-viewer-code-body">
-        <CodeEditor
-          path={path}
-          error={error}
-          draft={draft}
-          setDraft={setDraft}
-          loaded={loaded}
-          // Ctrl+S in the LaTeX viewer saves and recompiles (compile() persists
-          // pending edits first), so the PDF preview tracks the source.
-          save={() => void compile()}
-          onFollowLink={onEditorFollow}
-          linkRanges={linkRanges}
-          undo={undo}
-          redo={redo}
-          autocomplete={ac}
-          grammarCheck={gc}
-          texCompletions={completions}
-          fontSize={font.fontSize}
-          lineHeight={font.lineHeight}
-          incFont={font.inc}
-          decFont={font.dec}
-          resetFont={font.reset}
-          gotoLine={jump.gotoLine}
-          onGotoApplied={jump.onGotoApplied}
-          onCaretChange={onCaret}
-          caretApiRef={caretApiRef}
-          initialScrollTop={viewPos.initial?.scrollTop}
-          onScrollPersist={persistScroll}
-          wrap
-        />
+        {compareOpen ? (
+          <CompareView
+            path={path}
+            rightText={draft}
+            onApply={(merged) => {
+              setDraft(merged);
+              setCompareOpen(false);
+            }}
+            onClose={() => setCompareOpen(false)}
+          />
+        ) : (
+          <CodeEditor
+            path={path}
+            error={error}
+            draft={draft}
+            setDraft={setDraft}
+            loaded={loaded}
+            // Ctrl+S in the LaTeX viewer saves and recompiles (compile() persists
+            // pending edits first), so the PDF preview tracks the source.
+            save={() => void compile()}
+            onFollowLink={onEditorFollow}
+            linkRanges={linkRanges}
+            undo={undo}
+            redo={redo}
+            autocomplete={ac}
+            grammarCheck={gc}
+            texCompletions={completions}
+            fontSize={font.fontSize}
+            lineHeight={font.lineHeight}
+            incFont={font.inc}
+            decFont={font.dec}
+            resetFont={font.reset}
+            gotoLine={jump.gotoLine}
+            onGotoApplied={jump.onGotoApplied}
+            onCaretChange={onCaret}
+            caretApiRef={caretApiRef}
+            initialScrollTop={viewPos.initial?.scrollTop}
+            onScrollPersist={persistScroll}
+            wrap
+          />
+        )}
       </div>
     </div>
   );

@@ -588,16 +588,23 @@ fn git_log_blocking(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCo
         return Ok(vec![]);
     }
     let max = limit.unwrap_or(100);
-    // Fields separated by US (0x1f) so subjects can contain anything but a newline.
-    let fmt = "--pretty=format:%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ar\u{1f}%D\u{1f}%P";
     let max_count = format!("--max-count={max}");
-    let out = run_git(target.as_ref(), &project_dir, &["log", &max_count, fmt])?;
+    let out = run_git(target.as_ref(), &project_dir, &["log", &max_count, GIT_LOG_FMT])?;
     if !out.status.success() {
         // Empty repository (no commits) — not an error for our purposes.
         return Ok(vec![]);
     }
-    let text = String::from_utf8_lossy(&out.stdout);
     let head = git_head_hash(target.as_ref(), &project_dir);
+    Ok(parse_git_log(&String::from_utf8_lossy(&out.stdout), head.as_deref()))
+}
+
+/// The `--pretty` format shared by `git_log` and `git_file_log`: fields separated
+/// by US (0x1f) so subjects can contain anything but a newline.
+const GIT_LOG_FMT: &str = "--pretty=format:%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ar\u{1f}%D\u{1f}%P";
+
+/// Parse `git log` output emitted with `GIT_LOG_FMT` into `GitCommit`s. `head` is
+/// the current HEAD sha (used only to flag `is_head`).
+fn parse_git_log(text: &str, head: Option<&str>) -> Vec<GitCommit> {
     let mut commits = Vec::new();
     for line in text.lines() {
         let parts: Vec<&str> = line.split('\u{1f}').collect();
@@ -605,7 +612,7 @@ fn git_log_blocking(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCo
             continue;
         }
         let hash = parts[0].to_string();
-        let is_head = head.as_deref() == Some(hash.as_str());
+        let is_head = head == Some(hash.as_str());
         let parents = parts[6]
             .split_whitespace()
             .map(|p| p.to_string())
@@ -621,7 +628,75 @@ fn git_log_blocking(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCo
             parents,
         });
     }
-    Ok(commits)
+    commits
+}
+
+/// The commit history for a single file (`git log --follow -- <rel_path>`), most
+/// recent first. `--follow` keeps history across renames. Returns an empty vec for
+/// a non-git dir, an untracked path, or a repo with no commits. Local and remote
+/// (SSH) projects both work via the shared `run_git` dispatch.
+#[tauri::command]
+pub async fn git_file_log(
+    project_dir: String,
+    rel_path: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitCommit>, String> {
+    run_off_thread(move || git_file_log_blocking(project_dir, rel_path, limit)).await
+}
+
+fn git_file_log_blocking(
+    project_dir: String,
+    rel_path: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitCommit>, String> {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
+        return Ok(vec![]);
+    }
+    let max = limit.unwrap_or(100);
+    let max_count = format!("--max-count={max}");
+    let out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["log", &max_count, "--follow", GIT_LOG_FMT, "--", &rel_path],
+    )?;
+    if !out.status.success() {
+        // Untracked path or empty repo — not an error for our purposes.
+        return Ok(vec![]);
+    }
+    let head = git_head_hash(target.as_ref(), &project_dir);
+    Ok(parse_git_log(&String::from_utf8_lossy(&out.stdout), head.as_deref()))
+}
+
+/// Returns a file's contents at a specific revision (`git show <rev>:<rel_path>`).
+/// Used by the in-app compare/merge view for the "old version" pane. Errors (bad
+/// rev, path absent at that rev) surface as `Err(stderr)`. Local and remote (SSH)
+/// projects both work via the shared `run_git` dispatch.
+#[tauri::command]
+pub async fn git_file_at_rev(
+    project_dir: String,
+    rel_path: String,
+    rev: String,
+) -> Result<String, String> {
+    run_off_thread(move || git_file_at_rev_blocking(project_dir, rel_path, rev)).await
+}
+
+fn git_file_at_rev_blocking(
+    project_dir: String,
+    rel_path: String,
+    rev: String,
+) -> Result<String, String> {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
+        return Ok(String::new());
+    }
+    // `git show <rev>:<path>` wants a repo-relative, forward-slash path.
+    let spec = format!("{rev}:{}", rel_path.replace('\\', "/"));
+    let out = run_git(target.as_ref(), &project_dir, &["show", &spec])?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 #[derive(serde::Serialize)]

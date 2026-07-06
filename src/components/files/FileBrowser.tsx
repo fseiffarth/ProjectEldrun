@@ -17,6 +17,7 @@ import {
   visibleEntries,
 } from "../../lib/viewers/fileUtils";
 import { basename, dirname, isAbsolute } from "../../lib/paths";
+import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSync";
 
 type ProjectJson = Record<string, unknown>;
 
@@ -218,6 +219,11 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
         oldRel: relFromAbs(projectDir, target.path),
         newName: nextName.trim(),
       });
+      // Retarget any open viewer tab of this file (main + detached) to the new
+      // path — swap the basename on the entry's own absolute path (== embedPath).
+      const oldAbs = target.path;
+      const newAbs = `${oldAbs.slice(0, oldAbs.lastIndexOf("/") + 1)}${nextName.trim()}`;
+      retargetTabsForRenamedPath(oldAbs, newAbs);
       await load(relPath, { replace: true });
     } catch (e) {
       setError(String(e));
@@ -235,6 +241,8 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
           projectDir,
           relPath: relFromAbs(projectDir, target.path),
         });
+        // Close any open viewer tab for the deleted file/folder (main + detached).
+        closeTabsForDeletedPath(target.path);
       }
       await load(relPath, { replace: true });
     } catch (e) {

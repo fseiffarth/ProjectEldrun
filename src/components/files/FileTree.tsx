@@ -8,6 +8,7 @@ import { useTabsStore } from "../../stores/tabs";
 import { useDragStore, type EmbedCap } from "../../stores/drag";
 import { commitFileDrop } from "../tabs/commitFileDrop";
 import { startDetachedDropSession } from "../tabs/detachedDropTargets";
+import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSync";
 import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
@@ -702,7 +703,7 @@ export function FileTree({
       const moveRel = moveTargetRef.current;
       if (moveRel != null) {
         useDragStore.getState().end();
-        await moveEntryToFolder(sourceRel, entry.name, moveRel);
+        await moveEntryToFolder(sourceRel, entry.name, moveRel, entry.path);
         return;
       }
       const d = useDragStore.getState().drag;
@@ -801,7 +802,7 @@ export function FileTree({
   // backend `move_path` works the same for local and remote (SFTP) projects. A
   // name collision in the destination aborts with an error rather than silently
   // clobbering — moving is meant to be safe.
-  async function moveEntryToFolder(sourceRel: string, name: string, destFolderRel: string) {
+  async function moveEntryToFolder(sourceRel: string, name: string, destFolderRel: string, sourceAbs: string) {
     const destRel = destFolderRel ? `${destFolderRel}/${name}` : name;
     setLoading(true);
     setError(null);
@@ -821,6 +822,11 @@ export function FileTree({
         destProjectDir: projectDir,
         destRel,
       });
+      // Retarget any open viewer tab of the moved file/folder (main + detached).
+      // `sourceAbs` ends with `sourceRel`, so swapping that tail for `destRel`
+      // yields the new absolute path without rebuilding it from `projectDir`.
+      const newAbs = `${sourceAbs.slice(0, sourceAbs.length - sourceRel.length)}${destRel}`;
+      retargetTabsForRenamedPath(sourceAbs, newAbs);
       await load(relPath);
     } catch (err) {
       setError(String(err));
@@ -1033,6 +1039,12 @@ export function FileTree({
         oldRel: relForEntry(entry),
         newName: nextName.trim(),
       });
+      // Retarget any open viewer tab of this file (main + detached) to the new
+      // path. Derive the new absolute path by swapping the basename on the entry's
+      // own absolute path (== embedPath), so it holds for local and remote alike.
+      const oldAbs = entry.path;
+      const newAbs = `${oldAbs.slice(0, oldAbs.lastIndexOf("/") + 1)}${nextName.trim()}`;
+      retargetTabsForRenamedPath(oldAbs, newAbs);
       await load(relPath);
     } catch (err) {
       setError(String(err));
@@ -1066,6 +1078,7 @@ export function FileTree({
     setClipboard({
       projectDir,
       relPath: relForEntry(entry),
+      path: entry.path,
       name: entry.name,
       isDir: entry.is_dir,
       op,
@@ -1117,7 +1130,18 @@ export function FileTree({
           destProjectDir: projectDir,
           destRel,
         });
-        if (clipboard.op === "cut") clearClipboard();
+        if (clipboard.op === "cut") {
+          // A same-project cut relocates within this scope's tree, so retarget any
+          // open viewer tab of the moved file (main + detached). A cross-project
+          // cut lands in a different scope than the source tab, which this
+          // current-scope helper doesn't own, so leave it (reopen to refresh).
+          if (clipboard.projectDir === projectDir) {
+            const oldAbs = clipboard.path;
+            const newAbs = `${oldAbs.slice(0, oldAbs.length - clipboard.relPath.length)}${destRel}`;
+            retargetTabsForRenamedPath(oldAbs, newAbs);
+          }
+          clearClipboard();
+        }
       }
       setPastePrompt(null);
       await load(relPath);
@@ -1155,6 +1179,8 @@ export function FileTree({
         projectDir,
         relPath: target.relPath,
       });
+      // Close any open viewer tab for the deleted file/folder (main + detached).
+      closeTabsForDeletedPath(target.entry.path);
       await load(relPath);
     } catch (err) {
       setError(String(err));

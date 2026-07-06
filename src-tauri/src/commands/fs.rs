@@ -43,6 +43,37 @@ fn mime_for_ext(ext: &str) -> String {
         .to_string()
 }
 
+/// Build a [`FileEntry`] from a directory entry's path + metadata. Shared by the
+/// project-confined lister ([`list_dir_local`]) and the unconfined downloads
+/// scanner ([`list_recent_downloads`]) so both produce byte-identical shapes.
+fn file_entry_from(path: &Path, meta: &fs::Metadata, name: String) -> FileEntry {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| format!(".{s}"));
+    // Efficiency #15: compute the MIME lazily from the extension only when there
+    // is one, instead of always producing octet-stream fallbacks.
+    let mime = ext.as_deref().map(mime_for_ext);
+    FileEntry {
+        name,
+        path: display_path(path),
+        is_dir: meta.is_dir(),
+        size: if meta.is_file() { meta.len() } else { 0 },
+        modified_secs: meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs()),
+        created_secs: meta
+            .created()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs()),
+        extension: ext,
+        mime,
+    }
+}
+
 /// List directory contents — project-aware (mount-free remote, Phase 2):
 ///
 /// - **Remote project** → list the directory over SFTP, riding the pooled
@@ -94,34 +125,68 @@ pub fn list_dir_local(project_dir: &str, rel_path: &str) -> Result<Vec<FileEntry
         if name == ".eldrun" {
             continue;
         }
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|s| format!(".{s}"));
-        // Efficiency #15: compute the MIME lazily from the extension only when
-        // there is one, instead of always producing octet-stream fallbacks.
-        let mime = ext.as_deref().map(mime_for_ext);
-
-        result.push(FileEntry {
-            name,
-            path: display_path(&path),
-            is_dir: meta.is_dir(),
-            size: if meta.is_file() { meta.len() } else { 0 },
-            modified_secs: meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs()),
-            created_secs: meta
-                .created()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs()),
-            extension: ext,
-            mime,
-        });
+        result.push(file_entry_from(&path, &meta, name));
     }
     result.sort_by_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
+    Ok(result)
+}
+
+/// Scan one or more download *source* folders and return their recently-modified
+/// entries, merged and sorted newest-first. Backs the right-panel Downloads
+/// section (fast-copy of freshly downloaded files into a project).
+///
+/// Unlike [`list_dir`], the `paths` are user-chosen source folders that live
+/// OUTSIDE any project root, so path-confinement deliberately does not apply here
+/// — this is a read-only scan the user explicitly configured. Missing/unreadable
+/// folders are skipped rather than failing the whole call (a stale configured
+/// path must not break the section). Dot-hidden entries are skipped; top-level
+/// files and folders are included (a browser can drop a folder), no recursion.
+///
+/// `since_secs` (Unix seconds) keeps only entries modified at or after it; `None`
+/// returns everything. Results are sorted by `modified_secs` descending, then by
+/// name, so the most recent download is first.
+#[tauri::command]
+pub fn list_recent_downloads(
+    paths: Vec<String>,
+    since_secs: Option<u64>,
+) -> Result<Vec<FileEntry>, String> {
+    let mut result: Vec<FileEntry> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for dir in &paths {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            // Missing/unreadable source dir — skip it, don't fail the whole scan.
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip dot-hidden entries (partial-download temp files, etc.).
+            if name.starts_with('.') {
+                continue;
+            }
+            let fe = file_entry_from(&path, &meta, name);
+            if let Some(since) = since_secs {
+                if !matches!(fe.modified_secs, Some(m) if m >= since) {
+                    continue;
+                }
+            }
+            // De-dupe when the same absolute path is reachable via two configured
+            // source folders (e.g. a folder plus a symlink pointing into it).
+            if seen.insert(fe.path.clone()) {
+                result.push(fe);
+            }
+        }
+    }
+    result.sort_by(|a, b| {
+        b.modified_secs
+            .cmp(&a.modified_secs)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     Ok(result)
 }
 

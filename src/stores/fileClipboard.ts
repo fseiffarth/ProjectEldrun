@@ -10,6 +10,9 @@ export type ClipboardOp = "copy" | "cut";
 export interface FileClipboardEntry {
   projectDir: string;
   relPath: string;
+  // Absolute source path (matches an open viewer tab's `embedPath`), so a
+  // same-project cut/paste can retarget that tab to the moved file.
+  path: string;
   name: string;
   isDir: boolean;
   op: ClipboardOp;

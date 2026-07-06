@@ -135,6 +135,10 @@ export interface Settings {
    * original hard-coded behaviour.
    */
   keyboard_shortcuts?: Record<string, KeyboardChord>;
+  /** Download *source* folders scanned by the right-panel Downloads section
+   *  (fast-copy of freshly downloaded files into a project). Machine-wide,
+   *  read-only. Unset/empty → the frontend falls back to the OS Downloads dir. */
+  download_sources?: string[];
   /** True once the first-run "How to start" welcome has been shown/dismissed, so
    *  it never re-opens automatically. Re-openable manually from Settings. */
   onboarding_seen?: boolean;

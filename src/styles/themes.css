@@ -1764,9 +1764,145 @@ select option {
 
 /* The Blame toggle reuses the format-button chrome; the active state is accented
    like the other in-editor toggles. */
-.file-viewer-blame-btn.active {
+.file-viewer-blame-btn.active,
+.file-viewer-compare-btn.active {
   border-color: var(--accent, #4493f8);
   color: var(--accent, #4493f8);
+}
+
+/* Three-column compare/merge view (old commit ⇄ live content ⇄ editable result).
+   Fills the editor body; its own sub-toolbar sits above the three columns. */
+.file-viewer-compare {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.file-viewer-compare-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+}
+.file-viewer-compare-label {
+  color: var(--text-muted);
+}
+.file-viewer-compare-date {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.file-viewer-compare-bar-gap {
+  flex: 1 1 auto;
+}
+.file-viewer-compare-apply {
+  border-color: var(--accent, #4493f8);
+  color: var(--accent, #4493f8);
+}
+.file-viewer-compare-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--border-color);
+}
+.file-viewer-compare-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-panel);
+}
+.file-viewer-compare-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-elevated, rgba(127, 127, 127, 0.08));
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary, var(--text-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-viewer-compare-col-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.file-viewer-compare-line {
+  display: flex;
+  white-space: pre;
+}
+.file-viewer-compare-lno {
+  flex: 0 0 auto;
+  width: 3em;
+  padding-right: 0.5em;
+  text-align: right;
+  color: var(--text-muted);
+  opacity: 0.7;
+  user-select: none;
+}
+.file-viewer-compare-code {
+  flex: 1 1 auto;
+  padding-left: 0.5em;
+}
+/* The middle result is a plain editable textarea seeded from the merge. */
+.file-viewer-compare-col-mid .file-viewer-compare-col-head {
+  flex-wrap: wrap;
+}
+.file-viewer-compare-result {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 0 0.5em;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
+/* Per-change chips: accept (keep new) is accent, reject (restore old) is warm;
+   a hand-edited, un-anchorable change is dimmed and non-interactive. */
+.file-viewer-compare-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.file-viewer-compare-chip {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 5px;
+  font-size: 10px;
+  border: 1px solid var(--border-color);
+  user-select: none;
+}
+.file-viewer-compare-chip.accept {
+  border-color: rgba(63, 185, 80, 0.6);
+  color: #3fb950;
+}
+.file-viewer-compare-chip.reject {
+  border-color: rgba(248, 81, 73, 0.6);
+  color: #f85149;
+}
+.file-viewer-compare-chip.disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* #67 in-editor search: the match spans paint a translucent highlight behind the
@@ -1860,13 +1996,22 @@ select option {
   border-radius: 2px;
   animation: fv-delete-fade 2600ms ease-out forwards;
 }
+/* Retire the ghost by both fading it AND collapsing its width to nothing:
+   animating font-size shrinks the inline glyph advances (and the opaque
+   background + strike-through that scale with them) to 0, so the red run
+   shrivels toward its anchor instead of sitting — translucent — on top of the
+   live text once the opacity drops. `1em` is the inherited --code-font-size, so
+   it tracks the editor's current zoom. Held full for the first ~55% ("after some
+   time"), then shrunk away. Duration stays in sync with DELETE_GHOST_MS. */
 @keyframes fv-delete-fade {
   0%,
   55% {
     opacity: 1;
+    font-size: 1em;
   }
   100% {
     opacity: 0;
+    font-size: 0;
   }
 }
 
@@ -6131,6 +6276,107 @@ select option {
   border-radius: 4px;
 }
 
+/* Dragging a download over empty tree space (not a specific folder) targets the
+   currently browsed folder — frame the whole tree area so the drop is legible. */
+.right-panel-scroll.move-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+  border-radius: 4px;
+}
+
+/* Let the flex-1 tree scroll actually shrink when the Downloads section below it
+   grows (a flex child won't shrink past its content without min-height:0). */
+.right-panel-scroll {
+  min-height: 0;
+}
+
+/* ── Downloads section (right panel, below the file tree) ─────────────────── */
+.downloads-section {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  flex: 0 0 auto;
+  min-height: 0;
+}
+/* Grab bar spanning the top border: drag to grow/shrink the section height. */
+.downloads-resize {
+  height: 6px;
+  margin-top: -3px;
+  cursor: ns-resize;
+  flex: 0 0 auto;
+  background: transparent;
+}
+.downloads-resize:hover {
+  background: var(--accent-soft, rgba(88, 166, 255, 0.22));
+}
+.downloads-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+.downloads-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.downloads-windows {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.downloads-win-btn {
+  font-size: 10px;
+  padding: 1px 6px;
+  height: 20px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, var(--text-primary));
+  cursor: pointer;
+}
+.downloads-win-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.downloads-target {
+  font-size: 10px;
+  color: var(--text-muted, var(--text-secondary));
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.downloads-error {
+  font-size: 10px;
+  color: var(--danger, #f85149);
+  word-break: break-all;
+  padding: 2px 8px;
+}
+.downloads-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 40px;
+}
+.downloads-row {
+  cursor: grab;
+}
+.downloads-meta {
+  font-size: 10px;
+  color: var(--text-muted, var(--text-secondary));
+  white-space: nowrap;
+  margin-left: 6px;
+}
+.downloads-copied {
+  color: var(--accent);
+  font-size: 12px;
+  margin-left: 4px;
+}
+
 /* Only EMBEDDABLE files can be dragged onto a subwindow's tab bar (Group K).
    Give just those a subtle 3D "pop up" on hover so the drag affordance is
    discoverable; non-embeddable files get no effect, signalling they're not
@@ -7334,6 +7580,66 @@ select option {
 .filetype-settings-row button:hover {
   background: var(--control-hover-bg);
   border-color: var(--accent);
+}
+
+/* Print preview overlay (src/lib/viewers/print.ts). Reuses .modal-backdrop +
+   .settings-dialog chrome; the dialog is sized to preview a page and the iframe
+   fills the remaining height. */
+.print-preview-dialog {
+  width: min(860px, calc(100vw - 48px));
+  height: min(90vh, calc(100vh - 48px));
+  max-height: min(90vh, calc(100vh - 48px));
+  padding: 14px 16px;
+  gap: 10px;
+  overflow: hidden;
+}
+.print-preview-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 10px;
+}
+.print-preview-title {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--accent);
+}
+.print-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.print-preview-print {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: var(--accent);
+  color: var(--bg-panel);
+  cursor: pointer;
+  padding: 7px 14px;
+  font-weight: 600;
+}
+.print-preview-print:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+}
+.print-preview-print:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.print-preview-print .file-viewer-save-spinner {
+  border-top-color: var(--bg-panel);
+}
+.print-preview-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: #fff;
 }
 
 .settings-row,
