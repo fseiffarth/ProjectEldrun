@@ -221,6 +221,38 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: "smooth" });
   }, []);
 
+  // Continuous scroll while a chevron is hovered: rAF loop nudges the strip each
+  // frame until the pointer leaves (mirrors the project switcher's pill chevrons).
+  const hoverScrollRef = useRef<number | null>(null);
+  const stopHoverScroll = useCallback(() => {
+    if (hoverScrollRef.current !== null) {
+      cancelAnimationFrame(hoverScrollRef.current);
+      hoverScrollRef.current = null;
+    }
+  }, []);
+  const startHoverScroll = useCallback((dir: number) => {
+    stopHoverScroll();
+    const step = () => {
+      const el = stripRef.current;
+      if (!el) return;
+      el.scrollLeft += dir * 6;
+      // Unlike the switcher, these chevrons unmount at the edges (canScroll*),
+      // so onMouseLeave may never fire — stop the loop once we can't scroll
+      // further in `dir` rather than spinning forever.
+      const atEdge =
+        dir < 0
+          ? el.scrollLeft <= 0
+          : el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
+      if (atEdge) {
+        hoverScrollRef.current = null;
+        return;
+      }
+      hoverScrollRef.current = requestAnimationFrame(step);
+    };
+    hoverScrollRef.current = requestAnimationFrame(step);
+  }, [stopHoverScroll]);
+  useEffect(() => stopHoverScroll, [stopHoverScroll]);
+
   // Translate a vertical wheel into horizontal strip scrolling so the tabs can be
   // panned while hovering anywhere over them, not just via the (hidden) scrollbar.
   const onStripWheel = useCallback((e: React.WheelEvent) => {
@@ -876,6 +908,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           title="Scroll tabs left"
           // Keep the chevron out of the bar's detach-drag and tab pointer flow.
           onPointerDown={(e) => e.stopPropagation()}
+          onMouseEnter={() => startHoverScroll(-1)}
+          onMouseLeave={stopHoverScroll}
           onClick={() => scrollStrip(-1)}
         >
           ‹
@@ -1042,6 +1076,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           className="tab-scroll-btn right"
           title="Scroll tabs right"
           onPointerDown={(e) => e.stopPropagation()}
+          onMouseEnter={() => startHoverScroll(1)}
+          onMouseLeave={stopHoverScroll}
           onClick={() => scrollStrip(1)}
         >
           ›

@@ -156,6 +156,18 @@ export function DetachedCenterPanel({
   const landedNonce = useTabLandStore((s) => s.landed?.nonce ?? 0);
   const clearLanded = useTabLandStore((s) => s.clear);
   const byKey = new Map(tabs.map((t) => [t.key, t] as const));
+  // Which group inside this popout is "current". A split popout otherwise
+  // rendered every pane as `.focused` with no active-pane marker; mirror the main
+  // window, where `focusedGroupId` drives the `.focus-frame` accent outline. The
+  // detached window is inert to the main tabs store (separate JS heap, layout
+  // streamed via props), so focus is tracked locally here.
+  const [focusedGroupId, setFocusedGroupId] = useState<string | null>(null);
+  // Keep focus on a group that still exists as the tree changes (split added /
+  // removed / docked back); default to the first group.
+  useEffect(() => {
+    const ids = allGroups(tree).map((g) => g.id);
+    setFocusedGroupId((cur) => (cur && ids.includes(cur) ? cur : (ids[0] ?? null)));
+  }, [tree]);
 
   // ── Pane-region measurement (for the split-preview overlay) ───────────────
   // Recompute every group body's rect (relative to the panel) so the overlay can
@@ -851,8 +863,17 @@ export function DetachedCenterPanel({
     const localReorder = reorderGroupId === group.id ? reorderIndex : null;
     const isDropTarget = localReorder != null;
     const dropPlaceholder = <TabDropPlaceholder label={dragLabel} />;
+    const isFocused = group.id === focusedGroupId;
     return (
-      <div className="subwindow focused">
+      <div
+        className={`subwindow${isFocused ? " focused" : ""}`}
+        // Clicking anywhere in the group (bar or body) makes it the current one.
+        // Capture-phase so it wins before a tab/divider pointerdown stops
+        // propagation — mirrors the main window's `Subwindow`.
+        onMouseDownCapture={() => {
+          if (!isFocused) setFocusedGroupId(group.id);
+        }}
+      >
         <div
           ref={(el) => {
             if (el) barRefs.current.set(group.id, el);
@@ -1084,6 +1105,21 @@ export function DetachedCenterPanel({
         {/* Split preview: the translucent half/whole a split drop would carve out,
             drawn above the per-group panes (mirrors the main window). */}
         <SplitPreviewOverlay groupRects={groupRects} />
+        {/* Focus frame: the accent outline around the current group's pane rect,
+            drawn here (above the opaque panes) for the same reason as the split
+            preview — an in-body frame would be hidden. Mirrors the main window's
+            `FocusFrameOverlay` (minus Shift+↑/↓ nav, which isn't wired here). */}
+        {focusedGroupId && groupRects[focusedGroupId] && (
+          <div
+            className="focus-frame"
+            style={{
+              left: groupRects[focusedGroupId].left,
+              top: groupRects[focusedGroupId].top,
+              width: groupRects[focusedGroupId].width,
+              height: groupRects[focusedGroupId].height,
+            }}
+          />
+        )}
         {/* #42 (Windows): the move placeholder. While shown, `.detached-center.moving`
             hides the heavy pane content so this trivial surface is all WebView2 has to
             composite during the native drag — keeping the content aligned with the

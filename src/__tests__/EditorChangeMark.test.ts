@@ -12,6 +12,7 @@ import {
   remapChangeRange,
   decorateChangeRanges,
   decorateDeleteRanges,
+  deletionGhostText,
 } from "../components/embed/FileViewerPane";
 
 describe("diffRange", () => {
@@ -169,5 +170,24 @@ describe("decorateDeleteRanges", () => {
       'a<span class="file-viewer-delete-mark" style="animation-delay:-0ms">Y</span>bc' +
         '<span class="file-viewer-delete-mark" style="animation-delay:-0ms">Z</span>',
     );
+  });
+});
+
+describe("deletionGhostText", () => {
+  it("trims a trailing space off the removed run", () => {
+    expect(deletionGhostText("big ")).toBe("big");
+  });
+
+  it("trims a leading space off the removed run", () => {
+    expect(deletionGhostText(" world")).toBe("world");
+  });
+
+  it("leaves a run with no surrounding whitespace unchanged", () => {
+    expect(deletionGhostText("world")).toBe("world");
+  });
+
+  it("returns null for a whitespace-only removal so no ghost is spawned", () => {
+    expect(deletionGhostText(" ")).toBeNull();
+    expect(deletionGhostText("\n")).toBeNull();
   });
 });

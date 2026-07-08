@@ -155,7 +155,14 @@ export function FileTree({
   // query the backend once per distinct extension. Only embeddable files get the
   // drag-to-tab affordance (3D hover + pointer drag); the rest open on dblclick.
   const [embedByExt, setEmbedByExt] = useState<Record<string, boolean>>({});
-  const [relPath, setRelPath] = useState("");
+  // Seed from the saved folder (`initialRelPath`) rather than "" so a (re)mount
+  // renders that folder immediately. Starting at "" made every remount paint the
+  // ROOT for one frame — then the mount effect's async `load(initialRelPath)`
+  // would snap back to the saved folder, so a remounting tree visibly flickered
+  // "root ↔ current folder". Reading the prop lazily fixes that for all remount
+  // causes; the mount effect below still runs and just fetches this folder's
+  // listing (relPath is already correct, so there is no root frame).
+  const [relPath, setRelPath] = useState(() => initialRelPath ?? "");
   // Multi-selection: a set of entry ABSOLUTE paths (`e.path`, the row key), plus
   // the range anchor. Click selects; shift-click extends a contiguous range;
   // ctrl/cmd-click toggles a row. Backs bulk delete/move/copy, drag-all, and

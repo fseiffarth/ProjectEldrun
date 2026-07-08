@@ -118,6 +118,28 @@ describe("file tree navigation", () => {
     expect(document.querySelector(".file-tree-breadcrumb")).toBeNull();
   });
 
+  it("seeds relPath from the saved folder so a mount never flashes root", () => {
+    // Store remembers `proj-1` was last browsing the `sub` folder.
+    const state = {
+      projects: [ACTIVE_PROJECT],
+      activeId: "proj-1",
+      rightPanelFolderByProject: { "proj-1": "sub" },
+      setRightPanelFolder: vi.fn(),
+    } as unknown as ReturnType<typeof useProjectsStore>;
+    mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
+      selector ? selector(state) : state) as typeof useProjectsStore);
+
+    // Synchronous render (no awaited flush): the async `load("sub")` has NOT
+    // resolved yet, so `relPath` reflects only its initial value. With the fix it
+    // is seeded from `initialRelPath="sub"`, so the breadcrumb (driven by
+    // `relPath`, not the entry listing) is on screen on the first commit. The old
+    // `useState("")` would render root here and only reach `sub` after the load
+    // resolved — the "flash root" this test guards against.
+    render(<RightPanel open={true} />);
+    expect(document.querySelector(".file-tree-breadcrumb")).not.toBeNull();
+    expect(document.querySelector(".file-tree-crumb[title='Project root']")).toBeTruthy();
+  });
+
   it("#1 'New File' from the context menu prompts and calls create_file", async () => {
     const user = userEvent.setup();
     const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("created.ts");

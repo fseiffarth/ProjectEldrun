@@ -1252,6 +1252,15 @@ export function decorateDeleteRanges(
   return out;
 }
 
+/** The text a deletion ghost should strike through for a removed run: the run
+ *  with surrounding whitespace trimmed off, or null when it was whitespace-only
+ *  (nothing visible to cross out — a lingering space-only strike would just read
+ *  as invisible text). Pure — exported for tests. */
+export function deletionGhostText(removed: string): string | null {
+  const trimmed = removed.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 /** One run of recently typed text in the change-tint trail. `tier` is its age:
  *  0 is the newest edit, higher tiers are progressively older (and fainter). */
 export interface ChangeRange {
@@ -2129,9 +2138,9 @@ function CodeEditor({
             // where it vanished; existing ghosts are re-mapped through this edit
             // (dropped if their anchor sat inside the edited run) so they keep
             // pointing at the right spot.
-            const removed = draftRef.current.slice(span.start, span.endPrev);
+            const removed = deletionGhostText(draftRef.current.slice(span.start, span.endPrev));
             const ghost: DeleteGhost | null =
-              removed.length > 0
+              removed !== null
                 ? { id: deleteIdRef.current++, pos: span.endNext, text: removed, born: Date.now() }
                 : null;
             if (ghost) scheduleDeleteRemoval(ghost.id);
