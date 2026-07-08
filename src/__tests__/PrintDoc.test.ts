@@ -39,4 +39,15 @@ describe("buildPrintDoc", () => {
     expect(MARKDOWN_PRINT_CSS).toContain(".markdown-body");
     expect(TEXT_PRINT_CSS).toContain("pre.print-pre");
   });
+
+  it("gives md/txt real print margins via body padding, not @page alone", () => {
+    // WebKitGTK ignores the @page margin box, so margins must come from body
+    // padding (honored by every engine). @page is zeroed so Chromium-based
+    // WebView2 does not stack its own margin on top. Regression guard: these
+    // margins previously existed only as @page and printed edge-to-edge.
+    for (const css of [MARKDOWN_PRINT_CSS, TEXT_PRINT_CSS]) {
+      expect(css).toContain("body{padding:2.54cm}");
+      expect(css).toContain("@page{margin:0}");
+    }
+  });
 });

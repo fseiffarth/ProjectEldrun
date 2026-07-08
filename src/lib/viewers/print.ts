@@ -177,9 +177,16 @@ function escapeAttr(s: string): string {
 // Concrete light-on-white colors: the app's themed `var(--…)` tokens don't exist
 // inside the print iframe, and print output is on paper.
 
-/** Print styling for `renderMarkdown` output wrapped in `.markdown-body`. */
+/** Print styling for `renderMarkdown` output wrapped in `.markdown-body`.
+ *
+ * Margins come from body padding, NOT `@page{margin}`: WebKitGTK (the Linux
+ * webview) does not implement the `@page` margin box, so an `@page` margin alone
+ * prints edge-to-edge. Body padding is honored by every engine. `@page` margin
+ * is zeroed so Chromium-based WebView2 doesn't add its own on top (double
+ * margin). This overrides the `html,body{padding:0}` reset in `buildPrintDoc`. */
 export const MARKDOWN_PRINT_CSS = `
-@page{margin:2.54cm}
+@page{margin:0}
+body{padding:2.54cm}
 .markdown-body{max-width:100%;color:#111}
 .markdown-body h1,.markdown-body h2,.markdown-body h3,
 .markdown-body h4,.markdown-body h5,.markdown-body h6{
@@ -206,9 +213,12 @@ export const MARKDOWN_PRINT_CSS = `
 .markdown-body hr{border:0;border-top:1px solid #ddd;margin:1.2em 0}
 `;
 
-/** Print styling for plain text / source shown in a single `<pre>`. */
+/** Print styling for plain text / source shown in a single `<pre>`.
+ * Margins via body padding — see MARKDOWN_PRINT_CSS for why `@page{margin}`
+ * alone prints borderless on WebKitGTK. */
 export const TEXT_PRINT_CSS = `
-@page{margin:2.54cm}
+@page{margin:0}
+body{padding:2.54cm}
 pre.print-pre{
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:11px;line-height:1.45;color:#111;margin:0;
