@@ -19,8 +19,11 @@ export interface FileClipboardEntry {
 }
 
 interface FileClipboardState {
-  entry: FileClipboardEntry | null;
-  setEntry: (entry: FileClipboardEntry) => void;
+  /** The copied/cut files. Empty = clipboard clear; length 1 = a single
+   *  file/folder (keeps the rename-on-paste prompt); length > 1 = a multi
+   *  selection (pasted in bulk, auto-named on collision). */
+  entries: FileClipboardEntry[];
+  setEntries: (entries: FileClipboardEntry[]) => void;
   clear: () => void;
 }
 
@@ -28,7 +31,7 @@ interface FileClipboardState {
  *  module-level store (not per-tree state) so a copy in one folder/tree can be
  *  pasted in another. */
 export const useFileClipboardStore = create<FileClipboardState>((set) => ({
-  entry: null,
-  setEntry: (entry) => set({ entry }),
-  clear: () => set({ entry: null }),
+  entries: [],
+  setEntries: (entries) => set({ entries }),
+  clear: () => set({ entries: [] }),
 }));

@@ -56,6 +56,7 @@ export const TAB_ACCENT: Record<TabKind, string> = {
   embed: "var(--info, #4aa3df)",
   projects3d: "var(--accent-secondary)",
   network: "var(--info, #4aa3df)",
+  monitor: "var(--success, #3fb950)",
   calendar: "var(--accent)",
 };
 

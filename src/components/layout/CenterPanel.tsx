@@ -1,14 +1,14 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   DETACHED_DRAG_END,
   DETACHED_DRAG_MOVE,
   DETACHED_DRAG_START,
-  buildSeed,
-  detachedSeedEvent,
+  decideDetachedGroupDrop,
+  decideDetachedTabDrop,
   type DetachedDragEnd,
   type DetachedDragMove,
   type DetachedDragStart,
@@ -19,6 +19,7 @@ import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
 import { ProjectBlobPane } from "../common/ProjectBlobPane";
 import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
+import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
 import { CalendarPane } from "../calendar/CalendarPane";
 import { Subwindow } from "../tabs/Subwindow";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
@@ -42,11 +43,21 @@ import {
 import { useSettingsStore } from "../../stores/settings";
 import { useDragStore } from "../../stores/drag";
 import { useSubwindowNavStore } from "../../stores/subwindowNav";
+import { useScrollSyncStore } from "../../stores/scrollSync";
 import { useWindowMoveStore } from "../../stores/windowMove";
 import { useDetachAnimStore } from "../../stores/detachAnim";
 import { useTabLandStore } from "../../stores/tabLand";
 import { commitDrop } from "../tabs/commitDrop";
-import { snapshotFrame, physToClient, type WindowFrame } from "../../lib/coords";
+import {
+  startDetachedDropSession,
+  reseedDetached,
+} from "../tabs/detachedDropTargets";
+import {
+  snapshotFrame,
+  physToClient,
+  type PhysPoint,
+  type WindowFrame,
+} from "../../lib/coords";
 import { dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useConnectDialogStore } from "../../stores/connectDialog";
@@ -508,6 +519,29 @@ export function CenterPanel() {
         ? physToClient(frame, { x: cursorPhysX, y: cursorPhysY })
         : { x: cursorPhysX, y: cursorPhysY };
 
+    // #42: the SAME popout hit-test `TabBar` uses for main→popout drags, now also
+    // driving popout-ORIGINATED drags — so a tab dragged out of popout A lights up
+    // and docks into popout B exactly like a main→popout drag (the unification).
+    // Created per gesture on START, disposed on END. `dragSrcGroupId` is the source
+    // popout's record id, excluded from sibling hit-tests (a release over the source
+    // is handled inside it and arrives here as `cancelled:true`).
+    let session: ReturnType<typeof startDetachedDropSession> | null = null;
+    let dragSrcGroupId: string | null = null;
+    let dragLabel: string | undefined;
+    const endSession = () => {
+      session?.dispose();
+      session = null;
+      dragSrcGroupId = null;
+      dragLabel = undefined;
+    };
+    // The sibling popout under the physical cursor, or null (none, or it's the
+    // source popout — a self-drop is handled locally in the popout).
+    const siblingAt = (phys: PhysPoint | null) => {
+      if (!phys || !session) return null;
+      const pop = session.at(phys);
+      return pop && pop.groupId !== dragSrcGroupId ? pop : null;
+    };
+
     const unsubs: Array<() => void> = [];
     let cancelled = false;
     const reg = (p: Promise<() => void>) =>
@@ -521,6 +555,14 @@ export function CenterPanel() {
     reg(
       listen<DetachedDragStart>(DETACHED_DRAG_START, (ev) => {
         const { scope: dScope, groupId, label, cursorPhysX, cursorPhysY, tabKey } = ev.payload;
+        // Open a popout drop session for THIS gesture so sibling popouts of the
+        // scope become live drop targets (highlight on MOVE, dock on END) — the
+        // same machinery `TabBar` uses for main→popout drags.
+        endSession();
+        session = startDetachedDropSession();
+        dragSrcGroupId = groupId;
+        dragLabel = label;
+        void session.resolve();
         // Start the drag synchronously so the high-frequency MOVE poll that
         // follows isn't dropped by its `kind !== "detached"` guard while we await
         // the frame. Seed with the current (stale/identity) frame; refreshFrame()
@@ -547,180 +589,160 @@ export function CenterPanel() {
     reg(
       listen<DetachedDragMove>(DETACHED_DRAG_MOVE, (ev) => {
         if (useDragStore.getState().drag?.kind !== "detached") return;
-        const { x, y } = toClient(ev.payload.cursorPhysX, ev.payload.cursorPhysY);
+        const phys: PhysPoint = {
+          x: ev.payload.cursorPhysX,
+          y: ev.payload.cursorPhysY,
+        };
+        const { x, y } = toClient(phys.x, phys.y);
         useDragStore.getState().move(x, y);
         resolveTargetRef.current(x, y);
+        // Light up a SIBLING popout under the cursor (never the source), so a
+        // popout→popout drag previews its drop just like a main→popout drag.
+        if (session) session.hover(siblingAt(phys), phys, dragLabel);
       }),
     );
 
     reg(
       listen<DetachedDragEnd>(DETACHED_DRAG_END, (ev) => {
         const d = useDragStore.getState().drag;
-        if (d?.kind !== "detached") return;
-        // Shift held at release → keep the popout floating as its own window
-        // instead of docking it back (mirrors the main-window tab rule: Shift
-        // always means "new window"). The popout already IS a separate window, so
-        // honouring "new window" just means not docking. End the preview and bail.
-        if (ev.payload.shift) {
-          useDragStore.getState().end();
+        if (d?.kind !== "detached") {
+          endSession();
           return;
         }
         // END carries the LAST OS-cursor position in PHYSICAL desktop px (the DOM
-        // release event fires inside the popout on WebKitGTK, so we cannot trust
-        // `d.pointerX/Y` here). Re-map it to client coords and re-resolve the drop
-        // target so `inMain` and the target reflect where the cursor actually is.
+        // release fires inside the popout on WebKitGTK, so `d.pointerX/Y` is stale).
+        // Re-map it + re-resolve so `inMain`, the sibling hit-test, and the main-
+        // side target all reflect where the cursor actually ended.
+        const phys: PhysPoint | null =
+          ev.payload.cursorPhysX != null && ev.payload.cursorPhysY != null
+            ? { x: ev.payload.cursorPhysX, y: ev.payload.cursorPhysY }
+            : null;
         let px = d.pointerX;
         let py = d.pointerY;
-        if (ev.payload.cursorPhysX != null && ev.payload.cursorPhysY != null) {
-          const c = toClient(ev.payload.cursorPhysX, ev.payload.cursorPhysY);
+        if (phys) {
+          const c = toClient(phys.x, phys.y);
           px = c.x;
           py = c.y;
           useDragStore.getState().move(px, py);
           resolveTargetRef.current(px, py);
         }
-        // Re-read the drag after the final resolve so over/reorder targets are
-        // the ones the cursor ended over.
         const f = useDragStore.getState().drag;
-        // Dock only when released over THIS window's content and not cancelled;
-        // dropping outside the main window (or Escape) leaves the popout floating.
         const inMain =
-          px >= 0 &&
-          py >= 0 &&
-          px <= window.innerWidth &&
-          py <= window.innerHeight;
-        if (
-          !ev.payload.cancelled &&
-          inMain &&
-          f?.kind === "detached" &&
-          f.detachedGroupId &&
-          f.detachedScope &&
-          f.detachedTabKey
-        ) {
-          // Single-tab dock-back: dock just the dragged tab into its OWN scope's
-          // layout at the resolved target (a tab bar → merge; a body edge →
-          // split; otherwise default placement), then re-seed the popout so it
-          // drops the docked tab (or, if that emptied it, the popout has already
-          // closed). The resolved targets are the active scope's groups, so they
-          // only apply when the popout's scope IS the active one; cross-scope
-          // falls through to default placement inside its stored layout.
-          const store = useTabsStore.getState();
-          const sameScope = store.scope === f.detachedScope;
-          const target =
-            sameScope && f.reorderGroup
-              ? { targetGroupId: f.reorderGroup, edge: "center" as const }
-              : sameScope && f.overGroup && f.edge
-                ? { targetGroupId: f.overGroup, edge: f.edge }
-                : undefined;
-          store.attachDetachedTab(
-            f.detachedScope,
-            f.detachedGroupId,
-            f.detachedTabKey,
-            target,
-          );
-          // Docked back into the active scope's layout → play the drop-in
-          // landing on the tab as it mounts in its destination bar.
-          if (sameScope) useTabLandStore.getState().markLanded(f.detachedTabKey);
-          const entry = useTabsStore
-            .getState()
-            .detachedGroupsByScope[f.detachedScope]?.find(
-              (d) => d.id === f.detachedGroupId,
-            );
-          if (entry) {
-            const seed = buildSeed(
-              f.detachedScope,
-              f.detachedGroupId,
-              useTabsStore.getState().tabsByScope[f.detachedScope] ?? [],
-              entry.subtree,
-            );
-            void emit(detachedSeedEvent(entry.label), seed);
-          }
+          px >= 0 && py >= 0 && px <= window.innerWidth && py <= window.innerHeight;
+        // The sibling popout under the final cursor (null if none / it's the source).
+        const sibling = siblingAt(phys);
+        const overPopoutId = sibling?.groupId ?? null;
+        const store = useTabsStore.getState();
+        const done = () => {
+          endSession();
           useDragStore.getState().end();
-          return;
-        }
-        // Per-tab FREE-SPACE release (outside both windows): pop the dragged tab
-        // into its OWN new popout at the cursor — the popout analog of TabBar's
-        // `popToNewWindow`. Bounds use the PHYSICAL cursor (`cursorPhysX/Y`), as
-        // Rust `.position()` is physical (the client `px/py` would be wrong under
-        // DPI scaling), matching detachTab/popToNewWindow. After splitting we
-        // re-seed the SOURCE popout so it drops the tab that just left.
-        if (
-          !ev.payload.cancelled &&
-          !inMain &&
-          f?.kind === "detached" &&
-          f.detachedScope &&
-          f.detachedGroupId &&
-          f.detachedTabKey &&
-          ev.payload.cursorPhysX != null &&
-          ev.payload.cursorPhysY != null
-        ) {
-          const store = useTabsStore.getState();
-          const bounds = {
-            x: Math.round(ev.payload.cursorPhysX - 80),
-            y: Math.round(ev.payload.cursorPhysY - 8),
-            w: 900,
-            h: 640,
-          };
-          const newLabel = store.detachTabToNewWindow(
-            f.detachedScope,
-            f.detachedGroupId,
-            f.detachedTabKey,
-            bounds,
-          );
-          if (newLabel) {
-            const src = useTabsStore
-              .getState()
-              .detachedGroupsByScope[f.detachedScope]?.find(
-                (d) => d.id === f.detachedGroupId,
-              );
-            if (src) {
-              const seed = buildSeed(
-                f.detachedScope,
-                f.detachedGroupId,
-                useTabsStore.getState().tabsByScope[f.detachedScope] ?? [],
-                src.subtree,
-              );
-              void emit(detachedSeedEvent(src.label), seed);
+        };
+
+        // ── Single dragged tab: unified {newWindow | dockDetached | dockMain} ────
+        if (f?.kind === "detached" && f.detachedScope && f.detachedGroupId && f.detachedTabKey) {
+          const scope = f.detachedScope;
+          const srcGroup = f.detachedGroupId;
+          const tabKey = f.detachedTabKey;
+          const decision = decideDetachedTabDrop({
+            cancelled: ev.payload.cancelled,
+            shift: ev.payload.shift ?? false,
+            inMain,
+            overPopoutId,
+            srcGroupId: srcGroup,
+          });
+          switch (decision.kind) {
+            case "dockDetached": {
+              // Move the tab from its source popout INTO the sibling popout under
+              // the cursor, at the pane the cursor resolves to. Re-seed BOTH windows
+              // (the destination plays the drop-in landing on the moved tab).
+              const target = phys && sibling ? session!.targetAt(sibling, phys) : undefined;
+              store.moveTabBetweenDetached(scope, srcGroup, decision.toGroupId, tabKey, target);
+              reseedDetached(scope, decision.toGroupId, tabKey);
+              reseedDetached(scope, srcGroup);
+              break;
             }
+            case "dockMain": {
+              // Dock just the dragged tab into its OWN scope's in-window layout at
+              // the resolved target (bar → merge; body edge → split; else default).
+              // Targets only apply when the popout's scope IS the active one.
+              const sameScope = store.scope === scope;
+              const target =
+                sameScope && f.reorderGroup
+                  ? { targetGroupId: f.reorderGroup, edge: "center" as const }
+                  : sameScope && f.overGroup && f.edge
+                    ? { targetGroupId: f.overGroup, edge: f.edge }
+                    : undefined;
+              store.attachDetachedTab(scope, srcGroup, tabKey, target);
+              if (sameScope) useTabLandStore.getState().markLanded(tabKey);
+              reseedDetached(scope, srcGroup);
+              break;
+            }
+            case "newWindow": {
+              // Shift, or a free-space release: pop the tab into its OWN new popout
+              // at the PHYSICAL cursor (Rust `.position()` is physical). A lone-tab
+              // source is refused downstream (null) → clean no-op, never a hang.
+              if (phys) {
+                const bounds = {
+                  x: Math.round(phys.x - 80),
+                  y: Math.round(phys.y - 8),
+                  w: 900,
+                  h: 640,
+                };
+                const newLabel = store.detachTabToNewWindow(scope, srcGroup, tabKey, bounds);
+                if (newLabel) reseedDetached(scope, srcGroup);
+              }
+              break;
+            }
+            case "local":
+            case "none":
+              // The source popout already committed a within-popout drop (or the
+              // gesture was cancelled) — nothing for the host to do.
+              break;
           }
-          useDragStore.getState().end();
+          done();
           return;
         }
-        if (!ev.payload.cancelled && inMain && f?.kind === "detached" && f.detachedGroupId) {
-          const store = useTabsStore.getState();
-          // Mirror the button-path branch in `listenDetachedHost` (detached.ts):
-          // `attachGroup` re-injects only into the ACTIVE scope's live layout, so
-          // it can only dock a group whose scope is currently active. When the
-          // popout's scope is NOT the active one, re-inject into that scope's
-          // STORED layout via `dropDetachedGroup` instead — otherwise attachGroup
-          // silently no-ops and the drop is swallowed.
-          if (f.detachedScope && store.scope === f.detachedScope) {
-            if (f.reorderGroup) {
-              // Released over a tab bar → merge into that group.
-              store.attachGroup(f.detachedGroupId, {
-                targetGroupId: f.reorderGroup,
-                edge: "center",
-              });
-            } else if (f.overGroup && f.edge) {
-              store.attachGroup(f.detachedGroupId, {
-                targetGroupId: f.overGroup,
-                edge: f.edge,
-              });
+
+        // ── Whole group: dock into main, or stay floating ───────────────────────
+        if (f?.kind === "detached" && f.detachedGroupId && f.detachedScope) {
+          const decision = decideDetachedGroupDrop({
+            cancelled: ev.payload.cancelled,
+            shift: ev.payload.shift ?? false,
+            inMain,
+            overPopoutId,
+            srcGroupId: f.detachedGroupId,
+          });
+          if (decision.kind === "dockMain") {
+            // Mirror listenDetachedHost: attachGroup re-injects only into the ACTIVE
+            // scope's live layout; a non-active scope re-injects into its STORED
+            // layout via dropDetachedGroup (else attachGroup silently no-ops).
+            if (store.scope === f.detachedScope) {
+              if (f.reorderGroup) {
+                store.attachGroup(f.detachedGroupId, {
+                  targetGroupId: f.reorderGroup,
+                  edge: "center",
+                });
+              } else if (f.overGroup && f.edge) {
+                store.attachGroup(f.detachedGroupId, {
+                  targetGroupId: f.overGroup,
+                  edge: f.edge,
+                });
+              } else {
+                store.attachGroup(f.detachedGroupId);
+              }
             } else {
-              // Over the panel but no resolved target → default placement.
-              store.attachGroup(f.detachedGroupId);
+              store.dropDetachedGroup(f.detachedScope, f.detachedGroupId);
             }
-          } else if (f.detachedScope) {
-            // Cross-scope drop: re-inject into the popout's stored layout (target
-            // edges don't apply to a layout that isn't currently rendered).
-            store.dropDetachedGroup(f.detachedScope, f.detachedGroupId);
           }
+          // `float` (Shift / free space / over a sibling popout) → leave it be.
         }
-        useDragStore.getState().end();
+        done();
       }),
     );
 
     return () => {
       cancelled = true;
+      endSession();
       for (const fn of unsubs) fn();
     };
   }, []);
@@ -749,6 +771,28 @@ export function CenterPanel() {
     }
     return { activeKeyOfGroup, groupOfKey };
   }, [layoutByScope, scope]);
+  // Groups whose active tab is a scroll-syncable viewer (text/code, markdown, or
+  // PDF). Only these can host the divider scroll-link button, and only these are
+  // considered valid link endpoints. Rebuilt when the layout or tabs change.
+  const syncableGroups = useMemo(() => {
+    const byKey = new Map(tabs.map((t) => [t.key, t]));
+    const set = new Set<string>();
+    for (const g of allGroups(layoutByScope[scope] ?? null)) {
+      const t = g.activeKey ? byKey.get(g.activeKey) : undefined;
+      if (
+        t?.kind === "embed" &&
+        (t.viewer === "text" || t.viewer === "markdown" || t.viewer === "pdf")
+      ) {
+        set.add(g.id);
+      }
+    }
+    return set;
+  }, [layoutByScope, scope, tabs]);
+  // Drop any scroll-link whose endpoints are no longer both syncable viewers
+  // (a subwindow's active tab changed to a shell/image, or the group vanished).
+  useEffect(() => {
+    useScrollSyncStore.getState().prune(syncableGroups);
+  }, [syncableGroups]);
   // #62: fullscreen is active only when the stored group actually exists in the
   // current scope (a stale id from another scope is ignored). When active, the
   // fullscreened group's pane is sized to the whole panel and all others hidden.
@@ -774,6 +818,7 @@ export function CenterPanel() {
           panelRef={panelRef}
           registerGroupBody={registerGroupBody}
           onResized={measure}
+          syncableGroups={syncableGroups}
         />
       ) : (
         // No tabs yet: render an empty subwindow so its tab bar's "+" is always
@@ -877,6 +922,8 @@ export function CenterPanel() {
                   visible={visible}
                   onConnect={() => openConnectDialog(scopeKey)}
                 />
+              ) : tab.kind === "monitor" ? (
+                <SystemMonitorPane visible={visible} />
               ) : tab.kind === "files" ? (
                 <FileBrowser
                   // While a remote project is disconnected the SFTP tree can't be
@@ -909,6 +956,7 @@ export function CenterPanel() {
                     projectId={scopeKey === "root" ? null : scopeKey}
                     tabKey={tab.key}
                     visible={visible}
+                    groupId={groupId}
                   />
                 ) : (
                   <EmbedPane
@@ -1214,6 +1262,46 @@ export function DragGhost() {
   );
 }
 
+/**
+ * The scroll-link toggle that sits on the divider between two side-by-side
+ * viewer subwindows. When enabled, scrolling one subwindow proportionally
+ * scrolls the other (see stores/scrollSync). Subscribes narrowly to its own
+ * linked state so unrelated link changes don't re-render it. Stops pointer/click
+ * propagation so toggling never starts a divider resize drag.
+ */
+function ScrollLinkButton({ a, b }: { a: string; b: string }) {
+  const linked = useScrollSyncStore((s) => s.links[a] === b);
+  const toggleLink = useScrollSyncStore((s) => s.toggleLink);
+  return (
+    <button
+      type="button"
+      className={`split-scroll-link-btn${linked ? " linked" : ""}`}
+      title={linked ? "Unlink scrolling" : "Link scrolling of these subwindows"}
+      aria-pressed={linked}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        toggleLink(a, b);
+      }}
+    >
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" />
+        <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" />
+      </svg>
+    </button>
+  );
+}
+
 // ── Recursive layout renderer ────────────────────────────────────────────────
 
 interface TreeProps {
@@ -1223,6 +1311,9 @@ interface TreeProps {
   panelRef: React.RefObject<HTMLDivElement>;
   registerGroupBody: (id: string) => (el: HTMLDivElement | null) => void;
   onResized: () => void;
+  /** Group ids whose active tab is a scroll-syncable viewer — the divider
+   *  scroll-link button only appears between two such groups. */
+  syncableGroups: Set<string>;
 }
 
 function LayoutTree(props: TreeProps) {
@@ -1308,7 +1399,19 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
             <div
               className={`split-divider split-divider-${node.dir}`}
               onPointerDown={startDrag(i)}
-            />
+            >
+              {/* Scroll-link toggle: only between two adjacent leaf subwindows
+                  whose active tabs are both syncable viewers (text/markdown/PDF). */}
+              {node.children[i].type === "group" &&
+                node.children[i + 1].type === "group" &&
+                props.syncableGroups.has(node.children[i].id) &&
+                props.syncableGroups.has(node.children[i + 1].id) && (
+                  <ScrollLinkButton
+                    a={node.children[i].id}
+                    b={node.children[i + 1].id}
+                  />
+                )}
+            </div>
           )}
         </Fragment>
       ))}

@@ -24,6 +24,7 @@ import {
   unregisterEditor,
 } from "../../stores/editorJump";
 import { usePdfSyncStore } from "../../stores/pdfSync";
+import { useScrollSync } from "../../stores/scrollSync";
 import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
 import { CompareView } from "./CompareView";
@@ -245,6 +246,10 @@ interface Props {
    *  parent `.center-pane` already hides inactive panes via display:none — but
    *  accepted for call-site parity with the other pane components. */
   visible?: boolean;
+  /** The subwindow (group) id hosting this pane, for proportional scroll-linking
+   *  between two side-by-side viewer subwindows (see stores/scrollSync). Null/
+   *  absent when the pane isn't in a syncable group; the sync hooks then no-op. */
+  groupId?: string | null;
 }
 
 /**
@@ -268,7 +273,7 @@ interface Props {
  *                  PATH; it degrades to exactly the "text" editor otherwise.
  * An "Open externally" button is always offered as a fallback.
  */
-export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
+export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Props) {
   const fileName = basename(path) || path;
 
   // Resolve whether these bytes are remote-native (host SFTP) or the local
@@ -332,9 +337,9 @@ export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
   if (viewer === "image") {
     view = <ImageView path={path} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "pdf") {
-    view = <PdfView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <PdfView path={path} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   } else if (viewer === "markdown") {
-    view = <MarkdownView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <MarkdownView path={path} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   } else if (viewer === "tex") {
     view = <TexView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "table") {
@@ -352,11 +357,11 @@ export function FileViewerPane({ viewer, path, projectId, tabKey }: Props) {
   } else if (viewer === "html") {
     // HTML is now the editable base editor with a sandboxed live preview, keyed
     // to its own per-type prefs.
-    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} type="html" />;
+    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} type="html" groupId={groupId} />;
   } else if (viewer === "sqlite") {
     view = <SqliteView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else {
-    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   }
   return (
     <FileScopeContext.Provider value={projectId}>
@@ -1555,6 +1560,7 @@ function CodeEditor({
   blame,
   initialScrollTop,
   onScrollPersist,
+  groupId,
 }: {
   error: string | null;
   draft: string;
@@ -1631,8 +1637,13 @@ function CodeEditor({
   /** Called (throttled) with the textarea's `scrollTop` as the reader scrolls, so
    *  the position can be persisted. */
   onScrollPersist?: (scrollTop: number) => void;
+  /** When set, the subwindow (group) id hosting this editor, so its scroll is
+   *  proportionally linked to a side-by-side viewer subwindow (scrollSync). */
+  groupId?: string | null;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Proportional scroll-link to a paired subwindow (no-op unless linked).
+  const reportScrollSync = useScrollSync(groupId, textareaRef);
   const gutterInnerRef = useRef<HTMLDivElement>(null);
   const blameInnerRef = useRef<HTMLDivElement>(null);
   const blameInlineRef = useRef<HTMLDivElement>(null);
@@ -1899,6 +1910,7 @@ function CodeEditor({
   const persistTimer = useRef<number | null>(null);
   const onScroll = () => {
     syncScroll();
+    reportScrollSync();
     if (!onScrollPersist || !restoredScroll.current) return;
     const ta = textareaRef.current;
     if (!ta) return;
@@ -4269,11 +4281,13 @@ function TextView({
   onOpenExternally,
   tabKey,
   type = "text",
+  groupId,
 }: {
   path: string;
   onOpenExternally: () => void;
   tabKey?: string;
   type?: InternalViewer;
+  groupId?: string | null;
 }) {
   const {
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
@@ -4407,6 +4421,7 @@ function TextView({
             blame={blame}
             initialScrollTop={viewPos.initial?.scrollTop}
             onScrollPersist={persistScroll}
+            groupId={groupId}
           />
         )}
       </div>
@@ -4418,10 +4433,12 @@ function MarkdownView({
   path,
   onOpenExternally,
   tabKey,
+  groupId,
 }: {
   path: string;
   onOpenExternally: () => void;
   tabKey?: string;
+  groupId?: string | null;
 }) {
   const {
     error, draft, setDraft, loaded, isDirty, saving, saveError, save,
@@ -4432,6 +4449,16 @@ function MarkdownView({
   const [compareOpen, setCompareOpen] = useState(false);
   const font = useEditorFontSize(tabKey, "markdown");
   const wheelRef = useNonPassiveWheel((e) => onCtrlWheelFont(e, font.inc, font.dec));
+  // Proportional scroll-link (preview mode only — edit mode links via CodeEditor's
+  // textarea). `.file-viewer-body` is the overflow:auto scroller for the preview.
+  const bodyScrollRef = useRef<HTMLDivElement | null>(null);
+  const setBodyRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      wheelRef(el);
+      bodyScrollRef.current = el;
+    },
+    [wheelRef],
+  );
   const ai = useTabAiPrefs(tabKey, "markdown");
   const ac = ai.ac;
   const gc = ai.gc;
@@ -4445,6 +4472,9 @@ function MarkdownView({
   );
   // Preview always reflects the live draft, so toggling shows unsaved edits.
   const html = useMemo(() => (loaded ? renderMarkdown(draft) : ""), [loaded, draft]);
+  // Register the preview scroller only while in preview mode, so it never fights
+  // CodeEditor for the same group id (edit mode links via the textarea instead).
+  const reportPreviewSync = useScrollSync(mode === "preview" ? groupId : null, bodyScrollRef);
 
   // After the preview HTML is committed to the DOM, run the mermaid/KaTeX
   // enrichment pass (Dev A): it finds the mermaid code blocks and math
@@ -4581,7 +4611,8 @@ function MarkdownView({
       )}
       <div
         className={`file-viewer-body${mode === "edit" ? " file-viewer-code-body" : ""}`}
-        ref={wheelRef}
+        ref={setBodyRef}
+        onScroll={reportPreviewSync}
       >
         {mode === "edit" && compareOpen ? (
           <CompareView
@@ -4617,6 +4648,7 @@ function MarkdownView({
             editorApiRef={editorApi}
             initialScrollTop={viewPos.initial?.scrollTop}
             onScrollPersist={persistScroll}
+            groupId={groupId}
           />
         ) : error != null ? (
           <div className="file-viewer-error">{error}</div>
@@ -4952,6 +4984,7 @@ function PdfCanvas({
   path,
   onOpenExternally,
   tabKey,
+  groupId,
 }: {
   path: string;
   /** When set, an "Open externally" button is shown at the end of the toolbar.
@@ -4959,6 +4992,8 @@ function PdfCanvas({
   onOpenExternally?: () => void;
   /** This viewer tab's key, for #viewerpos scroll/zoom persistence. */
   tabKey?: string;
+  /** Hosting subwindow (group) id, for proportional scroll-linking (scrollSync). */
+  groupId?: string | null;
 }) {
   const scope = useFileScope();
   const viewPos = useViewerState(tabKey);
@@ -4972,6 +5007,8 @@ function PdfCanvas({
   // button and the initial fit restore it. Mirrors ImageViewer's `fittedRef`.
   const fittedRef = useRef(viewPos.initial?.scale == null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Proportional scroll-link to a paired subwindow (no-op unless linked).
+  const reportScrollSync = useScrollSync(groupId, scrollRef);
   const contentRef = useRef<HTMLDivElement>(null);
   // True once the first document load has run, so only that load restores the
   // session-persisted scroll/zoom (#viewerpos); later reloads behave as before.
@@ -5410,6 +5447,7 @@ function PdfCanvas({
   const onScrollPersist = useCallback(() => {
     const el = scrollRef.current;
     if (!el || restoreScroll.current) return;
+    reportScrollSync();
     const top = el.scrollTop;
     const left = el.scrollLeft;
     if (scrollPersistTimer.current != null) window.clearTimeout(scrollPersistTimer.current);
@@ -5417,7 +5455,7 @@ function PdfCanvas({
       () => viewPos.persist({ scrollTop: top, scrollLeft: left }),
       200,
     );
-  }, [viewPos]);
+  }, [viewPos, reportScrollSync]);
   useEffect(
     () => () => {
       if (scrollPersistTimer.current != null) window.clearTimeout(scrollPersistTimer.current);
@@ -5663,17 +5701,19 @@ function PdfView({
   path,
   onOpenExternally,
   tabKey,
+  groupId,
 }: {
   path: string;
   onOpenExternally: () => void;
   tabKey?: string;
+  groupId?: string | null;
 }) {
   // No ViewerHeader: the tab already shows the file name, so a filename row would
   // be redundant. The "Open externally" action lives in the PdfCanvas toolbar.
   return (
     <div className="file-viewer">
       <div className="file-viewer-body">
-        <PdfCanvas path={path} onOpenExternally={onOpenExternally} tabKey={tabKey} />
+        <PdfCanvas path={path} onOpenExternally={onOpenExternally} tabKey={tabKey} groupId={groupId} />
       </div>
     </div>
   );

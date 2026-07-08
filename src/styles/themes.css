@@ -3159,6 +3159,45 @@ select option {
   background: var(--accent);
 }
 
+/* Scroll-link toggle straddling a divider between two viewer subwindows.
+   Absolutely centred so it works for both row (vertical) and column
+   (horizontal) dividers; lifted above the divider so its own pointer events
+   fire instead of starting a resize drag. */
+.split-scroll-link-btn {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--control-border);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.12s, color 0.12s, background-color 0.12s, border-color 0.12s;
+}
+.split-divider:hover .split-scroll-link-btn {
+  opacity: 1;
+}
+.split-scroll-link-btn:hover {
+  opacity: 1;
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.split-scroll-link-btn.linked {
+  opacity: 1;
+  color: var(--accent-contrast, #fff);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 /* A subwindow: per-group tab bar over its pane region. */
 .subwindow {
   display: flex;
@@ -6472,6 +6511,15 @@ select option {
 }
 
 .file-entry:hover { background-color: var(--pill-hover-bg); }
+
+/* Multi-selection highlight (click / shift-range / ctrl-toggle). Sits above the
+   plain hover but below the move-drop-target outline. */
+.file-entry.selected { background-color: var(--accent-soft, rgba(88, 166, 255, 0.22)); }
+.file-entry.selected:hover { background-color: var(--accent-soft, rgba(88, 166, 255, 0.28)); }
+
+/* The tree is focusable (tabIndex) so it can catch Enter/Escape for the
+   selection; suppress the focus ring around the whole panel. */
+.file-tree:focus { outline: none; }
 
 /* Files never start a native (browser) drag — embeddable ones use a pointer
    drag to a tab bar, and every file can be pointer-dragged into a folder to move

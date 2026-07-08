@@ -13,6 +13,7 @@ export type TabKind =
   | "embed"
   | "projects3d"
   | "network"
+  | "monitor"
   | "calendar";
 
 /**
@@ -37,6 +38,13 @@ export const BLOB_TAB_CMD = "__eldrun_blob__";
 
 /** Sentinel command for the read-only local/SSH host traffic dashboard. */
 export const NETWORK_TAB_CMD = "__eldrun_network__";
+
+/**
+ * Sentinel `cmd` for the native htop-like system monitor tab: a read-only,
+ * whole-machine process/CPU/memory view. Carries no PTY — like the network pane
+ * it's identified by this command so cmdToKind can recover its kind on restore.
+ */
+export const MONITOR_TAB_CMD = "__eldrun_monitor__";
 
 /**
  * Sentinel `cmd` for the native calendar tab (root scope only): a local,
@@ -507,6 +515,23 @@ interface TabsStore {
     // from the cursor (a body edge splits, center/a bar slot merges into that
     // group). Omitted → append to the popout's first pane (legacy behaviour).
     target?: DetachedDockTarget,
+  ) => void;
+  // #42 (detached → detached): move a SINGLE tab from one open popout INTO another
+  // open popout of the SAME scope — fired when a tab dragged out of popout A is
+  // released over popout B. Removes `tabKey` from the source popout's subtree
+  // (dropping the source record + closing its OS window when it empties, mirroring
+  // `attachDetachedTab`) and places it into the destination popout's subtree at
+  // `target`. The payload STAYS in `tabsByScope` (shared), so the PTY the MAIN
+  // window owns never dies and both popouts re-attach to it after the re-seed.
+  // No-op if either popout is gone, the tab is absent from the source, or it is
+  // already in the destination.
+  moveTabBetweenDetached: (
+    scope: string,
+    fromGroupId: string,
+    toGroupId: string,
+    tabKey: string,
+    target?: DetachedDockTarget,
+    opts?: { skipBackend?: boolean },
   ) => void;
   // #42: apply an edit streamed back from a detached window to the main store's
   // record of that detached group (its subtree node + tab payloads). Keeps the
@@ -2201,6 +2226,48 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  moveTabBetweenDetached: (scope, fromGroupId, toGroupId, tabKey, target, opts) => {
+    // A tab can't move onto itself, and both endpoints must exist.
+    if (fromGroupId === toGroupId) return;
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const from = entries.find((d) => d.id === fromGroupId);
+    const to = entries.find((d) => d.id === toGroupId);
+    if (!from || !to) return;
+    // The tab must live in the source and NOT already in the destination.
+    if (!orderedTabKeys(from.subtree).includes(tabKey)) return;
+    if (orderedTabKeys(to.subtree).includes(tabKey)) return;
+    // The source popout is emptied by this tab leaving → close its OS window.
+    const willEmpty =
+      orderedTabKeys(from.subtree).filter((k) => k !== tabKey).length === 0;
+
+    set((s) => {
+      const list = s.detachedGroupsByScope[scope] ?? [];
+      // One atomic pass: place the key in the destination subtree and strip it
+      // from the source. The payload in `tabsByScope` is untouched (shared PTY).
+      let next = list.map((d) => {
+        if (d.id === toGroupId) {
+          return { ...d, subtree: placeKeyInTree(d.subtree, tabKey, target) };
+        }
+        if (d.id === fromGroupId) {
+          const sub = removeKeyFromTree(d.subtree, tabKey);
+          return sub ? { ...d, subtree: sub } : d;
+        }
+        return d;
+      });
+      // Drop the source record entirely when the tab leaving emptied it.
+      if (willEmpty) next = next.filter((d) => d.id !== fromGroupId);
+      return {
+        detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: next },
+      };
+    });
+
+    // Close the emptied source popout's OS window (frees the registry slot). The
+    // destination window is re-seeded by the caller so the moved tab renders.
+    if (willEmpty && !opts?.skipBackend) {
+      invoke("attach_subwindow", { registryId: from.label }).catch(() => {});
+    }
+  },
+
   applyDetachedEdit: (scope, groupId, edit) => {
     set((s) => {
       const entries = s.detachedGroupsByScope[scope] ?? [];
@@ -2713,6 +2780,7 @@ export function cmdToKind(cmd: string): TabKind {
   if (cmd === FILES_TAB_CMD) return "files";
   if (cmd === BLOB_TAB_CMD) return "projects3d";
   if (cmd === NETWORK_TAB_CMD) return "network";
+  if (cmd === MONITOR_TAB_CMD) return "monitor";
   if (cmd === CALENDAR_TAB_CMD) return "calendar";
   if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
@@ -2736,6 +2804,7 @@ export function isRestorableKind(kind: TabKind): boolean {
     kind === "shell" ||
     kind === "files" ||
     kind === "network" ||
+    kind === "monitor" ||
     kind === "calendar"
   );
 }

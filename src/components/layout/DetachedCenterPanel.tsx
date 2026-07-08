@@ -675,7 +675,14 @@ export function DetachedCenterPanel({
       } satisfies DetachedDragEnd);
     };
     const release = (shift = false) => {
-      if (tabKey != null && sourceGroup && popoutFrame) {
+      // Shift ALWAYS means "pop into its own window" (unified with the main-window
+      // tab rule), so DON'T commit a within-popout drop under Shift — hand the
+      // gesture to the main host UNcancelled and let its unified ladder run the
+      // new-window branch (`decideDetachedTabDrop` → `detachTabToNewWindow`). For a
+      // lone-tab popout the host refuses (it's already its own window) → a clean
+      // no-op, never the previous local-split + Shift-bail hang. Without Shift, a
+      // release over THIS popout is still committed locally (reorder/split).
+      if (!shift && tabKey != null && sourceGroup && popoutFrame) {
         const c = physToClient(popoutFrame, last);
         const handledLocally = handleLocalTabRelease(tabKey, c.x, c.y);
         finish(handledLocally, shift);

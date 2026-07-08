@@ -299,6 +299,47 @@ export function relFromAbs(projectDir: string, absPath: string): string {
   return relativePathWithin(projectDir, absPath) ?? "";
 }
 
+// ── File-tree multi-selection (pure logic, unit-tested) ──────────────────────
+// Selection is a set of entry *absolute paths*; `ordered` is the flat list of
+// visible rows in on-screen order (regular, then scaffold, then gitignored),
+// which is what a shift-range spans.
+
+/** The contiguous slice of `ordered` between `anchor` and `target` (inclusive),
+ *  order-independent. If either endpoint isn't in `ordered`, falls back to just
+ *  `target`. */
+export function rangeSelect(ordered: string[], anchor: string, target: string): string[] {
+  const a = ordered.indexOf(anchor);
+  const b = ordered.indexOf(target);
+  if (a === -1 || b === -1) return [target];
+  const [lo, hi] = a <= b ? [a, b] : [b, a];
+  return ordered.slice(lo, hi + 1);
+}
+
+/** Next selection + anchor after a click on `path`, given the current selection,
+ *  the visible order, and the modifier keys:
+ *   - shift (with an anchor)  → replace with the anchor→path range.
+ *   - toggle (ctrl/cmd)       → flip `path`; anchor becomes `path`.
+ *   - plain                   → select only `path`; anchor becomes `path`.
+ *  Shift without a prior anchor behaves like a plain click. */
+export function nextSelection(
+  cur: ReadonlySet<string>,
+  ordered: string[],
+  anchor: string | null,
+  path: string,
+  mods: { shift: boolean; toggle: boolean },
+): { selected: Set<string>; anchor: string } {
+  if (mods.shift && anchor) {
+    return { selected: new Set(rangeSelect(ordered, anchor, path)), anchor };
+  }
+  if (mods.toggle) {
+    const selected = new Set(cur);
+    if (selected.has(path)) selected.delete(path);
+    else selected.add(path);
+    return { selected, anchor: path };
+  }
+  return { selected: new Set([path]), anchor: path };
+}
+
 export function visibleEntries(
   entries: FileEntry[],
   options: {

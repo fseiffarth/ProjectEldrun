@@ -1,11 +1,11 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   BLOB_TAB_CMD,
   CALENDAR_TAB_CMD,
   NETWORK_TAB_CMD,
+  MONITOR_TAB_CMD,
   EMPTY_GROUP_ID,
   effectiveTabLocation,
   isLocatableKind,
@@ -135,8 +135,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   );
 
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
-  // #56: a right-click on a tab enters inline rename mode for that key (no menu,
-  // no prompt dialog). The label becomes a focused, text-selected <input>.
+  // Right-click on a tab opens this context menu (Close / Close others / Close to
+  // the left / Close to the right / Rename). Shift+right-click bypasses it and
+  // goes straight to inline rename (#56). Keyed to the clicked tab + its index so
+  // the left/right-of splits resolve against this group's ordered `tabs`.
+  const [tabMenu, setTabMenu] = useState<
+    { x: number; y: number; key: string; index: number } | null
+  >(null);
+  const tabMenuRef = useRef<HTMLDivElement>(null);
+  // #56: Shift+right-click on a tab enters inline rename mode for that key (no
+  // menu, no prompt dialog). The label becomes a focused, text-selected <input>.
   const [editingKey, setEditingKey] = useState<string | null>(null);
   // The local (Ollama) model a "Local Model" tab launches: the model tagged for
   // the "tabs" task in the 🧠 menu, falling back to the default `ollama_model`.
@@ -266,6 +274,47 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     if (nx !== menuPos.x || ny !== menuPos.y) setMenuPos({ x: nx, y: ny });
   }, [menuOpen, menuPos]);
 
+  // Dismiss the tab context menu on an outside click or Escape (mirrors the add
+  // menu). Clicks inside the menu itself are ignored so its items can fire.
+  useEffect(() => {
+    if (!tabMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (tabMenuRef.current?.contains(e.target as Node)) return;
+      setTabMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setTabMenu(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [tabMenu]);
+
+  // Keep the tab context menu inside the viewport: it opens at the cursor and
+  // grows right/down, so one near the right/bottom edge would clip. Measure once
+  // mounted and shift it back in (guarded so the corrective set doesn't loop).
+  useLayoutEffect(() => {
+    if (!tabMenu) return;
+    const el = tabMenuRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
+    let nx = tabMenu.x;
+    let ny = tabMenu.y;
+    if (rect.right > window.innerWidth - margin) {
+      nx = Math.max(margin, window.innerWidth - margin - rect.width);
+    }
+    if (rect.bottom > window.innerHeight - margin) {
+      ny = Math.max(margin, window.innerHeight - margin - rect.height);
+    }
+    if (nx !== tabMenu.x || ny !== tabMenu.y) {
+      setTabMenu((m) => (m ? { ...m, x: nx, y: ny } : m));
+    }
+  }, [tabMenu]);
+
   // Drop inline-rename mode if the edited tab disappears (closed / moved away).
   useEffect(() => {
     if (editingKey && !tabs.some((t) => t.key === editingKey)) {
@@ -323,6 +372,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     ensureTab(
       { label: "Projects", cmd: BLOB_TAB_CMD, cwd: projectCwd, kind: "projects3d" },
       (tab) => tab.kind === "projects3d",
+    );
+    setMenuPos(null);
+  }
+
+  // Open (or focus, if already open) the htop-like system monitor tab. The view
+  // is whole-machine/global, so one per group is enough — ensureTab focuses an
+  // existing one instead of stacking duplicates.
+  function handleAddMonitor() {
+    focusGroup(groupId);
+    ensureTab(
+      { label: "System Monitor", cmd: MONITOR_TAB_CMD, cwd: projectCwd, kind: "monitor" },
+      (tab) => tab.kind === "monitor",
     );
     setMenuPos(null);
   }
@@ -385,11 +446,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     }
   }
 
-  // #56: right-click a tab → immediately enter inline rename mode (no menu).
+  // #56: enter inline rename mode for a tab (no menu). Reached via Shift+right-
+  // click and the context menu's "Rename" item.
   function startInlineRename(event: React.MouseEvent, key: string) {
     event.preventDefault();
     event.stopPropagation();
     setMenuPos(null);
+    setTabMenu(null);
     focusGroup(groupId);
     setEditingKey(key);
   }
@@ -399,6 +462,32 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     // label unchanged.
     renameTab(key, value);
     setEditingKey(null);
+  }
+
+  // Right-click a tab → context menu; Shift+right-click → straight to rename.
+  function onTabContextMenu(event: React.MouseEvent, key: string, index: number) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.shiftKey) {
+      startInlineRename(event, key);
+      return;
+    }
+    setMenuPos(null); // close the add (+) menu if it was open
+    focusGroup(groupId);
+    setTabMenu({ x: event.clientX, y: event.clientY, key, index });
+  }
+
+  // Bulk-close helpers built on the tested `removeTab` action over this group's
+  // ordered `tabs`. Each removeTab reads fresh store state and repicks the active
+  // tab / collapses empty groups, so looping over a render-time snapshot is safe.
+  function closeToLeft(index: number) {
+    tabs.slice(0, index).forEach((t) => removeTab(t.key));
+  }
+  function closeToRight(index: number) {
+    tabs.slice(index + 1).forEach((t) => removeTab(t.key));
+  }
+  function closeOthers(key: string) {
+    tabs.filter((t) => t.key !== key).forEach((t) => removeTab(t.key));
   }
 
   // Start a pointer-based tab drag once the pointer crosses a 5px threshold.
@@ -651,13 +740,15 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     bindDragRelease({ onCommit: (shiftKey) => void onCommit(shiftKey), onAbort });
   }
 
-  // #42: drag the left-edge grip to pop the group into its own OS window —
-  // replacing the old ⧉ button. Focuses immediately on press; once the pointer
-  // crosses a small threshold the group detaches at the cursor and the window
-  // manager takes over the move (`startDragging`), so the popout follows the
-  // cursor natively until release. Only the explicit `.tab-drag-grip` triggers
-  // this — grabbing empty bar space no longer detaches, so a stray bar drag can't
-  // accidentally pop a subwindow out.
+  // #42: drag the left-edge grip to pop the group into its own OS window. Focuses
+  // on press; once the pointer crosses a small threshold a lightweight follow-ghost
+  // appears (a DOM card — no per-frame IPC, so it tracks the cursor smoothly) and
+  // the real detached OS window is created only on RELEASE, positioned where the
+  // group is dropped. This replaces the old "spawn immediately, then hand the move
+  // to the WM via `startDragging`" path, whose fragile grab after a heavy async
+  // window spawn made the detach lag and often required a SECOND drag to move the
+  // new window. Only the explicit `.tab-drag-grip` triggers this — grabbing empty
+  // bar space can't accidentally pop a subwindow out.
   function onBarPointerDown(e: React.PointerEvent) {
     focusGroup(groupId);
     if (e.button !== 0) return;
@@ -666,46 +757,94 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     e.preventDefault();
     const startX = e.clientX;
     const startY = e.clientY;
-    let detaching = false;
+    const pointerId = e.pointerId;
+    const activeLabel = tabs.find((t) => t.key === activeKey)?.label ?? "Subwindow";
+    // Capture on the document root (not this bar): detaching removes the group's
+    // node from the layout, so a capture anchored here would drop mid-gesture.
+    const captureEl = document.documentElement;
+    let dragging = false;
+    let ghost: HTMLElement | null = null;
+    let lastClient = { x: startX, y: startY };
+    let lastPhys: PhysPoint | null = null;
+    let stopPoll: (() => void) | null = null;
+
+    const onMove = (ev: PointerEvent) => {
+      if (!dragging) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 8) return;
+        dragging = true;
+        // Build the follow-ghost (reuses the drag-ghost styling: fixed, z-topped,
+        // pointer-events:none). No OS window yet — it is spawned on release.
+        ghost = document.createElement("div");
+        ghost.className = "tab-drag-ghost";
+        const lbl = document.createElement("div");
+        lbl.className = "tab-drag-ghost-label";
+        lbl.textContent = activeLabel;
+        ghost.appendChild(lbl);
+        ghost.style.left = `${ev.clientX}px`;
+        ghost.style.top = `${ev.clientY}px`;
+        document.body.appendChild(ghost);
+        // Capture the terminal pointer event on engines that stop delivering it
+        // once the cursor leaves the source window (Win/mac); WebKitGTK keeps the
+        // implicit grab, so the flag leaves capture off there.
+        if (dragPlatform.needsPointerCapture) {
+          try {
+            captureEl.setPointerCapture(pointerId);
+          } catch {
+            /* best-effort */
+          }
+        }
+        // Poll the OS cursor (physical px) so the drop position is DPI-correct and
+        // available even after the pointer leaves the main viewport.
+        stopPoll = startCursorPoll((p) => {
+          lastPhys = p;
+        });
+      }
+      lastClient = { x: ev.clientX, y: ev.clientY };
+      if (ghost) {
+        ghost.style.left = `${ev.clientX}px`;
+        ghost.style.top = `${ev.clientY}px`;
+      }
+    };
 
     const cleanup = () => {
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      stopPoll?.();
+      if (ghost && ghost.parentNode) ghost.parentNode.removeChild(ghost);
+      ghost = null;
+      if (dragPlatform.needsPointerCapture) {
+        try {
+          captureEl.releasePointerCapture(pointerId);
+        } catch {
+          /* ignore */
+        }
+      }
     };
-    const onMove = (ev: PointerEvent) => {
-      if (detaching) return;
-      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 8) return;
-      detaching = true;
+
+    const onCommit = async () => {
       cleanup();
-      const clientX = ev.clientX;
-      const clientY = ev.clientY;
-      const activeLabel = tabs.find((t) => t.key === activeKey)?.label;
-      // Spawn the popout under the cursor (offset so the grab point lands on its
-      // top frame), then hand the move to the WM via startDragging — the still-
-      // pressed pointer drives a native window move until release. The bounds feed
-      // Rust `.position(x,y)` (PHYSICAL), so read the OS cursor in physical px
-      // (desktopCursor) rather than DOM screenX/Y, whose units diverge under DPI.
-      void desktopCursor()
-        .then((p) => {
-          const bounds = {
-            x: Math.round(p.x - 80),
-            y: Math.round(p.y - 8),
-            w: 900,
-            h: 640,
-          };
-          const label = detachGroup(groupId, { bounds });
-          if (!label) return; // lone group can't detach — abort quietly.
-          // Send-off animation at the grab point, flying toward the exit edge.
-          playDetachFlyOut(clientX, clientY, activeLabel ?? "Subwindow");
-          WebviewWindow.getByLabel(label)
-            .then((w) => w?.startDragging())
-            .catch(() => {});
-        })
-        .catch(() => {});
+      if (!dragging) return; // a click on the grip (no drag) → nothing to detach.
+      // Final physical cursor at release (fresh read; fall back to the last poll
+      // tick). Bounds feed Rust `.position(x,y)` (PHYSICAL) — offset so the grab
+      // point lands on the new window's top frame.
+      const phys = (await desktopCursor().catch(() => null)) ?? lastPhys;
+      const bounds = {
+        x: Math.round((phys?.x ?? 0) - 80),
+        y: Math.round((phys?.y ?? 0) - 8),
+        w: 900,
+        h: 640,
+      };
+      // Send-off animation at the grab point, then create the OS window at the drop
+      // (no `startDragging`: the window appears already positioned, so there is no
+      // handoff to miss and no second drag needed). `detachGroup` refuses a lone
+      // group (returns null) — a harmless no-op here.
+      playDetachFlyOut(lastClient.x, lastClient.y, activeLabel);
+      detachGroup(groupId, { bounds });
     };
-    const onUp = () => cleanup();
+
+    const onAbort = () => cleanup();
+
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    bindDragRelease({ onCommit: () => void onCommit(), onAbort });
   }
 
   // This bar is the live drop target of an in-flight drag: light up the whole
@@ -779,7 +918,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             data-tab-index={index}
             data-kind={tab.kind}
             title={editing ? undefined : title}
-            onContextMenu={(e) => startInlineRename(e, tab.key)}
+            onContextMenu={(e) => onTabContextMenu(e, tab.key, index)}
             onPointerDown={(e) => onTabPointerDown(e, tab)}
             // Clear the landing once it finishes so the class doesn't linger
             // (guard on currentTarget so a child's animationend — e.g. the
@@ -1024,19 +1163,28 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             </button>
           ))}
 
+          {/* System Monitor is whole-machine, so it's offered in every scope;
+              Network Traffic is per-project (host/SSH link), so root has none. */}
+          <div className="tab-new-menu-group-label">Monitoring</div>
+          <button className="tab-new-menu-item" onClick={handleAddMonitor}>
+            <span
+              className="tab-new-menu-dot"
+              style={{ color: TAB_ACCENT.monitor }}
+            >
+              ●
+            </span>
+            System Monitor
+          </button>
           {scope !== "root" && (
-            <>
-              <div className="tab-new-menu-group-label">Monitoring</div>
-              <button className="tab-new-menu-item" onClick={handleAddNetwork}>
-                <span
-                  className="tab-new-menu-dot"
-                  style={{ color: TAB_ACCENT.network }}
-                >
-                  ●
-                </span>
-                Network Traffic
-              </button>
-            </>
+            <button className="tab-new-menu-item" onClick={handleAddNetwork}>
+              <span
+                className="tab-new-menu-dot"
+                style={{ color: TAB_ACCENT.network }}
+              >
+                ●
+              </span>
+              Network Traffic
+            </button>
           )}
 
           {showBlobItem && (
@@ -1070,6 +1218,68 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           >
             <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
             Close all tabs
+          </button>
+        </div>,
+        document.body,
+      )}
+      {tabMenu && createPortal(
+        <div
+          className="tab-new-menu"
+          ref={tabMenuRef}
+          style={{ position: "fixed", left: tabMenu.x, top: tabMenu.y }}
+        >
+          <button
+            className="tab-new-menu-item"
+            onClick={() => {
+              setEditingKey(tabMenu.key);
+              setTabMenu(null);
+            }}
+          >
+            <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>✎</span>
+            Rename
+          </button>
+          <button
+            className="tab-new-menu-item"
+            onClick={() => {
+              removeTab(tabMenu.key);
+              setTabMenu(null);
+            }}
+          >
+            <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
+            Close
+          </button>
+          <button
+            className="tab-new-menu-item"
+            disabled={tabs.length <= 1}
+            onClick={() => {
+              closeOthers(tabMenu.key);
+              setTabMenu(null);
+            }}
+          >
+            <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
+            Close others
+          </button>
+          <button
+            className="tab-new-menu-item"
+            disabled={tabMenu.index === 0}
+            onClick={() => {
+              closeToLeft(tabMenu.index);
+              setTabMenu(null);
+            }}
+          >
+            <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
+            Close to the left
+          </button>
+          <button
+            className="tab-new-menu-item"
+            disabled={tabMenu.index === tabs.length - 1}
+            onClick={() => {
+              closeToRight(tabMenu.index);
+              setTabMenu(null);
+            }}
+          >
+            <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
+            Close to the right
           </button>
         </div>,
         document.body,

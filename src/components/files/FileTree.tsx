@@ -5,8 +5,8 @@ import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { useWindowsStore } from "../../stores/windows";
 import { useTabsStore } from "../../stores/tabs";
-import { useDragStore, type EmbedCap } from "../../stores/drag";
-import { commitFileDrop } from "../tabs/commitFileDrop";
+import { useDragStore, type EmbedCap, type FileDragItem } from "../../stores/drag";
+import { commitFileDrop, fileDropGoesToNewWindow } from "../tabs/commitFileDrop";
 import { startDetachedDropSession } from "../tabs/detachedDropTargets";
 import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSync";
 import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
@@ -17,7 +17,7 @@ import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore, type SyncFileMeta } from "../../stores/sync";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
-import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
+import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { basename } from "../../lib/paths";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
@@ -55,7 +55,7 @@ interface Props {
 
 type GitStatusMap = Record<string, string>;
 type EntryContextMenu = { x: number; y: number; entry: FileEntry | null } | null;
-type DeleteConfirm = { entry: FileEntry; relPath: string } | null;
+type DeleteConfirm = { entries: FileEntry[] } | null;
 /** Open paste-rename window: `kind` is whether the source is the in-app file
  *  clipboard or a system-clipboard image (screenshot); `name` is the name being
  *  chosen for the pasted result in the current folder. */
@@ -156,6 +156,13 @@ export function FileTree({
   // drag-to-tab affordance (3D hover + pointer drag); the rest open on dblclick.
   const [embedByExt, setEmbedByExt] = useState<Record<string, boolean>>({});
   const [relPath, setRelPath] = useState("");
+  // Multi-selection: a set of entry ABSOLUTE paths (`e.path`, the row key), plus
+  // the range anchor. Click selects; shift-click extends a contiguous range;
+  // ctrl/cmd-click toggles a row. Backs bulk delete/move/copy, drag-all, and
+  // open-all. Cleared on folder navigation (in `load`) and pruned when the
+  // listing changes (fs-watch removes a selected file).
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const anchorRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gitStatuses, setGitStatuses] = useState<GitStatusMap>({});
@@ -210,9 +217,12 @@ export function FileTree({
   // Whether the system clipboard holds an image when the context menu opened
   // (probed async on right-click), gating the "Paste screenshot" option.
   const [clipboardImage, setClipboardImage] = useState(false);
-  const clipboard = useFileClipboardStore((s) => s.entry);
-  const setClipboard = useFileClipboardStore((s) => s.setEntry);
+  const clipboardEntries = useFileClipboardStore((s) => s.entries);
+  const setClipboardEntries = useFileClipboardStore((s) => s.setEntries);
   const clearClipboard = useFileClipboardStore((s) => s.clear);
+  // The primary clipboard item — backs the single-file paste-rename prompt and
+  // its labels. Multi-item pastes read the full `clipboardEntries` array.
+  const clipboard = clipboardEntries[0] ?? null;
   // TeX toolchain presence (null until probed); absolute paths of .tex files
   // currently compiling, for the inline build spinner.
   const [texCap, setTexCap] = useState<TexCapability | null>(null);
@@ -275,6 +285,65 @@ export function FileTree({
     }),
     [rawEntries, sortKey, descending, hiddenEndings, relPath, hiddenPaths, shownPaths],
   );
+
+  // The three on-screen sections in render order (regular, then the collapsible
+  // scaffold + gitignored groups). Shared by the renderer and the selection
+  // click handler so a shift-range spans exactly what the user sees. Mirrors the
+  // split the render body applies below.
+  const sections = useMemo(() => {
+    const isRoot = !relPath && separateScaffold;
+    const nonStandard = isRoot ? entries.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : entries;
+    const standard = isRoot ? entries.filter((e) => STANDARD_PROJECT_FILES.has(e.name)) : [];
+    const regular = nonStandard.filter((e) => gitStatuses[e.name] !== "ignored");
+    const gitignored = nonStandard.filter((e) => gitStatuses[e.name] === "ignored");
+    return { regular, standard, gitignored };
+  }, [entries, relPath, separateScaffold, gitStatuses]);
+
+  // Flat list of visible row paths in on-screen order — the axis a shift-range
+  // spans. Collapsed sections contribute no rows (they aren't rendered).
+  const orderedVisible = useMemo(() => {
+    const paths = sections.regular.map((e) => e.path);
+    if (scaffoldExpanded) paths.push(...sections.standard.map((e) => e.path));
+    if (gitignoredExpanded) paths.push(...sections.gitignored.map((e) => e.path));
+    return paths;
+  }, [sections, scaffoldExpanded, gitignoredExpanded]);
+
+  // Prune selected paths that vanished from the listing (fs-watch removed a
+  // file, a folder was deleted, etc.) so stale entries never linger in bulk ops.
+  useEffect(() => {
+    setSelected((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(entries.map((e) => e.path));
+      let changed = false;
+      const next = new Set<string>();
+      for (const p of prev) {
+        if (live.has(p)) next.add(p);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [entries]);
+
+  function clearSelection() {
+    anchorRef.current = null;
+    setSelected((prev) => (prev.size === 0 ? prev : new Set()));
+  }
+
+  // Apply a click on a row to the selection, honouring shift (range) and
+  // ctrl/cmd (toggle) via the pure `nextSelection` helper.
+  function selectFromClick(entry: FileEntry, ev: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) {
+    setSelected((prev) => {
+      const { selected: next, anchor } = nextSelection(
+        prev,
+        orderedVisible,
+        anchorRef.current,
+        entry.path,
+        { shift: ev.shiftKey, toggle: ev.ctrlKey || ev.metaKey },
+      );
+      anchorRef.current = anchor;
+      return next;
+    });
+  }
 
   // Resolve embed capability for any not-yet-known file extension in view. One
   // backend call per distinct extension; results cached in embedByExt.
@@ -457,6 +526,10 @@ export function FileTree({
     if (remoteBlocked) return;
     setLoading(true);
     setError(null);
+    // Navigating into a different folder abandons the current selection (its
+    // paths aren't on screen anymore). The quiet fs-watch `refresh()` deliberately
+    // does NOT clear — a background re-list must not wipe an in-progress selection.
+    clearSelection();
     // Re-listing (navigation or an explicit refresh) recomputes folder sizes:
     // drop the cache + in-flight guard so the effect re-requests them fresh. The
     // quiet fs-watch `refresh()` deliberately does NOT do this — folder sizes
@@ -513,6 +586,55 @@ export function FileTree({
       void extractArchive(entry);
     } else {
       openFile(entry.path, undefined, projectId, "right_file_tree").catch(console.error);
+    }
+  }
+
+  // Single-click routing. A plain click on a folder navigates into it (and
+  // drops any selection); every other click — a file, or a modifier-click on a
+  // folder — drives the multi-selection instead (shift = range, ctrl/cmd =
+  // toggle). Opening a file stays a double-click (onDoubleClick → handleOpen).
+  function handleRowClick(ev: React.MouseEvent, entry: FileEntry) {
+    const hasMod = ev.shiftKey || ev.ctrlKey || ev.metaKey;
+    if (entry.is_dir && !hasMod) {
+      clearSelection();
+      handleClick(entry);
+      return;
+    }
+    selectFromClick(entry, ev);
+  }
+
+  // Open a file on double-click. If it belongs to a multi-selection, open EVERY
+  // selected file (each in its own tab); otherwise just this one. Folders keep
+  // navigating via handleClick.
+  function handleOpen(entry: FileEntry) {
+    if (entry.is_dir) {
+      handleClick(entry);
+      return;
+    }
+    const targets =
+      selected.has(entry.path) && selected.size > 1
+        ? entries.filter((e) => !e.is_dir && selected.has(e.path))
+        : [entry];
+    for (const t of targets) {
+      if (t.extension === ".zip") void extractArchive(t);
+      else openFile(t.path, undefined, projectId, "right_file_tree").catch(console.error);
+    }
+  }
+
+  // Keyboard on the focused tree: Enter opens every selected file, Escape drops
+  // the selection. Only acts while something is selected so it never steals keys
+  // from the rest of the panel.
+  function handleTreeKeyDown(ev: React.KeyboardEvent) {
+    if (selected.size === 0) return;
+    if (ev.key === "Escape") {
+      ev.stopPropagation();
+      clearSelection();
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      for (const t of entries.filter((e) => !e.is_dir && selected.has(e.path))) {
+        if (t.extension === ".zip") void extractArchive(t);
+        else openFile(t.path, undefined, projectId, "right_file_tree").catch(console.error);
+      }
     }
   }
 
@@ -590,7 +712,20 @@ export function FileTree({
     // them into a folder (drag-to-move); released anywhere else they do nothing.
     const viewer = dragTarget === "embed" ? null : dragTarget;
     const canTab = dragTarget != null;
-    const sourceRel = relForEntry(entry);
+    // Multi-selection drag: if the pressed row belongs to a >1 selection, the
+    // whole selection is dragged; otherwise just this row. `dragEntries` (files
+    // + folders) drives drag-to-move; `dragFiles` (file members only, with their
+    // built-in viewer resolved) is the tab/window drop payload — folders can move
+    // but never become tabs. A release over a tab bar / split / new window
+    // creates tabs when `canDrop`: for a single drag only a viewer/embed file
+    // qualifies (unchanged); for a multi drag any file member becomes an embed
+    // tab.
+    const isMultiDrag = selected.has(entry.path) && selected.size > 1;
+    const dragEntries = isMultiDrag ? entries.filter((en) => selected.has(en.path)) : [entry];
+    const dragFiles: FileDragItem[] = dragEntries
+      .filter((en) => !en.is_dir)
+      .map((en) => ({ path: en.path, name: en.name, viewer: internalViewerFor(en, disabledViewerSet) ?? undefined }));
+    const canDrop = isMultiDrag ? dragFiles.length > 0 : canTab;
     // Ctrl held → the user wants to EXPORT/COPY this file out to another app
     // (Signal, a browser, a file manager). The row arms HTML5 `draggable` while
     // `ctrlHeld` (see renderEntry); its onDragStart suppresses the broken
@@ -625,12 +760,13 @@ export function FileTree({
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
         dragging = true;
         useDragStore.getState().startFileDrag({
-          label: entry.name,
+          label: isMultiDrag ? `${dragEntries.length} items` : entry.name,
           pointerX: ev.clientX,
           pointerY: ev.clientY,
           filePath: entry.path,
           fileName: entry.name,
           viewer: viewer ?? undefined,
+          files: isMultiDrag ? dragFiles : undefined,
         });
         // Built-in viewers render in-app and need no external handler, so skip
         // the embed-capability probe for them. For other embeddable files,
@@ -690,6 +826,12 @@ export function FileTree({
     };
 
     const commitRelease = async (shiftKey: boolean) => {
+      // Read the drop-target folder BEFORE cleanup() runs — cleanup calls
+      // setMoveTarget(null), which nulls moveTargetRef.current, so reading it
+      // afterwards always saw null and silently dropped every drag-to-move (the
+      // file just stayed put). See git dfcb6e0, which introduced the read below
+      // the cleanup() call.
+      const moveRel = moveTargetRef.current;
       cleanup();
       if (!dragging) {
         // Never moved → a plain click does NOT open. Opening a file is a
@@ -698,20 +840,23 @@ export function FileTree({
         return;
       }
       // Drag-to-move takes precedence: released over a folder / breadcrumb in the
-      // tree → relocate the file there. This is the one gesture available to ALL
-      // files (even those with no tab/viewer target).
-      const moveRel = moveTargetRef.current;
+      // tree → relocate the file(s) there. This is the one gesture available to
+      // ALL files (even those with no tab/viewer target). When a multi-selection
+      // is being dragged, every selected file moves.
       if (moveRel != null) {
         useDragStore.getState().end();
-        await moveEntryToFolder(sourceRel, entry.name, moveRel, entry.path);
+        for (const de of dragEntries) {
+          await moveEntryToFolder(relForEntry(de), de.name, moveRel, de.path);
+        }
         return;
       }
       const d = useDragStore.getState().drag;
       if (d == null) return;
       // A file with no tab/viewer/embed target can only be moved (handled above);
       // released anywhere else it does nothing — never leak it out as an external
-      // open or an empty embed tab.
-      if (!canTab) {
+      // open or an empty embed tab. (Multi drags qualify when any file member can
+      // become a tab — see `canDrop`.)
+      if (!canDrop) {
         useDragStore.getState().end();
         return;
       }
@@ -744,23 +889,26 @@ export function FileTree({
         useDragStore.getState().end();
         return;
       }
-      // Released OUTSIDE the main window (e.g. dragged onto another monitor), or
-      // over an OCCLUDED popout (handled above): open the file in its own
-      // standalone detached window at the cursor. Client coords outside [0,inner)
-      // — or being over a popout's bounds at all — is the signal. The new window's
-      // bounds feed Rust `.position(x,y)`, which is PHYSICAL → use the physical
-      // cursor, not DOM screen coords.
+      // Released OUTSIDE the main window (e.g. dragged onto another monitor):
+      // open the file in its own standalone detached window at the cursor. Client
+      // coords outside [0,inner) is the signal. The new window's bounds feed Rust
+      // `.position(x,y)`, which is PHYSICAL → use the physical cursor, not DOM
+      // screen coords.
+      //
+      // A popout under the cursor is NOT treated as "outside" here: a FRONT popout
+      // was already docked into above; an OCCLUDED popout (behind the main window)
+      // means the main window is what's actually under the cursor, so the release
+      // must fall through to the in-window split — spawning a new window the user
+      // can't see they're aiming at is exactly the bug this avoids.
       //
       // Shift forces a new window even when released INSIDE the main window: the
       // split/dock preview was suppressed during the drag (see CenterPanel's
       // pointer-move handler), so the only sensible commit is a fresh window.
-      const outside =
-        shiftKey ||
-        !!overDetached ||
-        lastClient.x < 0 ||
-        lastClient.y < 0 ||
-        lastClient.x >= window.innerWidth ||
-        lastClient.y >= window.innerHeight;
+      const outside = fileDropGoesToNewWindow({
+        shiftKey,
+        lastClient,
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+      });
       const detachBounds =
         outside && phys
           ? {
@@ -838,6 +986,13 @@ export function FileTree({
     e.preventDefault();
     e.stopPropagation();
     setTooltip(null);
+    // Right-clicking a row that ISN'T part of the current selection resets the
+    // selection to just it (standard file-manager behavior); right-clicking one
+    // that IS keeps the whole multi-selection so the menu can act on all of it.
+    if (!selected.has(entry.path)) {
+      setSelected(new Set([entry.path]));
+      anchorRef.current = entry.path;
+    }
     setContextMenu({ x: e.clientX, y: e.clientY, entry });
     probeClipboardImage();
   }
@@ -1022,9 +1177,9 @@ export function FileTree({
     }
   }
 
-  function promptDelete(entry: FileEntry) {
+  function promptDelete(targets: FileEntry[]) {
     setContextMenu(null);
-    setDeleteConfirm({ entry, relPath: relForEntry(entry) });
+    if (targets.length > 0) setDeleteConfirm({ entries: targets });
   }
 
   async function renameEntry(entry: FileEntry) {
@@ -1073,22 +1228,28 @@ export function FileTree({
     }
   }
 
-  function copyEntry(entry: FileEntry, op: "copy" | "cut") {
+  function copyEntries(targets: FileEntry[], op: "copy" | "cut") {
     setContextMenu(null);
-    setClipboard({
-      projectDir,
-      relPath: relForEntry(entry),
-      path: entry.path,
-      name: entry.name,
-      isDir: entry.is_dir,
-      op,
-    });
+    if (targets.length === 0) return;
+    setClipboardEntries(
+      targets.map((entry) => ({
+        projectDir,
+        relPath: relForEntry(entry),
+        path: entry.path,
+        name: entry.name,
+        isDir: entry.is_dir,
+        op,
+      })),
+    );
   }
 
   /** Suggest a name not already present in the current folder, appending
-   *  " copy"/" copy N" (before the extension) until it is free. */
-  function suggestPasteName(name: string): string {
+   *  " copy"/" copy N" (before the extension) until it is free. `extraTaken`
+   *  adds names already claimed earlier in a bulk paste (which hasn't re-listed
+   *  yet) so two pasted items can't collide with each other. */
+  function suggestPasteName(name: string, extraTaken?: ReadonlySet<string>): string {
     const taken = new Set(rawEntries.map((e) => e.name));
+    if (extraTaken) for (const n of extraTaken) taken.add(n);
     if (!taken.has(name)) return name;
     const dot = name.lastIndexOf(".");
     const stem = dot > 0 ? name.slice(0, dot) : name;
@@ -1108,6 +1269,57 @@ export function FileTree({
   function openScreenshotPrompt() {
     setContextMenu(null);
     setPastePrompt({ kind: "image", name: suggestPasteName("screenshot.png"), error: null });
+  }
+
+  // The context-menu Paste entry. A single clipboard item keeps its rename
+  // prompt (openPastePrompt); a multi-item clipboard pastes in bulk (pasteAll).
+  function renderPasteButton() {
+    if (clipboardEntries.length === 0) return null;
+    const multi = clipboardEntries.length > 1;
+    const move = clipboard?.op === "cut" ? " (move)" : "";
+    return (
+      <button onClick={() => (multi ? void pasteAll() : openPastePrompt())}>
+        {multi
+          ? `Paste ${clipboardEntries.length} items${move}`
+          : `Paste${move} “${clipboard?.name}”`}
+      </button>
+    );
+  }
+
+  // Paste a multi-item clipboard into the current folder in one go — no per-file
+  // rename prompt; each collision is auto-resolved with " copy". The single-item
+  // paste keeps its rename prompt (openPastePrompt / confirmPaste).
+  async function pasteAll() {
+    setContextMenu(null);
+    if (clipboardEntries.length === 0) return;
+    setLoading(true);
+    setError(null);
+    const claimed = new Set<string>();
+    try {
+      for (const cb of clipboardEntries) {
+        const newName = suggestPasteName(cb.name, claimed);
+        claimed.add(newName);
+        const destRel = relPath ? `${relPath}/${newName}` : newName;
+        await invoke(cb.op === "cut" ? "move_path" : "copy_path", {
+          srcProjectDir: cb.projectDir,
+          srcRel: cb.relPath,
+          destProjectDir: projectDir,
+          destRel,
+        });
+        // Same-project cut relocates within this tree → retarget any open viewer
+        // tab of the moved file (mirrors confirmPaste's single-item handling).
+        if (cb.op === "cut" && cb.projectDir === projectDir) {
+          const oldAbs = cb.path;
+          const newAbs = `${oldAbs.slice(0, oldAbs.length - cb.relPath.length)}${destRel}`;
+          retargetTabsForRenamedPath(oldAbs, newAbs);
+        }
+      }
+      if (clipboardEntries.some((c) => c.op === "cut")) clearClipboard();
+      await load(relPath);
+    } catch (err) {
+      setError(String(err));
+      setLoading(false);
+    }
   }
 
   async function confirmPaste() {
@@ -1170,17 +1382,20 @@ export function FileTree({
 
   async function confirmDelete() {
     if (!deleteConfirm) return;
-    const target = deleteConfirm;
+    const targets = deleteConfirm.entries;
     setDeleteConfirm(null);
     setLoading(true);
     setError(null);
     try {
-      await invoke(target.entry.is_dir ? "delete_dir" : "delete_file", {
-        projectDir,
-        relPath: target.relPath,
-      });
-      // Close any open viewer tab for the deleted file/folder (main + detached).
-      closeTabsForDeletedPath(target.entry.path);
+      for (const entry of targets) {
+        await invoke(entry.is_dir ? "delete_dir" : "delete_file", {
+          projectDir,
+          relPath: relForEntry(entry),
+        });
+        // Close any open viewer tab for the deleted file/folder (main + detached).
+        closeTabsForDeletedPath(entry.path);
+      }
+      clearSelection();
       await load(relPath);
     } catch (err) {
       setError(String(err));
@@ -1318,9 +1533,11 @@ export function FileTree({
   return (
     <div
       className={`file-tree${isDragOver ? " drag-over" : ""}`}
+      tabIndex={0}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      onKeyDown={handleTreeKeyDown}
       onMouseDown={() => setContextMenu(null)}
       onContextMenu={showRootContextMenu}
     >
@@ -1395,13 +1612,10 @@ export function FileTree({
         </label>
       )}
       {(() => {
-        const isRoot = !relPath && separateScaffold;
-        const nonStandard = isRoot ? entries.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : entries;
-        const standard = isRoot ? entries.filter((e) => STANDARD_PROJECT_FILES.has(e.name)) : [];
-        // Gitignored entries get their own collapsed section instead of an inline
-        // grey ✕ marker — pulled out of the regular list wherever they fall.
-        const regular = nonStandard.filter((e) => gitStatuses[e.name] !== "ignored");
-        const gitignored = nonStandard.filter((e) => gitStatuses[e.name] === "ignored");
+        // Sections (regular / collapsible scaffold / collapsible gitignored) are
+        // computed once in the `sections` memo above and shared with the
+        // selection click handler so a shift-range spans exactly these rows.
+        const { regular, standard, gitignored } = sections;
 
         function renderEntry(e: FileEntry, isScaffold = false, isGitignored = false) {
           const status = isGitignored ? undefined : gitStatuses[e.name];
@@ -1428,7 +1642,7 @@ export function FileTree({
           return (
             <div
               key={e.path}
-              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold || isGitignored ? " scaffold" : ""}${isMoveTarget ? " move-drop-target" : ""}`}
+              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold || isGitignored ? " scaffold" : ""}${isMoveTarget ? " move-drop-target" : ""}${selected.has(e.path) ? " selected" : ""}`}
               // Folders are drag-to-move destinations: dropping a dragged file
               // here relocates it (hit-tested by data-move-rel in the drag).
               data-move-rel={e.is_dir ? relForEntry(e) : undefined}
@@ -1440,8 +1654,8 @@ export function FileTree({
               // Files, CTRL held: arm native HTML5 DnD so any file can be dragged
               // out into an embedded browser / external target like Signal (the
               // pointer drag-to-tab bails on Ctrl, see onEntryPointerDown).
-              onClick={e.is_dir ? () => handleClick(e) : undefined}
-              onDoubleClick={e.is_dir ? undefined : () => handleClick(e)}
+              onClick={(ev) => handleRowClick(ev, e)}
+              onDoubleClick={e.is_dir ? undefined : () => handleOpen(e)}
               onContextMenu={(ev) => showEntryContextMenu(ev, e)}
               draggable={e.is_dir || ctrlHeld}
               onDragStart={
@@ -1609,11 +1823,7 @@ export function FileTree({
                 </>
               )}
               {(clipboard || clipboardImage) && <hr />}
-              {clipboard && (
-                <button onClick={openPastePrompt}>
-                  Paste{clipboard.op === "cut" ? " (move)" : ""} “{clipboard.name}”
-                </button>
-              )}
+              {renderPasteButton()}
               {clipboardImage && (
                 <button onClick={openScreenshotPrompt}>
                   Paste screenshot
@@ -1623,6 +1833,27 @@ export function FileTree({
           )}
           {contextMenu.entry && (() => {
             const entry = contextMenu.entry;
+            // When the right-clicked row is part of a >1 selection, the menu acts
+            // on the whole selection (bulk Copy/Cut/Delete only — the per-file
+            // actions like Rename / Stage / Set-default-app don't generalise).
+            const menuEntries =
+              selected.has(entry.path) && selected.size > 1
+                ? entries.filter((en) => selected.has(en.path))
+                : [entry];
+            if (menuEntries.length > 1) {
+              const n = menuEntries.length;
+              return (
+                <>
+                  <button onClick={() => copyEntries(menuEntries, "copy")}>Copy {n} items</button>
+                  <button onClick={() => copyEntries(menuEntries, "cut")}>Cut {n} items</button>
+                  {renderPasteButton()}
+                  <hr />
+                  <button className="danger" onClick={() => promptDelete(menuEntries)}>
+                    Delete {n} items
+                  </button>
+                </>
+              );
+            }
             const status = gitStatuses[entry.name];
             const isTex = !entry.is_dir && entry.extension === ".tex";
             const isZip = !entry.is_dir && entry.extension === ".zip";
@@ -1719,17 +1950,13 @@ export function FileTree({
                   </>
                 )}
                 <hr />
-                <button onClick={() => copyEntry(entry, "copy")}>
+                <button onClick={() => copyEntries([entry], "copy")}>
                   Copy
                 </button>
-                <button onClick={() => copyEntry(entry, "cut")}>
+                <button onClick={() => copyEntries([entry], "cut")}>
                   Cut
                 </button>
-                {clipboard && (
-                  <button onClick={openPastePrompt}>
-                    Paste{clipboard.op === "cut" ? " (move)" : ""} “{clipboard.name}”
-                  </button>
-                )}
+                {renderPasteButton()}
                 {clipboardImage && (
                   <button onClick={openScreenshotPrompt}>
                     Paste screenshot
@@ -1739,7 +1966,7 @@ export function FileTree({
                 <button onClick={() => renameEntry(entry)}>
                   Rename
                 </button>
-                <button className="danger" onClick={() => promptDelete(entry)}>
+                <button className="danger" onClick={() => promptDelete([entry])}>
                   Delete
                 </button>
               </>
@@ -1752,11 +1979,25 @@ export function FileTree({
       {deleteConfirm && createPortal(
         <div className="modal-backdrop" onMouseDown={() => setDeleteConfirm(null)}>
           <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
-            <h2>Delete {deleteConfirm.entry.is_dir ? "Folder" : "File"}</h2>
-            <p>
-              Delete <strong>{deleteConfirm.entry.name}</strong>? This permanently removes it from the project.
-            </p>
-            <div className="file-delete-path">{deleteConfirm.relPath}</div>
+            {deleteConfirm.entries.length === 1 ? (
+              <>
+                <h2>Delete {deleteConfirm.entries[0].is_dir ? "Folder" : "File"}</h2>
+                <p>
+                  Delete <strong>{deleteConfirm.entries[0].name}</strong>? This permanently removes it from the project.
+                </p>
+                <div className="file-delete-path">{relForEntry(deleteConfirm.entries[0])}</div>
+              </>
+            ) : (
+              <>
+                <h2>Delete {deleteConfirm.entries.length} items</h2>
+                <p>
+                  Delete these <strong>{deleteConfirm.entries.length}</strong> items? This permanently removes them from the project.
+                </p>
+                <div className="file-delete-path">
+                  {deleteConfirm.entries.map((e) => e.name).join(", ")}
+                </div>
+              </>
+            )}
             <div className="file-delete-actions">
               <button type="button" onClick={() => setDeleteConfirm(null)}>Cancel</button>
               <button type="button" className="danger" onClick={confirmDelete}>Delete</button>

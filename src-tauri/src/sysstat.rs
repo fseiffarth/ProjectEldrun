@@ -17,10 +17,57 @@
 //! `busy_secs = ticks / clk_tck()` formula is correct on every backend (Linux
 //! jiffies + USER_HZ; Windows 100-ns units + 10_000_000).
 
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// Cumulative CPU jiffies for one core (or the machine aggregate), as read from
+/// `/proc/stat`. `busy = total − idle − iowait`. CPU **percentages** are derived
+/// on the frontend from the delta of two successive snapshots
+/// (`(busy_now − busy_prev) / (total_now − total_prev)`), so these counters carry
+/// no timestamp of their own — the ratio is wall-clock-independent.
+#[derive(Serialize, Clone, Copy, Default)]
+pub struct CpuTimes {
+    pub busy: u64,
+    pub total: u64,
+}
+
+/// One process in a [`SystemSnapshot`]. `cpu_jiffies` is the cumulative
+/// utime+stime; the frontend turns successive samples into a live CPU%.
+#[derive(Serialize, Clone, Default)]
+pub struct ProcSample {
+    pub pid: u32,
+    pub ppid: u32,
+    pub comm: String,
+    pub cmdline: String,
+    pub state: String,
+    pub rss_kib: u64,
+    pub cpu_jiffies: u64,
+    pub threads: u32,
+}
+
+/// A single whole-system sample backing the htop-like monitor pane. Everything
+/// here is a *cumulative* counter or an instantaneous gauge; the pane computes
+/// per-core and per-process CPU% by diffing two of these (see the module notes on
+/// [`CpuTimes`]). `supported` is `false` on platforms without a `/proc`-style
+/// enumeration, letting the UI show a graceful "Linux only" placeholder.
+#[derive(Serialize, Clone, Default)]
+pub struct SystemSnapshot {
+    pub supported: bool,
+    pub clk_tck: u64,
+    pub num_cores: u32,
+    pub cpu: CpuTimes,
+    pub per_core: Vec<CpuTimes>,
+    pub mem_total_kib: u64,
+    pub mem_available_kib: u64,
+    pub swap_total_kib: u64,
+    pub swap_free_kib: u64,
+    pub load_avg: [f64; 3],
+    pub uptime_secs: f64,
+    pub processes: Vec<ProcSample>,
+}
 
 /// Generation counter bumped whenever a PTY is spawned or dies (see
 /// [`invalidate_descendant_cache`]). A change forces [`descendant_pids`] to
@@ -152,6 +199,110 @@ pub fn cmdline(pid: u32) -> Option<String> {
     platform::cmdline(pid)
 }
 
+/// A whole-system sample (all processes + per-core CPU + memory/load) for the
+/// htop-like monitor pane. Delegates to the per-OS backend; non-`/proc` targets
+/// return `SystemSnapshot { supported: false, .. }`.
+pub fn system_snapshot() -> SystemSnapshot {
+    platform::system_snapshot()
+}
+
+// ── Pure `/proc` parsers (Linux; compiled under test on any OS) ──────────────
+// Factored out of the Linux backend so they can be unit-tested from string
+// fixtures without a live `/proc`.
+
+/// Parse one `cpu`/`cpuN` line of `/proc/stat` into cumulative busy/total ticks.
+/// `total` is the sum of every column; `busy = total − idle − iowait`.
+#[cfg(any(target_os = "linux", test))]
+fn parse_cpu_line(line: &str) -> Option<CpuTimes> {
+    let mut it = line.split_whitespace();
+    it.next()?; // "cpu" / "cpuN" label
+    let nums: Vec<u64> = it.filter_map(|t| t.parse::<u64>().ok()).collect();
+    if nums.len() < 4 {
+        return None;
+    }
+    let total: u64 = nums.iter().sum();
+    let idle = nums[3];
+    let iowait = nums.get(4).copied().unwrap_or(0);
+    Some(CpuTimes {
+        busy: total.saturating_sub(idle).saturating_sub(iowait),
+        total,
+    })
+}
+
+/// Parse `/proc/stat` into (aggregate, per-core) cumulative CPU times. The
+/// aggregate is the `cpu ` line; each `cpuN` line is one core, in order.
+#[cfg(any(target_os = "linux", test))]
+fn parse_cpu_stat(content: &str) -> (CpuTimes, Vec<CpuTimes>) {
+    let mut agg = CpuTimes::default();
+    let mut per_core = Vec::new();
+    for line in content.lines() {
+        let Some(rest) = line.strip_prefix("cpu") else {
+            continue;
+        };
+        match rest.chars().next() {
+            Some(' ') => {
+                if let Some(ct) = parse_cpu_line(line) {
+                    agg = ct;
+                }
+            }
+            Some(c) if c.is_ascii_digit() => {
+                if let Some(ct) = parse_cpu_line(line) {
+                    per_core.push(ct);
+                }
+            }
+            _ => {}
+        }
+    }
+    (agg, per_core)
+}
+
+/// Extract (MemTotal, MemAvailable, SwapTotal, SwapFree) from `/proc/meminfo`,
+/// all in KiB. Missing keys default to 0.
+#[cfg(any(target_os = "linux", test))]
+fn parse_meminfo(content: &str) -> (u64, u64, u64, u64) {
+    let get = |key: &str| -> u64 {
+        content
+            .lines()
+            .find_map(|l| l.strip_prefix(key))
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    };
+    (
+        get("MemTotal:"),
+        get("MemAvailable:"),
+        get("SwapTotal:"),
+        get("SwapFree:"),
+    )
+}
+
+/// First three floats of `/proc/loadavg` (1/5/15-minute load averages).
+#[cfg(any(target_os = "linux", test))]
+fn parse_loadavg(content: &str) -> [f64; 3] {
+    let mut it = content.split_whitespace();
+    let mut next = || it.next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+    [next(), next(), next()]
+}
+
+/// Parse a `/proc/<pid>/stat` line into (comm, state, ppid, cpu_jiffies,
+/// threads). `comm` sits between the first `(` and last `)` and may itself
+/// contain spaces/parens, so fields are indexed *after* the last `)`:
+/// index 0 = state (field 3), 1 = ppid (field 4), 11 = utime (14),
+/// 12 = stime (15), 17 = num_threads (20).
+#[cfg(any(target_os = "linux", test))]
+fn parse_pid_stat(content: &str) -> Option<(String, String, u32, u64, u32)> {
+    let open = content.find('(')?;
+    let close = content.rfind(')')?;
+    let comm = content.get(open + 1..close)?.to_string();
+    let fields: Vec<&str> = content.get(close + 1..)?.split_whitespace().collect();
+    let state = (*fields.first()?).to_string();
+    let ppid: u32 = fields.get(1)?.parse().ok()?;
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    let threads: u32 = fields.get(17)?.parse().ok()?;
+    Some((comm, state, ppid, utime + stime, threads))
+}
+
 // ── Linux backend (`/proc`) ─────────────────────────────────────────────────
 #[cfg(target_os = "linux")]
 mod platform {
@@ -235,6 +386,67 @@ mod platform {
             None
         } else {
             Some(cmd)
+        }
+    }
+
+    /// Whole-system sample from `/proc`: aggregate + per-core CPU, memory/swap,
+    /// load, uptime, and every process (one `/proc/<pid>/{stat,status,cmdline}`
+    /// read each). Kernel threads (empty `cmdline`) fall back to `[comm]`.
+    pub fn system_snapshot() -> super::SystemSnapshot {
+        use super::{ProcSample, SystemSnapshot};
+
+        let (cpu, per_core) =
+            super::parse_cpu_stat(&fs::read_to_string("/proc/stat").unwrap_or_default());
+        let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) =
+            super::parse_meminfo(&fs::read_to_string("/proc/meminfo").unwrap_or_default());
+        let load_avg =
+            super::parse_loadavg(&fs::read_to_string("/proc/loadavg").unwrap_or_default());
+        let uptime_secs = fs::read_to_string("/proc/uptime")
+            .ok()
+            .and_then(|c| c.split_whitespace().next()?.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let mut processes = Vec::new();
+        if let Ok(entries) = fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Some(pid) = name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
+                    continue;
+                };
+                let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                    continue;
+                };
+                let Some((comm, state, ppid, cpu_jiffies, threads)) = super::parse_pid_stat(&stat)
+                else {
+                    continue;
+                };
+                let cmdline = cmdline(pid).unwrap_or_else(|| format!("[{comm}]"));
+                processes.push(ProcSample {
+                    pid,
+                    ppid,
+                    comm,
+                    cmdline,
+                    state,
+                    rss_kib: rss_kib(pid).unwrap_or(0),
+                    cpu_jiffies,
+                    threads,
+                });
+            }
+        }
+
+        SystemSnapshot {
+            supported: true,
+            clk_tck: clk_tck(),
+            num_cores: per_core.len() as u32,
+            cpu,
+            per_core,
+            mem_total_kib,
+            mem_available_kib,
+            swap_total_kib,
+            swap_free_kib,
+            load_avg,
+            uptime_secs,
+            processes,
         }
     }
 }
@@ -339,6 +551,12 @@ mod platform {
 
     fn filetime_units(ft: FILETIME) -> u64 {
         ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64
+    }
+
+    /// Not implemented on Windows yet: the htop-like monitor is Linux-only for
+    /// now, so return an unsupported snapshot and let the UI show a placeholder.
+    pub fn system_snapshot() -> super::SystemSnapshot {
+        super::SystemSnapshot::default()
     }
 }
 
@@ -461,6 +679,12 @@ mod platform {
                 .collect()
         }
     }
+
+    /// Not implemented on macOS yet: the htop-like monitor is Linux-only for now,
+    /// so return an unsupported snapshot and let the UI show a placeholder.
+    pub fn system_snapshot() -> super::SystemSnapshot {
+        super::SystemSnapshot::default()
+    }
 }
 
 // ── Fallback backend (other OSes) ───────────────────────────────────────────
@@ -494,6 +718,12 @@ mod platform {
 
     pub fn cmdline(_pid: u32) -> Option<String> {
         None
+    }
+
+    /// No `/proc`-style enumeration here: return an unsupported snapshot so the
+    /// monitor pane degrades to a placeholder rather than failing to build.
+    pub fn system_snapshot() -> super::SystemSnapshot {
+        super::SystemSnapshot::default()
     }
 }
 
@@ -597,5 +827,65 @@ mod tests {
         let me = std::process::id();
         assert!(sum_rss_kib(&[me]) > 0, "the running test process should report RSS");
         assert_eq!(sum_rss_kib(&[u32::MAX]), 0);
+    }
+
+    // ── /proc string parsers (pure; run on any OS) ──────────────────────────
+
+    #[test]
+    fn parse_cpu_stat_splits_aggregate_and_cores() {
+        let stat = "\
+cpu  100 20 30 1000 40 5 5 0 0 0
+cpu0 60 10 15 500 20 3 2 0 0 0
+cpu1 40 10 15 500 20 2 3 0 0 0
+intr 12345
+ctxt 67890
+";
+        let (agg, cores) = parse_cpu_stat(stat);
+        // total = sum of all columns; busy = total - idle - iowait.
+        assert_eq!(agg.total, 100 + 20 + 30 + 1000 + 40 + 5 + 5);
+        assert_eq!(agg.busy, agg.total - 1000 - 40);
+        assert_eq!(cores.len(), 2);
+        assert_eq!(cores[0].total, 60 + 10 + 15 + 500 + 20 + 3 + 2);
+        assert_eq!(cores[0].busy, cores[0].total - 500 - 20);
+    }
+
+    #[test]
+    fn parse_meminfo_reads_selected_keys() {
+        let mem = "\
+MemTotal:       16308668 kB
+MemFree:         1234567 kB
+MemAvailable:    9876543 kB
+Buffers:          123456 kB
+SwapTotal:       2097148 kB
+SwapFree:        2000000 kB
+";
+        let (total, avail, swap_total, swap_free) = parse_meminfo(mem);
+        assert_eq!(total, 16_308_668);
+        assert_eq!(avail, 9_876_543);
+        assert_eq!(swap_total, 2_097_148);
+        assert_eq!(swap_free, 2_000_000);
+        // A missing key defaults to 0 rather than panicking.
+        assert_eq!(parse_meminfo("MemTotal: 42 kB").1, 0);
+    }
+
+    #[test]
+    fn parse_loadavg_reads_three_floats() {
+        assert_eq!(parse_loadavg("0.52 0.58 0.59 1/1234 56789"), [0.52, 0.58, 0.59]);
+        // Short/garbage input degrades to zeros.
+        assert_eq!(parse_loadavg(""), [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn parse_pid_stat_handles_comm_with_spaces_and_parens() {
+        // comm = "Web Content" (spaces); a naive whitespace split would misalign
+        // every field — parsing must key off the last ')'.
+        let line = "1234 (Web (Content)) S 1000 1234 1000 0 -1 4194560 \
+100 0 0 0 4200 1300 0 0 20 0 27 0 999 0 0";
+        let (comm, state, ppid, cpu, threads) = parse_pid_stat(line).unwrap();
+        assert_eq!(comm, "Web (Content)");
+        assert_eq!(state, "S");
+        assert_eq!(ppid, 1000);
+        assert_eq!(cpu, 4200 + 1300); // utime + stime
+        assert_eq!(threads, 27);
     }
 }

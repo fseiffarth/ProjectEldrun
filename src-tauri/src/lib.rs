@@ -389,6 +389,7 @@ pub fn run() {
             commands::network::network_host_snapshot,
             commands::network::network_ssh_link_snapshot,
             commands::net_usage::get_net_usage,
+            commands::monitor::system_monitor_snapshot,
             // SSH-sync (Phase 1): selective local↔remote mirror sync.
             commands::sync::sync_pull,
             commands::sync::sync_whole_project,

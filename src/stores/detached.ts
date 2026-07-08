@@ -343,6 +343,74 @@ export function applyRenameToTabs(
 }
 
 /**
+ * #42: the UNIFIED cross-window drop decision for a single dragged tab. Keyed on
+ * the physical desktop cursor's relationship to the windows, this resolves a drag
+ * to ONE destination the SAME way regardless of which window it started in — the
+ * main window's `DETACHED_DRAG_END` host and (via the same ladder) `TabBar`'s own
+ * commit both consult it. Pure, so every branch is unit-testable.
+ *
+ * Ladder (first match wins):
+ *   1. `cancelled` (Escape / abort) → `none`.
+ *   2. released over the SOURCE popout & handled there → `local` (caller emitted
+ *      `cancelled:true`; this is defensive — such a release never reaches here).
+ *   3. `shift` → `newWindow` (Shift ALWAYS means "pop into its own window",
+ *      mirroring the main-window tab rule; a lone-tab source is refused downstream,
+ *      so it's a clean no-op rather than a hang).
+ *   4. over a SIBLING popout → `dockDetached` into it.
+ *   5. over the MAIN window → `dockMain` at the resolved pane target.
+ *   6. free space (no Eldrun window under the cursor) → `newWindow`.
+ */
+export type DetachedTabDrop =
+  | { kind: "none" } // cancelled — leave everything as-is
+  | { kind: "local" } // the source popout already committed a within-popout drop
+  | { kind: "newWindow" } // Shift, or released in free space → own new popout
+  | { kind: "dockDetached"; toGroupId: string } // released over a sibling popout
+  | { kind: "dockMain" }; // released over the main window (caller has the target)
+
+export function decideDetachedTabDrop(input: {
+  cancelled: boolean;
+  shift: boolean;
+  inMain: boolean;
+  /** A sibling popout under the cursor, or null (none / it's the source popout). */
+  overPopoutId: string | null;
+  srcGroupId: string;
+}): DetachedTabDrop {
+  if (input.cancelled) return { kind: "local" };
+  if (input.shift) return { kind: "newWindow" };
+  if (input.overPopoutId && input.overPopoutId !== input.srcGroupId) {
+    return { kind: "dockDetached", toGroupId: input.overPopoutId };
+  }
+  if (input.inMain) return { kind: "dockMain" };
+  return { kind: "newWindow" };
+}
+
+/**
+ * #42: the UNIFIED cross-window drop decision for a whole detached GROUP dragged
+ * from a popout. A group is already its own OS window, so "new window" just means
+ * "stay floating" (`float`). Docking a whole group into a SIBLING popout is out of
+ * scope (there is no merge-group-into-popout action), so a group over a sibling
+ * popout also stays floating. Pure/testable.
+ */
+export type DetachedGroupDrop =
+  | { kind: "float" } // Shift, free space, or over a sibling popout → keep floating
+  | { kind: "dockMain" }; // released over the main window (caller has the target)
+
+export function decideDetachedGroupDrop(input: {
+  cancelled: boolean;
+  shift: boolean;
+  inMain: boolean;
+  overPopoutId: string | null;
+  srcGroupId: string;
+}): DetachedGroupDrop {
+  if (input.cancelled || input.shift) return { kind: "float" };
+  if (input.overPopoutId && input.overPopoutId !== input.srcGroupId) {
+    return { kind: "float" };
+  }
+  if (input.inMain) return { kind: "dockMain" };
+  return { kind: "float" };
+}
+
+/**
  * MAIN window: wire the host side of the detached-subwindow protocol. Responds
  * to a detached window's seed request by shipping its group's tabs+subtree,
  * applies edits streamed back into `detachedGroupsByScope`, and docks a group
