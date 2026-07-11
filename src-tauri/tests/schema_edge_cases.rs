@@ -37,16 +37,9 @@ fn settings_explicit_color_scheme_is_returned() {
 }
 
 #[test]
-fn settings_workspace_management_defaults_false() {
+fn settings_debug_defaults_off() {
     let s = Settings::default();
-    assert!(!s.workspace_management());
-}
-
-#[test]
-fn settings_explicit_workspace_management_true() {
-    let mut s = Settings::default();
-    s.workspace_management = Some(true);
-    assert!(s.workspace_management());
+    assert_eq!(s.debug, None);
 }
 
 #[test]
@@ -93,13 +86,11 @@ fn settings_unknown_fields_preserved_in_extra() {
 #[test]
 fn settings_roundtrip_preserves_all_known_fields() {
     let s: Settings = parse(r#"{
-        "workspace_management": true,
         "color_scheme": "light",
         "ollama_host": "http://localhost:11434",
         "ollama_model": "mistral"
     }"#);
     let back = roundtrip(&s);
-    assert_eq!(back.workspace_management, Some(true));
     assert_eq!(back.color_scheme.as_deref(), Some("light"));
     assert_eq!(back.ollama_host.as_deref(), Some("http://localhost:11434"));
     assert_eq!(back.ollama_model.as_deref(), Some("mistral"));

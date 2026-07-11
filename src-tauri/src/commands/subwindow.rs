@@ -333,7 +333,16 @@ pub fn detached_window_frontmost(
                     .map(|top| top == wid)
                     .unwrap_or(false)
             }
-            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            // macOS: future-proofing — `resolve_detached_window_id` stays None
+            // on macOS v1, so this arm is only reached once popouts learn their
+            // CGWindowID.
+            #[cfg(target_os = "macos")]
+            {
+                crate::platform::macos::frontmost_window_under_pointer()
+                    .map(|top| top == wid)
+                    .unwrap_or(false)
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
             {
                 let _ = wid;
                 true

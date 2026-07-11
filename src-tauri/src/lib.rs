@@ -327,6 +327,88 @@ fn install_scrollbar_theme() {
     }
 }
 
+/// Reopen the main window on the monitor and at the geometry it was last closed
+/// at, then show it. The counterpart of the debounced save in `AppShell.tsx`.
+///
+/// The window is declared `"visible": false` in `tauri.conf.json` purely so this
+/// can run before the first frame: it opens `maximized`, so on a multi-monitor
+/// desk the WM maps it on the primary monitor and a restore onto the *other*
+/// monitor would be a visible jump. Hidden → placed → shown, and the user only
+/// ever sees the final position. The cost is that `win.show()` below is now
+/// load-bearing; every call in here is best-effort (`let _ =`) so no failure can
+/// skip it.
+///
+/// Geometry rules (which monitor, what if it was unplugged) live in
+/// `services::window_state::resolve_startup_geometry`, which is pure and tested.
+fn restore_main_window(app: &tauri::App) {
+    use tauri::Manager;
+
+    let Some(win) = app.get_webview_window("main") else {
+        return; // No main window: nothing to place and nothing to show.
+    };
+
+    // Guard against a stray fullscreen state surviving into this launch. On Linux
+    // this is not cosmetic: a window the WM has put into fullscreen keeps
+    // `_NET_WM_STATE_FULLSCREEN`, which under KWin wins over MAXIMIZED and makes
+    // the window UNMOVABLE — KWin refuses the `_NET_WM_MOVERESIZE` that
+    // `startDragging` sends, so the header title-bar drag silently no-ops. A
+    // maximized window fills the monitor identically yet stays draggable and
+    // edge-snappable, so that is what Eldrun uses instead. macOS is excluded: real
+    // fullscreen (its own Space) is the platform-expected behaviour there, and
+    // `AppShell.tsx` opts into it explicitly after load.
+    #[cfg(not(target_os = "macos"))]
+    let _ = win.set_fullscreen(false);
+
+    let saved = storage::read_json::<schema::Settings>(&storage::state_dir().join("settings.json"))
+        .ok()
+        .and_then(|s| s.window_state);
+    let monitors: Vec<services::window_state::MonitorRect> = win
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| services::window_state::MonitorRect {
+            x: m.position().x,
+            y: m.position().y,
+            w: m.size().width,
+            h: m.size().height,
+        })
+        .collect();
+    if saved.is_some() && monitors.is_empty() {
+        // We have a rect to restore but nothing to validate it against, so it is
+        // dropped and the window opens at the configured default. Not fatal, but
+        // it silently defeats the whole feature — say so rather than leave the
+        // user wondering why their window never comes back where they left it.
+        eprintln!("window_state: no monitors reported at startup; ignoring the saved geometry");
+    }
+
+    match services::window_state::resolve_startup_geometry(saved, &monitors) {
+        Some(g) => {
+            // Unmaximize FIRST, even when we are about to re-maximize immediately:
+            // the window is mapped maximized, and assigning a size/position while
+            // it is in that state is what gives the WM a genuine restore geometry
+            // to fall back to. Without it the WM's only record of a "normal" size
+            // is the full monitor, so the maximize button appears to do nothing —
+            // the exact bug `WindowControls.tsx` has to work around today.
+            let _ = win.unmaximize();
+            let _ = win.set_size(tauri::PhysicalSize::new(g.w, g.h));
+            let _ = win.set_position(tauri::PhysicalPosition::new(g.x, g.y));
+            if g.maximized {
+                let _ = win.maximize();
+            }
+        }
+        None => {
+            // Fresh install, or a saved rect no connected monitor can host (the
+            // undocked-external-display case). Fall back to the configured default
+            // and re-assert it, in case the WM dropped the `maximized` hint at map
+            // time.
+            #[cfg(not(target_os = "macos"))]
+            let _ = win.maximize();
+        }
+    }
+
+    let _ = win.show();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKit's DMA-BUF renderer SIGBUSes inside Mesa on some driver stacks
@@ -413,6 +495,21 @@ pub fn run() {
                     platform::windows::enable_aero_snap(id);
                 }
             }
+            // macOS: bind the MAIN window's CGWindowID (== NSWindow.windowNumber)
+            // for the structural parkable guard, like the Windows arm above.
+            // `ns_window()` must be used on the main thread, which setup is.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::Manager;
+                let workspace = _app.state::<WorkspaceStateArc>().inner().clone();
+                if let Some(id) = _app
+                    .get_webview_window("main")
+                    .and_then(|w| w.ns_window().ok())
+                    .and_then(|ns| platform::macos::ns_window_id(ns as *mut std::ffi::c_void))
+                {
+                    workspace.lock().unwrap().backend.set_main_window_id(id);
+                }
+            }
             // Install the global Claude SessionStart hook so Eldrun can follow a
             // tab's live session id across `/clear` (see services::agent_session).
             if let Err(e) = services::agent_session::install_session_start_hook() {
@@ -435,12 +532,18 @@ pub fn run() {
                     .clone();
                 services::net_usage::start(pool);
             }
+            // Place the main window where it was last closed and MAKE IT VISIBLE.
+            // Must stay last in `setup`: the window is created hidden (see
+            // `restore_main_window`), so anything that returns early before this
+            // leaves Eldrun running with no window on screen.
+            restore_main_window(_app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             // Settings
             commands::settings::get_settings,
             commands::settings::save_settings,
+            commands::settings::save_window_state,
             commands::default_apps::get_default_apps,
             commands::default_apps::save_default_apps,
             // Projects

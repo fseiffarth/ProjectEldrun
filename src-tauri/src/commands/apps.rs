@@ -1598,7 +1598,12 @@ fn list_window_ids() -> Vec<u64> {
     crate::platform::windows::list_window_ids()
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(target_os = "macos")]
+fn list_window_ids() -> Vec<u64> {
+    crate::platform::macos::list_window_ids()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn list_window_ids() -> Vec<u64> {
     Vec::new()
 }
@@ -1624,6 +1629,11 @@ fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
     crate::platform::windows::find_window_for_pid(pid, attempts)
 }
 
+#[cfg(target_os = "macos")]
+fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
+    crate::platform::macos::find_window_for_pid(pid, attempts)
+}
+
 /// Single-pass, non-blocking window-id resolver injected into `window_service`
 /// at project-switch (hide) time. A launch-time miss (race, or the visible
 /// top-level belonging to a child of the spawned pid) leaves `window_id` None;
@@ -1636,7 +1646,14 @@ pub fn resolve_window_id_for_pid(pid: u32) -> Option<u64> {
     crate::platform::windows::find_window_for_pid(pid, 1)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+/// macOS twin of the Windows resolver above — the launcher-stub → child-pid
+/// hand-off happens with `open`-style launches too.
+#[cfg(target_os = "macos")]
+pub fn resolve_window_id_for_pid(pid: u32) -> Option<u64> {
+    crate::platform::macos::find_window_for_pid(pid, 1)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn find_window_for_pid(_pid: u32, _attempts: usize) -> Option<u64> {
     None
 }
@@ -1662,7 +1679,12 @@ fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
     crate::platform::windows::find_new_window(before, attempts)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(target_os = "macos")]
+fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
+    crate::platform::macos::find_new_window(before, attempts)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn find_new_window(_before: &[u64], _attempts: usize) -> Option<u64> {
     None
 }

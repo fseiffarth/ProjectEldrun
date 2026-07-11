@@ -11,6 +11,12 @@ use serde::{Deserialize, Serialize};
 
 pub mod null;
 
+#[cfg(target_os = "macos")]
+pub mod macos;
+/// Pure parking logic for the macOS backend. Compiled on every OS (not
+/// `#[cfg]`-gated) so its safety-critical unit tests run on any platform; the
+/// CoreGraphics/objc FFI that consumes it lives in `macos.rs`.
+pub mod macos_park;
 #[cfg(target_os = "linux")]
 pub mod wayland_kde;
 #[cfg(target_os = "windows")]
@@ -92,11 +98,12 @@ pub trait WorkspaceBackend: Send + Sync {
 
     /// Move an already-mapped window to absolute physical root coordinates so it
     /// lands on the monitor containing (x, y). Used to place an externally
-    /// launched app on the screen where a file was dropped. Best-effort; the
+    /// launched app on the screen where a file was dropped. Best-effort;
+    /// implemented on X11 (ConfigureWindow) and Windows (SetWindowPos). The
     /// default is a no-op for backends that cannot position foreign windows
-    /// (KDE-Wayland forbids a client positioning another app's window, and
-    /// null/Windows do not implement it), which degrades gracefully to "the WM
-    /// places it wherever it likes".
+    /// (KDE-Wayland forbids a client positioning another app's window; macOS
+    /// has no public API for it; null has no windowing), which degrades
+    /// gracefully to "the WM places it wherever it likes".
     fn position_window(&self, _window_id: u64, _x: i32, _y: i32) -> Result<(), String> {
         Ok(())
     }
@@ -139,10 +146,15 @@ pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
         }
     }
 
-    // Fallback for every non-Windows platform (Linux desktops that matched no
-    // backend above, plus macOS/other). On Windows the early return above is the
-    // only path, so gating this keeps it from being flagged as unreachable.
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        return Box::new(macos::MacBackend::new());
+    }
+
+    // Fallback for Linux desktops that matched no backend above, plus other
+    // platforms. On Windows/macOS the early returns above are the only paths,
+    // so gating this keeps it from being flagged as unreachable.
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         return Box::new(null::NullBackend);
     }
@@ -159,7 +171,7 @@ mod tests {
         let b = detect_backend();
         let name = b.name();
         assert!(
-            ["null", "x11", "kde-wayland", "windows"].contains(&name),
+            ["null", "x11", "kde-wayland", "windows", "macos"].contains(&name),
             "unknown backend name: {name}"
         );
     }
