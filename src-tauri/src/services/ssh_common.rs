@@ -234,7 +234,7 @@ pub fn ssh_master_base_args(
 
 /// Password-auth variant of [`ssh_master_base_args`] (BatchMode off, password the
 /// only enabled method) for hosts reached with a supplied password (fed to ssh via
-/// [`make_askpass`] on Unix / `sshpass` on Windows). Still master-owning so the
+/// [`make_askpass`], or `sshpass` on pre-8.4 Windows). Still master-owning so the
 /// one-time password authenticates the master once and every later channel rides
 /// it with no further prompt.
 pub fn ssh_password_master_base_args(
@@ -275,23 +275,77 @@ pub fn ssh_password_master_base_args(
     Ok(args)
 }
 
-/// True if `sshpass` is available on `PATH`. On Windows this is still how password
-/// auth runs; on Unix it is no longer needed (see [`make_askpass`]) and is only
-/// reported for diagnostics.
+/// True if `sshpass` is available on `PATH`. On Unix it is no longer needed (see
+/// [`make_askpass`]) and is only reported for diagnostics; on Windows it is the
+/// fallback when the installed OpenSSH predates `SSH_ASKPASS_REQUIRE` (< 8.4,
+/// e.g. the Win10-inbox 8.1) — see [`ssh_supports_askpass`].
 pub fn sshpass_available() -> bool {
     crate::paths::binary_on_path("sshpass")
+}
+
+/// Parse an OpenSSH version banner (`ssh -V` output, printed to STDERR) into
+/// `(major, minor)`. Handles both the stock `OpenSSH_9.6p1 …` and the Windows
+/// `OpenSSH_for_Windows_8.6p1 …` spellings by keying on the first digit run
+/// after "OpenSSH".
+pub fn parse_openssh_version(text: &str) -> Option<(u32, u32)> {
+    let rest = &text[text.find("OpenSSH")?..];
+    let rest = &rest[rest.find(|c: char| c.is_ascii_digit())?..];
+    let mut parts = rest.split(|c: char| !c.is_ascii_digit());
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    Some((major, minor))
+}
+
+/// Whether OpenSSH `major.minor` honors `SSH_ASKPASS_REQUIRE=force` (added in
+/// OpenSSH 8.4). Without it, ssh only consults `SSH_ASKPASS` when there is no
+/// controlling TTY *and* `DISPLAY` is set — neither reliable from a GUI app on
+/// Windows — so the askpass path needs ≥ 8.4 and older installs fall back to
+/// `sshpass`.
+pub fn version_supports_askpass_require(major: u32, minor: u32) -> bool {
+    major > 8 || (major == 8 && minor >= 4)
+}
+
+/// Whether the `ssh` on PATH is new enough for the askpass path
+/// (`SSH_ASKPASS_REQUIRE`, OpenSSH ≥ 8.4). Cached for the process lifetime —
+/// the binary does not change under a running Eldrun. Win10's inbox OpenSSH is
+/// 8.1 (→ false, sshpass fallback); Win11's is 8.6+ (→ true).
+#[cfg(windows)]
+pub fn ssh_supports_askpass() -> bool {
+    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        crate::paths::command_no_window("ssh")
+            .arg("-V")
+            .output()
+            .ok()
+            .and_then(|out| {
+                // OpenSSH prints the version banner to STDERR.
+                let text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                parse_openssh_version(&text)
+            })
+            .map(|(major, minor)| version_supports_askpass_require(major, minor))
+            .unwrap_or(false)
+    })
 }
 
 /// Whether non-interactive password auth works on this platform **without the user
 /// installing anything**. On Unix it always does — we feed the password through
 /// OpenSSH's own `SSH_ASKPASS` mechanism ([`make_askpass`]), no external binary.
-/// On Windows we still shell out to `sshpass`, so it depends on that being present.
+/// On Windows the same askpass path works when OpenSSH is ≥ 8.4
+/// ([`ssh_supports_askpass`]); older installs still need `sshpass`.
 pub fn password_auth_available() -> bool {
     #[cfg(unix)]
     {
         true
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        ssh_supports_askpass() || sshpass_available()
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         sshpass_available()
     }
@@ -299,23 +353,24 @@ pub fn password_auth_available() -> bool {
 
 /// A temporary, owner-only askpass shim that feeds a password to OpenSSH via its
 /// built-in `SSH_ASKPASS` mechanism — the in-tree replacement for the external
-/// `sshpass` binary on Unix. The shim script holds **no secret**: it prints
-/// whatever is in the `ELDRUN_ASKPASS` environment variable, which we set only on
-/// the specific `ssh` child (same `/proc/<pid>/environ` exposure `sshpass -e`'s
+/// `sshpass` binary. The shim script holds **no secret**: it prints whatever is
+/// in the `ELDRUN_ASKPASS` environment variable, which we set only on the
+/// specific `ssh` child (same `/proc/<pid>/environ` exposure `sshpass -e`'s
 /// `SSHPASS` had — no worse). Pairing it with `SSH_ASKPASS_REQUIRE=force` makes
 /// OpenSSH (>= 8.4) call the shim with no controlling TTY and no `DISPLAY`, which
-/// is exactly our situation (a GUI app spawning `ssh` with piped stdio).
+/// is exactly our situation (a GUI app spawning `ssh` with piped stdio). On
+/// Windows, gate on [`ssh_supports_askpass`] before taking this path.
 ///
 /// The shim file is deleted when this guard is dropped, so a caller MUST keep the
 /// guard alive until the `ssh` child has finished authenticating (i.e. until the
 /// SFTP handshake / command completes, not merely until spawn returns).
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct Askpass {
     path: std::path::PathBuf,
     password: String,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Askpass {
     /// Environment variables to set on the `ssh` (or `ssh -s`) child so OpenSSH
     /// obtains the password from this shim instead of a controlling TTY.
@@ -331,7 +386,7 @@ impl Askpass {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Drop for Askpass {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
@@ -340,7 +395,7 @@ impl Drop for Askpass {
 
 /// Monotonic suffix so concurrent connects never collide on the shim filename
 /// (paired with the pid, which separates instances).
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 static ASKPASS_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Write an owner-only (0700) askpass shim for `password` and return a guard that
@@ -365,6 +420,37 @@ pub fn make_askpass(password: &str) -> Result<Askpass, String> {
         .map_err(|e| format!("create askpass shim: {e}"))?;
     // The password comes from the environment; the script itself is generic.
     f.write_all(b"#!/bin/sh\nprintf '%s\\n' \"$ELDRUN_ASKPASS\"\n")
+        .map_err(|e| format!("write askpass shim: {e}"))?;
+    Ok(Askpass {
+        path,
+        password: password.to_string(),
+    })
+}
+
+/// Body of the Windows askpass shim (`ap-*.cmd`). It must echo the secret via
+/// PowerShell, NOT `@echo %ELDRUN_ASKPASS%`: cmd re-parses the expanded value,
+/// so `& | < > ^` in a password would be executed/mangled. PowerShell receives
+/// the variable through the environment block and writes it verbatim. Secret-
+/// free, like the Unix shim. Exposed cfg-free so the no-interpolation property
+/// is unit-tested on Linux.
+pub fn windows_askpass_shim_body() -> &'static str {
+    "@powershell.exe -NoProfile -NonInteractive -Command \"[Console]::Out.WriteLine($env:ELDRUN_ASKPASS)\"\r\n"
+}
+
+/// Windows counterpart of the Unix [`make_askpass`]: writes an `ap-{pid}-{seq}.cmd`
+/// shim (see [`windows_askpass_shim_body`]) and returns the delete-on-drop guard.
+/// Only valid when [`ssh_supports_askpass`] is true — callers gate on that and
+/// fall back to `sshpass` otherwise. No `mode(0o700)` here: the state dir is
+/// under the user profile, and the file holds no secret anyway.
+#[cfg(windows)]
+pub fn make_askpass(password: &str) -> Result<Askpass, String> {
+    use std::sync::atomic::Ordering;
+
+    let dir = crate::storage::state_dir().join("ssh-askpass");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create askpass dir: {e}"))?;
+    let seq = ASKPASS_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("ap-{}-{seq}.cmd", std::process::id()));
+    std::fs::write(&path, windows_askpass_shim_body())
         .map_err(|e| format!("write askpass shim: {e}"))?;
     Ok(Askpass {
         path,
@@ -504,6 +590,53 @@ mod tests {
             assert!(!args.iter().any(|a| a == "StrictHostKeyChecking=no"));
             assert!(!args.iter().any(|a| a == "StrictHostKeyChecking=off"));
         }
+    }
+
+    #[test]
+    fn parses_openssh_version_banners() {
+        // Stock Linux and Windows-flavored banners, both to-stderr formats.
+        assert_eq!(
+            parse_openssh_version("OpenSSH_9.6p1 Ubuntu-3ubuntu13.5, OpenSSL 3.0.13"),
+            Some((9, 6))
+        );
+        assert_eq!(
+            parse_openssh_version("OpenSSH_for_Windows_8.6p1, LibreSSL 3.4.3"),
+            Some((8, 6))
+        );
+        assert_eq!(
+            parse_openssh_version("OpenSSH_for_Windows_9.5p1, LibreSSL 3.8.2"),
+            Some((9, 5))
+        );
+        assert_eq!(parse_openssh_version("not an ssh banner"), None);
+        assert_eq!(parse_openssh_version("OpenSSH_"), None);
+    }
+
+    #[test]
+    fn askpass_require_needs_openssh_8_4() {
+        // SSH_ASKPASS_REQUIRE landed in 8.4: Win10-inbox 8.1 must fall back to
+        // sshpass, Win11-inbox 8.6+ takes the askpass path.
+        assert!(!version_supports_askpass_require(8, 1));
+        assert!(!version_supports_askpass_require(8, 3));
+        assert!(version_supports_askpass_require(8, 4));
+        assert!(version_supports_askpass_require(8, 6));
+        assert!(version_supports_askpass_require(9, 0));
+        assert!(!version_supports_askpass_require(7, 9));
+    }
+
+    #[test]
+    fn windows_askpass_shim_echoes_env_without_cmd_interpolation() {
+        let body = windows_askpass_shim_body();
+        // The secret must travel via the environment…
+        assert!(body.contains("ELDRUN_ASKPASS"));
+        // …and never through cmd's %VAR% expansion, which re-parses the value
+        // (`& | < > ^` in a password would execute/mangle). PowerShell writes
+        // the variable verbatim instead.
+        assert!(!body.contains('%'), "cmd %VAR% expansion is forbidden");
+        assert!(body.contains("powershell"));
+        // @-prefixed so the command itself is not echoed into ssh's dialog.
+        assert!(body.starts_with('@'));
+        // cmd wants CRLF endings.
+        assert!(body.ends_with("\r\n"));
     }
 
     #[cfg(unix)]

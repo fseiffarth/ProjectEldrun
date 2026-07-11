@@ -72,7 +72,6 @@ export interface KeyboardChord {
 }
 
 export interface Settings {
-  terminal_command?: string;
   workspace_management?: boolean;
   debug?: boolean;
   git_profile_url?: string;
@@ -151,7 +150,30 @@ export interface Settings {
    *  skipped. Cosmetic only (never auto-launches the tour); the tour is always
    *  replayable from the gear menu / Settings. */
   tour_completed?: boolean;
+  /** Where the main window was when Eldrun last ran, so it reopens on the same
+   *  monitor in the same place. Written by the debounced save in `AppShell`;
+   *  consumed by the backend at startup, never rendered. */
+  window_state?: WindowState;
   [key: string]: unknown;
+}
+
+/**
+ * The main window's geometry in PHYSICAL desktop px — the canonical cross-window
+ * space (`src/lib/coords.ts`), which is also what `outerPosition`/`outerSize`
+ * report and what `setPosition`/`setSize` consume.
+ *
+ * `x`/`y`/`w`/`h` is the *restore* (non-maximized) rect: while the window is
+ * maximized the rect is left alone and only `maximized` flips, so un-maximizing
+ * after a restart lands on a real geometry instead of the full monitor.
+ *
+ * Mirrors `WindowState` in `src-tauri/src/schema/settings.rs`.
+ */
+export interface WindowState {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  maximized: boolean;
 }
 
 export interface OpenVpnSpec {
@@ -210,7 +232,8 @@ export interface RemoteEntry {
  * VPN-gated (`openvpn`) hosts need anything beyond a stock `ssh`. */
 export interface SshTooling {
   /** Whether non-interactive password auth works without installing anything.
-   * Always true on Unix (OpenSSH's `SSH_ASKPASS`); needs `sshpass` on Windows. */
+   * Always true on Unix (OpenSSH's `SSH_ASKPASS`); on Windows it needs either
+   * OpenSSH ≥ 8.4 (same askpass mechanism) or `sshpass` as the legacy fallback. */
   password_auth: boolean;
   /** `openvpn` + `pkexec` — required only for VPN-gated hosts. */
   openvpn: boolean;

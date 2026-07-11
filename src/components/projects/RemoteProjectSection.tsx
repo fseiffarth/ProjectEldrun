@@ -156,15 +156,16 @@ export function RemoteProjectSection({
         <>
           {sshTooling &&
             (() => {
-              // Mount-free remote: no sshfs/FUSE needed. Only password auth (on
-              // Windows, via sshpass) and VPN-gated (openvpn/pkexec) hosts depend on
-              // extra tooling. On Unix password auth rides OpenSSH's own SSH_ASKPASS,
-              // so nothing is missing. The VPN warning fires only once a config is
-              // selected, since OpenVPN is optional.
+              // Mount-free remote: no sshfs/FUSE needed. Only password auth and
+              // VPN-gated (openvpn/pkexec) hosts depend on extra tooling. Password
+              // auth rides OpenSSH's own SSH_ASKPASS everywhere; on Windows that
+              // needs OpenSSH ≥ 8.4, with sshpass as the legacy fallback — the
+              // warning fires only when neither is available. The VPN warning fires
+              // only once a config is selected, since OpenVPN is optional.
               const warnings: string[] = [];
               if (sshPassword && !sshTooling.password_auth) {
                 warnings.push(
-                  "sshpass not found — password auth won't work on this platform. Install sshpass, or use SSH keys (leave the password blank).",
+                  "Password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH or install sshpass, or use SSH keys (leave the password blank).",
                 );
               }
               if (vpnEnabled && vpnConfig && !sshTooling.openvpn) {

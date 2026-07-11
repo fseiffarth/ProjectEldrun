@@ -24,9 +24,9 @@ fn parse<T: serde::de::DeserializeOwned>(json: &str) -> T {
 // ── Settings ───────────────────────────────────────────────────────────────
 
 #[test]
-fn settings_default_color_scheme_is_fancy_dark() {
+fn settings_default_color_scheme_is_light_lavender() {
     let s = Settings::default();
-    assert_eq!(s.color_scheme(), "fancy_dark");
+    assert_eq!(s.color_scheme(), "light_lavender");
 }
 
 #[test]
@@ -53,7 +53,6 @@ fn settings_explicit_workspace_management_true() {
 fn settings_empty_json_parses_to_defaults() {
     let s: Settings = parse("{}");
     assert!(s.color_scheme.is_none());
-    assert!(s.terminal_command.is_none());
     assert!(s.global_apps.is_none());
 }
 
@@ -94,14 +93,12 @@ fn settings_unknown_fields_preserved_in_extra() {
 #[test]
 fn settings_roundtrip_preserves_all_known_fields() {
     let s: Settings = parse(r#"{
-        "terminal_command": "konsole",
         "workspace_management": true,
         "color_scheme": "light",
         "ollama_host": "http://localhost:11434",
         "ollama_model": "mistral"
     }"#);
     let back = roundtrip(&s);
-    assert_eq!(back.terminal_command.as_deref(), Some("konsole"));
     assert_eq!(back.workspace_management, Some(true));
     assert_eq!(back.color_scheme.as_deref(), Some("light"));
     assert_eq!(back.ollama_host.as_deref(), Some("http://localhost:11434"));

@@ -183,9 +183,9 @@ fn capture(mut cmd: Command, what: &str) -> Result<String, String> {
 
 /// Run an ssh command against `[user@]host[:port]`, choosing the auth method by
 /// whether a non-empty `password` was supplied:
-///   - password present → password-only auth. On Unix the password is fed through
-///     OpenSSH's own `SSH_ASKPASS` shim (`services::ssh_common::make_askpass`), so
-///     no external binary is needed; on Windows we still shell out to `sshpass -e`.
+///   - password present → password-only auth via OpenSSH's own `SSH_ASKPASS` shim
+///     (`services::ssh_common::make_askpass`) — on Windows only when OpenSSH ≥ 8.4
+///     supports `SSH_ASKPASS_REQUIRE`, with `sshpass -e` as the legacy fallback.
 ///   - otherwise → key/agent auth in `BatchMode=yes` (the original v1 flow).
 /// Returns ssh stdout on success or the trimmed stderr on failure.
 fn run_ssh_auth(
@@ -214,21 +214,34 @@ fn run_ssh_auth(
             }
             #[cfg(not(unix))]
             {
-                if !crate::services::ssh_common::sshpass_available() {
-                    return Err(
-                        "sshpass not found — install sshpass to use password auth, or set up SSH keys"
+                // Windows: same SSH_ASKPASS path when OpenSSH is ≥ 8.4; older
+                // installs (Win10-inbox 8.1) fall back to sshpass. All commands
+                // use `command_no_window`, so no console flashes either way.
+                if crate::services::ssh_common::ssh_supports_askpass() {
+                    let mut cmd = crate::paths::command_no_window("ssh");
+                    cmd.args(&base);
+                    cmd.args(remote);
+                    let askpass = crate::services::ssh_common::make_askpass(pw)?;
+                    for (k, v) in askpass.env_vars() {
+                        cmd.env(k, v);
+                    }
+                    // The guard must outlive the ssh run (shim exists through auth).
+                    capture(cmd, "ssh")
+                } else if crate::services::ssh_common::sshpass_available() {
+                    let mut cmd = crate::paths::command_no_window("sshpass");
+                    cmd.arg("-e"); // read the password from the SSHPASS env var
+                    cmd.env("SSHPASS", pw);
+                    cmd.arg("ssh");
+                    cmd.args(&base);
+                    cmd.args(remote);
+                    capture(cmd, "sshpass")
+                } else {
+                    Err(
+                        "password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH, \
+                         install sshpass, or set up SSH keys"
                             .to_string(),
-                    );
+                    )
                 }
-                // `command_no_window` keeps the ssh/sshpass probe from flashing a
-                // console window on Windows.
-                let mut cmd = crate::paths::command_no_window("sshpass");
-                cmd.arg("-e"); // read the password from the SSHPASS env var
-                cmd.env("SSHPASS", pw);
-                cmd.arg("ssh");
-                cmd.args(&base);
-                cmd.args(remote);
-                capture(cmd, "sshpass")
             }
         }
         None => {

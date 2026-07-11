@@ -13,8 +13,8 @@
 //! Only the *browse* path moves to SFTP. Remote **agent/terminal** tabs run over
 //! `ssh -tt` (see #28b). Auth is shared with those paths: key/agent in
 //! `BatchMode=yes`, or — when a password is supplied — fed to ssh via OpenSSH's
-//! own `SSH_ASKPASS` on Unix (`services::ssh_common::make_askpass`) / `sshpass` on
-//! Windows.
+//! own `SSH_ASKPASS` (`services::ssh_common::make_askpass`; on Windows only with
+//! OpenSSH ≥ 8.4, else the legacy `sshpass` fallback).
 
 use std::process::Stdio;
 
@@ -64,17 +64,18 @@ fn sftp_subsystem_args(mut base: Vec<String>) -> Result<Vec<String>, String> {
 /// client. Returns the live client plus the child so the caller can await its exit
 /// after dropping the client (dropping closes stdin, which makes ssh exit).
 ///
-/// For password auth the secret is fed via OpenSSH's `SSH_ASKPASS` on Unix (no
-/// external binary) or `sshpass -e` on Windows. The Unix askpass guard is kept in
-/// scope until the function returns so the shim exists throughout the ssh
-/// handshake (auth happens during `Sftp::new`, not merely at spawn).
+/// For password auth the secret is fed via OpenSSH's `SSH_ASKPASS` (on Windows
+/// only when OpenSSH ≥ 8.4 honors `SSH_ASKPASS_REQUIRE`; older installs fall back
+/// to `sshpass -e`). The askpass guard is kept in scope until the function
+/// returns so the shim exists throughout the ssh handshake (auth happens during
+/// `Sftp::new`, not merely at spawn).
 async fn open_session(
     user: &Option<String>,
     host: &str,
     port: Option<u16>,
     password: Option<&str>,
 ) -> Result<(Sftp, Child), String> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let mut _askpass: Option<crate::services::ssh_common::Askpass> = None;
     let mut cmd = match password.filter(|p| !p.is_empty()) {
         Some(pw) => {
@@ -93,18 +94,30 @@ async fn open_session(
             }
             #[cfg(not(unix))]
             {
-                if !crate::services::ssh_common::sshpass_available() {
+                // Windows: askpass when OpenSSH ≥ 8.4, else the sshpass fallback.
+                if crate::services::ssh_common::ssh_supports_askpass() {
+                    let mut cc = Command::new("ssh");
+                    cc.args(&args);
+                    let ap = crate::services::ssh_common::make_askpass(pw)?;
+                    for (k, v) in ap.env_vars() {
+                        cc.env(k, v);
+                    }
+                    _askpass = Some(ap);
+                    c = cc;
+                } else if crate::services::ssh_common::sshpass_available() {
+                    let mut cc = Command::new("sshpass");
+                    cc.arg("-e"); // read the password from $SSHPASS, never argv
+                    cc.env("SSHPASS", pw);
+                    cc.arg("ssh");
+                    cc.args(&args);
+                    c = cc;
+                } else {
                     return Err(
-                        "sshpass not found — install sshpass to use password auth, or set up SSH keys"
+                        "password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH, \
+                         install sshpass, or set up SSH keys"
                             .to_string(),
                     );
                 }
-                let mut cc = Command::new("sshpass");
-                cc.arg("-e"); // read the password from $SSHPASS, never argv
-                cc.env("SSHPASS", pw);
-                cc.arg("ssh");
-                cc.args(&args);
-                c = cc;
             }
             c
         }
@@ -162,7 +175,7 @@ pub async fn open_pooled_session(
     #[cfg(not(target_os = "windows"))]
     let _ = std::fs::create_dir_all(crate::services::ssh_exec::control_dir());
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let mut _askpass: Option<crate::services::ssh_common::Askpass> = None;
     let mut cmd = match password.filter(|p| !p.is_empty()) {
         Some(pw) => {
@@ -181,18 +194,30 @@ pub async fn open_pooled_session(
             }
             #[cfg(not(unix))]
             {
-                if !crate::services::ssh_common::sshpass_available() {
+                // Windows: askpass when OpenSSH ≥ 8.4, else the sshpass fallback.
+                if crate::services::ssh_common::ssh_supports_askpass() {
+                    let mut cc = Command::new("ssh");
+                    cc.args(&args);
+                    let ap = crate::services::ssh_common::make_askpass(pw)?;
+                    for (k, v) in ap.env_vars() {
+                        cc.env(k, v);
+                    }
+                    _askpass = Some(ap);
+                    c = cc;
+                } else if crate::services::ssh_common::sshpass_available() {
+                    let mut cc = Command::new("sshpass");
+                    cc.arg("-e"); // read the password from $SSHPASS, never argv
+                    cc.env("SSHPASS", pw);
+                    cc.arg("ssh");
+                    cc.args(&args);
+                    c = cc;
+                } else {
                     return Err(
-                        "sshpass not found — install sshpass to use password auth, or set up SSH keys"
+                        "password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH, \
+                         install sshpass, or set up SSH keys"
                             .to_string(),
                     );
                 }
-                let mut cc = Command::new("sshpass");
-                cc.arg("-e"); // read the password from $SSHPASS, never argv
-                cc.env("SSHPASS", pw);
-                cc.arg("ssh");
-                cc.args(&args);
-                c = cc;
             }
             c
         }
