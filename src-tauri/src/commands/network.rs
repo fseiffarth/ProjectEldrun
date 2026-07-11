@@ -382,7 +382,83 @@ fn local_snapshot(_include_connections: bool) -> NetworkHostSnapshot {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+/// Parse `netstat -ibn` output into per-interface byte counters. Only the
+/// `<Link#N>` rows are interface totals (per-address rows repeat the counters
+/// per bound address and carry no `<Link#…>` cell). The Address column is
+/// EMPTY for some link rows (`lo0`, `gif0`, …), so columns are indexed from
+/// the END of the row: … Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll — Ibytes
+/// is `len-5` and Obytes `len-2`. Loopback = name starts with "lo"; operstate
+/// isn't in this output, so `up` stays true (an interface present in the
+/// table is selectable — same convention as the remote /proc path).
+#[cfg(any(target_os = "macos", test))]
+fn parse_netstat_ibn(text: &str) -> Vec<NetworkInterface> {
+    text.lines()
+        .filter_map(|line| {
+            if !line.contains("<Link#") {
+                return None;
+            }
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 8 {
+                return None;
+            }
+            let name = *fields.first()?;
+            let rx_bytes = fields.get(fields.len() - 5)?.parse().ok()?;
+            let tx_bytes = fields.get(fields.len() - 2)?.parse().ok()?;
+            Some(NetworkInterface {
+                name: name.to_string(),
+                rx_bytes,
+                tx_bytes,
+                up: true,
+                loopback: name.starts_with("lo"),
+            })
+        })
+        .collect()
+}
+
+/// Local interface counters via `netstat -ibn` (spawned, not the raw
+/// `NET_RT_IFLIST2` sysctl — hand-declared route-message layouts are silent-
+/// garbage risk on a compile-blind port; the netstat text format is stable and
+/// fixture-tested). Connection details are not collected yet, mirroring the
+/// Windows arm.
+#[cfg(target_os = "macos")]
+fn local_snapshot(_include_connections: bool) -> NetworkHostSnapshot {
+    let output = match crate::paths::command_no_window("netstat")
+        .args(["-ibn"])
+        .env("LC_ALL", "C")
+        .output()
+    {
+        Ok(out) if out.status.success() => out,
+        _ => {
+            return unsupported_host(
+                false,
+                true,
+                "Local host".to_string(),
+                "`netstat -ibn` could not enumerate network interfaces.",
+            );
+        }
+    };
+    let interfaces = parse_netstat_ibn(&String::from_utf8_lossy(&output.stdout));
+    if interfaces.is_empty() {
+        return unsupported_host(
+            false,
+            true,
+            "Local host".to_string(),
+            "No network interfaces could be enumerated.",
+        );
+    }
+    NetworkHostSnapshot {
+        supported: true,
+        remote: false,
+        connected: true,
+        sampled_at_ms: now_ms(),
+        host_label: "Local host".to_string(),
+        interfaces,
+        connections: None,
+        warning: Some("Connection details are not yet collected on macOS.".to_string()),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn local_snapshot(_include_connections: bool) -> NetworkHostSnapshot {
     unsupported_host(
         false,
@@ -644,6 +720,39 @@ mod tests {
         assert_eq!(parsed[0].pid, Some(42));
         assert_eq!(parsed[1].local_address, "::");
         assert_eq!(parsed[1].remote_port, "*");
+    }
+
+    #[test]
+    fn parses_netstat_ibn_link_rows() {
+        // Real `netstat -ibn` shape: header, a Link row WITHOUT an Address
+        // cell (lo0), per-address rows that repeat counters (must be skipped),
+        // and a Link row WITH a MAC address (en0).
+        let input = "\
+Name  Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll
+lo0   16384 <Link#1>                         354628     0   82789666   354628     0   82789666     0
+lo0   16384 127           127.0.0.1          354628     -   82789666   354628     -   82789666     -
+lo0   16384 ::1/128     ::1                  354628     -   82789666   354628     -   82789666     -
+en0   1500  <Link#4>    a4:83:e7:00:11:22  1755892     0 1863340029  1084887     0  212930751     0
+en0   1500  192.168.1     192.168.1.23       1755892     - 1863340029  1084887     -  212930751     -
+utun0 1380  <Link#16>                            123     0      45678      321     0      98765     0
+";
+        let parsed = parse_netstat_ibn(input);
+        assert_eq!(parsed.len(), 3, "only <Link#N> rows are interface totals");
+        assert_eq!(parsed[0].name, "lo0");
+        assert!(parsed[0].loopback);
+        assert_eq!(parsed[0].rx_bytes, 82_789_666);
+        assert_eq!(parsed[0].tx_bytes, 82_789_666);
+        assert_eq!(parsed[1].name, "en0");
+        assert!(!parsed[1].loopback);
+        assert_eq!(parsed[1].rx_bytes, 1_863_340_029);
+        assert_eq!(parsed[1].tx_bytes, 212_930_751);
+        assert_eq!(parsed[2].name, "utun0");
+        assert_eq!(parsed[2].rx_bytes, 45_678);
+        assert_eq!(parsed[2].tx_bytes, 98_765);
+        assert!(parsed.iter().all(|i| i.up));
+        // Garbage/empty input degrades to no interfaces, not a panic.
+        assert!(parse_netstat_ibn("").is_empty());
+        assert!(parse_netstat_ibn("Name Mtu\nen0 1500 broken").is_empty());
     }
 
     #[test]

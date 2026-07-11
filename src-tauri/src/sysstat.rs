@@ -334,9 +334,10 @@ fn parse_processor_perf_buffer(buf: &[u8]) -> Vec<CpuTimes> {
         .collect()
 }
 
-/// Decode a NUL-terminated ANSI `CHAR` buffer (a `PROCESSENTRY32.szExeFile`)
-/// into a `String`, lossily for non-UTF-8 bytes.
-#[cfg(any(target_os = "windows", test))]
+/// Decode a NUL-terminated ANSI `CHAR` buffer (a `PROCESSENTRY32.szExeFile`,
+/// or a macOS `proc_bsdinfo.pbi_comm`) into a `String`, lossily for non-UTF-8
+/// bytes.
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 fn decode_ansi_nul(raw: &[i8]) -> String {
     let bytes: Vec<u8> = raw
         .iter()
@@ -344,6 +345,53 @@ fn decode_ansi_nul(raw: &[i8]) -> String {
         .map(|&c| c as u8)
         .collect();
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+// ── Pure macOS decoders (compiled under test on any OS) ─────────────────────
+
+/// Convert the flat tick array written by `host_processor_info`
+/// (`PROCESSOR_CPU_LOAD_INFO`: 4 cumulative `u32` tick counters per core, in
+/// CPU_STATE order user/system/idle/nice) into one [`CpuTimes`] per core, with
+/// ticks scaled to nanoseconds (`ns_per_tick = 1e9 / clk_tck`). The macOS
+/// "tick" unit for per-PROCESS times is already nanoseconds (`clk_tck()` is
+/// 1e9), so machine times MUST be converted to ns too — the frontend divides
+/// per-process by machine deltas and the units have to match. `busy` is
+/// user+system+nice; `total` adds idle. A trailing partial chunk is ignored.
+#[cfg(any(target_os = "macos", test))]
+fn parse_host_processor_ticks(ticks: &[u32], ns_per_tick: u64) -> Vec<CpuTimes> {
+    const CPU_STATE_USER: usize = 0;
+    const CPU_STATE_SYSTEM: usize = 1;
+    const CPU_STATE_IDLE: usize = 2;
+    const CPU_STATE_NICE: usize = 3;
+    ticks
+        .chunks_exact(4)
+        .map(|c| {
+            let busy = (c[CPU_STATE_USER] as u64
+                + c[CPU_STATE_SYSTEM] as u64
+                + c[CPU_STATE_NICE] as u64)
+                * ns_per_tick;
+            CpuTimes {
+                busy,
+                total: busy + c[CPU_STATE_IDLE] as u64 * ns_per_tick,
+            }
+        })
+        .collect()
+}
+
+/// Map a BSD `pbi_status` process state to the Linux-style single letter the
+/// monitor pane already renders: SRUN→R, SSLEEP→S, SSTOP→T, SZOMB→Z (SIDL→I;
+/// anything unknown → empty).
+#[cfg(any(target_os = "macos", test))]
+fn bsd_process_state(status: u32) -> String {
+    match status {
+        1 => "I", // SIDL — process being created
+        2 => "R", // SRUN
+        3 => "S", // SSLEEP
+        4 => "T", // SSTOP
+        5 => "Z", // SZOMB
+        _ => "",
+    }
+    .to_string()
 }
 
 // ── Linux backend (`/proc`) ─────────────────────────────────────────────────
@@ -873,10 +921,215 @@ mod platform {
         }
     }
 
-    /// Not implemented on macOS yet: the htop-like monitor is Linux-only for now,
-    /// so return an unsupported snapshot and let the UI show a placeholder.
+    // ── whole-system snapshot (mach host FFI) ───────────────────────────────
+    //
+    // The mach host calls below are not in the `libc` crate, so they are
+    // declared manually (same raw-FFI pattern as the libproc calls above; all
+    // live in the always-linked libSystem).
+
+    extern "C" {
+        fn mach_host_self() -> u32;
+        fn host_processor_info(
+            host: u32,
+            flavor: i32,
+            out_processor_count: *mut u32,
+            out_processor_info: *mut *mut u32,
+            out_processor_info_count: *mut u32,
+        ) -> i32;
+        fn host_statistics64(host: u32, flavor: i32, info: *mut i32, count: *mut u32) -> i32;
+        fn vm_deallocate(task: u32, address: usize, size: usize) -> i32;
+        static mach_task_self_: u32;
+    }
+
+    /// `PROCESSOR_CPU_LOAD_INFO`.
+    const CPU_LOAD_INFO: i32 = 2;
+    /// `HOST_VM_INFO64`.
+    const HOST_VM_INFO64: i32 = 4;
+    /// sysctl MIB names (numeric so no reliance on libc exposing each const).
+    const CTL_KERN: i32 = 1;
+    const KERN_BOOTTIME: i32 = 21;
+    const CTL_VM: i32 = 2;
+    const VM_SWAPUSAGE: i32 = 5;
+    const CTL_HW: i32 = 6;
+    const HW_MEMSIZE: i32 = 24;
+
+    /// The head of `struct vm_statistics64` — only the leading fixed-width
+    /// counters this module reads. `host_statistics64` copies out at most the
+    /// count we pass, so declaring a prefix is sound (the kernel truncates to
+    /// the caller's count; it never writes past it).
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct VmStatistics64Head {
+        free_count: u32,
+        active_count: u32,
+        inactive_count: u32,
+        wire_count: u32,
+    }
+
+    /// Generic fixed-size sysctl read. `None` when the kernel rejects the MIB
+    /// or writes a different size than expected.
+    fn sysctl_read<T>(mib: &mut [i32]) -> Option<T> {
+        // SAFETY: every T used here is a plain-old-data sysctl out-struct
+        // (u64 / libc::timeval / libc::xsw_usage), for which an all-zero bit
+        // pattern is a valid value; sysctl writes at most `len` bytes into it
+        // and updates `len`, and the result is used only when the kernel
+        // reported writing the full struct.
+        unsafe {
+            let mut out: T = std::mem::zeroed();
+            let mut len = std::mem::size_of::<T>();
+            let rc = libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as u32,
+                &mut out as *mut T as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            );
+            (rc == 0 && len == std::mem::size_of::<T>()).then_some(out)
+        }
+    }
+
+    /// Per-core cumulative CPU times in nanoseconds, via `host_processor_info`.
+    /// Failure degrades to an empty per-core list. The raw tick decode is the
+    /// pure, unit-tested [`super::parse_host_processor_ticks`].
+    fn per_core_times(ns_per_tick: u64) -> Vec<super::CpuTimes> {
+        let mut cpu_count: u32 = 0;
+        let mut info: *mut u32 = std::ptr::null_mut();
+        let mut info_count: u32 = 0;
+        // SAFETY: all three out-params are valid; on KERN_SUCCESS the kernel
+        // vm_allocates `info` (info_count u32s), which we copy out of and then
+        // vm_deallocate exactly once with the byte size it reported.
+        unsafe {
+            let rc = host_processor_info(
+                mach_host_self(),
+                CPU_LOAD_INFO,
+                &mut cpu_count,
+                &mut info,
+                &mut info_count,
+            );
+            if rc != 0 || info.is_null() {
+                return Vec::new();
+            }
+            let ticks = std::slice::from_raw_parts(info, info_count as usize).to_vec();
+            let _ = vm_deallocate(
+                mach_task_self_,
+                info as usize,
+                info_count as usize * std::mem::size_of::<u32>(),
+            );
+            super::parse_host_processor_ticks(&ticks, ns_per_tick)
+        }
+    }
+
+    /// Whole-system sample via mach/sysctl/libproc. All CPU counters are in
+    /// nanoseconds to match `proc_ticks`/`clk_tck` (1e9) — the frontend
+    /// divides per-process by machine deltas, so the units MUST agree; the
+    /// host tick counters are converted via `1e9 / _SC_CLK_TCK`.
+    ///
+    /// Visibility caveat: unprivileged `proc_pidinfo` only inspects the
+    /// calling user's processes, so other users' (and most system) processes
+    /// appear without CPU/RSS detail — they are skipped entirely rather than
+    /// listed as zero rows (TODO 31c).
     pub fn system_snapshot() -> super::SystemSnapshot {
-        super::SystemSnapshot::default()
+        use super::{ProcSample, SystemSnapshot};
+
+        // SAFETY: sysconf takes no pointers.
+        let clk = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        let ns_per_tick = if clk > 0 { 1_000_000_000 / clk as u64 } else { 10_000_000 };
+
+        let per_core = per_core_times(ns_per_tick);
+        let cpu = super::CpuTimes {
+            busy: per_core.iter().map(|c| c.busy).sum(),
+            total: per_core.iter().map(|c| c.total).sum(),
+        };
+
+        let mem_total_kib = sysctl_read::<u64>(&mut [CTL_HW, HW_MEMSIZE])
+            .map(|bytes| bytes / 1024)
+            .unwrap_or(0);
+        // SAFETY: sysconf takes no pointers.
+        let page_kib = {
+            let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+            if ps > 0 { ps as u64 / 1024 } else { 4 }
+        };
+        let mem_available_kib = {
+            let mut head = VmStatistics64Head::default();
+            let mut count = (std::mem::size_of::<VmStatistics64Head>()
+                / std::mem::size_of::<i32>()) as u32;
+            // SAFETY: `head` is a valid prefix buffer and `count` is its exact
+            // size in integer_t units; the kernel copies out at most `count`.
+            let rc = unsafe {
+                host_statistics64(
+                    mach_host_self(),
+                    HOST_VM_INFO64,
+                    &mut head as *mut VmStatistics64Head as *mut i32,
+                    &mut count,
+                )
+            };
+            if rc == 0 {
+                // free + inactive ≈ reclaimable, the usual "available" proxy.
+                (head.free_count as u64 + head.inactive_count as u64) * page_kib
+            } else {
+                0
+            }
+        };
+
+        let (swap_total_kib, swap_free_kib) =
+            sysctl_read::<libc::xsw_usage>(&mut [CTL_VM, VM_SWAPUSAGE])
+                .map(|xsw| (xsw.xsu_total / 1024, xsw.xsu_avail / 1024))
+                .unwrap_or((0, 0));
+
+        let mut load_avg = [0.0f64; 3];
+        // SAFETY: getloadavg writes at most 3 doubles into the array.
+        unsafe {
+            let _ = libc::getloadavg(load_avg.as_mut_ptr(), 3);
+        }
+
+        let uptime_secs = sysctl_read::<libc::timeval>(&mut [CTL_KERN, KERN_BOOTTIME])
+            .map(|boot| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                (now - boot.tv_sec).max(0) as f64
+            })
+            .unwrap_or(0.0);
+
+        // Process table: pids we can't inspect (other users, most system
+        // daemons — see the visibility caveat above) are skipped.
+        let mut processes = Vec::new();
+        for pid in all_pids() {
+            let Some(task) = task_info(pid) else {
+                continue;
+            };
+            let Some(bsd) = bsd_info(pid) else {
+                continue;
+            };
+            let comm = super::decode_ansi_nul(&bsd.pbi_comm);
+            processes.push(ProcSample {
+                pid,
+                ppid: bsd.pbi_ppid,
+                cmdline: format!("[{comm}]"),
+                comm,
+                state: super::bsd_process_state(bsd.pbi_status),
+                rss_kib: task.pti_resident_size / 1024,
+                cpu_jiffies: task.pti_total_user.wrapping_add(task.pti_total_system),
+                threads: task.pti_threadnum.max(0) as u32,
+            });
+        }
+
+        SystemSnapshot {
+            supported: true,
+            clk_tck: clk_tck(), // 1e9 — everything above is in ns
+            num_cores: per_core.len() as u32,
+            cpu,
+            per_core,
+            mem_total_kib,
+            mem_available_kib,
+            swap_total_kib,
+            swap_free_kib,
+            load_avg,
+            uptime_secs,
+            processes,
+        }
     }
 }
 
@@ -1115,6 +1368,42 @@ SwapFree:        2000000 kB
         assert_eq!(decode_ansi_nul(&raw), "explorer.exe");
         assert_eq!(decode_ansi_nul(&[-28, 0]), "\u{fffd}"); // lone 0xE4 byte
         assert_eq!(decode_ansi_nul(&[]), "");
+    }
+
+    // ── macOS decoders (pure; run on any OS) ────────────────────────────────
+
+    #[test]
+    fn parse_host_processor_ticks_scales_to_ns_and_sums_busy() {
+        // Two cores, CPU_STATE order user/system/idle/nice, clk_tck=100 →
+        // ns_per_tick = 10_000_000.
+        let ticks = [100u32, 50, 800, 10, 0, 0, 1000, 0];
+        let cores = parse_host_processor_ticks(&ticks, 10_000_000);
+        assert_eq!(cores.len(), 2);
+        assert_eq!(cores[0].busy, (100 + 50 + 10) * 10_000_000);
+        assert_eq!(cores[0].total, (100 + 50 + 10 + 800) * 10_000_000);
+        assert_eq!(cores[1].busy, 0);
+        assert_eq!(cores[1].total, 1000 * 10_000_000);
+    }
+
+    #[test]
+    fn parse_host_processor_ticks_ignores_partial_tail() {
+        // A truncated final chunk (interrupted copy-out) is dropped, and huge
+        // cumulative counters don't overflow at ns scale within u64.
+        let cores = parse_host_processor_ticks(&[u32::MAX, 0, u32::MAX, 0, 7, 7], 10_000_000);
+        assert_eq!(cores.len(), 1);
+        assert_eq!(cores[0].busy, u32::MAX as u64 * 10_000_000);
+        assert!(parse_host_processor_ticks(&[1, 2, 3], 1).is_empty());
+    }
+
+    #[test]
+    fn bsd_process_state_maps_to_linux_letters() {
+        assert_eq!(bsd_process_state(2), "R"); // SRUN
+        assert_eq!(bsd_process_state(3), "S"); // SSLEEP
+        assert_eq!(bsd_process_state(4), "T"); // SSTOP
+        assert_eq!(bsd_process_state(5), "Z"); // SZOMB
+        assert_eq!(bsd_process_state(1), "I"); // SIDL
+        assert_eq!(bsd_process_state(0), "");
+        assert_eq!(bsd_process_state(99), "");
     }
 
     #[test]
