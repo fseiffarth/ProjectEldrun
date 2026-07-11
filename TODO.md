@@ -928,9 +928,11 @@ container) — as opposed to the git **push** axis (#21/#22).*
       `stores/remoteStatus.ts` (keyed by project id). Activation (`stores/projects.ts`)
       drives the lamps (pooled `remote_connect` with retry; VPN from the prompt
       result or a bounded `openvpn_status` poll) and fires a dedicated `connToast`
-      ("VPN connected · <proj>"). **Known gaps for live QA:** (a) macOS
+      ("VPN connected · <proj>"). **Known gaps for live QA:** (a) ~~macOS
       `openvpn_status` is a stub (always false), so the VPN lamp never goes green
-      on macOS — wire real status when the macOS OpenVPN backend lands (Group H);
+      on macOS~~ — fixed by the macOS OpenVPN backend (31e, 2026-07-11):
+      `is_connected` now probes the daemon pid with EPERM-counts-as-alive, so
+      the lamp reflects real tunnel state (still needs mac runtime QA);
       (b) a headless password-auth host with no live master can't open the pool
       with a null password, so its SSH lamp goes red after the retry budget —
       accurate, but the path itself is the unstored-password limitation, not a lamp
@@ -1095,17 +1097,28 @@ have cross-platform foundations — platform-aware state paths, default-shell
 fallback, browser profile paths, network detection — so this is follow-up work,
 not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
 
+*Intentional gaps (decided, not forgotten — do not re-open without new facts):*
+- *Windows:* `make_sticky` (no public show-on-all-desktops API), window
+  **embedding** (no safe cross-process reparenting), ControlMaster and with it
+  the ssh-link monitor + `net_usage` sampler (Win32-OpenSSH has no mux support).
+- *macOS:* window **embedding** (impossible), **per-window** parking of foreign
+  apps (only app-granularity `NSRunningApplication hide/unhide`; per-window needs
+  private CGS/SkyLight APIs — rejected as build-fragile), popout self-parking
+  (hiding our own app would hide the MAIN window — deferred), `make_sticky`
+  (no public Spaces API), system-monitor process table limited to the calling
+  user's processes when unprivileged (`proc_pidinfo` visibility).
+- *Both:* the network pane's per-connection table (interfaces only; an
+  explanatory warning is shown in the pane).
+
 30. **Windows support follow-ups.** Windows is past the compile stage (state
     paths, shell fallback, browser profiles, network detection, app-icon
-    helpers, NSIS packaging, and a Windows CI package job all exist). Remaining:
+    helpers, NSIS packaging, and a Windows CI package job all exist). Native
+    window tracking/parking (`EnumWindows` + SW_HIDE model, `windows.rs` +
+    pure `windows_park.rs`), the PID liveness API (30c), and the
+    unhandled-exception crash hook (30g) are all built now. Remaining:
     validate a real build/runtime on Win 10 1903+ and Win 11 (incl. ConPTY
-    behavior in xterm.js); decide whether to replace the command-based PID
-    liveness check with a native Windows API; add native window tracking
-    (`EnumWindows` + `GetWindowThreadProcessId`) if project-owned standalone
-    windows need reliable show/hide; decide on a Windows unhandled-exception
-    crash hook (current crash logging is Unix-oriented). (Browser
-    download-preference editing was removed — Eldrun no longer touches any
-    browser's download path; see #60.)
+    behavior in xterm.js). (Browser download-preference editing was removed —
+    Eldrun no longer touches any browser's download path; see #60.)
 
     **Cross-platform detection audit (2026-06-27).** A sweep for Linux-only code
     paths that broke on Windows, fixing the directly-portable ones and tracking
@@ -1166,28 +1179,92 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       freed on success and error paths. Added `Win32_Graphics_Gdi`.
       - [x] 🤖 Automated test — shared filename/date tests retained; build verified
       - [ ] 🖐️ Manual test
-    - [x] **30f — VPN-gated projects on Windows.** ✅ Done (graceful degradation —
-      the explicitly-allowed deliverable). `services/openvpn.rs` is cfg-split:
-      Windows `openvpn_available()` probes only the `openvpn` binary (no `pkexec`),
-      and `connect`/`disconnect`/`is_connected`/`disconnect_all` are no-ops/clear
-      errors ("VPN-gated projects are not yet supported on Windows — connect the
-      OpenVPN tunnel manually …"). No UAC/elevation system built. Linux pkexec path
-      byte-for-byte unchanged (only cfg-gated); non-VPN remote projects unaffected.
+    - [x] **30f — VPN-gated projects on Windows.** ✅ Done — and since upgraded
+      from the original graceful-degradation stub to a **real backend**:
+      `services/openvpn.rs` spawns `openvpn.exe` directly (resolved via PATH /
+      per-user dirs / `Program Files\OpenVPN\bin`) with the same
+      `--askpass`/`--auth-user-pass` credential-file flow as Linux, suppresses
+      the console window, parses stdout/stderr for the ready marker, and tears
+      down via `taskkill /T`. No UAC elevation system: creating the TAP/Wintun
+      adapter typically needs Eldrun itself to run as Administrator, and the
+      error messages say so. Linux pkexec path unchanged.
       - [x] 🤖 Automated test — `cargo test --lib openvpn` passes on Windows
-      - [ ] 🖐️ Manual test
+      - [ ] 🖐️ Manual test — connect a VPN-gated project from an elevated Eldrun
+    - [x] **30g — Windows crash hook** (2026-07-11; ✅ Done · 🧪 CI-unverified).
+      The native-fault analog of the Unix signal handlers: `install_seh_filter`
+      (`lib.rs`) opens crash.log at startup, keeps the raw HANDLE in
+      `CRASH_LOG_HANDLE`, and registers a `SetUnhandledExceptionFilter` that
+      `WriteFile`s one `=== CRASH: code=0x… addr=0x… ===` line before returning
+      `EXCEPTION_CONTINUE_SEARCH`. Formatting is allocation-free via the
+      un-gated `format_crash_line` (the heap may be corrupt mid-crash). Added
+      `Win32_System_{Diagnostics_Debug,IO,Kernel}` features.
+      - [x] 🤖 Automated test — `format_crash_line_*` (4 tests, run on Linux)
+      - [ ] 🖐️ Manual test — force a native crash on Windows; crash.log gains a
+        `=== CRASH:` line with the exception code
+    - [x] **30h — Windows whole-system monitor** (2026-07-11; ✅ Done · 🧪
+      CI-unverified). `sysstat.rs` Windows backend fills a real
+      `SystemSnapshot`: aggregate CPU via `GetSystemTimes` (kernel includes
+      idle), per-core via a manual `NtQuerySystemInformation(8)` extern decoded
+      by the pure `parse_processor_perf_buffer`, memory/swap via
+      `GlobalMemoryStatusEx` (swap = pagefile − physical, saturating),
+      `GetTickCount64` uptime, one ToolHelp walk for the process table
+      (`decode_ansi_nul` for names). All CPU counters stay 100-ns units so the
+      frontend's per-process ÷ machine tick math keeps matching units; no load
+      average on Windows (`[0.0; 3]`).
+      - [x] 🤖 Automated test — `parse_processor_perf_buffer_*`,
+        `decode_ansi_nul_*` (run on Linux)
+      - [ ] 🖐️ Manual test — System Monitor pane shows live CPU/mem/processes
+        on Windows
+    - [x] **30i — Windows local network snapshot** (2026-07-11; ✅ Done · 🧪
+      CI-unverified). `commands/network.rs` Windows `local_snapshot` via
+      `GetIfTable2`: alias name (UTF-16, `utf16_nul_to_string`), octet
+      counters, `OperStatus == Up`, ifType 24 = loopback; empty-alias filter
+      rows skipped. Per-connection details stay `None` with a pane warning.
+      The ssh-link monitor + `net_usage` sampler stay OFF on Windows by design
+      (no ControlMaster mux — see the intentional-gaps register above).
+      - [x] 🤖 Automated test — `utf16_alias_decoding_stops_at_nul` (Linux-run)
+      - [ ] 🖐️ Manual test — Network pane lists adapters with live byte counts
+        on Windows
+    - [x] **30j — Windows SSH password auth via askpass** (2026-07-11; ✅ Done ·
+      🧪 CI-unverified). Password auth no longer hard-requires `sshpass`: when
+      the installed OpenSSH honors `SSH_ASKPASS_REQUIRE` (≥ 8.4 —
+      `parse_openssh_version` + `version_supports_askpass_require`, probed once
+      via `ssh -V` in `ssh_supports_askpass`), Eldrun writes an
+      `ap-{pid}-{seq}.cmd` shim that echoes the secret through **PowerShell**
+      from the child-only `ELDRUN_ASKPASS` env var (never `@echo %VAR%` — cmd
+      would re-parse `& | < > ^` in a password). Win10-inbox OpenSSH 8.1 falls
+      back to `sshpass`; with neither, a clear "needs OpenSSH 8.4+ or sshpass"
+      error. All three password branches (probe, one-shot SFTP, pooled master)
+      chain askpass → sshpass → error; `SshTooling.password_auth` and the
+      dialog warning updated.
+      - [x] 🤖 Automated test — `parses_openssh_version_banners`,
+        `askpass_require_needs_openssh_8_4`,
+        `windows_askpass_shim_echoes_env_without_cmd_interpolation` (Linux-run)
+      - [ ] 🖐️ Manual test — password-SSH project connects without sshpass on
+        Win11 (OpenSSH ≥ 8.4) and via sshpass on Win10 1903
+    - [x] **30k — Windows position_window + popout occlusion** (2026-07-11; ✅
+      Done · 🧪 CI-unverified). `platform/windows.rs` overrides
+      `position_window` (`SetWindowPos` with `SWP_NOSIZE|SWP_NOZORDER|
+      SWP_NOACTIVATE`) so a file-drop-launched app lands on the drop monitor,
+      and adds `frontmost_window_under_cursor` (`GetCursorPos` →
+      `WindowFromPoint` → `GA_ROOT`) wired into `detached_window_frontmost` so
+      an occluded popout refuses a drop-merge (#42 parity with X11).
+      - [x] 🤖 Automated test — compile-gated (`cargo check --target
+        x86_64-pc-windows-msvc`); the pure occlusion logic is X11/macOS-side
+      - [ ] 🖐️ Manual test — file drop places the app on the drop monitor; a
+        popout behind the main window refuses the drop-merge
 
 31. **macOS support follow-ups.** macOS has initial cross-platform code (state
-    paths, default shell, browser profiles, network detection, Unix symlinks,
-    null workspace-backend fallback). Remaining: add bundle support when
+    paths, default shell, browser profiles, network detection, Unix symlinks),
+    and native window tracking/parking now exists (31b — `CGWindowList` +
+    `NSRunningApplication`, no Accessibility permission, no private APIs; it
+    replaced the null-backend fallback). Remaining: add bundle support when
     distribution is needed (`dmg`/`app` target, `minimumSystemVersion`, CI
     artifact handling); add Hardened Runtime entitlements **only** if
     signing/notarization is pursued — do **not** enable App Sandbox (PTY needs
     unrestricted POSIX PTY access); validate a real build on Apple Silicon (and
     Intel if needed); add native app-icon resolution for `.app` bundles if the UI
-    needs resolved macOS icons; add native window tracking (Accessibility APIs or
-    `CGWindowList`) only if project-owned standalone windows need reliable
-    show/hide; and keep the null workspace backend as the default unless a clear
-    need justifies Accessibility permissions or private APIs.
+    needs resolved macOS icons.
     - [~] **31a — Native CPU/RSS sampling backend.** ✅ Code-complete, ⚠️
       **unverified** (compiles only on macOS; written/reviewed on a Windows host).
       Added a `#[cfg(target_os = "macos")] mod platform` in `sysstat.rs` using
@@ -1201,6 +1278,78 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] 🖐️ Manual test — needs a real macOS build to confirm the libc bindings
         (`proc_taskinfo`/`proc_bsdinfo`/`proc_listallpids`) resolve in pinned
         `libc 0.2`; if any is absent, add a minimal `extern "C"`/`#[repr(C)]` decl.
+    - [~] **31b — macOS workspace backend** (2026-07-11; ✅ Code-complete, ⚠️
+      **unverified** — compile-blind on Linux, no macOS SDK). macOS no longer
+      falls to `NullBackend`: `platform/macos.rs` implements `WorkspaceBackend`
+      over raw `extern "C"` FFI — `CGWindowListCopyWindowInfo` enumeration
+      (id/pid/owner/layer/bounds need **no** Screen Recording permission) +
+      `objc_msgSend` into `NSRunningApplication hide/unhide` (**no**
+      Accessibility permission). Parking is **app-granularity** (per-window
+      needs private CGS — rejected; see gaps register). Safety invariants:
+      `pid == self` unconditionally never hidden (hide is app-wide → would take
+      the MAIN window), protected owners (Dock/Finder/WindowServer/…) never
+      hidden, cleanup/Drop unhides exactly what was hidden. Hidden apps leave
+      the on-screen list, so hide time records window→pid in the pure, un-gated
+      `macos_park::MacParkState`. Wiring: factory arm, `apps.rs` window
+      resolvers (+ hide-time re-resolve on macOS like Windows), subwindow
+      occlusion arm (popouts don't learn a CGWindowID yet), `lib.rs` binds the
+      main window's `windowNumber`.
+      - [x] 🤖 Automated test — full `macos_park` suite runs on Linux
+        (protected-name matrix, structural main-window guard, park/show pid
+        round-trip, `frontmost_at_point` occlusion cases)
+      - [ ] 🖐️ Manual test — on a mac: project switch hides/shows foreign apps;
+        Eldrun/Finder/Dock never hidden; quitting Eldrun unhides everything
+    - [~] **31c — macOS whole-system monitor** (2026-07-11; ✅ Code-complete, ⚠️
+      **unverified**, compile-blind). `sysstat.rs` macOS `system_snapshot`:
+      per-core CPU via `host_processor_info` (ticks → **nanoseconds** so units
+      match the ns-based per-process times; pure
+      `parse_host_processor_ticks`), memory via `sysctl(HW_MEMSIZE)` + a manual
+      `repr(C)` `vm_statistics64` head (`available ≈ free+inactive`), swap via
+      `VM_SWAPUSAGE`, `getloadavg`, boot-time uptime; process table from
+      libproc with `bsd_process_state` (SRUN/SSLEEP/SSTOP/SZOMB → R/S/T/Z).
+      Unprivileged `proc_pidinfo` only sees the calling user's processes —
+      inaccessible pids are skipped (see gaps register).
+      - [x] 🤖 Automated test — `parse_host_processor_ticks_*`,
+        `bsd_process_state_*` (Linux-run)
+      - [ ] 🖐️ Manual test — System Monitor pane populates on a mac; CPU% of a
+        busy process roughly matches Activity Monitor
+    - [~] **31d — macOS local network snapshot** (2026-07-11; ✅ Code-complete,
+      ⚠️ **unverified**, compile-blind). `network.rs` spawns `netstat -ibn`
+      (chosen over the raw `NET_RT_IFLIST2` sysctl — hand-declared
+      route-message layouts are silent-garbage risk when nothing can be run)
+      parsed by the fixture-tested `parse_netstat_ibn` (`<Link#N>` rows only,
+      end-indexed columns since the Address cell can be empty). Connections
+      stay `None` with a pane warning, mirroring Windows.
+      - [x] 🤖 Automated test — `parses_netstat_ibn_link_rows` (Linux-run,
+        real-shaped fixture)
+      - [ ] 🖐️ Manual test — Network pane lists en0/lo0/utun* with live byte
+        counts on a mac
+    - [~] **31e — macOS OpenVPN backend** (2026-07-11; ✅ Code-complete, ⚠️
+      **unverified**, compile-blind). Replaces the "not yet supported" stubs:
+      `osascript -e 'do shell script … with administrator privileges'` starts
+      `openvpn --daemon --log <file>` (osascript blocks until the launched
+      command exits — daemonizing is what makes it return), then the handshake
+      is followed by tailing the logfile via the cfg-free, temp-file-tested
+      `wait_for_ready_logfile`. A macOS-own registry keys config →
+      pidfile/logfile (no Child); `is_connected` probes `kill(pid, 0)` with
+      **EPERM = alive** (root daemon — this fixes the 28l "lamp never green"
+      gap). Disconnect = admin-prompted `kill -TERM` (second prompt accepted
+      for v1; management-interface teardown is the no-prompt follow-up).
+      Interactive mode types `sudo openvpn --config … --auth-nocache`.
+      - [x] 🤖 Automated test — `applescript_escape_*`,
+        `macos_admin_shell_command_*`, `pidfile_pid_*`,
+        `wait_for_ready_logfile_*` (Linux-run)
+      - [ ] 🖐️ Manual test — VPN project on a mac: admin prompt → lamp green →
+        disconnect (second prompt) → lamp red; interactive mode types
+        `sudo openvpn …` into the root tab
+    - [ ] **31f — macOS ssh-link traffic via nettop** (design note, no code).
+      ControlMaster exists on macOS, so remote projects mux fine; what's
+      missing is per-socket byte counters for the ssh-link monitor +
+      `net_usage` sampler (`ss -ti` is Linux-only). Design: resolve the master
+      pid from `ssh -O check` (as on Linux), then sample
+      `nettop -P -x -L 1 -p <master-pid>` and parse its CSV (`bytes_in`/
+      `bytes_out` columns) into the existing `SshLinkSnapshot`. Needs a mac to
+      verify nettop's CSV shape/permissions before writing the parser.
 
 ---
 
