@@ -303,6 +303,49 @@ fn parse_pid_stat(content: &str) -> Option<(String, String, u32, u64, u32)> {
     Some((comm, state, ppid, utime + stime, threads))
 }
 
+// ── Pure Windows decoders (compiled under test on any OS) ───────────────────
+// Factored out of the Windows backend so they can be unit-tested from byte
+// fixtures without a live Win32 (pattern: the `/proc` parsers above).
+
+/// Byte size of one `SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION` entry as
+/// returned by `NtQuerySystemInformation` class 8: five LARGE_INTEGER times
+/// (Idle, Kernel, User, Dpc, Interrupt) + ULONG InterruptCount + padding.
+#[cfg(any(target_os = "windows", test))]
+const PROCESSOR_PERF_ENTRY_BYTES: usize = 48;
+
+/// Parse the raw buffer written by `NtQuerySystemInformation(8, …)` into one
+/// [`CpuTimes`] per processor. KernelTime INCLUDES IdleTime (same convention as
+/// `GetSystemTimes`), so `total = kernel + user` and `busy = total − idle`. A
+/// trailing partial entry is ignored; negative times (never expected) clamp to 0.
+#[cfg(any(target_os = "windows", test))]
+fn parse_processor_perf_buffer(buf: &[u8]) -> Vec<CpuTimes> {
+    buf.chunks_exact(PROCESSOR_PERF_ENTRY_BYTES)
+        .map(|chunk| {
+            let time = |off: usize| {
+                i64::from_le_bytes(chunk[off..off + 8].try_into().unwrap()).max(0) as u64
+            };
+            let (idle, kernel, user) = (time(0), time(8), time(16));
+            let total = kernel + user;
+            CpuTimes {
+                busy: total.saturating_sub(idle),
+                total,
+            }
+        })
+        .collect()
+}
+
+/// Decode a NUL-terminated ANSI `CHAR` buffer (a `PROCESSENTRY32.szExeFile`)
+/// into a `String`, lossily for non-UTF-8 bytes.
+#[cfg(any(target_os = "windows", test))]
+fn decode_ansi_nul(raw: &[i8]) -> String {
+    let bytes: Vec<u8> = raw
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 // ── Linux backend (`/proc`) ─────────────────────────────────────────────────
 #[cfg(target_os = "linux")]
 mod platform {
@@ -553,10 +596,160 @@ mod platform {
         ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64
     }
 
-    /// Not implemented on Windows yet: the htop-like monitor is Linux-only for
-    /// now, so return an unsupported snapshot and let the UI show a placeholder.
+    /// Per-core cumulative CPU times via `NtQuerySystemInformation` class 8
+    /// (`SystemProcessorPerformanceInformation`). The windows crate does not
+    /// bind this ntdll call, so it is declared manually; a failed query
+    /// degrades to an empty per-core list (the pane then shows only the
+    /// aggregate bar). The raw buffer decode is the pure, unit-tested
+    /// [`super::parse_processor_perf_buffer`].
+    fn query_per_core_times() -> Vec<super::CpuTimes> {
+        #[link(name = "ntdll")]
+        extern "system" {
+            fn NtQuerySystemInformation(
+                class: u32,
+                info: *mut core::ffi::c_void,
+                len: u32,
+                return_len: *mut u32,
+            ) -> i32;
+        }
+        const SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION: u32 = 8;
+        // 64 KiB holds > 1300 processors at 48 bytes each.
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut ret_len: u32 = 0;
+        // SAFETY: the buffer length is passed exactly; ntdll writes at most
+        // that many bytes and reports how many in `ret_len`, which bounds the
+        // parse below. A non-zero NTSTATUS means nothing was written.
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION,
+                buf.as_mut_ptr() as *mut core::ffi::c_void,
+                buf.len() as u32,
+                &mut ret_len,
+            )
+        };
+        if status != 0 {
+            return Vec::new();
+        }
+        buf.truncate((ret_len as usize).min(buf.len()));
+        super::parse_processor_perf_buffer(&buf)
+    }
+
+    /// Whole-system sample via Win32: `GetSystemTimes` (aggregate CPU; kernel
+    /// time INCLUDES idle, so total = kernel+user and busy = total−idle),
+    /// ntdll per-core times, `GlobalMemoryStatusEx` (swap ≈ pagefile −
+    /// physical, both counters include RAM), `GetTickCount64` uptime, and one
+    /// ToolHelp walk for the process table. Windows has no load average, so
+    /// `load_avg` stays `[0.0; 3]` and the pane hides it. All CPU counters are
+    /// 100-ns units to match `proc_ticks`/`clk_tck` — the frontend divides
+    /// per-process ticks by machine ticks, so the units MUST agree.
     pub fn system_snapshot() -> super::SystemSnapshot {
-        super::SystemSnapshot::default()
+        use super::{CpuTimes, ProcSample, SystemSnapshot};
+        use windows::Win32::System::SystemInformation::{
+            GetSystemInfo, GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO,
+        };
+        use windows::Win32::System::Threading::GetSystemTimes;
+
+        let mut idle = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: three valid FILETIME out-params, written on success only.
+        let cpu = if unsafe {
+            GetSystemTimes(
+                Some(&mut idle as *mut _),
+                Some(&mut kernel as *mut _),
+                Some(&mut user as *mut _),
+            )
+        }
+        .is_ok()
+        {
+            let total = filetime_units(kernel) + filetime_units(user);
+            CpuTimes {
+                busy: total.saturating_sub(filetime_units(idle)),
+                total,
+            }
+        } else {
+            CpuTimes::default()
+        };
+
+        let per_core = query_per_core_times();
+
+        let mut mem = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `mem` is valid and its dwLength is set as the API requires.
+        let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) =
+            if unsafe { GlobalMemoryStatusEx(&mut mem) }.is_ok() {
+                (
+                    mem.ullTotalPhys / 1024,
+                    mem.ullAvailPhys / 1024,
+                    mem.ullTotalPageFile.saturating_sub(mem.ullTotalPhys) / 1024,
+                    mem.ullAvailPageFile.saturating_sub(mem.ullAvailPhys) / 1024,
+                )
+            } else {
+                (0, 0, 0, 0)
+            };
+
+        let num_cores = {
+            let mut info = SYSTEM_INFO::default();
+            // SAFETY: plain out-param write into a valid SYSTEM_INFO.
+            unsafe { GetSystemInfo(&mut info) };
+            info.dwNumberOfProcessors
+        };
+
+        // SAFETY: no arguments; returns milliseconds since boot.
+        let uptime_secs = unsafe { GetTickCount64() } as f64 / 1000.0;
+
+        // One ToolHelp walk for identity fields (pid/ppid/name/threads), then
+        // per-pid CPU/RSS queries. A pid we cannot open (system/elevated)
+        // keeps its identity row with zeroed usage, matching the Linux
+        // behavior of unreadable /proc entries as closely as possible.
+        let mut processes = Vec::new();
+        // SAFETY: snapshot is closed before returning; the entry is fully
+        // initialized (dwSize set) before Process32First reads it.
+        unsafe {
+            if let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+                let mut entry = PROCESSENTRY32 {
+                    dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,
+                    ..Default::default()
+                };
+                if Process32First(snapshot, &mut entry).is_ok() {
+                    loop {
+                        let pid = entry.th32ProcessID;
+                        let comm = super::decode_ansi_nul(&entry.szExeFile);
+                        processes.push(ProcSample {
+                            pid,
+                            ppid: entry.th32ParentProcessID,
+                            cmdline: format!("[{comm}]"),
+                            comm,
+                            state: String::new(),
+                            rss_kib: rss_kib(pid).unwrap_or(0),
+                            cpu_jiffies: proc_ticks(pid).unwrap_or(0),
+                            threads: entry.cntThreads,
+                        });
+                        if Process32Next(snapshot, &mut entry).is_err() {
+                            break;
+                        }
+                    }
+                }
+                let _ = CloseHandle(snapshot);
+            }
+        }
+
+        SystemSnapshot {
+            supported: true,
+            clk_tck: clk_tck(),
+            num_cores,
+            cpu,
+            per_core,
+            mem_total_kib,
+            mem_available_kib,
+            swap_total_kib,
+            swap_free_kib,
+            load_avg: [0.0; 3],
+            uptime_secs,
+            processes,
+        }
     }
 }
 
@@ -873,6 +1066,55 @@ SwapFree:        2000000 kB
         assert_eq!(parse_loadavg("0.52 0.58 0.59 1/1234 56789"), [0.52, 0.58, 0.59]);
         // Short/garbage input degrades to zeros.
         assert_eq!(parse_loadavg(""), [0.0, 0.0, 0.0]);
+    }
+
+    // ── Windows byte decoders (pure; run on any OS) ─────────────────────────
+
+    /// Build one 48-byte SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION entry.
+    fn perf_entry(idle: i64, kernel: i64, user: i64) -> Vec<u8> {
+        let mut out = Vec::with_capacity(PROCESSOR_PERF_ENTRY_BYTES);
+        for v in [idle, kernel, user, 0i64, 0i64] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&[0u8; 8]); // InterruptCount + padding
+        out
+    }
+
+    #[test]
+    fn parse_processor_perf_buffer_derives_busy_and_total() {
+        let mut buf = perf_entry(1_000, 1_500, 300); // kernel includes idle
+        buf.extend(perf_entry(0, 200, 100));
+        let cores = parse_processor_perf_buffer(&buf);
+        assert_eq!(cores.len(), 2);
+        assert_eq!(cores[0].total, 1_800);
+        assert_eq!(cores[0].busy, 800); // (kernel − idle) + user
+        assert_eq!(cores[1].total, 300);
+        assert_eq!(cores[1].busy, 300);
+    }
+
+    #[test]
+    fn parse_processor_perf_buffer_ignores_partial_tail_and_clamps() {
+        // A short trailing chunk (returned length mid-entry) is dropped, and a
+        // negative time (corrupt input) clamps to 0 instead of wrapping.
+        let mut buf = perf_entry(-5, -10, 40);
+        buf.extend_from_slice(&[0u8; 20]);
+        let cores = parse_processor_perf_buffer(&buf);
+        assert_eq!(cores.len(), 1);
+        assert_eq!(cores[0].total, 40);
+        assert_eq!(cores[0].busy, 40);
+        assert!(parse_processor_perf_buffer(&[]).is_empty());
+    }
+
+    #[test]
+    fn decode_ansi_nul_stops_at_nul_and_is_lossy() {
+        let mut raw = [0i8; 16];
+        for (i, b) in b"explorer.exe".iter().enumerate() {
+            raw[i] = *b as i8;
+        }
+        raw[13] = b'x' as i8; // garbage after the NUL must be ignored
+        assert_eq!(decode_ansi_nul(&raw), "explorer.exe");
+        assert_eq!(decode_ansi_nul(&[-28, 0]), "\u{fffd}"); // lone 0xE4 byte
+        assert_eq!(decode_ansi_nul(&[]), "");
     }
 
     #[test]

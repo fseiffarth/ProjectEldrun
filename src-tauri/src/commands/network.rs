@@ -6,6 +6,7 @@
 //! from the ControlMaster's TCP socket so it includes every multiplexed channel
 //! (terminal, SFTP, sync, git).
 
+#[cfg(target_os = "linux")]
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -310,13 +311,84 @@ fn local_snapshot(include_connections: bool) -> NetworkHostSnapshot {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Decode a NUL-terminated UTF-16 buffer (a `MIB_IF_ROW2.Alias`) to a String.
+#[cfg(any(target_os = "windows", test))]
+fn utf16_nul_to_string(units: &[u16]) -> String {
+    let len = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+    String::from_utf16_lossy(&units[..len])
+}
+
+/// Local interface counters via `GetIfTable2`. Per-connection details need a
+/// `GetExtendedTcpTable`/`GetExtendedUdpTable` port that is not written yet, so
+/// `connections` stays `None` with an explanatory warning (the pane renders
+/// interfaces and hides the connection table).
+#[cfg(target_os = "windows")]
+fn local_snapshot(_include_connections: bool) -> NetworkHostSnapshot {
+    use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
+    use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+
+    /// IANA ifType 24 = softwareLoopback (`IF_TYPE_SOFTWARE_LOOPBACK`).
+    const IF_TYPE_SOFTWARE_LOOPBACK: u32 = 24;
+
+    let mut table: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
+    // SAFETY: GetIfTable2 allocates the table it points `table` at; it is read
+    // within NumEntries bounds and released with FreeMibTable on every path
+    // where it was set.
+    let interfaces = unsafe {
+        if GetIfTable2(&mut table).is_err() || table.is_null() {
+            Vec::new()
+        } else {
+            let rows =
+                std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize);
+            let interfaces = rows
+                .iter()
+                .filter_map(|row| {
+                    let name = utf16_nul_to_string(&row.Alias);
+                    // Skip alias-less rows (filter/lightweight interfaces); a
+                    // user-visible adapter always carries an alias.
+                    if name.is_empty() {
+                        return None;
+                    }
+                    Some(NetworkInterface {
+                        name,
+                        rx_bytes: row.InOctets,
+                        tx_bytes: row.OutOctets,
+                        up: row.OperStatus == IfOperStatusUp,
+                        loopback: row.Type == IF_TYPE_SOFTWARE_LOOPBACK,
+                    })
+                })
+                .collect();
+            FreeMibTable(table as *const core::ffi::c_void);
+            interfaces
+        }
+    };
+    if interfaces.is_empty() {
+        return unsupported_host(
+            false,
+            true,
+            "Local host".to_string(),
+            "No network interfaces could be enumerated.",
+        );
+    }
+    NetworkHostSnapshot {
+        supported: true,
+        remote: false,
+        connected: true,
+        sampled_at_ms: now_ms(),
+        host_label: "Local host".to_string(),
+        interfaces,
+        connections: None,
+        warning: Some("Connection details are not yet collected on Windows.".to_string()),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn local_snapshot(_include_connections: bool) -> NetworkHostSnapshot {
     unsupported_host(
         false,
         true,
         "Local host".to_string(),
-        "Network monitoring is currently supported on Linux.",
+        "Network monitoring is not supported on this platform yet.",
     )
 }
 
@@ -572,6 +644,21 @@ mod tests {
         assert_eq!(parsed[0].pid, Some(42));
         assert_eq!(parsed[1].local_address, "::");
         assert_eq!(parsed[1].remote_port, "*");
+    }
+
+    #[test]
+    fn utf16_alias_decoding_stops_at_nul() {
+        let mut alias = [0u16; 8];
+        for (i, u) in "Ethernet".encode_utf16().take(6).enumerate() {
+            alias[i] = u;
+        }
+        alias[6] = 0;
+        alias[7] = b'x' as u16; // garbage after the NUL must be ignored
+        assert_eq!(utf16_nul_to_string(&alias), "Ethern");
+        // No NUL at all → whole buffer.
+        let full: Vec<u16> = "lo".encode_utf16().collect();
+        assert_eq!(utf16_nul_to_string(&full), "lo");
+        assert_eq!(utf16_nul_to_string(&[]), "");
     }
 
     #[test]
