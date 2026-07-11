@@ -89,6 +89,17 @@ pub trait WorkspaceBackend: Send + Sync {
     /// refuse to ever add it to the override. Called once at startup when the
     /// main window's X11 id is resolved. Default no-op.
     fn set_main_window_id(&self, _window_id: u64) {}
+
+    /// Move an already-mapped window to absolute physical root coordinates so it
+    /// lands on the monitor containing (x, y). Used to place an externally
+    /// launched app on the screen where a file was dropped. Best-effort; the
+    /// default is a no-op for backends that cannot position foreign windows
+    /// (KDE-Wayland forbids a client positioning another app's window, and
+    /// null/Windows do not implement it), which degrades gracefully to "the WM
+    /// places it wherever it likes".
+    fn position_window(&self, _window_id: u64, _x: i32, _y: i32) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 // ── Factory ────────────────────────────────────────────────────────────────

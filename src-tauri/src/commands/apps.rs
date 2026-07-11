@@ -11,8 +11,14 @@
 //! App discovery, icon resolution and launching are inherently OS-specific, so
 //! the platform-divergent pieces are gated behind `cfg`:
 //! - **Linux** uses the freedesktop/XDG model: it scans `.desktop` entries under
-//!   `~/.local/share/applications` and `/usr/share/applications`, resolves icons
-//!   through the icon-theme directories, and launches the `Exec=` line directly.
+//!   `$XDG_DATA_HOME/applications` and every `$XDG_DATA_DIRS` entry's
+//!   `applications` dir (see [`xdg_application_dirs`]) — which, since desktop
+//!   sessions add Flatpak/Snap export paths to `XDG_DATA_DIRS`, is what makes
+//!   apps installed that way discoverable too — resolves icons through the
+//!   icon-theme directories, and launches the `Exec=` line. Multi-word `Exec=`
+//!   values (Flatpak's `flatpak run --branch=... app.id`) are preserved in full
+//!   by [`parse_exec_command`] and shell-split back into program+args at launch
+//!   time by [`split_exec_command`], rather than truncated to their first token.
 //! - **Windows** has no XDG layer, so [`list_installed_apps`] instead enumerates
 //!   Start-Menu `.lnk` shortcuts under `%ProgramData%`/`%APPDATA%`, reading each
 //!   shortcut's display name and resolving its target executable via
@@ -138,6 +144,29 @@ pub fn do_launch(
     Ok(win)
 }
 
+/// Split an exec string into the literal program to spawn and any leading
+/// arguments already baked into it (e.g. Flatpak's
+/// `flatpak run --branch=stable --command=... app.id`, from
+/// [`parse_exec_command`]).
+///
+/// An exec with no whitespace is always a single program. One that does
+/// contain whitespace is still treated as a single program when the whole
+/// string exists as a literal path on disk — this covers Windows targets like
+/// `C:\Program Files\App\app.exe` and any manually typed Linux path with a
+/// space, both of which must be spawned whole, not split. Only when the whole
+/// string is *not* a real path do we fall back to splitting on whitespace,
+/// which is exactly the multi-word-launcher case: the single-program
+/// interpretation could never have spawned it anyway (no file is literally
+/// named `flatpak run --branch=stable ...`).
+fn split_exec_command(exec: &str) -> (&str, Vec<&str>) {
+    if !exec.contains(' ') || Path::new(exec).exists() {
+        return (exec, Vec::new());
+    }
+    let mut parts = exec.split_whitespace();
+    let program = parts.next().unwrap_or(exec);
+    (program, parts.collect())
+}
+
 fn launch_command(exec: &str, args: &[String], file: Option<&str>) -> Command {
     #[cfg(target_os = "macos")]
     if Path::new(exec)
@@ -156,7 +185,9 @@ fn launch_command(exec: &str, args: &[String], file: Option<&str>) -> Command {
         return cmd;
     }
 
-    let mut cmd = crate::paths::command_for_program(Path::new(exec));
+    let (program, leading_args) = split_exec_command(exec);
+    let mut cmd = crate::paths::command_for_program(Path::new(program));
+    cmd.args(leading_args);
     cmd.args(args);
     if let Some(file) = file {
         cmd.arg(file);
@@ -225,13 +256,15 @@ fn resolve_app_icon_uncached(exec: &str) -> Option<String> {
         }
     }
 
-    let exec_base = Path::new(&exec)
+    let (exec_program, _) = split_exec_command(exec);
+    let exec_base = Path::new(exec_program)
         .file_name()?
         .to_string_lossy()
         .to_lowercase();
     for desktop_file in desktop_files() {
         if let Some(entry) = parse_desktop_entry(&desktop_file) {
-            let Some(entry_base) = Path::new(&entry.exec)
+            let (entry_program, _) = split_exec_command(&entry.exec);
+            let Some(entry_base) = Path::new(entry_program)
                 .file_name()
                 .map(|name| name.to_string_lossy().to_lowercase())
             else {
@@ -285,12 +318,28 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
 #[tauri::command]
 pub fn open_file(
     registry: State<'_, WindowRegistryState>,
+    workspace: State<'_, crate::commands::workspace::WorkspaceStateArc>,
     path: String,
     handler: Option<String>,
     project_id: Option<String>,
     origin: Option<String>,
+    // Physical desktop coordinates to place the launched window at (the point a
+    // file was dropped, on the target monitor). Both must be present to apply;
+    // absent on double-click / manual launch, leaving WM placement untouched.
+    x: Option<i32>,
+    y: Option<i32>,
 ) -> Result<TrackedWindow, String> {
     let origin = origin.unwrap_or_else(|| ORIGIN_MANUAL_LAUNCH.to_string());
+    // Best-effort: move a resolved window to the drop point so an externally
+    // launched app lands on the screen the file was dropped onto. Placement
+    // failure never fails the open (X11-only; a no-op elsewhere).
+    let place = |window_id: Option<u64>| {
+        if let (Some(wid), Some(px), Some(py)) = (window_id, x, y) {
+            if let Err(e) = workspace.lock().unwrap().backend.position_window(wid, px, py) {
+                eprintln!("position_window failed: {e}");
+            }
+        }
+    };
     let before = list_window_ids();
     // Resolve the executable to launch: an explicit handler always wins;
     // otherwise consult the project-then-global default-app map (keyed by
@@ -324,6 +373,7 @@ pub fn open_file(
         let pid =
             crate::paths::spawn_reaped(cmd).map_err(|e| format!("open with {launch_exec}: {e}"))?;
         let window_id = find_window_for_pid(pid, 20).or_else(|| find_new_window(&before, 20));
+        place(window_id);
         return track_opened_file(
             registry.inner(),
             launch_exec,
@@ -336,6 +386,7 @@ pub fn open_file(
     }
     opener::open(&path).map_err(|e| e.to_string())?;
     let window_id = find_new_window(&before, 20);
+    place(window_id);
     track_opened_file(
         registry.inner(),
         "open-file".to_string(),
@@ -425,13 +476,15 @@ pub const EMBEDDABLE_EXECS: &[&str] = &[
     "code", "blender",
 ];
 
-/// Whether `exec` (a path or bare command) names an embeddable app, matched by
-/// its basename against `EMBEDDABLE_EXECS`.
+/// Whether `exec` (a path, bare command, or multi-word launcher line) names an
+/// embeddable app, matched by the basename of its program (see
+/// [`split_exec_command`]) against `EMBEDDABLE_EXECS`.
 pub fn is_embeddable_exec(exec: &str) -> bool {
-    let base = Path::new(exec)
+    let (program, _) = split_exec_command(exec);
+    let base = Path::new(program)
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_else(|| exec.to_lowercase());
+        .unwrap_or_else(|| program.to_lowercase());
     EMBEDDABLE_EXECS.iter().any(|&e| e == base)
 }
 
@@ -516,18 +569,38 @@ fn resolve_handler_via_mime(path: &str) -> Option<String> {
     }
 }
 
+/// XDG application directories, in precedence order: `$XDG_DATA_HOME/applications`
+/// (falling back to `~/.local/share/applications`), then each dir in
+/// `$XDG_DATA_DIRS` (falling back to `/usr/local/share:/usr/share`) joined with
+/// `applications`. Respecting `XDG_DATA_DIRS` (rather than hardcoding just
+/// `/usr/share` + `/usr/local/share`) is what picks up Flatpak/Snap exports
+/// (e.g. `/var/lib/flatpak/exports/share`), which the desktop session already
+/// adds to that variable.
+fn xdg_application_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+    if let Some(home) = data_home {
+        dirs.push(home.join("applications"));
+    }
+    let data_dirs = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
+    for dir in data_dirs.split(':').filter(|s| !s.is_empty()) {
+        dirs.push(PathBuf::from(dir).join("applications"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
+    dirs
+}
+
 /// Linux-only after the mime-resolver was platform-gated; the icon resolver still
 /// uses the separate `desktop_files`, so keep this compiled but quiet elsewhere.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn desktop_app_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![
-        PathBuf::from("/usr/share/applications"),
-        PathBuf::from("/usr/local/share/applications"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.insert(0, PathBuf::from(home).join(".local/share/applications"));
-    }
-    dirs
+    xdg_application_dirs()
 }
 
 /// Return the native file-drag preview icon as a PNG `data:` URL.
@@ -620,7 +693,11 @@ fn project_apps_for_id(project_id: Option<&str>) -> HashMap<String, String> {
 pub struct InstalledApp {
     /// Display name (`Name=` from the `.desktop` entry).
     pub name: String,
-    /// Launch executable (first non-`%` token of `Exec=`).
+    /// Launch command line, parsed from `Exec=` with desktop field codes
+    /// (`%f`/`%U`/...) and Flatpak's `@@` quoting markers stripped. Kept as the
+    /// full command line (not just the first token) so multi-word launchers like
+    /// `flatpak run --branch=stable --command=... app.id` still work — see
+    /// [`parse_exec_command`].
     pub exec: String,
     /// Raw `Icon=` value (theme name or path); the frontend resolves it lazily.
     pub icon: Option<String>,
@@ -797,7 +874,7 @@ fn parse_installed_app(path: &Path) -> Option<InstalledApp> {
             }
         } else if let Some(v) = line.strip_prefix("Exec=") {
             if exec.is_none() {
-                exec = first_exec_token(v);
+                exec = parse_exec_command(v);
             }
         } else if let Some(v) = line.strip_prefix("Icon=") {
             if icon.is_none() {
@@ -1241,17 +1318,9 @@ fn utf16_buf_to_path(buf: &[u16]) -> Option<PathBuf> {
 }
 
 fn desktop_files() -> Vec<PathBuf> {
-    let mut dirs = vec![
-        PathBuf::from("/usr/share/applications"),
-        PathBuf::from("/usr/local/share/applications"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.insert(0, PathBuf::from(home).join(".local/share/applications"));
-    }
-
     let mut files = Vec::new();
-    for dir in dirs {
-        let Ok(entries) = fs::read_dir(dir) else {
+    for dir in xdg_application_dirs() {
+        let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -1279,7 +1348,7 @@ fn parse_desktop_entry(path: &Path) -> Option<DesktopEntry> {
             continue;
         }
         if let Some(value) = line.strip_prefix("Exec=") {
-            exec = first_exec_token(value);
+            exec = parse_exec_command(value);
         } else if let Some(value) = line.strip_prefix("Icon=") {
             icon = Some(value.to_string());
         }
@@ -1290,16 +1359,27 @@ fn parse_desktop_entry(path: &Path) -> Option<DesktopEntry> {
     })
 }
 
-pub(crate) fn first_exec_token(value: &str) -> Option<String> {
-    let first = value
+/// Parse a desktop-entry `Exec=` value into the literal command line to launch.
+///
+/// Desktop field codes (`%f`, `%U`, `%i`, ...) are placeholders the file/URL
+/// argument fills in separately (see `file` in [`launch_command`]), and
+/// Flatpak's `@@...@@` quoting markers wrap those placeholders, so both are
+/// dropped. Every remaining token is kept and rejoined with single spaces —
+/// unlike a first-token-only parse, this preserves multi-word launchers such as
+/// Flatpak's `flatpak run --branch=stable --command=entrypoint app.id`, which
+/// would otherwise be truncated to a bare `flatpak` with no way to know which
+/// app to run.
+pub(crate) fn parse_exec_command(value: &str) -> Option<String> {
+    let tokens: Vec<&str> = value
         .split_whitespace()
-        .find(|part| !part.starts_with('%'))?
-        .trim_matches('"')
-        .to_string();
-    if first.is_empty() {
+        .filter(|part| !part.starts_with('%') && !part.starts_with("@@"))
+        .map(|part| part.trim_matches('"'))
+        .filter(|part| !part.is_empty())
+        .collect();
+    if tokens.is_empty() {
         None
     } else {
-        Some(first)
+        Some(tokens.join(" "))
     }
 }
 
@@ -1831,50 +1911,99 @@ mod tests {
         );
     }
 
-    // ── first_exec_token ───────────────────────────────────────────────────
+    // ── parse_exec_command ──────────────────────────────────────────────────
 
     #[test]
-    fn first_exec_token_plain_path() {
+    fn parse_exec_command_plain_path() {
         assert_eq!(
-            first_exec_token("/usr/bin/firefox"),
+            parse_exec_command("/usr/bin/firefox"),
             Some("/usr/bin/firefox".into())
         );
     }
 
     #[test]
-    fn first_exec_token_strips_desktop_field_codes() {
+    fn parse_exec_command_strips_desktop_field_codes() {
         // %U, %F etc. must be skipped.
         assert_eq!(
-            first_exec_token("/usr/bin/code %F"),
+            parse_exec_command("/usr/bin/code %F"),
             Some("/usr/bin/code".into())
         );
     }
 
     #[test]
-    fn first_exec_token_strips_leading_percent_args() {
+    fn parse_exec_command_strips_leading_percent_args() {
         assert_eq!(
-            first_exec_token("%u /usr/bin/app"),
+            parse_exec_command("%u /usr/bin/app"),
             Some("/usr/bin/app".into())
         );
     }
 
     #[test]
-    fn first_exec_token_empty_string() {
-        assert_eq!(first_exec_token(""), None);
+    fn parse_exec_command_empty_string() {
+        assert_eq!(parse_exec_command(""), None);
     }
 
     #[test]
-    fn first_exec_token_only_field_codes() {
-        assert_eq!(first_exec_token("%U %F %i"), None);
+    fn parse_exec_command_only_field_codes() {
+        assert_eq!(parse_exec_command("%U %F %i"), None);
     }
 
     #[test]
-    fn first_exec_token_quoted_token_outer_quotes_stripped() {
+    fn parse_exec_command_quoted_token_outer_quotes_stripped() {
         // The function strips outer quotes from the final string but splits on
         // whitespace first, so a quoted path with spaces is split at the space.
         // This documents the actual behavior.
-        let result = first_exec_token("\"/usr/bin/myapp\"");
+        let result = parse_exec_command("\"/usr/bin/myapp\"");
         assert_eq!(result, Some("/usr/bin/myapp".into()));
+    }
+
+    #[test]
+    fn parse_exec_command_preserves_multi_token_flatpak_launcher() {
+        // A first-token-only parse would truncate this to a bare `flatpak`
+        // with no way to know which app to run — the full command line
+        // (minus field codes/@@ markers) must survive.
+        let result = parse_exec_command(
+            "/usr/bin/flatpak run --branch=stable --arch=x86_64 \
+             --command=entrypoint --file-forwarding com.prusa3d.PrusaSlicer \
+             --single-instance-on-url @@u %u @@",
+        );
+        assert_eq!(
+            result,
+            Some(
+                "/usr/bin/flatpak run --branch=stable --arch=x86_64 \
+                 --command=entrypoint --file-forwarding com.prusa3d.PrusaSlicer \
+                 --single-instance-on-url"
+                    .into()
+            )
+        );
+    }
+
+    // ── split_exec_command ──────────────────────────────────────────────────
+
+    #[test]
+    fn split_exec_command_no_whitespace_is_single_program() {
+        assert_eq!(split_exec_command("/usr/bin/firefox"), ("/usr/bin/firefox", vec![]));
+    }
+
+    #[test]
+    fn split_exec_command_splits_nonexistent_multi_word_launcher() {
+        let (program, args) =
+            split_exec_command("/usr/bin/flatpak run --branch=stable com.prusa3d.PrusaSlicer");
+        assert_eq!(program, "/usr/bin/flatpak");
+        assert_eq!(args, vec!["run", "--branch=stable", "com.prusa3d.PrusaSlicer"]);
+    }
+
+    #[test]
+    fn split_exec_command_keeps_existing_path_with_spaces_whole() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "eldrun test app {}.txt",
+            std::process::id()
+        ));
+        fs::write(&path, b"").unwrap();
+        let exec = path.to_string_lossy().into_owned();
+        assert_eq!(split_exec_command(&exec), (exec.as_str(), vec![]));
+        let _ = fs::remove_file(&path);
     }
 
     // ── installed-app parsing / embeddable allowlist ───────────────────────

@@ -195,6 +195,36 @@ impl WorkspaceBackend for X11Backend {
         self.parkable.lock().unwrap().main_window_id = Some(window_id);
     }
 
+    fn position_window(&self, window_id: u64, x: i32, y: i32) -> Result<(), String> {
+        let wid =
+            window_from_u64(window_id).ok_or_else(|| format!("invalid x11 window id {window_id}"))?;
+        // Geometry only — root-window pixels map to whichever monitor contains
+        // (x, y), so no monitor enumeration is needed. Do NOT touch
+        // _NET_WM_DESKTOP here: this is placement, not workspace parking.
+        // Best-effort re-apply: an app can force its own geometry right after
+        // mapping, so re-issue a few times. Never a hard error — positioning a
+        // foreign app is inherently best-effort.
+        let mut last_err = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                thread::sleep(Duration::from_millis(40));
+            }
+            last_err = self
+                .conn
+                .send_and_check_request(&x::ConfigureWindow {
+                    window: wid,
+                    value_list: &[x::ConfigWindow::X(x), x::ConfigWindow::Y(y)],
+                })
+                .map_err(|e| e.to_string())
+                .and_then(|()| self.conn.flush().map_err(|e| e.to_string()))
+                .err();
+        }
+        match last_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     fn cleanup(&self) -> Result<(), String> {
         let mut cleaned_up = self.cleaned_up.lock().unwrap();
         if *cleaned_up {

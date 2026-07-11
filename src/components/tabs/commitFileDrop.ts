@@ -165,6 +165,10 @@ export function commitFileDrop(
             f ? undefined : cap?.resolved_exec ?? d.fileExec,
             projectId,
             "file_drag_out",
+            // Land the external app on the monitor the file was dropped onto:
+            // detachBounds is the physical drop rectangle (from the desktop
+            // cursor), matching the sibling viewer-window branch above.
+            { x: detachBounds.x, y: detachBounds.y },
           )
           .catch((e) => console.error(e));
       }

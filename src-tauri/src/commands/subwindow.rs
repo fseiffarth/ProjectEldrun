@@ -303,8 +303,10 @@ pub fn attach_subwindow(
 /// main window or another app) it is NOT at front, so the drop must open a new
 /// window instead of merging into a window the user can't see (#42).
 ///
-/// Defaults to `true` (allow the merge) when the popout has no resolved X11 id
-/// or on non-Linux, so a missing occlusion signal never suppresses a legit dock.
+/// Defaults to `true` (allow the merge) when the popout has no resolved native
+/// window id or on platforms without an occlusion probe (currently everything
+/// but Linux/X11 and Windows), so a missing occlusion signal never suppresses a
+/// legit dock.
 #[tauri::command]
 pub fn detached_window_frontmost(
     win_registry: State<'_, WindowRegistryState>,
@@ -325,7 +327,13 @@ pub fn detached_window_frontmost(
                     .map(|top| top == wid)
                     .unwrap_or(false)
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "windows")]
+            {
+                crate::platform::windows::frontmost_window_under_cursor()
+                    .map(|top| top == wid)
+                    .unwrap_or(false)
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             {
                 let _ = wid;
                 true

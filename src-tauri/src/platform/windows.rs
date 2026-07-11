@@ -28,7 +28,7 @@ use super::{WorkspaceBackend, WorkspaceInfo};
 use windows::core::BOOL;
 use windows::core::GUID;
 use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
@@ -38,10 +38,11 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, EnumWindows, GetForegroundWindow, GetParent, GetWindow, GetWindowLongPtrW,
-    GetWindowThreadProcessId, IsWindow, IsWindowVisible, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, GW_OWNER, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WS_MAXIMIZEBOX, WS_THICKFRAME,
+    BringWindowToTop, EnumWindows, GetAncestor, GetCursorPos, GetForegroundWindow, GetParent,
+    GetWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WindowFromPoint, GA_ROOT,
+    GW_OWNER, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SW_HIDE, SW_SHOW, WS_MAXIMIZEBOX, WS_THICKFRAME,
 };
 
 pub struct WindowsBackend {
@@ -177,6 +178,23 @@ impl WorkspaceBackend for WindowsBackend {
         self.state.lock().unwrap().set_main(window_id);
     }
 
+    fn position_window(&self, window_id: u64, x: i32, y: i32) -> Result<(), String> {
+        let hwnd = hwnd_from_u64(window_id)?;
+        if !is_window(hwnd) {
+            return Ok(());
+        }
+        // Move only — virtual-screen pixels map to whichever monitor contains
+        // (x, y), so no monitor enumeration is needed (the Windows analog of
+        // x11.rs positioning in root coordinates). Size, z-order and activation
+        // are left untouched.
+        // SAFETY: hwnd was validated by `is_window` above; SetWindowPos with
+        // SWP_NOSIZE ignores the zero width/height arguments.
+        unsafe {
+            SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+                .map_err(|e| format!("SetWindowPos: {e}"))
+        }
+    }
+
     fn cleanup(&self) -> Result<(), String> {
         let mut cleaned_up = self.cleaned_up.lock().unwrap();
         if *cleaned_up {
@@ -307,6 +325,29 @@ pub fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
         }
     }
     None
+}
+
+/// The ROOT top-level window currently under the mouse cursor, as a u64 id.
+/// The Windows analog of x11.rs `frontmost_window_under_pointer`, used by the
+/// popout occlusion check (#42): a file drop over a popout's bounds must not
+/// merge into a popout that is actually behind another window. `WindowFromPoint`
+/// returns the deepest child at the point (a drop usually lands on the webview
+/// child HWND), so it is resolved to its `GA_ROOT` ancestor to compare against
+/// the popout's registered top-level HWND.
+pub fn frontmost_window_under_cursor() -> Option<u64> {
+    // SAFETY: plain Win32 calls on stack-owned data; WindowFromPoint/GetAncestor
+    // return null HWNDs on failure, which are checked before use.
+    unsafe {
+        let mut pt = POINT::default();
+        GetCursorPos(&mut pt).ok()?;
+        let hwnd = WindowFromPoint(pt);
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let root = GetAncestor(hwnd, GA_ROOT);
+        let top = if root.0.is_null() { hwnd } else { root };
+        Some(hwnd_to_u64(top))
+    }
 }
 
 /// Whether `hwnd`'s owning process is Eldrun itself or a protected shell/system

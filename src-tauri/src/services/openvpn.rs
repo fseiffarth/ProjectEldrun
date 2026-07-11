@@ -709,7 +709,7 @@ pub fn connect_streaming(
 
     // `command_no_window` adds CREATE_NO_WINDOW so the long-lived openvpn.exe
     // does not own a flashing console window.
-    let spawn_result = crate::paths::command_no_window(&exe.to_string_lossy())
+    let spawn_result = crate::paths::command_no_window(&exe)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
