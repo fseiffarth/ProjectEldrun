@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod duscan;
 pub mod paths;
 pub mod platform;
 pub mod schema;
@@ -16,6 +17,12 @@ use terminal::PtyRegistry;
 /// Raw fd kept open so the async-signal-safe crash handler can write to it.
 #[cfg(unix)]
 static CRASH_LOG_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// Raw file HANDLE kept open so the SEH crash filter can write to it — the
+/// Windows analog of `CRASH_LOG_FD`. `0` (null, never a valid file handle)
+/// means "not installed".
+#[cfg(windows)]
+static CRASH_LOG_HANDLE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
 /// Install a panic hook + OS signal handlers that append to crash.log.
 fn install_crash_logger() {
@@ -36,6 +43,10 @@ fn install_crash_logger() {
     #[cfg(unix)]
     // SAFETY: called once at startup before any threads that touch signals.
     unsafe { install_signal_handlers(&path) };
+
+    #[cfg(windows)]
+    // SAFETY: called once at startup before any thread can crash.
+    unsafe { install_seh_filter(&path) };
 }
 
 /// Append one entry to crash.log in the state dir.
@@ -117,6 +128,110 @@ extern "C" fn signal_crash_handler(
 fn sig_write(fd: i32, buf: &[u8]) {
     // SAFETY: `write` is async-signal-safe per POSIX.
     unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
+}
+
+/// Register a Windows SEH unhandled-exception filter that appends a
+/// `=== CRASH: … ===` line to crash.log — the native-fault analog of the Unix
+/// signal handlers above (a Rust panic is already covered by the panic hook;
+/// this catches access violations and friends that never unwind).
+#[cfg(windows)]
+unsafe fn install_seh_filter(path: &std::path::Path) {
+    use std::os::windows::io::IntoRawHandle;
+    use windows::Win32::System::Diagnostics::Debug::SetUnhandledExceptionFilter;
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        CRASH_LOG_HANDLE.store(
+            file.into_raw_handle() as isize,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    // SAFETY: `crash_filter` matches the required `extern "system"` signature
+    // and only performs handle writes on pre-opened state.
+    unsafe {
+        SetUnhandledExceptionFilter(Some(crash_filter));
+    }
+}
+
+/// SEH top-level filter: write one crash line to the pre-opened handle, then
+/// return `EXCEPTION_CONTINUE_SEARCH` (0) so default termination (WER, exit
+/// code) proceeds — the moral equivalent of `SA_RESETHAND` on Unix. Runs on
+/// the crashing thread with a possibly corrupt heap, so it formats into a
+/// stack buffer via the allocation-free `format_crash_line`.
+#[cfg(windows)]
+unsafe extern "system" fn crash_filter(
+    info: *const windows::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS,
+) -> i32 {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::WriteFile;
+
+    // SAFETY: the OS hands us a valid EXCEPTION_POINTERS for the duration of
+    // the filter call; both pointers are null-checked before dereference.
+    let (code, addr) = unsafe {
+        if info.is_null() || (*info).ExceptionRecord.is_null() {
+            (0u32, 0usize)
+        } else {
+            let rec = &*(*info).ExceptionRecord;
+            (rec.ExceptionCode.0 as u32, rec.ExceptionAddress as usize)
+        }
+    };
+    let handle = CRASH_LOG_HANDLE.load(std::sync::atomic::Ordering::Relaxed);
+    if handle != 0 {
+        let mut buf = [0u8; 64];
+        let len = format_crash_line(code, addr, &mut buf);
+        // SAFETY: the handle was opened at install time and is kept open for
+        // the process lifetime; WriteFile on a file handle is safe here.
+        unsafe {
+            let _ = WriteFile(
+                HANDLE(handle as *mut core::ffi::c_void),
+                Some(&buf[..len]),
+                None,
+                None,
+            );
+        }
+    }
+    0 // EXCEPTION_CONTINUE_SEARCH
+}
+
+/// Format `=== CRASH: code=0x… addr=0x… ===\n` into `buf` without allocating
+/// (an SEH filter runs on a crashing thread whose heap may be corrupt) and
+/// return the byte length. Truncates silently if `buf` is too small. Compiled
+/// on every OS so its unit tests run on Linux; only the Windows crash filter
+/// consumes it at runtime.
+pub fn format_crash_line(code: u32, addr: usize, buf: &mut [u8]) -> usize {
+    fn push(buf: &mut [u8], pos: usize, bytes: &[u8]) -> usize {
+        let n = bytes.len().min(buf.len().saturating_sub(pos));
+        buf[pos..pos + n].copy_from_slice(&bytes[..n]);
+        pos + n
+    }
+    fn push_hex(buf: &mut [u8], pos: usize, mut v: u64, min_digits: usize) -> usize {
+        let mut digits = [0u8; 16];
+        let mut i = 0;
+        loop {
+            let d = (v & 0xF) as u8;
+            digits[i] = if d < 10 { b'0' + d } else { b'A' + (d - 10) };
+            i += 1;
+            v >>= 4;
+            if (v == 0 && i >= min_digits) || i == digits.len() {
+                break;
+            }
+        }
+        let mut pos = pos;
+        while i > 0 {
+            i -= 1;
+            pos = push(buf, pos, &digits[i..i + 1]);
+        }
+        pos
+    }
+    let mut pos = 0;
+    pos = push(buf, pos, b"=== CRASH: code=0x");
+    pos = push_hex(buf, pos, code as u64, 8);
+    pos = push(buf, pos, b" addr=0x");
+    pos = push_hex(buf, pos, addr as u64, 1);
+    pos = push(buf, pos, b" ===\n");
+    pos
 }
 
 /// Webview renderer crashes (e.g. WebKitWebProcess SIGBUS) happen in a child
@@ -241,6 +356,9 @@ pub fn run() {
     // on remote_connect when enabled, stopped on disconnect / exit). See
     // `services::git_peer` (TODO #28n).
     let git_peer = services::git_peer::new_registry();
+    // Cancel flags for in-flight disk-usage scans, one per scanning pane. See
+    // `commands::disk_usage`.
+    let disk_scans = commands::disk_usage::new_state();
 
     tauri::Builder::default()
         .manage(pty_registry)
@@ -251,6 +369,7 @@ pub fn run() {
         .manage(sync_manifest)
         .manage(auto_sync)
         .manage(git_peer)
+        .manage(disk_scans)
         .setup(|_app| {
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
@@ -461,6 +580,10 @@ pub fn run() {
             commands::format::check_syntax,
             commands::fs_watch::watch_dir,
             commands::fs_watch::unwatch_dir,
+            // Disk usage analyzer (commands::disk_usage)
+            commands::disk_usage::disk_usage_scan,
+            commands::disk_usage::disk_usage_cancel,
+            commands::disk_usage::disk_usage_devices,
             // LaTeX view / compile (gated on a TeX engine being on PATH)
             commands::tex::tex_capability,
             commands::tex::compile_tex,
@@ -629,5 +752,40 @@ mod tests {
         let s = iso_now();
         assert!(s.ends_with('Z'), "crash-log timestamps end with Z: {s}");
         assert!(s.contains('T'));
+    }
+
+    fn crash_line(code: u32, addr: usize, cap: usize) -> (String, usize) {
+        let mut buf = vec![0u8; cap];
+        let len = format_crash_line(code, addr, &mut buf);
+        (String::from_utf8(buf[..len].to_vec()).unwrap(), len)
+    }
+
+    #[test]
+    fn format_crash_line_access_violation() {
+        // 0xC0000005 = STATUS_ACCESS_VIOLATION, the canonical native crash.
+        let (s, _) = crash_line(0xC000_0005, 0x7FF6_1234_ABCD, 64);
+        assert_eq!(s, "=== CRASH: code=0xC0000005 addr=0x7FF61234ABCD ===\n");
+    }
+
+    #[test]
+    fn format_crash_line_pads_code_to_8_digits_and_addr_to_1() {
+        let (s, _) = crash_line(0x5, 0x0, 64);
+        assert_eq!(s, "=== CRASH: code=0x00000005 addr=0x0 ===\n");
+    }
+
+    #[test]
+    fn format_crash_line_truncates_without_panicking() {
+        for cap in 0..48 {
+            let (s, len) = crash_line(0xC000_0005, usize::MAX, cap);
+            assert!(len <= cap, "len {len} must fit cap {cap}");
+            assert!("=== CRASH: code=0xC0000005 addr=0xFFFFFFFFFFFFFFFF ===\n".starts_with(&s));
+        }
+    }
+
+    #[test]
+    fn format_crash_line_max_values_fit_a_64_byte_buffer() {
+        let (s, len) = crash_line(u32::MAX, usize::MAX, 64);
+        assert!(len < 64, "worst case must fit the filter's stack buffer");
+        assert_eq!(s, "=== CRASH: code=0xFFFFFFFF addr=0xFFFFFFFFFFFFFFFF ===\n");
     }
 }

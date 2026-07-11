@@ -35,7 +35,10 @@ infer = "0.19.0"
 opener = "0.8.4"
 notify = "8"
 # Read images (e.g. screenshots) off the system clipboard for paste-into-tree.
-arboard = "3"
+# wayland-data-control: without it arboard speaks only X11, so image copy/paste
+# silently no-ops on a Wayland session with no XWayland. It falls back to X11 at
+# runtime when the compositor lacks the protocol, so this is additive.
+arboard = { version = "3", features = ["wayland-data-control"] }
 # Encode the clipboard's raw RGBA image as PNG before writing it to disk.
 png = "0.17"
 calamine = "0.35.0"
@@ -82,6 +85,12 @@ windows = { version = "0.61", features = [
     "Win32_Graphics_Gdi",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    # SEH unhandled-exception filter → crash.log line (`install_seh_filter`).
+    # Debug owns the module; Kernel gates EXCEPTION_POINTERS itself and IO gates
+    # the WriteFile the filter logs with.
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_Kernel",
     # Per-process CPU/memory sampling + process-tree walk for the project resource
     # readout (the Windows analogue of Linux's `/proc` parsing in `sysstat.rs`).
     "Win32_System_Diagnostics_ToolHelp",
