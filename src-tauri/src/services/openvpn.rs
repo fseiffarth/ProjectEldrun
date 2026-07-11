@@ -16,25 +16,20 @@
 //! (no leading `-`, no control characters) and passed to the child as a separate
 //! argv item.
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::collections::HashMap;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
+use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-// `OpenOptionsExt::mode` is only used by `write_askpass`, which is compiled on
-// Linux/Windows but not macOS — scope its import to Linux to avoid an unused
-// import there (macOS still uses `PermissionsExt` in `store_config`).
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::process::{Child, Stdio};
 #[cfg(target_os = "linux")]
 use std::process::Command;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::sync::{Mutex, OnceLock};
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -43,10 +38,8 @@ use crate::services::ssh_common::validate_arg;
 use crate::storage;
 
 /// OpenVPN prints this once the tunnel is fully up.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 const READY_MARKER: &str = "Initialization Sequence Completed";
 /// Give the tunnel this long to come up before we give up and kill it.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// A running tunnel: the OpenVPN child plus the pidfile OpenVPN wrote. On Linux
@@ -215,10 +208,19 @@ pub fn interactive_connect_command(config: &str) -> Result<String, String> {
     ))
 }
 
-/// macOS has no wired OpenVPN backend yet (see [`connect`]).
+/// macOS variant: `sudo` on the visible tty (no `pkexec`/polkit on macOS; the
+/// interactive root-tab path types the password straight into the terminal).
 #[cfg(target_os = "macos")]
-pub fn interactive_connect_command(_config: &str) -> Result<String, String> {
-    Err("OpenVPN-gated projects are not yet supported on macOS".into())
+pub fn interactive_connect_command(config: &str) -> Result<String, String> {
+    let config = config.trim();
+    validate_arg("OpenVPN config", config)?;
+    if config.is_empty() {
+        return Err("OpenVPN config path must not be empty".to_string());
+    }
+    Ok(format!(
+        "sudo openvpn --config {} --auth-nocache",
+        shell_quote(config)
+    ))
 }
 
 /// True if `openvpn` and `pkexec` are both available on `PATH` (both are needed:
@@ -237,12 +239,13 @@ pub fn openvpn_available() -> bool {
     resolve_openvpn().is_some()
 }
 
-/// macOS has no wired OpenVPN backend yet (no `pkexec`/polkit analogue and the
-/// tunnel-management flow needs runtime testing), so VPN-gated projects report as
-/// unavailable rather than the crate failing to build.
+/// True if an `openvpn` binary can be located (PATH or the usual Homebrew /
+/// local prefixes). Elevation rides `osascript … with administrator privileges`
+/// (see [`connect_streaming`]), which is always present, so only the binary is
+/// probed.
 #[cfg(target_os = "macos")]
 pub fn openvpn_available() -> bool {
-    false
+    resolve_openvpn().is_some()
 }
 
 /// Build the `openvpn` argv (without the leading `pkexec`/`openvpn`) for a
@@ -341,7 +344,6 @@ fn safe_stem(config: &str) -> String {
 /// On Windows the 0600 mode is skipped (no `mode()`); the file lives under the
 /// per-user `%APPDATA%\eldrun\openvpn` dir, which is already user-scoped, and is
 /// deleted as soon as OpenVPN has read it.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn write_askpass(stem: &str, password: &str) -> Result<PathBuf, String> {
     let dir = runtime_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create openvpn dir: {e}"))?;
@@ -363,7 +365,6 @@ fn write_askpass(stem: &str, password: &str) -> Result<PathBuf, String> {
 /// soon as OpenVPN has read it. A newline in either field would forge extra lines
 /// OpenVPN misreads, so both are rejected (they can't occur in a real credential
 /// anyway).
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn write_userpass(stem: &str, username: &str, password: &str) -> Result<PathBuf, String> {
     if username.contains(['\n', '\r']) || password.contains(['\n', '\r']) {
         return Err("VPN username/password must not contain newlines".to_string());
@@ -402,10 +403,28 @@ pub fn is_connected(config: &str) -> bool {
     }
 }
 
-/// macOS stub: no tunnels are tracked, so none are ever connected.
+/// True if a tunnel for `config` is currently up: registered and its recorded
+/// daemon pid probes alive via `kill(pid, 0)` — where **EPERM counts as
+/// alive** (the daemon is root; see [`pid_alive`]). This feeds `openvpn_status`,
+/// so getting EPERM wrong keeps the VPN lamp dark (the 28l bug). A registered
+/// tunnel whose pid is gone is dropped from the registry.
 #[cfg(target_os = "macos")]
-pub fn is_connected(_config: &str) -> bool {
-    false
+pub fn is_connected(config: &str) -> bool {
+    let mut reg = mac_registry().lock().unwrap();
+    match reg.get(config) {
+        Some(proc) => match pidfile_pid(&proc.pidfile) {
+            Some(pid) if pid_alive(pid) => true,
+            _ => {
+                let dead = reg.remove(config);
+                if let Some(dead) = dead {
+                    let _ = std::fs::remove_file(&dead.pidfile);
+                    let _ = std::fs::remove_file(&dead.logfile);
+                }
+                false
+            }
+        },
+        None => false,
+    }
 }
 
 /// Bring up the OpenVPN tunnel for `config`, authenticating with `password`.
@@ -770,36 +789,311 @@ pub fn disconnect(config: &str) -> Result<(), String> {
     Ok(())
 }
 
-// --- macOS: not yet supported -----------------------------------------------
+// --- macOS: osascript-elevated daemon + logfile tail -------------------------
 //
-// macOS has no `pkexec`/polkit non-interactive escalation analogue, and driving
-// the bundled OpenVPN client (or Tunnelblick) needs runtime testing, so the
-// tunnel lifecycle is stubbed: connect errors with a clear message and the
-// teardown paths are no-ops. `is_connected`/`openvpn_available` already report
-// false above, so VPN-gated projects degrade gracefully rather than failing to
-// build.
+// macOS has no `pkexec`/polkit analogue; privileged one-shots go through
+// `osascript -e 'do shell script … with administrator privileges'` (the system
+// admin-auth dialog). That call BLOCKS until the launched command exits, so
+// OpenVPN must not run in the foreground — it is started with `--daemon --log
+// <file>`: the parent exits as soon as the daemon forks (osascript returns),
+// and the handshake is followed by tailing the logfile for the ready marker.
+// There is consequently no `Child` to track: the macOS registry keys the
+// config to its pidfile/logfile, liveness is `kill(pid, 0)` (EPERM = alive —
+// the daemon is root; treating EPERM as dead is the exact 28l lamp bug), and
+// teardown is a second admin-prompted `kill -TERM <pid>` (accepted for v1;
+// management-interface teardown would avoid the prompt but needs the config
+// to opt in — follow-up note in TODO 31e).
 
-/// macOS stub: bringing up a tunnel is not implemented yet. (Shared `connect`
-/// wrapper above forwards here with a no-op callback.)
-#[cfg(target_os = "macos")]
-pub fn connect_streaming(
-    _config: &str,
-    _username: Option<&str>,
-    _password: &str,
-    _on_line: impl Fn(&str),
-) -> Result<(), String> {
-    Err("OpenVPN-gated projects are not yet supported on macOS".into())
+/// Escape `s` for embedding inside an AppleScript double-quoted string
+/// literal: backslashes and double quotes are the only metacharacters.
+/// Compiled cfg-free so it is unit-tested on Linux.
+pub fn applescript_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch == '\\' || ch == '"' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }
 
-/// macOS stub: nothing is ever connected, so teardown is a no-op success.
+/// Build the AppleScript source that runs `shell_cmd` elevated with the given
+/// dialog `prompt` — the macOS analog of prefixing `pkexec`. `shell_cmd` must
+/// already be shell-quoted (see [`shell_quote`]); this wraps it for the
+/// AppleScript string context. Compiled cfg-free for Linux-run unit tests.
+pub fn macos_admin_shell_command(shell_cmd: &str, prompt: &str) -> String {
+    format!(
+        "do shell script \"{}\" with administrator privileges with prompt \"{}\"",
+        applescript_escape(shell_cmd),
+        applescript_escape(prompt)
+    )
+}
+
+/// Read and validate the pid recorded in `pidfile`: digits only (same
+/// validation as `kill_pidfile` — the file is root-written, but never feed a
+/// non-numeric string to `kill`). `None` when missing/empty/invalid. Compiled
+/// cfg-free for Linux-run unit tests.
+pub fn pidfile_pid(pidfile: &Path) -> Option<i32> {
+    let contents = std::fs::read_to_string(pidfile).ok()?;
+    let pid = contents.trim();
+    if pid.is_empty() || !pid.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Follow `logfile` until the OpenVPN ready marker appears (`Ok`), the daemon
+/// dies without it (`Err` with the log tail), or `timeout` elapses (`Err`).
+/// The logfile analog of `wait_for_ready`'s pipe loop, for a daemonized
+/// OpenVPN whose parent already exited. Emits every COMPLETE line to
+/// `on_line` (a trailing partial line is held until its newline arrives).
+/// `still_alive` is consulted after each drain so a death right after writing
+/// the failure reason still surfaces that reason. std-only and cfg-free so it
+/// is unit-tested on Linux with a temp file.
+pub fn wait_for_ready_logfile(
+    logfile: &Path,
+    timeout: Duration,
+    poll: Duration,
+    still_alive: impl Fn() -> bool,
+    on_line: impl Fn(&str),
+) -> Result<(), String> {
+    let start = Instant::now();
+    let mut seen = 0usize; // byte offset of consumed (complete) lines
+    let mut tail: Vec<String> = Vec::new();
+    loop {
+        // Raw bytes + lossy per-line decode: a log with a stray non-UTF-8 byte
+        // must not stall the whole tail.
+        let bytes = std::fs::read(logfile).unwrap_or_default();
+        while let Some(nl) = bytes[seen.min(bytes.len())..].iter().position(|&b| b == b'\n') {
+            let line = String::from_utf8_lossy(&bytes[seen..seen + nl]);
+            let line = line.trim_end_matches('\r');
+            on_line(line);
+            if line.contains(READY_MARKER) {
+                return Ok(());
+            }
+            tail.push(line.to_string());
+            if tail.len() > 8 {
+                tail.remove(0);
+            }
+            seen += nl + 1;
+        }
+        if !still_alive() {
+            let detail = tail.join("; ");
+            return if detail.is_empty() {
+                Err("OpenVPN exited before the tunnel came up".to_string())
+            } else {
+                Err(format!("OpenVPN failed: {detail}"))
+            };
+        }
+        if start.elapsed() >= timeout {
+            return Err("OpenVPN connection timed out".to_string());
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// A live macOS tunnel: the root daemon's pidfile + its logfile. No `Child` —
+/// osascript exits once OpenVPN daemonizes.
 #[cfg(target_os = "macos")]
-pub fn disconnect(_config: &str) -> Result<(), String> {
+struct MacVpn {
+    pidfile: PathBuf,
+    logfile: PathBuf,
+}
+
+/// macOS-own registry of live tunnels, keyed by config path (the pid-tracked
+/// analog of [`registry`]).
+#[cfg(target_os = "macos")]
+fn mac_registry() -> &'static Mutex<HashMap<String, MacVpn>> {
+    static REG: OnceLock<Mutex<HashMap<String, MacVpn>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Whether `pid` is alive. **EPERM counts as ALIVE**: the daemon runs as root,
+/// so an unprivileged probe gets EPERM for a perfectly healthy tunnel —
+/// treating that as dead keeps the VPN lamp dark (the exact 28l bug).
+#[cfg(target_os = "macos")]
+fn pid_alive(pid: i32) -> bool {
+    // SAFETY: kill with signal 0 only probes for existence/permission.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Locate `openvpn` as an ABSOLUTE path: PATH first, then the Homebrew /
+/// usr-local prefixes a GUI app's environment usually lacks. Absolute because
+/// the command runs under `do shell script`, whose /bin/sh gets a minimal
+/// PATH without any of those prefixes.
+#[cfg(target_os = "macos")]
+fn resolve_openvpn() -> Option<PathBuf> {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let extra = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+    ];
+    for dir in path_var
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .chain(extra.iter().copied())
+    {
+        let cand = Path::new(dir).join("openvpn");
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// Like [`connect`], but invokes `on_line` for every line OpenVPN writes to
+/// its logfile while the tunnel comes up, so the caller can stream the live
+/// handshake into a read-only log. See the section comment above for the
+/// osascript + `--daemon` + logfile-tail design.
+#[cfg(target_os = "macos")]
+pub fn connect_streaming(
+    config: &str,
+    username: Option<&str>,
+    password: &str,
+    on_line: impl Fn(&str),
+) -> Result<(), String> {
+    let config = config.trim();
+    validate_arg("OpenVPN config", config)?;
+    if !Path::new(config).is_file() {
+        return Err(format!("OpenVPN config not found: {config}"));
+    }
+    if is_connected(config) {
+        return Ok(());
+    }
+    let exe = resolve_openvpn().ok_or_else(|| {
+        "openvpn not found — install it (e.g. `brew install openvpn`) to use VPN-gated projects"
+            .to_string()
+    })?;
+
+    let stem = safe_stem(config);
+    // Feed the secret through the channel the config actually reads: a two-line
+    // user+pass file for `auth-user-pass` configs, else a one-line key passphrase.
+    let userpass = config_requires_userpass(config);
+    let credfile = if userpass {
+        write_userpass(&stem, username.unwrap_or(""), password)?
+    } else {
+        write_askpass(&stem, password)?
+    };
+    let pidfile = runtime_dir().join(format!("{stem}.pid"));
+    let logfile = runtime_dir().join(format!("{stem}.log"));
+    // Stale files from a previous run would satisfy the tail/liveness checks
+    // spuriously — start clean.
+    let _ = std::fs::remove_file(&pidfile);
+    let _ = std::fs::remove_file(&logfile);
+
+    let mut args = openvpn_args(config, userpass, &credfile, &pidfile)?;
+    args.push("--daemon".to_string());
+    args.push("--log".to_string());
+    args.push(logfile.to_string_lossy().into_owned());
+
+    let shell_cmd = std::iter::once(exe.to_string_lossy().into_owned())
+        .chain(args)
+        .map(|a| shell_quote(&a))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = macos_admin_shell_command(
+        &shell_cmd,
+        "Eldrun needs to start the OpenVPN tunnel.",
+    );
+
+    // Blocks until the admin dialog is answered AND openvpn daemonizes (its
+    // parent exits) — or fails. "User canceled." on stderr = dialog declined.
+    let output = crate::paths::command_no_window("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output();
+    let output = match output {
+        Ok(out) => out,
+        Err(e) => {
+            let _ = std::fs::remove_file(&credfile);
+            return Err(format!("failed to run osascript: {e}"));
+        }
+    };
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&credfile);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(if stderr.contains("User canceled") {
+            "administrator authorization was declined".to_string()
+        } else {
+            let msg = stderr.trim();
+            if msg.is_empty() {
+                "osascript failed to start OpenVPN".to_string()
+            } else {
+                format!("failed to start OpenVPN: {msg}")
+            }
+        });
+    }
+
+    // Tail the logfile until the marker / dead daemon / timeout. A missing
+    // pidfile means the daemon is still writing it — only a RECORDED pid that
+    // fails the probe counts as dead.
+    let ready = wait_for_ready_logfile(
+        &logfile,
+        CONNECT_TIMEOUT,
+        Duration::from_millis(200),
+        || pidfile_pid(&pidfile).map(pid_alive).unwrap_or(true),
+        &on_line,
+    );
+    // The credential has been read by now; remove it regardless of outcome.
+    let _ = std::fs::remove_file(&credfile);
+
+    match ready {
+        Ok(()) => {
+            mac_registry()
+                .lock()
+                .unwrap()
+                .insert(config.to_string(), MacVpn { pidfile, logfile });
+            Ok(())
+        }
+        Err(msg) => Err(msg),
+    }
+}
+
+/// Tear down the tunnel for `config` if it is up: an admin-prompted
+/// `kill -TERM <pid>` (the daemon is root — a plain kill gets EPERM). The
+/// second prompt per disconnect is accepted for v1. A missing/already-dead
+/// tunnel is treated as success.
+#[cfg(target_os = "macos")]
+pub fn disconnect(config: &str) -> Result<(), String> {
+    let proc = mac_registry().lock().unwrap().remove(config);
+    let Some(proc) = proc else {
+        return Ok(());
+    };
+    if let Some(pid) = pidfile_pid(&proc.pidfile) {
+        if pid_alive(pid) {
+            let script = macos_admin_shell_command(
+                &format!("kill -TERM {pid}"),
+                "Eldrun needs to stop the OpenVPN tunnel.",
+            );
+            let _ = crate::paths::command_no_window("osascript")
+                .arg("-e")
+                .arg(&script)
+                .output();
+        }
+    }
+    let _ = std::fs::remove_file(&proc.pidfile);
+    let _ = std::fs::remove_file(&proc.logfile);
     Ok(())
 }
 
-/// macOS stub: no live tunnels to tear down at app exit.
+/// Tear down every live tunnel at app exit; errors are swallowed so shutdown
+/// never blocks (mirrors the Linux/Windows `disconnect_all`).
 #[cfg(target_os = "macos")]
-pub fn disconnect_all() {}
+pub fn disconnect_all() {
+    let keys: Vec<String> = {
+        let reg = mac_registry().lock().unwrap();
+        reg.keys().cloned().collect()
+    };
+    for k in keys {
+        let _ = disconnect(&k);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -953,5 +1247,116 @@ mod tests {
     #[test]
     fn is_connected_false_for_unknown_config() {
         assert!(!is_connected("/no/such/config-unit-test.ovpn"));
+    }
+
+    // ── macOS pure helpers (run on any OS) ──────────────────────────────────
+
+    #[test]
+    fn applescript_escape_handles_quotes_and_backslashes() {
+        assert_eq!(applescript_escape("plain"), "plain");
+        assert_eq!(applescript_escape(r#"a"b"#), r#"a\"b"#);
+        assert_eq!(applescript_escape(r"a\b"), r"a\\b");
+        assert_eq!(applescript_escape(r#"\""#), r#"\\\""#);
+    }
+
+    #[test]
+    fn macos_admin_shell_command_wraps_and_escapes() {
+        let cmd = macos_admin_shell_command("'/opt/x/openvpn' --config 'a\"b.ovpn'", "Prompt.");
+        assert!(cmd.starts_with("do shell script \""));
+        assert!(cmd.ends_with("with prompt \"Prompt.\""));
+        assert!(cmd.contains("with administrator privileges"));
+        // The embedded double quote survived AppleScript-escaped.
+        assert!(cmd.contains(r#"a\"b.ovpn"#));
+    }
+
+    #[test]
+    fn pidfile_pid_accepts_digits_only() {
+        let dir = std::env::temp_dir().join(format!("eldrun-pidfile-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            p
+        };
+        assert_eq!(pidfile_pid(&write("ok.pid", "1234\n")), Some(1234));
+        assert_eq!(pidfile_pid(&write("ws.pid", "  567  ")), Some(567));
+        // Anything non-numeric must never reach `kill`.
+        assert_eq!(pidfile_pid(&write("evil.pid", "123; rm -rf /")), None);
+        assert_eq!(pidfile_pid(&write("neg.pid", "-1")), None);
+        assert_eq!(pidfile_pid(&write("empty.pid", "")), None);
+        assert_eq!(pidfile_pid(&dir.join("missing.pid")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_for_ready_logfile_finds_marker() {
+        let dir = std::env::temp_dir().join(format!("eldrun-ovpnlog-a-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("t.log");
+        std::fs::write(&log, "line one\nInitialization Sequence Completed\nafter\n").unwrap();
+        let seen = std::sync::Mutex::new(Vec::<String>::new());
+        let result = wait_for_ready_logfile(
+            &log,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || true,
+            |l| seen.lock().unwrap().push(l.to_string()),
+        );
+        assert!(result.is_ok());
+        let seen = seen.lock().unwrap();
+        // Every line up to AND INCLUDING the marker is streamed; nothing after.
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], "line one");
+        assert!(seen[1].contains("Initialization Sequence Completed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_for_ready_logfile_reports_death_with_tail() {
+        let dir = std::env::temp_dir().join(format!("eldrun-ovpnlog-b-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("t.log");
+        std::fs::write(&log, "AUTH: Received control message: AUTH_FAILED\n").unwrap();
+        let result = wait_for_ready_logfile(
+            &log,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || false, // daemon died
+            |_| {},
+        );
+        let err = result.unwrap_err();
+        // The failure reason from the log is surfaced, not swallowed.
+        assert!(err.contains("AUTH_FAILED"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_for_ready_logfile_times_out_and_holds_partial_lines() {
+        let dir = std::env::temp_dir().join(format!("eldrun-ovpnlog-c-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("t.log");
+        // No trailing newline: the partial line must NOT be emitted.
+        std::fs::write(&log, "partial without newline").unwrap();
+        let seen = std::sync::Mutex::new(Vec::<String>::new());
+        let result = wait_for_ready_logfile(
+            &log,
+            Duration::from_millis(50),
+            Duration::from_millis(10),
+            || true, // alive but silent → timeout path
+            |l| seen.lock().unwrap().push(l.to_string()),
+        );
+        assert_eq!(result.unwrap_err(), "OpenVPN connection timed out");
+        assert!(seen.lock().unwrap().is_empty(), "partial line must be held back");
+        // A missing logfile behaves like an empty one (daemon hasn't created it
+        // yet) rather than erroring out of the wait.
+        let result = wait_for_ready_logfile(
+            &dir.join("never-created.log"),
+            Duration::from_millis(30),
+            Duration::from_millis(10),
+            || true,
+            |_| {},
+        );
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
