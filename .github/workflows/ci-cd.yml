@@ -257,7 +257,10 @@ jobs:
 
       - name: Rename universal DMG
         run: |
-          dmg="$(find src-tauri/target target -path '*/universal-apple-darwin/release/bundle/dmg/*.dmg' -print -quit)"
+          # Only one of these roots exists (rust-cache redirects CARGO_TARGET_DIR
+          # to the project root), and find exits 1 on the missing one — which the
+          # step's `bash -e` would treat as fatal before `test -n` ever runs.
+          dmg="$(find src-tauri/target target -path '*/universal-apple-darwin/release/bundle/dmg/*.dmg' -print -quit 2>/dev/null || true)"
           test -n "$dmg"
           mv "$dmg" "$(dirname "$dmg")/Eldrun-${{ github.sha }}-universal.dmg"
 
