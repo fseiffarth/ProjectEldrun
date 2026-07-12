@@ -1814,6 +1814,24 @@ auth) and the local/remote git push axis (#21).*
     the "reset to `~/Downloads`" path still wrote into browser config — so we leave
     browser download settings fully alone.
 
+86. **Docker sandbox on Windows (currently refused).** The sandbox is Unix-only:
+    `services::sandbox` is `#[cfg(unix)]` and `pty_spawn` returns a clear error on
+    Windows rather than silently spawning an agent unsandboxed that the user asked
+    to sandbox. It was never actually functional there — `staged_config_mounts` and
+    `rw_mounts` bind host paths straight into a **Linux** container, so on Windows
+    the container-side destination came out as a Windows host path
+    (`C:\Users\…\.claude\settings.json`), which means nothing inside the container
+    and whose drive colon also makes the `src:dst` mount string ambiguous;
+    `host_uid_gid()` is equally meaningless there. CI only surfaced this by
+    accident, through a test assertion rather than the feature itself. To support
+    it: translate host paths to Docker Desktop's container view (`C:\x` → `/c/x`,
+    or a WSL2 path), decide what `--user` should be on Windows (likely: omit it),
+    and re-enable the module plus its `staged_config_mounts` test for Windows.
+    Needs a real Docker Desktop box to verify — it cannot be validated from CI or
+    from a Linux dev host. Ties into Group H (Windows parity).
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+
 ---
 
 ## Group R — Right Panel: Polish & App-Window Tracking
