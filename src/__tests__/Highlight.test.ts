@@ -12,6 +12,8 @@ describe("languageForPath", () => {
     expect(languageForPath("style.scss")).toBe("css");
     expect(languageForPath("paper.tex")).toBe("tex");
     expect(languageForPath("macros.sty")).toBe("tex");
+    expect(languageForPath("README.md")).toBe("markdown");
+    expect(languageForPath("notes.markdown")).toBe("markdown");
   });
 
   it("maps well-known extensionless filenames", () => {
@@ -82,5 +84,31 @@ describe("highlight", () => {
   it("handles Python triple-quoted strings across newlines", () => {
     const html = highlight('x = """line1\nline2"""', "python")!;
     expect(html).toContain('<span class="tok-string">&quot;&quot;&quot;line1\nline2&quot;&quot;&quot;</span>');
+  });
+
+  it("highlights markdown headings, emphasis, code, and links", () => {
+    const src = "# Title\n**bold** and *em* with `code`\n[text](http://x)";
+    const html = highlight(src, "markdown")!;
+    expect(html).toContain('<span class="tok-md-heading"># Title</span>');
+    expect(html).toContain('<span class="tok-md-strong">**bold**</span>');
+    expect(html).toContain('<span class="tok-md-em">*em*</span>');
+    expect(html).toContain('<span class="tok-md-code">`code`</span>');
+    expect(html).toContain('<span class="tok-md-link">text</span>');
+    expect(html).toContain('<span class="tok-md-url">http://x</span>');
+  });
+
+  it("highlights markdown fences, blockquotes, and list markers", () => {
+    const html = highlight("> quote\n- item\n```\nraw *not em*\n```", "markdown")!;
+    expect(html).toContain('<span class="tok-md-quote">&gt; </span>');
+    expect(html).toContain('<span class="tok-md-list">-</span>');
+    expect(html).toContain('<span class="tok-md-code">```</span>');
+    // Content inside a fence is verbatim, not inline-tokenized.
+    expect(html).toContain('<span class="tok-md-code">raw *not em*</span>');
+  });
+
+  it("does not treat intra-word underscores or spaced asterisks as emphasis", () => {
+    const html = highlight("some_var_name and 2 * 3 * 4", "markdown")!;
+    expect(html).not.toContain("tok-md-em");
+    expect(html).not.toContain("tok-md-strong");
   });
 });

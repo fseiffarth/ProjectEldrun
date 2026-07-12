@@ -1,7 +1,13 @@
 # SSH / Remote Projects — Implementation Plan (TODO Group M, #28)
 
-Status: **implemented** (code complete; runtime QA pending — agents cannot
-launch Eldrun). Built by a 4-agent sequential team.
+> **Superseded by the mount-free remote model — see
+> [`docs/mountfree_remote_plan.md`](mountfree_remote_plan.md).** The sshfs mount
+> described below was **removed** (#28j): remote projects are now SSH/SFTP-native
+> (no FUSE). Retained for history; the SSH-exec / OpenVPN / SFTP-browse machinery
+> it introduced lives on, but the mount / `ssh_mount.rs` parts no longer exist.
+
+Status: **superseded** (mount removed in #28j; SSH/SFTP machinery retained).
+Originally built by a 4-agent sequential team.
 
 The mount / browse / scaffold v1 below is code-complete. A **remote-execution
 layer** (`services/ssh_exec.rs` + `services/openvpn.rs`) was added on top of it —

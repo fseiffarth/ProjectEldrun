@@ -1,7 +1,8 @@
 [package]
 name = "eldrun"
-version = "0.1.5"
+version = "0.1.15"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 
 [lib]
 name = "eldrun_lib"
@@ -17,6 +18,18 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# Desktop notifications for calendar reminders. The in-app alarm popup
+# (components/calendar/AlarmPopup.tsx) covers the case where Eldrun is focused;
+# this covers the case where it is not — a reminder is worthless if the window
+# has to be open to see it.
+tauri-plugin-notification = "2"
+# Native OS drag-OUT of files (Windows OLE / macOS NSDraggingSession / Linux GTK).
+# WebKitGTK's HTML5 drag-out won't render a drag image or reliably export files
+# to other apps, so the Ctrl-drag file export goes through this plugin instead.
+tauri-plugin-drag = "2"
+# Encode the drag-preview PNG as a base64 data URL for tauri-plugin-drag's icon
+# field (it only accepts `data:image/png;base64,…`, not a file path).
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -27,14 +40,35 @@ infer = "0.19.0"
 opener = "0.8.4"
 notify = "8"
 # Read images (e.g. screenshots) off the system clipboard for paste-into-tree.
-arboard = "3"
+# wayland-data-control: without it arboard speaks only X11, so image copy/paste
+# silently no-ops on a Wayland session with no XWayland. It falls back to X11 at
+# runtime when the compositor lacks the protocol, so this is additive.
+arboard = { version = "3", features = ["wayland-data-control"] }
 # Encode the clipboard's raw RGBA image as PNG before writing it to disk.
 png = "0.17"
 calamine = "0.35.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
+# Stage host file bytes on disk so `git diff --no-index` can diff the local mirror
+# against the current host copy (SSH-sync host-vs-mirror diff button).
+tempfile = "3"
 # Extract dropped/double-clicked .zip archives in place (deflate covers the vast
 # majority of real-world zips; "stored" entries need no feature).
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Store git-hosting access tokens in the OS credential store (Windows Credential
+# Manager / macOS Keychain / Linux Secret Service) instead of plaintext on disk.
+# The backend deps are target-gated inside the crate, so enabling all three
+# native backends is the standard cross-platform recipe.
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
+# Native SFTP client for the remote folder browser (TODO #80): drives the SFTP
+# subsystem over a child `ssh -s sftp` process, so browsing parses no `ls` text
+# and never feeds a remote `$SHELL -c` (replaces the injection-prone `ssh ls`
+# path). The project mount/exec paths are unchanged — still sshfs / `ssh -tt`.
+openssh-sftp-client = "0.15.7"
+# `StreamExt::next` to drive the SFTP `ReadDir` stream (already in the dep tree).
+futures-util = "0.3"
+# `BytesMut` buffer type for chunked SFTP reads (git-lockstep streaming transport,
+# #28n Phase 3); matches the `bytes` version openssh-sftp-client already resolves.
+bytes = "1"
 
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -52,11 +86,34 @@ gtk = "0.18"
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
+    # Native screen capture (BitBlt the virtual screen → PNG) in `screenshot.rs`.
+    "Win32_Graphics_Gdi",
+    # Interface byte counters for the network pane (`GetIfTable2` + the Ndis
+    # types its rows use) in `commands/network.rs`.
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    # SEH unhandled-exception filter → crash.log line (`install_seh_filter`).
+    # Debug owns the module; Kernel gates EXCEPTION_POINTERS itself and IO gates
+    # the WriteFile the filter logs with.
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_Kernel",
+    # Per-process CPU/memory sampling + process-tree walk for the project resource
+    # readout (the Windows analogue of Linux's `/proc` parsing in `sysstat.rs`).
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    # Whole-system monitor sample (`GetSystemTimes`, `GlobalMemoryStatusEx`,
+    # `GetSystemInfo`, `GetTickCount64`) in `sysstat.rs`.
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -11,6 +11,7 @@
  * Escape (exit fullscreen) are deliberately *not* rebindable — they stay fixed
  * in `useKeyboard` — so only the eight navigation actions live here.
  */
+import { IS_MAC } from "./platform";
 
 /** A serializable key chord. `key` is a `KeyboardEvent.key` value, normalized:
  *  single letters are lower-cased, named keys ("Tab", "Enter", "ArrowLeft")
@@ -27,11 +28,12 @@ export interface ChordDescriptor {
 export type ShortcutAction =
   | "toggleFullscreen"
   | "cycleProject"
-  | "focusLeft"
-  | "focusRight"
-  | "focusUp"
-  | "focusDown"
+  | "prevTab"
+  | "nextTab"
+  | "subwindowUp"
+  | "subwindowDown"
   | "cycleTabs"
+  | "hideSubwindow"
   | "closeSubwindow"
   | "closeTab"
   | "closeAllTabs";
@@ -60,29 +62,34 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     default: { key: "Tab", ctrl: true, shift: true },
   },
   {
-    action: "focusLeft",
-    label: "Focus subwindow left",
+    action: "prevTab",
+    label: "Previous tab in subwindow",
     default: { key: "ArrowLeft", shift: true },
   },
   {
-    action: "focusRight",
-    label: "Focus subwindow right",
+    action: "nextTab",
+    label: "Next tab in subwindow",
     default: { key: "ArrowRight", shift: true },
   },
   {
-    action: "focusUp",
-    label: "Focus subwindow up",
+    action: "subwindowUp",
+    label: "Cycle focused subwindow up",
     default: { key: "ArrowUp", shift: true },
   },
   {
-    action: "focusDown",
-    label: "Focus subwindow down",
+    action: "subwindowDown",
+    label: "Cycle focused subwindow down",
     default: { key: "ArrowDown", shift: true },
   },
   {
     action: "cycleTabs",
     label: "Cycle tabs in subwindow",
     default: { key: "Tab", shift: true },
+  },
+  {
+    action: "hideSubwindow",
+    label: "Hide focused subwindow",
+    default: { key: "h", ctrl: true, shift: true },
   },
   {
     action: "closeSubwindow",
@@ -140,19 +147,45 @@ export function chordFromEvent(e: KeyboardEvent): ChordDescriptor | null {
   return chord;
 }
 
-/** True when `e` matches `chord` (modifiers exact, key normalized). */
+/**
+ * True when `e` matches `chord` (key normalized).
+ *
+ * Primary-modifier handling (macOS): the platform-primary modifier is Cmd
+ * (metaKey) on macOS and Ctrl elsewhere. The default chord table encodes the
+ * primary modifier as `ctrl` (its historical Linux/Windows shape). Rather than
+ * fork the whole table, on macOS we treat a chord's primary-modifier
+ * requirement — whether it was stored as `ctrl` (a default) or `meta` (a mac
+ * user's captured rebind) — as satisfied by EITHER Cmd or Ctrl. So both Cmd+W
+ * and Ctrl+W fire on a mac, while a plain key still rejects a stray Cmd press.
+ * This collapses ⌘/⌃ into one "primary" on macOS (you can't bind a mac-only
+ * Control-vs-Command distinction) — the deliberate, low-risk trade-off the task
+ * calls for. Off macOS, modifiers are matched exactly as before.
+ */
 export function chordMatches(chord: ChordDescriptor, e: KeyboardEvent): boolean {
-  return (
-    normalizeKey(e.key) === normalizeKey(chord.key) &&
-    e.ctrlKey === !!chord.ctrl &&
-    e.shiftKey === !!chord.shift &&
-    e.altKey === !!chord.alt &&
-    e.metaKey === !!chord.meta
-  );
+  if (normalizeKey(e.key) !== normalizeKey(chord.key)) return false;
+  if (e.shiftKey !== !!chord.shift) return false;
+  if (e.altKey !== !!chord.alt) return false;
+  if (IS_MAC) {
+    const wantsPrimary = !!chord.ctrl || !!chord.meta;
+    const hasPrimary = e.ctrlKey || e.metaKey;
+    return wantsPrimary === hasPrimary;
+  }
+  return e.ctrlKey === !!chord.ctrl && e.metaKey === !!chord.meta;
 }
 
-/** Human-readable label for a chord, e.g. "Shift+Ctrl+Tab". */
+/** Human-readable label for a chord, e.g. "Shift+Ctrl+Tab" — or native mac
+ *  glyphs ("⇧⌘Tab") on macOS. On macOS the primary modifier (stored as `ctrl`)
+ *  and `meta`/Super both render as ⌘ (deduped), matching what a mac user
+ *  actually presses; off macOS the textual labels are unchanged. */
 export function chordLabel(chord: ChordDescriptor): string {
+  if (IS_MAC) {
+    const parts: string[] = [];
+    if (chord.alt) parts.push("⌥"); // Option
+    if (chord.shift) parts.push("⇧"); // Shift
+    if (chord.ctrl || chord.meta) parts.push("⌘"); // primary modifier / Super
+    parts.push(prettyKey(chord.key));
+    return parts.join(""); // mac convention concatenates the glyphs
+  }
   const parts: string[] = [];
   if (chord.ctrl) parts.push("Ctrl");
   if (chord.shift) parts.push("Shift");

@@ -1,6 +1,8 @@
 pub mod active_session;
 pub mod boxes;
+pub mod calendar;
 pub mod default_apps;
+pub mod net_usage;
 pub mod project;
 pub mod projects;
 pub mod session;
@@ -9,6 +11,7 @@ pub mod time_log;
 
 pub use active_session::ActiveSession;
 pub use boxes::{BoxRelation, BoxesList, ProjectBox};
+pub use calendar::{Calendar, CalendarData, CalendarEvent, CalendarFile, CalendarTask};
 pub use default_apps::DefaultApps;
 pub use project::Project;
 pub use projects::ProjectEntry;

@@ -68,9 +68,16 @@ pub struct TabEntry {
     pub extra: HashMap<String, Value>,
 }
 
-/// Remote (SSH) location metadata. A project is "remote" iff this is present.
-/// The project's `directory` then points at the local sshfs mountpoint while
-/// the bytes live on `host:remote_path`.
+/// Remote (SSH) location metadata. A project is "remote" iff this is present;
+/// the explicit "is this project remote?" resolver is
+/// `services::remote::remote_target_for` (replacing the old infer-from-mountpoint
+/// signal). The bytes live on `host:remote_path`.
+///
+/// In the mount-free remote model (`docs/mountfree_remote_plan.md`) the project's
+/// `directory` is **not** a real local path for a remote project — file, git, and
+/// terminal commands resolve `host:remote_path` directly over SSH/SFTP, never the
+/// local fs. (During the sshfs→SFTP transition `directory` may still hold a legacy
+/// mountpoint; it is ignored for fs purposes once a phase routes that op remote.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteSpec {
     /// SSH user, e.g. "alice"
@@ -92,23 +99,33 @@ pub struct RemoteSpec {
     pub extra: HashMap<String, Value>,
 }
 
-/// Optional OpenVPN tunnel for reaching a remote project's host. Only the
-/// client config path is persisted; the password is prompted each time the
-/// tunnel is brought up and is never written to disk.
+/// Optional OpenVPN tunnel for reaching a remote project's host. The client
+/// config path and (for `auth-user-pass` configs) the auth username are
+/// persisted; the password/passphrase is prompted each time the tunnel is
+/// brought up and is never written to disk (unless the user opts into the OS
+/// keychain via "Save password").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenVpnSpec {
     /// Absolute path to the local `.ovpn` client config file.
     pub config: String,
+    /// Auth username for configs that use `auth-user-pass` (server-side
+    /// username+password auth). Persisted (it is not a secret, like the SSH
+    /// `user`); the matching password is still prompted/keychained separately and
+    /// never written here. `None` for configs that don't need a username (e.g.
+    /// certificate-only or encrypted-key-passphrase configs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
 
 /// Per-project Docker sandbox config. When present and `enabled`, agent tabs
-/// (Claude/Codex/Gemini/Vibe) for this project are launched inside an ephemeral
-/// Docker container that mounts only the project directory, so an agent cannot
-/// reach host files outside the project. Absent (the default) = agents run on
-/// the host exactly as before. Local projects only.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// (Claude/Codex/Gemini/Vibe) for this project are launched inside an ephemeral,
+/// capability-dropped Docker container that mounts only the project directory plus
+/// the minimal agent auth/state paths (see `services::sandbox`), so an agent
+/// cannot reach unrelated host files. Absent (the default) = agents run on the
+/// host exactly as before. Local projects only.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SandboxSpec {
     /// Whether agent tabs run inside the Docker sandbox.
     pub enabled: bool,
@@ -116,6 +133,27 @@ pub struct SandboxSpec {
     /// absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Max number of processes inside the container (`--pids-limit`). Guards
+    /// against a fork-bombing agent. Falls back to a generous built-in default
+    /// when absent (see `services::sandbox`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pids_limit: Option<u32>,
+    /// Optional hard memory cap (`--memory`, e.g. "4g"). Absent = unlimited, so
+    /// heavy in-container builds are not OOM-killed unless the user opts in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    /// Optional CPU cap (`--cpus`, e.g. "2"). Absent = unlimited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<String>,
+    /// Optional docker network (`--network`, e.g. "none" for no egress, or a
+    /// custom allowlist network). Absent = the default bridge (full egress).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    /// Run the container with a read-only root filesystem (`--read-only` +
+    /// `--tmpfs /tmp`). Off by default because it breaks agents that write
+    /// outside the mounted dirs (e.g. `~/.cache`); opt-in hardening.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub readonly_rootfs: bool,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -134,6 +172,18 @@ pub struct Project {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_type: Option<String>,
+    /// Per-project git-hosting profile URL (e.g. `https://github.com/me`) that
+    /// overrides the global `settings.git_profile_url` for this project's push /
+    /// publish. Non-secret, so it lives here; the matching token is kept in the
+    /// OS keyring (see `services::git_credentials`), never in this file (which is
+    /// inside the project's committed git tree).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_profile_url: Option<String>,
+    /// Hosting provider this project was published to (`"github"` / `"gitlab"`),
+    /// recorded at publish time so the UI can label the pill and pick the right
+    /// CLI. Absent until the project is published to a remote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -173,6 +223,16 @@ pub struct Project {
     pub open_tab_sessions: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteSpec>,
+    /// For a remote (SSH) project, the local mirror root — the paired local
+    /// working copy synced from the host. Chosen at import (defaults to a
+    /// `<name>` subfolder of the top-level `eldrun/projects-ssh/` root) and relocatable via the
+    /// pill's "Show on disk" when the mirror has been deleted. Absent for local
+    /// projects and for remote projects predating configurable mirrors, which
+    /// fall back to the default under the state dir. Mirrored into the
+    /// `projects.json` entry's `extra["mirror"]`, which `remote_sync::mirror_dir`
+    /// reads as the always-local source of truth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<String>,
     /// Docker sandbox config for agent tabs. Absent = run agents on the host.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxSpec>,

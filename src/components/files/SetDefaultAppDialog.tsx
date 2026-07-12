@@ -42,6 +42,7 @@ function readDefaultApps(project: ProjectJson | null): Record<string, string> {
 export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props) {
   const [scope, setScope] = useState<Scope>(localFile ? "project" : "global");
   const [apps, setApps] = useState<InstalledApp[]>([]);
+  const [iconDataUrls, setIconDataUrls] = useState<Record<string, string | null>>({});
   const [query, setQuery] = useState("");
   const [exec, setExec] = useState("");
   const [globalApps, setGlobalApps] = useState<Record<string, string>>({});
@@ -84,6 +85,32 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
       (a) => a.name.toLowerCase().includes(q) || a.exec.toLowerCase().includes(q),
     );
   }, [apps, query]);
+
+  // Resolve icons lazily for the apps currently shown. The backend caches per
+  // exec, so re-filtering as the user types only resolves newly-revealed apps.
+  // Works on both platforms: on Windows `list_installed_apps` returns icon=null
+  // and the resolver extracts the shell icon; on Linux it resolves the theme name.
+  useEffect(() => {
+    let cancelled = false;
+    const execs = filtered
+      .map((a) => a.exec)
+      .filter((exec) => exec && !(exec in iconDataUrls));
+    if (execs.length === 0) return;
+    Promise.all(
+      [...new Set(execs)].map(async (exec) => {
+        try {
+          return [exec, await invoke<string | null>("resolve_app_icon", { exec })] as const;
+        } catch {
+          return [exec, null] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!cancelled) setIconDataUrls((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [filtered, iconDataUrls]);
 
   const otherScopeValue = scope === "project" ? globalApps[ext] : undefined;
 
@@ -176,8 +203,15 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
                 onClick={() => setExec(a.exec)}
                 title={a.exec}
               >
-                <span className="set-default-app-name">{a.name}</span>
-                <span className="set-default-app-exec">{a.exec}</span>
+                {iconDataUrls[a.exec] ? (
+                  <img className="set-default-app-icon" src={iconDataUrls[a.exec]!} alt="" />
+                ) : (
+                  <span className="set-default-app-icon set-default-app-icon-placeholder" />
+                )}
+                <span className="set-default-app-text">
+                  <span className="set-default-app-name">{a.name}</span>
+                  <span className="set-default-app-exec">{a.exec}</span>
+                </span>
               </button>
             ))
           )}

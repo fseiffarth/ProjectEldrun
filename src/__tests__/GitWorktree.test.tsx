@@ -68,7 +68,9 @@ describe("#23 git worktrees", () => {
     await screen.findByText("Worktrees");
 
     await user.click(screen.getByRole("button", { name: "+ Worktree" }));
-    await user.selectOptions(screen.getByLabelText("Branch"), "feature");
+    // Branch picker is the themed Dropdown (title "Branch"): open it, pick "feature".
+    await user.click(screen.getByTitle("Branch"));
+    await user.click(screen.getByRole("option", { name: "feature" }));
     await user.type(screen.getByLabelText("Worktree path"), "/tmp/wt");
     await user.click(screen.getByRole("button", { name: "Create" }));
 

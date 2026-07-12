@@ -38,6 +38,9 @@ vi.mock("@xterm/xterm", () => ({
     write() {}
     onData() {}
     onResize() {}
+    onBell() {}
+    onTitleChange() {}
+    buffer = { active: { length: 0, getLine: () => null } };
     attachCustomKeyEventHandler() {}
     getSelection() { return ""; }
     focus() {}

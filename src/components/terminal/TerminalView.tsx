@@ -6,6 +6,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, Event } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
 import { isDetachedPtyId } from "../../stores/tabs";
+import { useActivityStore } from "../../stores/activity";
+import { useAgentTaskStore } from "../../stores/agentTask";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -37,6 +39,11 @@ interface Props {
   // When true, run this (agent) tab inside a Docker sandbox that mounts only the
   // project dir. Set only for agent tabs of a sandbox-enabled local project.
   sandbox?: boolean;
+  // The owning project's id for a project-scope tab (null/undefined for the root
+  // scope and connection terminals). Forwarded to the backend spawn so it can
+  // detect remoteness explicitly (resolve the project's RemoteSpec) instead of
+  // sniffing the cwd. Harmless for local projects — they resolve to no remote.
+  projectId?: string | null;
   // Whether this pane is laid out on screen (single-mode active tab, or any
   // pane in grid mode). Drives display + xterm fit.
   visible: boolean;
@@ -52,9 +59,52 @@ interface Props {
   // When true (agent tabs), the pane is font-zoomable: Ctrl+wheel and
   // Ctrl +/-/0 scale the font, with the level shared across all agent panes.
   zoomable?: boolean;
+  // When true, do NOT kill the PTY when this view unmounts. Used by the
+  // non-headless connection terminals embedded in the project dialog: the
+  // OpenVPN/SSH login they run must outlive the dialog (the new project relies
+  // on the tunnel/master being up), so closing the dialog leaves the PTY
+  // running rather than tearing the connection down. This view owns the PTY
+  // (it spawns it, unlike `attachOnly`), it just declines to reap it on unmount.
+  persistOnUnmount?: boolean;
 }
 
 function terminalTheme(scheme: string | undefined) {
+  if (scheme === "light_lavender") {
+    // Neutral slots form a wide lavender ramp (not grey) so Claude Code's ANSI
+    // theme reads as lavender with strong contrast: `black` is a deep saturated
+    // lavender for the emphasized sent-message block / removed-diff background,
+    // `brightBlack` a clearly lighter lavender for dimmed previous messages /
+    // added-diff background, and `white` a light lavender for borders/dim text.
+    // The gap between black↔brightBlack↔white is deliberately large so the
+    // states are easy to tell apart. green/red are kept saturated so the +/-
+    // diff markers stay legible on top of the lavender line backgrounds.
+    // selection* + cursorAccent are set (xterm otherwise defaults them to a
+    // blue-grey) so selection/cursor also pick up the lavender hue.
+    return {
+      background: "#faf9fe",
+      foreground: "#2c2348",
+      cursor: "#7c5cdb",
+      cursorAccent: "#faf9fe",
+      selectionBackground: "#dccff2",
+      selectionForeground: "#241d38",
+      black: "#2f2358",
+      red: "#d1242f",
+      green: "#0f5a26",
+      yellow: "#9a6700",
+      blue: "#0969da",
+      magenta: "#7c5cdb",
+      cyan: "#1b7c83",
+      white: "#cbc0ec",
+      brightBlack: "#8878c4",
+      brightRed: "#cf222e",
+      brightGreen: "#1c7a39",
+      brightYellow: "#bf8700",
+      brightBlue: "#0550ae",
+      brightMagenta: "#b48cf0",
+      brightCyan: "#3192aa",
+      brightWhite: "#2c2348",
+    };
+  }
   if (scheme === "light" || scheme === "fancy_light") {
     return {
       background: "#ffffff",
@@ -134,7 +184,7 @@ function readAgentFontSize(): number {
   return DEFAULT_FONT_SIZE;
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, visible, focused, attachOnly = false, zoomable = false }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -144,6 +194,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const unlistenExit = useRef<(() => void) | null>(null);
   const initialInputSent = useRef(false);
   const initialEnterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openWatchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firstOutputAt = useRef<number | null>(null);
   // xterm crashes if opened/written into a zero-size or display:none element
   // (its renderer never initializes, so syncScrollArea dereferences undefined).
@@ -170,7 +221,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       allowProposedApi: false,
       cursorBlink: true,
       fontSize: zoomable ? readAgentFontSize() : DEFAULT_FONT_SIZE,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+      // Consolas/Cascadia Mono are the guaranteed Windows monospace fonts; keep
+      // them ahead of the generic fallback so the terminal isn't a bitmap font on
+      // Windows when the preferred coding fonts aren't installed.
+      fontFamily:
+        "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Cascadia Mono', Consolas, Menlo, monospace",
       theme: terminalTheme(colorScheme),
     });
 
@@ -233,6 +288,28 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // Wire keyboard input → PTY write.
     term.onData((data) => {
       invoke("pty_write", { id, data: PTY_ENCODER.encode(data) }).catch(console.error);
+    });
+
+    // A terminal bell means the agent wants to be looked at NOW, so it shortcuts
+    // the quiet window the activity store otherwise waits out before calling a
+    // turn finished. It is only a hint, never the source of truth: agents ring it
+    // optionally, and a pane that has never been opened has no xterm to parse it
+    // at all. WHAT the agent wants (a decision vs a finished turn) is worked out
+    // in the store from the raw output tail — reading the screen here would race
+    // the paint, since onBell fires as xterm parses the BEL, before the prompt
+    // that follows it in the same chunk has landed in the buffer.
+    // xterm fires this only for a real BEL control, not an OSC title terminator,
+    // so title changes don't false-trigger. Disposed with `term` on unmount.
+    term.onBell(() => {
+      useActivityStore.getState().noteBell(id);
+    });
+
+    // Agent CLIs set the terminal title (OSC 0/2) to a short summary of what
+    // they're doing — the same signal a native terminal shows in its tab. Capture
+    // it per tab so the tab hover card can surface it as the agent task summary.
+    // Disposed with `term` on unmount.
+    term.onTitleChange((title) => {
+      useAgentTaskStore.getState().setTabTitle(id, title);
     });
 
     // Copy/paste: xterm binds neither itself, so without this the terminal has no
@@ -369,7 +446,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
 
       try {
         await invoke("pty_spawn", {
-          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox },
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, project_id: projectId ?? null },
         });
       } catch (e) {
         if (!cancelled) {
@@ -406,6 +483,30 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // for viewport-level changes (maximize, fullscreen toggle).
     window.addEventListener("resize", doFit);
 
+    // Open watchdog (the "black agent tab" gate, esp. Windows/WebView2).
+    // tryOpen() only runs from the ResizeObserver and the `visible` effect. When
+    // a pane goes display:none → flex while `visible` was already true, the only
+    // trigger is the ResizeObserver firing on that box change — and WebView2
+    // occasionally drops that callback. The PTY has already spawned and is
+    // buffering its output into pendingOutput, but xterm never opens, so the
+    // pane stays black AND unresponsive (no open → no focus → keystrokes go
+    // nowhere). This bounded poll guarantees we keep attempting tryOpen while the
+    // pane is visible-but-unopened, so it can never get stuck closed. It costs a
+    // few cheap ticks at mount, stops the instant the terminal opens, and is
+    // capped by a wall-clock deadline so it can't spin forever (a legitimately
+    // hidden pane is opened by the `visible` effect when it is next shown).
+    const OPEN_WATCH_INTERVAL_MS = 150;
+    const OPEN_WATCH_DEADLINE_MS = 8000;
+    const watchStart = Date.now();
+    const watchOpen = () => {
+      openWatchTimer.current = null;
+      if (cancelled || openedRef.current) return;
+      if (visibleRef.current) tryOpen();
+      if (openedRef.current || Date.now() - watchStart >= OPEN_WATCH_DEADLINE_MS) return;
+      openWatchTimer.current = setTimeout(watchOpen, OPEN_WATCH_INTERVAL_MS);
+    };
+    openWatchTimer.current = setTimeout(watchOpen, OPEN_WATCH_INTERVAL_MS);
+
     // Agent-pane zoom: Ctrl+wheel scales the font; a window event keeps every
     // other open agent pane in sync with the shared level. Both are no-ops for
     // non-agent shells. The wheel listener is non-passive so it can preventDefault.
@@ -429,6 +530,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     return () => {
       cancelled = true;
       if (initialEnterTimer.current) clearTimeout(initialEnterTimer.current);
+      if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
       window.removeEventListener("resize", doFit);
       if (zoomable) {
         containerRef.current?.removeEventListener("wheel", onWheel);
@@ -447,13 +549,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // unmounting *because its tab was just detached* into a popped-out window
       // (the detached attach-only viewer is now reading this PTY; killing it
       // would leave that window a dead black pane). Only a real close tears it
-      // down.
-      if (!attachOnly && !isDetachedPtyId(id)) {
+      // down. (c) `persistOnUnmount` — a dialog-embedded connection terminal
+      // whose tunnel/login must outlive the dialog.
+      if (!attachOnly && !isDetachedPtyId(id) && !persistOnUnmount) {
         invoke("pty_kill", { id }).catch(() => {});
+        // Drop the captured agent-task title so a closed tab's summary can't
+        // linger against a future tab that reuses the key.
+        const parts = id.split(":");
+        useAgentTaskStore.getState().clearTabTitle(parts.length > 1 ? parts.slice(1).join(":") : id);
       }
       term.dispose();
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, attachOnly, zoomable]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, attachOnly, zoomable, persistOnUnmount]);
 
   useEffect(() => {
     if (termRef.current) {
@@ -484,7 +591,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         position: "relative",
         display: "flex",
         flexDirection: "column",
-        background: colorScheme === "light" || colorScheme === "fancy_light" ? "#ffffff" : "#0d1117",
+        background:
+          colorScheme === "light_lavender"
+            ? "#faf9fe"
+            : colorScheme === "light" || colorScheme === "fancy_light"
+              ? "#ffffff"
+              : "#0d1117",
       }}
     />
   );

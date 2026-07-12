@@ -1,10 +1,37 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { RemoteEntry, SshTooling } from "../../types";
+import type { RemoteEntry, SshTooling, StoredVpnConfig } from "../../types";
 import { joinRemotePath, parseSshAddress, type ParsedSshAddress } from "./scaffold";
+import { IS_WINDOWS } from "../../lib/platform";
+import { forgetConnection, markConnectionOpened } from "../../lib/remoteConnect";
+import { useSettingsStore } from "../../stores/settings";
+import type { LogLine } from "../common/ConnectionLog";
 
 type ConnStatus = "idle" | "connecting" | "connected" | "error";
+
+// OpenVPN prints this once the tunnel is fully up (mirrors the backend's
+// READY_MARKER in services/openvpn.rs). The embedded VPN login terminal is
+// watched for it to flip the lamp green (see the readiness watcher below).
+const VPN_READY_MARKER = "Initialization Sequence Completed";
+
+// Shape of the `terminal-output` event payload (PTY id + a raw output chunk),
+// matching the backend emit and TerminalView's own listener.
+interface TerminalOutput {
+  id: string;
+  data: string;
+}
+
+/** Steps of the remote-project flow: connect (SSH + VPN) → browse a remote
+ *  folder → fill in name/details. Local projects bypass these entirely. */
+export type RemoteStep = "connect" | "browse" | "details";
+
+// Monotonic id source for the dialog-embedded connection terminals. The id has
+// no ":" so it never collides with a tab PTY id (`<scope>:<key>`) or trips the
+// detached-PTY check. (Module scope so the counter survives re-renders.)
+let dialogTermSeq = 0;
+const nextDialogTermId = (kind: string) => `dialog-${kind}-${++dialogTermSeq}`;
 
 /**
  * Owns the optional SSH + OpenVPN connection lifecycle for the new/import
@@ -13,14 +40,25 @@ type ConnStatus = "idle" | "connecting" | "connected" | "error";
  * stays a single cohesive form component; behavior is unchanged.
  */
 export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
+  // Mirrors the global `connections_headless` setting (default ON): headless →
+  // the password/passphrase is typed into Eldrun's own fields and the backend
+  // connects directly (`connectSsh`/`connectVpn`), same as activation's
+  // `ensureVpnIfNeeded`. Off → the integrated login terminal is used instead, so
+  // the user types the secret into a visible terminal embedded right here and
+  // Eldrun never handles it.
+  const headless = useSettingsStore((s) => s.settings?.connections_headless ?? true);
   // Whether this is a remote (SSH) project. The whole SSH section — address,
   // password, connect, and the remote browser — only appears when this is on.
   const [isRemoteProject, setIsRemoteProject] = useState(false);
-  // Availability of sshfs/sshpass/openvpn, fetched the first time the remote
-  // checkbox is enabled so missing tools are flagged up front rather than only
-  // after a connect/mount fails. `null` until probed.
+  // Availability of password-auth/openvpn tooling, fetched the first time the
+  // remote checkbox is enabled so missing tools are flagged up front rather than
+  // only after a connect fails. `null` until probed.
   const [sshTooling, setSshTooling] = useState<SshTooling | null>(null);
   const [sshAddress, setSshAddress] = useState("");
+  // Previously-used SSH addresses (newest first), offered for reuse so a host
+  // need only be typed once. Loaded when the remote section opens and refreshed
+  // after a successful connect remembers the address (see rememberSshAddress).
+  const [sshAddresses, setSshAddresses] = useState<string[]>([]);
   const [sshPassword, setSshPassword] = useState("");
   const [sshStatus, setSshStatus] = useState<ConnStatus>("idle");
   const [sshError, setSshError] = useState("");
@@ -36,20 +74,93 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   const [remoteListError, setRemoteListError] = useState("");
   // The remote folder the user committed to via "Use this folder".
   const [remoteChosenPath, setRemoteChosenPath] = useState("");
+  // Previously-used remote paths for the current host (newest first), offered
+  // for reuse so a project location need only be browsed/typed once per host.
+  // Refreshed whenever the resolved host changes; see the effect below.
+  const [remotePaths, setRemotePaths] = useState<string[]>([]);
   // --- Optional OpenVPN tunnel for VPN-gated remote hosts ---
+  // "Connect via OpenVPN" opt-in, default OFF. Most hosts are reached directly
+  // when you're already on the right network, so the VPN section stays collapsed
+  // (and no config is stored on the project) until the user turns this on.
+  const [vpnEnabled, setVpnEnabled] = useState(false);
   // `vpnConfig` holds the Eldrun-stored `.ovpn` path (the picked file is copied
   // into Eldrun on selection). The password is transient — never persisted.
-  const [vpnEnabled, setVpnEnabled] = useState(false);
+  // A tunnel is "used" only when the toggle is on AND a config is selected.
   const [vpnConfig, setVpnConfig] = useState("");
+  // Auth username for `auth-user-pass` configs (server-side username+password
+  // auth). `vpnNeedsUsername` (queried when the config changes) decides whether
+  // the field is shown and required; the value is persisted onto the new
+  // project's OpenVpnSpec (it is not a secret). See `config_requires_userpass`.
+  const [vpnUsername, setVpnUsername] = useState("");
+  const [vpnNeedsUsername, setVpnNeedsUsername] = useState(false);
   const [vpnPassword, setVpnPassword] = useState("");
   const [vpnStatus, setVpnStatus] = useState<ConnStatus>("idle");
   const [vpnError, setVpnError] = useState("");
+  // Live OpenVPN handshake output for the headless connect, streamed from the
+  // backend (`openvpn-progress`) and shown in a read-only log so the connect
+  // isn't an opaque spinner. Reset at the start of each connect attempt.
+  const [vpnLog, setVpnLog] = useState<LogLine[]>([]);
+  // Monotonic id source for `vpnLog` lines. A dedicated counter (never reset on
+  // slice) gives each pushed line a stable React key so the `.slice(-500)` cap
+  // trims only the head without re-creating surviving line nodes.
+  const vpnLogSeq = useRef(0);
+  // Previously-used `.ovpn` configs (newest first), offered for reuse so a
+  // config need only be browsed for once. Refreshed when the VPN section opens
+  // and after a new config is stored.
+  const [vpnConfigs, setVpnConfigs] = useState<StoredVpnConfig[]>([]);
+  // --- Non-headless in-dialog connection terminals ---
+  // In non-headless mode the OpenVPN tunnel and SSH login are interactive: the
+  // user types the passphrase/password into a live terminal. Rather than
+  // deferring those to a root-terminal tab at activation (the old flow), we
+  // embed the live terminal right here in the dialog. Each holds `{ id, command }`
+  // for an embedded `TerminalView` that runs `command` in a shell. The PTY is
+  // spawned with `persistOnUnmount`, so closing the dialog leaves the
+  // tunnel/login up for the new project to use; we also pre-mark the activation
+  // dedupe key (see `markConnectionOpened`) so the root-tab flow is skipped.
+  // Each holds the activation dedupe `key` it pre-marked (see `markConnectionOpened`)
+  // so the matching `stopX` forgets *that* key — not one rebuilt from current
+  // render state, which may have drifted (e.g. the config/address changed while
+  // the terminal was up), leaving a stale mark that suppresses the real connect.
+  const [vpnTerm, setVpnTerm] = useState<{ id: string; command: string; key: string } | null>(
+    null,
+  );
+  const [sshTerm, setSshTerm] = useState<{ id: string; command: string; key: string } | null>(
+    null,
+  );
 
   const isRemote = sshStatus === "connected" && remoteConn !== null;
+
+  // Windows has no ssh ControlMaster socket, so a non-headless login can't be
+  // ridden for SFTP browsing — that mode falls back to typing the remote path.
+  const winManual = IS_WINDOWS && !headless;
+
+  // Which step of the remote flow we're on. Local projects ignore this (the
+  // dialog renders its single form whenever the project isn't remote).
+  const [step, setStep] = useState<RemoteStep>("connect");
+
+  // Timer for the non-headless browse-readiness poll (see startSshTerm): once the
+  // embedded interactive login authenticates, the shared ControlMaster comes up
+  // and an otherwise-credential-less ssh_connect starts succeeding, at which point
+  // we flip to the same connected/browse state headless reaches via connectSsh.
+  const sshPollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearSshPoll = () => {
+    if (sshPollTimer.current) {
+      clearTimeout(sshPollTimer.current);
+      sshPollTimer.current = null;
+    }
+  };
+  useEffect(() => clearSshPoll, []);
+
+  // Advance to the browser the moment the SSH session goes live (either mode),
+  // so the user sees the lamp turn green and lands on the folder picker.
+  useEffect(() => {
+    if (isRemote) setStep((s) => (s === "connect" ? "browse" : s));
+  }, [isRemote]);
 
   // Drop any live remote session back to the disconnected state. Called when
   // the user edits a credential (address/password) or unchecks "remote".
   const resetSshSession = () => {
+    clearSshPoll();
     setSshStatus("idle");
     setSshError("");
     setRemoteConn(null);
@@ -58,6 +169,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setRemoteBrowsePath("");
     setRemoteChosenPath("");
     setRemoteListError("");
+    setStep("connect");
   };
 
   // Toggle remote mode. Turning it off tears down the SSH session and clears the
@@ -75,16 +187,145 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       setSshAddress("");
       setSshPassword("");
       resetSshSession();
-      setVpnEnabled(false);
+      stopSshTerm();
       setVpnConfig("");
       setVpnPassword("");
       setVpnStatus("idle");
       setVpnError("");
+      stopVpnTerm();
     }
   };
 
+  // Load the list of previously-stored configs (newest first). Best-effort.
+  const refreshVpnConfigs = () => {
+    invoke<StoredVpnConfig[]>("openvpn_list_configs")
+      .then(setVpnConfigs)
+      .catch(() => setVpnConfigs([]));
+  };
+
+  // Load the recently-used SSH addresses (newest first). Best-effort.
+  const refreshSshAddresses = () => {
+    invoke<string[]>("ssh_list_addresses")
+      .then(setSshAddresses)
+      .catch(() => setSshAddresses([]));
+  };
+
+  // Persist `addr` as the most-recently-used SSH address and refresh the local
+  // list so it surfaces immediately in the dropdown. Best-effort — a store
+  // failure must never block the connection that just succeeded.
+  const rememberSshAddress = (addr: string) => {
+    const trimmed = addr.trim();
+    if (!trimmed) return;
+    invoke("ssh_remember_address", { address: trimmed })
+      .then(refreshSshAddresses)
+      .catch(() => {});
+  };
+
+  // Fetch the recent-configs and recent-addresses lists when the remote section
+  // opens so a previously-used config/host can be picked without re-entering it.
+  useEffect(() => {
+    if (isRemoteProject) {
+      refreshVpnConfigs();
+      refreshSshAddresses();
+    }
+  }, [isRemoteProject]);
+
+  // Load the recently-used remote paths for `host` (newest first). Best-effort;
+  // an empty/unresolved host just clears the list.
+  const refreshRemotePaths = (host: string) => {
+    if (!host) {
+      setRemotePaths([]);
+      return;
+    }
+    invoke<string[]>("remote_list_paths", { host })
+      .then(setRemotePaths)
+      .catch(() => setRemotePaths([]));
+  };
+
+  // Persist `path` as the most-recently-used remote path for `host` and refresh
+  // the local list. Best-effort — a store failure must never block project
+  // creation, which already succeeded by the time this is called.
+  const rememberRemotePath = (host: string, path: string) => {
+    const trimmed = path.trim();
+    if (!host || !trimmed) return;
+    invoke("remote_remember_path", { host, path: trimmed })
+      .then(() => refreshRemotePaths(host))
+      .catch(() => {});
+  };
+
+  // The host path suggestions are scoped to: the live-connected host (browse
+  // mode), or the address as currently typed (Windows manual-path mode, which
+  // never opens a live session before submit).
+  const suggestionHost = remoteConn?.host ?? (winManual ? parseSshAddress(sshAddress)?.host : undefined);
+
+  // Refresh the path suggestions whenever the resolved host changes.
+  useEffect(() => {
+    refreshRemotePaths(suggestionHost ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestionHost]);
+
+  // Remember a chosen remote path against the resolved host so it's offered in
+  // the "Recently used…" lists on the next SSH project for the same host. Called
+  // both when a browsed folder is committed ("Use this folder") and right before
+  // a remote project is actually created/imported (see `buildRemoteSpec`'s call
+  // site). `path` defaults to the committed `remoteChosenPath`; the browse commit
+  // passes the just-browsed path explicitly, since the `remoteChosenPath` state
+  // update from the same click isn't visible yet.
+  const rememberChosenPath = (path?: string) => {
+    const target = (path ?? remoteChosenPath).trim();
+    if (!suggestionHost || !target) return;
+    rememberRemotePath(suggestionHost, target);
+  };
+
+  // Stream the live OpenVPN handshake into `vpnLog` while the VPN section is
+  // open. The backend tags each line with the config it belongs to, so we keep
+  // only lines for the config currently selected here (the dialog connects one
+  // tunnel at a time). Capped so a chatty handshake can't grow unbounded.
+  useEffect(() => {
+    if (!vpnConfig) return;
+    let cancelled = false;
+    let un: (() => void) | undefined;
+    void listen<{ config: string; line: string }>("openvpn-progress", (ev) => {
+      if (ev.payload.config !== vpnConfig) return;
+      setVpnLog((prev) => [...prev, { id: vpnLogSeq.current++, text: ev.payload.line }].slice(-500));
+    }).then((u) => {
+      if (cancelled) u();
+      else un = u;
+    });
+    return () => {
+      cancelled = true;
+      un?.();
+    };
+  }, [vpnConfig]);
+
+  // Does the chosen config need an auth username (bare `auth-user-pass`)? Drives
+  // whether the username field is shown/required.
+  useEffect(() => {
+    if (!vpnConfig) {
+      setVpnNeedsUsername(false);
+      return;
+    }
+    let cancelled = false;
+    void invoke<boolean>("openvpn_needs_username", { config: vpnConfig })
+      .then((v) => !cancelled && setVpnNeedsUsername(v))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [vpnConfig]);
+
+  // Select one of the previously-stored configs (its path is already an
+  // Eldrun-stored copy, so it's used as-is — no re-copy needed).
+  const selectVpnConfig = (path: string) => {
+    setVpnConfig(path);
+    setVpnStatus("idle");
+    setVpnError("");
+    setVpnLog([]); // drop the previous config's handshake output
+  };
+
   // Pick a `.ovpn` config and copy it into Eldrun so the project no longer
-  // depends on the original file's location (stored on first use).
+  // depends on the original file's location (stored on first use). The new copy
+  // joins the recent-configs list for future reuse.
   const browseVpnConfig = async () => {
     const picked = await open({
       multiple: false,
@@ -96,6 +337,8 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       setVpnConfig(stored);
       setVpnStatus("idle");
       setVpnError("");
+      setVpnLog([]); // drop the previous config's handshake output
+      refreshVpnConfigs();
     } catch (e) {
       setVpnError(String(e));
     }
@@ -106,8 +349,13 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     if (!vpnConfig) return;
     setVpnStatus("connecting");
     setVpnError("");
+    setVpnLog([]);
     try {
-      await invoke("openvpn_connect", { config: vpnConfig, password: vpnPassword });
+      await invoke("openvpn_connect", {
+        config: vpnConfig,
+        username: vpnUsername || null,
+        password: vpnPassword,
+      });
       setVpnStatus("connected");
     } catch (e) {
       setVpnStatus("error");
@@ -115,10 +363,176 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     }
   };
 
+  // Non-headless: bring the OpenVPN tunnel up in a terminal embedded in the
+  // dialog. The connect command (`pkexec openvpn … --auth-nocache`) runs
+  // interactively so the user types the passphrase in that visible terminal —
+  // Eldrun never handles it. The PTY persists past the dialog so the tunnel
+  // stays up for the new project; we pre-mark the dedupe key so activation's
+  // root-terminal fallback (`ensureVpnIfNeeded`) is suppressed.
+  const startVpnTerm = async () => {
+    if (!vpnConfig || vpnTerm) return;
+    try {
+      const command = await invoke<string>("openvpn_login_command", { config: vpnConfig });
+      const key = `vpn:${vpnConfig}`;
+      markConnectionOpened(key);
+      setVpnTerm({ id: nextDialogTermId("vpn"), command, key });
+      // The handshake is now in flight in the terminal below — light the lamp
+      // orange until the readiness watcher (below) sees the ready marker.
+      setVpnStatus("connecting");
+      setVpnError("");
+    } catch (e) {
+      setVpnStatus("error");
+      setVpnError(String(e));
+    }
+  };
+
+  // Flip the VPN lamp green once the interactive tunnel comes up. The embedded
+  // login spawns `pkexec openvpn` inside its own PTY, so the tunnel is *not* in
+  // the backend's tunnel registry — `openvpn_status` can't see it. Instead we
+  // watch that terminal's own output for OpenVPN's ready marker (the same string
+  // the headless backend waits on). Output arrives in chunks, so we keep a small
+  // rolling buffer in case the marker straddles two `terminal-output` events.
+  useEffect(() => {
+    if (!vpnTerm) return;
+    const termId = vpnTerm.id;
+    let cancelled = false;
+    let un: (() => void) | undefined;
+    let buf = "";
+    void listen<TerminalOutput>("terminal-output", (ev) => {
+      if (ev.payload.id !== termId) return;
+      buf = (buf + ev.payload.data).slice(-512);
+      if (buf.includes(VPN_READY_MARKER)) setVpnStatus("connected");
+    }).then((u) => {
+      if (cancelled) u();
+      else un = u;
+    });
+    return () => {
+      cancelled = true;
+      un?.();
+    };
+  }, [vpnTerm]);
+
+  // Tear the embedded VPN terminal down (explicit disconnect / config change /
+  // leaving remote mode). Kills the PTY and drops the dedupe mark so a later
+  // activation can re-open the connection if still needed.
+  const stopVpnTerm = () => {
+    if (!vpnTerm) return;
+    void invoke("pty_kill", { id: vpnTerm.id }).catch(() => {});
+    forgetConnection(vpnTerm.key);
+    setVpnTerm(null);
+    setVpnStatus("idle");
+  };
+
+  // Non-headless: open the interactive SSH login in a dialog-embedded terminal.
+  // It establishes the ControlMaster socket the sshfs mount later rides, so the
+  // new project activates without a second prompt. Persisted past the dialog;
+  // the dedupe mark suppresses activation's root-terminal login.
+  // Poll for the embedded login's ControlMaster to come up: a credential-less
+  // ssh_connect rides the master once it's live (and on key-auth hosts succeeds
+  // immediately). On the first success we mirror connectSsh's connected state so
+  // both modes converge on the same `isRemote` browser. Bounded (~2 min) so a
+  // never-authenticated login eventually stops; the user can re-arm it with the
+  // "I've logged in — browse" button (tryBrowseNow). Never hard-errors while the
+  // terminal is up — the login may just not be authenticated yet.
+  const pollSshReady = (parsed: ParsedSshAddress, attempt = 0) => {
+    const maxAttempts = 40; // ~2 min at 3s cadence
+    void invoke<void>("ssh_connect", {
+      user: parsed.user,
+      host: parsed.host,
+      port: parsed.port,
+      password: null,
+    })
+      .then(async () => {
+        clearSshPoll();
+        const startDir = await invoke<string>("ssh_default_dir", {
+          user: parsed.user,
+          host: parsed.host,
+          port: parsed.port,
+          password: null,
+        }).catch(() => "");
+        setRemoteConn(parsed);
+        setRemotePassword(""); // empty → null → rides the master in the listing effect
+        setSshStatus("connected");
+        setRemoteBrowsePath(startDir || "");
+      })
+      .catch(() => {
+        if (attempt + 1 >= maxAttempts) {
+          clearSshPoll();
+          return;
+        }
+        sshPollTimer.current = setTimeout(() => pollSshReady(parsed, attempt + 1), 3000);
+      });
+  };
+
+  // Manual re-arm of the readiness poll (the "I've logged in — browse" button),
+  // for when the user authenticates after the auto-poll gave up, or wants to
+  // retry sooner.
+  const tryBrowseNow = () => {
+    const parsed = parseSshAddress(sshAddress);
+    if (!parsed) return;
+    clearSshPoll();
+    setSshStatus("connecting");
+    setSshError("");
+    pollSshReady(parsed);
+  };
+
+  const startSshTerm = async () => {
+    if (sshTerm) return;
+    const parsed = parseSshAddress(sshAddress);
+    if (!parsed) {
+      setSshStatus("error");
+      setSshError("Enter an address like user@host or host:2222");
+      return;
+    }
+    try {
+      const command = await invoke<string>("remote_login_command", {
+        user: parsed.user ?? null,
+        host: parsed.host,
+        port: parsed.port ?? null,
+      });
+      const target = `${parsed.user ? `${parsed.user}@` : ""}${parsed.host}`;
+      const key = `ssh:${target}:${parsed.port ?? ""}`;
+      markConnectionOpened(key);
+      setSshTerm({ id: nextDialogTermId("ssh"), command, key });
+      setSshError("");
+      // The user committed to this host by opening its login — remember it so it
+      // shows up in the recents dropdown next time (covers non-headless + winManual).
+      rememberSshAddress(sshAddress);
+      // Outside Windows, ride the login's ControlMaster to SFTP-browse — no stored
+      // password. (Windows has no control socket, so it keeps the manual path input.)
+      if (!winManual) {
+        setSshStatus("connecting");
+        pollSshReady(parsed);
+      }
+    } catch (e) {
+      setSshStatus("error");
+      setSshError(String(e));
+    }
+  };
+
+  const stopSshTerm = () => {
+    if (!sshTerm) return;
+    void invoke("pty_kill", { id: sshTerm.id }).catch(() => {});
+    // Drop the dedupe mark (symmetric with stopVpnTerm) so a later activation can
+    // re-open the SSH login; otherwise the key lingers in openedConnections and
+    // ensureRootSshLoginIfNeeded silently skips the real login.
+    forgetConnection(sshTerm.key);
+    setSshTerm(null);
+    // Killing the login drops the ControlMaster the browse rode, so stop the
+    // readiness poll and return to the disconnected state.
+    clearSshPoll();
+    setSshStatus("idle");
+    setRemoteConn(null);
+    setStep("connect");
+  };
+
   // Disconnect/reset the remote session when the user edits the SSH address.
   const onSshAddressChange = (value: string) => {
     setSshAddress(value);
     if (sshStatus !== "idle") resetSshSession();
+    // A live login is bound to the old target — drop it so a re-connect uses
+    // the new address.
+    stopSshTerm();
   };
 
   // Editing the password also invalidates a live session — the next connect
@@ -157,6 +571,8 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       setRemotePassword(sshPassword);
       setSshStatus("connected");
       setRemoteBrowsePath(startDir || "");
+      // Connection succeeded — remember the address for the recents dropdown.
+      rememberSshAddress(sshAddress);
     } catch (err) {
       setSshStatus("error");
       setSshError(String(err));
@@ -202,6 +618,12 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setRemoteBrowsePath(joinRemotePath(remoteBrowsePath, entry.name));
   };
 
+  // Jump the browser straight to a previously-used remote path (picked from the
+  // recents dropdown) instead of navigating there entry by entry.
+  const jumpToRemotePath = (path: string) => {
+    setRemoteBrowsePath(path);
+  };
+
   const remoteGoUp = () => {
     const path = remoteBrowsePath.replace(/\/+$/, "");
     if (!path || path === "/") {
@@ -212,26 +634,99 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setRemoteBrowsePath(idx <= 0 ? "/" : path.slice(0, idx));
   };
 
-  // Build the `remote` spec for the create/import request, or undefined when not
-  // a connected remote project. NEW: name becomes a subdir under the chosen
+  // Create a new folder under the current browse path, then descend into it so
+  // it becomes the selectable target. Reuses the frozen connect credential, like
+  // the listing. No-op without a live session (the SFTP browser only renders then).
+  const createRemoteFolder = async (rawName: string) => {
+    const name = rawName.trim();
+    if (!name || !remoteConn) return;
+    // Reject path separators — this creates a single child of the current dir,
+    // not an arbitrary deep path. The backend's mkdir -p still joins safely.
+    if (name.includes("/")) {
+      setRemoteListError("Folder name can't contain '/'.");
+      return;
+    }
+    const target = joinRemotePath(remoteBrowsePath || "/", name);
+    setRemoteListBusy(true);
+    setRemoteListError("");
+    try {
+      await invoke("ssh_mkdir", {
+        user: remoteConn.user,
+        host: remoteConn.host,
+        port: remoteConn.port,
+        password: remotePassword ? remotePassword : null,
+        path: target,
+      });
+      // Descend into the new folder; the listing effect refreshes off the path.
+      setRemoteBrowsePath(target);
+    } catch (err) {
+      setRemoteListError(String(err));
+      setRemoteListBusy(false);
+    }
+  };
+
+  // Build the `remote` spec for the create/import request, or undefined when this
+  // isn't a usable remote project. NEW: name becomes a subdir under the chosen
   // path. IMPORT: the chosen path IS the project root.
-  const buildRemoteSpec = (safeName: string) =>
-    isRemote && remoteConn
-      ? {
-          user: remoteConn.user ?? undefined,
-          host: remoteConn.host,
-          port: remoteConn.port ?? undefined,
-          remote_path:
-            kind === "new" ? joinRemotePath(remoteChosenPath, safeName) : remoteChosenPath,
-          openvpn: vpnEnabled && vpnConfig ? { config: vpnConfig } : undefined,
-        }
-      : undefined;
+  //
+  // Headless: requires a live, browsed SSH session (`isRemote`). Non-headless:
+  // no in-dialog connection is made (the live login happens in the root terminal
+  // at activation), so the spec is built straight from the typed address + the
+  // manually-entered remote path.
+  const buildRemoteSpec = (safeName: string) => {
+    if (!isRemoteProject) return undefined;
+    const openvpn =
+      vpnEnabled && vpnConfig
+        ? { config: vpnConfig, username: vpnUsername.trim() || undefined }
+        : undefined;
+    // Both modes now browse to a real folder over a live session (headless via
+    // connectSsh, non-headless by riding the embedded login's ControlMaster), so a
+    // committed remoteConn + chosen path is the single source of truth.
+    if (remoteConn && remoteChosenPath.trim()) {
+      return {
+        user: remoteConn.user ?? undefined,
+        host: remoteConn.host,
+        port: remoteConn.port ?? undefined,
+        remote_path:
+          kind === "new" ? joinRemotePath(remoteChosenPath, safeName) : remoteChosenPath,
+        openvpn,
+      };
+    }
+    // Windows non-headless can't browse (no control socket) — fall back to the
+    // typed address + manually-entered path.
+    if (winManual) {
+      const parsed = parseSshAddress(sshAddress);
+      const path = remoteChosenPath.trim();
+      if (!parsed || !path) return undefined;
+      return {
+        user: parsed.user ?? undefined,
+        host: parsed.host,
+        port: parsed.port ?? undefined,
+        remote_path: kind === "new" ? joinRemotePath(path, safeName) : path,
+        openvpn,
+      };
+    }
+    return undefined;
+  };
+
+  // Ready to submit: a chosen remote folder over a live session, or (Windows
+  // non-headless) a typed path. Drives the dialog's submit gating + step machine.
+  const remoteReady =
+    isRemoteProject &&
+    (winManual ? remoteChosenPath.trim() !== "" : isRemote && remoteChosenPath.trim() !== "");
 
   return {
     isRemoteProject,
     isRemote,
+    headless,
+    winManual,
+    remoteReady,
+    step,
+    setStep,
+    tryBrowseNow,
     sshTooling,
     sshAddress,
+    sshAddresses,
     sshPassword,
     sshStatus,
     sshError,
@@ -241,15 +736,29 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     remoteListError,
     remoteChosenPath,
     setRemoteChosenPath,
+    remotePaths,
+    rememberChosenPath,
     vpnEnabled,
     setVpnEnabled,
     vpnConfig,
+    vpnConfigs,
+    vpnUsername,
+    setVpnUsername,
+    vpnNeedsUsername,
+    selectVpnConfig,
     vpnPassword,
     setVpnPassword,
     vpnStatus,
     setVpnStatus,
     vpnError,
     setVpnError,
+    vpnLog,
+    vpnTerm,
+    startVpnTerm,
+    stopVpnTerm,
+    sshTerm,
+    startSshTerm,
+    stopSshTerm,
     toggleRemoteProject,
     browseVpnConfig,
     connectVpn,
@@ -257,7 +766,9 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     onSshPasswordChange,
     connectSsh,
     enterRemoteFolder,
+    jumpToRemotePath,
     remoteGoUp,
+    createRemoteFolder,
     buildRemoteSpec,
   };
 }

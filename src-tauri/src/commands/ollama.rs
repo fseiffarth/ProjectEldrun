@@ -91,10 +91,11 @@ fn ollama_http(method: &str, path: &str, json_body: Option<&str>) -> Result<Stri
 fn friendly_ollama_error(raw: &str) -> String {
     let lower = raw.to_ascii_lowercase();
     if lower.contains("llama-server") && lower.contains("not found") {
+        let cmd = ollama_install_cmd();
         return format!(
             "Ollama's inference runner (llama-server) is missing, so Ollama can \
             serve its API but cannot load any model — the install is incomplete. \
-            Reinstall Ollama with `{OLLAMA_INSTALL_CMD}`."
+            Reinstall Ollama with `{cmd}`."
         );
     }
     raw.to_string()
@@ -102,31 +103,63 @@ fn friendly_ollama_error(raw: &str) -> String {
 
 // ── New management commands ───────────────────────────────────────────────
 
-/// True when the `ollama` binary is available in PATH.
+// PATH lookups go through the shared, cross-platform `crate::paths::binary_on_path`
+// (`where` on Windows, `which` elsewhere); see that module for the rationale.
+use crate::paths::binary_on_path;
+
+/// True when the `ollama` binary is available. Checks PATH first, then (on
+/// Windows) the well-known per-user install location, since winget/the GUI
+/// installer drop `ollama.exe` under `%LOCALAPPDATA%\Programs\Ollama` and a
+/// running Eldrun's inherited PATH won't pick it up until a new session.
 #[tauri::command]
 pub async fn ollama_is_installed() -> bool {
-    std::process::Command::new("which")
-        .arg("ollama")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    if binary_on_path("ollama") {
+        return true;
+    }
+    if cfg!(target_os = "windows") {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            if std::path::Path::new(&local)
+                .join("Programs")
+                .join("Ollama")
+                .join("ollama.exe")
+                .exists()
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
-/// The official, distro-agnostic Ollama install command. Kept as a constant so
-/// the backend installer and the UI's copy-to-clipboard fallback stay in sync.
-pub const OLLAMA_INSTALL_CMD: &str = "curl -fsSL https://ollama.com/install.sh | sh";
+/// The manual download page, offered as a last-resort fallback on every OS.
+pub const OLLAMA_DOWNLOAD_URL: &str = "https://ollama.com/download";
 
-/// Install Ollama via its official install script (Linux/macOS).
+/// The recommended Ollama install command for the host OS. Kept here so the
+/// backend installer, the error messages, and the UI's copy-to-clipboard
+/// fallback all stay in sync with whatever the installer actually runs.
 ///
-/// Runs `curl -fsSL https://ollama.com/install.sh | sh` and streams its combined
-/// stdout+stderr to the frontend line-by-line via `ollama-install-progress`
-/// events (`{ line }`) so the UI can show live progress. The script needs root
-/// to drop the binary into `/usr/local` and register the systemd service; it
-/// invokes `sudo` itself, so a fully non-interactive run only succeeds when sudo
-/// is passwordless or Eldrun runs as root. When it can't elevate, the UI falls
-/// back to the manual step-by-step instructions (and the same copyable command).
+/// - Windows: winget (present on all supported Windows 10/11 builds).
+/// - Linux/macOS: the official distro-agnostic install script.
+pub fn ollama_install_cmd() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "winget install --id Ollama.Ollama -e --silent --accept-source-agreements --accept-package-agreements"
+    } else {
+        "curl -fsSL https://ollama.com/install.sh | sh"
+    }
+}
+
+/// Install Ollama using the host OS's native package mechanism, streaming its
+/// combined stdout+stderr to the frontend line-by-line via
+/// `ollama-install-progress` events (`{ line }`) so the UI can show live progress.
+///
+/// Per-OS strategy (see [`ollama_install_cmd`]):
+/// - **Windows**: `winget install --id Ollama.Ollama …` (silent, per-user). winget
+///   ships with all supported Windows 10/11 builds; if it is absent or fails, the
+///   UI falls back to the manual command + the ollama.com download link.
+/// - **Linux/macOS**: the official `curl … install.sh | sh` script. It needs root
+///   to drop the binary and register the systemd service; it invokes `sudo` itself,
+///   so a non-interactive run only succeeds with passwordless sudo or as root.
+///
 /// Returns the install log on success, or the tail of the output on failure.
 #[tauri::command]
 pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
@@ -137,22 +170,41 @@ pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
         return Ok("Ollama is already installed.".to_string());
     }
 
-    if !cfg!(any(target_os = "linux", target_os = "macos")) {
-        return Err("Automatic install is only supported on Linux/macOS. \
-            Download Ollama from https://ollama.com/download."
-            .to_string());
-    }
+    let cmd = ollama_install_cmd();
+
+    // Build the OS-native invocation. We merge stderr into stdout (`2>&1`) at the
+    // shell level so a single reader sees every line in order. On unsupported
+    // platforms there is no automated path — point at the manual download.
+    let (program, args): (&str, Vec<String>) = if cfg!(target_os = "windows") {
+        ("cmd", vec!["/C".into(), format!("{cmd} 2>&1")])
+    } else if cfg!(any(target_os = "linux", target_os = "macos")) {
+        ("sh", vec!["-c".into(), format!("{cmd} 2>&1")])
+    } else {
+        return Err(format!(
+            "Automatic install isn't supported on this OS. Download Ollama from {OLLAMA_DOWNLOAD_URL}."
+        ));
+    };
+
+    // Per-OS hint appended to failure messages (the likely reason it didn't take).
+    let fail_hint: &str = if cfg!(target_os = "windows") {
+        "It may need winget (App Installer) or administrator rights"
+    } else {
+        "It likely needs sudo"
+    };
 
     let emit = |line: &str| {
-        let _ = app.emit("ollama-install-progress", serde_json::json!({ "line": line }));
+        let _ = app.emit(
+            "ollama-install-progress",
+            serde_json::json!({ "line": line }),
+        );
     };
     emit("Starting Ollama installer…");
 
-    // Merge stderr into stdout (`2>&1`) so a single reader sees every line in
-    // order, then stream each line to the UI as it arrives.
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{OLLAMA_INSTALL_CMD} 2>&1"))
+    // `command_no_window` suppresses the transient console window the `cmd`/`sh`
+    // wrapper would otherwise pop on Windows; progress is surfaced in-app via the
+    // piped stdout below.
+    let mut child = crate::paths::command_no_window(program)
+        .args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -181,20 +233,21 @@ pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
         let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
         return Err(if tail.is_empty() {
             format!(
-                "installer exited unsuccessfully ({status}). It likely needs sudo — \
-                run `{OLLAMA_INSTALL_CMD}` in a terminal."
+                "installer exited unsuccessfully ({status}). {fail_hint} — \
+                run `{cmd}` in a terminal."
             )
         } else {
             tail
         });
     }
 
-    // The post-install check is the real source of truth: a script can print a
-    // sudo warning to stderr yet still have placed the binary, or vice versa.
+    // The post-install check is the real source of truth: an installer can print a
+    // warning to stderr yet still have placed the binary, or vice versa.
     if !ollama_is_installed().await {
         return Err(format!(
-            "installer ran but `ollama` is still not on PATH. It likely needs \
-            sudo — run `{OLLAMA_INSTALL_CMD}` in a terminal.\n\n{combined}"
+            "installer ran but `ollama` is still not detected. {fail_hint}, or it \
+            may need a fresh session so the install dir is on PATH — run `{cmd}` in \
+            a terminal.\n\n{combined}"
         ));
     }
 
@@ -206,6 +259,45 @@ pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
     })
 }
 
+/// OS-appropriate install guidance for the frontend, so the UI can render the
+/// right command and wording without hardcoding a platform. `auto` is true when
+/// [`install_ollama`] can drive the install itself on this OS.
+#[derive(serde::Serialize, Clone)]
+pub struct OllamaInstallStrategy {
+    /// "windows" | "macos" | "linux" | "unknown".
+    pub os: String,
+    /// The exact command Eldrun runs / the user can copy-paste.
+    pub command: String,
+    /// Whether one-click `install_ollama` is supported on this OS.
+    pub auto: bool,
+    /// Manual download page, always provided as a last resort.
+    pub download_url: String,
+}
+
+/// Report the OS-dependent Ollama install strategy (detect OS + suggest command).
+#[tauri::command]
+pub async fn ollama_install_strategy() -> OllamaInstallStrategy {
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
+    };
+    OllamaInstallStrategy {
+        os: os.to_string(),
+        command: ollama_install_cmd().to_string(),
+        auto: cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )),
+        download_url: OLLAMA_DOWNLOAD_URL.to_string(),
+    }
+}
+
 // ── Vibe (local-model agent runtime) ──────────────────────────────────────
 //
 // Local Ollama models are driven through Mistral's `vibe` CLI (the Local Model
@@ -214,39 +306,62 @@ pub async fn install_ollama(app: tauri::AppHandle) -> Result<String, String> {
 // We surface install/detection here, alongside the Ollama installer, so the
 // Ollama settings window can guide the user through the full prerequisite.
 
-/// The official Vibe install command. Installs via `uv` into the user's
-/// home (`~/.local/bin`); needs no `sudo`. Kept as a constant so the backend
-/// installer and the UI's copy-to-clipboard fallback stay in sync.
-pub const VIBE_INSTALL_CMD: &str = "curl -LsSf https://mistral.ai/vibe/install.sh | bash";
+/// The official Vibe install command for the host OS. Kept here so the backend
+/// installer, the error messages, and the UI's copy-to-clipboard fallback all
+/// stay in sync with whatever the installer actually runs. Both paths install
+/// per-user (no administrator rights / `sudo`).
+///
+/// - **Windows**: install Astral's `uv` (per-user, into `%USERPROFILE%\.local\bin`)
+///   via its PowerShell installer, then `uv tool install mistral-vibe`, which drops
+///   `vibe.exe` alongside it. uv isn't on `PATH` in the same session that just
+///   installed it, so the command invokes `uv.exe` by full path to work in one shot.
+/// - **Linux/macOS**: the official `curl … install.sh | bash` script (installs via
+///   `uv` into `~/.local/bin`).
+pub fn vibe_install_cmd() -> &'static str {
+    if cfg!(target_os = "windows") {
+        // PowerShell. The second statement calls uv by full path because the
+        // freshly-installed uv is not yet on this session's PATH.
+        "irm https://astral.sh/uv/install.ps1 | iex; & \"$env:USERPROFILE\\.local\\bin\\uv.exe\" tool install mistral-vibe"
+    } else {
+        "curl -LsSf https://mistral.ai/vibe/install.sh | bash"
+    }
+}
 
-/// True when the `vibe` binary is reachable. Checks `PATH` (via `which`) and the
-/// well-known user install locations the installer uses, since Eldrun's inherited
-/// `PATH` may omit `~/.local/bin` even when a login shell would include it.
+/// True when the `vibe` binary is reachable. Checks `PATH` (cross-platform, via
+/// `where`/`which`) and the well-known user install locations the installer uses,
+/// since Eldrun's inherited `PATH` may omit `~/.local/bin` even when a login shell
+/// would include it.
 #[tauri::command]
 pub async fn vibe_is_installed() -> bool {
-    let on_path = std::process::Command::new("which")
-        .arg("vibe")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if on_path {
+    if binary_on_path("vibe") {
         return true;
     }
     let home = crate::paths::home_dir();
-    [".local/bin/vibe", ".cargo/bin/vibe"]
-        .iter()
-        .any(|rel| home.join(rel).exists())
+    [".local/bin/vibe", ".cargo/bin/vibe"].iter().any(|rel| {
+        let base = home.join(rel);
+        if base.exists() {
+            return true;
+        }
+        // On Windows the install dir holds `vibe.exe` (the uv tool shim), which
+        // the bare extensionless relative path misses.
+        cfg!(target_os = "windows")
+            && ["exe", "cmd", "bat", "ps1"]
+                .iter()
+                .any(|ext| base.with_extension(ext).exists())
+    })
 }
 
-/// Install the Vibe CLI via its official install script (Linux/macOS).
+/// Install the Vibe CLI via its official per-user install command (see
+/// [`vibe_install_cmd`]).
 ///
-/// Runs `curl -LsSf https://mistral.ai/vibe/install.sh | bash` and streams its
-/// combined stdout+stderr to the frontend line-by-line via `vibe-install-progress`
-/// events (`{ line }`) so the UI can show live progress. The script installs into
-/// the user's home (no `sudo`), so this runs non-interactively. Returns the install
-/// log on success, or the tail of the output on failure.
+/// Streams the installer's combined stdout+stderr to the frontend line-by-line via
+/// `vibe-install-progress` events (`{ line }`) so the UI can show live progress. The
+/// install is per-user (no `sudo` / administrator rights), so this runs
+/// non-interactively. Returns the install log on success, or the tail of the output
+/// on failure.
+///
+/// Per-OS the command is driven through the native shell: PowerShell on Windows
+/// (uv → `uv tool install mistral-vibe`), the POSIX shell on Linux/macOS.
 #[tauri::command]
 pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
     use std::io::{BufRead, BufReader};
@@ -256,20 +371,38 @@ pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
         return Ok("Vibe is already installed.".to_string());
     }
 
-    if !cfg!(any(target_os = "linux", target_os = "macos")) {
-        return Err("Automatic install is only supported on Linux/macOS. \
+    let cmd = vibe_install_cmd();
+
+    // Build the OS-native invocation, merging stderr into stdout (`2>&1`) so a
+    // single reader sees every line in order.
+    let (program, args): (&str, Vec<String>) = if cfg!(target_os = "windows") {
+        (
+            "powershell",
+            vec![
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-Command".into(),
+                format!("{cmd} 2>&1"),
+            ],
+        )
+    } else if cfg!(any(target_os = "linux", target_os = "macos")) {
+        ("sh", vec!["-c".into(), format!("{cmd} 2>&1")])
+    } else {
+        return Err("Automatic install isn't supported on this OS. \
             See https://docs.mistral.ai/getting-started/quickstarts/vibe-code/install-cli."
             .to_string());
-    }
+    };
 
     let emit = |line: &str| {
         let _ = app.emit("vibe-install-progress", serde_json::json!({ "line": line }));
     };
     emit("Starting Vibe installer…");
 
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{VIBE_INSTALL_CMD} 2>&1"))
+    // `command_no_window` suppresses the transient console window the PowerShell/
+    // `sh` wrapper would otherwise pop on Windows; progress is surfaced in-app.
+    let mut child = crate::paths::command_no_window(program)
+        .args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -296,7 +429,7 @@ pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
         let tail: Vec<&str> = combined.lines().rev().take(20).collect();
         let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
         return Err(if tail.is_empty() {
-            format!("installer exited unsuccessfully ({status}). Run `{VIBE_INSTALL_CMD}` in a terminal.")
+            format!("installer exited unsuccessfully ({status}). Run `{cmd}` in a terminal.")
         } else {
             tail
         });
@@ -306,7 +439,7 @@ pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
     if !vibe_is_installed().await {
         return Err(format!(
             "installer ran but `vibe` is still not detected. It may need a new shell so \
-            `~/.local/bin` is on PATH — run `{VIBE_INSTALL_CMD}` in a terminal.\n\n{combined}"
+            the install dir (`~/.local/bin`) is on PATH — run `{cmd}` in a terminal.\n\n{combined}"
         ));
     }
 
@@ -316,6 +449,46 @@ pub async fn install_vibe(app: tauri::AppHandle) -> Result<String, String> {
     } else {
         combined
     })
+}
+
+/// OS-appropriate Vibe install guidance for the frontend, so the UI renders the
+/// right command and wording without hardcoding a platform. `auto` is true when
+/// [`install_vibe`] can drive the install itself on this OS.
+#[derive(serde::Serialize, Clone)]
+pub struct VibeInstallStrategy {
+    /// "windows" | "macos" | "linux" | "unknown".
+    pub os: String,
+    /// The exact command Eldrun runs / the user can copy-paste.
+    pub command: String,
+    /// Whether one-click `install_vibe` is supported on this OS.
+    pub auto: bool,
+    /// Docs URL, always provided as a last resort.
+    pub docs: String,
+}
+
+/// Report the OS-dependent Vibe install strategy (detect OS + suggest command).
+#[tauri::command]
+pub async fn vibe_install_strategy() -> VibeInstallStrategy {
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
+    };
+    VibeInstallStrategy {
+        os: os.to_string(),
+        command: vibe_install_cmd().to_string(),
+        auto: cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )),
+        docs: "https://docs.mistral.ai/getting-started/quickstarts/vibe-code/install-cli"
+            .to_string(),
+    }
 }
 
 /// Return detailed info for every locally installed model, cross-referenced
@@ -428,22 +601,42 @@ pub struct PartialBlob {
 /// Ollama blob directories to scan (env override, user home, system service),
 /// de-duplicated and filtered to those that exist.
 fn ollama_blob_dirs() -> Vec<std::path::PathBuf> {
-    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(m) = std::env::var("OLLAMA_MODELS") {
-        if !m.is_empty() {
-            dirs.push(std::path::PathBuf::from(m).join("blobs"));
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        dirs.push(std::path::PathBuf::from(home).join(".ollama/models/blobs"));
-    }
-    if let Some(sys) = system_ollama_models_dir() {
-        dirs.push(sys.join("blobs"));
+    let override_dir = std::env::var_os("OLLAMA_MODELS").map(std::path::PathBuf::from);
+    let mut dirs = ollama_model_dir_candidates(
+        crate::paths::OsKind::current(),
+        &crate::paths::home_dir(),
+        override_dir.as_deref(),
+    )
+    .into_iter()
+    .map(|dir| dir.join("blobs"))
+    .collect::<Vec<_>>();
+    if let Some(system) = system_ollama_models_dir() {
+        dirs.push(system.join("blobs"));
     }
     let mut seen = std::collections::HashSet::new();
     dirs.into_iter()
         .filter(|d| d.is_dir() && seen.insert(d.clone()))
         .collect()
+}
+
+fn ollama_model_dir_candidates(
+    os: crate::paths::OsKind,
+    home: &std::path::Path,
+    override_dir: Option<&std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(path) = override_dir.filter(|path| !path.as_os_str().is_empty()) {
+        dirs.push(path.to_path_buf());
+    }
+    dirs.push(home.join(".ollama").join("models"));
+    if os == crate::paths::OsKind::Unix {
+        dirs.extend([
+            std::path::PathBuf::from("/usr/share/ollama/.ollama/models"),
+            std::path::PathBuf::from("/var/lib/ollama/.ollama/models"),
+            std::path::PathBuf::from("/var/lib/ollama/models"),
+        ]);
+    }
+    dirs
 }
 
 /// Orphaned partial download layers sitting in Ollama's blob cache, largest
@@ -528,13 +721,126 @@ pub async fn clear_pending_ollama_pull(model: String) {
     mark_pending_pull(&model, false);
 }
 
+// ── Pausable pulls ────────────────────────────────────────────────────────
+// Ollama's /api/pull has no native pause, but dropping the connection mid-stream
+// leaves the partial blobs on disk, and a later /api/pull continues from them. We
+// implement "pause" as a cooperative cancel: `pause_ollama_pull` records a model
+// ref, and the streaming loop in `pull_ollama_model` notices it on its next chunk,
+// stops reading, and returns — keeping the pending-pull record so the UI can offer
+// Resume (re-pull) or Delete (drop the partials).
+
+fn paused_pulls() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Request that an in-flight pull of `model` pause at the next streamed chunk.
+/// The partial download is preserved so it can be resumed later.
+#[tauri::command]
+pub async fn pause_ollama_pull(model: String) {
+    if let Ok(mut set) = paused_pulls().lock() {
+        set.insert(model);
+    }
+}
+
+/// True (consuming the flag) if a pause was requested for `model`.
+fn take_pause_request(model: &str) -> bool {
+    paused_pulls()
+        .lock()
+        .map(|mut set| set.remove(model))
+        .unwrap_or(false)
+}
+
+/// Delete a paused/interrupted download: clear its pending record, remove the
+/// partial blobs it left in Ollama's cache, and delete any committed model of the
+/// same ref. Best-effort — the partial blobs are resolved from the registry
+/// manifest's layer digests, so a missing network leaves them for the orphan-blob
+/// cleanup to reclaim instead. Always clears the pending record so the UI settles.
+#[tauri::command]
+pub async fn delete_ollama_pull(model: String) -> Result<(), String> {
+    mark_pending_pull(&model, false);
+    // Drop any committed manifest/blobs (no-op 404 if the pull never got that far).
+    let body = serde_json::json!({ "model": model }).to_string();
+    let _ = ollama_http("DELETE", "/api/delete", Some(&body));
+    // Remove the partial layers this model's pull was fetching.
+    if let Ok(digests) = registry_layer_digests(&model) {
+        delete_partials_for_digests(&digests);
+    }
+    Ok(())
+}
+
+/// The set of blob digests (`sha256:<hex>`) a model ref is composed of — its
+/// config plus every layer — read from the Ollama registry manifest. Used to map
+/// a paused download back to the specific `-partial` files it created.
+fn registry_layer_digests(model: &str) -> Result<Vec<String>, String> {
+    let v = fetch_registry_manifest(model)?;
+    let mut out: Vec<String> = Vec::new();
+    if let Some(d) = v["config"]["digest"].as_str() {
+        out.push(d.to_string());
+    }
+    if let Some(arr) = v["layers"].as_array() {
+        for l in arr {
+            if let Some(d) = l["digest"].as_str() {
+                out.push(d.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Delete the `*-partial` (and per-chunk `*-partial-<N>`) files matching any of
+/// the given `sha256:<hex>` digests, across all known blob directories.
+fn delete_partials_for_digests(digests: &[String]) {
+    // Blob files are named `sha256-<hex>`; the manifest gives `sha256:<hex>`.
+    let stems: std::collections::HashSet<String> =
+        digests.iter().map(|d| d.replace(':', "-")).collect();
+    for dir in ollama_blob_dirs() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(rest) = name.strip_suffix("-partial").or_else(|| {
+                // per-chunk metadata file: `<stem>-partial-<N>`
+                name.rsplit_once("-partial-").map(|(head, _)| head)
+            }) else {
+                continue;
+            };
+            if stems.contains(rest) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 /// Load a model into memory now (an empty `/api/generate` warms it) and keep it
 /// resident until explicitly unloaded (`keep_alive: -1`), so the user controls
 /// residency by button rather than relying on first use to trigger the load.
+///
+/// Ollama's warm-up call returns only once the model is fully resident and streams
+/// no load percentage, so progress here is coarse: an `ollama-load-progress` event
+/// (`{ model, status }`, status `loading`→`success`/`error`) is emitted around the
+/// blocking call so any surface (the brain menu, the settings panel) can show a
+/// live "Loading into memory…" indicator for a load started anywhere.
 #[tauri::command]
-pub async fn load_ollama_model(model: String) -> Result<(), String> {
+pub async fn load_ollama_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+    use tauri::Emitter;
+
+    let _ = app.emit(
+        "ollama-load-progress",
+        serde_json::json!({ "model": model, "status": "loading" }),
+    );
     let body = serde_json::json!({"model": model, "keep_alive": -1}).to_string();
-    ollama_http("POST", "/api/generate", Some(&body))?;
+    let result = ollama_http("POST", "/api/generate", Some(&body));
+    let _ = app.emit(
+        "ollama-load-progress",
+        match &result {
+            Ok(_) => serde_json::json!({ "model": model, "status": "success" }),
+            Err(e) => serde_json::json!({ "model": model, "status": "error", "error": e }),
+        },
+    );
+    result?;
     Ok(())
 }
 
@@ -550,8 +856,7 @@ pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(
 
     let body = serde_json::json!({"model": model, "stream": true}).to_string();
 
-    let stream =
-        TcpStream::connect("127.0.0.1:11434").map_err(|_| "not_running".to_string())?;
+    let stream = TcpStream::connect("127.0.0.1:11434").map_err(|_| "not_running".to_string())?;
     // 10-minute read timeout accommodates large model pulls between chunks.
     stream
         .set_read_timeout(Some(Duration::from_secs(600)))
@@ -569,6 +874,9 @@ pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(
     // Record this as an in-flight pull; a crash/exit now leaves the entry behind
     // so the next launch can offer to resume it. Removed only on success below.
     mark_pending_pull(&model, true);
+    // Consume any stale pause flag from a previous run so this fresh pull (e.g. a
+    // resume) isn't cancelled before it starts.
+    take_pause_request(&model);
 
     let mut reader = BufReader::new(stream);
 
@@ -579,7 +887,11 @@ pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(
     reader
         .read_line(&mut header)
         .map_err(|e| format!("read: {e}"))?;
-    if let Some(code) = header.split_whitespace().nth(1).and_then(|s| s.parse().ok()) {
+    if let Some(code) = header
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+    {
         status_code = code;
     }
     loop {
@@ -593,8 +905,20 @@ pub async fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(
     // Stream the newline-delimited JSON body, forwarding each progress line.
     let mut last_err: Option<String> = None;
     loop {
+        // Cooperative pause: if the user asked to pause this pull, stop reading and
+        // drop the connection. Ollama keeps the partial blobs, and the pending-pull
+        // record is left in place so the UI can offer Resume or Delete.
+        if take_pause_request(&model) {
+            let _ = app.emit(
+                "ollama-pull-progress",
+                serde_json::json!({ "model": model, "status": "paused" }),
+            );
+            return Ok(());
+        }
         let mut line = String::new();
-        let n = reader.read_line(&mut line).map_err(|e| format!("read: {e}"))?;
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("read: {e}"))?;
         if n == 0 {
             break;
         }
@@ -638,18 +962,16 @@ pub async fn delete_ollama_model(model: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Total download size in bytes for an installable model tag, read from the
-/// Ollama registry manifest. Used to show a model's size on hover before the
-/// user commits to a pull. Shells out to `curl` (no Rust TLS dep) and sums the
-/// manifest's config + layer sizes. `model` may be `name`, `name:tag`, or
-/// `namespace/name:tag`; an absent tag defaults to `latest`.
-#[tauri::command]
-pub async fn ollama_registry_size(model: String) -> Result<u64, String> {
-    validate_model_name(&model)?;
+/// Fetch the Ollama registry manifest (config + layers) for a model ref. Shells
+/// out to `curl` (no Rust TLS dep); `model` may be `name`, `name:tag`, or
+/// `namespace/name:tag`, with an absent tag defaulting to `latest`. Shared by the
+/// size hint and the paused-download partial-blob resolver.
+fn fetch_registry_manifest(model: &str) -> Result<serde_json::Value, String> {
+    validate_model_name(model)?;
 
     let (name, tag) = match model.split_once(':') {
         Some((n, t)) => (n, t),
-        None => (model.as_str(), "latest"),
+        None => (model, "latest"),
     };
     // Bare names live under the implicit `library/` namespace on the registry.
     let repo = if name.contains('/') {
@@ -660,8 +982,9 @@ pub async fn ollama_registry_size(model: String) -> Result<u64, String> {
     let url = format!("https://registry.ollama.ai/v2/{repo}/manifests/{tag}");
 
     // No shell — args are passed directly, and `validate_model_name` already
-    // restricts the characters that reach the URL.
-    let output = std::process::Command::new("curl")
+    // restricts the characters that reach the URL. `command_no_window` keeps
+    // `curl` from flashing a console window on Windows (Win10/11 ship curl.exe).
+    let output = crate::paths::command_no_window("curl")
         .args([
             "-fsSL",
             "-H",
@@ -675,8 +998,15 @@ pub async fn ollama_registry_size(model: String) -> Result<u64, String> {
         return Err(format!("registry returned no manifest for {model}"));
     }
 
-    let v: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("manifest json: {e}"))?;
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("manifest json: {e}"))
+}
+
+/// Total download size in bytes for an installable model tag, read from the
+/// Ollama registry manifest. Used to show a model's size on hover before the
+/// user commits to a pull. Sums the manifest's config + layer sizes.
+#[tauri::command]
+pub async fn ollama_registry_size(model: String) -> Result<u64, String> {
+    let v = fetch_registry_manifest(&model)?;
 
     let layers_total: u64 = v["layers"]
         .as_array()
@@ -761,7 +1091,9 @@ fn all_tag_texts(card: &str, marker: &str) -> Vec<String> {
     let mut pos = 0;
     while let Some(i) = card[pos..].find(marker) {
         let start = pos + i + marker.len();
-        let Some(gt) = card[start..].find('>') else { break };
+        let Some(gt) = card[start..].find('>') else {
+            break;
+        };
         let after = start + gt + 1;
         if let Some(lt) = card[after..].find('<') {
             let text = html_unescape(card[after..after + lt].trim());
@@ -826,8 +1158,9 @@ pub async fn search_ollama_registry(
     }
 
     // No shell — args passed directly; the URL is built only from a validated
-    // capability/sort and a percent-encoded query.
-    let output = std::process::Command::new("curl")
+    // capability/sort and a percent-encoded query. `command_no_window` avoids a
+    // console-window flash on Windows.
+    let output = crate::paths::command_no_window("curl")
         .args(["-fsSL", &url])
         .output()
         .map_err(|e| format!("failed to query registry: {e}"))?;
@@ -1058,6 +1391,21 @@ pub async fn ollama_status() -> &'static str {
     }
 }
 
+/// Total VRAM (bytes) currently in use across all models resident in Ollama's
+/// memory, summed from `/api/ps`'s `size_vram`. Returns `0` when the server is
+/// unreachable or no model is loaded on the GPU, so callers can treat it as a
+/// plain "GPU bytes in use" gauge that degrades to zero rather than erroring.
+pub fn total_vram_in_use() -> u64 {
+    ollama_http("GET", "/api/ps", None)
+        .ok()
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["models"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .map(|m| m["size_vram"].as_u64().unwrap_or(0))
+        .sum()
+}
+
 fn ollama_listening() -> bool {
     TcpStream::connect_timeout(
         &"127.0.0.1:11434".parse().unwrap(),
@@ -1078,26 +1426,35 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         return Ok(());
     }
 
-    // Try the system service first — it runs as the ollama user and sees all
-    // system-wide models (e.g. /usr/share/ollama/.ollama/models).
-    let service_started = std::process::Command::new("systemctl")
-        .args(["start", "ollama"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    // Try the system service first (Linux only) — it runs as the ollama user and
+    // sees all system-wide models (e.g. /usr/share/ollama/.ollama/models).
+    #[cfg(target_os = "linux")]
+    {
+        let service_started = std::process::Command::new("systemctl")
+            .args(["start", "ollama"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
 
-    if service_started {
-        let deadline = Instant::now() + Duration::from_secs(8);
-        if wait_for_ollama(deadline) {
-            return Ok(());
+        if service_started {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            if wait_for_ollama(deadline) {
+                return Ok(());
+            }
         }
     }
 
     // Fall back to spawning a user process, but point it at the system models
-    // directory if it exists so models installed via the system service are visible.
-    let mut cmd = std::process::Command::new("ollama");
+    // directory if it exists so models installed via the system service are
+    // visible. Resolve `ollama` to an absolute path: on Windows the winget/GUI
+    // installer drops `ollama.exe` under %LOCALAPPDATA%\Programs\Ollama, which is
+    // detected by `ollama_is_installed` but is not on this process's PATH.
+    let ollama_bin = crate::paths::resolve_offpath_binary("ollama")
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| "ollama".into());
+    let mut cmd = crate::paths::command_no_window(&ollama_bin);
     cmd.arg("serve")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -1106,8 +1463,7 @@ pub async fn ensure_ollama_running() -> Result<(), String> {
         cmd.env("OLLAMA_MODELS", sys_models);
     }
 
-    cmd.spawn()
-        .map_err(|e| format!("failed to start ollama serve: {e}"))?;
+    crate::paths::spawn_reaped(cmd).map_err(|e| format!("failed to start ollama serve: {e}"))?;
 
     let deadline = Instant::now() + Duration::from_secs(8);
     if wait_for_ollama(deadline) {
@@ -1130,15 +1486,17 @@ fn wait_for_ollama(deadline: Instant) -> bool {
 /// Returns the path to the system-wide Ollama models directory if it exists
 /// and contains at least one model manifest.
 fn system_ollama_models_dir() -> Option<std::path::PathBuf> {
-    let candidates = [
-        "/usr/share/ollama/.ollama/models",
-        "/var/lib/ollama/.ollama/models",
-        "/var/lib/ollama/models",
-    ];
-    for path in &candidates {
-        let p = std::path::Path::new(path);
-        if p.join("manifests").exists() {
-            return Some(p.to_owned());
+    #[cfg(target_os = "linux")]
+    {
+        for path in [
+            "/usr/share/ollama/.ollama/models",
+            "/var/lib/ollama/.ollama/models",
+            "/var/lib/ollama/models",
+        ] {
+            let p = std::path::Path::new(path);
+            if p.join("manifests").exists() {
+                return Some(p.to_owned());
+            }
         }
     }
     None
@@ -1407,7 +1765,11 @@ fn completion_prompt(
     mode: CompletionMode,
     context: &str,
 ) -> String {
-    let lang = if language.is_empty() { "text" } else { language };
+    let lang = if language.is_empty() {
+        "text"
+    } else {
+        language
+    };
     // When the caret sits just after a natural-language comment, switch from
     // continuing text to *implementing that comment as code* (#45 intent comments).
     let task: String = if let Some(desc) = trailing_comment_intent(prefix, language) {
@@ -1468,8 +1830,16 @@ fn clean_completion(raw: &str) -> String {
         let lower = first.to_ascii_lowercase();
         let is_preamble = first.ends_with(':')
             && [
-                "here is", "here's", "here are", "sure", "certainly", "of course",
-                "the continuation", "continuation", "the reformatted", "the completed",
+                "here is",
+                "here's",
+                "here are",
+                "sure",
+                "certainly",
+                "of course",
+                "the continuation",
+                "continuation",
+                "the reformatted",
+                "the completed",
             ]
             .iter()
             .any(|p| lower.starts_with(p));
@@ -1500,10 +1870,7 @@ const MIN_SEAM_OVERLAP: usize = 3;
 fn overlap_len(a: &str, b: &str) -> usize {
     let max = a.len().min(b.len());
     for k in (1..=max).rev() {
-        if b.is_char_boundary(k)
-            && a.is_char_boundary(a.len() - k)
-            && a[a.len() - k..] == b[..k]
-        {
+        if b.is_char_boundary(k) && a.is_char_boundary(a.len() - k) && a[a.len() - k..] == b[..k] {
             return k;
         }
     }
@@ -1548,7 +1915,10 @@ pub async fn complete_text(
     context: Option<Vec<ContextFile>>,
 ) -> Result<String, String> {
     let mode = CompletionMode::parse(mode.as_deref().unwrap_or("sentence"));
-    let context_block = context.as_deref().map(build_context_block).unwrap_or_default();
+    let context_block = context
+        .as_deref()
+        .map(build_context_block)
+        .unwrap_or_default();
     let user = completion_prompt(&prefix, &suffix, &language, mode, &context_block);
     // Implementing a comment needs room for a whole statement/block even in the
     // conservative Sentence mode, so give intent completions at least the Block cap.
@@ -1824,6 +2194,10 @@ struct LocalDriver {
     id: &'static str,
     /// Human-readable label.
     label: &'static str,
+    /// The agent's own binary name. The driver is only offered when this is
+    /// actually installed — `ollama launch <sub>` still drives the agent's CLI,
+    /// so a missing binary means the tab can't run regardless of `launch`.
+    bin: &'static str,
     /// `ollama launch <sub> --model <model>` subcommand, when supported.
     launch_sub: Option<&'static str>,
     /// Direct fallback when `ollama launch` is unavailable: the binary to spawn
@@ -1838,6 +2212,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
     LocalDriver {
         id: "claude",
         label: "Claude Code",
+        bin: "claude",
         launch_sub: Some("claude"),
         // Claude Code needs an Anthropic-compatible endpoint, which only
         // `ollama launch` stands up — no reliable hand-rolled fallback.
@@ -1846,6 +2221,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
     LocalDriver {
         id: "codex",
         label: "Codex",
+        bin: "codex",
         launch_sub: Some("codex"),
         // `codex --oss -m <model>` talks to the local Ollama server directly.
         fallback: Some(("codex", &["--oss", "-m", "{model}"])),
@@ -1853,6 +2229,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
     LocalDriver {
         id: "opencode",
         label: "OpenCode",
+        bin: "opencode",
         launch_sub: Some("opencode"),
         // OpenCode's built-in `ollama` provider; `--model ollama/<model>` selects it.
         fallback: Some(("opencode", &["--model", "ollama/{model}"])),
@@ -1860,6 +2237,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
     LocalDriver {
         id: "droid",
         label: "Droid",
+        bin: "droid",
         launch_sub: Some("droid"),
         // Droid is configured via ~/.factory/config.json; only `ollama launch`
         // writes that wiring for us.
@@ -1868,6 +2246,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
     LocalDriver {
         id: "openclaw",
         label: "OpenClaw",
+        bin: "openclaw",
         launch_sub: Some("openclaw"),
         // Launch-only: `ollama launch openclaw` installs OpenClaw if missing and
         // stands up its gateway against the local Ollama endpoint. There's no
@@ -1880,7 +2259,7 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
 /// True when the installed Ollama exposes the `launch` subcommand (v0.15+).
 /// Cheap probe: `ollama launch --help` exits 0 only when the subcommand exists.
 fn ollama_has_launch() -> bool {
-    std::process::Command::new("ollama")
+    crate::paths::command_no_window("ollama")
         .args(["launch", "--help"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1903,8 +2282,9 @@ fn fallback_spec(driver: &LocalDriver, model: &str) -> Option<LocalLaunchSpec> {
 pub struct LocalDriverInfo {
     pub id: String,
     pub label: String,
-    /// True when `ollama launch` supports it (and is available) or a direct
-    /// fallback exists. The menu hides drivers that are currently unreachable.
+    /// True when the agent's binary is installed *and* Eldrun has a way to wire
+    /// it to the local model (`ollama launch` supports it, or a direct fallback
+    /// exists). The menu hides drivers that aren't installed or are unreachable.
     pub available: bool,
 }
 
@@ -1919,7 +2299,11 @@ pub async fn list_local_drivers() -> Vec<LocalDriverInfo> {
         .map(|d| LocalDriverInfo {
             id: d.id.to_string(),
             label: d.label.to_string(),
-            available: (d.launch_sub.is_some() && has_launch) || d.fallback.is_some(),
+            // Both must hold: the agent itself is installed, and we have a wiring
+            // path (ollama launch or a direct fallback). A driver whose binary is
+            // missing (e.g. Droid) is no longer offered.
+            available: crate::commands::agents::binary_is_installed(d.bin)
+                && ((d.launch_sub.is_some() && has_launch) || d.fallback.is_some()),
         })
         .collect()
 }
@@ -1987,9 +2371,7 @@ fn validate_model_name(model: &str) -> Result<(), String> {
         .chars()
         .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@')))
     {
-        return Err(format!(
-            "invalid character {bad:?} in model name '{model}'"
-        ));
+        return Err(format!("invalid character {bad:?} in model name '{model}'"));
     }
     Ok(())
 }
@@ -2202,7 +2584,7 @@ mod tests {
             "missing-runner error should be rewritten to an actionable message, got: {msg}"
         );
         // It points the user at the reinstall command.
-        assert!(msg.contains(OLLAMA_INSTALL_CMD));
+        assert!(msg.contains(ollama_install_cmd()));
         // And it no longer leaks the raw cmake/build hint.
         assert!(!msg.contains("cmake"));
     }
@@ -2216,7 +2598,11 @@ mod tests {
     #[test]
     fn friendly_ollama_error_passes_through_unrelated() {
         // Errors we don't special-case must be returned verbatim, not swallowed.
-        for raw in ["model 'foo' not found, try pulling it first", "out of memory", "HTTP 500"] {
+        for raw in [
+            "model 'foo' not found, try pulling it first",
+            "out of memory",
+            "HTTP 500",
+        ] {
             assert_eq!(friendly_ollama_error(raw), raw);
         }
     }
@@ -2298,7 +2684,10 @@ mod tests {
     #[test]
     fn completion_prompt_defaults_empty_language_to_text() {
         let p = completion_prompt("a", "b", "", CompletionMode::Sentence, "");
-        assert!(p.contains("Language: text"), "empty language defaults to text");
+        assert!(
+            p.contains("Language: text"),
+            "empty language defaults to text"
+        );
     }
 
     #[test]
@@ -2313,9 +2702,18 @@ mod tests {
     #[test]
     fn build_context_block_labels_files_and_skips_empty() {
         let files = vec![
-            ContextFile { name: "util.rs".into(), content: "fn helper() {}".into() },
-            ContextFile { name: "blank.rs".into(), content: "   \n  ".into() },
-            ContextFile { name: "types.rs".into(), content: "struct Foo;".into() },
+            ContextFile {
+                name: "util.rs".into(),
+                content: "fn helper() {}".into(),
+            },
+            ContextFile {
+                name: "blank.rs".into(),
+                content: "   \n  ".into(),
+            },
+            ContextFile {
+                name: "types.rs".into(),
+                content: "struct Foo;".into(),
+            },
         ];
         let block = build_context_block(&files);
         assert!(block.contains("--- util.rs ---\nfn helper() {}"));
@@ -2330,14 +2728,26 @@ mod tests {
     fn build_context_block_caps_total_size() {
         let big = "x".repeat(20_000);
         let files = vec![
-            ContextFile { name: "a".into(), content: big.clone() },
-            ContextFile { name: "b".into(), content: big.clone() },
-            ContextFile { name: "c".into(), content: big },
+            ContextFile {
+                name: "a".into(),
+                content: big.clone(),
+            },
+            ContextFile {
+                name: "b".into(),
+                content: big.clone(),
+            },
+            ContextFile {
+                name: "c".into(),
+                content: big,
+            },
         ];
         let block = build_context_block(&files);
         // Each file is per-file capped and the total is bounded; allow for the
         // labels/separators on top of the included bytes.
-        assert!(block.len() <= MAX_CONTEXT_TOTAL + 256, "total context stays bounded");
+        assert!(
+            block.len() <= MAX_CONTEXT_TOTAL + 256,
+            "total context stays bounded"
+        );
         // The first file always makes it in.
         assert!(block.contains("--- a ---"));
     }
@@ -2470,7 +2880,13 @@ mod tests {
 
     #[test]
     fn completion_prompt_biases_to_finishing_the_sentence_when_mid_sentence() {
-        let mid = completion_prompt("I am writing to ", " Best regards", "text", CompletionMode::Sentence, "");
+        let mid = completion_prompt(
+            "I am writing to ",
+            " Best regards",
+            "text",
+            CompletionMode::Sentence,
+            "",
+        );
         assert!(mid.contains("middle of a sentence"));
         assert!(mid.contains("complete") || mid.contains("completes"));
         // At a sentence boundary it switches to the plain-continuation hint.
@@ -2535,7 +2951,10 @@ mod tests {
             "express my thanks",
         );
         // A 1–2 char incidental match is below the threshold, so it is NOT trimmed.
-        assert_eq!(trim_context_overlap("foo a", "", "a list of items"), "a list of items");
+        assert_eq!(
+            trim_context_overlap("foo a", "", "a list of items"),
+            "a list of items"
+        );
     }
 
     #[test]
@@ -2556,7 +2975,8 @@ mod tests {
 
     #[test]
     fn parse_grammar_issues_reads_a_clean_array() {
-        let raw = r#"[{"line":2,"bad":"teh","suggestion":"the","category":"spelling","message":"typo"}]"#;
+        let raw =
+            r#"[{"line":2,"bad":"teh","suggestion":"the","category":"spelling","message":"typo"}]"#;
         let issues = parse_grammar_issues(raw);
         assert_eq!(issues.len(), 1);
         assert_eq!(
@@ -2643,6 +3063,20 @@ mod tests {
         // active_model appears exactly once.
         let active_model_count = cfg.matches(&format!("active_model = \"{alias}\"")).count();
         assert_eq!(active_model_count, 1);
+    }
+
+    #[test]
+    fn model_directory_candidates_are_os_specific() {
+        let home = std::path::Path::new("/home/alice");
+        for os in [crate::paths::OsKind::Windows, crate::paths::OsKind::Macos] {
+            let dirs = ollama_model_dir_candidates(os, home, None);
+            assert_eq!(dirs, vec![home.join(".ollama/models")]);
+        }
+        let linux = ollama_model_dir_candidates(crate::paths::OsKind::Unix, home, None);
+        assert!(linux.contains(&home.join(".ollama/models")));
+        assert!(linux.contains(&std::path::PathBuf::from(
+            "/usr/share/ollama/.ollama/models"
+        )));
     }
 
     /// Integration test: only runs when Ollama is reachable and has models.

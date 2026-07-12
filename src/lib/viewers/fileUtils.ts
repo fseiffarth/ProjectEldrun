@@ -1,3 +1,5 @@
+import { relativePathWithin } from "../paths";
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -20,6 +22,7 @@ export const STANDARD_PROJECT_FILES = new Set([
   "DOCUMENTATION.md",
   ".gitignore",
   ".claude",
+  ".git",
 ]);
 
 export const INTERNAL_PROJECT_FILES = new Set([
@@ -42,6 +45,10 @@ export type InternalViewer =
   | "table"
   | "notebook"
   | "diff"
+  // SSH-sync host-vs-mirror diff. Never auto-selected by extension — only opened
+  // explicitly from a diverged (amber) file's diff button; routed to `DiffView`
+  // in sync mode (backend `sync_diff`).
+  | "syncdiff"
   | "odt"
   | "media"
   | "html"
@@ -289,10 +296,48 @@ export function parentRel(path: string): string {
 }
 
 export function relFromAbs(projectDir: string, absPath: string): string {
-  const root = projectDir.replace(/\/+$/, "");
-  if (absPath === root) return "";
-  if (!absPath.startsWith(`${root}/`)) return "";
-  return absPath.slice(root.length + 1);
+  return relativePathWithin(projectDir, absPath) ?? "";
+}
+
+// ── File-tree multi-selection (pure logic, unit-tested) ──────────────────────
+// Selection is a set of entry *absolute paths*; `ordered` is the flat list of
+// visible rows in on-screen order (regular, then scaffold, then gitignored),
+// which is what a shift-range spans.
+
+/** The contiguous slice of `ordered` between `anchor` and `target` (inclusive),
+ *  order-independent. If either endpoint isn't in `ordered`, falls back to just
+ *  `target`. */
+export function rangeSelect(ordered: string[], anchor: string, target: string): string[] {
+  const a = ordered.indexOf(anchor);
+  const b = ordered.indexOf(target);
+  if (a === -1 || b === -1) return [target];
+  const [lo, hi] = a <= b ? [a, b] : [b, a];
+  return ordered.slice(lo, hi + 1);
+}
+
+/** Next selection + anchor after a click on `path`, given the current selection,
+ *  the visible order, and the modifier keys:
+ *   - shift (with an anchor)  → replace with the anchor→path range.
+ *   - toggle (ctrl/cmd)       → flip `path`; anchor becomes `path`.
+ *   - plain                   → select only `path`; anchor becomes `path`.
+ *  Shift without a prior anchor behaves like a plain click. */
+export function nextSelection(
+  cur: ReadonlySet<string>,
+  ordered: string[],
+  anchor: string | null,
+  path: string,
+  mods: { shift: boolean; toggle: boolean },
+): { selected: Set<string>; anchor: string } {
+  if (mods.shift && anchor) {
+    return { selected: new Set(rangeSelect(ordered, anchor, path)), anchor };
+  }
+  if (mods.toggle) {
+    const selected = new Set(cur);
+    if (selected.has(path)) selected.delete(path);
+    else selected.add(path);
+    return { selected, anchor: path };
+  }
+  return { selected: new Set([path]), anchor: path };
 }
 
 export function visibleEntries(
@@ -344,51 +389,6 @@ export function visibleEntries(
       return shownPaths.has(entryRelPath) || options.showStandardFiles || !STANDARD_PROJECT_FILES.has(entry.name);
     })
     .filter((entry) => !query || entry.name.toLowerCase().includes(query))
-    .sort((a, b) => compareEntries(a, b, sortKey, descending));
-}
-
-/**
- * Dotfiles that `visibleEntries` filters out of the inline tree (the `showHidden`
- * step), surfaced so the panel can gather them into a collapsed "hidden" section.
- *
- * Returns the entries hidden *solely* by the dotfile rule — items removed by the
- * other filters (internal, hiddenEndings, hiddenPaths) stay fully hidden, and
- * `.gitignore`, scaffold/standard files, and explicitly-shown paths are excluded
- * because they already render inline or in the scaffold section. When
- * `showHidden` is on, dotfiles appear inline already, so the bucket is empty.
- */
-export function hiddenEntries(
-  entries: FileEntry[],
-  options: {
-    showHidden: boolean;
-    sortKey?: SortKey;
-    descending?: boolean;
-    hiddenEndings?: string[];
-    relPath?: string;
-    hiddenPaths?: string[];
-    shownPaths?: string[];
-  },
-): FileEntry[] {
-  if (options.showHidden) return [];
-  const sortKey = options.sortKey ?? "name";
-  const descending = options.descending ?? false;
-  const relPath = (options.relPath ?? "").replace(/^\/+|\/+$/g, "");
-  const hiddenEndings = (options.hiddenEndings ?? [])
-    .map((ending) => ending.trim().toLowerCase())
-    .filter(Boolean);
-  const hiddenPaths = new Set((options.hiddenPaths ?? []).map(normalizeRulePath));
-  const shownPaths = new Set((options.shownPaths ?? []).map(normalizeRulePath));
-
-  return entries
-    .filter((entry) => {
-      if (!entry.name.startsWith(".") || entry.name === ".gitignore") return false;
-      if (INTERNAL_PROJECT_FILES.has(entry.name) || STANDARD_PROJECT_FILES.has(entry.name)) return false;
-      const entryRelPath = normalizeRulePath(relPath ? `${relPath}/${entry.name}` : entry.name);
-      if (shownPaths.has(entryRelPath)) return false; // already shown inline
-      if (hiddenPaths.has(entryRelPath)) return false; // user chose to fully hide
-      if (hiddenEndings.some((ending) => entry.name.toLowerCase().endsWith(ending))) return false;
-      return true;
-    })
     .sort((a, b) => compareEntries(a, b, sortKey, descending));
 }
 

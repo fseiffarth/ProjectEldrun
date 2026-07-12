@@ -82,12 +82,15 @@ export const DETACHED_BOUNDS = "detached-bounds";
  * START opens the preview, MOVE updates it, and END commits (or cancels). One
  * popout drags at a time, so MOVE/END carry no id.
  *
- * The streamed coords are OS-level desktop CURSOR coords (logical/CSS px),
- * polled from `cursorPosition()` — NOT DOM pointer-event coords. On WebKitGTK
- * (esp. Wayland) DOM pointermove/up do not cross the OS window boundary, so once
- * the cursor leaves the popout the DOM stream dies at the popout's edge. Polling
- * the OS cursor keeps MOVE flowing over the main window, and END carries the last
- * polled cursor position so the drop resolves where the cursor really is.
+ * The streamed coords are OS-level desktop CURSOR coords in PHYSICAL desktop px
+ * (the canonical cross-window space — see `lib/coords`), polled from
+ * `cursorPosition()` — NOT DOM pointer-event coords. DOM `screenX/Y` units diverge
+ * across engines under DPI scaling, and on WebKitGTK (esp. Wayland) DOM
+ * pointermove/up don't cross the OS window boundary, so the DOM stream would die at
+ * the popout's edge. Polling the OS cursor keeps MOVE flowing over the main window
+ * in a single DPI-correct frame, and END carries the last polled cursor position so
+ * the drop resolves where the cursor really is. The receiver converts physical →
+ * its-own-client px at the leaf (`physToClient`), the only DPI-correct place.
  */
 export const DETACHED_DRAG_START = "detached-drag-start";
 export const DETACHED_DRAG_MOVE = "detached-drag-move";
@@ -116,11 +119,12 @@ export const detachedDropPreviewEvent = (label: string) =>
 export interface DetachedDropPreview {
   active: boolean;
   target?: { groupId: string; edge: DropEdge } | null;
-  // OS cursor (logical/CSS px) so the popout can position its own drag ghost while
-  // the main-window item hovers (the main's ghost lives in the main window and
-  // isn't visible over the popout). Cosmetic — the target drives the drop.
-  screenX?: number;
-  screenY?: number;
+  // OS cursor in PHYSICAL desktop px (see lib/coords) so the popout can position
+  // its own drag ghost while the main-window item hovers (the main's ghost lives in
+  // the main window and isn't visible over the popout). Cosmetic — the target
+  // drives the drop.
+  cursorPhysX?: number;
+  cursorPhysY?: number;
   label?: string;
 }
 
@@ -136,10 +140,11 @@ export interface DetachedPanesRequest {
 }
 /**
  * Detached → host: this popout's panes in CLIENT px (its own getBoundingClientRect
- * space, which equals `cursor − outerPosition` for a decorationless window). The
- * host hit-tests the cursor against these: over a bar → merge into that group;
- * over a body → edge-split (pickEdge). One channel carrying the label, so the host
- * needs a single listener.
+ * space). The host converts the physical cursor into THIS popout's client px via
+ * its `innerPosition`/scale (`physToClient` — never `outerPosition`, so an
+ * invisible frame/shadow can't skew it) before hit-testing against these: over a
+ * bar → merge into that group; over a body → edge-split (pickEdge). One channel
+ * carrying the label, so the host needs a single listener.
  */
 export const DETACHED_PANES = "detached-panes";
 export interface PaneRect {
@@ -161,26 +166,27 @@ export interface DetachedDragStart {
   scope: string;
   groupId: string;
   label: string;
-  screenX: number;
-  screenY: number;
+  cursorPhysX: number;
+  cursorPhysY: number;
   tabKey?: string;
 }
-/** Detached → main: the OS cursor moved (desktop logical/CSS px). */
+/** Detached → main: the OS cursor moved (physical desktop px — see lib/coords). */
 export interface DetachedDragMove {
-  screenX: number;
-  screenY: number;
+  cursorPhysX: number;
+  cursorPhysY: number;
 }
 /**
- * Detached → main: the drag ended; `cancelled` skips docking. `screenX/Y` carry
- * the LAST OS-level cursor position (logical/CSS px), so the main window resolves
- * the drop against where the cursor actually is — not the stale DOM coordinates of
- * the release event, which on WebKitGTK fire inside the popout even when the
- * cursor is released over the main window. Absent only on a cancel.
+ * Detached → main: the drag ended; `cancelled` skips docking. `cursorPhysX/Y` carry
+ * the LAST OS-level cursor position (physical desktop px — see lib/coords), so the
+ * main window resolves the drop against where the cursor actually is — not the
+ * stale DOM coordinates of the release event, which on WebKitGTK fire inside the
+ * popout even when the cursor is released over the main window. Absent only on a
+ * cancel.
  */
 export interface DetachedDragEnd {
   cancelled: boolean;
-  screenX?: number;
-  screenY?: number;
+  cursorPhysX?: number;
+  cursorPhysY?: number;
   /**
    * Shift held at release → keep the popout floating as its own window instead of
    * docking it back into the main window (mirrors the main-window tab rule where
@@ -228,6 +234,11 @@ export type DetachedEdit =
   | { kind: "rename"; key: string; label: string }
   | { kind: "close"; key: string }
   | { kind: "reorder"; tabKeys: string[] }
+  // New tab created FROM the popout's own "+" menu. The detached window can't mint
+  // the store-unique tab key (or own the PTY), so it ships the resolved payload +
+  // the popout group it should land in; the MAIN window mints the key, appends the
+  // payload (spawning/owning the PTY), and re-seeds the popout so it renders it.
+  | { kind: "add"; tab: Omit<TabEntry, "key">; targetGroupId: string }
   // Multi-pane popouts: split `key` into a new pane at `edge` of `targetGroupId`.
   | { kind: "split"; key: string; targetGroupId: string; edge: DropEdge }
   // Multi-pane popouts: resize the divider between children i and i+1 of a split.
@@ -310,6 +321,10 @@ export function applyEditToSubtree(
     case "move":
       // Optimistic local cross-group merge; null (invalid) leaves it unchanged.
       return moveKeyInTree(subtree, edit.key, edit.targetGroupId, edit.index) ?? subtree;
+    case "add":
+      // The detached window can't mint the tab key — it leaves the subtree as-is
+      // and waits for the main window's re-seed (with the real, keyed tab).
+      return subtree;
     case "rename":
       // Label lives on the tab payload, not the group node — no node change.
       return subtree;
@@ -325,6 +340,74 @@ export function applyRenameToTabs(
   const next = label.trim();
   if (!next) return tabs;
   return tabs.map((t) => (t.key === key ? { ...t, label: next } : t));
+}
+
+/**
+ * #42: the UNIFIED cross-window drop decision for a single dragged tab. Keyed on
+ * the physical desktop cursor's relationship to the windows, this resolves a drag
+ * to ONE destination the SAME way regardless of which window it started in — the
+ * main window's `DETACHED_DRAG_END` host and (via the same ladder) `TabBar`'s own
+ * commit both consult it. Pure, so every branch is unit-testable.
+ *
+ * Ladder (first match wins):
+ *   1. `cancelled` (Escape / abort) → `none`.
+ *   2. released over the SOURCE popout & handled there → `local` (caller emitted
+ *      `cancelled:true`; this is defensive — such a release never reaches here).
+ *   3. `shift` → `newWindow` (Shift ALWAYS means "pop into its own window",
+ *      mirroring the main-window tab rule; a lone-tab source is refused downstream,
+ *      so it's a clean no-op rather than a hang).
+ *   4. over a SIBLING popout → `dockDetached` into it.
+ *   5. over the MAIN window → `dockMain` at the resolved pane target.
+ *   6. free space (no Eldrun window under the cursor) → `newWindow`.
+ */
+export type DetachedTabDrop =
+  | { kind: "none" } // cancelled — leave everything as-is
+  | { kind: "local" } // the source popout already committed a within-popout drop
+  | { kind: "newWindow" } // Shift, or released in free space → own new popout
+  | { kind: "dockDetached"; toGroupId: string } // released over a sibling popout
+  | { kind: "dockMain" }; // released over the main window (caller has the target)
+
+export function decideDetachedTabDrop(input: {
+  cancelled: boolean;
+  shift: boolean;
+  inMain: boolean;
+  /** A sibling popout under the cursor, or null (none / it's the source popout). */
+  overPopoutId: string | null;
+  srcGroupId: string;
+}): DetachedTabDrop {
+  if (input.cancelled) return { kind: "local" };
+  if (input.shift) return { kind: "newWindow" };
+  if (input.overPopoutId && input.overPopoutId !== input.srcGroupId) {
+    return { kind: "dockDetached", toGroupId: input.overPopoutId };
+  }
+  if (input.inMain) return { kind: "dockMain" };
+  return { kind: "newWindow" };
+}
+
+/**
+ * #42: the UNIFIED cross-window drop decision for a whole detached GROUP dragged
+ * from a popout. A group is already its own OS window, so "new window" just means
+ * "stay floating" (`float`). Docking a whole group into a SIBLING popout is out of
+ * scope (there is no merge-group-into-popout action), so a group over a sibling
+ * popout also stays floating. Pure/testable.
+ */
+export type DetachedGroupDrop =
+  | { kind: "float" } // Shift, free space, or over a sibling popout → keep floating
+  | { kind: "dockMain" }; // released over the main window (caller has the target)
+
+export function decideDetachedGroupDrop(input: {
+  cancelled: boolean;
+  shift: boolean;
+  inMain: boolean;
+  overPopoutId: string | null;
+  srcGroupId: string;
+}): DetachedGroupDrop {
+  if (input.cancelled || input.shift) return { kind: "float" };
+  if (input.overPopoutId && input.overPopoutId !== input.srcGroupId) {
+    return { kind: "float" };
+  }
+  if (input.inMain) return { kind: "dockMain" };
+  return { kind: "float" };
 }
 
 /**
@@ -348,7 +431,28 @@ export async function listenDetachedHost(): Promise<() => void> {
 
   const unEdit = await listen<DetachedEditEnvelope>(DETACHED_EDIT, (ev) => {
     const { scope, groupId, edit } = ev.payload;
-    useTabsStore.getState().applyDetachedEdit(scope, groupId, edit);
+    const store = useTabsStore.getState();
+    if (edit.kind === "add") {
+      // The main window owns tab creation + the PTY: mint the tab into the
+      // popout's subtree (spawning the pane in the main window's flat pane layer),
+      // then re-seed the popout so it re-renders — attaching to the new PTY — and
+      // plays the drop-in landing for the freshly-added tab.
+      const key = store.addDetachedTab(scope, groupId, edit.tab, edit.targetGroupId);
+      if (!key) return;
+      const entry = (useTabsStore.getState().detachedGroupsByScope[scope] ?? []).find(
+        (d) => d.id === groupId,
+      );
+      if (!entry) return;
+      const seed = buildSeed(
+        scope,
+        groupId,
+        useTabsStore.getState().tabsByScope[scope] ?? [],
+        entry.subtree,
+      );
+      void emit(detachedSeedEvent(entry.label), { ...seed, landedKey: key });
+      return;
+    }
+    store.applyDetachedEdit(scope, groupId, edit);
   });
 
   const unBounds = await listen<DetachedBoundsEnvelope>(DETACHED_BOUNDS, (ev) => {

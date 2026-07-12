@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Toggle } from "../common/Toggle";
 import { useWindowsStore } from "../../stores/windows";
 import { useProjectsStore } from "../../stores/projects";
 import { Dropdown } from "../common/Dropdown";
@@ -16,6 +17,8 @@ import {
   relFromAbs,
   visibleEntries,
 } from "../../lib/viewers/fileUtils";
+import { basename, dirname, isAbsolute } from "../../lib/paths";
+import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSync";
 
 type ProjectJson = Record<string, unknown>;
 
@@ -217,6 +220,11 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
         oldRel: relFromAbs(projectDir, target.path),
         newName: nextName.trim(),
       });
+      // Retarget any open viewer tab of this file (main + detached) to the new
+      // path — swap the basename on the entry's own absolute path (== embedPath).
+      const oldAbs = target.path;
+      const newAbs = `${oldAbs.slice(0, oldAbs.lastIndexOf("/") + 1)}${nextName.trim()}`;
+      retargetTabsForRenamedPath(oldAbs, newAbs);
       await load(relPath, { replace: true });
     } catch (e) {
       setError(String(e));
@@ -234,6 +242,8 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
           projectDir,
           relPath: relFromAbs(projectDir, target.path),
         });
+        // Close any open viewer tab for the deleted file/folder (main + detached).
+        closeTabsForDeletedPath(target.path);
       }
       await load(relPath, { replace: true });
     } catch (e) {
@@ -250,7 +260,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   function revealSelected() {
     const target = firstSelectedEntry();
     if (!target) return;
-    const path = target.is_dir ? target.path : target.path.slice(0, target.path.lastIndexOf("/"));
+    const path = target.is_dir ? target.path : dirname(target.path);
     openFile(path, undefined, projectId, "middle_file_browser").catch((e) =>
       setError(String(e)),
     );
@@ -294,8 +304,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   function submitPath(event: React.FormEvent) {
     event.preventDefault();
     const raw = pathEntry.trim();
-    const root = projectDir.replace(/\/+$/, "");
-    const nextRel = raw.startsWith("/") ? relFromAbs(root, raw) : raw.replace(/^\/+/, "");
+    const nextRel = isAbsolute(raw) ? relFromAbs(projectDir, raw) : raw.replace(/^\/+/, "");
     load(nextRel);
   }
 
@@ -313,7 +322,7 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
         <button onClick={() => load(parentRel(relPath))} disabled={!relPath} title="Up">↑</button>
         <button onClick={() => load(relPath, { replace: true })} title="Refresh">↻</button>
         <form className="file-browser-path" onSubmit={submitPath}>
-          <span>{projectDir.split("/").pop() || projectDir}</span>
+          <span>{basename(projectDir) || projectDir}</span>
           <input value={pathEntry} onChange={(e) => setPathEntry(e.target.value)} placeholder="/" />
         </form>
         <input
@@ -333,10 +342,10 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
         <button onClick={deleteSelected} disabled={!canMutate}>Delete</button>
         <button onClick={copySelectedPaths} disabled={!canMutate}>Copy Path</button>
         <button onClick={revealSelected} disabled={!canMutate}>Reveal</button>
-        <label><input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /> Hidden</label>
-        <label><input type="checkbox" checked={showStandardFiles} onChange={(e) => setShowStandardFiles(e.target.checked)} /> Scaffold</label>
-        <label><input type="checkbox" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} /> Separate scaffold</label>
-        <label><input type="checkbox" checked={showUserHidden} onChange={(e) => setShowUserHidden(e.target.checked)} /> User hidden</label>
+        <label><Toggle size="sm" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /> Hidden</label>
+        <label><Toggle size="sm" checked={showStandardFiles} onChange={(e) => setShowStandardFiles(e.target.checked)} /> Scaffold</label>
+        <label><Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} /> Separate scaffold</label>
+        <label><Toggle size="sm" checked={showUserHidden} onChange={(e) => setShowUserHidden(e.target.checked)} /> User hidden</label>
         <Dropdown
           title="Sort by"
           value={sortKey}

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useWindowsStore } from "../../stores/windows";
+import { basename } from "../../lib/paths";
 
 interface Props {
   /** Absolute path of the embedded file. */
@@ -33,7 +34,7 @@ export function EmbedPane({ path, exec, projectId, visible }: Props) {
       .catch((e) => console.error(e));
   }, [path, exec, projectId]);
 
-  const fileName = path.split("/").filter(Boolean).pop() ?? path;
+  const fileName = basename(path) || path;
   return (
     <div
       className="embed-pane center-placeholder"

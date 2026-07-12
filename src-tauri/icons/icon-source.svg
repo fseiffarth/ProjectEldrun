@@ -1,23 +1,36 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" role="img" aria-label="Eldrun">
   <title>Eldrun</title>
-  <g stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" fill="none">
-    <!-- Ring -->
-    <path d="M 214 491 A 239 239 0 1 1 298 491" stroke-width="10" />
-    <!-- Central trunk -->
-    <path d="M 256 161 L 256 499" stroke-width="10" />
-    <!-- Left branches (authored) -->
-    <path d="M 165 176 L 165 238 L 233 306 L 233 440 L 222 483" stroke-width="10" />
-    <path d="M 98 235 L 98 289 L 134.1 325.1 M 155 343.7 L 233 405" stroke-width="10" />
-    <circle cx="165" cy="162" r="14" stroke-width="8" />
-    <circle cx="98"  cy="221" r="14" stroke-width="8" />
-    <circle cx="144" cy="335" r="14" stroke-width="8" />
-    <!-- Right branches (explicit mirror across x=256) -->
-    <path d="M 347 176 L 347 238 L 279 306 L 279 440 L 290 483" stroke-width="10" />
-    <path d="M 414 235 L 414 289 L 377.9 325.1 M 357 343.7 L 279 405" stroke-width="10" />
-    <circle cx="347" cy="162" r="14" stroke-width="8" />
-    <circle cx="414" cy="221" r="14" stroke-width="8" />
-    <circle cx="368" cy="335" r="14" stroke-width="8" />
+  <defs>
+    <!-- Brand ramp, same colors as the bg-header ramp in themes.css. -->
+    <linearGradient id="eldrun-coaster" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#101624" />
+      <stop offset="0.5" stop-color="#16213a" />
+      <stop offset="1" stop-color="#241735" />
+    </linearGradient>
+  </defs>
+  <!-- Opaque coaster so the white glyph reads on any OS taskbar/switcher. -->
+  <rect x="0" y="0" width="512" height="512" rx="96" fill="url(#eldrun-coaster)" />
+  <!-- Glyph inset ~46px inside the coaster (0.82 * 512 = 420, centered). -->
+  <g transform="translate(46,46) scale(0.82)">
+    <g stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <!-- Ring -->
+      <path d="M 214 491 A 239 239 0 1 1 298 491" stroke-width="10" />
+      <!-- Central trunk -->
+      <path d="M 256 161 L 256 499" stroke-width="10" />
+      <!-- Left branches (authored) -->
+      <path d="M 165 176 L 165 238 L 233 306 L 233 440 L 222 483" stroke-width="10" />
+      <path d="M 98 235 L 98 289 L 134.1 325.1 M 155 343.7 L 233 405" stroke-width="10" />
+      <circle cx="165" cy="162" r="14" stroke-width="8" />
+      <circle cx="98"  cy="221" r="14" stroke-width="8" />
+      <circle cx="144" cy="335" r="14" stroke-width="8" />
+      <!-- Right branches (explicit mirror across x=256) -->
+      <path d="M 347 176 L 347 238 L 279 306 L 279 440 L 290 483" stroke-width="10" />
+      <path d="M 414 235 L 414 289 L 377.9 325.1 M 357 343.7 L 279 405" stroke-width="10" />
+      <circle cx="347" cy="162" r="14" stroke-width="8" />
+      <circle cx="414" cy="221" r="14" stroke-width="8" />
+      <circle cx="368" cy="335" r="14" stroke-width="8" />
+    </g>
+    <!-- Gold four-point spark (unchanged) -->
+    <path d="M 256 61 C 261 92 268 96 292 101 C 268 106 261 110 256 142 C 251 110 244 106 220 101 C 244 96 251 92 256 61 Z" fill="#C79A45" />
   </g>
-  <!-- Gold four-point spark (unchanged) -->
-  <path d="M 256 61 C 261 92 268 96 292 101 C 268 106 261 110 256 142 C 251 110 244 106 220 101 C 244 96 251 92 256 61 Z" fill="#C79A45" />
 </svg>

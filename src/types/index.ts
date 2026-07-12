@@ -72,23 +72,56 @@ export interface KeyboardChord {
 }
 
 export interface Settings {
-  terminal_command?: string;
-  workspace_management?: boolean;
   debug?: boolean;
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
+  /** Global UI zoom factor for the whole interface (helps on high-DPI/4K
+   *  monitors). `1` (or unset) is 100% — the default look; applied as a CSS
+   *  `zoom` on the document root. Clamped to [0.5, 3]. */
+  ui_zoom?: number;
+  /** Calendar: first column of the week — `0` = Sunday (default), `1` = Monday. */
+  calendar_week_start?: 0 | 1;
+  /** Calendar: the view a fresh calendar tab opens on. Default `"month"`. */
+  calendar_default_view?: CalendarViewKind;
+  /** Calendar: 24-hour clock instead of AM/PM. Default off. */
+  calendar_time_format_24h?: boolean;
+  /** Calendar: first/last hour the day and week grids scroll to. Default 8/20. */
+  calendar_day_start_hour?: number;
+  calendar_day_end_hour?: number;
+  /** Calendar: minutes-before reminder pre-filled on a new event. `0` = none. */
+  calendar_default_reminder_minutes?: number;
   default_agent_cmd?: string;
-  /** The single active local (Ollama) model. A "Local Model" tab launches this
-   *  one; chosen in Settings → Ollama. Unset = no local model selected. */
+  /** The default local (Ollama) model. Used by any task without its own
+   *  per-task assignment in `ollama_roles`, and as the legacy "active model".
+   *  Chosen in the 🧠 menu (click a loaded model's name). Unset = none. */
   ollama_model?: string;
+  /** Per-task local-model assignments (🧠 menu role chips). Maps a task key —
+   *  `"autocomplete"`, `"grammar"`, or `"tabs"` — to the model name that should
+   *  serve it, so several loaded models can run different jobs in parallel. A
+   *  task absent here falls back to `ollama_model`, then to any loaded model. */
+  ollama_roles?: Record<string, string>;
   run_scripts_in_background?: boolean;
+  /** Header resource-monitor row toggles. Each defaults ON (undefined → shown).
+   *  Independent of `debug`; the pill is available in every build. */
+  show_cpu_usage?: boolean;
+  show_ram_usage?: boolean;
+  show_gpu_usage?: boolean;
   /** When true (the default), Claude agent tabs are spawned with `--remote-control`
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
   agent_remote_control?: boolean;
+  /** When true (the default), remote SSH/OpenVPN connections are made headlessly
+   *  in the background (Eldrun handles the password transiently). When false, they
+   *  are launched as interactive terminal tabs in the Eldrun root scope, so the
+   *  password is typed directly into the live terminal and Eldrun never handles
+   *  it. Default ON (headless) preserves existing behaviour. */
+  connections_headless?: boolean;
   /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
   right_panel_pinned?: boolean;
+  /** Width of the right (file/git) panel in px. Set by dragging the panel's left
+   *  border; unset falls back to the default 280px. */
+  right_panel_width?: number;
   /** Minimum subwindow (split pane) width in px a divider drag may shrink to.
    *  Unset falls back to DEFAULT_MIN_SUBWINDOW_PX. */
   min_subwindow_width?: number;
@@ -97,6 +130,10 @@ export interface Settings {
   min_subwindow_height?: number;
   /** When true, in-app editors debounce-save edits automatically (#47). Default OFF. */
   autosave?: boolean;
+  /** When true (the default), the text/TeX editors tint recently typed runs with a
+   *  sequential new→old colour trail that fades as you keep typing. Default ON;
+   *  only an explicit `false` disables it. */
+  change_tint?: boolean;
   /** Per-type native-viewer prefs (#48): opt-in local autocomplete (#45). */
   viewer_prefs?: Record<string, ViewerPref>;
   global_apps?: Record<string, GlobalAppEntry>;
@@ -107,12 +144,63 @@ export interface Settings {
    * original hard-coded behaviour.
    */
   keyboard_shortcuts?: Record<string, KeyboardChord>;
+  /** Download *source* folders scanned by the right-panel Downloads section
+   *  (fast-copy of freshly downloaded files into a project). Machine-wide,
+   *  read-only. Unset/empty → the frontend falls back to the OS Downloads dir. */
+  download_sources?: string[];
+  /** True once the first-run "How to start" welcome has been shown/dismissed, so
+   *  it never re-opens automatically. Re-openable manually from Settings. */
+  onboarding_seen?: boolean;
+  /** Ids of contextual hints (see `src/lib/hints.ts`) the user has seen/dismissed
+   *  or implicitly acted on, so each surfaces at most once. */
+  hints_seen?: string[];
+  /** Master switch for the contextual hint system; default ON when unset. */
+  hints_enabled?: boolean;
+  /** True once the guided "Take a tour" walkthrough has been completed or
+   *  skipped. Cosmetic only (never auto-launches the tour); the tour is always
+   *  replayable from the gear menu / Settings. */
+  tour_completed?: boolean;
+  /** Where the main window was when Eldrun last ran, so it reopens on the same
+   *  monitor in the same place. Written by the debounced save in `AppShell`;
+   *  consumed by the backend at startup, never rendered. */
+  window_state?: WindowState;
   [key: string]: unknown;
+}
+
+/**
+ * The main window's geometry in PHYSICAL desktop px — the canonical cross-window
+ * space (`src/lib/coords.ts`), which is also what `outerPosition`/`outerSize`
+ * report and what `setPosition`/`setSize` consume.
+ *
+ * `x`/`y`/`w`/`h` is the *restore* (non-maximized) rect: while the window is
+ * maximized the rect is left alone and only `maximized` flips, so un-maximizing
+ * after a restart lands on a real geometry instead of the full monitor.
+ *
+ * Mirrors `WindowState` in `src-tauri/src/schema/settings.rs`.
+ */
+export interface WindowState {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  maximized: boolean;
 }
 
 export interface OpenVpnSpec {
   /** Absolute path to the local `.ovpn` client config file. */
   config: string;
+  /** Auth username for `auth-user-pass` configs (server-side username+password
+   *  auth). Persisted (not a secret); the password is still prompted separately. */
+  username?: string;
+}
+
+/** A previously-used `.ovpn` config copied into Eldrun's store, offered for
+ *  reuse so a config need only be browsed for once. */
+export interface StoredVpnConfig {
+  /** Absolute path to the stored copy (passed to `openvpn_connect`). */
+  path: string;
+  /** Friendly display name (the original `.ovpn` file name). */
+  name: string;
 }
 
 export interface RemoteSpec {
@@ -125,10 +213,23 @@ export interface RemoteSpec {
 }
 
 /** Per-project Docker sandbox config. When `enabled`, agent tabs run inside a
- *  container that mounts only the project directory. Absent = run on host. */
+ *  container that mounts only the project directory (plus minimal agent
+ *  auth/state paths). Absent = run on host. The hardening fields below are
+ *  optional overrides; unset means the built-in default (see `services::sandbox`
+ *  in the backend). */
 export interface SandboxSpec {
   enabled: boolean;
   image?: string;
+  /** `--pids-limit` (fork-bomb guard). Unset = generous built-in default. */
+  pids_limit?: number;
+  /** Hard memory cap, e.g. "4g" (`--memory`). Unset = unlimited. */
+  memory?: string;
+  /** CPU cap, e.g. "2" (`--cpus`). Unset = unlimited. */
+  cpus?: string;
+  /** Docker network, e.g. "none" for no egress (`--network`). Unset = bridge. */
+  network?: string;
+  /** Read-only root filesystem (`--read-only` + tmpfs /tmp). Default false. */
+  readonly_rootfs?: boolean;
 }
 
 export interface RemoteEntry {
@@ -136,14 +237,18 @@ export interface RemoteEntry {
   is_dir: boolean;
 }
 
-/** Availability of the external binaries remote (SSH) projects rely on. */
+/** Availability of the remote-project capabilities that depend on the platform.
+ * Remote projects are SSH/SFTP-native (no FUSE mount), so only password auth and
+ * VPN-gated (`openvpn`) hosts need anything beyond a stock `ssh`. */
 export interface SshTooling {
-  /** `sshfs` — required to mount a remote project locally. */
-  sshfs: boolean;
-  /** `sshpass` — required only for password auth. */
-  sshpass: boolean;
+  /** Whether non-interactive password auth works without installing anything.
+   * Always true on Unix (OpenSSH's `SSH_ASKPASS`); on Windows it needs either
+   * OpenSSH ≥ 8.4 (same askpass mechanism) or `sshpass` as the legacy fallback. */
+  password_auth: boolean;
   /** `openvpn` + `pkexec` — required only for VPN-gated hosts. */
   openvpn: boolean;
+  /** `rsync` on the local machine — enables the SSH-sync bulk fast-path. */
+  rsync: boolean;
 }
 
 export interface ProjectEntry {
@@ -160,7 +265,73 @@ export interface ProjectEntry {
   sandbox?: SandboxSpec;
   /** Denormalized inverse of `ProjectBox.member_ids` (the box this pill is in). */
   box_id?: string;
+  /** Per-project git-hosting profile URL that overrides the global one. Mirrored
+   *  from project.json into the pill list; the matching token lives in the OS
+   *  keyring, never here. See `GitHostingInfo`. */
+  git_profile_url?: string;
+  /** Hosting provider this project was published to, recorded at publish time.
+   *  Absent until published to a remote. */
+  git_provider?: GitProvider;
+  /** Provider sniffed from the local `origin` host at load time (host-only, no
+   *  network). Decorates the pill badge for repos pushed to a host outside
+   *  Eldrun's Publish flow. Transient — never persisted to projects.json. */
+  detected_provider?: GitProvider;
+  /** Raw `origin` remote URL sniffed alongside `detected_provider`. Shown as the
+   *  git address in the project hover. Transient — never persisted. */
+  git_origin_url?: string;
+  /** User-assigned category tags. Group/color the project in the cloud + pills;
+   *  set via the pill / blob-node right-click menu. Stored in the entry's
+   *  flattened `extra` (mirrored into project.json). */
+  categories?: string[];
   [key: string]: unknown;
+}
+
+/** A row in the Settings "Archived projects" list (from `list_archived_projects`).
+ *  Archived projects live under `~/eldrun/archive/<id>/` until restored or
+ *  permanently cleared. */
+export interface ArchivedProject {
+  id: string;
+  name: string;
+  /** ISO timestamp the project was archived (stamped at delete time). */
+  archived_at: string;
+  /** True for remote (SSH) projects — their host tree was never touched. */
+  remote: boolean;
+}
+
+/** One local mirror branch carrying commits the host baseline lacks. */
+export interface UnsyncedBranch {
+  name: string;
+  count: number;
+}
+
+/** Whether permanently deleting an archived remote project would discard
+ * local-only mirror history. Computed offline from the archived files. */
+export interface UnsyncedReport {
+  /** Commits on the mirror's local branches not present on the host baseline. */
+  total: number;
+  branches: UnsyncedBranch[];
+  /** False when there was no host baseline to compare against (the count is then
+   * every local commit and should read as "could not verify"). */
+  verified: boolean;
+}
+
+/** Supported git-hosting providers for publishing a project's repo. */
+export type GitProvider = "github" | "gitlab";
+
+/**
+ * Per-project git-hosting config as returned by `get_project_git_hosting`. The
+ * token is never sent to the renderer — only whether one is stored — and the
+ * global values are surfaced so the editor can show what is inherited by default.
+ */
+export interface GitHostingInfo {
+  /** Per-project profile URL override, if set (else inherits `global_profile_url`). */
+  profile_url: string | null;
+  /** Whether a per-project token is stored in the keyring. */
+  has_token: boolean;
+  /** Global fallback profile URL (from settings), shown as the inherited default. */
+  global_profile_url: string | null;
+  /** Whether a global token exists to fall back on. */
+  has_global_token: boolean;
 }
 
 /**
@@ -190,6 +361,138 @@ export interface ProjectBox {
 }
 
 /**
+ * The native calendar's model, mirroring `src-tauri/src/schema/calendar.rs`.
+ *
+ * All timestamps are **local wall-clock**: `"YYYY-MM-DDTHH:MM"` when timed,
+ * `"YYYY-MM-DD"` when all-day. Ends are **exclusive** (an all-day event on the
+ * 8th ends `"2026-07-09"`). See `src/lib/calendarTime.ts` for the math.
+ */
+
+/** The views a calendar tab can show. */
+export type CalendarViewKind =
+  | "day"
+  | "week"
+  | "multiweek"
+  | "month"
+  | "agenda"
+  | "tasks";
+
+/** One named, colored calendar in the sidebar list. */
+export interface Calendar {
+  id: string;
+  name: string;
+  /** CSS color its events render in. */
+  color: string;
+  /** Unchecked in the sidebar → its events drop out of every view. */
+  visible: boolean;
+  readonly: boolean;
+}
+
+/** How often a recurring event repeats. */
+export type Freq = "daily" | "weekly" | "monthly" | "yearly";
+
+/** A recurrence rule. `until` and `count` are mutually exclusive ends. */
+export interface Rrule {
+  freq: Freq;
+  /** Repeat every N periods. */
+  interval: number;
+  /** Weekly only: weekdays to fire on, `0` = Sunday … `6` = Saturday. */
+  byweekday?: number[];
+  /** Monthly only: day of month (1-31). Absent → the event's own day. */
+  bymonthday?: number | null;
+  /** Inclusive last date (`"YYYY-MM-DD"`) the rule may fire on. */
+  until?: string | null;
+  /** Total occurrences, counting the first. */
+  count?: number | null;
+}
+
+/** A single occurrence edited away from its master ("this event only"). */
+export interface EventOverride {
+  /** The occurrence's start as the rule generated it — the key. */
+  occurrence_start: string;
+  start?: string | null;
+  end?: string | null;
+  title?: string | null;
+  location?: string | null;
+  notes?: string | null;
+}
+
+/** A reminder, fired `minutes_before` the occurrence starts. */
+export interface Alarm {
+  minutes_before: number;
+}
+
+/** `"confirmed"` (default) | `"tentative"` | `"cancelled"`. */
+export type EventStatus = "confirmed" | "tentative" | "cancelled";
+
+/** A calendar event. `end` is exclusive. */
+export interface CalendarEvent {
+  id: string;
+  calendar_id: string;
+  start: string;
+  end: string;
+  all_day: boolean;
+  title: string;
+  location?: string;
+  notes?: string;
+  category?: string;
+  status?: EventStatus | "";
+  rrule?: Rrule | null;
+  /** Occurrence starts deleted from the series. */
+  exdates?: string[];
+  overrides?: EventOverride[];
+  alarms?: Alarm[];
+}
+
+/** A to-do (VTODO). */
+export interface CalendarTask {
+  id: string;
+  calendar_id: string;
+  title: string;
+  notes?: string;
+  due?: string | null;
+  start?: string | null;
+  /** iCalendar priority: `0` = unset, `1` = highest … `9` = lowest. */
+  priority: number;
+  /** 0-100; `100` implies done. */
+  percent: number;
+  completed?: string | null;
+  category?: string;
+  alarms?: Alarm[];
+}
+
+/** The whole of `calendar.json`. */
+export interface CalendarData {
+  version: number;
+  calendars: Calendar[];
+  events: CalendarEvent[];
+  tasks: CalendarTask[];
+}
+
+/**
+ * One materialized instance of an event on the timeline. A non-recurring event
+ * yields exactly one; a recurring one yields many, all sharing `eventId`.
+ * `occurrenceStart` is the start the *rule* generated — the stable key used for
+ * exdates and overrides, which survives the occurrence being moved.
+ */
+export interface Occurrence {
+  eventId: string;
+  occurrenceStart: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  title: string;
+  location: string;
+  notes: string;
+  category: string;
+  status: EventStatus | "";
+  calendarId: string;
+  /** True when it came from a recurring master (so the UI can offer this/all). */
+  recurring: boolean;
+  alarms: Alarm[];
+}
+
+/**
  * Sanitize a box name into a folder segment. Mirrors the backend
  * `commands::projects::sanitize_name` so the frontend can preview the box-folder
  * path consistently.
@@ -206,16 +509,40 @@ export function boxFolderName(name: string): string {
 export function resolveProjectDirectory(project: ProjectEntry | null | undefined): string {
   if (!project) return "";
   if (project.directory) return project.directory;
-  return project.local_file.endsWith("/project.json")
-    ? project.local_file.slice(0, -"/project.json".length)
-    : "";
+  const match = /^(.*)[/\\]project\.json$/i.exec(project.local_file);
+  return match?.[1] ?? "";
 }
 
-export type Theme = "fancy_dark" | "dark" | "light" | "fancy_light";
+/**
+ * Format a remote project's location as `user@host:remote_path` (the `user@`
+ * prefix is dropped when no user is set). Port is intentionally omitted — this
+ * is an at-a-glance display string, and `host:port:path` would be ambiguous.
+ */
+export function formatRemoteTarget(remote: RemoteSpec): string {
+  return `${remote.user ? `${remote.user}@` : ""}${remote.host}:${remote.remote_path}`;
+}
+
+/**
+ * The paired local working-copy ("mirror") path for a remote project, read from
+ * the flattened `extra["mirror"]` field mirrored onto the entry. Returns null
+ * when unset (legacy remote projects created before the mirror was persisted).
+ */
+export function resolveLocalMirror(project: ProjectEntry | null | undefined): string | null {
+  const mirror = project?.mirror;
+  return typeof mirror === "string" && mirror.trim() ? mirror : null;
+}
+
+export type Theme =
+  | "fancy_dark"
+  | "dark"
+  | "light"
+  | "fancy_light"
+  | "light_lavender";
 
 export const THEMES: { value: Theme; label: string }[] = [
   { value: "fancy_dark", label: "Fancy Dark" },
   { value: "dark", label: "Plain Dark" },
   { value: "light", label: "Plain Light" },
   { value: "fancy_light", label: "Fancy Light" },
+  { value: "light_lavender", label: "Light Lavender" },
 ];

@@ -6,17 +6,14 @@
 //! passed as separate argv items, and we reject values that could be mistaken
 //! for `ssh`/`ls` options (a leading `-`) or that contain control characters.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 use serde::Serialize;
 
-use crate::schema::project::Project;
-use crate::schema::projects::ProjectsList;
-use crate::storage;
-// The validation + base-argv helpers live in `services::ssh_mount` so the
-// `ssh` and `sshfs` commands share a single validated implementation.
-use crate::services::ssh_mount::{self, ssh_base_args, ssh_target, sshpass_available, validate_arg};
+// The validation + base-argv helpers live in `services::ssh_common` so every
+// remote path shares a single validated implementation.
+use crate::services::sftp;
+use crate::services::ssh_common::{ssh_base_args, ssh_password_base_args};
 
 /// One entry in a remote directory listing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -27,15 +24,19 @@ pub struct RemoteEntry {
 
 /// Availability of the external binaries remote projects rely on, so the UI can
 /// warn the moment the "Remote (SSH) project" checkbox is enabled instead of
-/// only surfacing a failure after the user tries to connect/mount.
+/// only surfacing a failure after the user tries to connect. Remote projects are
+/// SSH/SFTP-native (no FUSE mount), so only `sshpass`/`openvpn` are relevant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SshTooling {
-    /// `sshfs` — required to mount a remote project locally.
-    pub sshfs: bool,
-    /// `sshpass` — required only for password auth (key/agent auth needs none).
-    pub sshpass: bool,
+    /// Whether non-interactive password auth works without the user installing
+    /// anything. Always true on Unix (OpenSSH's own `SSH_ASKPASS` carries it);
+    /// on Windows it still depends on `sshpass` being present.
+    pub password_auth: bool,
     /// `openvpn` + `pkexec` — required only for VPN-gated hosts.
     pub openvpn: bool,
+    /// `rsync` on the LOCAL machine — enables the SSH-sync bulk fast-path (the
+    /// SFTP-native floor is always used when it (or the host's rsync) is missing).
+    pub rsync: bool,
 }
 
 /// Report which remote-project tools are present on `PATH`. Called when the
@@ -43,10 +44,123 @@ pub struct SshTooling {
 #[tauri::command]
 pub fn ssh_tooling_status() -> SshTooling {
     SshTooling {
-        sshfs: ssh_mount::sshfs_available(),
-        sshpass: sshpass_available(),
+        password_auth: crate::services::ssh_common::password_auth_available(),
         openvpn: crate::services::openvpn::openvpn_available(),
+        rsync: crate::services::remote_sync::rsync_available_local(),
     }
+}
+
+/// Most-recently-used SSH addresses to keep. Old entries past this fall off.
+const SSH_ADDRESS_CAP: usize = 20;
+
+/// File backing the recently-used SSH address list (a plain `Vec<String>`).
+fn ssh_addresses_path() -> std::path::PathBuf {
+    crate::storage::state_dir().join("ssh_addresses.json")
+}
+
+/// Merge `addr` into `existing` as a most-recently-used list: drop any prior
+/// case-insensitive duplicate, prepend the new value, and cap the length. Pure
+/// so the dedupe/cap policy is unit-tested without touching disk.
+fn merge_recent_address(existing: Vec<String>, addr: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(existing.len() + 1);
+    out.push(addr.to_string());
+    for e in existing {
+        if !e.eq_ignore_ascii_case(addr) {
+            out.push(e);
+        }
+    }
+    out.truncate(SSH_ADDRESS_CAP);
+    out
+}
+
+/// Previously-used SSH addresses (most-recent first) so the project dialog can
+/// offer them for reuse instead of retyping. Best-effort: a missing or corrupt
+/// store yields an empty list.
+#[tauri::command]
+pub fn ssh_list_addresses() -> Vec<String> {
+    crate::storage::read_json(&ssh_addresses_path()).unwrap_or_default()
+}
+
+/// Remember `address` as the most-recently-used SSH address. Trims and validates
+/// it (rejecting blanks, option-looking values, and control chars) so we never
+/// persist something the connect path couldn't use, then moves it to the front
+/// of the recents list.
+#[tauri::command]
+pub fn ssh_remember_address(address: String) -> Result<(), String> {
+    let trimmed = address.trim();
+    if trimmed.is_empty() {
+        return Err("empty SSH address".to_string());
+    }
+    crate::services::ssh_common::validate_arg("SSH address", trimmed)?;
+    let existing: Vec<String> = crate::storage::read_json(&ssh_addresses_path()).unwrap_or_default();
+    let merged = merge_recent_address(existing, trimmed);
+    crate::storage::write_json(&ssh_addresses_path(), &merged).map_err(|e| e.to_string())
+}
+
+/// Most-recently-used remote paths to keep, per host. Old entries past this
+/// fall off.
+const REMOTE_PATH_CAP: usize = 20;
+
+/// File backing the recently-used remote-path lists, keyed by host
+/// (case-insensitive) so a path picked on one host isn't suggested for another.
+fn remote_paths_path() -> std::path::PathBuf {
+    crate::storage::state_dir().join("remote_paths.json")
+}
+
+/// Merge `path` into `existing` as a most-recently-used list: drop any prior
+/// exact-match duplicate (paths are case-sensitive, unlike hostnames), prepend
+/// the new value, and cap the length. Pure so the dedupe/cap policy is
+/// unit-tested without touching disk.
+fn merge_recent_path(existing: Vec<String>, path: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(existing.len() + 1);
+    out.push(path.to_string());
+    for e in existing {
+        if e != path {
+            out.push(e);
+        }
+    }
+    out.truncate(REMOTE_PATH_CAP);
+    out
+}
+
+/// Previously-used remote paths for `host` (most-recent first), so the project
+/// dialog can offer them for reuse instead of re-browsing. Best-effort: a
+/// missing or corrupt store, or a host with no history, yields an empty list.
+#[tauri::command]
+pub fn remote_list_paths(host: String) -> Vec<String> {
+    let store: std::collections::HashMap<String, Vec<String>> =
+        crate::storage::read_json(&remote_paths_path()).unwrap_or_default();
+    store.get(&host.to_lowercase()).cloned().unwrap_or_default()
+}
+
+/// Remember `path` as the most-recently-used remote path for `host`. Trims and
+/// validates it (rejecting blanks, option-looking values, and control chars) so
+/// we never persist something the browse/connect path couldn't use, then moves
+/// it to the front of that host's recents list.
+#[tauri::command]
+pub fn remote_remember_path(host: String, path: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("empty remote path".to_string());
+    }
+    crate::services::ssh_common::validate_arg("remote path", trimmed)?;
+    let key = host.to_lowercase();
+    let mut store: std::collections::HashMap<String, Vec<String>> =
+        crate::storage::read_json(&remote_paths_path()).unwrap_or_default();
+    let existing = store.remove(&key).unwrap_or_default();
+    store.insert(key, merge_recent_path(existing, trimmed));
+    crate::storage::write_json(&remote_paths_path(), &store).map_err(|e| e.to_string())
+}
+
+/// Open a web URL in the user's default browser. Refuses anything that is not an
+/// `http(s)` URL so it cannot be turned into a launcher for arbitrary local files
+/// or schemes.
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("refusing to open a non-web URL".to_string());
+    }
+    opener::open(&url).map_err(|e| format!("failed to open {url}: {e}"))
 }
 
 /// Run a built command, returning stdout on success or the trimmed stderr (or a
@@ -67,38 +181,11 @@ fn capture(mut cmd: Command, what: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Build the password-auth ssh argv: BatchMode off and only the password method
-/// enabled, so ssh never falls back to (or hangs on) keys/keyboard-interactive.
-/// The target `[user@]host` is validated and rendered as a single argv item.
-fn ssh_password_base_args(
-    user: &Option<String>,
-    host: &str,
-    port: Option<u16>,
-) -> Result<Vec<String>, String> {
-    let mut args: Vec<String> = vec![
-        "-o".to_string(),
-        "BatchMode=no".to_string(),
-        "-o".to_string(),
-        "ConnectTimeout=10".to_string(),
-        "-o".to_string(),
-        "PreferredAuthentications=password".to_string(),
-        "-o".to_string(),
-        "PubkeyAuthentication=no".to_string(),
-        "-o".to_string(),
-        "NumberOfPasswordPrompts=1".to_string(),
-    ];
-    if let Some(port) = port {
-        args.push("-p".to_string());
-        args.push(port.to_string());
-    }
-    args.push(ssh_target(user, host)?);
-    Ok(args)
-}
-
 /// Run an ssh command against `[user@]host[:port]`, choosing the auth method by
 /// whether a non-empty `password` was supplied:
-///   - password present → `sshpass -e ssh …` (password read from the `SSHPASS`
-///     env var so it never appears in the process's argv), password-only auth;
+///   - password present → password-only auth via OpenSSH's own `SSH_ASKPASS` shim
+///     (`services::ssh_common::make_askpass`) — on Windows only when OpenSSH ≥ 8.4
+///     supports `SSH_ASKPASS_REQUIRE`, with `sshpass -e` as the legacy fallback.
 ///   - otherwise → key/agent auth in `BatchMode=yes` (the original v1 flow).
 /// Returns ssh stdout on success or the trimmed stderr on failure.
 fn run_ssh_auth(
@@ -110,24 +197,56 @@ fn run_ssh_auth(
 ) -> Result<String, String> {
     match password.filter(|p| !p.is_empty()) {
         Some(pw) => {
-            if !sshpass_available() {
-                return Err(
-                    "sshpass not found — install sshpass to use password auth, or set up SSH keys"
-                        .to_string(),
-                );
-            }
             let base = ssh_password_base_args(user, host, port)?;
-            let mut cmd = Command::new("sshpass");
-            cmd.arg("-e"); // read the password from the SSHPASS env var
-            cmd.env("SSHPASS", pw);
-            cmd.arg("ssh");
-            cmd.args(&base);
-            cmd.args(remote);
-            capture(cmd, "sshpass")
+            #[cfg(unix)]
+            {
+                // Feed the password via OpenSSH's SSH_ASKPASS (no `sshpass`). The
+                // shim guard must outlive the ssh run, so it stays in scope until
+                // `capture` returns.
+                let mut cmd = crate::paths::command_no_window("ssh");
+                cmd.args(&base);
+                cmd.args(remote);
+                let askpass = crate::services::ssh_common::make_askpass(pw)?;
+                for (k, v) in askpass.env_vars() {
+                    cmd.env(k, v);
+                }
+                capture(cmd, "ssh")
+            }
+            #[cfg(not(unix))]
+            {
+                // Windows: same SSH_ASKPASS path when OpenSSH is ≥ 8.4; older
+                // installs (Win10-inbox 8.1) fall back to sshpass. All commands
+                // use `command_no_window`, so no console flashes either way.
+                if crate::services::ssh_common::ssh_supports_askpass() {
+                    let mut cmd = crate::paths::command_no_window("ssh");
+                    cmd.args(&base);
+                    cmd.args(remote);
+                    let askpass = crate::services::ssh_common::make_askpass(pw)?;
+                    for (k, v) in askpass.env_vars() {
+                        cmd.env(k, v);
+                    }
+                    // The guard must outlive the ssh run (shim exists through auth).
+                    capture(cmd, "ssh")
+                } else if crate::services::ssh_common::sshpass_available() {
+                    let mut cmd = crate::paths::command_no_window("sshpass");
+                    cmd.arg("-e"); // read the password from the SSHPASS env var
+                    cmd.env("SSHPASS", pw);
+                    cmd.arg("ssh");
+                    cmd.args(&base);
+                    cmd.args(remote);
+                    capture(cmd, "sshpass")
+                } else {
+                    Err(
+                        "password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH, \
+                         install sshpass, or set up SSH keys"
+                            .to_string(),
+                    )
+                }
+            }
         }
         None => {
             let base = ssh_base_args(user, host, port)?;
-            let mut cmd = Command::new("ssh");
+            let mut cmd = crate::paths::command_no_window("ssh");
             cmd.args(&base);
             cmd.args(remote);
             capture(cmd, "ssh")
@@ -135,245 +254,146 @@ fn run_ssh_auth(
     }
 }
 
-/// Single-quote `s` for a POSIX shell, escaping embedded single quotes as
-/// `'\''`. The result parses back to exactly `s` regardless of spaces, `;`,
-/// `$()`, quotes, or other metacharacters.
-///
-/// This is required because `ssh` concatenates its trailing argv with spaces and
-/// hands the result to the *remote* `$SHELL -c`. Passing the path after `--`
-/// only stops `ls`'s own option parsing; it does **not** stop the remote shell
-/// from interpreting metacharacters. So each remote path argument must be quoted
-/// before it reaches ssh, or a directory named e.g. `foo; rm -rf ~` would run as
-/// a command on the remote host.
-fn shell_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
-}
-
-/// Parse `ls -1Ap` output into entries. A trailing `/` marks a directory; we
-/// strip it and set `is_dir`. `.`/`..` are filtered out, blank lines skipped.
-/// Result is sorted dirs-first, then case-insensitively by name.
-fn parse_ls_output(stdout: &str) -> Vec<RemoteEntry> {
-    let mut entries: Vec<RemoteEntry> = Vec::new();
-    for line in stdout.lines() {
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            continue;
-        }
-        let (name, is_dir) = match line.strip_suffix('/') {
-            Some(stripped) => (stripped, true),
-            None => (line, false),
-        };
-        if name.is_empty() || name == "." || name == ".." {
-            continue;
-        }
-        entries.push(RemoteEntry {
-            name: name.to_string(),
-            is_dir,
-        });
-    }
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
-    entries
+/// Build the shell command that opens an **interactive** ssh login to
+/// `[user@]host[:port]`, sharing the multiplexing master the mount/check paths
+/// reuse. Returned for the frontend to type into a root-scope shell tab when
+/// headless connections are off, so the password is entered in the visible
+/// terminal and never handled by Eldrun (see `ssh_exec::interactive_login_command`).
+#[tauri::command]
+pub fn remote_login_command(
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+) -> Result<String, String> {
+    crate::services::ssh_exec::interactive_login_command(&user, &host, port)
 }
 
 /// Verify the remote host is reachable over SSH (non-interactive). With a
-/// non-empty `password`, authenticates via `sshpass`; otherwise uses key/agent
-/// auth. Returns the trimmed ssh stderr as the error on failure.
+/// non-empty `password`, authenticates by feeding it to ssh (via `SSH_ASKPASS` on
+/// Unix, `sshpass` on Windows); otherwise uses key/agent auth. Returns the trimmed
+/// ssh stderr as the error on failure.
+///
+/// Async + `spawn_blocking`: the ssh probe spawns a subprocess that can block for
+/// up to `ConnectTimeout=10s` (BatchMode key/agent auth against an unreachable or
+/// not-yet-tunnelled host, or while a password login's master comes up). As a
+/// *synchronous* Tauri command this ran on the main/UI thread and froze the whole
+/// window — most visibly during reconnect, where `pollSshReady` polls it every
+/// few seconds against a still-authenticating master. Running it on a blocking
+/// worker keeps the UI responsive (e.g. the SSH-login button stays clickable while
+/// the OpenVPN tunnel is coming up).
+///
+/// `remember` opts into saving the working password in the OS keychain (keyed by
+/// the host target) for no-prompt reconnects; it is written **only after auth
+/// succeeds**. A `None`/empty `password` first falls back to any saved credential
+/// (silent reconnect) before dropping to key/agent auth. Unticking (`remember =
+/// false`) clears any previously-saved password.
 #[tauri::command]
-pub fn ssh_connect(
+pub async fn ssh_connect(
     user: Option<String>,
     host: String,
     port: Option<u16>,
     password: Option<String>,
+    remember: Option<bool>,
 ) -> Result<(), String> {
-    run_ssh_auth(&user, &host, port, password.as_deref(), &["true"]).map(|_| ())
+    let remember = remember.unwrap_or(false);
+    tokio::task::spawn_blocking(move || {
+        use crate::services::remote_credentials as creds;
+        let account = creds::ssh_account(&user, &host, port);
+        // A typed password wins; otherwise fall back to a saved one so an
+        // activation-time reconnect authenticates without a prompt.
+        let effective = password
+            .filter(|p| !p.is_empty())
+            .or_else(|| creds::get(&account));
+        run_ssh_auth(&user, &host, port, effective.as_deref(), &["true"])?;
+        // Auth succeeded — persist (opt-in) or clear per the checkbox. Best-effort:
+        // a keychain write failure must not fail an already-successful connect.
+        let to_store = if remember { effective.as_deref() } else { None };
+        let _ = creds::set(&account, to_store);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("ssh probe task failed: {e}"))?
 }
 
-/// Return the remote `$HOME` (via `pwd`) as the browser's start location.
+/// Whether a saved SSH password exists for this host target, so the UI can
+/// pre-check the "Save password" box and show "saved" without ever receiving the
+/// secret itself.
 #[tauri::command]
-pub fn ssh_default_dir(
+pub fn remote_has_saved_password(user: Option<String>, host: String, port: Option<u16>) -> bool {
+    let account = crate::services::remote_credentials::ssh_account(&user, &host, port);
+    crate::services::remote_credentials::has(&account)
+}
+
+/// Forget any saved SSH password for this host target (explicit "clear" action).
+#[tauri::command]
+pub fn remote_forget_password(
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+) -> Result<(), String> {
+    let account = crate::services::remote_credentials::ssh_account(&user, &host, port);
+    crate::services::remote_credentials::set(&account, None)
+}
+
+/// Return the remote default (home) directory as the browser's start location.
+/// Resolved over SFTP (REALPATH of `.`), so no remote shell runs.
+#[tauri::command]
+pub async fn ssh_default_dir(
     user: Option<String>,
     host: String,
     port: Option<u16>,
     password: Option<String>,
 ) -> Result<String, String> {
-    let stdout = run_ssh_auth(&user, &host, port, password.as_deref(), &["pwd"])?;
-    let path = stdout.trim().to_string();
-    if path.is_empty() {
-        return Err("remote pwd returned no path".to_string());
-    }
-    Ok(path)
+    sftp::default_dir(&user, &host, port, password.as_deref()).await
 }
 
-/// List one remote directory. Empty `path` lists the remote home directory.
+/// List one remote directory over SFTP. Empty `path` lists the remote home
+/// directory. Because SFTP is a binary protocol, a directory name containing
+/// `;`/`$()`/spaces is just a listing entry — it is never re-interpreted by a
+/// remote shell (the injection surface the old `ssh ls` path had to guard).
 #[tauri::command]
-pub fn ssh_list_dir(
+pub async fn ssh_list_dir(
     user: Option<String>,
     host: String,
     port: Option<u16>,
     password: Option<String>,
     path: String,
 ) -> Result<Vec<RemoteEntry>, String> {
-    let pw = password.as_deref();
-    let path = path.trim();
-    let stdout = if path.is_empty() {
-        // No path → list the remote home directory.
-        run_ssh_auth(&user, &host, port, pw, &["ls", "-1Ap", "--"])?
-    } else {
-        validate_arg("path", path)?;
-        // `ssh` joins its trailing argv with spaces and feeds it to the remote
-        // `$SHELL -c`, so the path must be single-quoted for that shell (the
-        // `--` only stops `ls`'s own flag parsing). Without this a directory name
-        // containing `;`/`$()`/spaces would be re-interpreted on the remote host.
-        let quoted = shell_quote(path);
-        run_ssh_auth(&user, &host, port, pw, &["ls", "-1Ap", "--", quoted.as_str()])?
-    };
-
-    Ok(parse_ls_output(&stdout))
+    let entries = sftp::list_dir(&user, &host, port, password.as_deref(), &path).await?;
+    Ok(entries
+        .into_iter()
+        .map(|e| RemoteEntry {
+            name: e.name,
+            is_dir: e.is_dir,
+        })
+        .collect())
 }
 
-/// Ensure a project's bytes are reachable locally and return the directory to
-/// use. For a remote project this sshfs-mounts it (no-op if already mounted)
-/// and returns the local mountpoint; for a local project it returns the stored
-/// `directory` unchanged.
+/// Create a remote directory (mkdir -p) over SFTP. Like `ssh_list_dir`, `path`
+/// is a binary SFTP field, never re-interpreted by a remote shell — so a folder
+/// name with shell metacharacters is created verbatim, not executed. Used by the
+/// new/import dialog's remote browser to add a target folder while browsing.
 #[tauri::command]
-pub fn ensure_project_mounted(project_id: String) -> Result<String, String> {
-    let project = load_project_by_id(&project_id)?;
-
-    match project.remote.as_ref() {
-        Some(remote) => {
-            let mountpoint = ssh_mount::mount(remote, &project_id)?;
-            Ok(mountpoint.to_string_lossy().into_owned())
-        }
-        None => Ok(project.directory),
-    }
-}
-
-/// Load a project's `project.json` by its id, resolving `local_file` from the
-/// global `projects.json` list.
-pub(crate) fn load_project_by_id(project_id: &str) -> Result<Project, String> {
-    let list_path = storage::state_dir().join("projects.json");
-    let list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let entry = list
-        .iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    let path = PathBuf::from(&entry.local_file);
-    storage::read_json::<Project>(&path).map_err(|e| e.to_string())
+pub async fn ssh_mkdir(
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+    password: Option<String>,
+    path: String,
+) -> Result<(), String> {
+    sftp::mkdir(&user, &host, port, password.as_deref(), &path).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── parse_ls_output ────────────────────────────────────────────────────
-
-    #[test]
-    fn parse_ls_distinguishes_dirs_and_files() {
-        let out = "src/\nmain.rs\nCargo.toml\ntarget/\n";
-        let entries = parse_ls_output(out);
-        let dirs: Vec<_> = entries
-            .iter()
-            .filter(|e| e.is_dir)
-            .map(|e| e.name.as_str())
-            .collect();
-        let files: Vec<_> = entries
-            .iter()
-            .filter(|e| !e.is_dir)
-            .map(|e| e.name.as_str())
-            .collect();
-        assert_eq!(dirs, vec!["src", "target"]);
-        assert_eq!(files, vec!["Cargo.toml", "main.rs"]);
-    }
-
-    #[test]
-    fn parse_ls_sorts_dirs_first_then_name_ci() {
-        let out = "zebra.txt\nApple/\nbanana.txt\nCherry/\n";
-        let entries = parse_ls_output(out);
-        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-        // Dirs first (Apple, Cherry), then files (banana, zebra), each ci-sorted.
-        assert_eq!(names, vec!["Apple", "Cherry", "banana.txt", "zebra.txt"]);
-    }
-
-    #[test]
-    fn parse_ls_includes_hidden_entries() {
-        let out = ".config/\n.bashrc\nvisible.txt\n";
-        let entries = parse_ls_output(out);
-        assert!(entries
-            .iter()
-            .any(|e| e.name == ".config" && e.is_dir));
-        assert!(entries
-            .iter()
-            .any(|e| e.name == ".bashrc" && !e.is_dir));
-    }
-
-    #[test]
-    fn parse_ls_filters_dot_and_dotdot_and_blanks() {
-        // -Ap omits . and .., but be defensive: ./ and ../ and blank lines drop.
-        let out = "./\n../\n\nreal/\n";
-        let entries = parse_ls_output(out);
-        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["real"]);
-    }
-
-    #[test]
-    fn parse_ls_handles_crlf_line_endings() {
-        let out = "dir/\r\nfile.txt\r\n";
-        let entries = parse_ls_output(out);
-        assert_eq!(entries.len(), 2);
-        assert!(entries[0].is_dir && entries[0].name == "dir");
-        assert!(!entries[1].is_dir && entries[1].name == "file.txt");
-    }
-
-    #[test]
-    fn parse_ls_empty_output_yields_no_entries() {
-        assert!(parse_ls_output("").is_empty());
-        assert!(parse_ls_output("\n\n").is_empty());
-    }
-
-    // ── shell_quote (remote path injection defense) ────────────────────────
-
-    #[test]
-    fn shell_quote_wraps_plain_and_metachars() {
-        assert_eq!(shell_quote("projects"), "'projects'");
-        assert_eq!(shell_quote("a b"), "'a b'");
-        assert_eq!(shell_quote("$HOME"), "'$HOME'");
-    }
-
-    #[test]
-    fn shell_quote_neutralizes_command_injection() {
-        // A directory named so as to inject a command must come back fully
-        // single-quoted, so the remote shell treats it as one literal argument.
-        let evil = "foo; rm -rf ~";
-        assert_eq!(shell_quote(evil), "'foo; rm -rf ~'");
-        let subst = "$(touch /tmp/pwned)";
-        assert_eq!(shell_quote(subst), "'$(touch /tmp/pwned)'");
-    }
-
-    #[test]
-    fn shell_quote_escapes_embedded_single_quotes() {
-        // The classic break-out attempt: close the quote, inject, reopen.
-        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
-        // A name trying to escape its own quoting stays inert.
-        assert_eq!(shell_quote("'; rm -rf ~ #"), "''\\''; rm -rf ~ #'");
-    }
+    // NOTE: the old `ls`-text browse path (`parse_ls_output`) and its
+    // `shell_quote` remote-path injection defense were removed when browsing
+    // moved to native SFTP (TODO #80). The dirs-first/ci sort + dot-filter and
+    // the injection-is-inert property now live in `services::sftp` tests
+    // (`finalize_entries`, `finalize_injection_named_dir_is_one_inert_entry`),
+    // since SFTP paths are protocol fields and never reach a remote shell.
 
     // ── ssh_base_args / validation ─────────────────────────────────────────
 
@@ -428,9 +448,9 @@ mod tests {
 
     #[test]
     fn validate_arg_rejects_dash_and_control_allows_normal_path() {
-        assert!(validate_arg("path", "/home/user/projects").is_ok());
-        assert!(validate_arg("path", "-rf").is_err());
-        assert!(validate_arg("path", "a\nb").is_err());
+        assert!(crate::services::ssh_common::validate_arg("path", "/home/user/projects").is_ok());
+        assert!(crate::services::ssh_common::validate_arg("path", "-rf").is_err());
+        assert!(crate::services::ssh_common::validate_arg("path", "a\nb").is_err());
     }
 
     // ── ssh_password_base_args ─────────────────────────────────────────────
@@ -453,5 +473,66 @@ mod tests {
         assert_eq!(args[pos + 1], "2222");
         assert!(ssh_password_base_args(&None, "-evil", None).is_err());
         assert!(ssh_password_base_args(&Some("-evil".to_string()), "host", None).is_err());
+    }
+
+    // ── merge_recent_address (recently-used SSH addresses) ─────────────────
+
+    #[test]
+    fn merge_recent_prepends_new_address() {
+        let out = merge_recent_address(vec!["a@h".to_string(), "b@h".to_string()], "c@h");
+        assert_eq!(out, vec!["c@h", "a@h", "b@h"]);
+    }
+
+    #[test]
+    fn merge_recent_moves_existing_to_front_without_duplicating() {
+        let out = merge_recent_address(vec!["a@h".to_string(), "b@h".to_string()], "b@h");
+        assert_eq!(out, vec!["b@h", "a@h"]);
+    }
+
+    #[test]
+    fn merge_recent_dedup_is_case_insensitive() {
+        let out = merge_recent_address(vec!["User@Host".to_string()], "user@host");
+        assert_eq!(out, vec!["user@host"]);
+    }
+
+    #[test]
+    fn merge_recent_caps_length_keeping_newest() {
+        let existing: Vec<String> = (0..SSH_ADDRESS_CAP).map(|i| format!("h{i}")).collect();
+        let out = merge_recent_address(existing, "newest");
+        assert_eq!(out.len(), SSH_ADDRESS_CAP);
+        assert_eq!(out[0], "newest");
+        // The oldest entry ("h19") is dropped to make room.
+        assert!(!out.iter().any(|a| a == &format!("h{}", SSH_ADDRESS_CAP - 1)));
+    }
+
+    // ── merge_recent_path (recently-used remote paths, per host) ───────────
+
+    #[test]
+    fn merge_recent_path_prepends_new_path() {
+        let out = merge_recent_path(vec!["/a".to_string(), "/b".to_string()], "/c");
+        assert_eq!(out, vec!["/c", "/a", "/b"]);
+    }
+
+    #[test]
+    fn merge_recent_path_moves_existing_to_front_without_duplicating() {
+        let out = merge_recent_path(vec!["/a".to_string(), "/b".to_string()], "/b");
+        assert_eq!(out, vec!["/b", "/a"]);
+    }
+
+    #[test]
+    fn merge_recent_path_dedup_is_case_sensitive() {
+        // Unlike hostnames, remote filesystem paths are case-sensitive — "/Foo"
+        // and "/foo" are different directories on Linux, so both must survive.
+        let out = merge_recent_path(vec!["/Foo".to_string()], "/foo");
+        assert_eq!(out, vec!["/foo", "/Foo"]);
+    }
+
+    #[test]
+    fn merge_recent_path_caps_length_keeping_newest() {
+        let existing: Vec<String> = (0..REMOTE_PATH_CAP).map(|i| format!("/p{i}")).collect();
+        let out = merge_recent_path(existing, "/newest");
+        assert_eq!(out.len(), REMOTE_PATH_CAP);
+        assert_eq!(out[0], "/newest");
+        assert!(!out.iter().any(|a| a == &format!("/p{}", REMOTE_PATH_CAP - 1)));
     }
 }

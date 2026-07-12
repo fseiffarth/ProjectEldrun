@@ -1,10 +1,13 @@
 /**
- * #56 — right-click a tab enters inline rename mode (no context menu, no prompt).
+ * #56 — SHIFT+right-click a tab enters inline rename mode (no menu, no prompt).
+ * Plain right-click opens the tab context menu instead (which carries its own
+ * "Rename" item routing back into the same inline editor).
  *
  * Renders the real TabBar and drives the contextmenu / keyboard path through
  * React's own event system to prove:
- *   - contextmenu on a tab swaps the label for a focused, text-selected input
- *     and shows NO context menu;
+ *   - shift+contextmenu on a tab swaps the label for a focused, text-selected
+ *     input and shows NO context menu;
+ *   - a plain contextmenu opens the menu and does NOT start renaming;
  *   - typing + Enter commits the new label via renameTab;
  *   - Escape discards the edit, leaving the original label;
  *   - a pointerdown on the editing input does not start a tab drag.
@@ -45,13 +48,13 @@ describe("#56 inline tab rename", () => {
     cleanup();
   });
 
-  it("contextmenu shows an input (label selected) and no context menu", () => {
+  it("shift+contextmenu shows an input (label selected) and no context menu", () => {
     const { groupId } = seedOneTab("shell");
     const { container } = render(
       <TabBar groupId={groupId} projectCwd="/p" showGroupClose={false} />,
     );
     const tab = container.querySelector(".tab")!;
-    fireEvent.contextMenu(tab);
+    fireEvent.contextMenu(tab, { shiftKey: true });
 
     const input = container.querySelector("input.tab-label-edit") as HTMLInputElement | null;
     expect(input).toBeTruthy();
@@ -59,10 +62,23 @@ describe("#56 inline tab rename", () => {
     // The whole label is selected for a fast retype.
     expect(input!.selectionStart).toBe(0);
     expect(input!.selectionEnd).toBe("shell".length);
-    // No old-style tab context menu.
-    expect(document.querySelector(".tab-context-menu")).toBeNull();
+    // Shift goes STRAIGHT to rename — the menu is skipped entirely. (It portals
+    // to document.body, so look there rather than in the container.)
+    expect(document.querySelector(".tab-new-menu")).toBeNull();
     // The plain label span is gone while editing.
     expect(container.querySelector(".tab-label")).toBeNull();
+  });
+
+  it("plain contextmenu opens the tab menu and does NOT start renaming", () => {
+    const { groupId } = seedOneTab("shell");
+    const { container } = render(
+      <TabBar groupId={groupId} projectCwd="/p" showGroupClose={false} />,
+    );
+    fireEvent.contextMenu(container.querySelector(".tab")!);
+
+    expect(document.querySelector(".tab-new-menu")).toBeTruthy();
+    expect(container.querySelector("input.tab-label-edit")).toBeNull();
+    expect(container.querySelector(".tab-label")!.textContent).toBe("shell");
   });
 
   it("typing + Enter renames the tab and closes the editor", () => {
@@ -70,7 +86,7 @@ describe("#56 inline tab rename", () => {
     const { container } = render(
       <TabBar groupId={groupId} projectCwd="/p" showGroupClose={false} />,
     );
-    fireEvent.contextMenu(container.querySelector(".tab")!);
+    fireEvent.contextMenu(container.querySelector(".tab")!, { shiftKey: true });
     const input = container.querySelector("input.tab-label-edit") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "renamed" } });
     fireEvent.keyDown(input, { key: "Enter" });
@@ -85,7 +101,7 @@ describe("#56 inline tab rename", () => {
     const { container } = render(
       <TabBar groupId={groupId} projectCwd="/p" showGroupClose={false} />,
     );
-    fireEvent.contextMenu(container.querySelector(".tab")!);
+    fireEvent.contextMenu(container.querySelector(".tab")!, { shiftKey: true });
     const input = container.querySelector("input.tab-label-edit") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "discarded" } });
     fireEvent.keyDown(input, { key: "Escape" });
@@ -100,7 +116,7 @@ describe("#56 inline tab rename", () => {
     const { container } = render(
       <TabBar groupId={groupId} projectCwd="/p" showGroupClose={false} />,
     );
-    fireEvent.contextMenu(container.querySelector(".tab")!);
+    fireEvent.contextMenu(container.querySelector(".tab")!, { shiftKey: true });
     const input = container.querySelector("input.tab-label-edit") as HTMLInputElement;
     fireEvent.pointerDown(input, { button: 0, clientX: 10, clientY: 10 });
     // Moving far would normally cross the drag threshold; the input's

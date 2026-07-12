@@ -5,6 +5,32 @@
 //! apps are tracked by PID and launched/raised as separate windows.
 //! `project.json["open_apps"]` is preserved for backward compatibility but
 //! treated as best-effort restore metadata.
+//!
+//! ## Per-OS backends (TODO 30d)
+//!
+//! App discovery, icon resolution and launching are inherently OS-specific, so
+//! the platform-divergent pieces are gated behind `cfg`:
+//! - **Linux** uses the freedesktop/XDG model: it scans `.desktop` entries under
+//!   `$XDG_DATA_HOME/applications` and every `$XDG_DATA_DIRS` entry's
+//!   `applications` dir (see [`xdg_application_dirs`]) — which, since desktop
+//!   sessions add Flatpak/Snap export paths to `XDG_DATA_DIRS`, is what makes
+//!   apps installed that way discoverable too — resolves icons through the
+//!   icon-theme directories, and launches the `Exec=` line. Multi-word `Exec=`
+//!   values (Flatpak's `flatpak run --branch=... app.id`) are preserved in full
+//!   by [`parse_exec_command`] and shell-split back into program+args at launch
+//!   time by [`split_exec_command`], rather than truncated to their first token.
+//! - **Windows** has no XDG layer, so [`list_installed_apps`] instead enumerates
+//!   Start-Menu `.lnk` shortcuts under `%ProgramData%`/`%APPDATA%`, reading each
+//!   shortcut's display name and resolving its target executable via
+//!   `IShellLinkW` (see [`windows_shortcuts`]). Launching resolves a bare app
+//!   name or `.lnk` back to that target exe ([`resolve_windows_launch_exec`]) and
+//!   spawns it; [`run_script_detached`] runs scripts through `cmd`/PowerShell
+//!   rather than `bash`. Icons are best-effort: a `.png`/`.ico` referenced by the
+//!   shortcut is inlined as a data URL, otherwise the target path is returned for
+//!   the frontend to resolve lazily (no native HICON rasterization — that would
+//!   need GDI, which is out of scope here).
+//! - **Other OSes** fall back to empty/no-op results so the commands never fail
+//!   to build or error at runtime.
 
 use std::collections::HashMap;
 use std::fs;
@@ -35,6 +61,11 @@ pub struct TrackedWindow {
 #[derive(Default)]
 pub struct WindowRegistry {
     pub windows: HashMap<String, TrackedWindow>,
+    /// Detached-subwindow display numbers, keyed by the window's stable label.
+    /// Assigned in `detach_subwindow` (lowest free positive int) so each popout's
+    /// OS title reads "Eldrun win-N", and freed in `attach_subwindow` on
+    /// dock-back/close so numbers stay small and reuse freed slots.
+    pub detached_seqs: HashMap<String, u32>,
 }
 
 pub type WindowRegistryState = Arc<Mutex<WindowRegistry>>;
@@ -83,19 +114,12 @@ pub fn do_launch(
     origin: &str,
 ) -> Result<TrackedWindow, String> {
     let launch_exec = resolve_launch_exec(exec);
-    let mut cmd = Command::new(&launch_exec);
-    cmd.args(args);
-    if let Some(f) = file {
-        cmd.arg(f);
-    }
+    let mut cmd = launch_command(&launch_exec, args, file);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("launch {launch_exec}: {e}"))?;
-    let pid = child.id();
+    let pid = crate::paths::spawn_reaped(cmd).map_err(|e| format!("launch {launch_exec}: {e}"))?;
     let window_id = find_window_for_pid(pid, 20);
 
     let opened_at = SystemTime::now()
@@ -118,6 +142,57 @@ pub fn do_launch(
     };
     registry.lock().unwrap().windows.insert(id, win.clone());
     Ok(win)
+}
+
+/// Split an exec string into the literal program to spawn and any leading
+/// arguments already baked into it (e.g. Flatpak's
+/// `flatpak run --branch=stable --command=... app.id`, from
+/// [`parse_exec_command`]).
+///
+/// An exec with no whitespace is always a single program. One that does
+/// contain whitespace is still treated as a single program when the whole
+/// string exists as a literal path on disk — this covers Windows targets like
+/// `C:\Program Files\App\app.exe` and any manually typed Linux path with a
+/// space, both of which must be spawned whole, not split. Only when the whole
+/// string is *not* a real path do we fall back to splitting on whitespace,
+/// which is exactly the multi-word-launcher case: the single-program
+/// interpretation could never have spawned it anyway (no file is literally
+/// named `flatpak run --branch=stable ...`).
+fn split_exec_command(exec: &str) -> (&str, Vec<&str>) {
+    if !exec.contains(' ') || Path::new(exec).exists() {
+        return (exec, Vec::new());
+    }
+    let mut parts = exec.split_whitespace();
+    let program = parts.next().unwrap_or(exec);
+    (program, parts.collect())
+}
+
+fn launch_command(exec: &str, args: &[String], file: Option<&str>) -> Command {
+    #[cfg(target_os = "macos")]
+    if Path::new(exec)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+    {
+        let mut cmd = crate::paths::command_no_window("/usr/bin/open");
+        cmd.arg("-a").arg(exec);
+        if let Some(file) = file {
+            cmd.arg(file);
+        }
+        if !args.is_empty() {
+            cmd.arg("--args").args(args);
+        }
+        return cmd;
+    }
+
+    let (program, leading_args) = split_exec_command(exec);
+    let mut cmd = crate::paths::command_for_program(Path::new(program));
+    cmd.args(leading_args);
+    cmd.args(args);
+    if let Some(file) = file {
+        cmd.arg(file);
+    }
+    cmd
 }
 
 // ── Commands ───────────────────────────────────────────────────────────────
@@ -181,13 +256,15 @@ fn resolve_app_icon_uncached(exec: &str) -> Option<String> {
         }
     }
 
-    let exec_base = Path::new(&exec)
+    let (exec_program, _) = split_exec_command(exec);
+    let exec_base = Path::new(exec_program)
         .file_name()?
         .to_string_lossy()
         .to_lowercase();
     for desktop_file in desktop_files() {
         if let Some(entry) = parse_desktop_entry(&desktop_file) {
-            let Some(entry_base) = Path::new(&entry.exec)
+            let (entry_program, _) = split_exec_command(&entry.exec);
+            let Some(entry_base) = Path::new(entry_program)
                 .file_name()
                 .map(|name| name.to_string_lossy().to_lowercase())
             else {
@@ -241,12 +318,28 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
 #[tauri::command]
 pub fn open_file(
     registry: State<'_, WindowRegistryState>,
+    workspace: State<'_, crate::commands::workspace::WorkspaceStateArc>,
     path: String,
     handler: Option<String>,
     project_id: Option<String>,
     origin: Option<String>,
+    // Physical desktop coordinates to place the launched window at (the point a
+    // file was dropped, on the target monitor). Both must be present to apply;
+    // absent on double-click / manual launch, leaving WM placement untouched.
+    x: Option<i32>,
+    y: Option<i32>,
 ) -> Result<TrackedWindow, String> {
     let origin = origin.unwrap_or_else(|| ORIGIN_MANUAL_LAUNCH.to_string());
+    // Best-effort: move a resolved window to the drop point so an externally
+    // launched app lands on the screen the file was dropped onto. Placement
+    // failure never fails the open (X11-only; a no-op elsewhere).
+    let place = |window_id: Option<u64>| {
+        if let (Some(wid), Some(px), Some(py)) = (window_id, x, y) {
+            if let Err(e) = workspace.lock().unwrap().backend.position_window(wid, px, py) {
+                eprintln!("position_window failed: {e}");
+            }
+        }
+    };
     let before = list_window_ids();
     // Resolve the executable to launch: an explicit handler always wins;
     // otherwise consult the project-then-global default-app map (keyed by
@@ -273,15 +366,14 @@ pub fn open_file(
     };
     if let Some(exec) = effective {
         let launch_exec = resolve_launch_exec(&exec);
-        let child = Command::new(&launch_exec)
-            .arg(&path)
-            .stdin(Stdio::null())
+        let mut cmd = launch_command(&launch_exec, &[], Some(&path));
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("open with {launch_exec}: {e}"))?;
-        let pid = child.id();
+            .stderr(Stdio::null());
+        let pid =
+            crate::paths::spawn_reaped(cmd).map_err(|e| format!("open with {launch_exec}: {e}"))?;
         let window_id = find_window_for_pid(pid, 20).or_else(|| find_new_window(&before, 20));
+        place(window_id);
         return track_opened_file(
             registry.inner(),
             launch_exec,
@@ -294,6 +386,7 @@ pub fn open_file(
     }
     opener::open(&path).map_err(|e| e.to_string())?;
     let window_id = find_new_window(&before, 20);
+    place(window_id);
     track_opened_file(
         registry.inner(),
         "open-file".to_string(),
@@ -308,11 +401,16 @@ pub fn open_file(
 /// Run a shell script as a fire-and-forget detached process.
 ///
 /// Used by the right-panel "run in background" mode: the script is spawned with
-/// `bash <path>`, stdio fully detached, and is not tracked as a window or tab.
-/// No output is surfaced — callers that want to watch a script should open a
-/// terminal tab instead. When a `run_id` is supplied, a background thread waits
-/// for the process and emits a `script-finished` event (`{ runId, success }`)
-/// so the UI can show a running animation that clears on completion.
+/// stdio fully detached, and is not tracked as a window or tab. No output is
+/// surfaced — callers that want to watch a script should open a terminal tab
+/// instead. When a `run_id` is supplied, a background thread waits for the
+/// process and emits a `script-finished` event (`{ runId, success }`) so the UI
+/// can show a running animation that clears on completion.
+///
+/// On Linux/Unix the script is run with `bash <path>`. Windows has no `bash`, so
+/// [`windows_script_command`] picks an interpreter by extension (`.ps1` →
+/// PowerShell, everything else → `cmd /C`, which honours `.bat`/`.cmd` and the
+/// file's shell association) while still yielding a waitable child process.
 #[tauri::command]
 pub fn run_script_detached(
     app: tauri::AppHandle,
@@ -320,22 +418,35 @@ pub fn run_script_detached(
     cwd: Option<String>,
     run_id: Option<String>,
 ) -> Result<(), String> {
-    let mut cmd = Command::new("bash");
-    cmd.arg(&script_path);
+    #[cfg(target_os = "windows")]
+    let mut cmd = windows_script_command(&script_path);
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut cmd = Command::new("bash");
+        cmd.arg(&script_path);
+        cmd
+    };
     if let Some(dir) = cwd.as_deref().filter(|d| !d.is_empty()) {
         cmd.current_dir(dir);
     }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut child = cmd.spawn().map_err(|e| format!("run {script_path}: {e}"))?;
+    crate::paths::augment_command_path(&mut cmd);
+    let child = cmd.spawn().map_err(|e| format!("run {script_path}: {e}"))?;
     if let Some(run_id) = run_id {
+        let mut child = child;
         std::thread::spawn(move || {
             let success = child.wait().map(|s| s.success()).unwrap_or(false);
             let _ = app.emit(
                 "script-finished",
                 serde_json::json!({ "runId": run_id, "success": success }),
             );
+        });
+    } else {
+        std::thread::spawn(move || {
+            let mut child = child;
+            let _ = child.wait();
         });
     }
     Ok(())
@@ -365,13 +476,15 @@ pub const EMBEDDABLE_EXECS: &[&str] = &[
     "code", "blender",
 ];
 
-/// Whether `exec` (a path or bare command) names an embeddable app, matched by
-/// its basename against `EMBEDDABLE_EXECS`.
+/// Whether `exec` (a path, bare command, or multi-word launcher line) names an
+/// embeddable app, matched by the basename of its program (see
+/// [`split_exec_command`]) against `EMBEDDABLE_EXECS`.
 pub fn is_embeddable_exec(exec: &str) -> bool {
-    let base = Path::new(exec)
+    let (program, _) = split_exec_command(exec);
+    let base = Path::new(program)
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_else(|| exec.to_lowercase());
+        .unwrap_or_else(|| program.to_lowercase());
     EMBEDDABLE_EXECS.iter().any(|&e| e == base)
 }
 
@@ -413,46 +526,96 @@ pub fn resolve_default_handler(
 }
 
 /// System-default handler via `xdg-mime` → `.desktop` `Exec` first token.
+///
+/// Linux-only: `xdg-mime` and `.desktop` entries are a freedesktop concept. On
+/// other platforms this is a no-op (`None`) so the caller falls back to
+/// `opener::open` / the OS default.
 fn resolve_handler_via_mime(path: &str) -> Option<String> {
-    let mime = Command::new("xdg-mime")
-        .args(["query", "filetype", path])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())?;
-    let desktop = Command::new("xdg-mime")
-        .args(["query", "default", &mime])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())?;
-    // Locate the named .desktop file and pull its Exec first token.
-    for dir in desktop_app_dirs() {
-        let candidate = dir.join(&desktop);
-        if candidate.exists() {
-            if let Some(entry) = parse_desktop_entry(&candidate) {
-                return Some(entry.exec);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        None
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mime = Command::new("xdg-mime")
+            .args(["query", "filetype", path])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())?;
+        let desktop = Command::new("xdg-mime")
+            .args(["query", "default", &mime])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())?;
+        // Locate the named .desktop file and pull its Exec first token.
+        for dir in desktop_app_dirs() {
+            let candidate = dir.join(&desktop);
+            if candidate.exists() {
+                if let Some(entry) = parse_desktop_entry(&candidate) {
+                    return Some(entry.exec);
+                }
             }
         }
+        None
     }
-    None
 }
 
-fn desktop_app_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![
-        PathBuf::from("/usr/share/applications"),
-        PathBuf::from("/usr/local/share/applications"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.insert(0, PathBuf::from(home).join(".local/share/applications"));
+/// XDG application directories, in precedence order: `$XDG_DATA_HOME/applications`
+/// (falling back to `~/.local/share/applications`), then each dir in
+/// `$XDG_DATA_DIRS` (falling back to `/usr/local/share:/usr/share`) joined with
+/// `applications`. Respecting `XDG_DATA_DIRS` (rather than hardcoding just
+/// `/usr/share` + `/usr/local/share`) is what picks up Flatpak/Snap exports
+/// (e.g. `/var/lib/flatpak/exports/share`), which the desktop session already
+/// adds to that variable.
+fn xdg_application_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+    if let Some(home) = data_home {
+        dirs.push(home.join("applications"));
     }
+    let data_dirs = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
+    for dir in data_dirs.split(':').filter(|s| !s.is_empty()) {
+        dirs.push(PathBuf::from(dir).join("applications"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
     dirs
+}
+
+/// Linux-only after the mime-resolver was platform-gated; the icon resolver still
+/// uses the separate `desktop_files`, so keep this compiled but quiet elsewhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn desktop_app_dirs() -> Vec<PathBuf> {
+    xdg_application_dirs()
+}
+
+/// Return the native file-drag preview icon as a PNG `data:` URL.
+///
+/// `tauri-plugin-drag`'s `startDrag` icon field is deserialized through an
+/// untagged enum whose only string form is a base64 PNG **data URL**
+/// (`data:image/png;base64,…`) — a bare file path fails to deserialize and the
+/// whole drag command rejects before it starts. So embed the app icon at compile
+/// time and hand back a data URL the frontend can pass straight to `startDrag`.
+#[tauri::command]
+pub fn drag_preview_icon() -> String {
+    use base64::Engine;
+    const ICON_PNG: &[u8] = include_bytes!("../../icons/128x128.png");
+    let b64 = base64::engine::general_purpose::STANDARD.encode(ICON_PNG);
+    format!("data:image/png;base64,{b64}")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -530,47 +693,164 @@ fn project_apps_for_id(project_id: Option<&str>) -> HashMap<String, String> {
 pub struct InstalledApp {
     /// Display name (`Name=` from the `.desktop` entry).
     pub name: String,
-    /// Launch executable (first non-`%` token of `Exec=`).
+    /// Launch command line, parsed from `Exec=` with desktop field codes
+    /// (`%f`/`%U`/...) and Flatpak's `@@` quoting markers stripped. Kept as the
+    /// full command line (not just the first token) so multi-word launchers like
+    /// `flatpak run --branch=stable --command=... app.id` still work — see
+    /// [`parse_exec_command`].
     pub exec: String,
     /// Raw `Icon=` value (theme name or path); the frontend resolves it lazily.
     pub icon: Option<String>,
 }
 
-/// List installed applications by scanning `.desktop` entries in the standard
-/// application directories. Powers the search box in the "set default app"
-/// dialog. Skips hidden entries (`NoDisplay=true`) and non-`Application` types,
-/// dedupes by executable basename (user dirs take precedence), sorted by name.
+/// List installed applications, powering the search box in the "set default app"
+/// dialog. On Linux this scans `.desktop` entries in the standard application
+/// directories (skipping hidden entries and non-`Application` types, deduped by
+/// executable basename with user dirs taking precedence); on Windows it
+/// enumerates Start-Menu shortcuts. Sorted by name.
 #[tauri::command]
 pub fn list_installed_apps() -> Vec<InstalledApp> {
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut apps: Vec<InstalledApp> = Vec::new();
-    for dir in desktop_app_dirs() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+    #[cfg(target_os = "windows")]
+    {
+        return windows_installed_apps();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos_installed_apps();
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut apps: Vec<InstalledApp> = Vec::new();
+        for dir in desktop_app_dirs() {
+            let Ok(entries) = fs::read_dir(&dir) else {
                 continue;
-            }
-            if let Some(app) = parse_installed_app(&path) {
-                let key = Path::new(&app.exec)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_lowercase())
-                    .unwrap_or_else(|| app.exec.to_lowercase());
-                if seen.insert(key) {
-                    apps.push(app);
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                    continue;
+                }
+                if let Some(app) = parse_installed_app(&path) {
+                    let key = Path::new(&app.exec)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_else(|| app.exec.to_lowercase());
+                    if seen.insert(key) {
+                        apps.push(app);
+                    }
                 }
             }
+        }
+        apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        apps
+    }
+}
+
+/// Windows installed-app list: every Start-Menu `.lnk` shortcut, mapped to its
+/// display name and resolved target executable (which is what the picker stores
+/// and later launches). Deduped by target-exe path (case-insensitive), sorted by
+/// name. The icon is left to lazy resolution via [`resolve_app_icon`].
+#[cfg(target_os = "windows")]
+fn windows_installed_apps() -> Vec<InstalledApp> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut apps: Vec<InstalledApp> = Vec::new();
+    for shortcut in windows_shortcuts() {
+        let exec = shortcut.target_path.to_string_lossy().into_owned();
+        if exec.trim().is_empty() {
+            continue;
+        }
+        if seen.insert(exec.to_lowercase()) {
+            apps.push(InstalledApp {
+                name: shortcut.display_name,
+                exec,
+                icon: None,
+            });
         }
     }
     apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     apps
 }
 
+/// macOS installed-app list from each bundle's Info.plist. The picker persists
+/// the bundle path so launch goes through LaunchServices.
+#[cfg(target_os = "macos")]
+fn macos_installed_apps() -> Vec<InstalledApp> {
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+        PathBuf::from("/System/Applications/Utilities"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.insert(0, PathBuf::from(home).join("Applications"));
+    }
+
+    macos_installed_apps_in(&roots)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_installed_apps_in(roots: &[PathBuf]) -> Vec<InstalledApp> {
+    let mut seen = std::collections::HashSet::new();
+    let mut apps: Vec<InstalledApp> = Vec::new();
+    for root in roots {
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("app") {
+                continue;
+            }
+            let Some(app) = parse_macos_app_bundle(&path) else {
+                continue;
+            };
+            if !seen.insert(app.exec.to_lowercase()) {
+                continue;
+            }
+            apps.push(app);
+        }
+    }
+    apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    apps
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_app_bundle(app: &Path) -> Option<InstalledApp> {
+    let plist = plist::Value::from_file(app.join("Contents").join("Info.plist")).ok()?;
+    let dict = plist.as_dictionary()?;
+    let executable = dict.get("CFBundleExecutable")?.as_string()?.trim();
+    if executable.is_empty()
+        || !app
+            .join("Contents")
+            .join("MacOS")
+            .join(executable)
+            .is_file()
+    {
+        return None;
+    }
+    let name = ["CFBundleDisplayName", "CFBundleName"]
+        .iter()
+        .find_map(|key| dict.get(*key).and_then(plist::Value::as_string))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            app.file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+        })?;
+    Some(InstalledApp {
+        name,
+        exec: app.to_string_lossy().into_owned(),
+        icon: None,
+    })
+}
+
 /// Parse a single `.desktop` file into an `InstalledApp`, or `None` when it is
 /// hidden, not an application, or has no `Exec`. First value of each key wins so
 /// the unlocalized `Name=`/`Exec=` take precedence over later `[Action]` groups.
+/// Linux-only (Windows lists Start-Menu shortcuts instead); kept compiled for the
+/// shared unit tests.
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 fn parse_installed_app(path: &Path) -> Option<InstalledApp> {
     let content = fs::read_to_string(path).ok()?;
     let mut in_entry = false;
@@ -594,7 +874,7 @@ fn parse_installed_app(path: &Path) -> Option<InstalledApp> {
             }
         } else if let Some(v) = line.strip_prefix("Exec=") {
             if exec.is_none() {
-                exec = first_exec_token(v);
+                exec = parse_exec_command(v);
             }
         } else if let Some(v) = line.strip_prefix("Icon=") {
             if icon.is_none() {
@@ -704,6 +984,33 @@ fn resolve_windows_launch_exec(exec: &str) -> Option<String> {
         .map(|shortcut| shortcut.target_path.to_string_lossy().into_owned())
 }
 
+/// Build the [`Command`] that runs `script_path` on Windows, choosing an
+/// interpreter by extension: `.ps1` is run through PowerShell with an execution
+/// policy bypass; anything else is handed to `cmd /C`, which executes `.bat`/
+/// `.cmd` directly and otherwise opens the file via its shell association. Either
+/// way the returned command spawns a child whose exit status the caller can wait
+/// on for the `script-finished` event.
+#[cfg(target_os = "windows")]
+fn windows_script_command(script_path: &str) -> Command {
+    let is_ps1 = Path::new(script_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map_or(false, |ext| ext.eq_ignore_ascii_case("ps1"));
+    // `command_no_window` sets CREATE_NO_WINDOW so a background "run script"
+    // action doesn't pop a transient console window — its output is intentionally
+    // not surfaced (callers wanting output open a terminal tab instead).
+    if is_ps1 {
+        let mut cmd = crate::paths::command_no_window("powershell");
+        cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+        cmd.arg(script_path);
+        cmd
+    } else {
+        let mut cmd = crate::paths::command_no_window("cmd");
+        cmd.args(["/C", script_path]);
+        cmd
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn resolve_windows_app_icon(exec: &str) -> Option<String> {
     let direct = PathBuf::from(exec.trim_matches('"'));
@@ -797,7 +1104,8 @@ fn resolve_windows_shortcut(path: &Path) -> Option<ShortcutEntry> {
         persist.Load(PCWSTR(wide.as_ptr()), STGM_READ).ok()?;
 
         let mut target_buf = [0u16; 32768];
-        link.GetPath(&mut target_buf, std::ptr::null_mut(), 0).ok()?;
+        link.GetPath(&mut target_buf, std::ptr::null_mut(), 0)
+            .ok()?;
         let target = utf16_buf_to_path(&target_buf)?;
 
         let mut icon_buf = [0u16; 32768];
@@ -818,16 +1126,179 @@ fn resolve_windows_shortcut(path: &Path) -> Option<ShortcutEntry> {
 
 #[cfg(target_os = "windows")]
 fn windows_icon_to_data_url(path: &Path) -> Option<String> {
+    // A raster `.png` is already a valid `<img>` source, so inline it directly
+    // with the correct MIME. Everything else — `.exe`/`.dll` (no embedded raster),
+    // `.ico` (whose `image/png` mislabel did not render reliably), or an extension-
+    // less target — is rasterized through the shell to a real PNG data URL below.
+    // Returning a bare filesystem path here (the prior behaviour) produced an
+    // `<img src="C:\...\app.exe">` the WebView cannot load, hence blank icons.
     if path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map_or(false, |ext| {
-            ext.eq_ignore_ascii_case("png") || ext.eq_ignore_ascii_case("ico")
-        })
+        .map_or(false, |ext| ext.eq_ignore_ascii_case("png"))
     {
         return icon_to_data_url(path);
     }
-    Some(path.to_string_lossy().into_owned())
+    extract_windows_icon_png(path)
+}
+
+/// Rasterize the shell icon for `path` (an `.exe`/`.ico`/`.dll`/associated file)
+/// to a base64 PNG data URL via GDI. Returns `None` on any failure so the
+/// frontend falls back to its glyph rather than rendering a broken image. Every
+/// GDI/shell handle acquired here is released on all paths.
+#[cfg(target_os = "windows")]
+fn extract_windows_icon_png(path: &Path) -> Option<String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+    use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+    use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+    // SAFETY: the HICON returned in `info.hIcon` is destroyed before returning on
+    // both the success and failure paths.
+    unsafe {
+        let wide = wide_null(path.as_os_str());
+        let mut info = SHFILEINFOW::default();
+        let res = SHGetFileInfoW(
+            PCWSTR(wide.as_ptr()),
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            Some(&mut info),
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_LARGEICON,
+        );
+        if res == 0 || info.hIcon.is_invalid() {
+            return None;
+        }
+        let rgba = hicon_to_rgba(info.hIcon);
+        let _ = DestroyIcon(info.hIcon);
+        let (width, height, pixels) = rgba?;
+        encode_png_data_url(width, height, &pixels)
+    }
+}
+
+/// Convert an `HICON` to a top-down RGBA buffer `(width, height, pixels)`. The
+/// icon's color bitmap supplies BGR (and per-pixel alpha for modern 32-bit
+/// icons); when that alpha channel is entirely zero — legacy icons — opacity is
+/// reconstructed from the 1-bpp AND mask instead. The color/mask GDI bitmaps from
+/// `GetIconInfo` are deleted on every path.
+#[cfg(target_os = "windows")]
+unsafe fn hicon_to_rgba(
+    hicon: windows::Win32::UI::WindowsAndMessaging::HICON,
+) -> Option<(u32, u32, Vec<u8>)> {
+    use std::ffi::c_void;
+    use windows::Win32::Graphics::Gdi::{
+        DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
+
+    let mut icon_info = ICONINFO::default();
+    if GetIconInfo(hicon, &mut icon_info).is_err() {
+        return None;
+    }
+    let color = icon_info.hbmColor;
+    let mask = icon_info.hbmMask;
+
+    let result = (|| {
+        if color.is_invalid() {
+            return None;
+        }
+        let mut bmp = BITMAP::default();
+        let got = GetObjectW(
+            HGDIOBJ(color.0),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bmp as *mut BITMAP as *mut c_void),
+        );
+        if got == 0 || bmp.bmWidth <= 0 || bmp.bmHeight <= 0 {
+            return None;
+        }
+        let width = bmp.bmWidth;
+        let height = bmp.bmHeight;
+        let pixel_count = (width as usize) * (height as usize);
+
+        // Negative biHeight requests top-down rows (the order the PNG encoder
+        // wants); 32-bit BI_RGB unpacks any source depth to BGRA scanlines.
+        let header = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0 as u32,
+            ..Default::default()
+        };
+
+        let dc = GetDC(None);
+        if dc.is_invalid() {
+            return None;
+        }
+
+        let read_dib = |hbm: windows::Win32::Graphics::Gdi::HBITMAP, buf: &mut [u8]| -> bool {
+            let mut info = BITMAPINFO {
+                bmiHeader: header,
+                ..Default::default()
+            };
+            GetDIBits(
+                dc,
+                hbm,
+                0,
+                height as u32,
+                Some(buf.as_mut_ptr() as *mut c_void),
+                &mut info,
+                DIB_RGB_COLORS,
+            ) != 0
+        };
+
+        let mut pixels = vec![0u8; pixel_count * 4];
+        let outcome = (|| {
+            if !read_dib(color, &mut pixels) {
+                return None;
+            }
+            // Reconstruct alpha from the AND mask when the color bitmap carries
+            // none (mask: 0 = opaque, white = transparent).
+            if !pixels.chunks_exact(4).any(|px| px[3] != 0) && !mask.is_invalid() {
+                let mut mask_px = vec![0u8; pixel_count * 4];
+                if read_dib(mask, &mut mask_px) {
+                    for (px, m) in pixels.chunks_exact_mut(4).zip(mask_px.chunks_exact(4)) {
+                        px[3] = if m[0] == 0 { 0xFF } else { 0x00 };
+                    }
+                } else {
+                    for px in pixels.chunks_exact_mut(4) {
+                        px[3] = 0xFF;
+                    }
+                }
+            }
+            // GDI delivers BGRA; the PNG encoder wants RGBA.
+            for px in pixels.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+            Some((width as u32, height as u32, pixels))
+        })();
+
+        ReleaseDC(None, dc);
+        outcome
+    })();
+
+    if !color.is_invalid() {
+        let _ = DeleteObject(HGDIOBJ(color.0));
+    }
+    if !mask.is_invalid() {
+        let _ = DeleteObject(HGDIOBJ(mask.0));
+    }
+    result
+}
+
+/// Encode a top-down RGBA buffer to a base64 `data:image/png` URL in memory.
+#[cfg(target_os = "windows")]
+fn encode_png_data_url(width: u32, height: u32, rgba: &[u8]) -> Option<String> {
+    let mut buf = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut buf, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().ok()?;
+        writer.write_image_data(rgba).ok()?;
+    }
+    Some(format!("data:image/png;base64,{}", base64_encode(&buf)))
 }
 
 #[cfg(target_os = "windows")]
@@ -847,17 +1318,9 @@ fn utf16_buf_to_path(buf: &[u16]) -> Option<PathBuf> {
 }
 
 fn desktop_files() -> Vec<PathBuf> {
-    let mut dirs = vec![
-        PathBuf::from("/usr/share/applications"),
-        PathBuf::from("/usr/local/share/applications"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.insert(0, PathBuf::from(home).join(".local/share/applications"));
-    }
-
     let mut files = Vec::new();
-    for dir in dirs {
-        let Ok(entries) = fs::read_dir(dir) else {
+    for dir in xdg_application_dirs() {
+        let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -885,7 +1348,7 @@ fn parse_desktop_entry(path: &Path) -> Option<DesktopEntry> {
             continue;
         }
         if let Some(value) = line.strip_prefix("Exec=") {
-            exec = first_exec_token(value);
+            exec = parse_exec_command(value);
         } else if let Some(value) = line.strip_prefix("Icon=") {
             icon = Some(value.to_string());
         }
@@ -896,16 +1359,27 @@ fn parse_desktop_entry(path: &Path) -> Option<DesktopEntry> {
     })
 }
 
-pub(crate) fn first_exec_token(value: &str) -> Option<String> {
-    let first = value
+/// Parse a desktop-entry `Exec=` value into the literal command line to launch.
+///
+/// Desktop field codes (`%f`, `%U`, `%i`, ...) are placeholders the file/URL
+/// argument fills in separately (see `file` in [`launch_command`]), and
+/// Flatpak's `@@...@@` quoting markers wrap those placeholders, so both are
+/// dropped. Every remaining token is kept and rejoined with single spaces —
+/// unlike a first-token-only parse, this preserves multi-word launchers such as
+/// Flatpak's `flatpak run --branch=stable --command=entrypoint app.id`, which
+/// would otherwise be truncated to a bare `flatpak` with no way to know which
+/// app to run.
+pub(crate) fn parse_exec_command(value: &str) -> Option<String> {
+    let tokens: Vec<&str> = value
         .split_whitespace()
-        .find(|part| !part.starts_with('%'))?
-        .trim_matches('"')
-        .to_string();
-    if first.is_empty() {
+        .filter(|part| !part.starts_with('%') && !part.starts_with("@@"))
+        .map(|part| part.trim_matches('"'))
+        .filter(|part| !part.is_empty())
+        .collect();
+    if tokens.is_empty() {
         None
     } else {
-        Some(first)
+        Some(tokens.join(" "))
     }
 }
 
@@ -992,19 +1466,44 @@ pub fn untrack_window(registry: State<'_, WindowRegistryState>, id: String) -> b
 
 #[tauri::command]
 pub fn check_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
     if cfg!(target_os = "linux") {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
     } else if cfg!(target_os = "windows") {
-        // tasklist /FI "PID eq <pid>" exits 0 even if the PID is not found;
-        // check that the PID number appears in the output instead.
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {}", pid), "/NH", "/FO", "CSV"])
-            .output()
-            .map(|o| {
-                let out = String::from_utf8_lossy(&o.stdout);
-                out.contains(&format!(",\"{}\",", pid))
-            })
-            .unwrap_or(false)
+        // Native liveness check: open the process and read its exit code.
+        // STILL_ACTIVE (259) means the process is still running. A handle to an
+        // already-exited process still opens successfully but GetExitCodeProcess
+        // then reports the real exit code, so OpenProcess succeeding alone is not
+        // enough — we must inspect the code. A failed OpenProcess (e.g. the PID
+        // no longer exists) is treated as dead.
+        #[cfg(target_os = "windows")]
+        {
+            use windows::Win32::Foundation::CloseHandle;
+            use windows::Win32::System::Threading::{
+                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            };
+            const STILL_ACTIVE: u32 = 259;
+            unsafe {
+                match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                    Ok(handle) => {
+                        let mut code: u32 = 0;
+                        let alive =
+                            GetExitCodeProcess(handle, &mut code).is_ok() && code == STILL_ACTIVE;
+                        let _ = CloseHandle(handle);
+                        alive
+                    }
+                    Err(_) => false,
+                }
+            }
+        }
+        // On non-Windows targets this branch is never taken at runtime; the
+        // `false` keeps the expression well-typed when the cfg above is absent.
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
+        }
     } else {
         // macOS / non-Linux Unix: kill(pid, 0) returns 0 if process exists.
         // On non-Unix platforms this branch is never reached (Windows is
@@ -1099,7 +1598,12 @@ fn list_window_ids() -> Vec<u64> {
     crate::platform::windows::list_window_ids()
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(target_os = "macos")]
+fn list_window_ids() -> Vec<u64> {
+    crate::platform::macos::list_window_ids()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn list_window_ids() -> Vec<u64> {
     Vec::new()
 }
@@ -1125,7 +1629,31 @@ fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
     crate::platform::windows::find_window_for_pid(pid, attempts)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(target_os = "macos")]
+fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
+    crate::platform::macos::find_window_for_pid(pid, attempts)
+}
+
+/// Single-pass, non-blocking window-id resolver injected into `window_service`
+/// at project-switch (hide) time. A launch-time miss (race, or the visible
+/// top-level belonging to a child of the spawned pid) leaves `window_id` None;
+/// re-resolving here just before hiding lets such a window still be parked, and
+/// the back-populated id keeps the later switch-back SHOW symmetric. `attempts:
+/// 1` does one enumeration with no `thread::sleep`, so it never stalls the
+/// switch worker.
+#[cfg(target_os = "windows")]
+pub fn resolve_window_id_for_pid(pid: u32) -> Option<u64> {
+    crate::platform::windows::find_window_for_pid(pid, 1)
+}
+
+/// macOS twin of the Windows resolver above — the launcher-stub → child-pid
+/// hand-off happens with `open`-style launches too.
+#[cfg(target_os = "macos")]
+pub fn resolve_window_id_for_pid(pid: u32) -> Option<u64> {
+    crate::platform::macos::find_window_for_pid(pid, 1)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn find_window_for_pid(_pid: u32, _attempts: usize) -> Option<u64> {
     None
 }
@@ -1151,7 +1679,12 @@ fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
     crate::platform::windows::find_new_window(before, attempts)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(target_os = "macos")]
+fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
+    crate::platform::macos::find_new_window(before, attempts)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn find_new_window(_before: &[u64], _attempts: usize) -> Option<u64> {
     None
 }
@@ -1344,22 +1877,16 @@ mod tests {
     }
 
     #[test]
-    fn base64_roundtrip_via_stdlib() {
-        use std::process::Command;
-        // Cross-check against system base64 on Linux.
+    fn base64_roundtrip_via_reference_crate() {
+        use base64::Engine;
+
         let input = b"Eldrun workspace manager";
         let encoded = base64_encode(input);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("custom encoder should produce valid base64");
 
-        // Use base64 --decode via shell to verify correctness.
-        if let Ok(out) = Command::new("sh")
-            .arg("-c")
-            .arg(format!("echo -n '{encoded}' | base64 -d"))
-            .output()
-        {
-            if out.status.success() {
-                assert_eq!(out.stdout, input.as_ref());
-            }
-        }
+        assert_eq!(decoded, input.as_ref());
     }
 
     #[test]
@@ -1406,50 +1933,99 @@ mod tests {
         );
     }
 
-    // ── first_exec_token ───────────────────────────────────────────────────
+    // ── parse_exec_command ──────────────────────────────────────────────────
 
     #[test]
-    fn first_exec_token_plain_path() {
+    fn parse_exec_command_plain_path() {
         assert_eq!(
-            first_exec_token("/usr/bin/firefox"),
+            parse_exec_command("/usr/bin/firefox"),
             Some("/usr/bin/firefox".into())
         );
     }
 
     #[test]
-    fn first_exec_token_strips_desktop_field_codes() {
+    fn parse_exec_command_strips_desktop_field_codes() {
         // %U, %F etc. must be skipped.
         assert_eq!(
-            first_exec_token("/usr/bin/code %F"),
+            parse_exec_command("/usr/bin/code %F"),
             Some("/usr/bin/code".into())
         );
     }
 
     #[test]
-    fn first_exec_token_strips_leading_percent_args() {
+    fn parse_exec_command_strips_leading_percent_args() {
         assert_eq!(
-            first_exec_token("%u /usr/bin/app"),
+            parse_exec_command("%u /usr/bin/app"),
             Some("/usr/bin/app".into())
         );
     }
 
     #[test]
-    fn first_exec_token_empty_string() {
-        assert_eq!(first_exec_token(""), None);
+    fn parse_exec_command_empty_string() {
+        assert_eq!(parse_exec_command(""), None);
     }
 
     #[test]
-    fn first_exec_token_only_field_codes() {
-        assert_eq!(first_exec_token("%U %F %i"), None);
+    fn parse_exec_command_only_field_codes() {
+        assert_eq!(parse_exec_command("%U %F %i"), None);
     }
 
     #[test]
-    fn first_exec_token_quoted_token_outer_quotes_stripped() {
+    fn parse_exec_command_quoted_token_outer_quotes_stripped() {
         // The function strips outer quotes from the final string but splits on
         // whitespace first, so a quoted path with spaces is split at the space.
         // This documents the actual behavior.
-        let result = first_exec_token("\"/usr/bin/myapp\"");
+        let result = parse_exec_command("\"/usr/bin/myapp\"");
         assert_eq!(result, Some("/usr/bin/myapp".into()));
+    }
+
+    #[test]
+    fn parse_exec_command_preserves_multi_token_flatpak_launcher() {
+        // A first-token-only parse would truncate this to a bare `flatpak`
+        // with no way to know which app to run — the full command line
+        // (minus field codes/@@ markers) must survive.
+        let result = parse_exec_command(
+            "/usr/bin/flatpak run --branch=stable --arch=x86_64 \
+             --command=entrypoint --file-forwarding com.prusa3d.PrusaSlicer \
+             --single-instance-on-url @@u %u @@",
+        );
+        assert_eq!(
+            result,
+            Some(
+                "/usr/bin/flatpak run --branch=stable --arch=x86_64 \
+                 --command=entrypoint --file-forwarding com.prusa3d.PrusaSlicer \
+                 --single-instance-on-url"
+                    .into()
+            )
+        );
+    }
+
+    // ── split_exec_command ──────────────────────────────────────────────────
+
+    #[test]
+    fn split_exec_command_no_whitespace_is_single_program() {
+        assert_eq!(split_exec_command("/usr/bin/firefox"), ("/usr/bin/firefox", vec![]));
+    }
+
+    #[test]
+    fn split_exec_command_splits_nonexistent_multi_word_launcher() {
+        let (program, args) =
+            split_exec_command("/usr/bin/flatpak run --branch=stable com.prusa3d.PrusaSlicer");
+        assert_eq!(program, "/usr/bin/flatpak");
+        assert_eq!(args, vec!["run", "--branch=stable", "com.prusa3d.PrusaSlicer"]);
+    }
+
+    #[test]
+    fn split_exec_command_keeps_existing_path_with_spaces_whole() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "eldrun test app {}.txt",
+            std::process::id()
+        ));
+        fs::write(&path, b"").unwrap();
+        let exec = path.to_string_lossy().into_owned();
+        assert_eq!(split_exec_command(&exec), (exec.as_str(), vec![]));
+        let _ = fs::remove_file(&path);
     }
 
     // ── installed-app parsing / embeddable allowlist ───────────────────────
@@ -1507,6 +2083,44 @@ mod tests {
         assert!(project_apps_for_id(None).is_empty());
     }
 
+    #[test]
+    fn pid_zero_is_never_alive() {
+        assert!(!check_pid_alive(0));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_bundle_discovery_uses_info_plist_and_bundle_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("Filename.app");
+        let contents = app.join("Contents");
+        let executable = contents.join("MacOS").join("real-bin");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"binary").unwrap();
+
+        let mut info = plist::Dictionary::new();
+        info.insert(
+            "CFBundleDisplayName".into(),
+            plist::Value::String("Preferred Name".into()),
+        );
+        info.insert(
+            "CFBundleName".into(),
+            plist::Value::String("Fallback Name".into()),
+        );
+        info.insert(
+            "CFBundleExecutable".into(),
+            plist::Value::String("real-bin".into()),
+        );
+        plist::Value::Dictionary(info)
+            .to_file_xml(contents.join("Info.plist"))
+            .unwrap();
+
+        let apps = macos_installed_apps_in(&[temp.path().to_path_buf()]);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].name, "Preferred Name");
+        assert_eq!(apps[0].exec, app.to_string_lossy().into_owned());
+    }
+
     // ── Windows Start Menu matching ────────────────────────────────────────
 
     fn shortcut() -> ShortcutEntry {
@@ -1545,5 +2159,18 @@ mod tests {
     #[test]
     fn shortcut_does_not_match_unrelated_name() {
         assert!(!shortcut_matches("notepad", &shortcut()));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_script_command_picks_interpreter_by_extension() {
+        // .ps1 → PowerShell; .bat / .cmd / everything else → cmd /C.
+        let ps1 = windows_script_command(r"C:\tmp\build.ps1");
+        assert_eq!(ps1.get_program().to_string_lossy(), "powershell");
+
+        for script in [r"C:\tmp\build.bat", r"C:\tmp\run.cmd", r"C:\tmp\go.sh"] {
+            let cmd = windows_script_command(script);
+            assert_eq!(cmd.get_program().to_string_lossy(), "cmd");
+        }
     }
 }

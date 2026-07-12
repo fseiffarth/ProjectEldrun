@@ -119,6 +119,19 @@ describe("resolveTexRef", () => {
   it("returns null for a bare \\includegraphics (extension unknown without probing)", () => {
     expect(resolveTexRef(MAIN, { command: "includegraphics", token: "figs/plot" })).toBeNull();
   });
+
+  it("resolves a token against a native Windows .tex path, joining with backslashes", () => {
+    const win = "C:\\Users\\u\\proj\\paper.tex";
+    expect(resolveTexRef(win, { command: "input", token: "chapters/intro" })).toEqual({
+      path: "C:\\Users\\u\\proj\\chapters\\intro.tex",
+      viewer: "tex",
+      label: "intro.tex",
+    });
+    // `..` segments collapse against the Windows directory too.
+    expect(resolveTexRef(win, { command: "input", token: "../shared/defs" })?.path).toBe(
+      "C:\\Users\\u\\shared\\defs.tex",
+    );
+  });
 });
 
 describe("resolveTexRefAsync (\\includegraphics directory probe)", () => {

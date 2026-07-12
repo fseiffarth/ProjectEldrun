@@ -20,10 +20,6 @@ pub struct GlobalAppEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub terminal_command: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_management: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub debug: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_profile_url: Option<String>,
@@ -31,12 +27,43 @@ pub struct Settings {
     pub git_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_scheme: Option<String>,
+    /// Global UI zoom factor for the whole interface (helps on high-DPI/4K
+    /// monitors). `1.0` (or unset) is 100% — the current default look. Applied
+    /// frontend-side as a CSS `zoom`; the backend only round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_zoom: Option<f32>,
+    /// Calendar: first column of the week — `0` = Sunday (default), `1` = Monday.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_week_start: Option<u8>,
+    /// Calendar: the view a fresh calendar tab opens on
+    /// (`day`/`week`/`multiweek`/`month`/`agenda`/`tasks`). Frontend logic only —
+    /// the backend just round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_default_view: Option<String>,
+    /// Calendar: 24-hour clock instead of AM/PM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_time_format_24h: Option<bool>,
+    /// Calendar: first/last hour the day and week grids scroll to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_day_start_hour: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_day_end_hour: Option<u8>,
+    /// Calendar: minutes-before reminder pre-filled on a new event. `0` = none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_default_reminder_minutes: Option<i64>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_host: Option<String>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_model: Option<String>,
+    /// Per-task local-model assignments set from the 🧠 menu's role chips. Maps a
+    /// task key (`"autocomplete"`, `"grammar"`, `"tabs"`) to the model name that
+    /// serves it, so several loaded models can run different jobs in parallel.
+    /// Optional + flat so older settings files round-trip cleanly; a task absent
+    /// here falls back to `ollama_model`. Frontend logic only — persisted here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_roles: Option<HashMap<String, String>>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_autostart: Option<bool>,
@@ -51,6 +78,23 @@ pub struct Settings {
     /// app/web. Only Claude supports the flag; other agents ignore it. Default ON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_remote_control: Option<bool>,
+    /// When true (the default), remote SSH/OpenVPN connections are made headlessly
+    /// in the background, with Eldrun handling the password transiently (sshpass /
+    /// askpass). When false, those connections are launched as interactive
+    /// terminal tabs in the Eldrun **root** scope so the password is typed directly
+    /// into the live terminal and Eldrun never handles it at all. Default ON
+    /// (headless) so existing behaviour is preserved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connections_headless: Option<bool>,
+    /// Header resource-monitor row toggles. Each defaults ON when unset so the
+    /// pill shows CPU/RAM/GPU by default; flip one off to hide that row. Shown in
+    /// every build (independent of `debug`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_cpu_usage: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_ram_usage: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_gpu_usage: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_apps: Option<HashMap<String, GlobalAppEntry>>,
     /// Minimum subwindow (split pane) width in px a divider drag may shrink a
@@ -66,6 +110,11 @@ pub struct Settings {
     /// counterpart for external changes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autosave: Option<bool>,
+    /// When true (the default), the in-app text/TeX editors tint recently typed
+    /// runs with a sequential new→old colour trail that fades as typing
+    /// continues. Defaults ON; only an explicit `false` disables it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_tint: Option<bool>,
     /// Per-file-type native-viewer preferences (#48), keyed by a type id derived
     /// from `fileUtils` (e.g. "tex", "text", "markdown"). Holds the opt-in
     /// autocomplete toggle (#45). Optional + flat so older settings files
@@ -78,8 +127,46 @@ pub struct Settings {
     /// fall back to the built-in defaults in the frontend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyboard_shortcuts: Option<HashMap<String, ChordDescriptor>>,
+    /// Download *source* folders scanned by the right-panel Downloads section
+    /// (fast-copy of freshly downloaded files into a project). A machine-wide
+    /// list, read-only — Eldrun never changes any browser's download path.
+    /// Unset/empty → the frontend falls back to the user's `~/Downloads`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_sources: Option<Vec<String>>,
+    /// Where the MAIN window was when Eldrun last ran, so it reopens on the same
+    /// monitor in the same place. Unset (fresh install, or a saved rect no live
+    /// monitor can host) → the window opens as `tauri.conf.json` configures it:
+    /// maximized, wherever the WM puts it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_state: Option<WindowState>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// Last-known geometry of the MAIN window, in PHYSICAL desktop pixels — the
+/// canonical cross-window coordinate space (see `src/lib/coords.ts`). Tauri's
+/// `outerPosition`/`outerSize`/`set_position`/`set_size` are all physical; only a
+/// *builder*'s `.position()`/`.inner_size()` are logical, which is the trap
+/// `commands::subwindow::detached_position` exists to document.
+///
+/// `x`/`y`/`w`/`h` is the *restore* (non-maximized) rect: it is refreshed only
+/// while the window is floating. Storing the maximized rect here instead would
+/// recreate the bug `WindowControls.tsx` works around — a window whose only known
+/// "normal" size is the whole monitor, so un-maximizing appears to do nothing and
+/// KWin's edge-snap stays suppressed.
+///
+/// There is deliberately no `fullscreen` field. Linux must never enter fullscreen
+/// (a `_NET_WM_STATE_FULLSCREEN` window is unmovable under KWin — see the note in
+/// `lib.rs`'s setup), and macOS is unconditionally fullscreen. Persisting the flag
+/// could only ever strand the window.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct WindowState {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    #[serde(default)]
+    pub maximized: bool,
 }
 
 /// One entry in `settings["keyboard_shortcuts"]` (Group L / #62). A serializable
@@ -132,16 +219,19 @@ pub struct ViewerPref {
 
 impl Settings {
     pub fn color_scheme(&self) -> &str {
-        self.color_scheme.as_deref().unwrap_or("fancy_dark")
-    }
-
-    pub fn workspace_management(&self) -> bool {
-        self.workspace_management.unwrap_or(false)
+        self.color_scheme.as_deref().unwrap_or("light_lavender")
     }
 
     /// Whether Claude agent tabs should be spawned with `--remote-control`.
     /// Defaults ON when unset so existing settings files opt in automatically.
     pub fn agent_remote_control(&self) -> bool {
         self.agent_remote_control.unwrap_or(true)
+    }
+
+    /// Whether remote SSH/OpenVPN connections are made headlessly (Eldrun handles
+    /// the password) rather than as interactive root-terminal tabs. Defaults ON
+    /// (headless) when unset so existing behaviour is preserved.
+    pub fn connections_headless(&self) -> bool {
+        self.connections_headless.unwrap_or(true)
     }
 }

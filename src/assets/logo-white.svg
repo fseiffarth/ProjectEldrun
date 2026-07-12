@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="128" height="128" fill="none" role="img" aria-label="Eldrun">
+  <title>Eldrun</title>
+  <!--
+    Eldrun logo (white variant for dark backgrounds) — a circuit "tree of life"
+    inside a ring, crowned by a gold spark. Same geometry as logo.svg; the
+    dark-green traces are recolored to white so the mark reads on dark chrome.
+  -->
+  <g stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- Ring, with a small opening at the bottom where the trunk passes through. -->
+    <path d="M 214 491 A 239 239 0 1 1 298 491" stroke-width="10" />
+
+    <!-- Central trunk stem. -->
+    <path d="M 256 161 L 256 499" stroke-width="10" />
+
+    <!-- Left-side branches + descending leg (authored), then mirrored. -->
+    <g id="eldrun-branches">
+      <!-- L1: node → vertical → 45° diagonal → leg → splayed foot. -->
+      <path d="M 165 176 L 165 238 L 233 306 L 233 440 L 222 483" stroke-width="10" />
+      <!-- L2 → vertical → diagonal → L3 (trace stops short of the pad on both sides) → 45° diagonal down into the leg. -->
+      <path d="M 98 235 L 98 289 L 129.9 320.9 M 159.7 347.4 L 233 405" stroke-width="10" />
+      <!-- Node terminals (thinner stroke than the traces). -->
+      <circle cx="165" cy="162" r="14" stroke-width="8" />
+      <circle cx="98"  cy="221" r="14" stroke-width="8" />
+      <circle cx="144" cy="335" r="14" stroke-width="8" />
+    </g>
+    <use href="#eldrun-branches" transform="translate(512,0) scale(-1,1)" />
+  </g>
+
+  <!-- Gold four-point spark above the trunk. -->
+  <path d="M 256 61
+           C 261 92 268 96 292 101
+           C 268 106 261 110 256 142
+           C 251 110 244 106 220 101
+           C 244 96 251 92 256 61 Z"
+        fill="#C79A45" />
+</svg>

@@ -1,6 +1,7 @@
 import { useMemo, useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ViewerHeader, useViewerState, useReadonlyFile } from "./FileViewerPane";
+import { Dropdown } from "../common/Dropdown";
 import { parseDelimited, sortRows, delimiterForPath } from "../../lib/viewers/table";
 
 /** Backend `read_spreadsheet` result (Dev G). Mirrors the Rust `SheetData`. */
@@ -145,27 +146,12 @@ export function TableView({
     <div className="file-viewer" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewerHeader onOpenExternally={onOpenExternally}>
         {isSheet && sheetData && sheetData.sheet_names.length > 1 && (
-          <select
+          <Dropdown
             value={selectedSheet ?? sheetData.active_sheet}
-            onChange={(e) => setSelectedSheet(e.target.value)}
+            onChange={setSelectedSheet}
             title="Select sheet"
-            style={{
-              fontSize: 12,
-              alignSelf: "center",
-              background: "var(--bg-panel)",
-              color: "var(--text-primary)",
-              border: "1px solid var(--border-color)",
-              borderRadius: 4,
-              padding: "2px 6px",
-              cursor: "pointer",
-            }}
-          >
-            {sheetData.sheet_names.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
+            options={sheetData.sheet_names.map((name) => ({ value: name, label: name }))}
+          />
         )}
         {loaded && !error && (
           <span

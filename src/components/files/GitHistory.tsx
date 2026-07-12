@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { Dropdown } from "../common/Dropdown";
 
 interface GitCommit {
   hash: string;
@@ -28,8 +31,30 @@ interface Worktree {
   is_bare: boolean;
 }
 
+/** A peer's HEAD as reported by the git-lockstep backend (#28n). */
+type HeadRef =
+  | { kind: "branch"; name: string; sha: string }
+  | { kind: "detached"; sha: string }
+  | { kind: "unborn" };
+
+type LockstepStatus = "synchronized" | "syncing" | "desynchronized";
+
+/** Mirrors `services::git_peer::GitPeerState` (camelCase). */
+interface GitPeerState {
+  enabled: boolean;
+  status: LockstepStatus;
+  detail: string | null;
+  localHead: HeadRef | null;
+  remoteHead: HeadRef | null;
+  lastSyncTs: number | null;
+}
+
 interface Props {
   projectDir: string;
+  /** Project id — only supplied for SSH remote projects, enabling git lockstep (#28n). */
+  projectId?: string;
+  /** True for SSH remote projects (gates the lockstep UI). */
+  remote?: boolean;
   /** Called after a checkout/reword so the parent can refresh git status. */
   onChanged?: () => void;
 }
@@ -138,7 +163,19 @@ const LANE_W = 14;
 const GRAPH_ROW_H = 22;
 const cx = (col: number) => col * LANE_W + LANE_W / 2;
 
-function CommitGraphCell({ row, height, lanes, head }: { row: RowLayout; height: number; lanes: number; head: boolean }) {
+function CommitGraphCell({
+  row,
+  height,
+  lanes,
+  head,
+  tip,
+}: {
+  row: RowLayout;
+  height: number;
+  lanes: number;
+  head: boolean;
+  tip: boolean;
+}) {
   const mid = height / 2;
   const width = lanes * LANE_W;
   const x = (c: number) => cx(c);
@@ -173,6 +210,11 @@ function CommitGraphCell({ row, height, lanes, head }: { row: RowLayout; height:
           strokeWidth={1.5}
         />
       ))}
+      {/* Branch tips get a hollow ring in their lane color so the heads stand
+          out from ordinary commits along the same lane. */}
+      {tip && (
+        <circle cx={dotX} cy={mid} r={head ? 7 : 6} fill="none" stroke={laneColor(row.col)} strokeWidth={1.5} />
+      )}
       <circle cx={dotX} cy={mid} r={head ? 4.5 : 3.5} fill={laneColor(row.col)} stroke="var(--bg-panel)" strokeWidth={head ? 1.5 : 1} />
     </svg>
   );
@@ -180,10 +222,14 @@ function CommitGraphCell({ row, height, lanes, head }: { row: RowLayout; height:
 
 const GRAPH_MODE_KEY = "eldrun.gitHistoryGraph";
 
-export function GitHistory({ projectDir, onChanged }: Props) {
+export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) {
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  // Git lockstep (#28n): only meaningful for SSH remote projects.
+  const lockstepEligible = !!(remote && projectId);
+  const [lockstep, setLockstep] = useState<GitPeerState | null>(null);
+  const [lockstepBusy, setLockstepBusy] = useState(false);
   const [wtForm, setWtForm] = useState<{ path: string; branch: string; newBranch: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -232,11 +278,107 @@ export function GitHistory({ projectDir, onChanged }: Props) {
     load();
   }, [load]);
 
+  // Load git-lockstep status + subscribe to backend status pushes (#28n).
+  useEffect(() => {
+    if (!lockstepEligible || !projectId) {
+      setLockstep(null);
+      return;
+    }
+    let alive = true;
+    invoke<GitPeerState>("git_peer_status", { projectId })
+      .then((s) => alive && setLockstep(s))
+      .catch(() => {});
+    const un = listen<{ projectId: string; state: GitPeerState }>("git-peer-status", (e) => {
+      if (alive && e.payload.projectId === projectId) setLockstep(e.payload.state);
+    });
+    return () => {
+      alive = false;
+      un.then((f) => f());
+    };
+  }, [lockstepEligible, projectId]);
+
+  const toggleLockstep = useCallback(async () => {
+    if (!projectId) return;
+    setLockstepBusy(true);
+    setError(null);
+    try {
+      const s = await invoke<GitPeerState>("git_peer_set_enabled", {
+        projectId,
+        enabled: !(lockstep?.enabled ?? false),
+      });
+      setLockstep(s);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLockstepBusy(false);
+    }
+  }, [projectId, lockstep?.enabled]);
+
+  const lockstepSyncNow = useCallback(async () => {
+    if (!projectId) return;
+    setLockstepBusy(true);
+    setError(null);
+    try {
+      const s = await invoke<GitPeerState>("git_peer_sync_now", { projectId });
+      setLockstep(s);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLockstepBusy(false);
+    }
+  }, [projectId, load]);
+
+  // Use-local / Use-remote divergence resolution (#28n Phase 2): the chosen side
+  // becomes authoritative and the loser's overwritten tips are backed up to
+  // refs/eldrun/backup/* before it is reset. Confirm first — it discards commits
+  // on the losing side (recoverable only via those backup refs).
+  const lockstepResolve = useCallback(
+    async (authority: "local" | "remote") => {
+      if (!projectId) return;
+      const other = authority === "local" ? "remote host" : "local mirror";
+      if (
+        !window.confirm(
+          `Use ${authority} as the source of truth?\n\nThe ${other}'s diverging commits will be reset to match ${authority} (backed up to refs/eldrun/backup/* first).`,
+        )
+      )
+        return;
+      setLockstepBusy(true);
+      setError(null);
+      try {
+        const s = await invoke<GitPeerState>("git_peer_resolve", {
+          projectId,
+          authority,
+        });
+        setLockstep(s);
+        await load();
+        onChanged?.();
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setLockstepBusy(false);
+      }
+    },
+    [projectId, load, onChanged],
+  );
+
   async function checkout(target: string) {
     setLoading(true);
     setError(null);
     try {
-      await invoke("git_checkout", { projectDir, target });
+      // With git lockstep enabled, route through the coordinator so the paired
+      // local mirror + remote host tree switch together (#28n). The Git UI here
+      // reflects the host tree, so the host initiates.
+      if (lockstepEligible && projectId && lockstep?.enabled) {
+        const s = await invoke<GitPeerState>("git_peer_checkout", {
+          projectId,
+          target,
+          initiatingSide: "remote",
+        });
+        setLockstep(s);
+      } else {
+        await invoke("git_checkout", { projectDir, target });
+      }
       setSelected(null);
       await load();
       onChanged?.();
@@ -279,11 +421,32 @@ export function GitHistory({ projectDir, onChanged }: Props) {
     }
   }
 
-  const graph = useMemo(() => (graphMode ? computeGraph(commits) : []), [graphMode, commits]);
+  // The graph layout is computed regardless of view mode so the per-lane colors
+  // can also tint the branch selector and the ref labels in list view; only the
+  // SVG cell itself is gated on graphMode below.
+  const graph = useMemo(() => computeGraph(commits), [commits]);
   const graphLanes = useMemo(
     () => graph.reduce((max, r) => Math.max(max, r.laneCount), 1),
     [graph],
   );
+
+  // Map each ref (branch tip / remote / tag) to the color of the lane its commit
+  // occupies in the graph, so a branch wears one consistent color everywhere it
+  // appears: the selector pill, its ref label, and its lane in the graph. Tag
+  // refs ("tag: …") are skipped — only branch heads get a color. First write wins
+  // when several refs share a commit (they share the lane anyway).
+  const branchColor = useMemo(() => {
+    const m = new Map<string, string>();
+    commits.forEach((c, i) => {
+      const col = graph[i]?.col;
+      if (col == null) return;
+      for (const r of parseRefs(c.refs)) {
+        if (r.startsWith("tag: ") || m.has(r)) continue;
+        m.set(r, laneColor(col));
+      }
+    });
+    return m;
+  }, [commits, graph]);
 
   const current = branches.find((b) => b.is_current)?.name;
   const localBranches = branches.filter((b) => !b.is_remote);
@@ -312,6 +475,68 @@ export function GitHistory({ projectDir, onChanged }: Props) {
         </button>
       </div>
 
+      {lockstepEligible && (
+        <div className="git-lockstep-bar" style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 6px", borderBottom: "1px solid var(--border-color)", fontSize: 10 }}>
+          <button
+            className={`tab-add-btn${lockstep?.enabled ? " active" : ""}`}
+            onClick={toggleLockstep}
+            disabled={lockstepBusy}
+            aria-pressed={!!lockstep?.enabled}
+            title={lockstep?.enabled ? "Git lockstep on — click to disable" : "Keep the local mirror and remote host repo on the same branch/commit"}
+          >
+            ⇄ Lockstep {lockstep?.enabled ? "on" : "off"}
+          </button>
+          {lockstep?.enabled && (
+            <>
+              <span
+                title={lockstep.detail ?? undefined}
+                style={{
+                  padding: "1px 6px",
+                  borderRadius: 8,
+                  color: "#fff",
+                  background:
+                    lockstep.status === "synchronized"
+                      ? "var(--success, #3fb950)"
+                      : lockstep.status === "syncing"
+                        ? "var(--warning, #e3b341)"
+                        : "var(--danger, #f85149)",
+                }}
+              >
+                {lockstep.status}
+              </span>
+              <button className="tab-add-btn" onClick={lockstepSyncNow} disabled={lockstepBusy} title="Reconcile git state now (retry after resolving a divergence)">
+                {lockstep.status === "desynchronized" ? "Retry" : "Sync now"}
+              </button>
+              {lockstep.status === "desynchronized" && (
+                <>
+                  <button
+                    className="tab-add-btn"
+                    onClick={() => lockstepResolve("local")}
+                    disabled={lockstepBusy}
+                    title="Resolve the divergence with the local mirror as the source of truth (backs up the remote's overwritten tips first)"
+                  >
+                    Use local
+                  </button>
+                  <button
+                    className="tab-add-btn"
+                    onClick={() => lockstepResolve("remote")}
+                    disabled={lockstepBusy}
+                    title="Resolve the divergence with the remote host as the source of truth (backs up the mirror's overwritten tips first)"
+                  >
+                    Use remote
+                  </button>
+                </>
+              )}
+              {lockstep.status === "desynchronized" && lockstep.detail && (
+                <span style={{ color: "var(--danger, #f85149)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={lockstep.detail}>
+                  {lockstep.detail}
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {(localBranches.length > 0 || remoteBranches.length > 0) && (
         <div className="git-branch-list">
           {localBranches.map((b) => (
@@ -322,6 +547,9 @@ export function GitHistory({ projectDir, onChanged }: Props) {
               disabled={loading || b.is_current}
               title={b.is_current ? `On ${b.name}` : `Checkout ${b.name}`}
             >
+              {branchColor.has(b.name) && (
+                <span className="git-branch-dot" style={{ background: branchColor.get(b.name) }} aria-hidden />
+              )}
               {b.name}
             </button>
           ))}
@@ -333,6 +561,9 @@ export function GitHistory({ projectDir, onChanged }: Props) {
               disabled={loading}
               title={`Checkout ${b.name}`}
             >
+              {branchColor.has(b.name) && (
+                <span className="git-branch-dot" style={{ background: branchColor.get(b.name) }} aria-hidden />
+              )}
               {b.name}
             </button>
           ))}
@@ -385,17 +616,12 @@ export function GitHistory({ projectDir, onChanged }: Props) {
         )}
         {wtForm && (
           <div className="git-worktree-form">
-            <select
+            <Dropdown
               value={wtForm.branch}
-              onChange={(e) => setWtForm({ ...wtForm, branch: e.target.value })}
-              aria-label="Branch"
-            >
-              {localBranches.map((b) => (
-                <option key={b.name} value={b.name}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
+              title="Branch"
+              onChange={(v) => setWtForm({ ...wtForm, branch: v })}
+              options={localBranches.map((b) => ({ value: b.name, label: b.name }))}
+            />
             <input
               type="text"
               placeholder="Worktree path"
@@ -404,8 +630,8 @@ export function GitHistory({ projectDir, onChanged }: Props) {
               aria-label="Worktree path"
             />
             <label className="git-worktree-newbranch">
-              <input
-                type="checkbox"
+              <Toggle
+                size="sm"
                 checked={wtForm.newBranch}
                 onChange={(e) => setWtForm({ ...wtForm, newBranch: e.target.checked })}
               />
@@ -431,6 +657,8 @@ export function GitHistory({ projectDir, onChanged }: Props) {
       <div className={`git-commit-list${graphMode ? " graph" : ""}`}>
         {commits.map((c, i) => {
           const refs = parseRefs(c.refs);
+          // A branch tip carries at least one non-tag ref; mark it in the graph.
+          const isTip = refs.some((r) => !r.startsWith("tag: "));
           return (
             <button
               key={c.hash}
@@ -439,13 +667,28 @@ export function GitHistory({ projectDir, onChanged }: Props) {
               title={c.subject}
             >
               {graphMode && (
-                <CommitGraphCell row={graph[i]} height={GRAPH_ROW_H} lanes={graphLanes} head={c.is_head} />
+                <CommitGraphCell
+                  row={graph[i]}
+                  height={GRAPH_ROW_H}
+                  lanes={graphLanes}
+                  head={c.is_head}
+                  tip={isTip}
+                />
               )}
               <span className="git-commit-hash">{c.short}</span>
               <span className="git-commit-subject">{c.subject}</span>
-              {refs.map((r) => (
-                <span key={r} className="git-commit-ref">{r}</span>
-              ))}
+              {refs.map((r) => {
+                const color = branchColor.get(r);
+                return (
+                  <span
+                    key={r}
+                    className="git-commit-ref"
+                    style={color ? { background: color } : undefined}
+                  >
+                    {r}
+                  </span>
+                );
+              })}
               <span className="git-commit-date">{c.date}</span>
             </button>
           );

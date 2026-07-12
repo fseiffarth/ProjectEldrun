@@ -16,14 +16,58 @@ struct AgentSpec {
     id: &'static str,
     /// Human-readable label.
     label: &'static str,
-    /// Binary name to probe on `PATH` (via `which`).
+    /// Binary name to probe on `PATH` (`where` on Windows, `which` elsewhere).
     bin: &'static str,
-    /// Official non-interactive install command (Linux/macOS).
+    /// Official non-interactive install command (Linux/macOS, run in `sh`).
     install_cmd: &'static str,
-    /// Extra home-relative paths to check when `which` misses (PATH gaps).
+    /// Official non-interactive install command on Windows, when one exists.
+    /// `None` means there is no one-line Windows installer — the UI then points
+    /// at `docs` instead. Commands using `irm`/`iex` are PowerShell-only; plain
+    /// `npm`/`python` commands run in either PowerShell or Command Prompt (see
+    /// `windows_shell`).
+    install_cmd_windows: Option<&'static str>,
+    /// Extra home-relative paths to check when the PATH lookup misses (PATH gaps).
     extra_paths: &'static [&'static str],
     /// Docs URL shown when automatic install isn't possible.
     docs: &'static str,
+}
+
+/// The shell a Windows install command must be run in, derived from the command
+/// itself: `irm … | iex` is PowerShell-only; `npm`/`python` installs work in
+/// either PowerShell or the classic Command Prompt.
+fn windows_shell(cmd: &str) -> &'static str {
+    if cmd.contains("iex") || cmd.trim_start().starts_with("irm") {
+        "PowerShell"
+    } else {
+        "PowerShell or Command Prompt"
+    }
+}
+
+fn windows_shell_kind(cmd: &str) -> &'static str {
+    if cmd.contains("iex") || cmd.trim_start().starts_with("irm") {
+        "powershell"
+    } else {
+        "default"
+    }
+}
+
+/// The install command + the shell it runs in, for the host OS. On Windows the
+/// command is `None` when no one-line installer exists.
+fn platform_install(spec: &AgentSpec) -> (Option<&'static str>, String, &'static str) {
+    if cfg!(target_os = "windows") {
+        let shell = spec
+            .install_cmd_windows
+            .map(windows_shell)
+            .unwrap_or("PowerShell")
+            .to_string();
+        let kind = spec
+            .install_cmd_windows
+            .map(windows_shell_kind)
+            .unwrap_or("powershell");
+        (spec.install_cmd_windows, shell, kind)
+    } else {
+        (Some(spec.install_cmd), "bash".to_string(), "bash")
+    }
 }
 
 /// The built-in agent registry. The order here is the order the UI lists them.
@@ -33,6 +77,7 @@ const AGENTS: &[AgentSpec] = &[
         label: "Claude",
         bin: "claude",
         install_cmd: "curl -fsSL https://claude.ai/install.sh | bash",
+        install_cmd_windows: Some("irm https://claude.ai/install.ps1 | iex"),
         extra_paths: &[".local/bin/claude"],
         docs: "https://docs.anthropic.com/en/docs/claude-code/setup",
     },
@@ -41,6 +86,7 @@ const AGENTS: &[AgentSpec] = &[
         label: "Codex",
         bin: "codex",
         install_cmd: "npm install -g @openai/codex",
+        install_cmd_windows: Some("npm install -g @openai/codex"),
         extra_paths: &[".local/bin/codex"],
         docs: "https://github.com/openai/codex",
     },
@@ -49,6 +95,7 @@ const AGENTS: &[AgentSpec] = &[
         label: "Gemini",
         bin: "gemini",
         install_cmd: "npm install -g @google/gemini-cli",
+        install_cmd_windows: Some("npm install -g @google/gemini-cli"),
         extra_paths: &[".local/bin/gemini"],
         docs: "https://github.com/google-gemini/gemini-cli",
     },
@@ -57,6 +104,8 @@ const AGENTS: &[AgentSpec] = &[
         label: "Mistral",
         bin: "vibe",
         install_cmd: "curl -LsSf https://mistral.ai/vibe/install.sh | bash",
+        // No one-line Windows installer; the UI points at `docs`.
+        install_cmd_windows: None,
         extra_paths: &[".local/bin/vibe", ".cargo/bin/vibe"],
         docs: "https://docs.mistral.ai/getting-started/quickstarts/vibe-code/install-cli",
     },
@@ -65,6 +114,7 @@ const AGENTS: &[AgentSpec] = &[
         label: "Aider",
         bin: "aider",
         install_cmd: "python -m pip install aider-install && aider-install",
+        install_cmd_windows: Some("python -m pip install aider-install && aider-install"),
         extra_paths: &[".local/bin/aider"],
         docs: "https://aider.chat/docs/install.html",
     },
@@ -73,6 +123,7 @@ const AGENTS: &[AgentSpec] = &[
         label: "OpenCode",
         bin: "opencode",
         install_cmd: "curl -fsSL https://opencode.ai/install | bash",
+        install_cmd_windows: Some("npm install -g opencode-ai"),
         extra_paths: &[".opencode/bin/opencode", ".local/bin/opencode"],
         docs: "https://opencode.ai/docs/",
     },
@@ -81,6 +132,8 @@ const AGENTS: &[AgentSpec] = &[
         label: "Cursor",
         bin: "cursor-agent",
         install_cmd: "curl https://cursor.com/install -fsS | bash",
+        // No one-line Windows installer; the UI points at `docs`.
+        install_cmd_windows: None,
         extra_paths: &[".local/bin/cursor-agent"],
         docs: "https://cursor.com/docs/cli/installation",
     },
@@ -89,6 +142,7 @@ const AGENTS: &[AgentSpec] = &[
         label: "Copilot",
         bin: "copilot",
         install_cmd: "npm install -g @github/copilot",
+        install_cmd_windows: Some("npm install -g @github/copilot"),
         extra_paths: &[".local/bin/copilot"],
         docs: "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
     },
@@ -97,6 +151,7 @@ const AGENTS: &[AgentSpec] = &[
         label: "Grok",
         bin: "grok",
         install_cmd: "npm install -g @vibe-kit/grok-cli",
+        install_cmd_windows: Some("npm install -g @vibe-kit/grok-cli"),
         extra_paths: &[".local/bin/grok"],
         docs: "https://github.com/superagent-ai/grok-cli",
     },
@@ -105,6 +160,7 @@ const AGENTS: &[AgentSpec] = &[
         label: "Qwen",
         bin: "qwen",
         install_cmd: "npm install -g @qwen-code/qwen-code",
+        install_cmd_windows: Some("npm install -g @qwen-code/qwen-code"),
         extra_paths: &[".local/bin/qwen"],
         docs: "https://github.com/QwenLM/qwen-code",
     },
@@ -113,6 +169,7 @@ const AGENTS: &[AgentSpec] = &[
         label: "OpenClaw",
         bin: "openclaw",
         install_cmd: "npm install -g openclaw",
+        install_cmd_windows: Some("npm install -g openclaw"),
         extra_paths: &[".local/bin/openclaw"],
         docs: "https://docs.openclaw.ai",
     },
@@ -124,7 +181,14 @@ pub struct AgentInfo {
     pub id: String,
     pub label: String,
     pub bin: String,
+    /// The install command for the host OS, or empty when there is no one-line
+    /// installer on this platform (Windows-only case — fall back to `docs`).
     pub install_cmd: String,
+    /// The shell `install_cmd` is meant to run in: `bash` on Linux/macOS,
+    /// `PowerShell` or `PowerShell or Command Prompt` on Windows.
+    pub shell: String,
+    /// Machine-readable terminal shell policy for the frontend.
+    pub shell_kind: String,
     pub docs: String,
     pub installed: bool,
 }
@@ -135,19 +199,27 @@ fn find_spec(id: &str) -> Option<&'static AgentSpec> {
 
 /// True when an agent's binary is reachable on `PATH` or in one of its
 /// well-known user install locations.
+///
+/// PATH lookup goes through the shared cross-platform helper (`where` on Windows,
+/// `which` elsewhere): `which` does not exist on Windows, so probing it directly
+/// reported every Windows install — Claude included — as missing.
 fn spec_is_installed(spec: &AgentSpec) -> bool {
-    let on_path = std::process::Command::new("which")
-        .arg(spec.bin)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if on_path {
+    if crate::paths::binary_on_path(spec.bin) {
         return true;
     }
     let home = crate::paths::home_dir();
-    spec.extra_paths.iter().any(|rel| home.join(rel).exists())
+    spec.extra_paths.iter().any(|rel| {
+        let base = home.join(rel);
+        if base.exists() {
+            return true;
+        }
+        // On Windows the extra paths omit the executable extension that the
+        // installer actually writes (e.g. `.local/bin/claude` → `claude.exe`).
+        cfg!(target_os = "windows")
+            && ["exe", "cmd", "bat", "ps1"]
+                .iter()
+                .any(|ext| base.with_extension(ext).exists())
+    })
 }
 
 /// True when the given agent (by id) is installed. Unknown ids return false.
@@ -156,18 +228,43 @@ pub async fn agent_is_installed(id: String) -> bool {
     find_spec(&id).map(spec_is_installed).unwrap_or(false)
 }
 
+/// True when Node.js' `npm` is reachable on `PATH`. Most agent CLIs install via
+/// `npm install -g …`, so the Manage Agents panel uses this to decide whether to
+/// surface its "install Node/npm first" helper.
+#[tauri::command]
+pub async fn npm_is_installed() -> bool {
+    crate::paths::binary_on_path("npm")
+}
+
+/// Sync install probe for callers outside the agent registry (e.g. the local-
+/// model drivers in `commands::ollama`). Looks `bin` up in the registry first so
+/// it reuses the known user install locations; falls back to a bare PATH lookup
+/// for binaries the registry doesn't track (e.g. Droid).
+pub fn binary_is_installed(bin: &str) -> bool {
+    AGENTS
+        .iter()
+        .find(|a| a.bin == bin)
+        .map(spec_is_installed)
+        .unwrap_or_else(|| crate::paths::binary_on_path(bin))
+}
+
 /// List every known agent CLI with its current installed status.
 #[tauri::command]
 pub async fn list_agents() -> Vec<AgentInfo> {
     AGENTS
         .iter()
-        .map(|spec| AgentInfo {
-            id: spec.id.to_string(),
-            label: spec.label.to_string(),
-            bin: spec.bin.to_string(),
-            install_cmd: spec.install_cmd.to_string(),
-            docs: spec.docs.to_string(),
-            installed: spec_is_installed(spec),
+        .map(|spec| {
+            let (cmd, shell, shell_kind) = platform_install(spec);
+            AgentInfo {
+                id: spec.id.to_string(),
+                label: spec.label.to_string(),
+                bin: spec.bin.to_string(),
+                install_cmd: cmd.unwrap_or("").to_string(),
+                shell,
+                shell_kind: shell_kind.to_string(),
+                docs: spec.docs.to_string(),
+                installed: spec_is_installed(spec),
+            }
         })
         .collect()
 }
@@ -205,7 +302,7 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
     };
     emit(&format!("Starting {} installer…", spec.label));
 
-    let mut child = std::process::Command::new("sh")
+    let mut child = crate::paths::command_no_window("sh")
         .arg("-c")
         .arg(format!("{} 2>&1", spec.install_cmd))
         .stdout(std::process::Stdio::piped())
@@ -258,4 +355,64 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
     } else {
         combined
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_shell_flags_powershell_only_commands() {
+        // `irm … | iex` is PowerShell syntax.
+        assert_eq!(
+            windows_shell("irm https://claude.ai/install.ps1 | iex"),
+            "PowerShell"
+        );
+        // npm/python installs run in either shell.
+        assert_eq!(
+            windows_shell("npm install -g @openai/codex"),
+            "PowerShell or Command Prompt"
+        );
+    }
+
+    #[test]
+    fn claude_has_a_powershell_windows_installer() {
+        let claude = find_spec("claude").expect("claude in registry");
+        let win = claude
+            .install_cmd_windows
+            .expect("claude has a Windows installer");
+        assert!(
+            win.contains("irm"),
+            "expected the PowerShell `irm` installer"
+        );
+        assert!(
+            !win.contains("curl"),
+            "Windows installer must not use curl/bash"
+        );
+    }
+
+    #[test]
+    fn every_agent_serves_a_shell_label() {
+        for spec in AGENTS {
+            let (_cmd, shell, shell_kind) = platform_install(spec);
+            assert!(!shell.is_empty(), "{} has no shell label", spec.id);
+            assert!(
+                matches!(shell_kind, "bash" | "powershell" | "default"),
+                "{} has an invalid shell kind",
+                spec.id
+            );
+        }
+    }
+
+    #[test]
+    fn windows_shell_kind_is_not_derived_from_display_text() {
+        assert_eq!(
+            windows_shell_kind("irm https://claude.ai/install.ps1 | iex"),
+            "powershell"
+        );
+        assert_eq!(
+            windows_shell_kind("npm install -g @openai/codex"),
+            "default"
+        );
+    }
 }

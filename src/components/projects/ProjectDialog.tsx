@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Toggle } from "../common/Toggle";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ProjectEntry } from "../../types";
 import { resolveProjectDirectory } from "../../types";
+import { basename } from "../../lib/paths";
 import { cmdToKind, useTabsStore } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import {
@@ -17,8 +19,9 @@ import {
   sanitizeName,
   type ScaffoldPreviewItem,
 } from "./scaffold";
-import { useRemoteSession } from "./useRemoteSession";
+import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
+import { Dropdown } from "../common/Dropdown";
 
 export function ProjectDialog({
   kind,
@@ -30,7 +33,17 @@ export function ProjectDialog({
   onProject: (project: ProjectEntry) => void | Promise<void>;
 }) {
   const defaultAgentCmd = useSettingsStore((s) => s.settings?.default_agent_cmd ?? "claude");
+  // A GitHub/GitLab "connection through Eldrun" = a global access token saved in
+  // Settings → Git Hosting (the credential publishing actually uses). Used to
+  // decide whether picking a "Push to GitHub/GitLab" git type can proceed or
+  // should first send the user to set the connection up.
+  const gitToken = useSettingsStore((s) => s.settings?.git_token ?? "");
   const [projectsRoot, setProjectsRoot] = useState("");
+  // Remote (SSH) projects only: the chosen parent dir for the LOCAL mirror (the
+  // synced working copy). The mirror lands at `<mirrorParent>/<name>`. Seeded
+  // from the backend default (`projects-ssh` root) so it matches
+  // `default_remote_mirror`; editable via the "Local location" picker.
+  const [mirrorParent, setMirrorParent] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [descriptionFillMode, setDescriptionFillMode] = useState("manual");
@@ -49,17 +62,65 @@ export function ProjectDialog({
   const {
     isRemoteProject,
     isRemote,
+    winManual,
+    step,
+    setStep,
+    remoteReady,
     remoteBrowsePath,
     remoteChosenPath,
     setRemoteChosenPath,
+    rememberChosenPath,
     toggleRemoteProject,
     buildRemoteSpec,
   } = remote;
+  // Remote projects walk a stepped flow (connect → browse → details); the
+  // name/git/description body only appears on the final "details" step. Local
+  // projects ignore steps and show their single form.
+  const showDetails = !isRemoteProject || step === "details";
+  // Step order for the footer's Back/Next; Windows non-headless has no browse
+  // step (it types the path in the connect step instead).
+  const remoteSteps: RemoteStep[] = winManual
+    ? ["connect", "details"]
+    : ["connect", "browse", "details"];
+  const stepIdx = remoteSteps.indexOf(step);
+  const goBack = () => setStep(remoteSteps[Math.max(0, stepIdx - 1)]);
+  const goNext = () => setStep(remoteSteps[Math.min(remoteSteps.length - 1, stepIdx + 1)]);
+  const canNext =
+    step === "connect"
+      ? winManual
+        ? remoteChosenPath.trim() !== ""
+        : isRemote
+      : step === "browse"
+        ? remoteChosenPath.trim() !== ""
+        : false;
   const safeName = sanitizeName(name);
   const targetDir = safeName && projectsRoot ? `${projectsRoot}/${safeName}` : "";
+  // "Push to GitHub/GitLab" was chosen, but no Eldrun connection is set up yet.
+  // Here "remote" is the git push target (a hosting service), distinct from the
+  // SSH host the files may live on — see the git-hosting hint below.
+  const wantsRemoteGit = gitType === "remote-private" || gitType === "remote-public";
+  const gitConnected = gitToken.trim() !== "";
+  const needsGitConnection = wantsRemoteGit && !gitConnected;
+
+  // Send the user to Settings → Git Hosting to establish the GitHub/GitLab
+  // connection. The project dialog stays open (so the half-filled form isn't
+  // lost); once a token is saved the `needsGitConnection` notice clears live.
+  // Git Hosting is its own settings sub-panel, so open it directly.
+  const openGitHostingSettings = () => {
+    window.dispatchEvent(new CustomEvent("eldrun:open-settings", { detail: "git" }));
+  };
 
   useEffect(() => {
     invoke<string>("projects_root_dir").then(setProjectsRoot).catch(() => {});
+  }, []);
+
+  // Seed the remote local-mirror parent from the backend default (the
+  // `projects-ssh` root) so the picker's default agrees with the backend
+  // fallback. Only fills an empty value, so a user edit isn't clobbered.
+  useEffect(() => {
+    invoke<string>("remote_mirror_root_dir")
+      .then((dir) => setMirrorParent((cur) => cur || dir.replace(/\/+$/, "")))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -101,7 +162,7 @@ export function ProjectDialog({
     if (typeof picked === "string") {
       setSourceDir(picked);
       if (!name.trim()) {
-        setName(picked.split("/").filter(Boolean).pop() ?? "");
+        setName(basename(picked));
       }
     }
   };
@@ -113,14 +174,34 @@ export function ProjectDialog({
     }
   };
 
+  // Pick the LOCAL mirror parent for a remote (SSH) project (mirror of
+  // `chooseLocation`, but for the synced working copy rather than a local project).
+  const chooseLocalMirrorLocation = async () => {
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: mirrorParent || projectsRoot || undefined,
+    });
+    if (typeof picked === "string") {
+      setMirrorParent(picked.replace(/\/+$/, ""));
+    }
+  };
+
   // Commit the currently-browsed remote folder. On import with an empty name,
   // default the name to the chosen folder's last segment.
   const useThisRemoteFolder = () => {
-    setRemoteChosenPath(remoteBrowsePath || "/");
+    const chosen = remoteBrowsePath || "/";
+    setRemoteChosenPath(chosen);
     if (kind === "import" && !name.trim()) {
-      const segs = (remoteBrowsePath || "").split("/").filter(Boolean);
+      const segs = chosen.split("/").filter(Boolean);
       if (segs.length) setName(segs[segs.length - 1]);
     }
+    // Persist the committed folder against this host now (not only at submit),
+    // so it's offered in the "Recently used…" lists for the next SSH project on
+    // the same remote — even if this dialog is later cancelled.
+    rememberChosenPath(chosen);
+    // Committing the folder is the natural end of the browse step.
+    setStep("details");
   };
 
   const selectedScaffoldAgentFills = () => {
@@ -190,7 +271,7 @@ export function ProjectDialog({
       // Remote scaffold filling runs over the local mount; for v1 we skip the
       // local-disk-only scaffold-fill agent tabs on import when remote.
       const scaffoldAgentFills =
-        kind === "import" && !isRemote && !skipScaffold
+        kind === "import" && !isRemoteProject && !skipScaffold
           ? selectedScaffoldAgentFills()
           : new Map<string, string[]>();
       const descriptionAgent = selectedDescriptionAgent();
@@ -198,23 +279,35 @@ export function ProjectDialog({
       const project =
         kind === "new"
           ? await invoke<ProjectEntry>("create_project", {
-              req: { name, directory: targetDir, description, gitType, skipScaffold, remote: remoteSpec },
+              req: {
+                name,
+                directory: targetDir,
+                description,
+                gitType,
+                skipScaffold,
+                remote: remoteSpec,
+                // Remote only: chosen local mirror parent (ignored for local).
+                mirrorParent: isRemoteProject ? mirrorParent : undefined,
+              },
             })
           : await invoke<ProjectEntry>("import_project", {
               req: {
                 // Backend ignores sourceDir for remote but the field is required;
-                // pass the browsed remote path as a stand-in.
-                sourceDir: isRemote ? remoteChosenPath : sourceDir,
+                // pass the (browsed or typed) remote path as a stand-in.
+                sourceDir: isRemoteProject ? remoteChosenPath : sourceDir,
                 name,
                 description,
                 gitType,
-                mode: isRemote ? "keep" : mode,
+                mode: isRemoteProject ? "keep" : mode,
                 scaffoldFillModes,
                 manualValidationConfirmed,
                 skipScaffold,
                 remote: remoteSpec,
+                // Remote only: chosen local mirror parent (ignored for local).
+                mirrorParent: isRemoteProject ? mirrorParent : undefined,
               },
             });
+      if (isRemoteProject) rememberChosenPath();
       await onProject(project);
       await openScaffoldAgentTabs(project, scaffoldAgentFills);
       await openDescriptionAgentTab(project, descriptionAgent);
@@ -226,21 +319,26 @@ export function ProjectDialog({
     }
   };
 
-  const canSubmit = isRemoteProject
-    ? // Remote mode: must be connected and have a chosen remote folder.
-      !isRemote
-      ? false
+  const canSubmit =
+    // "Push to GitHub/GitLab" requires an Eldrun connection first — block submit
+    // until a token is saved (the notice above links to Settings → Git Hosting).
+    !needsGitConnection &&
+    (isRemoteProject
+      ? // Remote mode: ready (live session when headless, typed path otherwise)
+        // and has a remote folder.
+        !remoteReady
+        ? false
+        : kind === "new"
+          ? Boolean(name.trim() && safeName && remoteChosenPath && mirrorParent.trim())
+          : Boolean(name.trim() && remoteChosenPath && mirrorParent.trim())
       : kind === "new"
-        ? Boolean(name.trim() && safeName && remoteChosenPath)
-        : Boolean(name.trim() && remoteChosenPath)
-    : kind === "new"
-      ? Boolean(name.trim() && targetDir && safeName)
-      : Boolean(
-          name.trim() &&
-          sourceDir &&
-          (mode === "keep" || safeName) &&
-          (mode === "keep" || manualValidationConfirmed),
-        );
+        ? Boolean(name.trim() && targetDir && safeName)
+        : Boolean(
+            name.trim() &&
+            sourceDir &&
+            (mode === "keep" || safeName) &&
+            (mode === "keep" || manualValidationConfirmed),
+          ));
 
   const missingFillableScaffoldCount = scaffoldPreview.filter((item) => !item.exists && item.kind === "file").length;
 
@@ -259,19 +357,100 @@ export function ProjectDialog({
     return item.exists ? "Already there, will be kept" : "Missing, will be added";
   };
 
+  // The shared project name + description fields. They live in the always-visible
+  // remote-basics block for a remote project (so name/description are editable
+  // from the moment SSH is toggled on), and inside the details section for a local
+  // project. Extracted so the markup isn't duplicated between the two placements.
+  const nameField = (
+    <label>
+      Project name
+      <input
+        autoFocus
+        value={name}
+        placeholder="my-project"
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && canSubmit && !busy) void submit();
+          if (e.key === "Escape") onClose();
+        }}
+      />
+    </label>
+  );
+
+  const descriptionField = (
+    <label className="project-description-field">
+      <div className="project-description-header">
+        <span>Project description</span>
+        <Dropdown
+          title="Project description fill mode"
+          value={descriptionFillMode}
+          onChange={setDescriptionFillMode}
+          options={[
+            { value: "manual", label: "Manual" },
+            { value: "agent_choice", label: "Agent choice" },
+            { value: "claude", label: "Claude" },
+            { value: "codex", label: "Codex" },
+            { value: "gemini", label: "Gemini" },
+            { value: "vibe", label: "Mistral" },
+          ]}
+        />
+      </div>
+      <textarea
+        value={description}
+        placeholder="What this project is for"
+        rows={3}
+        onChange={(e) => setDescription(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onClose();
+        }}
+      />
+    </label>
+  );
+
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <h2>{kind === "new" ? "New Project" : "Import Project"}</h2>
 
-        <label className="remote-project-toggle">
-          <input
-            type="checkbox"
-            checked={isRemoteProject}
-            onChange={(e) => toggleRemoteProject(e.target.checked)}
-          />
-          Remote (SSH) project
+        <label className={`toggle-card${isRemoteProject ? " is-on" : ""}`}>
+          <span className="toggle-card-body">
+            <span className="toggle-card-title">Remote (SSH) project</span>
+            <span className="toggle-card-desc">
+              Work on a project that lives on another machine — terminals, files,
+              and git all run on the host over SSH.
+            </span>
+          </span>
+          <span className="eld-switch">
+            <input
+              type="checkbox"
+              checked={isRemoteProject}
+              onChange={(e) => toggleRemoteProject(e.target.checked)}
+            />
+            <span className="eld-switch-track" aria-hidden="true" />
+          </span>
         </label>
+
+        {/* Remote basics: a remote (SSH) project also needs a LOCAL location (its
+            synced mirror). Show it plus the shared name/description up front — from
+            the moment SSH is toggled on — while the remote location is chosen later
+            in the connect → browse flow below. The project name is shared: it's the
+            leaf of both `<local location>/<name>` and `<remote path>/<name>`. */}
+        {isRemoteProject && (
+          <>
+            <label>
+              Local location
+              <div className="folder-picker-row">
+                <span title={mirrorParent}>{mirrorParent || "No folder selected"}</span>
+                <button type="button" onClick={chooseLocalMirrorLocation}>Browse...</button>
+              </div>
+              <span className="ssh-optional-hint">
+                The synced local working copy lives here as {safeName || "<name>"}.
+              </span>
+            </label>
+            {nameField}
+            {descriptionField}
+          </>
+        )}
 
         <RemoteProjectSection
           kind={kind}
@@ -281,6 +460,8 @@ export function ProjectDialog({
           remote={remote}
         />
 
+        {showDetails && (
+        <>
         {kind === "import" && !isRemoteProject && (
           <label>
             Source folder
@@ -301,65 +482,57 @@ export function ProjectDialog({
           </label>
         )}
 
+        {/* For a remote project these live in the always-visible remote-basics
+            block above; here they render only for a local project. */}
+        {!isRemoteProject && nameField}
+        {!isRemoteProject && descriptionField}
+
         <label>
-          Project name
-          <input
-            autoFocus
-            value={name}
-            placeholder="my-project"
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && canSubmit && !busy) void submit();
-              if (e.key === "Escape") onClose();
-            }}
+          Git hosting
+          <Dropdown
+            className="dropdown-block"
+            value={gitType}
+            onChange={setGitType}
+            options={[
+              { value: "none", label: "No git (plain files, no repo)" },
+              { value: "local", label: "Local repo only (not pushed anywhere)" },
+              { value: "remote-private", label: "Push to GitHub/GitLab · private" },
+              { value: "remote-public", label: "Push to GitHub/GitLab · public" },
+            ]}
           />
+          <span className="ssh-optional-hint">
+            “Push to GitHub/GitLab” publishes the repo to a hosting service
+            {isRemoteProject
+              ? " — unrelated to the SSH host above, which is just where the project files live."
+              : "."}
+          </span>
         </label>
 
-        <label className="project-description-field">
-          <div className="project-description-header">
-            <span>Project description</span>
-            <select
-              aria-label="Project description fill mode"
-              value={descriptionFillMode}
-              onChange={(e) => setDescriptionFillMode(e.target.value)}
-            >
-              <option value="manual">Manual</option>
-              <option value="agent_choice">Agent choice</option>
-              <option value="claude">Claude</option>
-              <option value="codex">Codex</option>
-              <option value="gemini">Gemini</option>
-              <option value="vibe">Mistral</option>
-            </select>
+        {needsGitConnection && (
+          <div className="git-connect-notice" role="status">
+            <span>
+              No GitHub/GitLab connection set up in Eldrun yet. Add an access
+              token in Settings → Git Hosting so the repo can be published.
+            </span>
+            <button type="button" onClick={openGitHostingSettings}>
+              Set up GitHub/GitLab…
+            </button>
           </div>
-          <textarea
-            value={description}
-            placeholder="What this project is for"
-            rows={3}
-            onChange={(e) => setDescription(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
-            }}
-          />
-        </label>
-
-        <label>
-          Git
-          <select value={gitType} onChange={(e) => setGitType(e.target.value)}>
-            <option value="none">No git (local files only)</option>
-            <option value="local">Local repo (no remote)</option>
-            <option value="remote-private">Remote · private</option>
-            <option value="remote-public">Remote · public</option>
-          </select>
-        </label>
+        )}
 
         {kind === "import" && !isRemoteProject && (
           <label>
             Import mode
-            <select value={mode} onChange={(e) => setMode(e.target.value)}>
-              <option value="keep">Keep location (register in place)</option>
-              <option value="copy">Copy to ~/eldrun/projects/</option>
-              <option value="move">Move to ~/eldrun/projects/</option>
-            </select>
+            <Dropdown
+              className="dropdown-block"
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: "keep", label: "Keep location (register in place)" },
+                { value: "copy", label: "Copy into Eldrun's projects folder" },
+                { value: "move", label: "Move into Eldrun's projects folder" },
+              ]}
+            />
           </label>
         )}
 
@@ -370,8 +543,8 @@ export function ProjectDialog({
         )}
 
         <label className="skip-scaffold-row">
-          <input
-            type="checkbox"
+          <Toggle
+            size="sm"
             checked={skipScaffold}
             onChange={(e) => setSkipScaffold(e.target.checked)}
           />
@@ -396,8 +569,8 @@ export function ProjectDialog({
 
             {mode !== "keep" && (
               <label className="manual-validation-row">
-                <input
-                  type="checkbox"
+                <Toggle
+                  size="sm"
                   checked={manualValidationConfirmed}
                   onChange={(e) => setManualValidationConfirmed(e.target.checked)}
                 />
@@ -407,18 +580,15 @@ export function ProjectDialog({
 
             <label className="scaffold-fill-all-row">
               <span>Fill all</span>
-              <select
+              <Dropdown
                 value=""
+                placeholder={missingFillableScaffoldCount === 0 ? "No missing files" : "Choose fill mode..."}
                 disabled={missingFillableScaffoldCount === 0}
-                onChange={(e) => applyScaffoldFillAll(e.target.value)}
-              >
-                <option value="" disabled>
-                  {missingFillableScaffoldCount === 0 ? "No missing files" : "Choose fill mode..."}
-                </option>
-                {SCAFFOLD_FILL_OPTIONS.map((option) => (
-                  <option value={option.value} key={option.value}>{option.label}</option>
-                ))}
-              </select>
+                onChange={(v) => {
+                  if (v) applyScaffoldFillAll(v);
+                }}
+                options={SCAFFOLD_FILL_OPTIONS}
+              />
             </label>
 
             <div className="scaffold-list">
@@ -429,17 +599,14 @@ export function ProjectDialog({
                     <small>{scaffoldStatusText(item)}</small>
                   </div>
                   {item.kind === "file" ? (
-                    <select
+                    <Dropdown
                       value={item.exists ? "none" : scaffoldFillModes[item.path] ?? "none"}
                       disabled={item.exists}
-                      onChange={(e) =>
-                        setScaffoldFillModes((current) => ({ ...current, [item.path]: e.target.value }))
+                      onChange={(v) =>
+                        setScaffoldFillModes((current) => ({ ...current, [item.path]: v }))
                       }
-                    >
-                      {SCAFFOLD_FILL_OPTIONS.map((option) => (
-                        <option value={option.value} key={option.value}>{option.label}</option>
-                      ))}
-                    </select>
+                      options={SCAFFOLD_FILL_OPTIONS}
+                    />
                   ) : (
                     <span className="scaffold-row-status">Status only</span>
                   )}
@@ -455,27 +622,63 @@ export function ProjectDialog({
         )}
 
         <div className="project-dialog-path">
-          {isRemote
-            ? remoteChosenPath
-              ? kind === "new"
-                ? `Remote destination: ${joinRemotePath(remoteChosenPath, safeName || "<name>")}`
-                : `Remote location: ${remoteChosenPath}`
-              : ""
-            : kind === "new" || mode !== "keep"
-              ? targetDir
-                ? `Destination: ${targetDir}`
-                : ""
-              : sourceDir
-                ? `Location: ${sourceDir}`
-                : ""}
+          {isRemoteProject ? (
+            remoteChosenPath ? (
+              <span className="remote-chosen-summary">
+                <span className="remote-chosen-text">
+                  {kind === "new"
+                    ? `Remote destination: ${joinRemotePath(remoteChosenPath, safeName || "<name>")}`
+                    : `Remote location: ${remoteChosenPath}`}
+                </span>
+                {/* Wrong folder committed at the browse step? Jump straight back
+                    to it (the browser keeps its place) to pick another — without
+                    hunting for the footer's generic Back button. Windows manual
+                    has no browse step, so Back lands on the connect path field. */}
+                <button
+                  type="button"
+                  className="remote-change-folder-btn"
+                  disabled={busy}
+                  onClick={goBack}
+                  title={
+                    winManual
+                      ? "Go back to change the remote path"
+                      : "Go back to the remote browser to pick a different folder"
+                  }
+                >
+                  Change folder
+                </button>
+              </span>
+            ) : (
+              ""
+            )
+          ) : kind === "new" || mode !== "keep" ? (
+            targetDir ? `Destination: ${targetDir}` : ""
+          ) : sourceDir ? (
+            `Location: ${sourceDir}`
+          ) : (
+            ""
+          )}
         </div>
         {error && <div className="project-dialog-error">{error}</div>}
+        </>
+        )}
 
         <div className="project-dialog-actions">
           <button type="button" onClick={onClose}>Cancel</button>
-          <button type="button" disabled={!canSubmit || busy} onClick={() => void submit()}>
-            {busy ? "Working..." : kind === "new" ? "Create" : "Import"}
-          </button>
+          {isRemoteProject && stepIdx > 0 && (
+            <button type="button" disabled={busy} onClick={goBack}>
+              Back
+            </button>
+          )}
+          {isRemoteProject && step !== "details" ? (
+            <button type="button" disabled={!canNext || busy} onClick={goNext}>
+              Next
+            </button>
+          ) : (
+            <button type="button" disabled={!canSubmit || busy} onClick={() => void submit()}>
+              {busy ? "Working..." : kind === "new" ? "Create" : "Import"}
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -3,6 +3,15 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import {
+  snapshotFrame,
+  physToClient,
+  clientToPhys,
+  desktopCursor,
+  type PhysPoint,
+  type WindowFrame,
+} from "../../lib/coords";
+import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform";
+import {
   DETACHED_DRAG_END,
   DETACHED_DRAG_MOVE,
   DETACHED_DRAG_START,
@@ -21,9 +30,14 @@ import { TerminalView } from "../terminal/TerminalView";
 import { FileBrowser } from "../files/FileBrowser";
 import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
+import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
+import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
+import { DiskUsagePane } from "../monitoring/DiskUsagePane";
+import { CalendarPane } from "../calendar/CalendarPane";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
+import { NewTabMenu } from "../tabs/NewTabMenu";
 import { pickEdge } from "../tabs/dragGeometry";
 import { useDragStore } from "../../stores/drag";
 import { useTabLandStore } from "../../stores/tabLand";
@@ -31,6 +45,7 @@ import { useSettingsStore } from "../../stores/settings";
 import {
   DEFAULT_MIN_SUBWINDOW_PX,
   allGroups,
+  effectiveTabLocation,
   findGroup,
   type DropEdge,
   type GroupNode,
@@ -71,6 +86,10 @@ interface Props {
   /** Merge `key` into `targetGroupId` (at `index`, else append) — a tab dragged
    *  onto ANOTHER group's bar (or body center) inside a split popout. */
   onMove: (key: string, targetGroupId: string, index?: number) => void;
+  /** Create a new tab (from the popout's own "+" menu) in `targetGroupId`. The
+   *  detached window can't mint the key/own the PTY, so it streams the resolved
+   *  payload to the main window, which creates the tab and re-seeds. */
+  onAddTab: (tab: Omit<TabEntry, "key">, targetGroupId: string) => void;
 }
 
 /**
@@ -92,7 +111,10 @@ export function DetachedCenterPanel({
   onSplit,
   onResize,
   onMove,
+  onAddTab,
 }: Props) {
+  // The popout's "+" add-tab menu: which group opened it + where to anchor it.
+  const [addMenu, setAddMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
   // One bar element per group, so a per-tab drag can hit-test the bar it's over.
   const barRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   // One body element per group, for resolving an edge-split drop target.
@@ -111,6 +133,13 @@ export function DetachedCenterPanel({
   // the toggle on our label-namespaced channel and commits the dock itself (it
   // owns the layout); we only render the cue. See `detachedDropPreviewEvent`.
   const [dropActive, setDropActive] = useState(false);
+  // #42 (Windows): true while the popout is being moved by a NATIVE title-bar drag.
+  // It swaps the heavy pane content (terminal canvases) for a cheap placeholder so
+  // WebView2 has a trivial surface to composite during the OS modal move loop and
+  // can keep up with the frame — the panes would otherwise visibly lag/swim behind
+  // the moving frame. Set on the first `onMoved`, cleared on release (or when the
+  // window stops moving), so a plain title-bar click never flashes the placeholder.
+  const [windowDragging, setWindowDragging] = useState(false);
   // Within-bar reorder visuals, driven by THIS popout's own drag store (a
   // separate JS heap from the main window). While a tab is dragged, the dragged
   // tab collapses and a gap slides open at the live drop slot.
@@ -129,6 +158,18 @@ export function DetachedCenterPanel({
   const landedNonce = useTabLandStore((s) => s.landed?.nonce ?? 0);
   const clearLanded = useTabLandStore((s) => s.clear);
   const byKey = new Map(tabs.map((t) => [t.key, t] as const));
+  // Which group inside this popout is "current". A split popout otherwise
+  // rendered every pane as `.focused` with no active-pane marker; mirror the main
+  // window, where `focusedGroupId` drives the `.focus-frame` accent outline. The
+  // detached window is inert to the main tabs store (separate JS heap, layout
+  // streamed via props), so focus is tracked locally here.
+  const [focusedGroupId, setFocusedGroupId] = useState<string | null>(null);
+  // Keep focus on a group that still exists as the tree changes (split added /
+  // removed / docked back); default to the first group.
+  useEffect(() => {
+    const ids = allGroups(tree).map((g) => g.id);
+    setFocusedGroupId((cur) => (cur && ids.includes(cur) ? cur : (ids[0] ?? null)));
+  }, [tree]);
 
   // ── Pane-region measurement (for the split-preview overlay) ───────────────
   // Recompute every group body's rect (relative to the panel) so the overlay can
@@ -233,16 +274,15 @@ export function DetachedCenterPanel({
     const win = getCurrentWindow();
     const label = win.label;
     let active = false;
-    // `origin` maps the streamed OS cursor (logical px) into our client space for
-    // the ghost position; resolved lazily on the first hover (window doesn't move).
-    let origin = { x: 0, y: 0 };
-    const refreshOrigin = async () => {
+    // Our window frame (physical px), used to map the streamed physical cursor into
+    // our own client px for the ghost position; snapshotted lazily on the first
+    // hover (the popout doesn't move/rescale mid-gesture).
+    let frame: WindowFrame | null = null;
+    const refreshFrame = async () => {
       try {
-        const scale = (await win.scaleFactor()) || 1;
-        const lg = (await win.innerPosition()).toLogical(scale);
-        origin = { x: lg.x, y: lg.y };
+        frame = await snapshotFrame(win);
       } catch {
-        origin = { x: 0, y: 0 };
+        frame = null;
       }
     };
     const reg = (p: Promise<() => void>) =>
@@ -250,8 +290,11 @@ export function DetachedCenterPanel({
 
     // Render the host-resolved target as our split-preview, and follow the ghost.
     const apply = (p: DetachedDropPreview) => {
-      if (p.screenX != null && p.screenY != null) {
-        useDragStore.getState().move(p.screenX - origin.x, p.screenY - origin.y);
+      if (p.cursorPhysX != null && p.cursorPhysY != null && frame) {
+        // physical desktop px → our own client px (via innerPhys/scale, the only
+        // DPI-correct conversion); valid even though the cursor is outside us.
+        const c = physToClient(frame, { x: p.cursorPhysX, y: p.cursorPhysY });
+        useDragStore.getState().move(c.x, c.y);
       }
       const t = p.target;
       useDragStore.getState().setTarget(
@@ -306,7 +349,7 @@ export function DetachedCenterPanel({
             previewW: 0,
             previewH: 0,
           });
-          void refreshOrigin().then(() => apply(p));
+          void refreshFrame().then(() => apply(p));
           return;
         }
         apply(p);
@@ -423,21 +466,20 @@ export function DetachedCenterPanel({
     return true;
   };
 
-  // #42: drag-to-dock. We stream the gesture's OS-LEVEL CURSOR position to the
-  // main window, which maps it into its client space, renders the dock preview,
-  // and docks on release. We do NOT rely on DOM pointer events crossing into the
-  // main window: on WebKitGTK (especially Wayland) DOM pointermove/up do not cross
-  // the OS window boundary, so the stream would die at the popout's edge and the
-  // drop would commit at stale coords. Instead we POLL `cursorPosition()`; that is
-  // a desktop-global PHYSICAL position, so we (a) divide by our scale factor to
-  // emit logical/CSS px for the main window and (b) use the raw physical position
-  // to move our OWN window so it follows the cursor. Release is via DOM
-  // pointerup/pointercancel; END carries the LAST polled cursor position. Only
-  // Escape cancels; pointercancel commits (WebKitGTK fires it for pointerup).
+  // #42: drag-to-dock. We stream the gesture's OS-LEVEL CURSOR position (PHYSICAL
+  // desktop px — the canonical cross-window space, see lib/coords) to the main
+  // window, which maps it into its own client space and renders the dock preview /
+  // docks on release. We do NOT rely on DOM pointer events crossing into the main
+  // window: on WebKitGTK (esp. Wayland) DOM pointermove/up don't cross the OS
+  // window boundary, and DOM `screenX/Y` units diverge across engines under DPI
+  // scaling. Instead we POLL `cursorPosition()` (already physical, cross-engine):
+  // (a) emit it verbatim for the main window, and (b) on Linux only — see
+  // `followWindowOnDockDrag` — use it to move our OWN window so it follows the
+  // cursor (on Win/mac `setPosition` under a held button can drop pointer capture).
+  // Release is centralized through `bindDragRelease`, which applies the
+  // engine-correct cancel-vs-commit policy; END carries the last polled cursor.
   const beginDockDrag = (args: {
     pointerId: number;
-    screenX: number;
-    screenY: number;
     clientX?: number;
     clientY?: number;
     captureEl: HTMLElement | null;
@@ -448,49 +490,39 @@ export function DetachedCenterPanel({
     tabKey?: string;
   }) => {
     const { pointerId, captureEl, label: dragLabel, moveWindow, tabKey, sourceGroup } = args;
-    try {
-      captureEl?.setPointerCapture(pointerId);
-    } catch {
-      /* capture is best-effort; the OS-cursor poll does not depend on it */
+    // Per-tab drags pass `captureEl: null` (no stable element under the pointer);
+    // on engines that need capture to deliver the terminal event, fall back to a
+    // stable element (the panel root, else document.body). Without this, dragging a
+    // SINGLE tab out of a popout never receives its release on Win/mac and never
+    // docks. WebKitGTK keeps the implicit grab, so it needs no capture at all.
+    const capEl =
+      captureEl ??
+      (dragPlatform.needsPointerCapture ? (panelRef.current ?? document.body) : null);
+    // Capture whenever a real element is present (preserves the old unconditional
+    // Linux capture for whole-window/group/titlebar drags); the `capEl` fallback
+    // ADDS capture only on engines that need it (Win/mac) for the per-tab case.
+    if (capEl) {
+      try {
+        capEl.setPointerCapture(pointerId);
+      } catch {
+        /* capture is best-effort; the OS-cursor poll does not depend on it */
+      }
     }
 
     const win = getCurrentWindow();
-    let last = { x: args.screenX, y: args.screenY };
-    let scale = 1;
+    // `last` tracks the physical desktop cursor (the canonical cross-window space).
+    let last: PhysPoint = { x: 0, y: 0 };
     let done = false;
     let grab: { x: number; y: number } | null = null;
     let moving = false;
-    let origin = { x: 0, y: 0 };
+    // Our own window frame (physical px), for mapping the physical cursor back into
+    // our client px for the local per-tab hit-test. Snapshotted up front.
+    let popoutFrame: WindowFrame | null = null;
+    let pollId: number | null = null;
+    let unbindRelease: (() => void) | null = null;
 
-    void win
-      .scaleFactor()
-      .then(async (s) => {
-        scale = s || 1;
-        if (tabKey != null) {
-          const ip = await win.innerPosition();
-          const lg = ip.toLogical(scale);
-          origin = { x: lg.x, y: lg.y };
-        }
-      })
-      .catch(() => {});
-    if (moveWindow) {
-      void Promise.all([win.outerPosition(), cursorPosition()])
-        .then(([pos, cur]) => {
-          grab = { x: cur.x - pos.x, y: cur.y - pos.y };
-        })
-        .catch(() => {});
-    }
-
-    void emit(DETACHED_DRAG_START, {
-      scope,
-      // Cross-window protocol identifies the popout RECORD, not the inner group.
-      groupId: popoutId,
-      label: dragLabel,
-      screenX: last.x,
-      screenY: last.y,
-      tabKey,
-    } satisfies DetachedDragStart);
-
+    // Per-tab drags show a local ghost immediately (no frame needed): clone the
+    // dragged pane and seed the popout's own drag store synchronously on press.
     if (tabKey != null) {
       const pane =
         Array.from(
@@ -525,100 +557,169 @@ export function DetachedCenterPanel({
       });
     }
 
-    const poll = window.setInterval(() => {
-      void cursorPosition()
-        .then((p) => {
-          if (done) return;
-          last = { x: p.x / scale, y: p.y / scale };
-          void emit(DETACHED_DRAG_MOVE, {
-            screenX: last.x,
-            screenY: last.y,
-          } satisfies DetachedDragMove);
-          if (moveWindow && grab && !moving) {
-            moving = true;
-            void win
-              .setPosition(
-                new PhysicalPosition(
-                  Math.round(p.x - grab.x),
-                  Math.round(p.y - grab.y),
-                ),
-              )
-              .catch(() => {})
-              .finally(() => {
-                moving = false;
-              });
-          }
-          if (tabKey != null && sourceGroup) {
-            const cx = last.x - origin.x;
-            const cy = last.y - origin.y;
-            const overPopout =
-              cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight;
-            if (overPopout) {
-              useDragStore.getState().move(cx, cy);
-              resolveLocalTarget(cx, cy);
-            } else if (
-              useDragStore.getState().drag?.reorderGroup ||
-              useDragStore.getState().drag?.overGroup
-            ) {
-              useDragStore.getState().setTarget({
-                overGroup: null,
-                edge: null,
-                reorderGroup: null,
-                reorderIndex: null,
-              });
+    const startPoll = () => {
+      pollId = window.setInterval(() => {
+        void cursorPosition()
+          .then((p) => {
+            if (done) return;
+            last = { x: p.x, y: p.y };
+            void emit(DETACHED_DRAG_MOVE, {
+              cursorPhysX: p.x,
+              cursorPhysY: p.y,
+            } satisfies DetachedDragMove);
+            // Linux-only cosmetic window-follow (Win/mac: the main window already
+            // paints the preview + ghost; setPosition would fight the OS).
+            if (moveWindow && dragPlatform.followWindowOnDockDrag && grab && !moving) {
+              moving = true;
+              void win
+                .setPosition(
+                  new PhysicalPosition(
+                    Math.round(p.x - grab.x),
+                    Math.round(p.y - grab.y),
+                  ),
+                )
+                .catch(() => {})
+                .finally(() => {
+                  moving = false;
+                });
             }
+            if (tabKey != null && sourceGroup && popoutFrame) {
+              // physical desktop px → our own client px (innerPhys/scale), the only
+              // DPI-correct conversion — never outerPosition.
+              const c = physToClient(popoutFrame, { x: p.x, y: p.y });
+              const overPopout =
+                c.x >= 0 && c.y >= 0 && c.x <= window.innerWidth && c.y <= window.innerHeight;
+              if (overPopout) {
+                useDragStore.getState().move(c.x, c.y);
+                resolveLocalTarget(c.x, c.y);
+              } else if (
+                useDragStore.getState().drag?.reorderGroup ||
+                useDragStore.getState().drag?.overGroup
+              ) {
+                useDragStore.getState().setTarget({
+                  overGroup: null,
+                  edge: null,
+                  reorderGroup: null,
+                  reorderIndex: null,
+                });
+              }
+            }
+          })
+          .catch(() => {});
+      }, 16);
+    };
+
+    // Snapshot our frame, seed the gesture's initial physical cursor, emit START,
+    // THEN start the poll — so a MOVE never reaches the main window before START
+    // (the main's MOVE/END handlers guard on the in-flight detached drag).
+    void snapshotFrame(win)
+      .then(async (f) => {
+        if (done) return;
+        popoutFrame = f;
+        // Seed: for a per-tab drag, derive from the press's client coords (exact
+        // origin of the gesture); otherwise read the OS cursor (physical).
+        const seed: PhysPoint =
+          tabKey != null && args.clientX != null && args.clientY != null
+            ? clientToPhys(f, { x: args.clientX, y: args.clientY })
+            : await desktopCursor().catch(() => ({ x: f.innerPhys.x, y: f.innerPhys.y }));
+        if (done) return;
+        last = seed;
+        if (moveWindow) {
+          // Grab offset = cursor − window origin, both physical, so the window
+          // tracks the cursor without jumping. Computed for BOTH window-follow
+          // modes: on Linux the poll uses it per-tick to follow the cursor; on
+          // Win/mac (`!followWindowOnDockDrag`) the poll skips the follow, but
+          // `finish` uses this same offset for ONE final `setPosition` so a
+          // free-space release lands the popout where it was dropped instead of
+          // leaving it frozen at its start position (the Windows regression).
+          try {
+            const cur = await cursorPosition();
+            grab = { x: cur.x - f.outerPhys.x, y: cur.y - f.outerPhys.y };
+          } catch {
+            grab = null;
           }
-        })
-        .catch(() => {});
-    }, 16);
+        }
+        void emit(DETACHED_DRAG_START, {
+          scope,
+          // Cross-window protocol identifies the popout RECORD, not the inner group.
+          groupId: popoutId,
+          label: dragLabel,
+          cursorPhysX: seed.x,
+          cursorPhysY: seed.y,
+          tabKey,
+        } satisfies DetachedDragStart);
+        startPoll();
+      })
+      .catch(() => {});
 
     const finish = (cancelled: boolean, shift = false) => {
       if (done) return;
       done = true;
-      window.clearInterval(poll);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onCancel);
-      window.removeEventListener("keydown", onKey);
+      if (pollId != null) window.clearInterval(pollId);
+      unbindRelease?.();
       try {
-        captureEl?.releasePointerCapture(pointerId);
+        capEl?.releasePointerCapture(pointerId);
       } catch {
         /* ignore */
       }
       if (tabKey != null) useDragStore.getState().end();
+      // Win/mac whole-window free-space release: the per-tick window-follow is
+      // disabled there (`!followWindowOnDockDrag`), so the popout never moved
+      // during the gesture and the main window's END no-ops on a free-space
+      // (inMain=false) drop — leaving the popout frozen at its origin. Move it
+      // ONCE here to where it was dropped, using the same grab offset the Linux
+      // follow uses. Skipped on cancel (Escape leaves it put). Harmless vs a
+      // dock-back: if released over the main window, attach_subwindow destroys
+      // this window an instant later, so a stray setPosition has no effect.
+      if (!cancelled && moveWindow && !dragPlatform.followWindowOnDockDrag && grab) {
+        void win
+          .setPosition(
+            new PhysicalPosition(
+              Math.round(last.x - grab.x),
+              Math.round(last.y - grab.y),
+            ),
+          )
+          .catch(() => {});
+      }
       void emit(DETACHED_DRAG_END, {
         cancelled,
-        screenX: last.x,
-        screenY: last.y,
+        cursorPhysX: last.x,
+        cursorPhysY: last.y,
         shift,
       } satisfies DetachedDragEnd);
     };
     const release = (shift = false) => {
-      if (tabKey != null && sourceGroup) {
-        const handledLocally = handleLocalTabRelease(
-          tabKey,
-          last.x - origin.x,
-          last.y - origin.y,
-        );
+      // Shift ALWAYS means "pop into its own window" (unified with the main-window
+      // tab rule), so DON'T commit a within-popout drop under Shift — hand the
+      // gesture to the main host UNcancelled and let its unified ladder run the
+      // new-window branch (`decideDetachedTabDrop` → `detachTabToNewWindow`). For a
+      // lone-tab popout the host refuses (it's already its own window) → a clean
+      // no-op, never the previous local-split + Shift-bail hang. Without Shift, a
+      // release over THIS popout is still committed locally (reorder/split).
+      if (!shift && tabKey != null && sourceGroup && popoutFrame) {
+        const c = physToClient(popoutFrame, last);
+        const handledLocally = handleLocalTabRelease(tabKey, c.x, c.y);
         finish(handledLocally, shift);
         return;
       }
       finish(false, shift);
     };
-    const onUp = (ev: PointerEvent) => release(ev.shiftKey);
-    const onCancel = (ev: PointerEvent) => release(ev.shiftKey);
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") finish(true);
-    };
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onCancel);
-    window.addEventListener("keydown", onKey);
+    // bindDragRelease applies the engine-correct policy (WebKitGTK: pointercancel
+    // commits; Win/mac: pointercancel aborts) + a blur backstop. Bound synchronously
+    // so the terminal event is captured from the start of the gesture.
+    unbindRelease = bindDragRelease({
+      onCommit: (shift) => release(shift),
+      onAbort: () => finish(true),
+    });
   };
 
   // #42: grab a group's empty bar area to move/dock the WHOLE popout window.
   const onGroupBarPointerDown = (e: React.PointerEvent, group: GroupNode) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    if (target.closest(".tab, .detached-titlebar-controls, button")) return;
+    // Only the explicit `.tab-drag-grip` moves/docks the popout from the tab bar —
+    // grabbing empty bar space no longer does (the titlebar remains a move handle).
+    if (!target.closest(".tab-drag-grip")) return;
     e.preventDefault();
     const activeLabel =
       group.tabKeys
@@ -626,12 +727,53 @@ export function DetachedCenterPanel({
         .find((t) => t?.key === group.activeKey)?.label ?? "Subwindow";
     beginDockDrag({
       pointerId: e.pointerId,
-      screenX: e.screenX,
-      screenY: e.screenY,
       captureEl: e.currentTarget as HTMLElement,
       label: activeLabel,
       moveWindow: true,
     });
+  };
+
+  // #42 (Windows): show the cheap move placeholder for the duration of a NATIVE
+  // title-bar drag (`startDragging`), so WebView2 isn't repainting the terminal
+  // canvases during the OS modal move loop (which it can't do fast enough → the
+  // content lags the frame). End detection is deliberately belt-and-suspenders
+  // because the native move loop can swallow the terminal `pointerup`:
+  //   • show on the FIRST `onMoved` (so a non-drag click never flashes it),
+  //   • hide on `pointerup`/`pointercancel` (the normal release, cursor over us),
+  //   • hide once the window has stopped moving for a beat (release over ANOTHER
+  //     monitor, where our webview never sees the pointerup), and
+  //   • a hard timeout so the placeholder can never get stuck on.
+  const beginWindowMove = () => {
+    const win = getCurrentWindow();
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    let unMoved: (() => void) | undefined;
+    let shown = false;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (idle) clearTimeout(idle);
+      clearTimeout(hardStop);
+      unMoved?.();
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      if (shown) setWindowDragging(false);
+    };
+    const onMoved = () => {
+      if (!shown) {
+        shown = true;
+        setWindowDragging(true);
+      }
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(finish, 250);
+    };
+    const hardStop = setTimeout(finish, 10000);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    win
+      .onMoved(onMoved)
+      .then((fn) => (done ? fn() : (unMoved = fn)))
+      .catch(() => {});
   };
 
   // #42: grab the popout's outer title bar to move/dock the WHOLE window. Mirrors
@@ -643,13 +785,28 @@ export function DetachedCenterPanel({
     const target = e.target as HTMLElement;
     if (target.closest(".detached-titlebar-controls, button, .no-drag")) return;
     e.preventDefault();
+    // Windows: move the borderless popout with the NATIVE OS window drag, the same
+    // mechanism the main window's HeaderBar uses. The custom poll+setPosition dock
+    // gesture (`beginDockDrag`) can't move the window on Windows — window-follow is
+    // disabled there (`followWindowOnDockDrag=false`), AND the focus loss when the
+    // main window paints its dock ghost trips the `blur` backstop in
+    // `bindDragRelease` (armed because `needsPointerCapture` is true on Windows),
+    // which aborts the gesture with `cancelled=true` and so SKIPS the on-release
+    // `setPosition`. The popout was therefore frozen during the drag and never
+    // jumped on release. `startDragging` hands the move to the OS: live, DPI-correct,
+    // and correct across monitors. Dock-back-into-main stays available via the group
+    // tab-bar handle (`onGroupBarPointerDown`). Other platforms keep the unified
+    // move+dock gesture, where window-follow already works — untouched.
+    if (PLATFORM === "windows") {
+      beginWindowMove();
+      void getCurrentWindow().startDragging().catch(() => {});
+      return;
+    }
     const first = allGroups(tree)[0];
     const activeLabel =
       (first ? tabs.find((t) => t.key === first.activeKey)?.label : undefined) ?? "Subwindow";
     beginDockDrag({
       pointerId: e.pointerId,
-      screenX: e.screenX,
-      screenY: e.screenY,
       captureEl: e.currentTarget as HTMLElement,
       label: activeLabel,
       moveWindow: true,
@@ -657,24 +814,24 @@ export function DetachedCenterPanel({
   };
 
   // #42: dragging a SINGLE tab out of `group`. Activate on press, then once the
-  // pointer crosses a threshold start a per-tab dock drag.
+  // pointer crosses a threshold start a per-tab dock drag. The threshold uses DOM
+  // `clientX/Y` (reliable in-window CSS px on every engine); cross-window position
+  // is poll-driven inside beginDockDrag. The press's client coords seed the gesture.
   const onTabPointerDown = (e: React.PointerEvent, group: GroupNode, tab: TabEntry) => {
     if (e.button !== 0) return;
     e.stopPropagation();
     onActivate(tab.key);
-    const startX = e.screenX;
-    const startY = e.screenY;
+    const startX = e.clientX;
+    const startY = e.clientY;
     let armed = false;
     const onMove = (ev: PointerEvent) => {
       if (armed) return;
-      if (Math.hypot(ev.screenX - startX, ev.screenY - startY) < 5) return;
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
       armed = true;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       beginDockDrag({
         pointerId: ev.pointerId,
-        screenX: ev.screenX,
-        screenY: ev.screenY,
         clientX: ev.clientX,
         clientY: ev.clientY,
         captureEl: null,
@@ -708,8 +865,17 @@ export function DetachedCenterPanel({
     const localReorder = reorderGroupId === group.id ? reorderIndex : null;
     const isDropTarget = localReorder != null;
     const dropPlaceholder = <TabDropPlaceholder label={dragLabel} />;
+    const isFocused = group.id === focusedGroupId;
     return (
-      <div className="subwindow focused">
+      <div
+        className={`subwindow${isFocused ? " focused" : ""}`}
+        // Clicking anywhere in the group (bar or body) makes it the current one.
+        // Capture-phase so it wins before a tab/divider pointerdown stops
+        // propagation — mirrors the main window's `Subwindow`.
+        onMouseDownCapture={() => {
+          if (!isFocused) setFocusedGroupId(group.id);
+        }}
+      >
         <div
           ref={(el) => {
             if (el) barRefs.current.set(group.id, el);
@@ -719,6 +885,19 @@ export function DetachedCenterPanel({
           data-group-id={group.id}
           onPointerDown={(e) => onGroupBarPointerDown(e, group)}
         >
+          {/* Move grip — the sole tab-bar handle for moving/docking this popout
+              (the titlebar still moves it too). Always pinned at the far left so
+              it stays grabbable however many tabs fill the bar. A plain
+              (non-button) element, so its pointerdown bubbles to
+              `onGroupBarPointerDown`, which now fires only when the grip is the
+              target. */}
+          <div
+            className="tab-drag-grip"
+            title="Drag to move this window"
+            aria-hidden="true"
+          >
+            ⠿
+          </div>
           {/* Empty bar that's a drop target: the placeholder is the only slot. */}
           {isDropTarget && orderedTabs.length === 0 && (
             <Fragment key="drop-marker">{dropPlaceholder}</Fragment>
@@ -767,6 +946,29 @@ export function DetachedCenterPanel({
           {isDropTarget && localReorder === orderedTabs.length && orderedTabs.length > 0 && (
             <Fragment key="drop-marker-end">{dropPlaceholder}</Fragment>
           )}
+          {/* #42: the popout's own "+" — the detached window had no way to add
+              tabs. Streams an "add" edit to the main window (which owns tab
+              creation + the PTY) via onAddTab. */}
+          <div className="tab-new-wrap">
+            <button
+              className="tab-new-btn"
+              title="New tab"
+              // The bar's pointerdown starts a window-move/dock drag; keep the
+              // button's press out of it (it also excludes buttons, but be explicit).
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setAddMenu((cur) =>
+                  cur && cur.groupId === group.id
+                    ? null
+                    : { groupId: group.id, x: r.left, y: r.bottom + 4 },
+                );
+              }}
+            >
+              +
+            </button>
+          </div>
         </div>
         <div
           className="subwindow-body"
@@ -783,7 +985,23 @@ export function DetachedCenterPanel({
                 : { display: "none" };
               return (
                 <div key={tab.key} className="center-pane" data-tab-key={tab.key} style={style}>
-                  {tab.kind === "files" ? (
+                  {tab.kind === "network" ? (
+                    <NetworkTrafficPane projectId={scope} visible={visible} />
+                  ) : tab.kind === "calendar" ? (
+                    <CalendarPane visible={visible} />
+                  ) : tab.kind === "monitor" ? (
+                    <SystemMonitorPane visible={visible} />
+                  ) : tab.kind === "diskusage" ? (
+                    <DiskUsagePane
+                      projectId={scope === "root" ? null : scope}
+                      projectCwd={tab.cwd}
+                      // No `tabKey` on purpose: a popout runs on a streamed COPY of
+                      // the tab payloads in its own JS heap, with no rename channel
+                      // back to the main window — renaming here would silently
+                      // diverge. A detached tab keeps the label it was given.
+                      visible={visible}
+                    />
+                  ) : tab.kind === "files" ? (
                     <FileBrowser
                       projectDir={tab.cwd}
                       projectId={scope === "root" ? null : scope}
@@ -813,7 +1031,9 @@ export function DetachedCenterPanel({
                       args={tab.args ?? []}
                       env={tab.env ?? {}}
                       cwd={tab.cwd}
-                      localOnly={tab.kind === "local_agent"}
+                      // attachOnly: the main window owns the spawn, so localOnly is
+                      // cosmetic here — kept aligned with CenterPanel's locality.
+                      localOnly={effectiveTabLocation(tab) === "local"}
                       zoomable={tab.kind === "agent" || tab.kind === "local_agent"}
                       visible={visible}
                       focused={visible}
@@ -871,17 +1091,26 @@ export function DetachedCenterPanel({
     );
   };
 
+  // Label shown on the move placeholder: the first group's active tab, else a
+  // generic fallback. Cheap to compute; only painted while `windowDragging`.
+  const firstGroup = allGroups(tree)[0];
+  const moveLabel =
+    (firstGroup ? tabs.find((t) => t.key === firstGroup.activeKey)?.label : undefined) ??
+    "Subwindow";
+
   return (
-    <div className="detached-center center-panel">
+    <div className={`detached-center center-panel${windowDragging ? " moving" : ""}`}>
       {/* #42: the popout's own title bar — a full-width strip ABOVE the tab layout
           that always hosts the min/max/close controls top-right. They used to live
           in the root group's tab bar, which slid left (with the root group) once
           the popout was split; an outer frame keeps them pinned. The empty strip
           is a drag handle for moving / docking the whole window. */}
       <div className="detached-titlebar detached-drag-handle" onPointerDown={onTitlebarPointerDown}>
-        <div className="detached-titlebar-controls no-drag">
-          <WindowControls />
-        </div>
+        {PLATFORM !== "macos" && (
+          <div className="detached-titlebar-controls no-drag">
+            <WindowControls />
+          </div>
+        )}
       </div>
       {/* The layout tree (below the title bar) is the positioning context for the
           absolutely-inset split/subwindow nodes and the split-preview overlay. */}
@@ -890,8 +1119,55 @@ export function DetachedCenterPanel({
         {/* Split preview: the translucent half/whole a split drop would carve out,
             drawn above the per-group panes (mirrors the main window). */}
         <SplitPreviewOverlay groupRects={groupRects} />
+        {/* Focus frame: the accent outline around the current group's pane rect,
+            drawn here (above the opaque panes) for the same reason as the split
+            preview — an in-body frame would be hidden. Mirrors the main window's
+            `FocusFrameOverlay` (minus Shift+↑/↓ nav, which isn't wired here). */}
+        {focusedGroupId && groupRects[focusedGroupId] && (
+          <div
+            className="focus-frame"
+            style={{
+              left: groupRects[focusedGroupId].left,
+              top: groupRects[focusedGroupId].top,
+              width: groupRects[focusedGroupId].width,
+              height: groupRects[focusedGroupId].height,
+            }}
+          />
+        )}
+        {/* #42 (Windows): the move placeholder. While shown, `.detached-center.moving`
+            hides the heavy pane content so this trivial surface is all WebView2 has to
+            composite during the native drag — keeping the content aligned with the
+            frame instead of lagging behind it. */}
+        {windowDragging && (
+          <div className="detached-move-overlay">
+            <span>{moveLabel}</span>
+          </div>
+        )}
       </div>
       {dropActive && <div className="detached-drop-target" />}
+      {/* #42: the "+" add-tab menu for the group that opened it. cwd comes from a
+          tab already in that group (the popout's project directory). */}
+      {addMenu &&
+        (() => {
+          const g = findGroup(tree, addMenu.groupId);
+          if (!g) return null;
+          const cwd =
+            byKey.get(g.activeKey ?? g.tabKeys[0] ?? "")?.cwd ??
+            g.tabKeys.map((k) => byKey.get(k)?.cwd).find(Boolean) ??
+            "";
+          return (
+            <NewTabMenu
+              scope={scope}
+              projectCwd={cwd}
+              // The detached window is inert to the projects store, so there's no
+              // project name to auto-name an agent session with — skip it.
+              projectName=""
+              anchor={{ x: addMenu.x, y: addMenu.y }}
+              onPick={(tab) => onAddTab(tab, addMenu.groupId)}
+              onClose={() => setAddMenu(null)}
+            />
+          );
+        })()}
       <DragGhost />
     </div>
   );

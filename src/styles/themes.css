@@ -41,6 +41,33 @@ html, body, #root {
   height: 100%;
 }
 
+/* #42 (Windows): while the popout is moved by a native title-bar drag, take the
+   heavy pane content OUT of compositing so WebView2 only paints the cheap
+   placeholder and can keep up with the OS-moved frame (otherwise the terminal
+   canvases lag/swim behind the frame). `visibility: hidden` (not display:none)
+   keeps the layout intact, so no xterm reflow/refit churn on release — the
+   content reappears at the same size the instant the move ends. */
+.detached-center.moving .pane-layer {
+  visibility: hidden;
+}
+/* The placeholder shown in place of the hidden content during the move. Solid,
+   opaque, trivially cheap to composite. Fills the body (its positioning context,
+   `.detached-body { position: relative }`); sits above the panes but below nothing
+   that matters during a move. Click-through so it never swallows the gesture. */
+.detached-move-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel);
+  color: var(--text-muted, #9fb0d0);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
 /* #42: the popout's own title bar — a full-width strip above the tab layout that
    always hosts the min/max/close controls in the top-right corner. Before, the
    controls lived in the root group's tab bar; once the popout was split the root
@@ -137,16 +164,46 @@ html, body, #root {
   background: var(--scrollbar-track);
 }
 
-/* xterm's viewport has a pure-black background and `overflow-y: scroll`; it
-   inherits the same standard scrollbar-color as everything else so its bar
+/* xterm's viewport has a pure-black background and hardcodes `overflow-y: scroll`,
+   which paints an always-present scrollbar — with no scrollback the thumb fills
+   the whole track and reads as a solid accent bar down the right edge. Force
+   `auto` so the bar only appears when there's actually something to scroll. The
+   thumb inherits the same standard scrollbar-color as everything else so its bar
    matches (a themed bluish thumb on a themed track). */
 .xterm-viewport {
+  overflow-y: auto !important;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 /* ── Activity calendar color levels (shared across themes) ──────────── */
 /* Override per-theme below where contrast requires it. */
+
+/* ─────────────────────────────────────────────────────────────────────
+   HOW TO ADD A THEME (quick reference)
+   1. Copy one of the [data-theme="..."] blocks below (start from `light`
+      or `dark` — the "fancy" ones add gradients/token overrides).
+   2. Rename the selector: [data-theme="my_theme"] { ... }
+   3. Register it so the Settings → Theme picker shows it, in
+      src/types/index.ts: add to the `Theme` union AND the `THEMES` array.
+   No other file needs changing — settings just stores the id string and
+   App.tsx puts it on <html data-theme="...">.
+
+   The variables you actually recolor (everything else can be left alone):
+     --bg-main / --bg-panel / --bg-header  → window, panels, header
+     --border-color / --border-subtle       → separators, outlines
+     --text-primary / --text-secondary / --text-muted → text tiers
+     --accent / --accent-hover / --accent-active      → the theme's hue
+       (buttons, active pill, links, scrollbar thumb, focus rings)
+     --accent-secondary                     → secondary highlight hue
+     --control-bg / --control-hover-bg / --control-border → inputs/buttons
+     --pill-active-bg / --pill-active-border / --pill-hover-bg → project pills
+     --success / --warning / --danger        → status colors (usually keep)
+     --wm-close / --wm-minimize / --wm-maximize → window-control dots
+     --activity-0..4                         → calendar heatmap ramp (light→dark)
+   Tip: pick one --accent, then derive -hover (darker), -active (darker
+   still), and the pill-active-* rgba() from that same hue.
+   ───────────────────────────────────────────────────────────────────── */
 
 /* ── Theme: fancy_dark (default) ─────────────────────────────────────── */
 :root,
@@ -163,6 +220,21 @@ html, body, #root {
   --accent-hover: #5edcff;
   --accent-active: #1ca7d8;
   --accent-secondary: #b388ff;
+  --info: #6cb6ff;
+  /* Header logo: pure black on light themes, pure white on dark. Defaulted on
+     :root so the plain `dark` theme inherits #fff without redeclaring it. */
+  --logo-color: #fff;
+  /* Text color for solid-accent-filled controls (e.g. .dialog-connect-btn,
+     .how-to-start-num). One constant across themes (not redeclared per theme,
+     so it cascades from :root everywhere). NOTE: this fixed white gives poor
+     contrast on the bright accents (e.g. fancy_dark's cyan), so filled-accent
+     CTA buttons use --bg-main instead (see .btn-primary) — which is dark in dark
+     themes and light in light themes, tracking the accent for legible text. */
+  --accent-contrast: #ffffff;
+  /* Corner radius knob for the whole app: the house style is sharp corners, so
+     every shared surface/button rule reads var(--radius) and this single value
+     flips them all at once. Defined once on :root (not per theme). */
+  --radius: 0;
   /* Scrollbar colors. Defined ONCE on :root but referencing the theme's own
      --accent / --bg-panel, which are re-declared per theme on this same <html>
      element — so `var()`'s lazy resolution gives every theme a bluish (accent)
@@ -179,6 +251,9 @@ html, body, #root {
   --success: #7ee787;
   --warning: #ffd166;
   --danger: #ff5c8a;
+  /* Helix signature hues for the pill/tab labels (apricot + green). */
+  --helix-orange: #f47868;
+  --helix-green: #9fd86a;
   --pill-bg: transparent;
   --pill-active-bg: rgba(54, 197, 240, 0.16);
   --pill-active-border: #36c5f0;
@@ -208,12 +283,15 @@ html, body, #root {
   --accent-hover: #58a6ff;
   --accent-active: #1f6feb;
   --accent-secondary: #d29922;
+  --info: #58a6ff;
   --control-bg: #1c2128;
   --control-hover-bg: #262d36;
   --control-border: #30363d;
   --success: #3fb950;
   --warning: #e3b341;
   --danger: #f85149;
+  --helix-orange: #f47868;
+  --helix-green: #9fd86a;
   --pill-bg: transparent;
   --pill-active-bg: rgba(56, 139, 253, 0.1);
   --pill-active-border: rgba(56, 139, 253, 0.2);
@@ -243,12 +321,16 @@ html, body, #root {
   --accent-hover: #0550ae;
   --accent-active: #054da7;
   --accent-secondary: #bf8700;
+  --info: #0969da;
+  --logo-color: #000;
   --control-bg: #ffffff;
   --control-hover-bg: #f6f8fa;
   --control-border: #d0d7de;
   --success: #1a7f37;
   --warning: #9a6700;
   --danger: #d1242f;
+  --helix-orange: #d6492f;
+  --helix-green: #2e7d32;
   --pill-bg: transparent;
   --pill-active-bg: rgba(9, 105, 218, 0.1);
   --pill-active-border: rgba(9, 105, 218, 0.24);
@@ -278,12 +360,16 @@ html, body, #root {
   --accent-hover: #0550ae;
   --accent-active: #054da7;
   --accent-secondary: #14b8a6;
+  --info: #0ea5e9;
+  --logo-color: #000;
   --control-bg: #ffffff;
   --control-hover-bg: #f6f8fa;
   --control-border: #c9d7e5;
   --success: #1a7f37;
   --warning: #9a6700;
   --danger: #d1242f;
+  --helix-orange: #d6492f;
+  --helix-green: #2e7d32;
   --pill-bg: transparent;
   --pill-active-bg: rgba(9, 105, 218, 0.16);
   --pill-active-border: #0969da;
@@ -297,6 +383,45 @@ html, body, #root {
   --activity-2: #40c463;
   --activity-3: #30a14e;
   --activity-4: #216e39;
+}
+
+/* ── Theme: light_lavender ──────────────────────────────────────────── */
+[data-theme="light_lavender"] {
+  --bg-main: #faf9fe;
+  --bg-panel: #f2effa;
+  --bg-header: #f2effa;
+  --border-color: #ddd6f0;
+  --border-subtle: #ebe7f6;
+  --text-primary: #2e2a3d;
+  --text-secondary: #5f5878;
+  --text-muted: #938bab;
+  --accent: #7c5cdb;
+  --accent-hover: #6a49c8;
+  --accent-active: #5d3eb8;
+  --accent-secondary: #9d6ecb;
+  --info: #6d7fd4;
+  --logo-color: #000;
+  --control-bg: #ffffff;
+  --control-hover-bg: #f2effa;
+  --control-border: #ddd6f0;
+  --success: #2e7d5b;
+  --warning: #9a6700;
+  --danger: #d1242f;
+  --helix-orange: #d6492f;
+  --helix-green: #2e7d32;
+  --pill-bg: transparent;
+  --pill-active-bg: rgba(124, 92, 219, 0.12);
+  --pill-active-border: rgba(124, 92, 219, 0.28);
+  --pill-hover-bg: rgba(95, 88, 120, 0.08);
+  --offline-bg: rgba(209, 36, 47, 0.88);
+  --wm-close: #f85149;
+  --wm-minimize: #e3b341;
+  --wm-maximize: #3fb950;
+  --activity-0: #ece8f5;
+  --activity-1: #cdbdf0;
+  --activity-2: #a98fe0;
+  --activity-3: #8968cf;
+  --activity-4: #6344ab;
 }
 
 /* ── App layout shell ─────────────────────────────────────────────────── */
@@ -385,6 +510,29 @@ select option {
 
 }
 
+/* Explicit window-move grip at the top-left of the header, mirroring the
+   subwindow `.tab-drag-grip`. The header is already a drag region, but this is
+   an always-present, obvious handle. */
+.app-drag-grip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  user-select: none;
+  opacity: 0.6;
+  cursor: grab;
+  transition: opacity 0.1s, color 0.1s;
+}
+.app-drag-grip:hover {
+  opacity: 1;
+  color: var(--text-primary);
+}
+.app-drag-grip:active { cursor: grabbing; }
+
 .header-center {
   flex: 1;
   min-width: 0;
@@ -401,6 +549,14 @@ select option {
   padding: 0 10px;
   flex-shrink: 0;
 
+}
+
+/* macOS draws native traffic-light buttons over the top-left of the window
+   (Overlay title-bar style; see tauri.macos.conf.json). Reserve room so the
+   logo and version don't sit under them, and the custom `.wm-controls` are
+   hidden in WindowControls.tsx on macOS. */
+.app-header.is-mac .header-left {
+  padding-left: 78px;
 }
 
 /* ── Window controls (traffic lights) ───────────────────────────────── */
@@ -459,8 +615,9 @@ select option {
   object-fit: contain;
   flex-shrink: 0;
   /* Ring/branch strokes use currentColor so the logo stays legible on every
-     theme (the dark-green original vanished on the dark background). */
-  color: var(--text-primary);
+     theme (the dark-green original vanished on the dark background). Pure
+     black on light themes, pure white on dark, via the per-theme token. */
+  color: var(--logo-color, var(--text-primary));
 }
 
 /* The logo doubles as the root-terminal switch button. */
@@ -486,7 +643,7 @@ select option {
 .root-logo-btn.active {
   background: var(--pill-active-bg);
   border-color: var(--pill-active-border);
-  box-shadow: inset 0 3px 0 var(--accent);
+  box-shadow: inset 0 4px 0 var(--accent);
 }
 
 /* ── Version / debug / conn-type ─────────────────────────────────────── */
@@ -516,8 +673,8 @@ select option {
   height: 32px;
   min-width: 82px;
   padding: 0 6px;
-  border: 1px solid var(--control-border);
-  background: var(--control-bg);
+  border: none;
+  background: transparent;
   color: var(--text-secondary);
   display: inline-flex;
   flex-direction: column;
@@ -680,6 +837,67 @@ select option {
   border-color: var(--text-muted);
 }
 
+/* Print button — shared across the viewers, mirrors the open-external icon. */
+.file-viewer-print {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 0;
+  width: 22px;
+  height: 18px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-viewer-print:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.file-viewer-print:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Auto-sync toggle in the viewer header (remote projects only). Off = muted
+   outline; on = accent-tinted so it reads as active. */
+.file-viewer-autosync {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 0;
+  width: 20px;
+  height: 18px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-viewer-autosync:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.file-viewer-autosync.on {
+  color: var(--accent, #3fb950);
+  border-color: color-mix(in srgb, var(--accent, #3fb950) 60%, transparent);
+  background: color-mix(in srgb, var(--accent, #3fb950) 14%, transparent);
+}
+
+.file-viewer-autosync:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 /* Edit/Preview segmented toggle for the markdown viewer. */
 .file-viewer-modes {
   display: inline-flex;
@@ -703,7 +921,7 @@ select option {
 
 .file-viewer-mode.active {
   background: var(--accent, #4493f8);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 
 .file-viewer-save {
@@ -774,7 +992,7 @@ select option {
 .file-viewer-ai-btn.active {
   background: var(--accent, #4493f8);
   border-color: var(--accent, #4493f8);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 .file-viewer-ai-mode {
   background: var(--bg-panel);
@@ -1018,6 +1236,28 @@ select option {
   word-break: break-word;
 }
 
+/* "No LaTeX engine — install one" prompt in the TeX viewer's no-engine state.
+   Mirrors the install-cmd rows used in the Ollama/Agents settings panels. */
+.tex-install-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+}
+
+.tex-install-banner-text {
+  color: var(--text-muted);
+}
+
+.tex-install-banner .ollama-install-cmd {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
 /* OpenDocument Text viewer (#51): a scrolling, theme-coloured reading surface for
    the HTML subset rendered from content.xml. A centred max-width column keeps
    prose readable; tables and images stay within it. */
@@ -1254,12 +1494,72 @@ select option {
 .tok-attr { color: var(--accent-secondary); }
 .tok-prop { color: var(--accent); }
 
+/* Markdown source highlighting (the .md "Edit" view). Reuses the same semantic
+   variables so it adapts per theme; headings/strong stay bold, emphasis italic. */
+.tok-md-heading { color: var(--accent); font-weight: 700; }
+.tok-md-strong  { color: var(--text-primary); font-weight: 700; }
+.tok-md-em      { color: var(--text-primary); font-style: italic; }
+.tok-md-code    { color: var(--success); }
+.tok-md-link    { color: var(--accent); }
+.tok-md-url     { color: var(--accent-secondary); text-decoration: underline; }
+.tok-md-quote   { color: var(--text-muted); font-style: italic; }
+.tok-md-list    { color: var(--accent-secondary); font-weight: 700; }
+.tok-md-hr      { color: var(--text-muted); }
+
+/* Fancy themes: a Helix-inspired, high-contrast palette so code in the viewer
+   pops — built from Helix's default signature hues (apricot red-orange, lilac &
+   lavender purple, honey/chamois gold) pushed brighter for contrast, plus a
+   green for strings (Helix's default uses grey there, too flat for this).
+   `fancy_dark` carries the Helix dark-purple vibe; `fancy_light` drops the same
+   hues darker so they stay legible on the light surface. Plain `dark`/`light`
+   keep the calm semantic colors above. */
+[data-theme="fancy_dark"] .tok-comment { color: #697c81; }   /* sirocco  */
+[data-theme="fancy_dark"] .tok-string  { color: #9fd86a; }   /* green    */
+[data-theme="fancy_dark"] .tok-keyword { color: #d9bfff; }   /* lilac    */
+[data-theme="fancy_dark"] .tok-num     { color: #efba5d; }   /* honey    */
+[data-theme="fancy_dark"] .tok-type    { color: #e8dca0; }   /* chamois  */
+[data-theme="fancy_dark"] .tok-func    { color: #a4a0e8; }   /* lavender */
+[data-theme="fancy_dark"] .tok-tag     { color: #f47868; }   /* apricot  */
+[data-theme="fancy_dark"] .tok-attr    { color: #dbbfef; }   /* lilac    */
+[data-theme="fancy_dark"] .tok-prop    { color: #b9b4f5; }   /* lavender */
+
+[data-theme="fancy_dark"] .tok-md-heading { color: #f47868; }  /* apricot  */
+[data-theme="fancy_dark"] .tok-md-strong  { color: #e8dca0; }  /* chamois  */
+[data-theme="fancy_dark"] .tok-md-em      { color: #e8dca0; }  /* chamois  */
+[data-theme="fancy_dark"] .tok-md-code    { color: #9fd86a; }  /* green    */
+[data-theme="fancy_dark"] .tok-md-link    { color: #a4a0e8; }  /* lavender */
+[data-theme="fancy_dark"] .tok-md-url     { color: #697c81; }  /* sirocco  */
+[data-theme="fancy_dark"] .tok-md-quote   { color: #697c81; }  /* sirocco  */
+[data-theme="fancy_dark"] .tok-md-list    { color: #d9bfff; }  /* lilac    */
+[data-theme="fancy_dark"] .tok-md-hr      { color: #697c81; }  /* sirocco  */
+
+[data-theme="fancy_light"] .tok-comment { color: #6b7280; }
+[data-theme="fancy_light"] .tok-string  { color: #2e7d32; }  /* green    */
+[data-theme="fancy_light"] .tok-keyword { color: #8e24aa; }  /* lilac    */
+[data-theme="fancy_light"] .tok-num     { color: #b8540a; }  /* honey    */
+[data-theme="fancy_light"] .tok-type    { color: #8a6d1a; }  /* chamois  */
+[data-theme="fancy_light"] .tok-func    { color: #5145c4; }  /* lavender */
+[data-theme="fancy_light"] .tok-tag     { color: #d6492f; }  /* apricot  */
+[data-theme="fancy_light"] .tok-attr    { color: #9333ea; }  /* lilac    */
+[data-theme="fancy_light"] .tok-prop    { color: #6d28d9; }  /* lavender */
+
+[data-theme="fancy_light"] .tok-md-heading { color: #d6492f; }  /* apricot  */
+[data-theme="fancy_light"] .tok-md-strong  { color: #6d4c00; }  /* chamois  */
+[data-theme="fancy_light"] .tok-md-em      { color: #6d4c00; }  /* chamois  */
+[data-theme="fancy_light"] .tok-md-code    { color: #2e7d32; }  /* green    */
+[data-theme="fancy_light"] .tok-md-link    { color: #5145c4; }  /* lavender */
+[data-theme="fancy_light"] .tok-md-url     { color: #6b7280; }  /* sirocco  */
+[data-theme="fancy_light"] .tok-md-quote   { color: #6b7280; }  /* sirocco  */
+[data-theme="fancy_light"] .tok-md-list    { color: #8e24aa; }  /* lilac    */
+[data-theme="fancy_light"] .tok-md-hr      { color: #6b7280; }  /* sirocco  */
+
 /* #49 link-decoration + #45 ghost overlays: transparent <pre> layers aligned to
    the textarea exactly like .file-viewer-highlight, so only their styled spans
    paint. They sit ABOVE the highlight layer but below the textarea caret. */
 .file-viewer-link-layer,
 .file-viewer-search-layer,
 .file-viewer-change-layer,
+.file-viewer-delete-layer,
 .file-viewer-grammar-layer,
 .file-viewer-ghost {
   position: absolute;
@@ -1288,6 +1588,7 @@ select option {
 .file-viewer-link-layer,
 .file-viewer-search-layer,
 .file-viewer-change-layer,
+.file-viewer-delete-layer,
 .file-viewer-grammar-layer {
   inset: auto;
   top: 0;
@@ -1373,6 +1674,260 @@ select option {
   color: var(--accent, #4493f8);
 }
 
+/* ── Git blame (#blame) ─────────────────────────────────────────────────────
+   A per-line attribution column left of the numbers, a faint current-line inline
+   hint, and a hovercard. The column shares the gutter's font metrics and cell
+   heights (incl. wrap mode) so its rows line up with the numbers and the code. */
+.file-viewer-blame-gutter {
+  flex-shrink: 0;
+  overflow: hidden;
+  max-width: 22ch;
+  padding: 10px 6px 10px 8px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: var(--code-font-size, 12px);
+  line-height: var(--code-line-height, 18px);
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border-subtle);
+  user-select: none;
+  cursor: default;
+}
+/* Scroll-locked as a block, mirroring the number gutter (see syncScroll). */
+.file-viewer-blame-inner {
+  will-change: transform;
+}
+.file-viewer-blame-line {
+  height: var(--code-line-height, 18px);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  border-radius: 2px;
+}
+.file-viewer-blame-line.current {
+  color: var(--text-primary);
+  outline: 1px solid var(--border-subtle);
+}
+.file-viewer-blame-line .fv-blame-author {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-viewer-blame-line .fv-blame-date {
+  flex-shrink: 0;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+.file-viewer-blame-line.uncommitted {
+  opacity: 0.4;
+}
+.file-viewer-blame-line .fv-blame-none {
+  opacity: 0.5;
+}
+
+/* Faint right-aligned annotation on the caret's line, over the code area but not
+   interactive (no pointer events). Scroll-locked with the blame column. */
+.file-viewer-blame-inline {
+  position: absolute;
+  right: 12px;
+  z-index: 2;
+  max-width: 60%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  font-size: calc(var(--code-font-size, 12px) - 1px);
+  color: var(--text-muted);
+  opacity: 0.8;
+  font-style: italic;
+  will-change: transform;
+}
+
+/* Blame hovercard: same chrome as the grammar tooltip. Explicit color so it
+   reads correctly regardless of surrounding context (canonical menu scheme). */
+.file-viewer-blame-tip {
+  position: fixed;
+  z-index: 60;
+  transform: translateY(-100%);
+  margin-top: -8px;
+  max-width: 360px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: var(--bg-main, #1f2430);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--accent, #4493f8);
+  font-size: 11px;
+  line-height: 1.45;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.file-viewer-blame-tip-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 2px;
+}
+.file-viewer-blame-tip-hash {
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  color: var(--accent, #4493f8);
+}
+.file-viewer-blame-tip-author {
+  font-weight: 600;
+}
+.file-viewer-blame-tip-date {
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+.file-viewer-blame-tip-summary {
+  white-space: normal;
+}
+
+/* The Blame toggle reuses the format-button chrome; the active state is accented
+   like the other in-editor toggles. */
+.file-viewer-blame-btn.active,
+.file-viewer-compare-btn.active {
+  border-color: var(--accent, #4493f8);
+  color: var(--accent, #4493f8);
+}
+
+/* Three-column compare/merge view (old commit ⇄ live content ⇄ editable result).
+   Fills the editor body; its own sub-toolbar sits above the three columns. */
+.file-viewer-compare {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.file-viewer-compare-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+}
+.file-viewer-compare-label {
+  color: var(--text-muted);
+}
+.file-viewer-compare-date {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.file-viewer-compare-bar-gap {
+  flex: 1 1 auto;
+}
+.file-viewer-compare-apply {
+  border-color: var(--accent, #4493f8);
+  color: var(--accent, #4493f8);
+}
+.file-viewer-compare-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--border-color);
+}
+.file-viewer-compare-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-panel);
+}
+.file-viewer-compare-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-elevated, rgba(127, 127, 127, 0.08));
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary, var(--text-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-viewer-compare-col-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.file-viewer-compare-line {
+  display: flex;
+  white-space: pre;
+}
+.file-viewer-compare-lno {
+  flex: 0 0 auto;
+  width: 3em;
+  padding-right: 0.5em;
+  text-align: right;
+  color: var(--text-muted);
+  opacity: 0.7;
+  user-select: none;
+}
+.file-viewer-compare-code {
+  flex: 1 1 auto;
+  padding-left: 0.5em;
+}
+/* The middle result is a plain editable textarea seeded from the merge. */
+.file-viewer-compare-col-mid .file-viewer-compare-col-head {
+  flex-wrap: wrap;
+}
+.file-viewer-compare-result {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 0 0.5em;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
+/* Per-change chips: accept (keep new) is accent, reject (restore old) is warm;
+   a hand-edited, un-anchorable change is dimmed and non-interactive. */
+.file-viewer-compare-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.file-viewer-compare-chip {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 5px;
+  font-size: 10px;
+  border: 1px solid var(--border-color);
+  user-select: none;
+}
+.file-viewer-compare-chip.accept {
+  border-color: rgba(63, 185, 80, 0.6);
+  color: #3fb950;
+}
+.file-viewer-compare-chip.reject {
+  border-color: rgba(248, 81, 73, 0.6);
+  color: #f85149;
+}
+.file-viewer-compare-chip.disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* #67 in-editor search: the match spans paint a translucent highlight behind the
    editable text (the layer sits below the textarea), the current match brighter —
    like a find highlight. Fixed rgba so it reads on both light and dark themes. */
@@ -1384,14 +1939,103 @@ select option {
   background: rgba(255, 145, 0, 0.6);
 }
 
-/* Last-change marker: tint the most recently inserted/edited run so the latest
-   edit stands out. Sits below the textarea like the other overlays, so the tint
-   paints behind the editable glyphs. A green "changed" tint, distinct from the
-   yellow/orange search highlight; fixed rgba so it reads on both light and dark
-   themes (color-mix/theme vars are unreliable on WebKitGTK here). */
+/* Change-tint trail: tint recently typed runs so the latest edits stand out,
+   sequenced new→old across tiers (.tier-0 newest … .tier-17 oldest). Each tier
+   shifts hue green→teal→blue and fades, so the freshest keystrokes read brightest
+   and older runs cool off before the idle decay retires them. Sits below the
+   textarea like the other overlays, so the tint paints behind the editable
+   glyphs. Fixed rgba so it reads on both light and dark themes (color-mix/theme
+   vars are unreliable on WebKitGTK here). Must stay in sync with CHANGE_TIERS. */
 .file-viewer-change-layer .file-viewer-change-mark {
   border-radius: 2px;
-  background: rgba(63, 185, 80, 0.28);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-0 {
+  background: rgba(63, 185, 80, 0.34);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-1 {
+  background: rgba(64, 181, 88, 0.33);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-2 {
+  background: rgba(65, 177, 95, 0.31);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-3 {
+  background: rgba(66, 173, 103, 0.30);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-4 {
+  background: rgba(67, 169, 111, 0.28);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-5 {
+  background: rgba(67, 165, 118, 0.27);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-6 {
+  background: rgba(68, 161, 126, 0.25);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-7 {
+  background: rgba(69, 157, 134, 0.24);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-8 {
+  background: rgba(70, 153, 141, 0.22);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-9 {
+  background: rgba(71, 148, 149, 0.21);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-10 {
+  background: rgba(72, 144, 156, 0.19);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-11 {
+  background: rgba(73, 140, 164, 0.18);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-12 {
+  background: rgba(74, 136, 172, 0.16);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-13 {
+  background: rgba(74, 132, 179, 0.15);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-14 {
+  background: rgba(75, 128, 187, 0.13);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-15 {
+  background: rgba(76, 124, 195, 0.12);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-16 {
+  background: rgba(77, 120, 202, 0.10);
+}
+.file-viewer-change-layer .file-viewer-change-mark.tier-17 {
+  background: rgba(78, 116, 210, 0.09);
+}
+
+/* Deletion ghosts: the counterpart to the green change trail on the removal
+   side. Just-deleted text is injected back at the spot it vanished and shown in
+   red with a strike-through, then fades out over DELETE_GHOST_MS (kept in sync
+   with `fv-delete-fade` below). The mark carries an OPAQUE panel background so it
+   cleanly masks whatever live text now occupies that position (the rest of the
+   injected layer reflows transparently and never paints). Fixed red so it reads
+   on both light and dark themes, matching the grammar spelling red. */
+.file-viewer-delete-layer .file-viewer-delete-mark {
+  color: #f85149;
+  background: var(--bg-panel, #1f2430);
+  text-decoration: line-through;
+  text-decoration-color: #f85149;
+  border-radius: 2px;
+  animation: fv-delete-fade 2600ms ease-out forwards;
+}
+/* Retire the ghost by both fading it AND collapsing its width to nothing:
+   animating font-size shrinks the inline glyph advances (and the opaque
+   background + strike-through that scale with them) to 0, so the red run
+   shrivels toward its anchor instead of sitting — translucent — on top of the
+   live text once the opacity drops. `1em` is the inherited --code-font-size, so
+   it tracks the editor's current zoom. Held full for the first ~55% ("after some
+   time"), then shrunk away. Duration stays in sync with DELETE_GHOST_MS. */
+@keyframes fv-delete-fade {
+  0%,
+  55% {
+    opacity: 1;
+    font-size: 1em;
+  }
+  100% {
+    opacity: 0;
+    font-size: 0;
+  }
 }
 
 /* #49: recognised file links read as clickable — a dotted underline in the link
@@ -1530,13 +2174,13 @@ select option {
 }
 .file-viewer-tex-compl-item.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 .file-viewer-tex-compl-key {
   font-family: var(--font-mono, monospace);
   color: var(--text-primary);
 }
-.file-viewer-tex-compl-item.active .file-viewer-tex-compl-key { color: #fff; }
+.file-viewer-tex-compl-item.active .file-viewer-tex-compl-key { color: var(--accent-contrast); }
 .file-viewer-tex-compl-detail {
   flex: 1 1 auto;
   overflow: hidden;
@@ -1559,6 +2203,7 @@ select option {
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-change-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-delete-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   white-space: pre-wrap;
@@ -1573,6 +2218,7 @@ select option {
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-change-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-delete-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   min-width: 0;
@@ -1941,25 +2587,34 @@ select option {
   position: absolute;
   top: 0;
   right: 0;
-  width: 14px;
+  width: 16px;
   height: 100%;
   pointer-events: none;
   z-index: 2;
 }
+/* Ticks are wider than the 8px scrollbar so they protrude past the thumb into
+   the page margin (a clear notch), and carry a 1px dark ring so the fixed yellow
+   reads over both the light PDF area and the accent-coloured scrollbar thumb. */
 .file-viewer-pdf-search-tick {
   position: absolute;
-  right: 2px;
-  width: 8px;
-  height: 2px;
-  border-radius: 1px;
-  background: rgba(255, 213, 0, 0.85);
-  transform: translateY(-1px);
-}
-.file-viewer-pdf-search-tick.current {
   right: 1px;
-  width: 11px;
-  height: 3px;
+  width: 12px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 213, 0, 1);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+  transform: translateY(-2px);
+}
+/* The current match spans the full rail, is taller/orange, and sits above the
+   normal ticks so an adjacent hit never hides it. */
+.file-viewer-pdf-search-tick.current {
+  right: 0;
+  width: 16px;
+  height: 5px;
   background: rgba(229, 110, 0, 1);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7);
+  transform: translateY(-2.5px);
+  z-index: 1;
 }
 
 /* #71: the Ctrl+F bar for the native PDF viewer renders as a static row
@@ -2017,7 +2672,7 @@ select option {
    not on a separate toolbar line. */
 .file-viewer-tex-compile {
   background: var(--accent, #4493f8);
-  color: #fff;
+  color: var(--accent-contrast);
   border: 0;
   border-radius: 3px;
   padding: 2px 10px;
@@ -2504,6 +3159,45 @@ select option {
   background: var(--accent);
 }
 
+/* Scroll-link toggle straddling a divider between two viewer subwindows.
+   Absolutely centred so it works for both row (vertical) and column
+   (horizontal) dividers; lifted above the divider so its own pointer events
+   fire instead of starting a resize drag. */
+.split-scroll-link-btn {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--control-border);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.12s, color 0.12s, background-color 0.12s, border-color 0.12s;
+}
+.split-divider:hover .split-scroll-link-btn {
+  opacity: 1;
+}
+.split-scroll-link-btn:hover {
+  opacity: 1;
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.split-scroll-link-btn.linked {
+  opacity: 1;
+  color: var(--accent-contrast, #fff);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 /* A subwindow: per-group tab bar over its pane region. */
 .subwindow {
   display: flex;
@@ -2511,10 +3205,10 @@ select option {
   overflow: hidden;
   background-color: var(--bg-main);
 }
-.subwindow.focused {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
-}
+/* The focused-subwindow frame + Shift-nav numbering are drawn by
+   FocusFrameOverlay above the pane layer (.focus-frame / .subwindow-number
+   below), not on .subwindow itself — an opaque pane (z-index:2) would paint
+   over an in-body frame. */
 
 .subwindow-body {
   position: relative;
@@ -2546,6 +3240,17 @@ select option {
   pointer-events: none;
 }
 
+/* Windows: while the whole window is moved by a native title-bar drag, take the
+   heavy pane content OUT of compositing so WebView2 only paints the cheap frame
+   (tab bars / empty bodies) and can keep up with the OS-moved window — otherwise
+   the terminal canvases lag/swim behind the frame. Mirrors `.detached-center.moving`
+   (#42). `visibility: hidden` (not display:none) keeps the layout intact, so no
+   xterm reflow/refit churn — the content reappears at the same size the instant
+   the move ends. */
+.center-panel.moving .pane-layer {
+  visibility: hidden;
+}
+
 /* Each pane is absolutely positioned by CenterPanel to a group's body rect.
    Hidden panes keep their PTY mounted via display:none. */
 .center-pane {
@@ -2553,6 +3258,363 @@ select option {
   flex-direction: column;
   overflow: hidden;
   pointer-events: auto;
+}
+
+/* ── 3D project blob (root "Projects" tab) ───────────────────────────────────
+   A navigable cloud of every project + box. The viewport owns the orbit/zoom
+   pointer surface; the scene is a preserve-3d space whose rotation/zoom is
+   written straight to the DOM by ProjectBlobPane's rAF loop. Nodes ride the
+   sphere via translate3d and counter-rotate to billboard toward the camera. */
+.blob-viewport {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--accent) 12%, transparent) 0%, transparent 60%),
+    var(--bg-main);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  perspective: 1100px;
+}
+.blob-viewport:active {
+  cursor: grabbing;
+}
+.blob-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.blob-empty-card {
+  padding: 16px 22px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+/* Clickable path bar shown while the spherical file viewer is open. */
+.blob-breadcrumb {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 80%;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  border: 1px solid var(--border-subtle);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.blob-crumb {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.blob-crumb:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text-primary);
+}
+.blob-crumb-exit {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.blob-crumb-sep {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.blob-crumb-loading {
+  flex-shrink: 0;
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.blob-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-panel) 75%, transparent);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+/* Sphere/Pie segmented toggle, top-right of the project cloud. */
+.blob-view-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  border: 1px solid var(--border-subtle);
+}
+.blob-view-toggle button {
+  padding: 3px 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.blob-view-toggle button:hover {
+  color: var(--text-primary);
+}
+.blob-view-toggle button.is-active {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+/* Pie mode: flat chart, so drop the grab cursor + 3D perspective. */
+.blob-viewport-pie {
+  cursor: default;
+  perspective: none;
+}
+.blob-pie-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 16px 48px;
+}
+.blob-pie-svg {
+  width: 100%;
+  height: 100%;
+  max-width: 560px;
+  max-height: 560px;
+  overflow: visible;
+}
+.blob-pie-slice path {
+  stroke: var(--bg-main);
+  stroke-width: 2;
+  cursor: pointer;
+  transition: opacity 0.12s ease;
+}
+.blob-pie-slice:hover path {
+  opacity: 0.82;
+}
+.blob-pie-slice.is-active path {
+  stroke: var(--text-primary);
+  stroke-width: 3;
+}
+.blob-pie-label {
+  fill: var(--bg-main);
+  font-size: 9px;
+  font-weight: 600;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--text-primary) 35%, transparent);
+  stroke-width: 0.4;
+}
+.blob-pie-center {
+  fill: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+.blob-pie-center-sub {
+  fill: var(--text-muted);
+  font-size: 11px;
+}
+.blob-pie-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.blob-stage {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+}
+.blob-scene {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+.blob-node {
+  position: absolute;
+  /* Center each card on its sphere point (translate3d in the inline transform). */
+  left: -70px;
+  top: -16px;
+  width: 140px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  will-change: transform;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.blob-node:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--bg-panel);
+}
+.blob-node-icon {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+}
+.blob-node-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blob-node-sub {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-secondary) 25%, transparent);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+/* Status coloring of the leading dot/glyph + accents. */
+.blob-status-current .blob-node-icon { color: var(--accent); }
+.blob-status-active .blob-node-icon { color: var(--success); }
+.blob-status-inactive { opacity: 0.55; }
+.blob-status-inactive .blob-node-icon { color: var(--text-muted); }
+.blob-node-box .blob-node-icon { color: var(--accent-secondary); }
+.blob-node-box { border-style: dashed; }
+.blob-node-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+/* The focused project, pinned at the center of the spherical file viewer. */
+.blob-node-center {
+  border-color: var(--accent);
+  background: var(--bg-panel);
+  font-weight: 600;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 24px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.blob-node-center .blob-node-icon { color: var(--accent); }
+/* File/folder nodes orbiting the focused project. */
+.blob-file-dir .blob-node-icon,
+.blob-file-doc .blob-node-icon { font-size: 13px; }
+.blob-file-dir { border-color: color-mix(in srgb, var(--accent-secondary) 55%, var(--border-subtle)); }
+.blob-file-dir .blob-node-label { font-weight: 500; }
+/* A project node tinted by its primary category color (grouping in the cloud).
+   The leading dot + a left accent stripe take the category hue. */
+.blob-node-categorized {
+  border-color: color-mix(in srgb, var(--cat-color) 60%, var(--border-subtle));
+  box-shadow: inset 3px 0 0 var(--cat-color);
+}
+.blob-node-categorized .blob-node-icon { color: var(--cat-color); }
+.blob-node-categorized:hover {
+  border-color: var(--cat-color);
+  box-shadow: inset 3px 0 0 var(--cat-color),
+    0 0 0 2px color-mix(in srgb, var(--cat-color) 35%, transparent);
+}
+/* Category chips inside the hover info card. */
+.blob-hover-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.blob-hover-category {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--cat-color) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cat-color) 45%, transparent);
+}
+.blob-hover-category-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--cat-color);
+}
+/* Pointer-anchored info card shown while hovering a node (project description /
+   box details). Rendered in a body portal so it's never clipped or scaled by
+   the 3D scene. */
+.blob-hover-card {
+  position: fixed;
+  z-index: 40;
+  width: max-content;
+  max-width: 760px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.blob-hover-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blob-hover-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  text-transform: capitalize;
+  color: var(--accent);
+}
+.blob-hover-desc {
+  margin-top: 6px;
+  max-width: 360px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* The embedded GitHub-style activity heatmap inside the hover card. The card is
+   pointer-events:none, so the calendar reads as a static "how much I worked"
+   strip — its per-cell tooltips intentionally don't fire here. */
+.blob-hover-activity {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.blob-hover-hint {
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--text-muted);
 }
 
 /* ── Split preview (shown while a tab is being dragged over a subwindow) ──── */
@@ -2571,6 +3633,40 @@ select option {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   transition: left 0.12s ease, top 0.12s ease, width 0.12s ease, height 0.12s ease;
+}
+
+/* ── Focused-subwindow frame + Shift+↑/↓ subwindow numbering ──────────────── */
+/* FocusFrameOverlay draws both above the pane layer (z-index:2) in panel-
+   relative px — an in-body frame would be hidden by the opaque panes. The frame
+   is outline-only (no fill) so it reads as a light, theme-fitting marker rather
+   than the split preview's dark wash; it glides between subwindows as focus (or
+   the Shift preview) moves. */
+.focus-frame {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 2px;
+  transition: left 0.1s ease, top 0.1s ease, width 0.1s ease, height 0.1s ease;
+}
+.subwindow-number {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--bg-main);
+  background: var(--accent);
+  border-radius: 9px;
 }
 
 /* Floating label following the pointer during a tab drag. */
@@ -2595,16 +3691,30 @@ select option {
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
 }
 
-/* Hint shown under the label during a file drag: reminds the user that holding
-   Alt switches to a native drag that can be dropped into an embedded browser. */
-.tab-drag-ghost-hint {
-  padding: 2px 8px;
-  font-size: 10px;
+/* Options legend shown under the label during a file drag: lists what each
+   release / modifier does. The line matching the current modifier state gets
+   `.active` to stand out (see DragGhost). */
+.tab-drag-ghost-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px;
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle, var(--accent));
-  color: var(--text-secondary, var(--text-primary));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+
+.tab-drag-ghost-opt {
+  font-size: 10px;
   white-space: nowrap;
-  opacity: 0.85;
+  color: var(--text-secondary, var(--text-primary));
+  opacity: 0.6;
+}
+
+.tab-drag-ghost-opt.active {
+  color: var(--accent);
+  opacity: 1;
+  font-weight: 600;
 }
 
 /* Scaled clone of the dragged tab's pane. The clone inside is transform-scaled
@@ -2731,6 +3841,40 @@ select option {
 
 .right-panel.open {
   transform: translateX(0);
+}
+
+/* While dragging the resize handle, kill the open/close transition so the panel
+   tracks the cursor 1:1 instead of easing toward each intermediate width. */
+.right-panel.resizing {
+  transition: none;
+}
+
+.app-body.resizing {
+  transition: none;
+}
+
+/* Left-border resize grip. Sits just outside the panel's left edge (straddling
+   the border) so it's easy to grab; widened beyond the visible border for a
+   comfortable hit target. Only tinted on hover / during the drag. */
+.right-panel-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 7px;
+  cursor: ew-resize;
+  z-index: 30;
+  touch-action: none;
+}
+
+.right-panel-resize:hover,
+.right-panel.resizing .right-panel-resize {
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--accent, #58a6ff) 70%, transparent) 60%,
+    transparent
+  );
 }
 
 /* OS file drag hovering over the panel: pulsing accent glow + dashed inset
@@ -2863,9 +4007,8 @@ select option {
 }
 .set-default-app-row {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   text-align: left;
   background: transparent;
@@ -2880,10 +4023,29 @@ select option {
 }
 .set-default-app-row.selected {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 .set-default-app-row.selected .set-default-app-exec {
   color: rgba(255, 255, 255, 0.8);
+}
+.set-default-app-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  image-rendering: -webkit-optimize-contrast;
+}
+.set-default-app-icon-placeholder {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+.set-default-app-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
 }
 .set-default-app-name {
   flex: 1;
@@ -2905,14 +4067,179 @@ select option {
   gap: 6px;
   margin-top: 4px;
 }
+.set-default-app-manual button,
+.set-default-app-actions button {
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 5px 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+}
 .set-default-app-manual button {
   flex-shrink: 0;
+}
+.set-default-app-manual button:hover,
+.set-default-app-actions button:not(:disabled):hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+.set-default-app-actions button:last-child {
+  background: var(--accent);
+  color: var(--bg-main);
+  border-color: var(--accent);
+}
+.set-default-app-actions button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--bg-main);
+}
+.set-default-app-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 .set-default-app-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 12px;
+}
+
+/* In-app folder-browser popup (FolderPickerDialog) */
+.folder-picker-dialog {
+  width: 520px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+}
+.folder-picker-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+.folder-picker-nav button {
+  flex-shrink: 0;
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 4px 10px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+}
+.folder-picker-nav button:not(:disabled):hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+.folder-picker-nav button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.folder-picker-cur {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.folder-picker-list {
+  min-height: 180px;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+}
+.folder-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.folder-picker-item:hover {
+  background: var(--bg-panel);
+}
+.folder-picker-icon {
+  flex-shrink: 0;
+}
+.folder-picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-picker-error {
+  color: var(--danger);
+}
+.folder-picker-name-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+.folder-picker-name-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.folder-picker-name-label input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 4px 8px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.folder-picker-name-label input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.folder-picker-name-preview {
+  margin: 0;
+  font-size: 11px;
+}
+.folder-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.folder-picker-actions button {
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 5px 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.folder-picker-actions button:not(:disabled):hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+.folder-picker-actions button.primary {
+  background: var(--accent);
+  color: var(--bg-main);
+  border-color: var(--accent);
+}
+.folder-picker-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .right-panel-scroll::-webkit-scrollbar,
@@ -2961,6 +4288,11 @@ select option {
 .right-panel-header {
   display: flex;
   align-items: center;
+  /* Wrap so the git action bar drops to its own row instead of overflowing the
+     panel's right edge when the project name + Add/Commit/Push don't fit on one
+     line (common at the default/narrow widths). */
+  flex-wrap: wrap;
+  row-gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
   font-size: 11px;
@@ -2974,6 +4306,139 @@ select option {
    the rightmost actions never get pushed off the panel's right edge. */
 .right-panel-header > button {
   flex-shrink: 0;
+}
+
+/* Second header row: view switch (Files/Git/Search/Apps) + import/open/settings,
+   moved below the project-name row so git status can share the name's row. */
+.right-panel-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Auto-pinned "Hidden subwindows" section: shown above the view toolbar only
+   when the current scope has ≥1 hidden subwindow, so a hidden pane is always one
+   click from coming back regardless of the active view. */
+.hidden-subwindows {
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+.hidden-sw-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, var(--text-muted));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.hidden-sw-header:hover {
+  color: var(--text-primary);
+}
+.hidden-sw-caret {
+  font-size: 9px;
+  width: 10px;
+  display: inline-block;
+}
+.hidden-sw-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 6px 4px;
+  gap: 2px;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.hidden-sw-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.hidden-sw-row:hover {
+  background: var(--pill-hover-bg);
+}
+.hidden-sw-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.hidden-sw-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.hidden-sw-chip {
+  max-width: 100%;
+  padding: 0 6px;
+  height: 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.hidden-sw-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.hidden-sw-btn {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.hidden-sw-btn:hover {
+  background: var(--bg-panel);
+  color: var(--accent);
+}
+.hidden-sw-close:hover {
+  color: var(--danger);
+}
+
+/* Inline variant of the git action bar when it lives in the header row, on its
+   own row below the project name: drop the full-width strip styling so it
+   hugs its buttons, left-aligned under the name. */
+.right-panel-header .git-action-bar--inline {
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Wrap the buttons among themselves (left-aligned) so a single action never
+     spills past the panel border. */
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 0;
+  border-bottom: none;
+}
+
+.right-panel-header .git-action-bar--inline .git-action-btn {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  font-size: 12px;
 }
 
 .right-panel-pin {
@@ -3049,16 +4514,21 @@ select option {
 }
 
 .git-action-btn {
-  background: transparent;
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  border-radius: 4px;
+  /* Per-action accent; each button overrides --git-btn-accent below so its
+     colour matches the status dot it carries (red=add, yellow=commit,
+     green=push). Defaults to the theme accent for the confirm/back buttons. */
+  --git-btn-accent: var(--accent);
+  background: color-mix(in srgb, var(--git-btn-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--git-btn-accent) 55%, transparent);
+  color: var(--git-btn-accent);
+  border-radius: 5px;
   cursor: pointer;
-  padding: 3px 7px;
-  font-size: 14px;
+  padding: 4px 9px;
+  font-size: 13px;
+  font-weight: 600;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   font-family: inherit;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
   white-space: nowrap;
@@ -3067,48 +4537,144 @@ select option {
 }
 
 .git-action-btn:hover {
-  background: var(--pill-active-bg);
-  color: var(--accent-hover);
-  border-color: var(--accent-hover);
+  background: color-mix(in srgb, var(--git-btn-accent) 26%, transparent);
+  border-color: var(--git-btn-accent);
 }
 
 .git-action-btn:disabled {
-  opacity: 0.3;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
-.git-btn-label {
-  display: none;
+/* Action-specific accents, matched to the inline status dots. Set on the
+   group wrapper too so the caret toggle inherits the same colour. */
+.git-action-btn--add,
+.git-action--add { --git-btn-accent: #f85149; }
+.git-action-btn--commit,
+.git-action--commit { --git-btn-accent: #e3b341; }
+.git-action-btn--push,
+.git-action--push { --git-btn-accent: #3fb950; }
+
+/* An action + its disclosure caret, joined into one pill so the two read as a
+   single control. The action button loses its right rounding, the caret its
+   left, and they share a divider. */
+.git-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.git-action .git-action-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.git-action-toggle {
+  --git-btn-accent: var(--accent);
+  background: color-mix(in srgb, var(--git-btn-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--git-btn-accent) 55%, transparent);
+  border-left: none;
+  color: var(--git-btn-accent);
+  border-radius: 0 5px 5px 0;
+  cursor: pointer;
+  padding: 0 5px;
   font-size: 10px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.git-action-toggle:hover {
+  background: color-mix(in srgb, var(--git-btn-accent) 26%, transparent);
+  border-color: var(--git-btn-accent);
+}
+
+.git-action-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* The label is always shown now (not hover-only) so each action reads clearly
+   without pointing at it; the leading glyph stays as a quick visual marker. */
+.git-btn-label {
+  display: inline;
+  font-size: 11px;
   line-height: 1;
 }
 
-.git-action-btn:hover .git-btn-label {
-  display: inline;
-}
-
-.git-hover-list {
+/* Click-opened navigable change tree under the Add/Commit/Push actions.
+   Anchored to the right edge of the action bar and grown leftward: the panel
+   hugs the app's right frame, so anchoring left would push a wide tree off
+   screen. Sized to the longest path (min keeps it readable, max caps depth). */
+.git-change-tree {
   position: absolute;
-  top: 100%;
-  left: 0;
+  top: calc(100% + 4px);
   right: 0;
+  left: auto;
+  min-width: 280px;
+  max-width: 480px;
+  width: max-content;
   z-index: 200;
   background: var(--bg-panel, #1e1e1e);
   border: 1px solid var(--border-color);
-  border-top: none;
-  max-height: 160px;
+  border-radius: 6px;
+  max-height: 320px;
   overflow-y: auto;
-  font-size: 10px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-size: 11px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  padding: 4px 0;
 }
 
-.git-hover-item {
-  padding: 2px 8px;
+.git-change-empty {
+  padding: 8px 12px;
+  color: var(--text-muted);
+}
+
+.git-change-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px 2px 0;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   color: var(--text-primary);
 }
+
+.git-change-row.is-dir {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.git-change-row.is-dir:hover {
+  background: var(--pill-hover-bg);
+}
+
+.git-change-caret {
+  display: inline-block;
+  width: 10px;
+  flex-shrink: 0;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.git-change-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-change-stat {
+  flex-shrink: 0;
+  display: inline-flex;
+  gap: 5px;
+  margin-left: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.git-change-add { color: #3fb950; }
+.git-change-del { color: #f85149; }
+.git-change-zero,
+.git-change-stat--bin { color: var(--text-muted); }
 
 /* ── Git history view ────────────────────────────────────────────────── */
 .git-history {
@@ -3149,6 +4715,9 @@ select option {
 }
 
 .git-branch-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: transparent;
   border: 1px solid var(--border-color);
   color: var(--text-primary);
@@ -3158,6 +4727,15 @@ select option {
   cursor: pointer;
   font-family: inherit;
   white-space: nowrap;
+}
+
+/* Lane-colored dot echoing the commit graph: the same color the branch's tip
+   wears in the graph and on its ref label. */
+.git-branch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .git-branch-pill:hover:not(:disabled) {
@@ -3299,7 +4877,7 @@ select option {
   background: transparent;
   border: 1px solid var(--border-color);
   color: var(--text-primary);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: 4px 10px;
   font-size: 11px;
   cursor: pointer;
@@ -3311,9 +4889,17 @@ select option {
   color: var(--accent-hover);
 }
 
+/* Filled accent (canonical primary), not the old outlined look. */
 .commit-window-actions button.primary {
+  background: var(--accent);
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--bg-main);
+}
+
+.commit-window-actions button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--bg-main);
 }
 
 .commit-window-actions button:disabled {
@@ -3343,6 +4929,8 @@ select option {
 
 /* ── Project pill ────────────────────────────────────────────────────── */
 .project-pill {
+  /* Anchors the bottom status-bar strip (.pill-status-bars). */
+  position: relative;
   display: flex;
   align-items: center;
   height: 32px;
@@ -3352,7 +4940,7 @@ select option {
   font-weight: 500;
   color: var(--text-secondary);
   background-color: var(--control-bg);
-  box-shadow: inset 0 3px 0 var(--warning);
+  box-shadow: inset 0 4px 0 var(--warning);
   transition: background-color 0.1s, color 0.1s;
   flex-shrink: 0;
   white-space: nowrap;
@@ -3434,10 +5022,86 @@ select option {
 }
 
 .project-pill.active {
-  background-color: var(--pill-active-bg);
+  /* Same accent-tinted fill as the current tab, so the active project pill and
+     the active tab read as the same "current" treatment across the app. */
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--accent) 42%, var(--bg-main)) 0%,
+    color-mix(in srgb, var(--accent) 26%, var(--bg-main)) 100%);
   border-color: var(--pill-active-border);
   color: var(--text-primary);
-  box-shadow: inset 0 3px 0 var(--accent);
+  box-shadow: inset 0 4px 0 var(--accent);
+}
+
+/* Category-tinted top bar: the project's primary category color replaces the
+   default status stripe so projects sharing a category read as a group. The
+   active pill keeps the accent stripe (its current-scope signal wins). */
+.project-pill.has-category:not(.active):not(.timer-paused) {
+  box-shadow: inset 0 4px 0 var(--cat-color);
+}
+/* Small per-category swatches inside the pill (one dot per category). */
+.pill-category-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0 4px 0 -2px;
+  flex-shrink: 0;
+}
+.pill-category-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-main) 50%, transparent);
+}
+
+/* Category editor modal: toggle chips for known tags + an add field. */
+.category-editor .category-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+.category-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+.category-chip:hover {
+  border-color: var(--cat-color);
+  color: var(--text-primary);
+}
+.category-chip.on {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--cat-color) 22%, transparent);
+  border-color: var(--cat-color);
+}
+.category-chip-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--cat-color);
+  flex-shrink: 0;
+}
+.category-chip-x {
+  margin-left: 1px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+.category-add-row {
+  display: flex;
+  gap: 6px;
+}
+.category-add-row input {
+  flex: 1;
+  min-width: 0;
 }
 
 .pill-main {
@@ -3481,30 +5145,6 @@ select option {
 .pill-close-btn:hover {
   background-color: var(--control-hover-bg);
   color: var(--text-primary);
-}
-
-/* Git "dirty" dot on a project pill: signals pending git state at a glance.
-   Colors mirror the file-tree markers — red (uncommitted/not added), orange
-   (staged, not committed), green (committed, not pushed). */
-.pill-git-dot {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  margin-right: 2px;
-  border-radius: 50%;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--control-bg) 70%, transparent);
-}
-
-.pill-git-dot.dirty {
-  background-color: #f85149;
-}
-
-.pill-git-dot.staged {
-  background-color: #d29922;
-}
-
-.pill-git-dot.unpushed {
-  background-color: #3fb950;
 }
 
 /* ── Project box chip ───────────────────────────────────────────────── */
@@ -3812,12 +5452,64 @@ select option {
   text-align: left;
 }
 
+.pill-popup-path-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 320px;
+  overflow: hidden;
+}
+
+.pill-popup-path-row .pill-popup-path {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pill-popup-path-label {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
 .pill-popup-description {
   color: var(--text-primary);
   font-size: 12px;
   line-height: 1.35;
   max-width: 320px;
   white-space: normal;
+}
+
+.pill-popup-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 320px;
+}
+
+/* Same tag chips, inline beside the right panel's project-name header instead
+   of in the pill hover popup. */
+.right-panel-type-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.pill-popup-tag {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
 }
 
 .pill-popup-status {
@@ -3843,6 +5535,37 @@ select option {
 .pill-popup-cpu {
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+/* ── Tab hover card ───────────────────────────────────────────────────────────
+   Reuses `.project-pill-popup` (box + position) and the `.pill-popup-*` rows so
+   the tab hover looks identical to the project pill hover; only the header row
+   and the muted kind line are tab-specific. */
+.tab-popup-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-popup-dot {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.tab-popup-label {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-popup-kind {
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.8;
 }
 
 /* ── Project switcher action buttons ──────────────────────────────────────── */
@@ -3911,11 +5634,11 @@ select option {
 .tab-bar {
   display: flex;
   align-items: flex-end;
-  padding: 0 4px;
+  padding: 0;
   gap: 2px;
   /* The bar itself no longer scrolls; only the inner `.tab-strip` does. The bar
-     stays a fixed row holding the scroll chevrons, the strip, the + button and
-     the close/detach controls. */
+     stays a fixed row holding the scroll chevrons, the strip (including the +
+     button after its final tab), and the close/detach controls. */
   overflow: hidden;
   /* A fixed-height strip at the top of its subwindow. NOT flex:1 — the tab bar
      lives inside the column-flex `.subwindow`, so growing would let it eat the
@@ -3927,18 +5650,38 @@ select option {
      bottom border + the active tab's `--bg-main` blend keep the divide crisp. */
   background-color: var(--bg-panel);
   border-bottom: 1px solid var(--border-color);
-  /* #42: the empty bar area is a drag handle — grab it to pop the subwindow out
-     into its own OS window. Tabs/buttons reset the cursor to their own. */
-  cursor: grab;
 }
-.tab-bar:active { cursor: grabbing; }
-.tab-bar .tab,
-.tab-bar button,
-.tab-bar .tab-new-wrap { cursor: default; }
+
+/* Explicit drag grip pinned at the far left of every subwindow bar. It sits
+   outside the scrolling `.tab-strip`, so it stays grabbable no matter how many
+   tabs fill (and overflow) the bar. Inherits the bar's grab cursor; brightens on
+   hover so it reads as an affordance. */
+.tab-drag-grip {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 26px;
+  padding: 0 1px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  user-select: none;
+  opacity: 0.6;
+  cursor: grab;
+  transition: opacity 0.1s, color 0.1s;
+}
+.tab-drag-grip:hover {
+  opacity: 1;
+  color: var(--text-primary);
+}
+.tab-drag-grip:active { cursor: grabbing; }
 
 /* The horizontally-scrolling tab container. Grows to fill the bar between the
-   chevrons and the +/close controls; its scrollbar is hidden (chevrons + wheel
-   drive the scroll instead). */
+   chevrons and close controls and carries the + directly after the final tab;
+   its scrollbar is hidden (chevrons + wheel drive the scroll instead). */
 .tab-strip {
   display: flex;
   align-items: flex-end;
@@ -3985,7 +5728,12 @@ select option {
   color: var(--text-muted);
   white-space: nowrap;
   flex-shrink: 0;
+  /* Every tab shows a 3px group-colour top stripe, always (not just the current
+     tab) — the same slot on all tabs, so the stripe lands at an identical
+     height with no offset between neighbours. The current tab is marked by a
+     darker background (below), not by whether the stripe is present. */
   border: 1px solid transparent;
+  border-top: 3px solid var(--tab-accent, var(--accent));
   border-bottom: none;
   border-radius: 0;
   margin-bottom: 0;
@@ -4001,15 +5749,23 @@ select option {
 .tab:hover {
   background-color: var(--pill-hover-bg);
   color: var(--text-primary);
-  border-top-color: var(--accent);
+  /* Stripe colour is unchanged on hover (it's always the group colour); hover
+     just warms the tab body. */
   border-left-color: var(--control-border);
   border-right-color: var(--control-border);
 }
 
 .tab.active {
-  background: linear-gradient(180deg, var(--control-hover-bg) 0%, var(--bg-main) 100%);
+  /* The current tab is marked by a darker, accent-tinted background — a darker
+     lavender in the lavender theme, and the equivalent theme-accent tint in the
+     others (dark themes deepen, light themes take on the accent hue). The stripe
+     itself is on every tab, so the background is what signals "current". */
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--accent) 42%, var(--bg-main)) 0%,
+    color-mix(in srgb, var(--accent) 26%, var(--bg-main)) 100%);
   color: var(--text-primary);
-  border-top: 2px solid var(--accent);
+  /* The 2px top border is the stripe (coloured by the tab group). */
+  border-top-color: var(--tab-accent, var(--accent));
   border-left-color: var(--border-color);
   border-right-color: var(--border-color);
   border-bottom-color: var(--bg-main);
@@ -4020,7 +5776,19 @@ select option {
   margin-bottom: -1px;
 }
 
-.tab-label { flex: 1; min-width: 0; }
+.tab-label {
+  flex: 1;
+  min-width: 0;
+  /* Tab text is never accent-coloured — it takes the theme foreground (white in
+     dark themes, near-black in light, dark-lavender in the lavender theme). The
+     tab-group identity is carried by the top stripe, not the label. Inactive
+     tabs dim slightly so the active tab still reads as foremost. */
+  color: var(--text-primary);
+}
+
+.tab:not(.active):not(:hover) .tab-label {
+  opacity: 0.78;
+}
 
 /* #56: inline tab rename. The label is swapped for a borderless input that
    inherits the tab's typography so the tab width doesn't jump while editing. */
@@ -4037,32 +5805,108 @@ select option {
   outline: none;
 }
 
-/* ── Working tab indicator ───────────────────────────────────────────────
-   Shown while a tab's PTY is actively streaming output (busy agent/terminal).
-   A small rotating orbit spinner sits before the label, tinted with the tab
-   kind's accent; the label itself gently pulses so background work is visible
-   without competing with the active tab. */
-.tab-working {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
+/* ── Tab status glow ─────────────────────────────────────────────────────
+   The WHOLE tab tints/pulses to show agent state — an inset box-shadow fill
+   painted behind the label, so it never changes the tab's width and the text
+   stays crisp. Three states:
+   - working        (green, pulsing): PTY producing sustained output.
+   - needs-decision (orange, pulsing): agent rang the bell with a prompt on
+     screen, on a tab that isn't being looked at.
+   - finished       (green, steady): agent rang the bell having simply finished.
+   The two attention states clear the moment the tab is viewed. */
+.tab.working {
+  animation: tab-glow-working 1.5s ease-in-out infinite;
 }
 
-.tab-working-spinner {
-  margin-left: 0;
+.tab.needs-decision {
+  animation: tab-glow-decision 1.2s ease-in-out infinite;
 }
 
-.tab-working-spinner .orbit-dot {
-  fill: currentColor;
+.tab.finished {
+  box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 16%, transparent);
 }
 
-.tab.working .tab-label {
-  animation: tab-working-pulse 1.6s ease-in-out infinite;
+@keyframes tab-glow-working {
+  0%, 100% { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 5%, transparent); }
+  50%      { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 26%, transparent); }
 }
 
-@keyframes tab-working-pulse {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
+@keyframes tab-glow-decision {
+  0%, 100% { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--warning) 8%, transparent); }
+  50%      { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--warning) 34%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Collapse the pulse to a steady tint — the state is still visible. */
+  .tab.working {
+    animation: none;
+    box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 16%, transparent);
+  }
+  .tab.needs-decision {
+    animation: none;
+    box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--warning) 22%, transparent);
+  }
+}
+
+/* ── Project pill status bars ────────────────────────────────────────────
+   A strip of little bars along the pill's bottom edge — ONE PER NON-IDLE TAB of
+   that project, so the switcher shows both what a project's tabs are doing and
+   how many are doing it. Same three states, and the same pulse timings, as the
+   tab glow:
+   - working        (green, pulsing): PTY producing sustained output.
+   - needs-decision (orange, pulsing): agent waiting on a decision.
+   - finished       (green, steady): agent finished, tab not yet seen.
+   The strip is the pill's only status signal — the pill body no longer tints, so
+   it can't fight the active gradient or the category top stripe. */
+.pill-status-bars {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 2px;
+  display: flex;
+  gap: 2px;
+  height: 3px;
+  pointer-events: none;
+}
+
+.pill-status-bar {
+  /* Shrinks (never grows) so a full strip still fits a narrow pill. */
+  flex: 0 1 12px;
+  min-width: 4px;
+  border-radius: 1px;
+}
+
+.pill-status-bar.working {
+  background-color: var(--success);
+  animation: pill-bar-working 1.5s ease-in-out infinite;
+}
+
+.pill-status-bar.needs-decision {
+  background-color: var(--warning);
+  animation: pill-bar-decision 1.2s ease-in-out infinite;
+}
+
+.pill-status-bar.finished {
+  background-color: var(--success);
+}
+
+@keyframes pill-bar-working {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1; }
+}
+
+@keyframes pill-bar-decision {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Collapse the pulse to a steady bar — the state is still visible. */
+  .pill-status-bar.working,
+  .pill-status-bar.needs-decision {
+    animation: none;
+    opacity: 0.85;
+  }
 }
 
 .tab-close {
@@ -4086,6 +5930,38 @@ select option {
 .tab:hover .tab-close,
 .tab.active .tab-close { opacity: 1; }
 .tab-close:hover { background-color: var(--pill-hover-bg); color: var(--text-primary); }
+
+/* SSH-sync Phase 0: per-tab local/remote locality badge (remote projects only).
+   Always visible (unlike the close button) so the tab's locality is legible at a
+   glance; click toggles it. Local = mirror (warning hue), remote = host (info). */
+/* Unified local/remote tab marking. One visual language across both meanings —
+   ⌂ + green = local, ☁ + amber = remote — since the two never coexist on a tab:
+     - .tab-locality: agent/shell tabs, a clickable toggle for WHERE the process
+       runs (local mirror vs the host over SSH).
+     - .tab-source: viewer/file tabs, a non-interactive badge for WHERE the bytes
+       are read (local synced copy vs host-native over SFTP). */
+.tab-locality,
+.tab-source {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: background-color 0.1s, color 0.1s;
+}
+.tab-locality { cursor: pointer; }
+.tab-source { cursor: default; }
+.tab-locality.local,
+.tab-source.local { color: var(--success); }
+.tab-locality.remote,
+.tab-source.remote { color: var(--warning); }
+.tab-locality:hover { background-color: var(--pill-hover-bg); }
 
 /* Per-subwindow close (×), shown in the tab bar when >1 subwindow exists.
    The bar scrolls horizontally when tabs overflow; pin this button to the right
@@ -4113,6 +5989,38 @@ select option {
 .subwindow-close:hover {
   background: var(--pill-hover-bg);
   color: var(--danger);
+}
+
+/* Hide-subwindow button: parks the subwindow into the right-panel Hidden list.
+   Sits just left of the close button (both margin-left:auto stack at the right
+   end; when close is absent for a single subwindow, hide still pins right). */
+.subwindow-hide {
+  margin-left: auto;
+  align-self: center;
+  position: sticky;
+  right: 0;
+  flex-shrink: 0;
+  z-index: 12;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
+/* When both render, the close button owns the far-right slot; hide sits snug to
+   its left (its own auto-margin has no free space left to consume). */
+.subwindow-hide + .subwindow-close {
+  margin-left: 0;
+}
+.subwindow-hide:hover {
+  background: var(--pill-hover-bg);
+  color: var(--accent);
 }
 
 /* #42: detached ("pop out") window title-bar controls — the native
@@ -4284,17 +6192,39 @@ select option {
   border-right-color: var(--control-border);
 }
 
+/* No tabs in this group yet: the + is the sole entry point, so breathe it in
+   the accent colour to invite a first tab. Reuses the working-tab pulse so the
+   cue matches the rest of the tab bar. Hovering cancels the pulse so it settles
+   into the normal affordance once the user reaches for it. */
+.tab-new-btn.empty-hint {
+  color: var(--accent);
+  animation: tab-working-pulse 1.6s ease-in-out infinite;
+}
+
+.tab-new-btn.empty-hint:hover {
+  animation: none;
+}
+
+/* One popover/menu surface for the whole app: context menus, the generic
+   dropdown (via .context-menu), the tab "+" menu and the project-switcher add
+   menu all read this. The individual rules keep only positioning / padding /
+   min-width. */
+.context-menu,
+.tab-new-menu,
+.project-switcher-add-menu {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.36);
+}
+
 .tab-new-menu {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
   z-index: 100;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 0;
   padding: 4px;
   min-width: 132px;
-  box-shadow: 0 12px 28px rgba(0,0,0,0.36);
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -4336,10 +6266,13 @@ select option {
 .tab-new-menu-group-label {
   padding: 6px 10px 2px;
   font-size: 9px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  /* Menu section header: accent so the groups ("Local Model" / "Load into
+     memory" / "Agents") separate from the item rows instead of reading like a
+     dimmed, disabled entry. */
+  color: var(--accent);
   user-select: none;
 }
 
@@ -4356,9 +6289,42 @@ select option {
   z-index: 1000;
   min-width: 150px;
   padding: 4px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  box-shadow: 0 12px 28px rgba(0,0,0,0.36);
+}
+
+/* Glowing frame that floats onto the right-clicked file-tree row so it's
+   obvious which entry a context menu belongs to, even after the menu's been
+   repositioned to stay on-screen (see useClampToViewport). Purely cosmetic:
+   fixed-position, no pointer events, unmounts with the menu. */
+.file-entry-highlight {
+  position: fixed;
+  z-index: 999;
+  pointer-events: none;
+  border-radius: 3px;
+  border: 2px solid var(--accent);
+  box-sizing: border-box;
+  animation:
+    file-entry-highlight-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both,
+    file-entry-highlight-pulse 1.3s ease-in-out 200ms infinite;
+}
+
+@keyframes file-entry-highlight-in {
+  from {
+    opacity: 0;
+    transform: scale(1.18);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes file-entry-highlight-pulse {
+  0%, 100% {
+    box-shadow: 0 0 5px 1px var(--accent);
+  }
+  50% {
+    box-shadow: 0 0 13px 3px var(--accent);
+  }
 }
 
 .context-menu button {
@@ -4394,6 +6360,45 @@ select option {
   background: var(--border-subtle);
 }
 
+/* Grouped context menu: a small caption above each cluster of related items. */
+.context-menu-group + .context-menu-group,
+.context-menu-group + .context-menu-danger-zone {
+  margin-top: 6px;
+}
+
+.context-menu-group-label {
+  padding: 4px 9px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted, var(--text-secondary));
+  user-select: none;
+}
+
+/* Danger zone: destructive actions fenced off in a red-tinted box. */
+.context-menu-danger-zone {
+  margin-top: 8px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.context-menu-danger-zone .context-menu-group-label {
+  color: var(--danger);
+}
+
+.context-menu-danger-zone button {
+  color: var(--danger);
+  background: transparent;
+}
+
+.context-menu-danger-zone button:hover {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  border-color: var(--danger);
+}
+
 /* ── Dropdown (the one custom themed dropdown; native <select> popups can't
    be themed on WebKitGTK so we render trigger + menu ourselves) ─────────── */
 .dropdown {
@@ -4408,7 +6413,7 @@ select option {
   min-height: 24px;
   padding: 2px 8px;
   border: 1px solid var(--control-border);
-  border-radius: 3px;
+  border-radius: 0;
   background: var(--control-bg);
   color: var(--text-primary);
   font-size: 12px;
@@ -4436,6 +6441,24 @@ select option {
   top: calc(100% + 2px);
   left: 0;
   min-width: 120px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+/* Full-width variant: use when a Dropdown replaces a block form <select> so the
+   trigger fills its field width (label above, value left, caret right). */
+.dropdown.dropdown-block {
+  display: flex;
+  width: 100%;
+}
+
+.dropdown.dropdown-block .dropdown-trigger {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.dropdown.dropdown-block .dropdown-menu {
+  right: 0;
 }
 
 /* Two-class specificity so per-toolbar `… button` rules (e.g. the file browser
@@ -4495,6 +6518,89 @@ select option {
 
 .file-tree-up:hover { background-color: var(--pill-hover-bg); }
 
+.file-tree-remote-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 4px;
+}
+
+.file-tree-refresh:disabled { opacity: 0.5; cursor: default; }
+
+.file-tree-remote-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+/* SSH-sync Phase 1: in-flight transfer counter in the remote bar. */
+.file-tree-sync-progress {
+  font-size: 10px;
+  color: var(--success, #3fb950);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* SSH-sync Phase 1: local/remote source toggle row in the files view. */
+.right-panel-source {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+/* Remote/Local file-source switch in the panel header (remote SSH projects
+   only). A live segmented control — deliberately shaped as a switch (grouped
+   segments in an inset track), NOT a chip, so it can never be mistaken for one
+   of the static project type tags it sits near. Given its own row (flex-basis
+   100%) left-aligned with the pin / project name, sitting above the
+   Add/Commit/Push row which wraps below it. The active segment's fill matches
+   the viewer's source badge: green = the local synced mirror, amber = the host
+   tree over SFTP. */
+.right-panel-source-switch {
+  flex-shrink: 0;
+  margin-left: 0;
+  display: inline-flex;
+  align-items: stretch;
+  padding: 1px;
+  border-radius: 5px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-inset, rgba(127, 127, 127, 0.12));
+}
+.right-panel-source-switch .source-seg {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1;
+  cursor: pointer;
+}
+.right-panel-source-switch .source-seg:hover:not(.active) {
+  color: var(--text-primary);
+}
+.right-panel-source-switch .source-seg.active {
+  color: #fff;
+}
+.right-panel-source-switch .source-seg:first-child.active {
+  background: var(--success);
+}
+.right-panel-source-switch .source-seg:last-child.active {
+  background: var(--warning);
+}
+
 .file-tree-crumb {
   padding: 2px 4px;
   background: transparent;
@@ -4551,13 +6657,135 @@ select option {
 
 .file-entry:hover { background-color: var(--pill-hover-bg); }
 
+/* Multi-selection highlight (click / shift-range / ctrl-toggle). Sits above the
+   plain hover but below the move-drop-target outline. */
+.file-entry.selected { background-color: var(--accent-soft, rgba(88, 166, 255, 0.22)); }
+.file-entry.selected:hover { background-color: var(--accent-soft, rgba(88, 166, 255, 0.28)); }
+
+/* The tree is focusable (tabIndex) so it can catch Enter/Escape for the
+   selection; suppress the focus ring around the whole panel. */
+.file-tree:focus { outline: none; }
+
 /* Files never start a native (browser) drag — embeddable ones use a pointer
-   drag to a tab bar, non-embeddable ones aren't draggable at all. Suppress the
-   webview's built-in drag of the row text/icon. Dirs keep native DnD (export). */
+   drag to a tab bar, and every file can be pointer-dragged into a folder to move
+   it. Suppress the webview's built-in drag of the row text/icon. Dirs keep
+   native DnD (export). */
 .file-entry.file,
 .file-entry.file * {
   -webkit-user-drag: none;
   user-drag: none;
+}
+
+/* Drag-to-move highlight: the folder row / breadcrumb / up button currently
+   under the cursor while a file is being dragged. Releasing moves the file in. */
+.file-entry.move-drop-target,
+.file-tree-up.move-drop-target,
+.file-tree-crumb.move-drop-target {
+  background-color: var(--accent-soft, rgba(88, 166, 255, 0.22));
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: 4px;
+}
+
+/* Dragging a download over empty tree space (not a specific folder) targets the
+   currently browsed folder — frame the whole tree area so the drop is legible. */
+.right-panel-scroll.move-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+  border-radius: 4px;
+}
+
+/* Let the flex-1 tree scroll actually shrink when the Downloads section below it
+   grows (a flex child won't shrink past its content without min-height:0). */
+.right-panel-scroll {
+  min-height: 0;
+}
+
+/* ── Downloads section (right panel, below the file tree) ─────────────────── */
+.downloads-section {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  flex: 0 0 auto;
+  min-height: 0;
+}
+/* Grab bar spanning the top border: drag to grow/shrink the section height. */
+.downloads-resize {
+  height: 6px;
+  margin-top: -3px;
+  cursor: ns-resize;
+  flex: 0 0 auto;
+  background: transparent;
+}
+.downloads-resize:hover {
+  background: var(--accent-soft, rgba(88, 166, 255, 0.22));
+}
+.downloads-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+.downloads-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.downloads-windows {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.downloads-win-btn {
+  font-size: 10px;
+  padding: 1px 6px;
+  height: 20px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, var(--text-primary));
+  cursor: pointer;
+}
+.downloads-win-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.downloads-target {
+  font-size: 10px;
+  color: var(--text-muted, var(--text-secondary));
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.downloads-error {
+  font-size: 10px;
+  color: var(--danger, #f85149);
+  word-break: break-all;
+  padding: 2px 8px;
+}
+.downloads-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 40px;
+}
+.downloads-row {
+  cursor: grab;
+}
+.downloads-meta {
+  font-size: 10px;
+  color: var(--text-muted, var(--text-secondary));
+  white-space: nowrap;
+  margin-left: 6px;
+}
+.downloads-copied {
+  color: var(--accent);
+  font-size: 12px;
+  margin-left: 4px;
 }
 
 /* Only EMBEDDABLE files can be dragged onto a subwindow's tab bar (Group K).
@@ -4625,6 +6853,209 @@ select option {
 
 @keyframes file-run-spin {
   to { transform: rotate(360deg); }
+}
+
+/* SSH-sync: actionable buttons shown left of the icon per sync state — red on an
+   unsynced row (pull from host / push from the mirror), orange on a diverged row
+   (view the host-vs-mirror diff). Shared box geometry; the accent color differs.
+   `--danger` = not synced, `#d29922` (amber) = diverged. */
+/* Fixed-width gutter reserving space for the sync/diff button so file & folder
+   names stay left-aligned across a sync-tracked tree even on rows with no button
+   (in-sync/green). Sits between the git-status marker and the file icon. */
+.file-sync-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  flex-shrink: 0;
+}
+
+.file-sync-btn,
+.file-diff-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.file-sync-btn {
+  border: 1px solid color-mix(in srgb, var(--danger) 70%, transparent);
+  color: var(--danger);
+}
+
+.file-sync-btn:hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border-color: var(--danger);
+}
+
+.file-diff-btn {
+  border: 1px solid color-mix(in srgb, #d29922 70%, transparent);
+  color: #d29922;
+}
+
+.file-diff-btn:hover {
+  background: color-mix(in srgb, #d29922 14%, transparent);
+  border-color: #d29922;
+}
+
+.file-sync-btn:disabled,
+.file-diff-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Auto-sync row indicator (non-interactive): a subtle accent glyph shown in the
+   sync slot when a file/folder auto-syncs and is in its resting (green) state. */
+.file-autosync-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--accent, #3fb950);
+  opacity: 0.85;
+}
+
+/* Right-panel "orange" (diverged) toolbar button + its count badge. */
+.right-panel-orange-btn.active {
+  color: #d29922;
+  border-color: color-mix(in srgb, #d29922 60%, transparent);
+}
+
+.right-panel-orange-count {
+  display: inline-block;
+  min-width: 12px;
+  padding: 0 3px;
+  margin-left: 2px;
+  border-radius: 8px;
+  background: #d29922;
+  color: #1a1a1a;
+  font-size: 9px;
+  line-height: 13px;
+  text-align: center;
+}
+
+/* Right-panel "orange" list view. */
+.right-panel-orange {
+  padding: 4px 6px;
+}
+
+.right-panel-orange-empty {
+  padding: 12px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.orange-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
+}
+
+.orange-file-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.orange-file-name:disabled {
+  cursor: default;
+}
+
+.orange-file-name:hover:not(:disabled) {
+  color: var(--accent, #3fb950);
+}
+
+.orange-file-dot {
+  color: #d29922;
+  flex-shrink: 0;
+}
+
+.orange-file-actions {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.orange-file-act {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: 9px;
+  padding: 1px 5px;
+  cursor: pointer;
+}
+
+.orange-file-act:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.orange-file-act:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Nested-repo toggle: segmented control shown atop the git view when the browsed
+   folder resolves to a git repo distinct from the project's repo (#nested-git). */
+.nested-repo-toggle {
+  display: flex;
+  gap: 2px;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-panel);
+}
+
+.nested-repo-pill {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nested-repo-pill:hover:not(.active) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.nested-repo-pill.active {
+  color: var(--text-primary);
+  border-color: var(--accent, #58a6ff);
+  background: color-mix(in srgb, var(--accent, #58a6ff) 18%, transparent);
+  cursor: default;
 }
 
 .file-tree-section-divider {
@@ -4719,12 +7150,22 @@ select option {
   padding: 18px;
   background: var(--bg-panel);
   border: 1px solid var(--border-color);
+  /* Portaled into <body>, which sets no text color (defaults to black); set it
+     here so bare descendants (h2 title, the diff <pre>, tables) stay readable in
+     dark themes instead of inheriting black. */
+  color: var(--text-primary);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.42);
 }
 
 .file-delete-dialog h2 {
   margin: 0;
+  /* Match the canonical dialog header (.settings-title-row h2): accent-colored,
+     heavier weight, and a divider under it, so every menu shares one look. */
   font-size: 16px;
+  font-weight: 650;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 10px;
 }
 
 .file-delete-dialog p {
@@ -5225,7 +7666,7 @@ select option {
   background: var(--pill-active-bg);
   color: var(--text-primary);
   border-color: var(--pill-active-border);
-  box-shadow: inset 0 3px 0 var(--accent);
+  box-shadow: inset 0 4px 0 var(--accent);
 }
 
 .project-switcher-add-btn {
@@ -5344,15 +7785,62 @@ select option {
 .project-pill-label {
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Helix apricot for the project name; inactive pills dim a touch so the active
+     scope still reads as foremost (its background/stripe also signal it). */
+  color: var(--helix-orange);
+}
+
+/* In the lavender theme the project name reads as dark lavender rather than
+   the default Helix apricot, so it stays in-palette with the rest of the UI. */
+[data-theme="light_lavender"] .project-pill-label {
+  color: #5d3eb8;
+}
+
+/* Project-pill top stripe in the lavender theme. The base stripe uses --warning
+   (a brown/amber) — replace it with lavender: open projects get a light-lavender
+   stripe, and the current (active) project gets a saturated dark-lavender one so
+   it clearly stands out. Category-tinted pills keep their category colour (that
+   rule is more specific). */
+[data-theme="light_lavender"] .project-pill {
+  box-shadow: inset 0 4px 0 #cdbdf0;
+}
+[data-theme="light_lavender"] .project-pill.active {
+  box-shadow: inset 0 4px 0 #5d3eb8;
+}
+
+.project-pill:not(.active):not(:hover) .project-pill-label {
+  opacity: 0.82;
+}
+
+.project-pill.active .project-pill-label {
+  font-weight: 650;
 }
 
 .pill-folder-icon {
+  display: inline-flex;
   flex-shrink: 0;
   font-size: 15px;
 }
 
-.project-pill.active .pill-folder-icon {
-  color: var(--accent-hover);
+/* Folder icon color signals the project's pending git state at a glance —
+   distinct from the round SSH connection lamp (RemoteConnMenu) so the two
+   indicators are never visually confused. Priority mirrors the file-tree
+   markers: dirty (red) > staged (orange) > unpushed (green) > clean (folder
+   yellow, its normal resting color). */
+.pill-folder-icon.git-clean {
+  color: #e3b341;
+}
+
+.pill-folder-icon.git-dirty {
+  color: #f85149;
+}
+
+.pill-folder-icon.git-staged {
+  color: #d29922;
+}
+
+.pill-folder-icon.git-unpushed {
+  color: #3fb950;
 }
 
 .project-search-wrap {
@@ -5438,10 +7926,6 @@ select option {
   flex-direction: column;
   gap: 2px;
   padding: 4px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 0;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.32);
   z-index: 60;
 }
 
@@ -5473,18 +7957,25 @@ select option {
   background: rgba(0, 0, 0, 0.35);
 }
 
-.project-dialog {
-  width: min(680px, calc(100vw - 32px));
-  max-height: min(820px, calc(100vh - 40px));
+/* One dialog surface for the whole app — the two shells differ only in size.
+   Shared chrome (bg-panel, accent border, sharp corners, shadow) lives here so
+   every modal reads identically. */
+.project-dialog,
+.settings-dialog {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 22px 24px;
   background: var(--bg-panel);
   border: 1px solid var(--border-color);
-  border-radius: 0;
+  border-radius: var(--radius);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.42);
+}
+
+.project-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(820px, calc(100vh - 40px));
+  padding: 22px 24px;
 }
 
 .settings-backdrop {
@@ -5497,15 +7988,7 @@ select option {
 .settings-dialog {
   width: min(560px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 96px));
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
   padding: 18px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 0;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.42);
 }
 
 .settings-title-row {
@@ -5520,7 +8003,9 @@ select option {
   flex: 1;
   font-size: 16px;
   font-weight: 650;
-  color: var(--text-primary);
+  /* Top-level panel header: accent so it clearly outranks the section titles
+     (accent-secondary) and the body text below it. */
+  color: var(--accent);
 }
 
 .dialog-close-btn,
@@ -5543,6 +8028,66 @@ select option {
 .filetype-settings-row button:hover {
   background: var(--control-hover-bg);
   border-color: var(--accent);
+}
+
+/* Print preview overlay (src/lib/viewers/print.ts). Reuses .modal-backdrop +
+   .settings-dialog chrome; the dialog is sized to preview a page and the iframe
+   fills the remaining height. */
+.print-preview-dialog {
+  width: min(860px, calc(100vw - 48px));
+  height: min(90vh, calc(100vh - 48px));
+  max-height: min(90vh, calc(100vh - 48px));
+  padding: 14px 16px;
+  gap: 10px;
+  overflow: hidden;
+}
+.print-preview-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 10px;
+}
+.print-preview-title {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--accent);
+}
+.print-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.print-preview-print {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: var(--accent);
+  color: var(--bg-panel);
+  cursor: pointer;
+  padding: 7px 14px;
+  font-weight: 600;
+}
+.print-preview-print:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+}
+.print-preview-print:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.print-preview-print .file-viewer-save-spinner {
+  border-top-color: var(--bg-panel);
+}
+.print-preview-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: #fff;
 }
 
 .settings-row,
@@ -5652,8 +8197,12 @@ select option {
   margin-top: 2px;
   padding-top: 12px;
   border-top: 1px solid var(--border-subtle);
-  color: var(--text-primary);
+  /* Section / per-agent headers: a distinct accent (one step below the panel
+     header) so a grouping like an agent name reads as a heading, not as the
+     primary-coloured body text, button labels and commands around it. */
+  color: var(--accent-secondary);
   font-weight: 650;
+  letter-spacing: 0.01em;
 }
 
 .settings-link-row {
@@ -5662,10 +8211,130 @@ select option {
   padding-top: 4px;
 }
 
+/* Sub-panel navigation menu at the foot of the main settings panel. Mirrors the
+   Lessons / How-to-start card menu (.lesson-item) so the whole app's "pick a
+   destination" lists read as one style. */
+.settings-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.settings-nav-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.settings-nav-item:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+}
+
+.settings-nav-item-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.settings-nav-item-blurb {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
 .settings-help {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.35;
+}
+
+/* Archived-projects (Settings) list */
+.archived-projects-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.archived-project-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+}
+
+.archived-project-info {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.archived-project-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archived-project-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.15));
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.archived-project-date {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.archived-project-actions,
+.archived-project-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.archived-project-confirm input {
+  min-width: 160px;
+}
+
+.archived-project-confirm-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.archived-project-warn {
+  margin: 0;
+  max-width: 340px;
+  font-size: 0.82em;
+  line-height: 1.35;
+  text-align: right;
+  color: var(--danger, #d9534f);
 }
 
 .help-section {
@@ -5777,7 +8446,7 @@ select option {
 
 .project-ending-toggle.is-hidden {
   color: var(--text-muted);
-  background: var(--bg-secondary);
+  background: var(--bg-main);
   border-color: var(--border-subtle);
 }
 
@@ -5827,22 +8496,15 @@ select option {
   color: var(--text-primary);
 }
 
+/* Canonical dialog header: solid accent + subtle divider, matching
+   .settings-title-row h2. (Previously a fancy_dark-only gradient-clipped title
+   that diverged from every other dialog.) */
 .project-dialog h2 {
   font-size: 16px;
   font-weight: 650;
-}
-
-[data-theme="fancy_dark"] .project-dialog h2 {
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
+  color: var(--accent);
   padding-bottom: 10px;
-  border-bottom: 1px solid var(--border-color);
-  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-secondary) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .project-dialog label {
@@ -5898,6 +8560,48 @@ select option {
   gap: 8px;
 }
 
+/* Masked input + show/hide eye toggle (see common/PasswordInput.tsx). The wrap
+   takes the input's place in every layout: it stretches to full width in the
+   column/label contexts (flex cross-axis stretch) and grows to fill a
+   `.folder-picker-row`. The reveal button floats over the trailing edge, so the
+   input reserves room for it via padding-right. */
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+.password-input-wrap > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 30px;
+}
+.folder-picker-row > .password-input-wrap {
+  flex: 1;
+  overflow: visible;
+}
+.password-reveal-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.password-reveal-btn:hover {
+  color: var(--text-primary);
+}
+.password-reveal-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 /* OpenVPN activation password prompt */
 .vpn-prompt-dialog {
   max-width: 380px;
@@ -5925,12 +8629,15 @@ select option {
 }
 
 .vpn-prompt-actions button.primary {
-  background: var(--accent, var(--control-border));
-  color: var(--text-primary);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-main);
+  font-weight: 600;
 }
 
-.vpn-toggle {
-  margin-bottom: 4px;
+.vpn-prompt-actions button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .folder-picker-row span {
@@ -5969,11 +8676,87 @@ select option {
   cursor: default;
 }
 
+/* Destructive confirm (e.g. delete git history) — overrides the accent style
+   the last-child rule otherwise applies. */
+.project-dialog-actions button.danger,
+.project-dialog-actions button.danger:last-child {
+  background: var(--danger);
+  color: var(--bg-main);
+  border-color: var(--danger);
+}
+
 .project-dialog-path {
   min-height: 16px;
   color: var(--text-muted);
   font-size: 12px;
   word-break: break-all;
+}
+
+.extend-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.extend-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.extend-path-label {
+  flex: none;
+  width: 52px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.extend-remote-path {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.remote-chosen-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.remote-chosen-summary .remote-chosen-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.remote-change-folder-btn {
+  flex: none;
+  padding: 2px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.remote-change-folder-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.remote-change-folder-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .project-dialog-error {
@@ -5992,7 +8775,7 @@ select option {
 }
 
 .scaffold-popover-title {
-  color: var(--text-primary);
+  color: var(--accent);
   font-size: 13px;
   font-weight: 650;
 }
@@ -6108,18 +8891,149 @@ select option {
   font-size: 12px;
 }
 
-.remote-project-toggle {
-  display: flex;
-  flex-direction: row;
+/* ── Mode-toggle card + sliding switch (remote-project / OpenVPN toggles) ──── */
+/* A bordered row carrying a title + one-line description on the left and a
+   sliding switch on the right. Lights up with the accent when the mode is on,
+   replacing the bare native checkbox these toggles used to render as. */
+.toggle-card {
+  display: flex !important;
+  flex-direction: row !important;
   align-items: center;
-  gap: 8px;
-  font-weight: 500;
+  gap: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-subtle);
+  background: var(--control-bg);
   cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease;
 }
 
-.remote-project-toggle input[type="checkbox"] {
-  width: auto;
+.toggle-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
+}
+
+.toggle-card.is-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--control-bg));
+}
+
+.toggle-card-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.toggle-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.toggle-card-desc {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+/* Sliding pill switch. The checkbox is the real (focusable) control, layered
+   transparently over the track; the track's ::after pseudo is the moving knob. */
+.eld-switch {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 40px;
+  height: 22px;
+}
+
+.eld-switch input[type="checkbox"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.eld-switch-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-secondary) 32%, transparent);
+  border: 1px solid var(--control-border);
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.eld-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  transform: translateY(-50%);
+  transition: transform 0.16s ease, background 0.16s ease;
+}
+
+.eld-switch input:checked + .eld-switch-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.eld-switch input:checked + .eld-switch-track::after {
+  transform: translate(18px, -50%);
+  background: #fff;
+}
+
+.eld-switch input:focus-visible + .eld-switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Compact variant for inline toolbars / filter rows (file-browser filters,
+   search options, per-file-type viewer prefs) where the full-size pill would
+   dominate a dense row. */
+.eld-switch-sm {
+  width: 30px;
+  height: 16px;
+}
+
+.eld-switch-sm .eld-switch-track::after {
+  width: 10px;
+  height: 10px;
+  left: 2px;
+}
+
+.eld-switch-sm input:checked + .eld-switch-track::after {
+  transform: translate(14px, -50%);
+}
+
+/* OpenVPN section heading. There's no on/off toggle (OpenVPN is the only tunnel
+   type), so this is a plain title + hint that labels the always-shown config
+   controls below; the tunnel is used only when a config is actually selected. */
+.vpn-section-header {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* Expanded OpenVPN controls, nested under the section heading with an accent
+   spine so the config picker / connect button read as belonging to it. */
+.vpn-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .ssh-connect-fields {
@@ -6140,8 +9054,291 @@ select option {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   border: 1px solid var(--danger);
-  border-radius: 4px;
   word-break: break-word;
+}
+
+/* "Recently used…" picker reuses the address-input look but is a real select. */
+.vpn-config-recent {
+  cursor: pointer;
+}
+
+/* OpenVPN connect button: animate the in-flight handshake and tint the button
+   by tunnel state so its status reads at a glance (the exact state/error is in
+   the hover title). */
+.vpn-connect-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.vpn-connect-btn.vpn-status-connecting {
+  /* Disabled while connecting, but keep it visibly "alive" with a soft pulse. */
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: vpn-connecting-pulse 1.1s ease-in-out infinite;
+}
+
+.vpn-connect-btn.vpn-status-connected {
+  border-color: var(--success, #3fb950);
+  color: var(--success, #3fb950);
+  background: color-mix(in srgb, var(--success, #3fb950) 14%, transparent);
+}
+
+.vpn-connect-btn.vpn-status-error {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* Small spinning ring shown inside the button while the tunnel comes up. */
+.vpn-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: file-viewer-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes vpn-connecting-pulse {
+  0%,
+  100% {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  50% {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+
+/* Non-headless connect block: the "Connect VPN…/Log in over SSH…" button and,
+   once clicked, the live terminal embedded in the project dialog where the user
+   authenticates the tunnel/login. The PTY outlives the dialog (persistOnUnmount)
+   so the new project rides the connection it set up. */
+.dialog-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-color));
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+/* Prominent call-to-action so it's obvious THIS is where you open the login
+   terminal — full-width, accent-filled, with a blinking-prompt glyph. */
+.dialog-connect-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  font-weight: 600;
+  /* --bg-main (not --accent-contrast) matches .btn-primary and the dialog
+     action buttons — legible dark-on-accent instead of low-contrast white. */
+  color: var(--bg-main);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.dialog-connect-btn:hover:not(:disabled) {
+  background: var(--accent-hover, var(--accent));
+  border-color: var(--accent-hover, var(--accent));
+}
+
+.dialog-connect-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.dialog-connect-btn-icon {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Menlo, monospace;
+  font-weight: 700;
+  letter-spacing: -1px;
+}
+
+/* ── Shared CTA buttons ──────────────────────────────────────────────────
+   The one canonical primary / danger call-to-action for the whole app. Filled
+   accent (or danger) with text in --bg-main — legible on every theme's accent
+   (dark text on the dark themes' bright accents, light text on the light
+   themes' blues), where fixed-white --accent-contrast would wash out. Sharp
+   corners via --radius. Use .btn-primary / .btn-danger (+ .btn-block to span a
+   row) for any new CTA so buttons never drift again. */
+.btn-primary,
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  font-weight: 600;
+  color: var(--bg-main);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.btn-danger {
+  background: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn-primary:disabled,
+.btn-danger:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.dialog-connect-terminal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border-color);
+  padding: 6px;
+  background: var(--bg-panel);
+}
+
+.dialog-connect-terminal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Fixed-height host so the embedded xterm has a stable layout box to open into
+   (xterm refuses to render in a zero-height element). */
+.dialog-connect-terminal-host {
+  height: 180px;
+  min-height: 180px;
+  display: flex;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.vpn-disconnect-btn {
+  border-color: var(--danger);
+  color: var(--danger);
+  flex: 0 0 auto;
+}
+
+/* "Push to GitHub/GitLab" picked but no Eldrun connection yet: a nudge to set
+   the access token up in Settings → Git Hosting, with a one-click redirect. */
+.git-connect-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text-primary, var(--text));
+  font-size: 0.85em;
+}
+
+.git-connect-notice button {
+  flex: 0 0 auto;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Read-only live OpenVPN handshake log (headless connect). Terminal-styled so a
+   streamed connect reads as live work; capped + scrollable so a chatty handshake
+   stays inside the dialog. */
+.connection-log {
+  max-height: 150px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.connection-log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary, var(--text));
+}
+
+.connection-log-waiting {
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.sshfs-install {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  color: var(--text-main);
+}
+
+.sshfs-install-instruction {
+  font-size: 12px;
+}
+
+.sshfs-install-commands {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sshfs-install-cmd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+
+.sshfs-install-cmd-text {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.sshfs-install-copy,
+.sshfs-install-guide-btn {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sshfs-install-guide-btn {
+  align-self: flex-start;
 }
 
 .ssh-address-input,
@@ -6192,6 +9389,44 @@ select option {
 .remote-browser-header button:hover {
   background: var(--control-hover-bg);
   border-color: var(--accent);
+}
+
+.remote-newfolder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.remote-newfolder-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  padding: 5px 8px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.remote-newfolder button {
+  flex: 0 0 auto;
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  padding: 5px 9px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.remote-newfolder button:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.remote-newfolder button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .remote-list {
@@ -6270,14 +9505,6 @@ select option {
 
 .orbit-dot {
   fill: var(--accent);
-}
-
-/* Running-task indicator on a project pill — green to read as "live work". */
-.pill-running-spinner {
-  margin-left: 6px;
-}
-.pill-running-spinner .orbit-dot {
-  fill: var(--success, #45c46a);
 }
 
 /* ── Activity calendar ───────────────────────────────────────────────── */
@@ -6378,6 +9605,20 @@ select option {
 
 /* Vibe runtime section + its inline status dot (used inside flowing text). */
 .ollama-vibe-section { margin-top: 14px; }
+
+/* Each agent rendered as a separated, card-like list entry in Manage Agents. */
+.agent-list-entry {
+  margin-top: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.03));
+}
+.agent-list-entry .settings-section-title {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
 .ollama-vibe-section .ollama-status-dot {
   display: inline-block;
   vertical-align: middle;
@@ -6465,6 +9706,136 @@ select option {
   color: var(--success);
 }
 
+/* ── Loaded-model row: green "resident" lamp + per-task tag chips ─────────── */
+/* The row (not the inner name button) owns the hover border/fill so the
+   highlight wraps the task tags below the name, not just the name itself. */
+.local-model-row {
+  display: flex;
+  flex-direction: column;
+  background: var(--control-bg);
+  border: 1px solid transparent;
+  border-radius: 0;
+  transition: background-color 0.1s, border-color 0.1s;
+}
+.local-model-row:hover {
+  background-color: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+/* The clickable name button sits inside the row; the lamp replaces the old
+   leading dot and a "default" tag marks the fallback model. It stays transparent
+   so the row's hover treatment shows through and there's no double outline. */
+.local-model-pick,
+.local-model-row:hover .local-model-pick,
+.local-model-pick:hover {
+  width: 100%;
+  background: transparent;
+  border-color: transparent;
+}
+.local-model-lamp {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--success);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--success) 70%, transparent);
+}
+
+/* ── Remote-connection status lamps (SSH / OpenVPN) ───────────────────────────
+   Red/orange/green dots shown in the project dialog (next to the connect
+   controls) and in the header (active remote project). Modeled on the
+   resident-model lamp above; the connecting state pulses to read as "in flight". */
+.conn-lamp {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  vertical-align: middle;
+  background: color-mix(in srgb, var(--text-secondary) 45%, transparent);
+}
+.conn-lamp-connected {
+  background: var(--success);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--success) 75%, transparent);
+}
+.conn-lamp-connecting {
+  background: var(--warning);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--warning) 75%, transparent);
+  animation: conn-lamp-pulse 1.1s ease-in-out infinite;
+}
+.conn-lamp-error {
+  background: var(--danger);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--danger) 75%, transparent);
+}
+@keyframes conn-lamp-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.local-model-default-tag {
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  color: var(--warning);
+}
+/* Tag chips sit just under the model name, indented past the lamp. */
+.local-model-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 10px 6px 25px;
+}
+.local-model-role-chip {
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.1s, border-color 0.1s, color 0.1s;
+}
+.local-model-role-chip:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.local-model-role-chip.on {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.local-model-role-chip.local-model-unload {
+  margin-left: auto;
+}
+.local-model-role-chip.local-model-unload:hover {
+  border-color: var(--danger, #e5534b);
+  color: var(--danger, #e5534b);
+}
+.local-model-role-chip.local-model-unload:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Installed agent CLIs listed in the brain menu's Agents section: a green
+   "installed" lamp next to the agent label, matching a loaded-model row. */
+.local-model-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 4px 10px;
+}
+
 /* In-flight downloads shown at the top of the brain menu. */
 .local-model-downloads {
   padding: 4px 10px 6px;
@@ -6485,11 +9856,44 @@ select option {
   justify-content: space-between;
   gap: 8px;
 }
+.local-model-download-head {
+  /* Name grows; pct + action buttons hug the right edge. */
+}
+.local-model-download-head .local-model-loaded-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .local-model-download-pct {
   font-size: 11px;
   color: var(--text-secondary);
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
+}
+/* Pause / Resume / Delete control on a (paused) download row in the brain menu. */
+.local-model-download-action {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--control-border);
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.local-model-download-action:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+.local-model-download-action.danger { color: var(--danger); }
+.local-model-download-action.danger:hover { border-color: var(--danger); }
+
+/* A "load into memory" row in the brain menu: the menu item plus, while the
+   model is warming, an indeterminate bar under it (Ollama streams no load %). */
+.local-model-load-row {
+  display: flex;
+  flex-direction: column;
+}
+.local-model-load-bar {
+  margin: 2px 12px 4px;
 }
 
 /* ── Install flow (shown when Ollama is missing) ─────────────────────────── */
@@ -6513,11 +9917,14 @@ select option {
 .ollama-install-cmd {
   flex: 1;
   padding: 4px 8px;
-  background: var(--control-bg);
+  background: var(--bg-main);
   border: 1px solid var(--control-border);
+  border-left: 2px solid var(--accent-secondary);
   font-family: var(--font-mono, monospace);
   font-size: 11px;
-  color: var(--text-primary);
+  /* Terminal command: monospace on the deeper window background with a coloured
+     gutter so it reads as a shell entry, not a button or a heading. */
+  color: var(--text-secondary);
   overflow-x: auto;
   white-space: nowrap;
 }
@@ -6604,8 +10011,10 @@ select option {
   max-height: 160px;
   overflow: auto;
   padding: 8px;
-  background: var(--control-bg);
+  /* Live installer output: same terminal treatment as the command snippet. */
+  background: var(--bg-main);
   border: 1px solid var(--control-border);
+  border-left: 2px solid var(--accent-secondary);
   font-family: var(--font-mono, monospace);
   font-size: 11px;
   color: var(--text-secondary);
@@ -6635,6 +10044,20 @@ select option {
 .ollama-action-btn.danger { color: var(--danger); }
 .ollama-action-btn.danger:hover:not(:disabled) {
   border-color: var(--danger);
+}
+
+/* Primary call-to-action (Install …). Filled accent so the main action stands
+   apart from the secondary outline buttons (Copy / Re-check / Refresh) sharing
+   this class. */
+.ollama-action-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-main);
+  font-weight: 600;
+}
+.ollama-action-btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .ollama-model-row {
@@ -6700,6 +10123,14 @@ select option {
 .ollama-download-status {
   font-size: 10px;
   color: var(--text-muted);
+}
+
+/* Indeterminate "loading into memory" strip under a model row in settings. */
+.ollama-load-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
 }
 
 .ollama-badge {
@@ -6855,4 +10286,2774 @@ select option {
   overflow: hidden;
   text-overflow: ellipsis;
   animation: toast-fade 2.2s ease forwards;
+}
+
+/* Remote (SSH) projects show two lines — a local mirror path and the remote
+   user@host:remote_path target. Preserve the newline + label spacing and left-
+   align; single-line local/conn toasts keep their nowrap + ellipsis above. */
+.project-switch-toast.multiline {
+  white-space: pre;
+  text-align: left;
+  line-height: 1.5;
+}
+
+/* The connection toast ("VPN connected · proj") sits just below the switch toast
+   so the two never overlap, and lingers a touch longer (matches its 3.2s clear). */
+.conn-toast {
+  top: calc(50% + 46px);
+  animation: toast-fade 3.2s ease forwards;
+}
+
+/* ── Project-dialog remote step indicator + header connection lamps ────────── */
+.remote-steps {
+  display: flex;
+  gap: 12px;
+  margin: 2px 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+.remote-step {
+  opacity: 0.55;
+}
+.remote-step.is-active {
+  opacity: 1;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+/* SSH-address label with its lamp inline. Explicit color — this dialog is
+   portaled into <body>, which sets no text color, so without this the plain
+   text child falls back to browser-default black. */
+.remote-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+}
+/* A remote project's live SSH/VPN lamps, rendered as a button (clicking opens
+   the Connect modal), so reset the native button chrome and keep just the lamp
+   row. */
+.header-conn-menu {
+  position: relative;
+  display: inline-flex;
+  margin-left: 6px;
+}
+.header-conn-lamps {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 5px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.header-conn-lamps:hover {
+  background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
+}
+/* Collapsed (resting) = single aggregate lamp; hover splits into labeled
+   per-channel lamps. */
+.header-conn-lamps .conn-collapsed {
+  display: inline-flex;
+  align-items: center;
+}
+.header-conn-lamps .conn-expanded {
+  display: none;
+  align-items: center;
+  gap: 9px;
+}
+.header-conn-lamps:hover .conn-collapsed {
+  display: none;
+}
+.header-conn-lamps:hover .conn-expanded {
+  display: inline-flex;
+}
+.conn-chan {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.conn-chan-label {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Compact variant: the lamp embedded on a project pill instead of the header,
+   so every remote project's connection state is visible in the project bar at a
+   glance (not just the active one). */
+.header-conn-menu-compact {
+  margin-left: 0;
+  margin-right: 2px;
+}
+.header-conn-menu-compact .header-conn-lamps {
+  padding: 2px;
+}
+
+/* ── Connect modal (RemoteConnectDialog) ────────────────────────────────────
+   Connect-only sibling of the new-project SSH section; reuses the shared
+   .remote-reconnect-section / .dialog-connect* / .connection-log styles. */
+.remote-connect-dialog {
+  width: min(560px, 92vw);
+}
+.remote-connect-target {
+  margin: 2px 0 10px;
+  font-family: var(--mono-font, monospace);
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-all;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+/* One row per location (Remote / Local): fixed-width label + path. */
+.remote-connect-location {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.remote-connect-location-label {
+  flex: 0 0 auto;
+  min-width: 44px;
+  font-family: var(--body-font, sans-serif);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+.remote-connect-location-path {
+  flex: 1 1 auto;
+  word-break: break-all;
+}
+/* Headless password row: label + input + Connect button stacked in the section. */
+.remote-connect-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.remote-connect-field input {
+  width: 100%;
+}
+/* Opt-in "Save password" row under a Connect-modal password field. */
+.remote-connect-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.remote-connect-remember input {
+  width: auto;
+  margin: 0;
+}
+
+/* ── Onboarding: empty-state card, "How to start" dialog, contextual hints ── */
+
+.center-placeholder-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  max-width: 360px;
+  padding: 0 16px;
+}
+
+/* Section divider inside the Connect modal (SSH / OpenVPN groups). */
+.remote-reconnect-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+
+.center-placeholder-title {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.center-placeholder-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.center-placeholder-key {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 5px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* "How to start" reuses .modal-backdrop + .settings-dialog; just the step list. */
+.how-to-start-steps {
+  list-style: none;
+  margin: 8px 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.how-to-start-step {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.how-to-start-num {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.how-to-start-step-title {
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.how-to-start-got-it {
+  margin-left: auto;
+  border-color: var(--accent) !important;
+}
+
+/* Contextual hint coachmark/banner. z-index 90: above the header (80) so it can
+   point at chrome, but below true modals (.modal-backdrop, 100) so a dialog is
+   never pierced by a stray hint. Portaled to body (see HintBubble). */
+.hint-bubble {
+  position: fixed;
+  z-index: 90;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  color: var(--text-primary);
+  font-size: 12px;
+  /* Fade in on appearance, then keep a slow accent breathing on the border so a
+     freshly-surfaced hint draws the eye without nagging. Opacity-only entry so it
+     never fights the inline/class positioning transforms (translateY/translateX).
+     Shares the pulse vocabulary of tab-working-pulse / right-panel-drop-pulse. */
+  animation: hint-bubble-in 0.24s ease-out,
+    hint-bubble-breathe 2.4s ease-in-out 0.24s infinite;
+}
+
+@keyframes hint-bubble-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hint-bubble-breathe {
+  0%,
+  100% {
+    border-color: var(--border-color);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  }
+  50% {
+    border-color: var(--accent);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45),
+      0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+
+/* The chrome a hint points at (the + button, etc.): a pulsing accent fill + inset
+   ring so the eye lands on the thing to click, not just the bubble. HintHost
+   toggles this class on the anchored element while its hint is on screen. The
+   effect is kept *inside* the element bounds (inset ring, no outward glow) so it
+   survives an overflow:hidden ancestor like the .tab-bar that clips the + button. */
+.hint-target {
+  animation: hint-target-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes hint-target-pulse {
+  0%,
+  100% {
+    background: color-mix(in srgb, var(--accent) 0%, transparent);
+    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+  }
+}
+
+.hint-bubble--banner {
+  left: 50%;
+  top: 16px;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 32px));
+  /* Banners have no anchor element to pulse, so the bubble itself breathes with a
+     gentle scale alongside the shared border glow. The transform-animating
+     keyframes must carry the centering translateX(-50%); the entry runs first and
+     the scale pulse starts when it ends (matched delay), so they never overlap on
+     the transform property. */
+  animation: hint-banner-in 0.24s ease-out,
+    hint-bubble-breathe 2.4s ease-in-out 0.24s infinite,
+    hint-banner-pulse 1.8s ease-in-out 0.24s infinite;
+}
+
+@keyframes hint-banner-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes hint-banner-pulse {
+  0%,
+  100% {
+    transform: translateX(-50%) scale(1);
+  }
+  50% {
+    transform: translateX(-50%) scale(1.03);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hint-bubble,
+  .hint-bubble--banner,
+  .hint-target {
+    animation: none;
+  }
+}
+
+.hint-bubble-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.hint-bubble-close:hover {
+  color: var(--text-primary);
+}
+
+.hint-bubble-title {
+  font-weight: 600;
+  margin: 0 16px 4px 0;
+}
+
+.hint-bubble-body {
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.hint-bubble-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.hint-bubble-link {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.hint-bubble-link:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.hint-bubble-got-it {
+  margin-left: auto;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.hint-bubble-got-it:hover {
+  background: var(--accent-hover, var(--accent));
+}
+
+/* The element a coachmark points at gets this class while the hint is shown, so
+   the eye lands on the thing to click (see HintHost). */
+.hint-target {
+  animation: hint-target-pulse 1.6s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+@keyframes hint-target-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 65%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+/* ── Guided tour ("Take a tour") ──────────────────────────────────────────── */
+
+/* Invisible anchor at the right-edge reveal band; gives the file-tree tour step
+   a stable element to spotlight without affecting layout or hit-testing. */
+.tour-edge-marker {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  width: 6px;
+  height: 120px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+/* Full-screen layer hosting the blocker, spotlight, and bubble. Above the hint
+   bubble (z 90) and most chrome; portaled to document.body. */
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+
+/* Transparent click-catcher: makes the tour narrated/can't-get-lost — every
+   pointer event over the app is swallowed so the user advances with Next. The
+   dim itself comes from the spotlight's box-shadow (or the banner backdrop). */
+.tour-blocker {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+}
+
+/* The cutout around the highlighted control: its huge box-shadow IS the dim, so
+   everything outside this rect darkens while the target stays clear. Visual
+   only (no pointer events) — the blocker beneath handles clicks. */
+.tour-spotlight {
+  position: fixed;
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 9999px rgba(0, 0, 0, 0.58),
+    0 0 0 2px var(--accent),
+    0 0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
+  pointer-events: none;
+  animation: tour-spotlight-in 0.2s ease-out;
+}
+
+@keyframes tour-spotlight-in {
+  from {
+    box-shadow:
+      0 0 0 9999px rgba(0, 0, 0, 0);
+  }
+}
+
+.tour-bubble {
+  position: fixed;
+  z-index: 201;
+  pointer-events: auto;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  color: var(--text-primary);
+  font-size: 12px;
+  animation: hint-bubble-in 0.22s ease-out;
+}
+
+/* Centered card fallback when a step's target isn't on screen. */
+.tour-bubble--banner {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 32px));
+}
+
+.tour-bubble-title {
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+.tour-bubble-body {
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.tour-bubble-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.tour-bubble-count {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tour-bubble-skip {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.tour-bubble-skip:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.tour-bubble-back {
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.tour-bubble-back:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.tour-bubble-next {
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 11px;
+  padding: 4px 14px;
+  cursor: pointer;
+}
+
+.tour-bubble-next:hover {
+  background: var(--accent-hover, var(--accent));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-spotlight,
+  .tour-bubble {
+    animation: none;
+  }
+}
+
+/* Lesson picker (LessonsMenu): a vertical list of task walkthroughs. */
+.lessons-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.lessons-section-title {
+  margin: 10px 0 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.lessons-section-title:first-child {
+  margin-top: 0;
+}
+
+.lesson-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.lesson-item:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+}
+
+.lesson-item-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.lesson-item-blurb {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/* ── Fancy themes: make the buttons live up to the name ──────────────────
+   The plain `dark`/`light` themes keep flat, utilitarian buttons. The
+   `fancy_*` themes earn their label here: the always-visible chrome buttons
+   (header app-menu button + Ollama model button, the app-launcher tiles, and
+   the project pills) get an accent-tinted gradient surface, a soft glow
+   border, and a hover lift + glow. Scoped to `[data-theme="fancy_*"]` so the
+   plain themes are untouched. Only color/shadow/transform are themed — sizing
+   and layout stay owned by the base component rules above. */
+[data-theme="fancy_dark"] .global-apps-menu-btn,
+[data-theme="fancy_light"] .global-apps-menu-btn {
+  background:
+    linear-gradient(160deg,
+      color-mix(in srgb, var(--accent) 14%, var(--control-bg)) 0%,
+      var(--control-bg) 70%);
+  border-color: var(--border-color);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 0 1px rgba(0, 0, 0, 0.18);
+  transition: background 0.15s ease, box-shadow 0.18s ease,
+    border-color 0.15s ease, color 0.15s ease, transform 0.08s ease;
+}
+
+[data-theme="fancy_dark"] .global-apps-menu-btn:hover,
+[data-theme="fancy_dark"] .global-apps-menu-btn[aria-expanded="true"],
+[data-theme="fancy_light"] .global-apps-menu-btn:hover,
+[data-theme="fancy_light"] .global-apps-menu-btn[aria-expanded="true"] {
+  background:
+    linear-gradient(160deg,
+      color-mix(in srgb, var(--accent) 26%, var(--control-hover-bg)) 0%,
+      var(--control-hover-bg) 80%);
+  border-color: var(--accent);
+  color: var(--text-primary);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 0 12px -2px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+
+[data-theme="fancy_dark"] .global-apps-menu-btn:active,
+[data-theme="fancy_light"] .global-apps-menu-btn:active {
+  transform: translateY(1px);
+}
+
+/* App-launcher tiles: a transparent rest state that blooms into an
+   accent-tinted, glowing tile on hover. */
+[data-theme="fancy_dark"] .global-app-btn:hover:not([aria-disabled="true"]),
+[data-theme="fancy_light"] .global-app-btn:hover:not([aria-disabled="true"]) {
+  background:
+    radial-gradient(120% 120% at 50% 0%,
+      color-mix(in srgb, var(--accent) 30%, transparent) 0%,
+      var(--pill-hover-bg) 75%);
+  color: var(--text-primary);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
+    0 0 10px -3px color-mix(in srgb, var(--accent) 70%, transparent);
+  transition: background 0.15s ease, box-shadow 0.18s ease, color 0.15s ease;
+}
+
+/* The active project pill: an accent gradient wash + glow so the live project
+   genuinely stands out in fancy mode. */
+[data-theme="fancy_dark"] .project-pill.active,
+[data-theme="fancy_light"] .project-pill.active {
+  background:
+    linear-gradient(160deg,
+      color-mix(in srgb, var(--accent) 24%, var(--bg-panel)) 0%,
+      var(--pill-active-bg) 85%);
+  border-color: transparent;
+  box-shadow:
+    inset 0 -3px 0 var(--accent),
+    0 0 14px -4px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+[data-theme="fancy_dark"] .project-pill,
+[data-theme="fancy_light"] .project-pill {
+  border-color: transparent;
+  box-shadow: inset 0 -3px 0 var(--warning);
+}
+
+[data-theme="fancy_dark"] .project-pill.has-category:not(.active):not(.timer-paused),
+[data-theme="fancy_light"] .project-pill.has-category:not(.active):not(.timer-paused) {
+  box-shadow: inset 0 -3px 0 var(--cat-color);
+}
+
+[data-theme="fancy_dark"] .project-pill:not(.active):hover,
+[data-theme="fancy_light"] .project-pill:not(.active):hover {
+  box-shadow:
+    inset 0 -3px 0 var(--warning),
+    0 0 10px -4px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+[data-theme="fancy_dark"] .project-pill.has-category:not(.active):not(.timer-paused):hover,
+[data-theme="fancy_light"] .project-pill.has-category:not(.active):not(.timer-paused):hover {
+  box-shadow:
+    inset 0 -3px 0 var(--cat-color),
+    0 0 10px -4px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* Tabs: fancy themes use borderless tabs with a bottom accent rail, keeping the
+   indicator beside the pane rather than above the label. The active tab also
+   gets an accent-tinted body, a bold label, and a soft glow; hovered tabs warm
+   into an accent wash. Plain themes keep the base tab treatment. */
+[data-theme="fancy_dark"] .tab,
+[data-theme="fancy_dark"] .tab:hover,
+[data-theme="fancy_dark"] .tab.active,
+[data-theme="fancy_light"] .tab,
+[data-theme="fancy_light"] .tab:hover,
+[data-theme="fancy_light"] .tab.active {
+  border-color: transparent;
+}
+
+[data-theme="fancy_dark"] .tab.active,
+[data-theme="fancy_light"] .tab.active {
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 22%, var(--control-hover-bg)) 0%,
+      var(--bg-main) 100%);
+  box-shadow:
+    0 2px 12px -4px color-mix(in srgb, var(--accent) 75%, transparent),
+    inset 0 -3px 0 var(--tab-accent, var(--accent));
+}
+
+/* Tab text stays uncoloured in the fancy themes too — fancy_dark labels are
+   plain white (below), fancy_light labels fall through to the theme foreground.
+   (No accent gradient on the active tab; the top/bottom rail carries the kind.) */
+
+/* Keep project and tab names plain white in fancy dark mode. */
+[data-theme="fancy_dark"] .project-pill-label,
+[data-theme="fancy_dark"] .tab-label {
+  color: #fff;
+}
+
+[data-theme="fancy_dark"] .project-pill-label,
+[data-theme="fancy_dark"] .tab-label,
+[data-theme="fancy_light"] .project-pill-label,
+[data-theme="fancy_light"] .tab-label {
+  font-weight: 700;
+}
+
+[data-theme="fancy_dark"] .project-pill:not(.active):not(:hover) .project-pill-label,
+[data-theme="fancy_dark"] .tab:not(.active):not(:hover) .tab-label {
+  opacity: 1;
+}
+
+[data-theme="fancy_dark"] .tab.active .tab-label {
+  background: none;
+  -webkit-text-fill-color: #fff;
+  color: #fff;
+  font-weight: 700;
+}
+
+/* Fancy dark keeps project names plain white and marks the current one by
+   weight rather than a top rail. */
+[data-theme="fancy_dark"] .project-pill.active {
+  box-shadow:
+    inset 0 -3px 0 var(--accent),
+    0 0 14px -4px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+[data-theme="fancy_dark"] .project-pill.active .project-pill-label {
+  font-weight: 700;
+}
+
+[data-theme="fancy_dark"] .tab.active {
+  box-shadow:
+    0 2px 12px -4px color-mix(in srgb, var(--accent) 45%, transparent),
+    inset 0 -3px 0 var(--tab-accent, var(--accent));
+}
+
+[data-theme="fancy_dark"] .tab:not(.active):hover,
+[data-theme="fancy_light"] .tab:not(.active):hover {
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 12%, transparent) 0%,
+      var(--pill-hover-bg) 100%);
+  box-shadow: inset 0 0 10px -6px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+[data-theme="fancy_dark"] .tab-new-btn:hover,
+[data-theme="fancy_light"] .tab-new-btn:hover {
+  background:
+    radial-gradient(120% 120% at 50% 0%,
+      color-mix(in srgb, var(--accent) 26%, transparent) 0%,
+      var(--pill-hover-bg) 75%);
+  color: var(--text-primary);
+  box-shadow: 0 0 10px -3px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+
+/* Local-model (Ollama) autocomplete ghost suggestion: in fancy mode the
+   accepted-on-Tab proposal glows so it reads as a live AI suggestion rather
+   than dim inline text. `text-shadow` (not box-shadow) so the glow hugs the
+   glyphs of the suggestion span only. Brighter than the base accent tint. */
+[data-theme="fancy_dark"] .file-viewer-ghost-text {
+  color: var(--accent-hover, #5edcff);
+  opacity: 1;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+[data-theme="fancy_light"] .file-viewer-ghost-text {
+  color: var(--accent);
+  opacity: 1;
+  text-shadow: 0 0 7px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ── Network traffic monitoring tab ─────────────────────────────────────── */
+.network-pane {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding: 18px;
+  color: var(--text-primary);
+  background: var(--bg-main);
+}
+
+.network-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.network-heading {
+  font-size: 18px;
+  font-weight: 700;
+  /* Pane section header → accent, like the canonical dialog/menu titles. */
+  color: var(--accent);
+}
+
+.network-subheading {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.network-view-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.network-view-tabs button {
+  border: 0;
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.network-view-tabs button:hover,
+.network-view-tabs button.active {
+  color: var(--text-primary);
+  background: var(--control-hover-bg);
+}
+
+.network-view-tabs button.active {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.network-interface-select {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.network-interface-select select,
+.network-connection-filters select,
+.network-connection-filters input {
+  min-width: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+}
+
+.network-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.network-metric {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 13px 15px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.network-metric span,
+.network-metric small {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.network-metric strong {
+  overflow: hidden;
+  font-size: clamp(18px, 3vw, 26px);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+}
+
+.network-metric.receive strong,
+.network-graph-legend .receive {
+  color: var(--accent);
+}
+
+.network-metric.transmit strong,
+.network-graph-legend .transmit {
+  color: var(--success, #3fb950);
+}
+
+.network-usage-totals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+  padding: 9px 15px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.network-usage-totals .network-usage-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.network-usage-totals .rx {
+  color: var(--accent);
+}
+
+.network-usage-totals .tx {
+  color: var(--success, #3fb950);
+}
+
+.network-graph-wrap {
+  position: relative;
+  padding: 12px 12px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.network-graph {
+  display: block;
+  width: 100%;
+  height: 160px;
+  overflow: visible;
+}
+
+.network-grid-line {
+  stroke: var(--border-subtle);
+  stroke-width: 1;
+}
+
+.network-line {
+  fill: none;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.network-line.receive {
+  stroke: var(--accent);
+}
+
+.network-line.transmit {
+  stroke: var(--success, #3fb950);
+}
+
+.network-graph-scale {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  color: var(--text-muted, var(--text-secondary));
+  font-size: 10px;
+}
+
+.network-graph-legend {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  font-size: 11px;
+}
+
+.network-history-label {
+  margin-left: auto;
+  color: var(--text-secondary);
+}
+
+.network-connections {
+  display: flex;
+  min-height: 190px;
+  flex: 1;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+.network-connections-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.network-connections-head h3 {
+  display: inline;
+  margin: 0 8px 0 0;
+  font-size: 14px;
+}
+
+.network-connections-head span,
+.network-table-note {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.network-connection-filters {
+  display: flex;
+  gap: 8px;
+  min-width: min(100%, 360px);
+}
+
+.network-connection-filters input {
+  flex: 1;
+}
+
+.network-table-wrap {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.network-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.network-table-wrap th,
+.network-table-wrap td {
+  max-width: 260px;
+  padding: 7px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 70%, transparent);
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.network-table-wrap th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+}
+
+.network-table-wrap tbody tr:hover {
+  background: var(--control-hover-bg);
+}
+
+.network-empty-row {
+  padding: 28px !important;
+  color: var(--text-secondary);
+  text-align: center !important;
+}
+
+.network-table-note,
+.network-link-note {
+  padding: 8px 12px;
+}
+
+.network-link-note,
+.network-warning {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+  font-size: 11px;
+}
+
+.network-warning {
+  padding: 8px 10px;
+  color: var(--warning, #d29922);
+}
+
+.network-status-panel {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 9px;
+  min-height: 260px;
+  flex: 1;
+  text-align: center;
+}
+
+.network-status-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.network-status-message {
+  max-width: 520px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 700px) {
+  .network-pane {
+    padding: 12px;
+  }
+
+  .network-interface-select {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .network-interface-select select {
+    flex: 1;
+  }
+
+  .network-connections-head,
+  .network-connection-filters {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+/* ── Disk usage analyzer tab ──────────────────────────────────────────────── */
+
+.du-root {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.du-centered {
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.du-error {
+  color: var(--danger);
+  padding: 8px 0;
+}
+
+/* ── Home screen ─────────────────────────────────────────────────────────── */
+
+.du-home {
+  padding: 28px 32px;
+  overflow: auto;
+}
+
+.du-home-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 16px;
+}
+
+.du-targets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  max-width: 900px;
+}
+
+.du-target {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 14px 16px;
+  text-align: left;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius, 4px);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.du-target:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.du-target:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.du-target-label {
+  font-weight: 600;
+}
+
+.du-target-path,
+.du-target-caption {
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.du-capacity {
+  display: block;
+  height: 6px;
+  margin-top: 4px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.du-capacity-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+/* ── Scanning ────────────────────────────────────────────────────────────── */
+
+.du-scanning-title {
+  font-weight: 600;
+}
+
+.du-scanning-stats {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.du-scanning-path {
+  color: var(--text-muted);
+  font-size: 11px;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* keep the deepest, most informative part of the path visible */
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+
+.du-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-color);
+  flex: 0 0 auto;
+}
+
+.du-btn {
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius, 4px);
+  color: var(--text-primary);
+  padding: 3px 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.du-btn:hover {
+  background: var(--control-hover-bg);
+}
+
+.du-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.du-crumbs {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.du-crumb {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 2px 3px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.du-crumb:disabled {
+  color: var(--text-primary);
+  font-weight: 600;
+  cursor: default;
+}
+
+.du-crumb-sep {
+  color: var(--text-muted);
+}
+
+.du-total {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.du-stats {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.du-chart-toggle {
+  display: flex;
+  gap: 4px;
+}
+
+/* ── Body: treeview | chart ──────────────────────────────────────────────── */
+
+.du-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.du-tree {
+  flex: 0 0 42%;
+  min-width: 260px;
+  max-width: 560px;
+  overflow: auto;
+  border-right: 1px solid var(--border-color);
+}
+
+.du-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 10px;
+  cursor: default;
+  white-space: nowrap;
+}
+
+.du-row.dir {
+  cursor: pointer;
+}
+
+.du-row:hover {
+  background: var(--pill-hover-bg);
+}
+
+.du-row-caret {
+  width: 10px;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.du-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.du-row.dir .du-row-name {
+  font-weight: 600;
+}
+
+.du-row.file .du-row-name {
+  color: var(--text-secondary);
+}
+
+.du-row-bar {
+  flex: 0 0 64px;
+  height: 6px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.du-row-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.du-row-size {
+  flex: 0 0 62px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.du-chart {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.du-svg-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* Slices are separated by a hairline of the pane background rather than a stroke
+   colour, so the ring reads as segmented in every theme (same trick as the commit
+   graph's dot halos). */
+.du-arc,
+.du-cell {
+  stroke: var(--bg-panel);
+  stroke-width: 1;
+  cursor: pointer;
+}
+
+.du-arc:hover,
+.du-cell:hover {
+  stroke: var(--text-primary);
+  stroke-width: 1.5;
+}
+
+.du-centre {
+  fill: var(--bg-panel);
+  stroke: var(--border-color);
+}
+
+.du-centre.up {
+  cursor: pointer;
+}
+
+.du-centre.up:hover {
+  stroke: var(--accent);
+}
+
+.du-centre-name,
+.du-centre-size,
+.du-cell-label {
+  pointer-events: none;
+  user-select: none;
+}
+
+.du-centre-name {
+  fill: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.du-centre-size {
+  fill: var(--text-muted);
+  font-size: 11px;
+}
+
+.du-cell-label {
+  fill: #0b0b0b; /* the slice fills are mid-to-light HSL in every theme */
+  font-size: 11px;
+  font-weight: 600;
+}
+
+
+/* ── Native calendar tab ──────────────────────────────────────────────────────
+   The pane is a toolbar + sidebar + one of six views (day / week / multiweek /
+   month / agenda / tasks). Events are colored by `currentColor`: each block sets
+   `color` to its category's (or its calendar's) color, and the border/background
+   below derive from it via color-mix, so one property tints a whole block.
+   ------------------------------------------------------------------------- */
+
+:root {
+  /* Category swatches. Deliberately theme-independent: a "Work" event should be
+     the same color in light and dark, the way a highlighter is. */
+  --cal-cat-work: #4aa3df;
+  --cal-cat-personal: #59b96a;
+  --cal-cat-meeting: #e8663d;
+  --cal-cat-travel: #4fc3c3;
+  --cal-cat-birthday: #c164d6;
+  --cal-cat-holiday: #e2b93b;
+  --cal-cat-important: #d9556b;
+
+  /* Geometry the month grid shares between its cells and its absolute bars. */
+  --cal-daynum-h: 20px;
+  --cal-bar-h: 18px;
+}
+
+.cal-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  overflow: hidden;
+  outline: none;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+
+.cal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  flex: 0 0 auto;
+}
+
+.cal-toolbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cal-toolbar-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--accent);
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cal-toolbar-views,
+.cal-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cal-search {
+  width: 180px;
+  flex: 0 0 auto;
+}
+
+/* ── Shared controls ─────────────────────────────────────────────────────── */
+
+.cal-btn,
+.cal-nav-btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.cal-nav-btn {
+  width: 26px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.cal-btn:hover:not(:disabled),
+.cal-nav-btn:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.cal-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cal-btn-primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.cal-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.cal-btn-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.cal-btn-danger:hover {
+  background: var(--danger);
+  color: var(--accent-contrast);
+}
+
+/* A pill toggle: view switcher, task filters, snooze offsets. */
+.cal-chip {
+  height: 24px;
+  padding: 0 9px;
+  font-size: 11px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.cal-chip:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.cal-chip-on {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.cal-link-btn {
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.cal-link-btn:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.cal-link-danger {
+  color: var(--danger);
+}
+
+.cal-link-danger:hover {
+  color: var(--danger);
+}
+
+.cal-input {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+}
+
+.cal-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.cal-input-num {
+  width: 64px;
+}
+
+.cal-textarea {
+  height: auto;
+  min-height: 60px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+.cal-empty,
+.cal-hint {
+  padding: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.cal-hint {
+  padding: 4px 0;
+}
+
+.cal-error {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.cal-notice {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border-bottom: 1px solid var(--accent);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+/* ── Body: sidebar + view ────────────────────────────────────────────────── */
+
+.cal-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.cal-view {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+
+.cal-sidebar {
+  width: 190px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px;
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+}
+
+.cal-mini-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.cal-mini-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.cal-mini-weekdays,
+.cal-mini-week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.cal-mini-weekday {
+  text-align: center;
+  font-size: 9px;
+  color: var(--text-muted);
+  padding: 2px 0;
+}
+
+.cal-mini-day {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.cal-mini-day:hover {
+  background: var(--control-hover-bg);
+}
+
+.cal-mini-day-out {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.cal-mini-day-today {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.cal-mini-day-selected {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.cal-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+.cal-list-title {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--accent-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cal-list-add {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.cal-list-add .cal-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.cal-list-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 0;
+}
+
+.cal-list-row:hover .cal-list-del {
+  visibility: visible;
+}
+
+.cal-list-del {
+  visibility: hidden;
+  margin-left: auto;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* A native color input, shrunk to a swatch. */
+.cal-color-dot {
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 1px solid var(--control-border);
+  background: none;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.cal-color-dot::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.cal-color-dot::-webkit-color-swatch {
+  border: none;
+}
+
+.cal-list-name {
+  font-size: 11px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.cal-list-name-off {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.cal-list-rename {
+  height: 20px;
+  font-size: 11px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Month / multiweek ───────────────────────────────────────────────────── */
+
+.cal-month {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.cal-month-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  border-bottom: 1px solid var(--border-subtle);
+  flex: 0 0 auto;
+}
+
+.cal-month-weekday {
+  padding: 5px 0;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cal-month-weeks {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Each week is a positioning context: the day cells tile it, and the event bars
+   sit on top so a multi-day bar can cross the cell borders. */
+.cal-month-week {
+  position: relative;
+  flex: 1;
+  min-height: 76px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cal-month-day {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-right: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+
+.cal-month-day:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.cal-month-day-out {
+  background: color-mix(in srgb, var(--bg-main) 45%, transparent);
+}
+
+.cal-month-day-out .cal-month-daynum {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.cal-month-day-selected {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.cal-month-daynum {
+  display: block;
+  height: var(--cal-daynum-h);
+  padding: 2px 6px 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.cal-month-day-today .cal-month-daynum {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.cal-month-more {
+  position: absolute;
+  bottom: 2px;
+  left: 5px;
+  font-size: 9px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.cal-month-more:hover {
+  color: var(--accent);
+}
+
+/* One event in the month grid. A timed single-day event is a dot + text; an
+   all-day or multi-day one is a solid bar spanning its columns. */
+.cal-month-bar {
+  position: absolute;
+  height: calc(var(--cal-bar-h) - 2px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  border-radius: var(--radius);
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.cal-month-bar:hover {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.cal-month-bar-solid {
+  background: color-mix(in srgb, currentColor 78%, transparent);
+  color: var(--accent-contrast);
+  /* The bar's own tint is set inline via `color`; keep the text legible on it. */
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.28);
+}
+
+.cal-month-bar-solid:hover {
+  background: currentColor;
+}
+
+/* A span continuing off the row edge gets a flat, notched end. */
+.cal-month-bar-clip-start {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 2px dotted var(--accent-contrast);
+}
+
+.cal-month-bar-clip-end {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 2px dotted var(--accent-contrast);
+}
+
+.cal-month-bar-dot {
+  font-size: 7px;
+  flex: 0 0 auto;
+}
+
+.cal-month-bar-time {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.cal-month-bar-solid .cal-month-bar-time {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.cal-month-bar-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cal-month-bar:not(.cal-month-bar-solid) .cal-month-bar-title {
+  color: var(--text-primary);
+}
+
+/* ── Day / week: the all-day strip ───────────────────────────────────────── */
+
+.cal-timeview {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.cal-allday {
+  display: flex;
+  flex: 0 0 auto;
+  max-height: 120px;
+  border-bottom: 1px solid var(--border-color);
+  overflow-y: auto;
+}
+
+.cal-allday-gutter {
+  width: 52px;
+  flex: 0 0 auto;
+  padding: 4px;
+  font-size: 9px;
+  color: var(--text-muted);
+  text-align: right;
+  align-self: flex-end;
+}
+
+.cal-allday-cols {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.cal-allday-col {
+  flex: 1;
+  min-width: 0;
+  padding: 3px;
+  border-left: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+
+.cal-allday-col-selected {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.cal-allday-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  padding-bottom: 3px;
+}
+
+.cal-allday-dow {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.cal-allday-num {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-secondary);
+}
+
+.cal-allday-col-today .cal-allday-dow,
+.cal-allday-col-today .cal-allday-num {
+  color: var(--accent);
+}
+
+.cal-allday-chip {
+  margin-bottom: 2px;
+  padding: 2px 5px;
+  font-size: 10px;
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+  color: var(--accent-contrast);
+  border-radius: var(--radius);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+/* ── Day / week: the hour grid ───────────────────────────────────────────── */
+
+.cal-timegrid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+}
+
+.cal-timegrid-inner {
+  display: flex;
+  position: relative;
+}
+
+.cal-timegrid-gutter {
+  width: 52px;
+  flex: 0 0 auto;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.cal-timegrid-hour-label {
+  padding-right: 6px;
+  font-size: 9px;
+  color: var(--text-muted);
+  text-align: right;
+  /* Nudge the label up so it sits ON its hour line, not below it. */
+  transform: translateY(-5px);
+}
+
+.cal-timegrid-body {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  /* A drag must not select the hour labels as it sweeps. */
+  user-select: none;
+}
+
+.cal-timegrid-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 1px solid var(--border-subtle);
+  pointer-events: none;
+}
+
+.cal-timegrid-col {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--border-subtle);
+  cursor: cell;
+}
+
+.cal-timegrid-col-today {
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+.cal-now-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 2px solid var(--danger);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.cal-now-line::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+/* One timed event. `color` is set inline to the event's tint; the fill and the
+   left rule both derive from it. */
+.cal-block {
+  position: absolute;
+  overflow: hidden;
+  padding: 2px 5px;
+  font-size: 10px;
+  line-height: 1.25;
+  border-radius: var(--radius);
+  border-left: 3px solid currentColor;
+  background: color-mix(in srgb, currentColor 72%, transparent);
+  color: var(--accent);
+  cursor: grab;
+  z-index: 2;
+}
+
+.cal-block:hover {
+  background: color-mix(in srgb, currentColor 88%, transparent);
+}
+
+.cal-block-dragging {
+  cursor: grabbing;
+  opacity: 0.85;
+  z-index: 4;
+}
+
+.cal-block-title {
+  font-weight: 650;
+  color: var(--accent-contrast);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3);
+}
+
+.cal-block-time {
+  color: var(--accent-contrast);
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Too short to show a second line — the title alone, on one line. */
+.cal-block-compact {
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+}
+
+.cal-block-tentative {
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 3px,
+    rgba(255, 255, 255, 0.22) 3px,
+    rgba(255, 255, 255, 0.22) 6px
+  );
+}
+
+.cal-block-cancelled {
+  opacity: 0.55;
+}
+
+.cal-block-cancelled .cal-block-title,
+.cal-block-cancelled .cal-agenda-title,
+.cal-block-cancelled .cal-month-bar-title {
+  text-decoration: line-through;
+}
+
+/* The bottom edge — grab to resize. */
+.cal-block-resize {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+/* The preview drawn while dragging out a new event. */
+.cal-block-ghost {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+  border: 1px dashed var(--accent);
+  border-left-width: 3px;
+  color: var(--accent);
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* ── Agenda ──────────────────────────────────────────────────────────────── */
+
+.cal-agenda {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+
+.cal-agenda-day {
+  margin-bottom: 14px;
+}
+
+.cal-agenda-date {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cal-agenda-date-today {
+  color: var(--accent);
+}
+
+.cal-agenda-today-tag {
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 650;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-radius: var(--radius);
+  text-transform: uppercase;
+}
+
+.cal-agenda-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cal-agenda-row:hover {
+  background: var(--control-hover-bg);
+}
+
+.cal-agenda-swatch {
+  font-size: 8px;
+  flex: 0 0 auto;
+}
+
+.cal-agenda-time {
+  width: 78px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-agenda-title {
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cal-agenda-location {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+/* ── Tasks ───────────────────────────────────────────────────────────────── */
+
+.cal-tasks {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cal-tasks-add {
+  display: flex;
+  gap: 6px;
+}
+
+.cal-tasks-add-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.cal-tasks-add-due {
+  width: 140px;
+  flex: 0 0 auto;
+}
+
+.cal-tasks-filters {
+  display: flex;
+  gap: 4px;
+}
+
+.cal-tasks-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.cal-task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cal-task-row:hover {
+  background: var(--control-hover-bg);
+}
+
+.cal-task-check {
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.cal-task-swatch {
+  font-size: 8px;
+  flex: 0 0 auto;
+}
+
+.cal-task-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cal-task-done .cal-task-title {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.cal-task-prio {
+  font-size: 10px;
+  font-weight: 650;
+  padding: 1px 5px;
+  border-radius: var(--radius);
+  flex: 0 0 auto;
+}
+
+.cal-task-prio-high {
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.cal-task-prio-normal {
+  color: var(--text-muted);
+  border: 1px solid var(--control-border);
+}
+
+.cal-task-prio-low {
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+
+/* A slim completion meter for a task that is underway but not done. */
+.cal-task-percent {
+  position: relative;
+  width: 44px;
+  height: 4px;
+  flex: 0 0 auto;
+  background: var(--control-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.cal-task-percent-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+}
+
+.cal-task-due {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-task-overdue .cal-task-due {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.cal-task-prio-select {
+  height: 22px;
+  font-size: 10px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  flex: 0 0 auto;
+}
+
+/* ── Event dialog ────────────────────────────────────────────────────────── */
+
+/* Rides the shared .settings-dialog chrome; only the width and the explicit text
+   color are its own. The color matters: the dialog is portaled to <body>, which
+   sets none, so without this it would inherit black. */
+.cal-event-dialog {
+  width: min(560px, calc(100vw - 32px));
+  color: var(--text-primary);
+}
+
+.cal-event-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.cal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.cal-field-label {
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cal-field-row {
+  display: flex;
+  gap: 10px;
+}
+
+.cal-datetime {
+  display: flex;
+  gap: 5px;
+}
+
+.cal-datetime .cal-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.cal-check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.cal-section {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cal-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cal-rule-summary {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.cal-repeat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 22px;
+}
+
+.cal-weekdays {
+  display: flex;
+  gap: 3px;
+}
+
+.cal-weekday-btn {
+  width: 26px;
+  height: 26px;
+  font-size: 11px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.cal-weekday-btn:hover {
+  border-color: var(--accent);
+}
+
+.cal-weekday-on {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.cal-alarm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cal-alarm-row .cal-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.cal-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.cal-scope-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Reminder popup ──────────────────────────────────────────────────────── */
+
+/* Bottom-right, above everything, and NOT a backdrop — a reminder must be
+   dismissible without blocking whatever the user was doing. */
+.cal-alarm-popup {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 120;
+  width: min(420px, calc(100vw - 36px));
+  max-height: min(60vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.cal-alarm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cal-alarm-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--accent);
+}
+
+.cal-alarm-list {
+  overflow-y: auto;
+}
+
+.cal-alarm-popup .cal-alarm-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cal-alarm-popup .cal-alarm-row:last-child {
+  border-bottom: none;
+}
+
+.cal-alarm-event {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.cal-alarm-when {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.cal-alarm-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.cal-alarm-snooze-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 2px;
+}
+
+.cal-alarm-actions .cal-btn-primary {
+  margin-left: auto;
 }

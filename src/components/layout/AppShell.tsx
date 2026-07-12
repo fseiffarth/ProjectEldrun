@@ -3,19 +3,30 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type MutableRefObject,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { PLATFORM } from "../../lib/dragPlatform";
+import { nextWindowState } from "../../lib/windowState";
 import { notePtyOutput, useActivityStore } from "../../stores/activity";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
+import { AlarmPopup } from "../calendar/AlarmPopup";
+import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { QuickOpen } from "../files/QuickOpen";
+import { HintHost } from "./HintHost";
+import { TourHost } from "./TourHost";
+import { HowToStart } from "./HowToStart";
+import { LessonsMenu } from "./LessonsMenu";
+import { useHintsStore } from "../../stores/hints";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
 import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
 import { listenPdfReveal } from "../../stores/pdfSync";
+import { listenSyncProgress } from "../../stores/sync";
 import { listenEditorJump } from "../../stores/editorJump";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
@@ -24,13 +35,65 @@ import { useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
 import { useKeyboard } from "../../hooks/useKeyboard";
 
+// Width of the right-edge band that reveals the (unpinned) right panel on hover.
+// Kept wide because on Windows/WebView2 the window often isn't true-fullscreen
+// (the Windows platform backend is a stub, so setFullscreen may not take) and
+// the OS resize border swallows mousemove events for the last few edge pixels —
+// a 2px strip there is unreachable, so the panel never opened. A wider band is
+// crossed on the way to the edge, so the reveal fires before the dead-zone.
+const REVEAL_EDGE_PX = 8;
+
+// Right-panel width bounds. The default matches the historical fixed 280px so
+// existing installs (no stored width) look unchanged; the max is capped against
+// the live window so the panel can never swallow the whole workspace.
+const RIGHT_PANEL_MIN = 220;
+const RIGHT_PANEL_DEFAULT = 280;
+function clampRightWidth(px: number): number {
+  const max = Math.max(RIGHT_PANEL_MIN, Math.min(900, window.innerWidth - 240));
+  return Math.round(Math.max(RIGHT_PANEL_MIN, Math.min(max, px)));
+}
+
+/**
+ * Snapshot the main window's geometry and persist it if it actually changed, so
+ * the backend can reopen the window on the same monitor next launch
+ * (`restore_main_window` in lib.rs). What to store — and the subtlety of what to
+ * store while MAXIMIZED — lives in `nextWindowState`.
+ *
+ * Shared by the debounced move/resize listener and the close path: a quit during
+ * the debounce window would otherwise lose the user's last move, which is exactly
+ * the move they care about.
+ */
+async function saveWindowGeometry(): Promise<void> {
+  const win = getCurrentWindow();
+  // A fullscreen window's rect is just the monitor, not a restore geometry. macOS
+  // only — Linux/Windows never enter fullscreen (see the startup effect).
+  if (await win.isFullscreen()) return;
+  const [pos, size, maximized] = await Promise.all([
+    win.outerPosition(),
+    win.outerSize(),
+    win.isMaximized(),
+  ]);
+  // outerPosition/outerSize are already PHYSICAL px, which is what the backend
+  // consumes — nothing is converted anywhere along this path (src/lib/coords.ts).
+  const store = useSettingsStore.getState();
+  const next = nextWindowState(
+    store.settings?.window_state,
+    { x: pos.x, y: pos.y, w: size.width, h: size.height },
+    maximized,
+  );
+  if (next) await store.saveWindowState(next);
+}
+
 export function AppShell() {
   const loadSettings = useSettingsStore((s) => s.load);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const pinnedSetting = useSettingsStore((s) => s.settings?.right_panel_pinned ?? false);
+  const widthSetting = useSettingsStore((s) => s.settings?.right_panel_width ?? RIGHT_PANEL_DEFAULT);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const loadProjects = useProjectsStore((s) => s.load);
   const projectsLoaded = useProjectsStore((s) => s.loaded);
+  const projectCount = useProjectsStore((s) => s.projects.length);
+  const onboardingSeen = useSettingsStore((s) => s.settings?.onboarding_seen ?? false);
   const loadBoxes = useBoxesStore((s) => s.load);
   const activeId = useProjectsStore((s) => s.activeId);
   const scope = useTabsStore((s) => s.scope);
@@ -39,17 +102,39 @@ export function AppShell() {
   const panelTarget = activeId !== null || scope.startsWith(BOX_SCOPE_PREFIX);
   const switchToast = useProjectsStore((s) => s.switchToast);
   const clearSwitchToast = useProjectsStore((s) => s.clearSwitchToast);
+  const connToast = useProjectsStore((s) => s.connToast);
+  const clearConnToast = useProjectsStore((s) => s.clearConnToast);
   const initTimer = useTimerStore((s) => s.init);
   const flushTimer = useTimerStore((s) => s.flush);
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [rightPinned, setRightPinned] = useState(false);
+  const [rightWidth, setRightWidth] = useState(RIGHT_PANEL_DEFAULT);
+  const [resizingRight, setResizingRight] = useState(false);
+  const latestRightWidth = useRef(RIGHT_PANEL_DEFAULT);
+  const [showHowToStart, setShowHowToStart] = useState(false);
+  const [showLessons, setShowLessons] = useState(false);
   const rightCloseTimer = useRef<number | null>(null);
 
   useEffect(() => {
     loadSettings();
     loadProjects();
-    getCurrentWindow().setFullscreen(true).catch(() => {});
+    // Startup window geometry — which monitor, what size, maximized or not — is
+    // owned ENTIRELY by the backend now (`restore_main_window` in lib.rs), which
+    // reapplies the rect saved by the effect below before the window is ever shown.
+    // Nothing may be re-asserted from here: a `maximize()` fired after load would
+    // land on top of a restore onto the secondary monitor and undo it.
+    //
+    // macOS is the exception and stays here: real fullscreen (its own Space) is the
+    // platform-expected behavior, and the system traffic-light controls keep the
+    // window manageable. Linux must never follow suit — a window the WM has put into
+    // fullscreen keeps `_NET_WM_STATE_FULLSCREEN`, which under KWin wins over
+    // MAXIMIZED and makes the window UNMOVABLE (KWin refuses the
+    // `_NET_WM_MOVERESIZE` that `startDragging` sends, so the header title-bar drag
+    // silently no-ops). See the matching note in `restore_main_window`.
+    if (PLATFORM === "macos") {
+      getCurrentWindow().setFullscreen(true).catch(() => {});
+    }
   }, [loadSettings, loadProjects]);
 
   // WebKitGTK doesn't reliably fire DOM 'resize' / ResizeObserver for OS-level
@@ -93,10 +178,82 @@ export function AppShell() {
     };
   }, []);
 
+  // Remember where the user puts the window, so it reopens there. Mirrors the
+  // popout's bounds streaming (DetachedApp.tsx): a drag fires a storm of events,
+  // so debounce and write once it settles. Gated on `settingsLoaded` because the
+  // save diffs against the currently-saved rect to skip no-op writes, and before
+  // load there is nothing to diff against.
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    const win = getCurrentWindow();
+    const unlisteners: Array<() => void> = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        void saveWindowGeometry().catch(() => {});
+      }, 300);
+    };
+    win.onMoved(schedule).then((fn) => unlisteners.push(fn)).catch(() => {});
+    win.onResized(schedule).then((fn) => unlisteners.push(fn)).catch(() => {});
+    return () => {
+      if (timer) clearTimeout(timer);
+      unlisteners.forEach((fn) => fn());
+    };
+  }, [settingsLoaded]);
+
   // Restore the pinned state once settings finish loading.
   useEffect(() => {
     if (settingsLoaded) setRightPinned(pinnedSetting);
   }, [settingsLoaded, pinnedSetting]);
+
+  // Restore the stored panel width once settings load (clamped to the current
+  // window so a width saved on a wider monitor can't strand the panel off-screen).
+  useEffect(() => {
+    if (settingsLoaded) {
+      const w = clampRightWidth(widthSetting);
+      latestRightWidth.current = w;
+      setRightWidth(w);
+    }
+  }, [settingsLoaded, widthSetting]);
+
+  // First-run "How to start": show once on a genuinely empty install (the
+  // `projects.length === 0` guard keeps upgrading users — who already have
+  // projects but no flag — from seeing it). Mark seen immediately (optimistic)
+  // so a hot-reload or transient re-render can't reopen it.
+  useEffect(() => {
+    if (settingsLoaded && projectsLoaded && !onboardingSeen && projectCount === 0) {
+      setShowHowToStart(true);
+      void updateSettings({ onboarding_seen: true });
+    }
+  }, [settingsLoaded, projectsLoaded, onboardingSeen, projectCount, updateSettings]);
+
+  // Let the Settings dialog / gear menu re-open the welcome on demand.
+  useEffect(() => {
+    const open = () => setShowHowToStart(true);
+    window.addEventListener("eldrun:open-how-to-start", open);
+    return () => window.removeEventListener("eldrun:open-how-to-start", open);
+  }, []);
+
+  // Open the lessons picker on demand, and let a tour/lesson step force the
+  // (otherwise hover-revealed) file panel open so it has something to spotlight.
+  useEffect(() => {
+    const openLessons = () => setShowLessons(true);
+    const revealPanel = () => {
+      if (rightCloseTimer.current !== null) {
+        window.clearTimeout(rightCloseTimer.current);
+        rightCloseTimer.current = null;
+      }
+      setRightOpen(true);
+    };
+    window.addEventListener("eldrun:open-lessons", openLessons);
+    window.addEventListener("eldrun:reveal-right-panel", revealPanel);
+    return () => {
+      window.removeEventListener("eldrun:open-lessons", openLessons);
+      window.removeEventListener("eldrun:reveal-right-panel", revealPanel);
+    };
+  }, []);
 
   // Load boxes once projects are in memory so deriving each project's box_id
   // (from the authoritative member_ids) runs over the loaded project list.
@@ -112,11 +269,57 @@ export function AppShell() {
     });
   };
 
+  // Drag the panel's left border to resize. The panel is absolutely positioned
+  // at right:0, so its width is just `innerWidth - cursorX`. We update local
+  // state live (driving both the panel width and the docked body inset) and
+  // persist only on release. Pointer capture keeps the gesture alive when the
+  // cursor leaves the thin handle.
+  const onResizeStart = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture is best-effort */
+    }
+    setResizingRight(true);
+  };
+
+  const onResizeMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizingRight) return;
+    const w = clampRightWidth(window.innerWidth - e.clientX);
+    latestRightWidth.current = w;
+    setRightWidth(w);
+  };
+
+  const onResizeEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizingRight) return;
+    setResizingRight(false);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    void updateSettings({ right_panel_width: latestRightWidth.current });
+    // Terminals and other panes refit off the DOM resize event; the docked body
+    // inset just changed, so nudge them to remeasure at the new width.
+    window.dispatchEvent(new Event("resize"));
+  };
+
   // Apply tab layout / right-panel restores emitted by the backend's
   // project-runtime switch (which runs off the UI thread).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listenProjectRuntimeSwitched()
+      .then((fn) => { unlisten = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); };
+  }, []);
+
+  // SSH-sync Phase 1: subscribe to the backend's mirror-sync progress stream so
+  // the remote file view reflects transfers + refreshes status on completion.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listenSyncProgress()
       .then((fn) => { unlisten = fn; })
       .catch(() => {});
     return () => { unlisten?.(); };
@@ -183,6 +386,9 @@ export function AppShell() {
     win.onCloseRequested(async (event) => {
       event.preventDefault();
       await flushTimer().catch(() => {});
+      // Capture the window's final geometry before it goes away — a quit inside
+      // the 300ms save debounce would otherwise drop the user's last move.
+      await saveWindowGeometry().catch(() => {});
       // Close any popped-out subwindows so they don't strand on screen; they
       // persist + re-open at their saved bounds next launch (see the helper).
       await shutdownDetachedWindows().catch(() => {});
@@ -216,8 +422,12 @@ export function AppShell() {
   // emitting even while their tab views are unmounted).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    listen<{ id: string }>("terminal-output", (ev) => {
-      notePtyOutput(ev.payload.id);
+    listen<{ id: string; data: string }>("terminal-output", (ev) => {
+      // The chunk itself rides along: it is the ONLY view of a tab's screen that
+      // exists for a pane the user has never opened (those buffer their output
+      // instead of writing it to an xterm), and the store classifies a quiet
+      // agent tab — finished vs blocked on a prompt — off its tail.
+      notePtyOutput(ev.payload.id, ev.payload.data);
     })
       .then((fn) => { unlisten = fn; })
       .catch(() => {});
@@ -238,6 +448,12 @@ export function AppShell() {
     const t = setTimeout(clearSwitchToast, 2200);
     return () => clearTimeout(t);
   }, [switchToast, clearSwitchToast]);
+
+  useEffect(() => {
+    if (!connToast) return;
+    const t = setTimeout(clearConnToast, 3200);
+    return () => clearTimeout(t);
+  }, [connToast, clearConnToast]);
 
   const reveal = (
     timer: MutableRefObject<number | null>,
@@ -262,13 +478,19 @@ export function AppShell() {
     }, delay);
   };
 
-  useKeyboard({ onTogglePanels: () => setPanelsHidden((v) => !v) });
+  useKeyboard({
+    onTogglePanels: () => {
+      useHintsStore.getState().markSeen("toggle-panels");
+      setPanelsHidden((v) => !v);
+    },
+  });
 
   const revealRight = panelTarget && !panelsHidden && (rightOpen || rightPinned);
 
   const handleBodyMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (!panelTarget || panelsHidden || rightOpen) return;
-    if (window.innerWidth - event.clientX <= 2) {
+    if (window.innerWidth - event.clientX <= REVEAL_EDGE_PX) {
+      useHintsStore.getState().markSeen("file-tree");
       reveal(rightCloseTimer, setRightOpen);
     }
   };
@@ -277,10 +499,17 @@ export function AppShell() {
     <div className="app-shell">
       <HeaderBar />
       {switchToast != null && (
-        <div key={switchToast} className="project-switch-toast">{switchToast}</div>
+        <div
+          key={switchToast}
+          className={`project-switch-toast${switchToast.includes("\n") ? " multiline" : ""}`}
+        >{switchToast}</div>
+      )}
+      {connToast != null && (
+        <div key={connToast} className="project-switch-toast conn-toast">{connToast}</div>
       )}
       <div
-        className={`app-body${revealRight && rightPinned ? " right-docked" : ""}`}
+        className={`app-body${revealRight && rightPinned ? " right-docked" : ""}${resizingRight ? " resizing" : ""}`}
+        style={revealRight && rightPinned ? { paddingRight: rightWidth } : undefined}
         onMouseMove={handleBodyMouseMove}
       >
         <CenterPanel />
@@ -288,14 +517,33 @@ export function AppShell() {
           <RightPanel
             open={revealRight}
             pinned={rightPinned}
+            width={rightWidth}
+            resizing={resizingRight}
+            onResizeStart={onResizeStart}
+            onResizeMove={onResizeMove}
+            onResizeEnd={onResizeEnd}
             onTogglePin={togglePin}
             onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
             onMouseLeave={() => !rightPinned && scheduleClose(rightCloseTimer, setRightOpen)}
           />
         )}
+        {/* Invisible marker at the right-edge reveal band so the guided tour has
+            a stable element to spotlight for the "find your files" step. */}
+        {panelTarget && !panelsHidden && (
+          <div className="tour-edge-marker" data-hint-anchor="file-tree-edge" aria-hidden />
+        )}
       </div>
       <VpnPasswordPrompt />
+      <RemoteConnectDialog />
+      {/* Calendar reminders live at the shell, not in the calendar pane: an alarm
+          must reach the user whatever tab they are on — and even if they have
+          never opened a calendar tab this session. */}
+      <AlarmPopup />
       <QuickOpen />
+      <HintHost />
+      <TourHost />
+      {showHowToStart && <HowToStart onClose={() => setShowHowToStart(false)} />}
+      {showLessons && <LessonsMenu onClose={() => setShowLessons(false)} />}
     </div>
   );
 }

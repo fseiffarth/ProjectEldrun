@@ -52,11 +52,9 @@ jobs:
       - name: Run backend tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-  package-windows:
-    name: package-windows
+  test-windows:
+    name: test-windows
     runs-on: windows-latest
-    if: github.event_name == 'push'
-    needs: test
 
     steps:
       - name: Checkout
@@ -79,8 +77,69 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build frontend
+        run: npm run build
+
       - name: Run backend tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  test-macos:
+    name: test-macos
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run backend tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  package-windows:
+    name: package-windows
+    runs-on: windows-latest
+    if: github.event_name == 'push'
+    needs: test-windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
 
       - name: Build release bundles
         run: npm run tauri:build -- --bundles nsis
@@ -157,32 +216,137 @@ jobs:
             src-tauri/target/release/bundle/deb/*.deb
             target/release/bundle/deb/*.deb
 
+  package-macos:
+    name: package-macos
+    runs-on: macos-latest
+    if: github.event_name == 'push'
+    needs: test-macos
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build release bundles
+        # Unsigned alpha .dmg (matches the unsigned Windows NSIS today). macOS
+        # bundle/window overrides come from src-tauri/tauri.macos.conf.json,
+        # which Tauri auto-merges on macOS. To ship a signed + notarized build
+        # later, import an Apple Developer cert into a keychain in a step above
+        # and set APPLE_SIGNING_IDENTITY + APPLE_ID + APPLE_PASSWORD +
+        # APPLE_TEAM_ID (or APPLE_API_KEY_ID/APPLE_API_ISSUER/APPLE_API_KEY_PATH)
+        # from repo secrets here before running the build.
+        run: npm run tauri:build -- --bundles dmg --target universal-apple-darwin
+
+      - name: Rename universal DMG
+        run: |
+          dmg="$(find src-tauri/target target -path '*/universal-apple-darwin/release/bundle/dmg/*.dmg' -print -quit)"
+          test -n "$dmg"
+          mv "$dmg" "$(dirname "$dmg")/Eldrun-${{ github.sha }}-universal.dmg"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: eldrun-${{ github.sha }}-macos-universal-dmg
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*-universal.dmg
+            target/universal-apple-darwin/release/bundle/dmg/*-universal.dmg
+
   release:
     name: release
     runs-on: ubuntu-22.04
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [package, package-windows]
+    needs: [package, package-windows, package-macos]
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      (
+        needs.package.result == 'success' ||
+        needs.package-windows.result == 'success' ||
+        needs.package-macos.result == 'success'
+      )
     permissions:
       contents: write
 
     steps:
       - name: Download AppImage artifact
+        if: needs.package.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: eldrun-${{ github.sha }}-appimage
           path: release-assets
 
       - name: Download DEB artifact
+        if: needs.package.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: eldrun-${{ github.sha }}-deb
           path: release-assets
 
       - name: Download Windows NSIS artifact
+        if: needs.package-windows.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: eldrun-${{ github.sha }}-windows-nsis
           path: release-assets
+
+      - name: Download macOS DMG artifact
+        if: needs.package-macos.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: eldrun-${{ github.sha }}-macos-universal-dmg
+          path: release-assets
+
+      - name: Build release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+          LINUX_RESULT: ${{ needs.package.result }}
+          WINDOWS_RESULT: ${{ needs.package-windows.result }}
+          MACOS_RESULT: ${{ needs.package-macos.result }}
+        run: |
+          {
+            printf 'Eldrun %s — alpha / preview build.\n\n' "$RELEASE_TAG"
+            printf 'Built from commit `%s`.\n\n' "$RELEASE_SHA"
+            printf 'Artifacts:\n'
+
+            if [ "$LINUX_RESULT" = success ]; then
+              printf -- '- Linux: `.AppImage` (portable) and `.deb`\n'
+            else
+              printf -- '- Linux: unavailable (package job: `%s`)\n' "$LINUX_RESULT"
+            fi
+
+            if [ "$WINDOWS_RESULT" = success ]; then
+              printf -- '- Windows: NSIS `.exe` installer\n'
+            else
+              printf -- '- Windows: unavailable (package job: `%s`)\n' "$WINDOWS_RESULT"
+            fi
+
+            if [ "$MACOS_RESULT" = success ]; then
+              printf -- '- macOS: universal Intel/Apple Silicon `.dmg` (unsigned — right-click → Open, or run '
+              printf '`xattr -dr com.apple.quarantine /Applications/Eldrun.app`)\n'
+            else
+              printf -- '- macOS: unavailable (package job: `%s`)\n' "$MACOS_RESULT"
+            fi
+
+            printf '\nThis is an early alpha; expect rough edges.\n'
+          } > release-body.md
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -191,16 +355,8 @@ jobs:
           name: ${{ github.ref_name }}
           # Pre-1.0 tags are alpha/preview builds; mark them so on GitHub.
           prerelease: true
-          body: |
-            Eldrun ${{ github.ref_name }} — alpha / preview build.
-
-            Built from commit ${{ github.sha }}.
-
-            Artifacts:
-            - Linux: `.AppImage` (portable) and `.deb`
-            - Windows: NSIS `.exe` installer
-
-            This is an early alpha; expect rough edges.
+          body_path: release-body.md
+          fail_on_unmatched_files: false
           # Recursive globs: the upload steps list two path patterns, so
           # upload-artifact roots each artifact at the workspace dir and the
           # bundle ends up nested (e.g. target/release/bundle/appimage/*.AppImage)
@@ -209,3 +365,4 @@ jobs:
             release-assets/**/*.AppImage
             release-assets/**/*.deb
             release-assets/**/*.exe
+            release-assets/**/*.dmg

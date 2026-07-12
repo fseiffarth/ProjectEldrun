@@ -1,6 +1,78 @@
 use std::collections::HashMap;
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+
+use crate::services::remote::{remote_target_for_dir, RemoteTarget};
+
+// Every git invocation goes through the single `run_git` helper, which dispatches
+// on whether the project is local or remote:
+//
+//   * **local** → `crate::paths::command_no_window("git")` in `project_dir`
+//     rather than a bare `Command::new`: Eldrun is a windowed app with no
+//     console, so on Windows every `git` subprocess would otherwise flash a
+//     transient console window — and `git_status`/`git_file_statuses` are polled
+//     continuously for the file tree. `command_no_window` sets CREATE_NO_WINDOW
+//     on Windows and is a no-op elsewhere.
+//   * **remote** (project carries a `RemoteSpec`) → the same `git <args>` run on
+//     the host over SSH, riding the shared ControlMaster (`ssh_exec::
+//     run_git_remote`). git's output is plain text, so the captured stdout/
+//     stderr/exit are parsed byte-for-byte identically to the local case and
+//     every parser below is reused unchanged. `push` then authenticates with the
+//     *host's* own git credentials/SSH keys, since git runs there.
+//
+// Each command resolves remoteness once via `remote_target_for_dir(&project_dir)`
+// (a reverse-lookup from the absolute `project_dir` the frontend passes to the
+// owning project's `RemoteSpec`) and threads the resulting `Option<&RemoteTarget>`
+// into `run_git` and the `local_non_repo` guard.
+
+/// Run `git <args>` for a project, dispatching local-vs-remote on `target`.
+/// Returns the captured `Output` (stdout/stderr/exit) for both, so callers parse
+/// it identically. `target` is the resolved remoteness for `project_dir`.
+fn run_git(
+    target: Option<&RemoteTarget>,
+    project_dir: &str,
+    args: &[&str],
+) -> Result<std::process::Output, String> {
+    match target {
+        Some(t) => {
+            let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            crate::services::ssh_exec::run_git_remote(&t.spec, &owned)
+        }
+        None => crate::paths::command_no_window("git")
+            .args(args)
+            .current_dir(project_dir)
+            .output()
+            .map_err(|e| e.to_string()),
+    }
+}
+
+/// Cheap "not a git repo" short-circuit for the read commands. Applies only to
+/// **local** projects, where a missing `.git` means "no repo" without spawning
+/// git. A remote project's `.git` lives on the host, so it is never short-
+/// circuited here — its command runs over SSH and the usual lenient
+/// empty-on-failure handling covers a non-repo host dir.
+fn local_non_repo(target: Option<&RemoteTarget>, project_dir: &str) -> bool {
+    target.is_none() && !Path::new(project_dir).join(".git").exists()
+}
+
+/// Run a blocking git command body on a worker thread.
+///
+/// Every git command here is genuinely blocking — `run_git` either spawns a local
+/// `git` subprocess (`.output()`) or runs `git` over SSH (`run_git_remote`, which
+/// can stall up to the SSH `ConnectTimeout`/`ServerAlive` window on an unreachable
+/// or unauthenticated host). Tauri runs a synchronous `#[command]` on the MAIN
+/// thread, so doing that work inline froze the whole window whenever a remote
+/// project's host was down (the remote-disconnect freeze). Each command is an
+/// `async` wrapper that offloads its sync body here via `spawn_blocking`, so the
+/// blocking work runs on tokio's blocking pool and the UI thread stays free. The
+/// bodies live in sibling `*_blocking` fns (kept sync, so they remain directly
+/// unit-testable without a tokio runtime).
+async fn run_off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("git task failed: {e}"))?
+}
 
 #[derive(serde::Serialize)]
 pub struct GitStatus {
@@ -12,17 +84,17 @@ pub struct GitStatus {
 }
 
 #[tauri::command]
-pub fn git_status(project_dir: String) -> Result<GitStatus, String> {
-    let dir = Path::new(&project_dir);
-    if !dir.join(".git").exists() {
+pub async fn git_status(project_dir: String) -> Result<GitStatus, String> {
+    run_off_thread(move || git_status_blocking(project_dir)).await
+}
+
+fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(GitStatus { staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
     }
 
-    let out = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run_git(target.as_ref(), &project_dir, &["status", "--porcelain"])?;
 
     let text = String::from_utf8_lossy(&out.stdout);
     let mut staged = 0usize;
@@ -40,23 +112,62 @@ pub fn git_status(project_dir: String) -> Result<GitStatus, String> {
         }
     }
 
-    let has_remote = Command::new("git")
-        .args(["remote"])
-        .current_dir(&project_dir)
-        .output()
+    let has_remote = run_git(target.as_ref(), &project_dir, &["remote"])
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false);
 
     Ok(GitStatus { staged, unstaged, untracked, has_remote, is_repo: true })
 }
 
+/// Resolve the git top-level enclosing `project_dir`/`rel_path` (the folder the
+/// user is currently browsing in the file tree). Returns the absolute repo root
+/// path, or `None` when the folder isn't inside any git repo. The right panel
+/// uses this to detect a **nested** repo — a subfolder that is its own git repo
+/// distinct from the project's repo — and re-root its git section at it.
+///
+/// Local only for now: a remote project's tree lives on the host, and a nested
+/// host toplevel can't be reverse-mapped back to the project's `RemoteSpec` by
+/// `remote_target_for_dir`, so remote projects short-circuit to `None` and keep
+/// their existing project-scoped behavior.
 #[tauri::command]
-pub fn git_add_all(project_dir: String) -> Result<(), String> {
-    let out = Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub async fn git_repo_root(project_dir: String, rel_path: String) -> Result<Option<String>, String> {
+    run_off_thread(move || git_repo_root_blocking(project_dir, rel_path)).await
+}
+
+fn git_repo_root_blocking(project_dir: String, rel_path: String) -> Result<Option<String>, String> {
+    // Remote projects keep project-scoped git (see doc comment).
+    if remote_target_for_dir(&project_dir).is_some() {
+        return Ok(None);
+    }
+    let dir: PathBuf = if rel_path.is_empty() {
+        PathBuf::from(&project_dir)
+    } else {
+        Path::new(&project_dir).join(&rel_path)
+    };
+    // `--show-toplevel` prints the absolute root of the innermost repo enclosing
+    // `dir`. Any failure (not a repo, missing dir) maps to `None`, not an error,
+    // so the UI treats it as "no repo here" rather than flashing a banner.
+    let out = crate::paths::command_no_window("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&dir)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let top = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            Ok(if top.is_empty() { None } else { Some(top) })
+        }
+        _ => Ok(None),
+    }
+}
+
+#[tauri::command]
+pub async fn git_add_all(project_dir: String) -> Result<(), String> {
+    run_off_thread(move || git_add_all_blocking(project_dir)).await
+}
+
+fn git_add_all_blocking(project_dir: String) -> Result<(), String> {
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["add", "-A"])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -64,21 +175,19 @@ pub fn git_add_all(project_dir: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_generate_commit_message(project_dir: String) -> Result<String, String> {
-    let files_out = Command::new("git")
-        .args(["diff", "--staged", "--name-only"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub async fn git_generate_commit_message(project_dir: String) -> Result<String, String> {
+    run_off_thread(move || git_generate_commit_message_blocking(project_dir)).await
+}
+
+fn git_generate_commit_message_blocking(project_dir: String) -> Result<String, String> {
+    let target = remote_target_for_dir(&project_dir);
+    let files_out = run_git(target.as_ref(), &project_dir, &["diff", "--staged", "--name-only"])?;
     let staged_text = String::from_utf8_lossy(&files_out.stdout).to_string();
     let staged: Vec<&str> = staged_text.lines().collect();
 
     // Also check untracked / unstaged if nothing staged
     let files: Vec<String> = if staged.is_empty() {
-        let all = Command::new("git")
-            .args(["diff", "--name-only"])
-            .current_dir(&project_dir)
-            .output()
+        let all = run_git(target.as_ref(), &project_dir, &["diff", "--name-only"])
             .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_owned).collect())
             .unwrap_or_default();
         all
@@ -130,12 +239,13 @@ fn format_commit_message(kind: &str, files: &[String]) -> String {
 }
 
 #[tauri::command]
-pub fn git_commit(project_dir: String, message: String) -> Result<(), String> {
-    let out = Command::new("git")
-        .args(["commit", "-m", &message])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub async fn git_commit(project_dir: String, message: String) -> Result<(), String> {
+    run_off_thread(move || git_commit_blocking(project_dir, message)).await
+}
+
+fn git_commit_blocking(project_dir: String, message: String) -> Result<(), String> {
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["commit", "-m", &message])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -151,20 +261,23 @@ pub fn git_commit(project_dir: String, message: String) -> Result<(), String> {
 ///   "ignored"   – ignored by git (gray ✕)
 /// For directories the highest-priority child status bubbles up.
 #[tauri::command]
-pub fn git_file_statuses(
+pub async fn git_file_statuses(
     project_dir: String,
     rel_path: String,
 ) -> Result<HashMap<String, String>, String> {
-    let dir = Path::new(&project_dir);
-    if !dir.join(".git").exists() {
+    run_off_thread(move || git_file_statuses_blocking(project_dir, rel_path)).await
+}
+
+fn git_file_statuses_blocking(
+    project_dir: String,
+    rel_path: String,
+) -> Result<HashMap<String, String>, String> {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(HashMap::new());
     }
 
-    let out = Command::new("git")
-        .args(["status", "--porcelain", "--ignored"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run_git(target.as_ref(), &project_dir, &["status", "--porcelain", "--ignored"])?;
     let porcelain = String::from_utf8_lossy(&out.stdout).into_owned();
 
     // prefix used to filter entries under rel_path
@@ -202,6 +315,16 @@ pub fn git_file_statuses(
         let top = rel.split('/').next().unwrap_or(rel);
         if top.is_empty() { return; }
 
+        // "ignored" must not bubble up from a descendant: git reports a wholly
+        // ignored path as `foo` (file) or `foo/` (whole dir), but an ignored
+        // file inside an otherwise-tracked dir as `foo/bar`. Only mark the
+        // top-level entry ignored when the ignored path IS that entry — else a
+        // single ignored child would drag the whole folder into the gitignored
+        // section. Other statuses still bubble up so a dir reflects its changes.
+        if status == "ignored" && rel.trim_end_matches('/') != top {
+            return;
+        }
+
         let cur = map.get(top).map(|s| priority(s.as_str())).unwrap_or(0);
         if priority(status) > cur {
             map.insert(top.to_string(), status.to_string());
@@ -230,10 +353,7 @@ pub fn git_file_statuses(
     }
 
     // Files in commits that exist locally but are not on the upstream branch.
-    if let Ok(out) = Command::new("git")
-        .args(["log", "@{u}..", "--name-only", "--pretty=format:"])
-        .current_dir(&project_dir)
-        .output()
+    if let Ok(out) = run_git(target.as_ref(), &project_dir, &["log", "@{u}..", "--name-only", "--pretty=format:"])
     {
         if out.status.success() {
             let committed = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -251,31 +371,174 @@ pub fn git_file_statuses(
 
 /// Stages a specific path (file or directory) via `git add`.
 #[tauri::command]
-pub fn git_add_path(project_dir: String, rel_path: String) -> Result<(), String> {
-    let out = Command::new("git")
-        .args(["add", "--", &rel_path])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub async fn git_add_path(project_dir: String, rel_path: String) -> Result<(), String> {
+    run_off_thread(move || git_add_path_blocking(project_dir, rel_path)).await
+}
+
+fn git_add_path_blocking(project_dir: String, rel_path: String) -> Result<(), String> {
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["add", "--", &rel_path])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
     Ok(())
 }
 
+/// A single changed file with its line delta, used by the action-button change
+/// tree (Add/Commit/Push). `binary` files report 0/0 — git emits "-" for them.
+#[derive(serde::Serialize)]
+pub struct FileChange {
+    pub path: String,
+    pub added: i64,
+    pub deleted: i64,
+    pub binary: bool,
+}
+
+/// Per-file line stats (`git diff --numstat`) for one of three scopes:
+///   "unstaged" – working-tree changes + untracked files (the Add list)
+///   "staged"   – index vs HEAD (the Commit list)
+///   "unpushed" – local commits ahead of upstream (the Push list)
+/// The frontend folds these flat paths into a navigable folder tree.
+#[tauri::command]
+pub async fn git_change_stats(
+    project_dir: String,
+    scope: String,
+    pool: tauri::State<'_, crate::services::remote::RemotePoolState>,
+) -> Result<Vec<FileChange>, String> {
+    let dir = Path::new(&project_dir);
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
+        return Ok(vec![]);
+    }
+
+    let numstat_args: &[&str] = match scope.as_str() {
+        "staged" => &["diff", "--cached", "--numstat", "--"],
+        "unpushed" => &["diff", "@{u}..", "--numstat", "--"],
+        _ => &["diff", "--numstat", "--"],
+    };
+
+    let mut changes: Vec<FileChange> = Vec::new();
+    if let Ok(out) = run_git(target.as_ref(), &project_dir, numstat_args)
+    {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                let mut parts = line.splitn(3, '\t');
+                let a = parts.next().unwrap_or("");
+                let d = parts.next().unwrap_or("");
+                let p = parts.next().unwrap_or("");
+                if p.is_empty() {
+                    continue;
+                }
+                changes.push(FileChange {
+                    path: normalize_numstat_path(p),
+                    added: a.parse().unwrap_or(0),
+                    deleted: d.parse().unwrap_or(0),
+                    binary: a == "-" || d == "-",
+                });
+            }
+        }
+    }
+
+    // Untracked files never appear in `git diff`; list them separately and count
+    // their lines as additions (the Add list shows them alongside modified files).
+    if scope == "unstaged" {
+        if let Ok(out) = run_git(target.as_ref(), &project_dir, &["ls-files", "--others", "--exclude-standard", "-z"])
+        {
+            if out.status.success() {
+                for chunk in out.stdout.split(|&b| b == 0) {
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    let rel = String::from_utf8_lossy(chunk).into_owned();
+                    // Untracked line counts read the file's bytes and apply the
+                    // same NUL/newline logic for both project kinds:
+                    //   * local  → `std::fs::read` under the project directory;
+                    //   * remote → the bytes over the pooled SFTP session, with
+                    //     the rel path confined under `spec.remote_path` (a path
+                    //     that escapes the root is treated as unreadable).
+                    // Any read/confinement error degrades to (0, false) rather
+                    // than failing the whole listing.
+                    let (added, binary) = match &target {
+                        None => count_added_lines(&dir.join(&rel)),
+                        Some(t) => count_added_lines_remote(&pool, t, &rel).await,
+                    };
+                    changes.push(FileChange { path: rel, added, deleted: 0, binary });
+                }
+            }
+        }
+    }
+
+    Ok(changes)
+}
+
+/// `git --numstat` renders renames as `old => new`, optionally with a braced
+/// common segment (`src/{a => b}/f.rs`). Reduce either form to the new path.
+fn normalize_numstat_path(p: &str) -> String {
+    let Some(arrow) = p.find(" => ") else {
+        return p.to_string();
+    };
+    if let (Some(lb), Some(rb)) = (p.find('{'), p.find('}')) {
+        if lb < arrow && arrow < rb {
+            return format!("{}{}{}", &p[..lb], &p[arrow + 4..rb], &p[rb + 1..]);
+        }
+    }
+    p[arrow + 4..].to_string()
+}
+
+/// Classify an untracked file's bytes into `(added_lines, binary)`, treating
+/// NUL-containing files as binary (0 lines). A final line without a trailing
+/// newline still counts. Shared by the local and remote readers below.
+fn count_lines_in_bytes(bytes: &[u8]) -> (i64, bool) {
+    if bytes.contains(&0) {
+        return (0, true);
+    }
+    let newlines = bytes.iter().filter(|&&b| b == b'\n').count() as i64;
+    let trailing = matches!(bytes.last(), Some(&b) if b != b'\n') as i64;
+    (newlines + trailing, false)
+}
+
+/// Line count of an untracked **local** file. An unreadable path degrades to
+/// `(0, false)` rather than failing the listing.
+fn count_added_lines(path: &Path) -> (i64, bool) {
+    match std::fs::read(path) {
+        Ok(bytes) => count_lines_in_bytes(&bytes),
+        Err(_) => (0, false),
+    }
+}
+
+/// Line count of an untracked **remote** file, read over the project's pooled
+/// SFTP session (mount-free remote). `rel` is the project-relative path from
+/// `git ls-files --others`; it is confined under `spec.remote_path` so a hostile
+/// path cannot escape the root. A confinement or read error degrades to
+/// `(0, false)`, mirroring the local reader.
+async fn count_added_lines_remote(
+    pool: &crate::services::remote::RemotePoolState,
+    target: &RemoteTarget,
+    rel: &str,
+) -> (i64, bool) {
+    let Ok(path) = crate::commands::fs::remote_join_confined(&target.spec.remote_path, rel) else {
+        return (0, false);
+    };
+    match crate::commands::fs::remote_read(pool, target, &path).await {
+        Ok(bytes) => count_lines_in_bytes(&bytes),
+        Err(_) => (0, false),
+    }
+}
+
 /// Returns one-line summaries of commits ahead of the upstream (not yet pushed).
 /// Returns an empty vec when there is no upstream or the repo is not git.
 #[tauri::command]
-pub fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> {
-    let dir = Path::new(&project_dir);
-    if !dir.join(".git").exists() {
+pub async fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> {
+    run_off_thread(move || git_unpushed_commits_blocking(project_dir)).await
+}
+
+fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, String> {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
-    let out = Command::new("git")
-        .args(["log", "@{u}..", "--oneline"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run_git(target.as_ref(), &project_dir, &["log", "@{u}..", "--oneline"])?;
     if !out.status.success() {
         return Ok(vec![]);
     }
@@ -284,12 +547,44 @@ pub fn git_unpushed_commits(project_dir: String) -> Result<Vec<String>, String> 
 }
 
 #[tauri::command]
-pub fn git_push(project_dir: String) -> Result<String, String> {
-    let out = Command::new("git")
-        .args(["push"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub async fn git_push(project_dir: String, project_id: Option<String>) -> Result<String, String> {
+    run_off_thread(move || git_push_blocking(project_dir, project_id)).await
+}
+
+fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<String, String> {
+    let out = if let Some(target) = remote_target_for_dir(&project_dir) {
+        // Remote project: the push runs on the host and authenticates with the
+        // host's own git credentials/SSH keys. The local effective token does not
+        // apply (it would be the wrong machine's secret), so it is not forwarded.
+        crate::services::ssh_exec::run_git_remote(&target.spec, &["push".to_string()])?
+    } else {
+        // Local project: effective per-project → global token (if any).
+        let token = project_id
+            .as_deref()
+            .and_then(|id| crate::commands::git_hosting::effective_git_creds(id).1);
+
+        let mut cmd = crate::paths::command_no_window("git");
+        cmd.current_dir(&project_dir);
+        if let Some(tok) = token.as_deref() {
+            // Authenticate an https push with the effective token via an ephemeral
+            // inline credential helper. The token is read from the child's env INSIDE
+            // the helper snippet, so it never lands in argv or on disk. The leading
+            // empty `credential.helper=` clears any system helper (e.g. GCM) so only
+            // ours runs. Harmless for SSH remotes — git won't call an http helper.
+            cmd.args([
+                "-c",
+                "credential.helper=",
+                "-c",
+                "credential.helper=!f() { test \"$1\" = get && echo username=x-access-token && echo \"password=$ELDRUN_GIT_TOKEN\"; }; f",
+                "push",
+            ]);
+            cmd.env("ELDRUN_GIT_TOKEN", tok);
+            cmd.env("GIT_TERMINAL_PROMPT", "0");
+        } else {
+            cmd.args(["push"]);
+        }
+        cmd.output().map_err(|e| e.to_string())?
+    };
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
@@ -314,11 +609,8 @@ pub struct GitCommit {
     pub parents: Vec<String>,
 }
 
-fn git_head_hash(project_dir: &str) -> Option<String> {
-    Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(project_dir)
-        .output()
+fn git_head_hash(target: Option<&RemoteTarget>, project_dir: &str) -> Option<String> {
+    run_git(target, project_dir, &["rev-parse", "HEAD"])
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -327,25 +619,33 @@ fn git_head_hash(project_dir: &str) -> Option<String> {
 /// Returns the most recent commits (default 100) as one-line summaries.
 /// Returns an empty vec for a non-git directory or a repo with no commits yet.
 #[tauri::command]
-pub fn git_log(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>, String> {
-    let dir = Path::new(&project_dir);
-    if !dir.join(".git").exists() {
+pub async fn git_log(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>, String> {
+    run_off_thread(move || git_log_blocking(project_dir, limit)).await
+}
+
+fn git_log_blocking(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>, String> {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
     let max = limit.unwrap_or(100);
-    // Fields separated by US (0x1f) so subjects can contain anything but a newline.
-    let fmt = "--pretty=format:%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ar\u{1f}%D\u{1f}%P";
-    let out = Command::new("git")
-        .args(["log", &format!("--max-count={max}"), fmt])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let max_count = format!("--max-count={max}");
+    let out = run_git(target.as_ref(), &project_dir, &["log", &max_count, GIT_LOG_FMT])?;
     if !out.status.success() {
         // Empty repository (no commits) — not an error for our purposes.
         return Ok(vec![]);
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let head = git_head_hash(&project_dir);
+    let head = git_head_hash(target.as_ref(), &project_dir);
+    Ok(parse_git_log(&String::from_utf8_lossy(&out.stdout), head.as_deref()))
+}
+
+/// The `--pretty` format shared by `git_log` and `git_file_log`: fields separated
+/// by US (0x1f) so subjects can contain anything but a newline.
+const GIT_LOG_FMT: &str = "--pretty=format:%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ar\u{1f}%D\u{1f}%P";
+
+/// Parse `git log` output emitted with `GIT_LOG_FMT` into `GitCommit`s. `head` is
+/// the current HEAD sha (used only to flag `is_head`).
+fn parse_git_log(text: &str, head: Option<&str>) -> Vec<GitCommit> {
     let mut commits = Vec::new();
     for line in text.lines() {
         let parts: Vec<&str> = line.split('\u{1f}').collect();
@@ -353,7 +653,7 @@ pub fn git_log(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>
             continue;
         }
         let hash = parts[0].to_string();
-        let is_head = head.as_deref() == Some(hash.as_str());
+        let is_head = head == Some(hash.as_str());
         let parents = parts[6]
             .split_whitespace()
             .map(|p| p.to_string())
@@ -369,7 +669,75 @@ pub fn git_log(project_dir: String, limit: Option<u32>) -> Result<Vec<GitCommit>
             parents,
         });
     }
-    Ok(commits)
+    commits
+}
+
+/// The commit history for a single file (`git log --follow -- <rel_path>`), most
+/// recent first. `--follow` keeps history across renames. Returns an empty vec for
+/// a non-git dir, an untracked path, or a repo with no commits. Local and remote
+/// (SSH) projects both work via the shared `run_git` dispatch.
+#[tauri::command]
+pub async fn git_file_log(
+    project_dir: String,
+    rel_path: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitCommit>, String> {
+    run_off_thread(move || git_file_log_blocking(project_dir, rel_path, limit)).await
+}
+
+fn git_file_log_blocking(
+    project_dir: String,
+    rel_path: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitCommit>, String> {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
+        return Ok(vec![]);
+    }
+    let max = limit.unwrap_or(100);
+    let max_count = format!("--max-count={max}");
+    let out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["log", &max_count, "--follow", GIT_LOG_FMT, "--", &rel_path],
+    )?;
+    if !out.status.success() {
+        // Untracked path or empty repo — not an error for our purposes.
+        return Ok(vec![]);
+    }
+    let head = git_head_hash(target.as_ref(), &project_dir);
+    Ok(parse_git_log(&String::from_utf8_lossy(&out.stdout), head.as_deref()))
+}
+
+/// Returns a file's contents at a specific revision (`git show <rev>:<rel_path>`).
+/// Used by the in-app compare/merge view for the "old version" pane. Errors (bad
+/// rev, path absent at that rev) surface as `Err(stderr)`. Local and remote (SSH)
+/// projects both work via the shared `run_git` dispatch.
+#[tauri::command]
+pub async fn git_file_at_rev(
+    project_dir: String,
+    rel_path: String,
+    rev: String,
+) -> Result<String, String> {
+    run_off_thread(move || git_file_at_rev_blocking(project_dir, rel_path, rev)).await
+}
+
+fn git_file_at_rev_blocking(
+    project_dir: String,
+    rel_path: String,
+    rev: String,
+) -> Result<String, String> {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
+        return Ok(String::new());
+    }
+    // `git show <rev>:<path>` wants a repo-relative, forward-slash path.
+    let spec = format!("{rev}:{}", rel_path.replace('\\', "/"));
+    let out = run_git(target.as_ref(), &project_dir, &["show", &spec])?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -381,17 +749,17 @@ pub struct GitBranch {
 
 /// Lists local and remote-tracking branches.
 #[tauri::command]
-pub fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
-    let dir = Path::new(&project_dir);
-    if !dir.join(".git").exists() {
+pub async fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
+    run_off_thread(move || git_branches_blocking(project_dir)).await
+}
+
+fn git_branches_blocking(project_dir: String) -> Result<Vec<GitBranch>, String> {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
     let fmt = "--format=%(if)%(HEAD)%(then)*%(else) %(end)\u{1f}%(refname:short)\u{1f}%(refname)";
-    let out = Command::new("git")
-        .args(["branch", "-a", fmt])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run_git(target.as_ref(), &project_dir, &["branch", "-a", fmt])?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut branches = Vec::new();
     for line in text.lines() {
@@ -416,12 +784,13 @@ pub fn git_branches(project_dir: String) -> Result<Vec<GitBranch>, String> {
 /// Checks out a branch name or commit hash. Surfaces git's stderr on failure
 /// (e.g. when the working tree has conflicting uncommitted changes).
 #[tauri::command]
-pub fn git_checkout(project_dir: String, target: String) -> Result<String, String> {
-    let out = Command::new("git")
-        .args(["checkout", &target])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub async fn git_checkout(project_dir: String, target: String) -> Result<String, String> {
+    run_off_thread(move || git_checkout_blocking(project_dir, target)).await
+}
+
+fn git_checkout_blocking(project_dir: String, target: String) -> Result<String, String> {
+    let rt = remote_target_for_dir(&project_dir);
+    let out = run_git(rt.as_ref(), &project_dir, &["checkout", &target])?;
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
@@ -432,12 +801,13 @@ pub fn git_checkout(project_dir: String, target: String) -> Result<String, Strin
 
 /// Returns the full commit message (subject + body) for a single commit.
 #[tauri::command]
-pub fn git_commit_message(project_dir: String, hash: String) -> Result<String, String> {
-    let out = Command::new("git")
-        .args(["log", "-1", "--pretty=format:%B", &hash])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub async fn git_commit_message(project_dir: String, hash: String) -> Result<String, String> {
+    run_off_thread(move || git_commit_message_blocking(project_dir, hash)).await
+}
+
+fn git_commit_message_blocking(project_dir: String, hash: String) -> Result<String, String> {
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["log", "-1", "--pretty=format:%B", &hash])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -447,15 +817,16 @@ pub fn git_commit_message(project_dir: String, hash: String) -> Result<String, S
 /// Rewords the most recent commit (HEAD) via `git commit --amend`. Only valid
 /// for the latest commit; rewording older commits would require a rebase.
 #[tauri::command]
-pub fn git_reword_head(project_dir: String, message: String) -> Result<(), String> {
+pub async fn git_reword_head(project_dir: String, message: String) -> Result<(), String> {
+    run_off_thread(move || git_reword_head_blocking(project_dir, message)).await
+}
+
+fn git_reword_head_blocking(project_dir: String, message: String) -> Result<(), String> {
     if message.trim().is_empty() {
         return Err("Commit message cannot be empty".to_string());
     }
-    let out = Command::new("git")
-        .args(["commit", "--amend", "-m", &message])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["commit", "--amend", "-m", &message])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -471,12 +842,13 @@ pub fn git_reword_head(project_dir: String, message: String) -> Result<(), Strin
 /// non-zero whenever there are differences, so for the fallback we treat any
 /// non-empty stdout as success regardless of exit status.
 #[tauri::command]
-pub fn git_diff_file(project_dir: String, rel_path: String) -> Result<String, String> {
-    let out = Command::new("git")
-        .args(["diff", "--", &rel_path])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub async fn git_diff_file(project_dir: String, rel_path: String) -> Result<String, String> {
+    run_off_thread(move || git_diff_file_blocking(project_dir, rel_path)).await
+}
+
+fn git_diff_file_blocking(project_dir: String, rel_path: String) -> Result<String, String> {
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["diff", "--", &rel_path])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -488,11 +860,7 @@ pub fn git_diff_file(project_dir: String, rel_path: String) -> Result<String, St
     // Tracked diff is empty (e.g. untracked file). Show the whole file as added.
     // `--no-index` exits non-zero when differences exist, which is the normal
     // case here, so treat any non-empty stdout as success.
-    let fallback = Command::new("git")
-        .args(["diff", "--no-index", "--", "/dev/null", &rel_path])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let fallback = run_git(target.as_ref(), &project_dir, &["diff", "--no-index", "--", "/dev/null", &rel_path])?;
     let fb_stdout = String::from_utf8_lossy(&fallback.stdout).to_string();
     if !fb_stdout.is_empty() {
         return Ok(fb_stdout);
@@ -502,6 +870,124 @@ pub fn git_diff_file(project_dir: String, rel_path: String) -> Result<String, St
     }
     // No tracked changes and the fallback produced nothing — return empty diff.
     Ok(stdout)
+}
+
+// ── Git blame ────────────────────────────────────────────────────────────────
+
+/// One source line's blame attribution. Mirrored field-for-field by the
+/// frontend `BlameLine` interface (snake_case, no serde renames).
+#[derive(serde::Serialize)]
+pub struct GitBlameLine {
+    /// 1-based final line number in the current file.
+    pub line_no: u32,
+    /// Full commit sha. All-zeros ⇒ the line is uncommitted (working tree).
+    pub hash: String,
+    /// First 8 chars of `hash`.
+    pub short: String,
+    pub author: String,
+    /// Author time as unix epoch seconds; the frontend renders the relative date.
+    pub author_time: i64,
+    /// Commit subject (first line of the message).
+    pub summary: String,
+}
+
+#[derive(Clone, Default)]
+struct BlameMeta {
+    author: String,
+    author_time: i64,
+    summary: String,
+}
+
+/// Parses `git blame --porcelain` output into one `GitBlameLine` per source
+/// line. In porcelain form each line begins with a header
+/// `<40-hex-sha> <orig-lineno> <final-lineno>[ <group-size>]`, followed — only
+/// the **first** time a given commit appears — by its metadata (`author`,
+/// `author-time`, `summary`, …), and always ends with a `\t`-prefixed content
+/// line. Later lines of an already-seen commit carry only the header + content,
+/// so commit metadata is cached by sha and reused.
+fn parse_blame_porcelain(text: &str) -> Vec<GitBlameLine> {
+    let mut cache: HashMap<String, BlameMeta> = HashMap::new();
+    let mut lines: Vec<GitBlameLine> = Vec::new();
+
+    let mut cur_hash: Option<String> = None;
+    let mut cur_line_no: u32 = 0;
+    let mut building = BlameMeta::default();
+
+    let is_header = |l: &str| -> Option<(String, u32)> {
+        let mut it = l.split(' ');
+        let sha = it.next()?;
+        if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let _orig = it.next()?; // original line number (unused)
+        let final_no: u32 = it.next()?.parse().ok()?;
+        Some((sha.to_string(), final_no))
+    };
+
+    for line in text.lines() {
+        if let Some((sha, final_no)) = is_header(line) {
+            // Start a new line record; seed metadata from cache if this commit
+            // was already described earlier in the stream.
+            building = cache.get(&sha).cloned().unwrap_or_default();
+            cur_hash = Some(sha);
+            cur_line_no = final_no;
+        } else if let Some(rest) = line.strip_prefix("author-time ") {
+            building.author_time = rest.trim().parse().unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("author ") {
+            building.author = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("summary ") {
+            building.summary = rest.to_string();
+        } else if line.starts_with('\t') {
+            // Content line — finalizes the current record.
+            if let Some(hash) = cur_hash.take() {
+                cache.entry(hash.clone()).or_insert_with(|| building.clone());
+                let short = hash.chars().take(8).collect();
+                lines.push(GitBlameLine {
+                    line_no: cur_line_no,
+                    short,
+                    author: building.author.clone(),
+                    author_time: building.author_time,
+                    summary: building.summary.clone(),
+                    hash,
+                });
+            }
+        }
+    }
+
+    lines
+}
+
+/// Per-line git blame for a file, ordered by line number. Returns an empty vec
+/// for a non-git dir or a path with no blame (e.g. never committed and no
+/// working-tree content). Local and remote (SSH) projects both work via the
+/// shared `run_git` dispatch.
+#[tauri::command]
+pub async fn git_blame(project_dir: String, rel_path: String) -> Result<Vec<GitBlameLine>, String> {
+    run_off_thread(move || git_blame_blocking(project_dir, rel_path)).await
+}
+
+fn git_blame_blocking(project_dir: String, rel_path: String) -> Result<Vec<GitBlameLine>, String> {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
+        return Ok(vec![]);
+    }
+    // `--porcelain` emits commit metadata once per commit; `-w` ignores
+    // whitespace-only changes so reformatting doesn't reassign blame.
+    let out = run_git(
+        target.as_ref(),
+        &project_dir,
+        &["blame", "--porcelain", "-w", "--", &rel_path],
+    )?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // An unmodified/untracked-but-blamable file blames fine; genuinely
+        // un-blamable paths (never committed, no HEAD) just yield nothing.
+        if stderr.is_empty() {
+            return Ok(vec![]);
+        }
+        return Err(stderr);
+    }
+    Ok(parse_blame_porcelain(&String::from_utf8_lossy(&out.stdout)))
 }
 
 // ── Git worktrees (#23) ──────────────────────────────────────────────────────
@@ -577,16 +1063,17 @@ fn parse_worktree_porcelain(text: &str) -> Vec<Worktree> {
 
 /// Lists worktrees attached to the repository at `project_dir`.
 #[tauri::command]
-pub fn git_worktree_list(project_dir: String) -> Result<Vec<Worktree>, String> {
+pub async fn git_worktree_list(project_dir: String) -> Result<Vec<Worktree>, String> {
+    run_off_thread(move || git_worktree_list_blocking(project_dir)).await
+}
+
+fn git_worktree_list_blocking(project_dir: String) -> Result<Vec<Worktree>, String> {
     // `.git` exists as a dir for the main repo and as a file in linked worktrees.
-    if !Path::new(&project_dir).join(".git").exists() {
+    let target = remote_target_for_dir(&project_dir);
+    if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(vec![]);
     }
-    let out = Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run_git(target.as_ref(), &project_dir, &["worktree", "list", "--porcelain"])?;
     if !out.status.success() {
         // Lenient, like git_log (e.g. empty repo).
         return Ok(vec![]);
@@ -598,7 +1085,16 @@ pub fn git_worktree_list(project_dir: String) -> Result<Vec<Worktree>, String> {
 /// `branch` at `path` (`git worktree add -b <branch> <path>`); otherwise checks
 /// out the existing `branch` (`git worktree add <path> <branch>`).
 #[tauri::command]
-pub fn git_worktree_add(
+pub async fn git_worktree_add(
+    project_dir: String,
+    path: String,
+    branch: String,
+    new_branch: bool,
+) -> Result<(), String> {
+    run_off_thread(move || git_worktree_add_blocking(project_dir, path, branch, new_branch)).await
+}
+
+fn git_worktree_add_blocking(
     project_dir: String,
     path: String,
     branch: String,
@@ -619,11 +1115,8 @@ pub fn git_worktree_add(
         args.push(&path);
         args.push(&branch);
     }
-    let out = Command::new("git")
-        .args(&args)
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &args)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -636,17 +1129,18 @@ pub fn git_worktree_add(
 /// git refuses to remove the main worktree or a dirty one without it, and that
 /// error is surfaced to the caller as-is.
 #[tauri::command]
-pub fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Result<(), String> {
+pub async fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Result<(), String> {
+    run_off_thread(move || git_worktree_remove_blocking(project_dir, path, force)).await
+}
+
+fn git_worktree_remove_blocking(project_dir: String, path: String, force: bool) -> Result<(), String> {
     let mut args: Vec<&str> = vec!["worktree", "remove"];
     if force {
         args.push("--force");
     }
     args.push(&path);
-    let out = Command::new("git")
-        .args(&args)
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &args)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -658,12 +1152,13 @@ pub fn git_worktree_remove(project_dir: String, path: String, force: bool) -> Re
 /// Prunes administrative entries for worktrees whose directories were removed
 /// out-of-band (`git worktree prune`).
 #[tauri::command]
-pub fn git_worktree_prune(project_dir: String) -> Result<(), String> {
-    let out = Command::new("git")
-        .args(["worktree", "prune"])
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub async fn git_worktree_prune(project_dir: String) -> Result<(), String> {
+    run_off_thread(move || git_worktree_prune_blocking(project_dir)).await
+}
+
+fn git_worktree_prune_blocking(project_dir: String) -> Result<(), String> {
+    let target = remote_target_for_dir(&project_dir);
+    let out = run_git(target.as_ref(), &project_dir, &["worktree", "prune"])?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -672,15 +1167,108 @@ pub fn git_worktree_prune(project_dir: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Map an `origin` remote URL to a hosting provider by its **host only**.
+/// Handles both SSH (`git@github.com:owner/repo.git`) and HTTPS
+/// (`https://github.com/owner/repo.git`) forms. Read-only string work — no
+/// network. Returns `None` for unrecognized/self-hosted vanity hosts so we
+/// never render a wrong badge.
+fn provider_from_origin_url(url: &str) -> Option<&'static str> {
+    let lower = url.to_ascii_lowercase();
+    if lower.contains("gitlab") {
+        Some("gitlab")
+    } else if lower.contains("github") {
+        Some("github")
+    } else {
+        None
+    }
+}
+
+/// A recognized `origin` for a local project: the hosting provider plus the raw
+/// remote URL, so the frontend can both badge the provider and display the git
+/// address in the project hover.
+#[derive(serde::Serialize)]
+pub struct DetectedOrigin {
+    pub provider: String,
+    pub url: String,
+}
+
+/// Sniff the `origin` host for each **local** git project and map it to a
+/// hosting provider (`"github"`/`"gitlab"`) plus its raw URL. Read-only: runs
+/// `git remote get-url origin`, makes no network calls and writes nothing.
+/// Returns `{ project_id -> { provider, url } }` only for projects whose origin
+/// resolves to a recognized provider. Published (`remote-*`) local projects are
+/// included too, so their git address shows in the hover even though their badge
+/// already rides on `git_type`. Used to decorate pill/right-panel hovers for
+/// repos pushed to a host — including ones published outside Eldrun's own
+/// Publish flow (the sole writer of the `remote-*` `git_type`).
+#[tauri::command]
+pub fn detect_git_providers() -> Result<HashMap<String, DetectedOrigin>, String> {
+    use serde_json::Value;
+
+    let path = crate::storage::state_dir().join("projects.json");
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let list: crate::schema::projects::ProjectsList =
+        crate::storage::read_json(&path).map_err(|e| e.to_string())?;
+
+    let mut out = HashMap::new();
+    for entry in &list {
+        // Local projects only: a remote project's `origin` lives on the host,
+        // and sniffing it would be a network call.
+        if entry.extra.contains_key("remote") {
+            continue;
+        }
+        // Skip repo-less projects; `local` and `remote-*` are both eligible.
+        if let Some(Value::String(gt)) = entry.extra.get("git_type") {
+            if gt == "none" {
+                continue;
+            }
+        }
+        // The project's working directory. Legacy entries (created before
+        // `directory` was persisted — e.g. the self-hosting ProjectEldrun
+        // entry) omit the key; fall back to `local_file`'s parent, which is
+        // always `<directory>/project.json`, so they still get sniffed/badged.
+        let dir: String = match entry.extra.get("directory") {
+            Some(Value::String(d)) => d.clone(),
+            _ => match Path::new(&entry.local_file).parent() {
+                Some(p) => p.to_string_lossy().into_owned(),
+                None => continue,
+            },
+        };
+        if !Path::new(&dir).join(".git").exists() {
+            continue;
+        }
+        let output = crate::paths::command_no_window("git")
+            .args(["-C", &dir, "remote", "get-url", "origin"])
+            .output();
+        let Ok(output) = output else { continue };
+        if !output.status.success() {
+            continue;
+        }
+        let url = String::from_utf8_lossy(&output.stdout);
+        let url = url.trim();
+        if let Some(provider) = provider_from_origin_url(url) {
+            out.insert(
+                entry.id.clone(),
+                DetectedOrigin {
+                    provider: provider.to_string(),
+                    url: url.to_string(),
+                },
+            );
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    use std::process::Command;
 
     /// Returns true when `git` is on PATH; tests skip gracefully otherwise.
     fn git_available() -> bool {
-        Command::new("git")
+        crate::paths::command_no_window("git")
             .arg("--version")
             .output()
             .map(|o| o.status.success())
@@ -689,7 +1277,7 @@ mod tests {
 
     fn init_repo(dir: &std::path::Path) {
         let run = |args: &[&str]| {
-            let ok = Command::new("git")
+            let ok = crate::paths::command_no_window("git")
                 .args(args)
                 .current_dir(dir)
                 .output()
@@ -715,7 +1303,7 @@ mod tests {
 
         let file = dir.join("note.txt");
         fs::write(&file, "first line\nsecond line\n").expect("write");
-        let add_ok = Command::new("git")
+        let add_ok = crate::paths::command_no_window("git")
             .args(["add", "note.txt"])
             .current_dir(dir)
             .output()
@@ -723,7 +1311,7 @@ mod tests {
             .status
             .success();
         assert!(add_ok, "git add failed");
-        let real_commit = Command::new("git")
+        let real_commit = crate::paths::command_no_window("git")
             .args(["commit", "-m", "init"])
             .current_dir(dir)
             .output()
@@ -735,7 +1323,7 @@ mod tests {
         // Modify the file so a tracked diff exists.
         fs::write(&file, "first line\nCHANGED line\n").expect("rewrite");
 
-        let diff = git_diff_file(
+        let diff = git_diff_file_blocking(
             dir.to_string_lossy().to_string(),
             "note.txt".to_string(),
         )
@@ -759,7 +1347,7 @@ mod tests {
         let file = dir.join("fresh.txt");
         fs::write(&file, "brand new content\nanother line\n").expect("write");
 
-        let diff = git_diff_file(
+        let diff = git_diff_file_blocking(
             dir.to_string_lossy().to_string(),
             "fresh.txt".to_string(),
         )
@@ -768,6 +1356,153 @@ mod tests {
         assert!(
             diff.contains("brand new content"),
             "expected file content in fallback diff, got: {diff}"
+        );
+    }
+
+    #[test]
+    fn parse_blame_porcelain_maps_lines_and_caches_metadata() {
+        // Two commits: `aaa…` owns lines 1 & 3 (its metadata appears once, on
+        // line 1, and is reused for line 3), `bbb…` owns line 2, and line 4 is
+        // uncommitted (all-zeros sha, "Not Committed Yet").
+        let sample = "\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 1 1
+author Alice
+author-mail <alice@example.com>
+author-time 1000000000
+author-tz +0000
+summary first commit
+filename note.txt
+\tline one
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 2 1
+author Bob
+author-mail <bob@example.com>
+author-time 1600000000
+author-tz +0000
+summary second commit
+filename note.txt
+\tline two
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 3 3 1
+filename note.txt
+\tline three
+0000000000000000000000000000000000000000 4 4 1
+author Not Committed Yet
+author-mail <not.committed.yet>
+author-time 1700000000
+author-tz +0000
+summary Version of note.txt from note.txt
+filename note.txt
+\tline four
+";
+        let blame = parse_blame_porcelain(sample);
+        assert_eq!(blame.len(), 4, "one entry per source line");
+
+        assert_eq!(blame[0].line_no, 1);
+        assert_eq!(blame[0].short, "aaaaaaaa");
+        assert_eq!(blame[0].author, "Alice");
+        assert_eq!(blame[0].author_time, 1_000_000_000);
+        assert_eq!(blame[0].summary, "first commit");
+
+        assert_eq!(blame[1].line_no, 2);
+        assert_eq!(blame[1].author, "Bob");
+        assert_eq!(blame[1].author_time, 1_600_000_000);
+
+        // Line 3 reuses `aaa…`'s cached metadata even though it wasn't repeated.
+        assert_eq!(blame[2].line_no, 3);
+        assert_eq!(blame[2].hash, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(blame[2].author, "Alice");
+        assert_eq!(blame[2].summary, "first commit");
+
+        // Line 4 is uncommitted.
+        assert_eq!(blame[3].line_no, 4);
+        assert_eq!(blame[3].hash, "0000000000000000000000000000000000000000");
+        assert_eq!(blame[3].author, "Not Committed Yet");
+    }
+
+    #[test]
+    fn git_blame_blocking_attributes_lines() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping git_blame_blocking_attributes_lines");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+
+        let file = dir.join("note.txt");
+        fs::write(&file, "first line\nsecond line\n").expect("write");
+        for args in [&["add", "note.txt"][..], &["commit", "-m", "init"][..]] {
+            let ok = crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git runs")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        }
+
+        let blame = git_blame_blocking(
+            dir.to_string_lossy().to_string(),
+            "note.txt".to_string(),
+        )
+        .expect("git_blame should succeed");
+        assert_eq!(blame.len(), 2, "two committed lines");
+        assert_eq!(blame[0].line_no, 1);
+        assert_eq!(blame[0].author, "Test User");
+        assert_ne!(blame[0].hash, "0000000000000000000000000000000000000000");
+    }
+
+    #[test]
+    fn git_blame_blocking_empty_for_non_repo() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        // No `git init` → local_non_repo short-circuits to an empty vec.
+        let blame = git_blame_blocking(
+            dir.to_string_lossy().to_string(),
+            "whatever.txt".to_string(),
+        )
+        .expect("non-repo blame is empty, not an error");
+        assert!(blame.is_empty());
+    }
+
+    #[test]
+    fn ignored_child_does_not_mark_whole_folder_ignored() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping ignored_child_does_not_mark_whole_folder_ignored");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+
+        // `partial/` has one ignored file and one tracked file → the folder
+        // itself is NOT ignored. `whole/` is ignored in its entirety.
+        fs::write(dir.join(".gitignore"), "partial/ignored.log\nwhole/\n").expect("write .gitignore");
+        fs::create_dir(dir.join("partial")).expect("mkdir partial");
+        fs::write(dir.join("partial/ignored.log"), "log\n").expect("write log");
+        fs::write(dir.join("partial/keep.txt"), "keep\n").expect("write keep");
+        fs::create_dir(dir.join("whole")).expect("mkdir whole");
+        fs::write(dir.join("whole/a.txt"), "a\n").expect("write a");
+
+        let statuses = git_file_statuses_blocking(
+            dir.to_string_lossy().to_string(),
+            String::new(),
+        )
+        .expect("git_file_statuses should succeed");
+
+        // A folder with only some ignored content stays out of the ignored bucket.
+        assert_ne!(
+            statuses.get("partial").map(String::as_str),
+            Some("ignored"),
+            "partial/ must not be marked ignored (got {:?})",
+            statuses.get("partial")
+        );
+        // A wholly-ignored folder is still reported as ignored.
+        assert_eq!(
+            statuses.get("whole").map(String::as_str),
+            Some("ignored"),
+            "whole/ should be ignored (got {:?})",
+            statuses.get("whole")
         );
     }
 
@@ -840,7 +1575,7 @@ mod tests {
         let root_str = root.to_string_lossy().to_string();
 
         let run = |args: &[&str]| {
-            Command::new("git")
+            crate::paths::command_no_window("git")
                 .args(args)
                 .current_dir(&root)
                 .output()
@@ -856,22 +1591,54 @@ mod tests {
         assert!(run(&["commit", "-m", "init"]).status.success());
 
         // Initially a single (main) worktree.
-        let listed = git_worktree_list(root_str.clone()).unwrap();
+        let listed = git_worktree_list_blocking(root_str.clone()).unwrap();
         assert_eq!(listed.len(), 1);
         assert!(listed[0].is_main);
 
         // Add a new worktree on a new branch.
         let wt_path = tmp.path().join("wt-feature").to_string_lossy().to_string();
-        git_worktree_add(root_str.clone(), wt_path.clone(), "feature".to_string(), true).unwrap();
+        git_worktree_add_blocking(root_str.clone(), wt_path.clone(), "feature".to_string(), true).unwrap();
 
-        let listed = git_worktree_list(root_str.clone()).unwrap();
+        let listed = git_worktree_list_blocking(root_str.clone()).unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed.iter().filter(|w| w.is_main).count(), 1);
         assert!(listed.iter().any(|w| w.branch == "feature"));
 
         // Remove it and confirm we are back to one.
-        git_worktree_remove(root_str.clone(), wt_path, true).unwrap();
-        let listed = git_worktree_list(root_str).unwrap();
+        git_worktree_remove_blocking(root_str.clone(), wt_path, true).unwrap();
+        let listed = git_worktree_list_blocking(root_str).unwrap();
         assert_eq!(listed.len(), 1);
+    }
+
+    #[test]
+    fn provider_from_origin_url_recognizes_hosts() {
+        // SSH form.
+        assert_eq!(
+            provider_from_origin_url("git@github.com:owner/repo.git"),
+            Some("github")
+        );
+        assert_eq!(
+            provider_from_origin_url("git@gitlab.com:owner/repo.git"),
+            Some("gitlab")
+        );
+        // HTTPS form.
+        assert_eq!(
+            provider_from_origin_url("https://github.com/owner/repo.git"),
+            Some("github")
+        );
+        assert_eq!(
+            provider_from_origin_url("https://gitlab.example.com/owner/repo.git"),
+            Some("gitlab")
+        );
+        // Enterprise/vanity host containing the provider name still matches.
+        assert_eq!(
+            provider_from_origin_url("git@github.corp.internal:owner/repo.git"),
+            Some("github")
+        );
+        // Unrecognized / self-hosted vanity host → no badge.
+        assert_eq!(
+            provider_from_origin_url("git@git.mycorp.com:owner/repo.git"),
+            None
+        );
     }
 }

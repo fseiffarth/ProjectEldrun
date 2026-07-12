@@ -10,18 +10,25 @@ import {
   type PaneRect,
 } from "../../stores/detached";
 import { pickEdge } from "./dragGeometry";
+import {
+  snapshotFrame,
+  physToClient,
+  pointInOuter,
+  type PhysPoint,
+  type WindowFrame,
+} from "../../lib/coords";
 import { useTabsStore, type DetachedDockTarget, type DropEdge } from "../../stores/tabs";
 
-/** An open popout of the active scope, with its on-screen bounds in logical/CSS
- *  px (matching `ev.screenX/Y`, which WebKitGTK reports in CSS px). */
+/** An open popout of the active scope, with its physical-px window frame (see
+ *  lib/coords). All hit-tests take a physical desktop cursor (`PhysPoint`) — never
+ *  DOM `ev.screenX/Y`, whose units diverge across engines under DPI scaling. */
 export interface DetachedTarget {
   label: string;
   groupId: string;
   scope: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
+  /** The popout window's physical-px frame: its outer rect for the AABB test and
+   *  its inner origin/scale for mapping the cursor into the popout's client px. */
+  frame: WindowFrame;
 }
 
 /** Hit-test a cursor (popout-client px) against a popout's reported panes: over a
@@ -61,12 +68,13 @@ export function resolvePaneTarget(
  * re-implementing the cross-window hit-test (the divergence that left file drags
  * spawning a new window over a popout instead of docking into it).
  *
- * The cursor leaves the main viewport while over a popout, but the pointer's
- * implicit grab keeps `ev.screenX/Y` valid, so a synchronous `at()` hit-test on
- * every move/release can tell whether the cursor is over one. `resolve()` is async
- * (per-window IPC), so the caller kicks it off when the drag starts and hit-tests
- * against whatever has resolved; an unfinished resolve simply means no popout
- * target yet (caller falls back to its new-window detach).
+ * The cursor leaves the main viewport while over a popout. The caller tracks it via
+ * the cross-platform `cursorPosition()` poll (`startCursorPoll`, physical desktop
+ * px), so a synchronous `at()` hit-test on every tick/release can tell whether the
+ * cursor is over a popout. `resolve()` is async (per-window IPC), so the caller
+ * kicks it off when the drag starts and hit-tests against whatever has resolved; an
+ * unfinished resolve simply means no popout target yet (caller falls back to its
+ * new-window detach).
  */
 export function startDetachedDropSession() {
   let targets: DetachedTarget[] = [];
@@ -94,21 +102,10 @@ export function startDetachedDropSession() {
       try {
         const w = await WebviewWindow.getByLabel(entry.label);
         if (!w) continue;
-        const [pos, size, scale] = await Promise.all([
-          w.outerPosition(),
-          w.outerSize(),
-          w.scaleFactor(),
-        ]);
-        const sc = scale || 1;
-        out.push({
-          label: entry.label,
-          groupId: entry.id,
-          scope,
-          x: pos.x / sc,
-          y: pos.y / sc,
-          w: size.width / sc,
-          h: size.height / sc,
-        });
+        // Snapshot the popout's physical-px frame (outer rect + inner origin/scale).
+        // All later hit-tests stay in physical desktop px — no `/scale` divisions.
+        const frame = await snapshotFrame(w);
+        out.push({ label: entry.label, groupId: entry.id, scope, frame });
         // Ask the popout for its pane geometry now (its tree is fixed for the drag)
         // so the cursor hit-test is ready before it reaches the popout.
         void emit(DETACHED_PANES_REQUEST, { label: entry.label });
@@ -119,47 +116,52 @@ export function startDetachedDropSession() {
     targets = out;
   };
 
-  const at = (screenX: number, screenY: number): DetachedTarget | null =>
-    targets.find(
-      (t) => screenX >= t.x && screenX <= t.x + t.w && screenY >= t.y && screenY <= t.y + t.h,
-    ) ?? null;
+  // Pure physical AABB: is the desktop cursor over a popout's OUTER rect?
+  const at = (cursorPhys: PhysPoint): DetachedTarget | null =>
+    targets.find((t) => pointInOuter(t.frame, cursorPhys)) ?? null;
 
   // Resolve the pane the cursor is over inside a popout (synchronously, from its
   // reported geometry). `null` if its panes haven't arrived yet or no pane is hit.
   const resolveInPopout = (
     pop: DetachedTarget,
-    screenX: number,
-    screenY: number,
+    cursorPhys: PhysPoint,
   ): DetachedDockTarget | null => {
     const panes = panesByLabel.get(pop.label);
     if (!panes) return null;
-    // Decorationless popout → client px = cursor − outer (== inner) position.
-    return resolvePaneTarget(panes, screenX - pop.x, screenY - pop.y);
+    // Map the physical cursor into the popout's OWN client px via its inner
+    // origin/scale (physToClient), the only DPI-correct conversion — then hit-test.
+    const c = physToClient(pop.frame, cursorPhys);
+    return resolvePaneTarget(panes, c.x, c.y);
   };
 
   // Drive the drop preview in the popout under the cursor: resolve the pane HERE
   // and stream the resolved target so the popout renders its per-pane preview;
   // clear the previous popout when the cursor moves off it. `label` is the dragged
   // item's name (shown in the popout's ghost). Pass `pop === null` to clear all.
-  const hover = (pop: DetachedTarget | null, screenX: number, screenY: number, label?: string) => {
+  const hover = (pop: DetachedTarget | null, cursorPhys: PhysPoint, label?: string) => {
     const next = pop?.label ?? null;
     if (next !== hovered) {
       if (hovered) void emit(detachedDropPreviewEvent(hovered), { active: false });
       hovered = next;
     }
     if (pop && next) {
-      const target = resolveInPopout(pop, screenX, screenY);
-      void emit(detachedDropPreviewEvent(next), { active: true, target, screenX, screenY, label });
+      const target = resolveInPopout(pop, cursorPhys);
+      void emit(detachedDropPreviewEvent(next), {
+        active: true,
+        target,
+        cursorPhysX: cursorPhys.x,
+        cursorPhysY: cursorPhys.y,
+        label,
+      });
     }
   };
 
-  // The pane the cursor resolves to in the given popout AT the supplied coords —
-  // computed synchronously for the release dock (no stale cross-window cache).
+  // The pane the cursor resolves to in the given popout AT the supplied physical
+  // cursor — computed synchronously for the release dock (no stale cross-window cache).
   const targetAt = (
     pop: DetachedTarget,
-    screenX: number,
-    screenY: number,
-  ): DetachedDockTarget | undefined => resolveInPopout(pop, screenX, screenY) ?? undefined;
+    cursorPhys: PhysPoint,
+  ): DetachedDockTarget | undefined => resolveInPopout(pop, cursorPhys) ?? undefined;
 
   // Clear any active highlight and tear down the panes listener. Call once the
   // gesture ends (release/abort).
