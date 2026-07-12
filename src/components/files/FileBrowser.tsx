@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Toggle } from "../common/Toggle";
 import { useWindowsStore } from "../../stores/windows";
 import { useProjectsStore } from "../../stores/projects";
 import { Dropdown } from "../common/Dropdown";
@@ -341,10 +342,10 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
         <button onClick={deleteSelected} disabled={!canMutate}>Delete</button>
         <button onClick={copySelectedPaths} disabled={!canMutate}>Copy Path</button>
         <button onClick={revealSelected} disabled={!canMutate}>Reveal</button>
-        <label><input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /> Hidden</label>
-        <label><input type="checkbox" checked={showStandardFiles} onChange={(e) => setShowStandardFiles(e.target.checked)} /> Scaffold</label>
-        <label><input type="checkbox" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} /> Separate scaffold</label>
-        <label><input type="checkbox" checked={showUserHidden} onChange={(e) => setShowUserHidden(e.target.checked)} /> User hidden</label>
+        <label><Toggle size="sm" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /> Hidden</label>
+        <label><Toggle size="sm" checked={showStandardFiles} onChange={(e) => setShowStandardFiles(e.target.checked)} /> Scaffold</label>
+        <label><Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} /> Separate scaffold</label>
+        <label><Toggle size="sm" checked={showUserHidden} onChange={(e) => setShowUserHidden(e.target.checked)} /> User hidden</label>
         <Dropdown
           title="Sort by"
           value={sortKey}

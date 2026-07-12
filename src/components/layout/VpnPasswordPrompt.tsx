@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Toggle } from "../common/Toggle";
 import { listen } from "@tauri-apps/api/event";
 import { useVpnPromptStore } from "../../stores/vpnPrompt";
 import { ConnectionLog, type LogLine } from "../common/ConnectionLog";
@@ -142,8 +143,8 @@ export function VpnPasswordPrompt() {
           />
         </label>
         <label className="remote-connect-remember">
-          <input
-            type="checkbox"
+          <Toggle
+            size="sm"
             checked={remember}
             disabled={connecting}
             onChange={(e) => setRemember(e.target.checked)}

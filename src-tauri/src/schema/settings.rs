@@ -20,10 +20,6 @@ pub struct GlobalAppEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub terminal_command: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_management: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub debug: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_profile_url: Option<String>,
@@ -36,6 +32,25 @@ pub struct Settings {
     /// frontend-side as a CSS `zoom`; the backend only round-trips the value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_zoom: Option<f32>,
+    /// Calendar: first column of the week — `0` = Sunday (default), `1` = Monday.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_week_start: Option<u8>,
+    /// Calendar: the view a fresh calendar tab opens on
+    /// (`day`/`week`/`multiweek`/`month`/`agenda`/`tasks`). Frontend logic only —
+    /// the backend just round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_default_view: Option<String>,
+    /// Calendar: 24-hour clock instead of AM/PM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_time_format_24h: Option<bool>,
+    /// Calendar: first/last hour the day and week grids scroll to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_day_start_hour: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_day_end_hour: Option<u8>,
+    /// Calendar: minutes-before reminder pre-filled on a new event. `0` = none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_default_reminder_minutes: Option<i64>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_host: Option<String>,
@@ -118,8 +133,40 @@ pub struct Settings {
     /// Unset/empty → the frontend falls back to the user's `~/Downloads`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_sources: Option<Vec<String>>,
+    /// Where the MAIN window was when Eldrun last ran, so it reopens on the same
+    /// monitor in the same place. Unset (fresh install, or a saved rect no live
+    /// monitor can host) → the window opens as `tauri.conf.json` configures it:
+    /// maximized, wherever the WM puts it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_state: Option<WindowState>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// Last-known geometry of the MAIN window, in PHYSICAL desktop pixels — the
+/// canonical cross-window coordinate space (see `src/lib/coords.ts`). Tauri's
+/// `outerPosition`/`outerSize`/`set_position`/`set_size` are all physical; only a
+/// *builder*'s `.position()`/`.inner_size()` are logical, which is the trap
+/// `commands::subwindow::detached_position` exists to document.
+///
+/// `x`/`y`/`w`/`h` is the *restore* (non-maximized) rect: it is refreshed only
+/// while the window is floating. Storing the maximized rect here instead would
+/// recreate the bug `WindowControls.tsx` works around — a window whose only known
+/// "normal" size is the whole monitor, so un-maximizing appears to do nothing and
+/// KWin's edge-snap stays suppressed.
+///
+/// There is deliberately no `fullscreen` field. Linux must never enter fullscreen
+/// (a `_NET_WM_STATE_FULLSCREEN` window is unmovable under KWin — see the note in
+/// `lib.rs`'s setup), and macOS is unconditionally fullscreen. Persisting the flag
+/// could only ever strand the window.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct WindowState {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    #[serde(default)]
+    pub maximized: bool,
 }
 
 /// One entry in `settings["keyboard_shortcuts"]` (Group L / #62). A serializable
@@ -172,11 +219,7 @@ pub struct ViewerPref {
 
 impl Settings {
     pub fn color_scheme(&self) -> &str {
-        self.color_scheme.as_deref().unwrap_or("fancy_dark")
-    }
-
-    pub fn workspace_management(&self) -> bool {
-        self.workspace_management.unwrap_or(false)
+        self.color_scheme.as_deref().unwrap_or("light_lavender")
     }
 
     /// Whether Claude agent tabs should be spawned with `--remote-control`.

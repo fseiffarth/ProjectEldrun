@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -9,7 +10,7 @@ import {
   type ProjectEntry,
 } from "../../types";
 import { useTimerStore } from "../../stores/timer";
-import { useActivityStore } from "../../stores/activity";
+import { useActivityStore, type TabStatusCounts } from "../../stores/activity";
 import { useProjectsStore } from "../../stores/projects";
 import { useTabsStore } from "../../stores/tabs";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
@@ -18,7 +19,6 @@ import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./Pro
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
-import { OrbitSpinner } from "../common/OrbitSpinner";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
@@ -49,6 +49,30 @@ const GIT_ICON_TITLE: Record<GitDirtyState, string> = {
   staged: "Staged changes — not yet committed",
   unpushed: "Committed — not yet pushed",
 };
+
+/** Most status bars the pill will draw. A project with more busy tabs than this
+ *  would overflow a narrow pill, so the strip stops here and the tooltip carries
+ *  the true tally. */
+const MAX_STATUS_BARS = 6;
+
+/** The strip's bars, most urgent state first, one per tab. */
+function statusBarKinds(c: TabStatusCounts): string[] {
+  const kinds = [
+    ...Array<string>(c.working).fill("working"),
+    ...Array<string>(c.decision).fill("needs-decision"),
+    ...Array<string>(c.done).fill("finished"),
+  ];
+  return kinds.slice(0, MAX_STATUS_BARS);
+}
+
+/** Tooltip spelling out the tally the bars stand for (never truncated). */
+function statusBarTitle(c: TabStatusCounts): string {
+  const parts: string[] = [];
+  if (c.working) parts.push(`${c.working} working`);
+  if (c.decision) parts.push(`${c.decision} waiting on you`);
+  if (c.done) parts.push(`${c.done} finished`);
+  return parts.join(" · ");
+}
 
 interface ContextMenuPos { x: number; y: number }
 
@@ -413,8 +437,7 @@ function GitHostingWindow({
         {info?.has_token && !newToken.trim() && (
           <label className="settings-switch-row">
             <span>Remove the project token (use global)</span>
-            <input
-              type="checkbox"
+            <Toggle
               checked={clearToken}
               onChange={(e) => setClearToken(e.target.checked)}
             />
@@ -865,7 +888,15 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const catColor = primaryCategoryColor(categories);
 
   const timerPaused = useTimerStore((s) => s.paused);
-  const busy = useActivityStore((s) => s.busyByScope[project.id] ?? false);
+  // Whole-pill status glow, matching the tab lamps: working (green pulse) wins,
+  // else an agent in this project needs a decision (orange pulse) or has finished
+  // unseen (green steady). Attention rolls up from the project's background tabs.
+  // One little bar per non-idle tab along the bottom edge of the pill, so a
+  // glance at the switcher says how many tabs of each project are working
+  // (green, pulsing), waiting on a decision (orange, pulsing) or finished unseen
+  // (green, steady). This replaced a whole-pill tint that could only ever show
+  // one state and said nothing about how many tabs were in it.
+  const statusCounts = useActivityStore((s) => s.statusCountsByScope[project.id]);
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
   const renameProject = useProjectsStore((s) => s.renameProject);
@@ -1415,7 +1446,6 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
             )}
           </span>
           <span className="project-pill-label">{project.name}</span>
-          {busy && <OrbitSpinner className="pill-running-spinner" />}
         </button>
         {categories.length > 0 && (
           <span className="pill-category-dots" title={`Categories: ${categories.join(", ")}`}>
@@ -1436,6 +1466,13 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         >
           ×
         </button>
+        {statusCounts && (
+          <span className="pill-status-bars" title={statusBarTitle(statusCounts)}>
+            {statusBarKinds(statusCounts).map((kind, i) => (
+              <span key={i} className={`pill-status-bar ${kind}`} />
+            ))}
+          </span>
+        )}
       </div>
     </>
   );

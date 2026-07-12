@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod crash;
 pub mod debug;
 pub mod default_apps;
+pub mod disk_usage;
 pub mod format;
 pub mod fs;
 pub mod fs_watch;

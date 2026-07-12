@@ -14,6 +14,7 @@ export type TabKind =
   | "projects3d"
   | "network"
   | "monitor"
+  | "diskusage"
   | "calendar";
 
 /**
@@ -47,9 +48,19 @@ export const NETWORK_TAB_CMD = "__eldrun_network__";
 export const MONITOR_TAB_CMD = "__eldrun_monitor__";
 
 /**
- * Sentinel `cmd` for the native calendar tab (root scope only): a local,
- * self-contained month-grid event calendar. Carries no PTY — like the files
- * pane it's identified by this command so cmdToKind can recover its kind.
+ * Sentinel `cmd` for the native disk usage analyzer tab: a baobab-like rings/
+ * treemap view of what is filling a folder. Carries no PTY — like the monitor pane
+ * it is identified by this command so cmdToKind can recover its kind on restore.
+ */
+export const DISKUSAGE_TAB_CMD = "__eldrun_diskusage__";
+
+/**
+ * Sentinel `cmd` for the native calendar tab: a local, self-contained month-grid
+ * event calendar, offered in every scope (root and each project). The event store
+ * is global — one `calendar.json`, one zustand store — so every calendar tab shows
+ * the same events regardless of the project it was opened from, and edits in one
+ * are seen live by the others. Carries no PTY — like the files pane it's identified
+ * by this command so cmdToKind can recover its kind.
  */
 export const CALENDAR_TAB_CMD = "__eldrun_calendar__";
 
@@ -2781,6 +2792,7 @@ export function cmdToKind(cmd: string): TabKind {
   if (cmd === BLOB_TAB_CMD) return "projects3d";
   if (cmd === NETWORK_TAB_CMD) return "network";
   if (cmd === MONITOR_TAB_CMD) return "monitor";
+  if (cmd === DISKUSAGE_TAB_CMD) return "diskusage";
   if (cmd === CALENDAR_TAB_CMD) return "calendar";
   if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
@@ -2805,6 +2817,9 @@ export function isRestorableKind(kind: TabKind): boolean {
     kind === "files" ||
     kind === "network" ||
     kind === "monitor" ||
+    // The tab comes back, but on its home screen — a scan is far too expensive to
+    // replay on every launch, so the pane never auto-rescans.
+    kind === "diskusage" ||
     kind === "calendar"
   );
 }

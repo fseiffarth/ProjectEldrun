@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { TerminalView } from "../terminal/TerminalView";
+import { Toggle } from "../common/Toggle";
 import { ConnLamp } from "../common/ConnLamp";
 import { ConnectionLog } from "../common/ConnectionLog";
 import { Dropdown } from "../common/Dropdown";
@@ -230,8 +231,8 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
                   )}
                 </label>
                 <label className="remote-connect-remember">
-                  <input
-                    type="checkbox"
+                  <Toggle
+                    size="sm"
                     checked={vpnRemember}
                     disabled={vpnStatus === "connecting" || vpnStatus === "connected"}
                     onChange={(e) => setVpnRemember(e.target.checked)}
@@ -326,8 +327,8 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
                 )}
               </label>
               <label className="remote-connect-remember">
-                <input
-                  type="checkbox"
+                <Toggle
+                  size="sm"
                   checked={sshRemember}
                   disabled={connecting || connected}
                   onChange={(e) => setSshRemember(e.target.checked)}

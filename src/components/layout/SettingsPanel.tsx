@@ -4,9 +4,17 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore, clampZoom, MIN_UI_ZOOM, MAX_UI_ZOOM } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
-import type { ArchivedProject, KeyboardChord, ProjectEntry, Theme, UnsyncedReport } from "../../types";
+import type {
+  ArchivedProject,
+  CalendarViewKind,
+  KeyboardChord,
+  ProjectEntry,
+  Theme,
+  UnsyncedReport,
+} from "../../types";
 import { THEMES } from "../../types";
-import { TERMINAL_OPTIONS, summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
+import { summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
+import { Toggle } from "../common/Toggle";
 import {
   SHORTCUT_DEFS,
   chordFromEvent,
@@ -65,15 +73,15 @@ const HELP_SECTIONS: HelpSection[] = [
   {
     title: "AI & terminals",
     items: [
-      { term: "Default agent", desc: "Choose the default terminal command (claude, codex, gemini, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) in Settings. Missing commands fall back to a shell; closed agents respawn." },
+      { term: "Agents", desc: "Open an agent (claude, codex, gemini, vibe, aider, opencode, cursor, copilot, grok, qwen, openclaw) or a plain shell from the + menu on the tab bar. Missing commands fall back to a shell; closed agents respawn." },
       { term: "Ollama models", desc: "When Ollama is installed, the gear menu shows local models. Ctrl+K opens the local-model prompt dialog for the active context." },
     ],
   },
   {
     title: "Settings & extras",
     items: [
-      { term: "Settings (⚙)", desc: "Theme, default agent, Git hosting profile/token, workspace management, background scripts, and debug mode." },
-      { term: "Workspace integration", desc: "Optional KDE/X11 virtual-desktop isolation per project when workspace management is enabled (Linux only)." },
+      { term: "Settings (⚙)", desc: "Theme, Git hosting profile/token, workspace management, background scripts, and debug mode." },
+      { term: "Workspace integration", desc: "Per-project KDE/X11 virtual-desktop isolation (Linux only): each project's launched windows park on their own desktop." },
       { term: "Time tracking", desc: "Eldrun records active session time so you can see how long you spend per project." },
     ],
   },
@@ -542,6 +550,23 @@ function HelpPanel({ onBack }: { onBack: () => void }) {
 
 export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "archive" | "scaffoldRepair" | "help";
 
+/** Sub-panel navigation shown as a card menu at the foot of the main settings
+ *  panel (styled like the Lessons / How-to-start menus). */
+const SETTINGS_NAV: {
+  panel: Exclude<SettingsPanelKind, "main" | "ollama">;
+  title: string;
+  blurb: string;
+}[] = [
+  { panel: "git", title: "Git Hosting", blurb: "Hosting profile, access token, and publishing." },
+  { panel: "global", title: "Global Apps", blurb: "Toolbar launchers shown across every project." },
+  { panel: "filetypes", title: "File Type Apps", blurb: "Choose which app opens each file type." },
+  { panel: "agents", title: "Manage Agents", blurb: "Install or update the agent CLIs." },
+  { panel: "shortcuts", title: "Keyboard Shortcuts", blurb: "Rebind the navigation chords." },
+  { panel: "archive", title: "Archived Projects", blurb: "Restore or permanently delete archived projects." },
+  { panel: "scaffoldRepair", title: "Repair Project Scaffold", blurb: "Regenerate missing scaffold files." },
+  { panel: "help", title: "Feature Guide", blurb: "Full glossary of Eldrun's features." },
+];
+
 export function SettingsDialog({
   onClose,
   initialPanel = "main",
@@ -552,8 +577,7 @@ export function SettingsDialog({
   const { settings, setTheme, updateSettings } = useSettingsStore();
   const [panel, setPanel] = useState<SettingsPanelKind>(initialPanel);
 
-  const terminal = settings?.terminal_command ?? "claude";
-  const currentTheme = (settings?.color_scheme ?? "fancy_dark") as Theme;
+  const currentTheme = (settings?.color_scheme ?? "light_lavender") as Theme;
 
   return (
     <div className="modal-backdrop settings-backdrop" onMouseDown={onClose}>
@@ -566,15 +590,6 @@ export function SettingsDialog({
             </div>
 
             <div className="settings-row">
-              <label>Terminal</label>
-              <Dropdown
-                value={terminal}
-                onChange={(v) => void updateSettings({ terminal_command: v })}
-                options={TERMINAL_OPTIONS.map((cmd) => ({ value: cmd, label: cmd }))}
-              />
-            </div>
-
-            <div className="settings-row">
               <label>Theme</label>
               <Dropdown
                 value={currentTheme}
@@ -584,18 +599,8 @@ export function SettingsDialog({
             </div>
 
             <label className="settings-switch-row">
-              <span>Manage workspaces</span>
-              <input
-                type="checkbox"
-                checked={settings?.workspace_management ?? false}
-                onChange={(e) => void updateSettings({ workspace_management: e.target.checked })}
-              />
-            </label>
-
-            <label className="settings-switch-row">
               <span>Run scripts in background</span>
-              <input
-                type="checkbox"
+              <Toggle
                 checked={settings?.run_scripts_in_background ?? true}
                 onChange={(e) => void updateSettings({ run_scripts_in_background: e.target.checked })}
               />
@@ -603,8 +608,7 @@ export function SettingsDialog({
 
             <label className="settings-switch-row">
               <span>Claude remote control</span>
-              <input
-                type="checkbox"
+              <Toggle
                 checked={settings?.agent_remote_control ?? true}
                 onChange={(e) => void updateSettings({ agent_remote_control: e.target.checked })}
               />
@@ -617,8 +621,7 @@ export function SettingsDialog({
 
             <label className="settings-switch-row">
               <span>Headless remote connections</span>
-              <input
-                type="checkbox"
+              <Toggle
                 checked={settings?.connections_headless ?? true}
                 onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
               />
@@ -633,8 +636,7 @@ export function SettingsDialog({
 
             <label className="settings-switch-row">
               <span>Debug mode</span>
-              <input
-                type="checkbox"
+              <Toggle
                 checked={settings?.debug ?? false}
                 onChange={(e) => void updateSettings({ debug: e.target.checked })}
               />
@@ -643,24 +645,21 @@ export function SettingsDialog({
             <div className="settings-section-title">Resource monitor</div>
             <label className="settings-switch-row">
               <span>Show CPU usage</span>
-              <input
-                type="checkbox"
+              <Toggle
                 checked={settings?.show_cpu_usage ?? true}
                 onChange={(e) => void updateSettings({ show_cpu_usage: e.target.checked })}
               />
             </label>
             <label className="settings-switch-row">
               <span>Show RAM usage</span>
-              <input
-                type="checkbox"
+              <Toggle
                 checked={settings?.show_ram_usage ?? true}
                 onChange={(e) => void updateSettings({ show_ram_usage: e.target.checked })}
               />
             </label>
             <label className="settings-switch-row">
               <span>Show GPU usage</span>
-              <input
-                type="checkbox"
+              <Toggle
                 checked={settings?.show_gpu_usage ?? true}
                 onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
               />
@@ -671,11 +670,84 @@ export function SettingsDialog({
               the timer.
             </p>
 
+            <div className="settings-section-title">Calendar</div>
+            <div className="settings-row">
+              <label>Week starts on</label>
+              <Dropdown
+                value={String(settings?.calendar_week_start ?? 0)}
+                onChange={(v) =>
+                  void updateSettings({ calendar_week_start: Number(v) === 1 ? 1 : 0 })
+                }
+                options={[
+                  { value: "0", label: "Sunday" },
+                  { value: "1", label: "Monday" },
+                ]}
+              />
+            </div>
+            <div className="settings-row">
+              <label>Default view</label>
+              <Dropdown
+                value={settings?.calendar_default_view ?? "month"}
+                onChange={(v) =>
+                  void updateSettings({ calendar_default_view: v as CalendarViewKind })
+                }
+                options={[
+                  { value: "day", label: "Day" },
+                  { value: "week", label: "Week" },
+                  { value: "multiweek", label: "Multiweek" },
+                  { value: "month", label: "Month" },
+                  { value: "agenda", label: "Agenda" },
+                  { value: "tasks", label: "Tasks" },
+                ]}
+              />
+            </div>
+            <label className="settings-switch-row">
+              <span>24-hour clock</span>
+              <Toggle
+                checked={settings?.calendar_time_format_24h ?? false}
+                onChange={(e) =>
+                  void updateSettings({ calendar_time_format_24h: e.target.checked })
+                }
+              />
+            </label>
+            <div className="settings-row">
+              <label>Day grid starts at</label>
+              <Dropdown
+                value={String(settings?.calendar_day_start_hour ?? 8)}
+                onChange={(v) => void updateSettings({ calendar_day_start_hour: Number(v) })}
+                options={Array.from({ length: 24 }, (_, h) => ({
+                  value: String(h),
+                  label: `${String(h).padStart(2, "0")}:00`,
+                }))}
+              />
+            </div>
+            <div className="settings-row">
+              <label>Default reminder</label>
+              <Dropdown
+                value={String(settings?.calendar_default_reminder_minutes ?? 0)}
+                onChange={(v) =>
+                  void updateSettings({ calendar_default_reminder_minutes: Number(v) })
+                }
+                options={[
+                  { value: "0", label: "None" },
+                  { value: "5", label: "5 minutes before" },
+                  { value: "15", label: "15 minutes before" },
+                  { value: "30", label: "30 minutes before" },
+                  { value: "60", label: "1 hour before" },
+                  { value: "1440", label: "1 day before" },
+                ]}
+              />
+            </div>
+            <p className="settings-help">
+              Reminders fire as a desktop notification and as an in-app popup you can
+              snooze. “Day grid starts at” only sets where the day and week views
+              scroll to — earlier events are still there, just above the fold.
+            </p>
+
             <div className="settings-section-title">Hints & onboarding</div>
             <label className="settings-switch-row">
               <span>Show contextual hints</span>
-              <input
-                type="checkbox"
+              <Toggle
                 checked={settings?.hints_enabled ?? true}
                 onChange={(e) => void updateSettings({ hints_enabled: e.target.checked })}
               />
@@ -839,15 +911,19 @@ export function SettingsDialog({
               </button>
             </div>
 
-            <div className="settings-link-row">
-              <button type="button" onClick={() => setPanel("git")}>Git Hosting...</button>
-              <button type="button" onClick={() => setPanel("global")}>Global Apps...</button>
-              <button type="button" onClick={() => setPanel("filetypes")}>File Type Apps...</button>
-              <button type="button" onClick={() => setPanel("agents")}>Manage Agents...</button>
-              <button type="button" onClick={() => setPanel("shortcuts")}>Keyboard Shortcuts...</button>
-              <button type="button" onClick={() => setPanel("archive")}>Archived Projects...</button>
-              <button type="button" onClick={() => setPanel("scaffoldRepair")}>Repair Project Scaffold...</button>
-              <button type="button" onClick={() => setPanel("help")}>Feature Guide...</button>
+            <div className="settings-section-title">More settings</div>
+            <div className="settings-nav-list">
+              {SETTINGS_NAV.map((item) => (
+                <button
+                  key={item.panel}
+                  type="button"
+                  className="settings-nav-item"
+                  onClick={() => setPanel(item.panel)}
+                >
+                  <span className="settings-nav-item-title">{item.title}</span>
+                  <span className="settings-nav-item-blurb">{item.blurb}</span>
+                </button>
+              ))}
             </div>
           </>
         )}

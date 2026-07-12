@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Toggle } from "../common/Toggle";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ProjectEntry } from "../../types";
 import { resolveProjectDirectory } from "../../types";
@@ -542,8 +543,8 @@ export function ProjectDialog({
         )}
 
         <label className="skip-scaffold-row">
-          <input
-            type="checkbox"
+          <Toggle
+            size="sm"
             checked={skipScaffold}
             onChange={(e) => setSkipScaffold(e.target.checked)}
           />
@@ -568,8 +569,8 @@ export function ProjectDialog({
 
             {mode !== "keep" && (
               <label className="manual-validation-row">
-                <input
-                  type="checkbox"
+                <Toggle
+                  size="sm"
                   checked={manualValidationConfirmed}
                   onChange={(e) => setManualValidationConfirmed(e.target.checked)}
                 />

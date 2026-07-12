@@ -57,6 +57,7 @@ export const TAB_ACCENT: Record<TabKind, string> = {
   projects3d: "var(--accent-secondary)",
   network: "var(--info, #4aa3df)",
   monitor: "var(--success, #3fb950)",
+  diskusage: "var(--warning, #e3b341)",
   calendar: "var(--accent)",
 };
 

@@ -16,3 +16,4 @@ pub mod ssh_exec;
 pub mod sync_auto;
 pub mod terminal_service;
 pub mod window_service;
+pub mod window_state;

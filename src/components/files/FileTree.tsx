@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
@@ -21,6 +22,7 @@ import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { basename } from "../../lib/paths";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
+import { useClampToViewport } from "../../hooks/useClampToViewport";
 
 // Persist whether the collapsed "gitignored" files section is expanded, so the
 // choice survives right-panel hide/show and remounts (FileTree remounts each
@@ -54,7 +56,14 @@ interface Props {
 }
 
 type GitStatusMap = Record<string, string>;
-type EntryContextMenu = { x: number; y: number; entry: FileEntry | null } | null;
+/** `rowRect` is the right-clicked row's bounding box, captured at open time, so
+ *  a glowing frame can float onto it and show which entry the menu targets. */
+type EntryContextMenu = {
+  x: number;
+  y: number;
+  entry: FileEntry | null;
+  rowRect: { left: number; top: number; width: number; height: number } | null;
+} | null;
 type DeleteConfirm = { entries: FileEntry[] } | null;
 /** Open paste-rename window: `kind` is whether the source is the in-app file
  *  clipboard or a system-clipboard image (screenshot); `name` is the name being
@@ -200,6 +209,8 @@ export function FileTree({
   const moveTargetRef = useRef<string | null>(null);
   const [moveTargetRel, setMoveTargetRel] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  useClampToViewport(contextMenuRef, contextMenu, setContextMenu);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
   const [defaultAppFor, setDefaultAppFor] = useState<FileEntry | null>(null);
   const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
@@ -1000,7 +1011,13 @@ export function FileTree({
       setSelected(new Set([entry.path]));
       anchorRef.current = entry.path;
     }
-    setContextMenu({ x: e.clientX, y: e.clientY, entry });
+    const row = e.currentTarget.getBoundingClientRect();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      entry,
+      rowRect: { left: row.left, top: row.top, width: row.width, height: row.height },
+    });
     probeClipboardImage();
   }
 
@@ -1374,7 +1391,7 @@ export function FileTree({
   function showRootContextMenu(e: React.MouseEvent<HTMLDivElement>) {
     e.preventDefault();
     setTooltip(null);
-    setContextMenu({ x: e.clientX, y: e.clientY, entry: null });
+    setContextMenu({ x: e.clientX, y: e.clientY, entry: null, rowRect: null });
     probeClipboardImage();
   }
 
@@ -1614,7 +1631,7 @@ export function FileTree({
       {error && <div className="file-tree-error">{error}</div>}
       {!relPath && (
         <label className="file-tree-scaffold-toggle">
-          <input type="checkbox" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
+          <Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
           Separate scaffold
         </label>
       )}
@@ -1807,8 +1824,22 @@ export function FileTree({
           </>
         );
       })()}
+      {contextMenu?.rowRect && createPortal(
+        <div
+          key={contextMenu.entry?.path ?? "root"}
+          className="file-entry-highlight"
+          style={{
+            left: contextMenu.rowRect.left,
+            top: contextMenu.rowRect.top,
+            width: contextMenu.rowRect.width,
+            height: contextMenu.rowRect.height,
+          }}
+        />,
+        document.body,
+      )}
       {contextMenu && createPortal(
         <div
+          ref={contextMenuRef}
           className="context-menu file-browser-context-menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}

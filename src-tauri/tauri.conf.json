@@ -21,7 +21,8 @@
         "decorations": false,
         "transparent": false,
         "fullscreen": false,
-        "maximized": true
+        "maximized": true,
+        "visible": false
       }
     ],
     "security": {

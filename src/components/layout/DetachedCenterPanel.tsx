@@ -31,6 +31,8 @@ import { FileBrowser } from "../files/FileBrowser";
 import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
 import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
+import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
+import { DiskUsagePane } from "../monitoring/DiskUsagePane";
 import { CalendarPane } from "../calendar/CalendarPane";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
@@ -987,6 +989,18 @@ export function DetachedCenterPanel({
                     <NetworkTrafficPane projectId={scope} visible={visible} />
                   ) : tab.kind === "calendar" ? (
                     <CalendarPane visible={visible} />
+                  ) : tab.kind === "monitor" ? (
+                    <SystemMonitorPane visible={visible} />
+                  ) : tab.kind === "diskusage" ? (
+                    <DiskUsagePane
+                      projectId={scope === "root" ? null : scope}
+                      projectCwd={tab.cwd}
+                      // No `tabKey` on purpose: a popout runs on a streamed COPY of
+                      // the tab payloads in its own JS heap, with no rename channel
+                      // back to the main window — renaming here would silently
+                      // diverge. A detached tab keeps the label it was given.
+                      visible={visible}
+                    />
                   ) : tab.kind === "files" ? (
                     <FileBrowser
                       projectDir={tab.cwd}

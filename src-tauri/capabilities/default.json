@@ -24,6 +24,7 @@
     "core:webview:allow-create-webview-window",
     "core:webview:allow-set-webview-zoom",
     "dialog:default",
-    "drag:default"
+    "drag:default",
+    "notification:default"
   ]
 }

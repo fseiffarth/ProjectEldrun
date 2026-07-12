@@ -1734,6 +1734,53 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
 
 ---
 
+## Group N — Native Calendar ✅ Done · 🧪 Untested
+*Files: `src-tauri/src/schema/calendar.rs`, `src-tauri/src/commands/calendar.rs`,
+`src/components/calendar/*`, `src/stores/{calendar,alarms}.ts`,
+`src/lib/{calendarTime,recurrence,ics,alarms,calendarCategories}.ts`. Brought the
+month-grid-only calendar up to Thunderbird-class features. The store is global —
+one `calendar.json`, shown by every calendar tab in every scope.*
+
+N1. **Event model v2 + migration.** `{date, time}` → `{start, end, all_day}` with
+    exclusive ends, plus location/category/status/rrule/alarms, and calendars +
+    tasks alongside. `calendar.json` became an object; the legacy bare array still
+    loads and is migrated on read (`CalendarFile`).
+    - [x] 🤖 Automated test — migration, CRUD, orphan refile (`commands/calendar.rs`)
+
+N2. **Views.** Day / week / multiweek / month / agenda / tasks, with a mini-month
+    + calendar list sidebar, a search box, and keyboard nav (←/→, T, N, 1-6).
+    Multi-day events render as spanning bars; day/week supports drag-to-create,
+    drag-to-move and edge-drag-to-resize (pointer events — HTML5 DnD is unusable
+    under WebKitGTK).
+    - [ ] 🧪 Manual — drag/resize in week view; multi-day bars in month view
+
+N3. **Recurrence.** Daily/weekly/monthly/yearly with interval, byweekday,
+    bymonthday, until/count. Editing or deleting one occurrence of a series
+    prompts "this occurrence / all occurrences" (exdates + per-occurrence
+    overrides, keyed by the rule-generated start).
+    - [x] 🤖 Automated test — `src/__tests__/Recurrence.test.ts` (39 cases)
+
+N4. **Reminders.** Fire on **both** channels: an OS notification
+    (`tauri-plugin-notification`) so it lands when Eldrun is unfocused, and an
+    in-app popup with snooze/dismiss, mounted in `AppShell` so it shows on any
+    tab. Fired alarms are keyed and persisted, so one never fires twice.
+    - [x] 🤖 Automated test — `src/__tests__/Alarms.test.ts` (fire-once, snooze)
+    - [ ] 🧪 Manual — confirm the OS notification actually appears on KDE/Wayland
+
+N5. **Multiple calendars, categories, tasks, ICS.** Named/colored/toggle-visible
+    calendars; a category→color palette; VTODO tasks (due, priority, % complete);
+    and ICS import/export through `calendar_read_ics`/`calendar_write_ics` —
+    deliberately narrow, extension- and size-guarded commands, because the general
+    `read_file_text`/`write_file_text` are confined to the current project and
+    that confinement is worth keeping.
+    - [x] 🤖 Automated test — `src/__tests__/Ics.test.ts` (round-trip, folding, guards)
+    - [ ] 🧪 Manual — import a real .ics from Thunderbird/Google and check fidelity
+
+N6. **Deferred.** Timezone support (everything is floating local time; a `TZID`
+    we do not understand is dropped rather than guessed at), CalDAV/URL
+    subscriptions, ordinal BYDAY ("2nd Monday" degrades to plain Monday), and
+    per-occurrence category/status overrides.
+
 ## Group O — Project Security & Permissions (new feature)
 *Files: `src-tauri/src/commands/projects.rs` (create/import), `schema/project.rs`
 + `schema/settings.rs` (new security/permission fields), `ProjectSwitcher.tsx`

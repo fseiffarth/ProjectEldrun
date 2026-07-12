@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Dropdown } from "../common/Dropdown";
@@ -629,8 +630,8 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
               aria-label="Worktree path"
             />
             <label className="git-worktree-newbranch">
-              <input
-                type="checkbox"
+              <Toggle
+                size="sm"
                 checked={wtForm.newBranch}
                 onChange={(e) => setWtForm({ ...wtForm, newBranch: e.target.checked })}
               />

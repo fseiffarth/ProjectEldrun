@@ -11,7 +11,7 @@ pub mod time_log;
 
 pub use active_session::ActiveSession;
 pub use boxes::{BoxRelation, BoxesList, ProjectBox};
-pub use calendar::{CalendarEvent, CalendarStore};
+pub use calendar::{Calendar, CalendarData, CalendarEvent, CalendarFile, CalendarTask};
 pub use default_apps::DefaultApps;
 pub use project::Project;
 pub use projects::ProjectEntry;

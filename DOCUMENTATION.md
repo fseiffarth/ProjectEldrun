@@ -604,8 +604,19 @@ session and removed.
 
 ### Startup
 
-1. `AppShell` mounts; loads settings and projects from the backend.
-2. `getCurrentWindow().setFullscreen(true)` is called after the window is ready.
+1. The main window is created hidden (`"visible": false` in `tauri.conf.json`).
+   The backend's `restore_main_window` (`lib.rs`) reapplies the geometry saved in
+   `settings.window_state` — monitor, position, size, maximized — then shows it,
+   so the window never visibly jumps between monitors. If nothing is saved, or the
+   saved rect no longer fits any connected monitor (an unplugged external display),
+   it falls back to opening maximized wherever the WM puts it. Which rect is
+   placeable is decided by `services::window_state::resolve_startup_geometry`.
+2. `AppShell` mounts; loads settings and projects from the backend. On macOS only,
+   `getCurrentWindow().setFullscreen(true)` is called after the window is ready
+   (Linux must never enter fullscreen: a `_NET_WM_STATE_FULLSCREEN` window is
+   unmovable under KWin). It then listens for window moves/resizes and writes the
+   geometry back to `settings.window_state` on a 300 ms debounce, plus once more on
+   close.
 3. Projects marked `current` or `active` appear as project-switcher pills.
 4. The project marked `current` is the initial active scope; if none, root.
 5. Workspace management (if enabled) allocates desktops for visible projects.
@@ -753,8 +764,10 @@ test skips itself when no local Ollama server or model is available.
 - `ensure_ollama_running` can start a system service only when the current user
   has permission to do so; otherwise it falls back to a user `ollama serve`
   process.
-- Open-app restore uses a best-effort relaunch model; window geometry and focus
-  order are not restored.
+- Open-app restore uses a best-effort relaunch model; the geometry and focus
+  order of *externally launched app* windows are not restored. (Eldrun's own main
+  window does restore its monitor, position, size, and maximized state — see
+  Startup below.)
 - Network status depends on reaching Cloudflare DNS; may show offline on
   networks that block direct TCP/53.
 - Download routing browser preference edits assume the browser is not running.

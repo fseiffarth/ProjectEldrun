@@ -1,3 +1,4 @@
+use crate::schema::settings::WindowState;
 use crate::schema::Settings;
 use crate::storage;
 
@@ -31,6 +32,28 @@ pub fn get_settings() -> Result<Settings, String> {
 #[tauri::command]
 pub fn save_settings(settings: Settings) -> Result<(), String> {
     let path = storage::state_dir().join("settings.json");
+    storage::write_json(&path, &settings).map_err(|e| e.to_string())
+}
+
+/// Persist only the main window's geometry, leaving every other setting on disk
+/// untouched.
+///
+/// Deliberately NOT routed through `save_settings`: the frontend's
+/// `updateSettings` writes the *whole* settings object back from its in-memory
+/// cache, and this is called on a debounce every time the user drags or resizes
+/// the window. Going through the full object would rewrite the entire
+/// user-facing settings file on every window nudge, and would clobber any setting
+/// changed elsewhere since the cache was filled. Read-modify-write of the single
+/// field here keeps a window drag from ever touching an unrelated setting.
+#[tauri::command]
+pub fn save_window_state(state: WindowState) -> Result<(), String> {
+    let path = storage::state_dir().join("settings.json");
+    let mut settings: Settings = if path.exists() {
+        storage::read_json(&path).map_err(|e| e.to_string())?
+    } else {
+        Settings::default()
+    };
+    settings.window_state = Some(state);
     storage::write_json(&path, &settings).map_err(|e| e.to_string())
 }
 

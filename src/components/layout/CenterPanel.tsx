@@ -20,6 +20,7 @@ import { FileViewerPane } from "../embed/FileViewerPane";
 import { ProjectBlobPane } from "../common/ProjectBlobPane";
 import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
 import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
+import { DiskUsagePane } from "../monitoring/DiskUsagePane";
 import { CalendarPane } from "../calendar/CalendarPane";
 import { Subwindow } from "../tabs/Subwindow";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
@@ -924,6 +925,16 @@ export function CenterPanel() {
                 />
               ) : tab.kind === "monitor" ? (
                 <SystemMonitorPane visible={visible} />
+              ) : tab.kind === "diskusage" ? (
+                <DiskUsagePane
+                  projectId={scopeKey === "root" ? null : scopeKey}
+                  projectCwd={tab.cwd}
+                  // Lets the pane retitle its own tab after the folder it scans.
+                  // Several Disk Usage tabs can be open at once, so "Disk Usage"
+                  // three times over would tell the user nothing.
+                  tabKey={tab.key}
+                  visible={visible}
+                />
               ) : tab.kind === "files" ? (
                 <FileBrowser
                   // While a remote project is disconnected the SFTP tree can't be

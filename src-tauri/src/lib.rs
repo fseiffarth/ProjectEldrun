@@ -591,11 +591,19 @@ pub fn run() {
             commands::boxes::refresh_box_agent_docs,
             commands::boxes::set_box_relations,
             // Native calendar (local event store)
-            commands::calendar::get_events,
-            commands::calendar::save_events,
+            commands::calendar::calendar_load,
+            commands::calendar::calendar_save,
             commands::calendar::create_event,
             commands::calendar::update_event,
             commands::calendar::delete_event,
+            commands::calendar::create_task,
+            commands::calendar::update_task,
+            commands::calendar::delete_task,
+            commands::calendar::create_calendar,
+            commands::calendar::update_calendar,
+            commands::calendar::delete_calendar,
+            commands::calendar::calendar_read_ics,
+            commands::calendar::calendar_write_ics,
             // SSH / remote projects
             commands::ssh::ssh_connect,
             commands::ssh::remote_has_saved_password,
@@ -811,6 +819,7 @@ pub fn run() {
         ])
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_drag::init())
+        .plugin(tauri_plugin_notification::init())
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, event| {

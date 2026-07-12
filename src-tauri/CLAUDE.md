@@ -32,6 +32,7 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 | `ollama.rs` | Ollama model list/pull/delete + local autocomplete. |
 | `tex.rs` | TeX compile + SyncTeX (shell-escape defense). |
 | `boxes.rs` | Project-box CRUD. |
+| `calendar.rs` | Calendar/event/task CRUD over `calendar.json` + guarded ICS file read/write. |
 | `subwindow.rs` | Detached/popped-out subwindow lifecycle (#42). |
 | `timer.rs` | Time-tracking commands. |
 | `workspace.rs` | KDE/X11 workspace switch commands. |
@@ -77,6 +78,7 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 | `default_apps.rs` | `default_apps.json`. |
 | `time_log.rs` | `time_log.json` (unbounded `Vec`; Efficiency #2/#12). |
 | `boxes.rs` | Project boxes. |
+| `calendar.rs` | `calendar.json`: calendars, events (start/end, rrule, alarms), tasks; migrates the legacy v1 array. |
 | `session.rs` | Live/restorable session state. |
 | `active_session.rs` | Defined but **not yet wired** (TODO Group F #24). |
 

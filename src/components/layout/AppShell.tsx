@@ -9,11 +9,13 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { PLATFORM } from "../../lib/dragPlatform";
+import { nextWindowState } from "../../lib/windowState";
 import { notePtyOutput, useActivityStore } from "../../stores/activity";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
+import { AlarmPopup } from "../calendar/AlarmPopup";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { QuickOpen } from "../files/QuickOpen";
 import { HintHost } from "./HintHost";
@@ -51,6 +53,37 @@ function clampRightWidth(px: number): number {
   return Math.round(Math.max(RIGHT_PANEL_MIN, Math.min(max, px)));
 }
 
+/**
+ * Snapshot the main window's geometry and persist it if it actually changed, so
+ * the backend can reopen the window on the same monitor next launch
+ * (`restore_main_window` in lib.rs). What to store — and the subtlety of what to
+ * store while MAXIMIZED — lives in `nextWindowState`.
+ *
+ * Shared by the debounced move/resize listener and the close path: a quit during
+ * the debounce window would otherwise lose the user's last move, which is exactly
+ * the move they care about.
+ */
+async function saveWindowGeometry(): Promise<void> {
+  const win = getCurrentWindow();
+  // A fullscreen window's rect is just the monitor, not a restore geometry. macOS
+  // only — Linux/Windows never enter fullscreen (see the startup effect).
+  if (await win.isFullscreen()) return;
+  const [pos, size, maximized] = await Promise.all([
+    win.outerPosition(),
+    win.outerSize(),
+    win.isMaximized(),
+  ]);
+  // outerPosition/outerSize are already PHYSICAL px, which is what the backend
+  // consumes — nothing is converted anywhere along this path (src/lib/coords.ts).
+  const store = useSettingsStore.getState();
+  const next = nextWindowState(
+    store.settings?.window_state,
+    { x: pos.x, y: pos.y, w: size.width, h: size.height },
+    maximized,
+  );
+  if (next) await store.saveWindowState(next);
+}
+
 export function AppShell() {
   const loadSettings = useSettingsStore((s) => s.load);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
@@ -86,31 +119,21 @@ export function AppShell() {
   useEffect(() => {
     loadSettings();
     loadProjects();
-    const win = getCurrentWindow();
-    // The window opens MAXIMIZED, not fullscreen (tauri.conf.json: `maximized: true`,
-    // `fullscreen: false`). This is deliberate on two counts:
-    //   1. Maximizing at config/map-time lets the WM record a clean restore geometry.
-    //      A JS `maximize()` fired right after load races KWin (the window may not be
-    //      mapped yet) and yields a fragile maximize-state — which both dropped the
-    //      "full at start" intent and broke KWin edge-snap after the maximize button
-    //      un-maximized (the button restore left stale tile state; a drag-restore,
-    //      which goes through KWin's own move handler, did not).
-    //   2. We must NOT enter fullscreen on Linux: a window the WM put into fullscreen
-    //      keeps `_NET_WM_STATE_FULLSCREEN`, which on KWin wins over MAXIMIZED and
-    //      makes the window UNMOVABLE — KWin refuses the `_NET_WM_MOVERESIZE` that
-    //      `startDragging` sends, so the header title-bar drag silently no-ops.
-    //      (Windows masked this because its fullscreen backend is a stub.) A maximized
-    //      window fills the monitor identically yet stays draggable and edge-snappable.
+    // Startup window geometry — which monitor, what size, maximized or not — is
+    // owned ENTIRELY by the backend now (`restore_main_window` in lib.rs), which
+    // reapplies the rect saved by the effect below before the window is ever shown.
+    // Nothing may be re-asserted from here: a `maximize()` fired after load would
+    // land on top of a restore onto the secondary monitor and undo it.
+    //
+    // macOS is the exception and stays here: real fullscreen (its own Space) is the
+    // platform-expected behavior, and the system traffic-light controls keep the
+    // window manageable. Linux must never follow suit — a window the WM has put into
+    // fullscreen keeps `_NET_WM_STATE_FULLSCREEN`, which under KWin wins over
+    // MAXIMIZED and makes the window UNMOVABLE (KWin refuses the
+    // `_NET_WM_MOVERESIZE` that `startDragging` sends, so the header title-bar drag
+    // silently no-ops). See the matching note in `restore_main_window`.
     if (PLATFORM === "macos") {
-      // macOS: real fullscreen is the platform-expected behavior (own Space) and the
-      // system traffic-light controls keep the window manageable. Enter it from the
-      // maximized start (brief flash before this resolves).
-      win.setFullscreen(true).catch(() => {});
-    } else {
-      // Windows AND Linux: config already maximizes at map-time; re-assert it
-      // defensively in case the WM dropped the hint, and guard against any stray
-      // fullscreen state that would strand the window (see note 2 above).
-      win.setFullscreen(false).then(() => win.maximize()).catch(() => {});
+      getCurrentWindow().setFullscreen(true).catch(() => {});
     }
   }, [loadSettings, loadProjects]);
 
@@ -154,6 +177,31 @@ export function AppShell() {
       unlisteners.forEach((fn) => fn());
     };
   }, []);
+
+  // Remember where the user puts the window, so it reopens there. Mirrors the
+  // popout's bounds streaming (DetachedApp.tsx): a drag fires a storm of events,
+  // so debounce and write once it settles. Gated on `settingsLoaded` because the
+  // save diffs against the currently-saved rect to skip no-op writes, and before
+  // load there is nothing to diff against.
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    const win = getCurrentWindow();
+    const unlisteners: Array<() => void> = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        void saveWindowGeometry().catch(() => {});
+      }, 300);
+    };
+    win.onMoved(schedule).then((fn) => unlisteners.push(fn)).catch(() => {});
+    win.onResized(schedule).then((fn) => unlisteners.push(fn)).catch(() => {});
+    return () => {
+      if (timer) clearTimeout(timer);
+      unlisteners.forEach((fn) => fn());
+    };
+  }, [settingsLoaded]);
 
   // Restore the pinned state once settings finish loading.
   useEffect(() => {
@@ -338,6 +386,9 @@ export function AppShell() {
     win.onCloseRequested(async (event) => {
       event.preventDefault();
       await flushTimer().catch(() => {});
+      // Capture the window's final geometry before it goes away — a quit inside
+      // the 300ms save debounce would otherwise drop the user's last move.
+      await saveWindowGeometry().catch(() => {});
       // Close any popped-out subwindows so they don't strand on screen; they
       // persist + re-open at their saved bounds next launch (see the helper).
       await shutdownDetachedWindows().catch(() => {});
@@ -371,8 +422,12 @@ export function AppShell() {
   // emitting even while their tab views are unmounted).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    listen<{ id: string }>("terminal-output", (ev) => {
-      notePtyOutput(ev.payload.id);
+    listen<{ id: string; data: string }>("terminal-output", (ev) => {
+      // The chunk itself rides along: it is the ONLY view of a tab's screen that
+      // exists for a pane the user has never opened (those buffer their output
+      // instead of writing it to an xterm), and the store classifies a quiet
+      // agent tab — finished vs blocked on a prompt — off its tail.
+      notePtyOutput(ev.payload.id, ev.payload.data);
     })
       .then((fn) => { unlisten = fn; })
       .catch(() => {});
@@ -480,6 +535,10 @@ export function AppShell() {
       </div>
       <VpnPasswordPrompt />
       <RemoteConnectDialog />
+      {/* Calendar reminders live at the shell, not in the calendar pane: an alarm
+          must reach the user whatever tab they are on — and even if they have
+          never opened a calendar tab this session. */}
+      <AlarmPopup />
       <QuickOpen />
       <HintHost />
       <TourHost />

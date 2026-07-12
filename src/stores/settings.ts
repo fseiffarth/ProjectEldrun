@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { create } from "zustand";
-import type { Settings, Theme } from "../types";
+import type { Settings, Theme, WindowState } from "../types";
 
 function applyTheme(scheme: string) {
   document.documentElement.setAttribute("data-theme", scheme);
@@ -40,6 +40,7 @@ interface SettingsStore {
   load: () => Promise<void>;
   setTheme: (theme: Theme) => Promise<void>;
   updateSettings: (patch: Partial<Settings>) => Promise<void>;
+  saveWindowState: (ws: WindowState) => Promise<void>;
 }
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
@@ -48,7 +49,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   load: async () => {
     const settings = await invoke<Settings>("get_settings");
-    applyTheme(settings.color_scheme ?? "fancy_dark");
+    applyTheme(settings.color_scheme ?? "light_lavender");
     applyZoom(settings.ui_zoom);
     set({ settings, loaded: true });
   },
@@ -72,5 +73,27 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       applyZoom(updated.ui_zoom);
     }
     set({ settings: updated as Settings });
+  },
+
+  // Persist the main window's geometry through its OWN command rather than
+  // `updateSettings`. This fires on a debounce every time the user drags or
+  // resizes the window, and `updateSettings` writes the *whole* settings object
+  // back from this cache — so routing it there would rewrite the entire settings
+  // file on every window nudge and clobber anything changed elsewhere meanwhile.
+  // `save_window_state` read-modify-writes the single field on disk.
+  //
+  // The local cache is still updated, for two reasons: the debounced save diffs
+  // against it to skip no-op writes, and a later `updateSettings` spreads this
+  // cache — a stale `window_state` here would be written straight back over the
+  // fresh one on disk.
+  saveWindowState: async (ws) => {
+    const current = get().settings;
+    if (!current) return;
+    set({ settings: { ...current, window_state: ws } });
+    try {
+      await invoke<void>("save_window_state", { state: ws });
+    } catch (err) {
+      console.warn("failed to save window state", err);
+    }
   },
 }));

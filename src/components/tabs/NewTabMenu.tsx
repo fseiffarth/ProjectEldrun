@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   CALENDAR_TAB_CMD,
+  DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
   type TabEntry,
 } from "../../stores/tabs";
@@ -16,8 +17,8 @@ import {
 } from "./newTabItems";
 
 interface Props {
-  /** Scope (project id or "root") the new tab belongs to. Gates the root-only /
-   *  project-only sections (Calendar vs Network). */
+  /** Scope (project id or "root") the new tab belongs to. Gates the project-only
+   *  sections (Network Traffic, which needs a host/SSH link). */
   scope: string;
   /** cwd for the new tab (the popout group's project directory). */
   projectCwd: string;
@@ -231,45 +232,55 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
         </button>
       ))}
 
+      {/* Disk Usage can scan anywhere, so it is offered in every scope; Network
+          Traffic is per-project (host/SSH link), so the root scope has none. */}
+      <div className="tab-new-menu-group-label">Monitoring</div>
+      <button
+        className="tab-new-menu-item"
+        onClick={() =>
+          pickFixed({
+            label: "Disk Usage",
+            cmd: DISKUSAGE_TAB_CMD,
+            cwd: projectCwd,
+            kind: "diskusage",
+          })
+        }
+      >
+        <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT.diskusage }}>◕</span>
+        Disk Usage
+      </button>
       {scope !== "root" && (
-        <>
-          <div className="tab-new-menu-group-label">Monitoring</div>
-          <button
-            className="tab-new-menu-item"
-            onClick={() =>
-              pickFixed({
-                label: "Network Traffic",
-                cmd: NETWORK_TAB_CMD,
-                cwd: projectCwd,
-                kind: "network",
-              })
-            }
-          >
-            <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT.network }}>●</span>
-            Network Traffic
-          </button>
-        </>
+        <button
+          className="tab-new-menu-item"
+          onClick={() =>
+            pickFixed({
+              label: "Network Traffic",
+              cmd: NETWORK_TAB_CMD,
+              cwd: projectCwd,
+              kind: "network",
+            })
+          }
+        >
+          <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT.network }}>●</span>
+          Network Traffic
+        </button>
       )}
 
-      {scope === "root" && (
-        <>
-          <div className="tab-new-menu-group-label">Calendar</div>
-          <button
-            className="tab-new-menu-item"
-            onClick={() =>
-              pickFixed({
-                label: "Calendar",
-                cmd: CALENDAR_TAB_CMD,
-                cwd: projectCwd,
-                kind: "calendar",
-              })
-            }
-          >
-            <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT.calendar }}>◆</span>
-            Calendar
-          </button>
-        </>
-      )}
+      <div className="tab-new-menu-group-label">Calendar</div>
+      <button
+        className="tab-new-menu-item"
+        onClick={() =>
+          pickFixed({
+            label: "Calendar",
+            cmd: CALENDAR_TAB_CMD,
+            cwd: projectCwd,
+            kind: "calendar",
+          })
+        }
+      >
+        <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT.calendar }}>◆</span>
+        Calendar
+      </button>
     </div>,
     document.body,
   );

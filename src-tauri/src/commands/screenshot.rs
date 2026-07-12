@@ -7,6 +7,11 @@
 //! so the shot lands beside the code it documents. The destination is confined
 //! to the project root, mirroring `clipboard`/`fs`.
 //!
+//! The shot is *also* put on the system clipboard, so it can be pasted straight
+//! into a chat or an agent tab without going hunting for the file (see
+//! [`clipboard::copy_image_to_clipboard`]). Copying is best-effort and off the
+//! critical path: the file is the product, the clipboard is a convenience.
+//!
 //! The platform-neutral layer (destination dir + timestamped filename) is shared;
 //! the actual capture is delegated to a per-OS [`platform`] backend:
 //! - **Linux** spawns an interactive native region tool (`spectacle`/`grim`/…),
@@ -21,6 +26,13 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::commands::fs::enforce_confinement;
+
+/// How long, after the capture tool exits, we keep looking for the PNG it was
+/// supposed to write before giving up on the clipboard copy.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const SHOT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const SHOT_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Capture a screenshot into `<project_dir>/screenshots/`.
 ///
@@ -58,6 +70,77 @@ fn screenshot_filename() -> String {
     format!("Screenshot-{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}.png")
 }
 
+/// Spawn a capture tool detached and, once it exits, copy the PNG it produced
+/// onto the clipboard.
+///
+/// Region selection blocks the *tool*, not Eldrun, so the shot does not exist
+/// until the child is gone — the wait therefore happens on a background thread,
+/// which also reaps the child (as `spawn_reaped` otherwise would). `expected` is
+/// the path the tool was directed at, or `None` for tools that name the file
+/// themselves (flameshot), where the newest PNG to appear is taken instead. A
+/// cancelled capture writes no file at all, so finding nothing is a normal
+/// outcome and stays silent.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn spawn_and_copy(
+    mut cmd: std::process::Command,
+    dir: &std::path::Path,
+    expected: Option<PathBuf>,
+) -> std::io::Result<()> {
+    // Filesystem mtimes can be coarser than `SystemTime::now()`, so leave slack
+    // rather than let a just-written file look older than the spawn.
+    let since = SystemTime::now()
+        .checked_sub(SHOT_WAIT)
+        .unwrap_or_else(SystemTime::now);
+    let mut child = cmd.spawn()?;
+    let dir = dir.to_path_buf();
+    std::thread::spawn(move || {
+        if child.wait().is_err() {
+            return;
+        }
+        // The PNG lands as the tool exits; poll briefly for it to appear (and to
+        // be readable — a decode can lose a race with the tool's final flush).
+        let polls = SHOT_WAIT.as_millis() / SHOT_POLL.as_millis();
+        for _ in 0..polls {
+            if let Some(shot) = locate_shot(&dir, expected.as_deref(), since) {
+                if crate::commands::clipboard::copy_png_file_to_clipboard(&shot).is_ok() {
+                    return;
+                }
+            }
+            std::thread::sleep(SHOT_POLL);
+        }
+    });
+    Ok(())
+}
+
+/// The PNG a capture just produced: the path the tool was directed at, or — for
+/// tools that choose their own filename — the newest PNG in `dir` written since
+/// the tool was spawned. `None` when the capture was cancelled and wrote nothing.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn locate_shot(
+    dir: &std::path::Path,
+    expected: Option<&std::path::Path>,
+    since: SystemTime,
+) -> Option<PathBuf> {
+    if let Some(path) = expected {
+        return path.is_file().then(|| path.to_path_buf());
+    }
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+        })
+        .filter_map(|entry| {
+            let mtime = entry.metadata().ok()?.modified().ok()?;
+            (mtime >= since).then_some((mtime, entry.path()))
+        })
+        .max_by_key(|(mtime, _)| *mtime)
+        .map(|(_, path)| path)
+}
+
 /// Civil date from days since the Unix epoch (Howard Hinnant's algorithm).
 fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719_468;
@@ -80,7 +163,7 @@ mod platform {
     //! tool is spawned detached — region selection blocks the *tool*, not Eldrun
     //! — and the project's filesystem watch surfaces the new PNG.
 
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
 
     /// Native region-capture tools we know how to drive, in preference order. The
@@ -113,21 +196,22 @@ mod platform {
             })?,
         };
 
-        let mut cmd = capture_command(&program, dir)
+        let (mut cmd, expected) = capture_command(&program, dir)
             .ok_or_else(|| format!("don't know how to capture with '{}'", basename(&program)))?;
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         crate::paths::augment_command_path(&mut cmd);
-        crate::paths::spawn_reaped(cmd).map_err(|e| format!("launch {program}: {e}"))?;
+        super::spawn_and_copy(cmd, dir, expected).map_err(|e| format!("launch {program}: {e}"))?;
         Ok(())
     }
 
-    /// Build the capture `Command` for a tool, routing its output into `dir`. Tools
-    /// that take an explicit output file get a timestamped path; tools that only
-    /// take a directory (flameshot) or self-name (`import`) write into `dir` too.
-    /// Returns `None` for tools we don't know how to direct.
-    fn capture_command(program: &str, dir: &Path) -> Option<Command> {
+    /// Build the capture `Command` for a tool, routing its output into `dir`, plus
+    /// the file it will write. Tools that take an explicit output file get a
+    /// timestamped path; flameshot only takes a directory and names the file
+    /// itself, so it reports no expected path. Returns `None` for tools we don't
+    /// know how to direct.
+    pub fn capture_command(program: &str, dir: &Path) -> Option<(Command, Option<PathBuf>)> {
         let base = basename(program);
         let file = dir.join(super::screenshot_filename());
         let f = file.to_string_lossy().to_string();
@@ -139,7 +223,10 @@ mod platform {
             "spectacle" => cmd.args(["-r", "-b", "-n", "-o", &f]),
             "gnome-screenshot" => cmd.args(["--area", "--file", &f]),
             // flameshot names the file itself; -p sets the directory it saves into
-            "flameshot" => cmd.args(["gui", "--path", &d]),
+            "flameshot" => {
+                cmd.args(["gui", "--path", &d]);
+                return Some((cmd, None));
+            }
             "scrot" => cmd.args(["--select", &f]),
             "maim" => cmd.args(["--select", &f]),
             "xfce4-screenshooter" => cmd.args(["--region", "--save", &f]),
@@ -151,11 +238,11 @@ mod platform {
             "grim" => {
                 let mut sh = Command::new("sh");
                 sh.arg("-c").arg(format!("grim -g \"$(slurp)\" {}", shell_quote(&f)));
-                return Some(sh);
+                return Some((sh, Some(file)));
             }
             _ => return None,
         };
-        Some(cmd)
+        Some((cmd, Some(file)))
     }
 
     /// Whether `capture_command` knows how to direct a tool's output, by basename.
@@ -218,12 +305,21 @@ mod platform {
         SM_YVIRTUALSCREEN,
     };
 
-    /// Grab the virtual screen and write the PNG into `dir`. `_exec` is unused on
-    /// Windows (the native grab is always preferred).
+    /// Grab the virtual screen, write the PNG into `dir`, and put the same pixels
+    /// on the clipboard. Unlike the spawn-a-tool backends, the buffer is already
+    /// in hand here, so the copy needs no wait — and a clipboard failure must not
+    /// fail a capture whose file landed fine. `_exec` is unused on Windows (the
+    /// native grab is always preferred).
     pub fn capture(dir: &Path, _exec: Option<&str>) -> Result<(), String> {
         let (width, height, rgba) = grab_virtual_screen()?;
         let file = dir.join(super::screenshot_filename());
-        encode_png_file(&file, width, height, &rgba)
+        encode_png_file(&file, width, height, &rgba)?;
+        let _ = crate::commands::clipboard::copy_image_to_clipboard(
+            width as usize,
+            height as usize,
+            rgba,
+        );
+        Ok(())
     }
 
     /// Capture all monitors as a single top-down RGBA buffer `(width, height, px)`.
@@ -351,7 +447,8 @@ mod platform {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        crate::paths::spawn_reaped(cmd).map_err(|e| format!("launch screencapture: {e}"))?;
+        super::spawn_and_copy(cmd, dir, Some(file))
+            .map_err(|e| format!("launch screencapture: {e}"))?;
         Ok(())
     }
 }
@@ -400,6 +497,58 @@ mod tests {
         assert!(platform::is_directable("scrot"));
         assert!(platform::is_directable("grim"));
         assert!(!platform::is_directable("totally-unknown-tool"));
+    }
+
+    /// The directed-output case: the tool's file is taken when it exists, and a
+    /// cancelled capture (no file) yields nothing rather than an older shot.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn locate_shot_uses_the_expected_path_when_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join("Screenshot-20200101-000000.png");
+        std::fs::write(&stale, b"old").unwrap();
+        let expected = dir.path().join("Screenshot-20260101-000000.png");
+        let since = SystemTime::now() - SHOT_WAIT;
+
+        assert_eq!(locate_shot(dir.path(), Some(&expected), since), None);
+        std::fs::write(&expected, b"new").unwrap();
+        assert_eq!(
+            locate_shot(dir.path(), Some(&expected), since),
+            Some(expected)
+        );
+    }
+
+    /// The self-naming case (flameshot): the newest PNG written since the spawn
+    /// wins, and PNGs predating it — or non-PNGs — are ignored.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn locate_shot_picks_the_newest_png_since_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old.png");
+        std::fs::write(&old, b"old").unwrap();
+
+        // Spawned now: anything already on disk is older than the cutoff.
+        let since = SystemTime::now();
+        assert_eq!(locate_shot(dir.path(), None, since), None);
+
+        std::fs::write(dir.path().join("notes.txt"), b"txt").unwrap();
+        let shot = dir.path().join("shot.png");
+        std::fs::write(&shot, b"new").unwrap();
+        assert_eq!(locate_shot(dir.path(), None, since), Some(shot));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn capture_command_reports_the_file_it_directs() {
+        let dir = std::path::Path::new("/tmp/eldrun-shots");
+        let (_, expected) = platform::capture_command("scrot", dir).unwrap();
+        let expected = expected.expect("scrot is directed at an explicit file");
+        assert_eq!(expected.parent(), Some(dir));
+        assert!(expected.extension().is_some_and(|e| e == "png"));
+
+        // flameshot names the file itself, so there is no path to expect.
+        let (_, expected) = platform::capture_command("flameshot", dir).unwrap();
+        assert_eq!(expected, None);
     }
 
     #[cfg(target_os = "linux")]

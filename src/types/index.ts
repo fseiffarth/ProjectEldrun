@@ -72,7 +72,6 @@ export interface KeyboardChord {
 }
 
 export interface Settings {
-  workspace_management?: boolean;
   debug?: boolean;
   git_profile_url?: string;
   git_token?: string;
@@ -81,6 +80,17 @@ export interface Settings {
    *  monitors). `1` (or unset) is 100% — the default look; applied as a CSS
    *  `zoom` on the document root. Clamped to [0.5, 3]. */
   ui_zoom?: number;
+  /** Calendar: first column of the week — `0` = Sunday (default), `1` = Monday. */
+  calendar_week_start?: 0 | 1;
+  /** Calendar: the view a fresh calendar tab opens on. Default `"month"`. */
+  calendar_default_view?: CalendarViewKind;
+  /** Calendar: 24-hour clock instead of AM/PM. Default off. */
+  calendar_time_format_24h?: boolean;
+  /** Calendar: first/last hour the day and week grids scroll to. Default 8/20. */
+  calendar_day_start_hour?: number;
+  calendar_day_end_hour?: number;
+  /** Calendar: minutes-before reminder pre-filled on a new event. `0` = none. */
+  calendar_default_reminder_minutes?: number;
   default_agent_cmd?: string;
   /** The default local (Ollama) model. Used by any task without its own
    *  per-task assignment in `ollama_roles`, and as the legacy "active model".
@@ -351,15 +361,135 @@ export interface ProjectBox {
 }
 
 /**
- * One user-authored calendar event, mirroring `schema::calendar::CalendarEvent`.
- * `date` is `"YYYY-MM-DD"`; `time` is `"HH:MM"` or `""` for an all-day event.
+ * The native calendar's model, mirroring `src-tauri/src/schema/calendar.rs`.
+ *
+ * All timestamps are **local wall-clock**: `"YYYY-MM-DDTHH:MM"` when timed,
+ * `"YYYY-MM-DD"` when all-day. Ends are **exclusive** (an all-day event on the
+ * 8th ends `"2026-07-09"`). See `src/lib/calendarTime.ts` for the math.
  */
+
+/** The views a calendar tab can show. */
+export type CalendarViewKind =
+  | "day"
+  | "week"
+  | "multiweek"
+  | "month"
+  | "agenda"
+  | "tasks";
+
+/** One named, colored calendar in the sidebar list. */
+export interface Calendar {
+  id: string;
+  name: string;
+  /** CSS color its events render in. */
+  color: string;
+  /** Unchecked in the sidebar → its events drop out of every view. */
+  visible: boolean;
+  readonly: boolean;
+}
+
+/** How often a recurring event repeats. */
+export type Freq = "daily" | "weekly" | "monthly" | "yearly";
+
+/** A recurrence rule. `until` and `count` are mutually exclusive ends. */
+export interface Rrule {
+  freq: Freq;
+  /** Repeat every N periods. */
+  interval: number;
+  /** Weekly only: weekdays to fire on, `0` = Sunday … `6` = Saturday. */
+  byweekday?: number[];
+  /** Monthly only: day of month (1-31). Absent → the event's own day. */
+  bymonthday?: number | null;
+  /** Inclusive last date (`"YYYY-MM-DD"`) the rule may fire on. */
+  until?: string | null;
+  /** Total occurrences, counting the first. */
+  count?: number | null;
+}
+
+/** A single occurrence edited away from its master ("this event only"). */
+export interface EventOverride {
+  /** The occurrence's start as the rule generated it — the key. */
+  occurrence_start: string;
+  start?: string | null;
+  end?: string | null;
+  title?: string | null;
+  location?: string | null;
+  notes?: string | null;
+}
+
+/** A reminder, fired `minutes_before` the occurrence starts. */
+export interface Alarm {
+  minutes_before: number;
+}
+
+/** `"confirmed"` (default) | `"tentative"` | `"cancelled"`. */
+export type EventStatus = "confirmed" | "tentative" | "cancelled";
+
+/** A calendar event. `end` is exclusive. */
 export interface CalendarEvent {
   id: string;
-  date: string;
-  time: string;
+  calendar_id: string;
+  start: string;
+  end: string;
+  all_day: boolean;
+  title: string;
+  location?: string;
+  notes?: string;
+  category?: string;
+  status?: EventStatus | "";
+  rrule?: Rrule | null;
+  /** Occurrence starts deleted from the series. */
+  exdates?: string[];
+  overrides?: EventOverride[];
+  alarms?: Alarm[];
+}
+
+/** A to-do (VTODO). */
+export interface CalendarTask {
+  id: string;
+  calendar_id: string;
   title: string;
   notes?: string;
+  due?: string | null;
+  start?: string | null;
+  /** iCalendar priority: `0` = unset, `1` = highest … `9` = lowest. */
+  priority: number;
+  /** 0-100; `100` implies done. */
+  percent: number;
+  completed?: string | null;
+  category?: string;
+  alarms?: Alarm[];
+}
+
+/** The whole of `calendar.json`. */
+export interface CalendarData {
+  version: number;
+  calendars: Calendar[];
+  events: CalendarEvent[];
+  tasks: CalendarTask[];
+}
+
+/**
+ * One materialized instance of an event on the timeline. A non-recurring event
+ * yields exactly one; a recurring one yields many, all sharing `eventId`.
+ * `occurrenceStart` is the start the *rule* generated — the stable key used for
+ * exdates and overrides, which survives the occurrence being moved.
+ */
+export interface Occurrence {
+  eventId: string;
+  occurrenceStart: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  title: string;
+  location: string;
+  notes: string;
+  category: string;
+  status: EventStatus | "";
+  calendarId: string;
+  /** True when it came from a recurring master (so the UI can offer this/all). */
+  recurring: boolean;
+  alarms: Alarm[];
 }
 
 /**

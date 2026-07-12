@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileTree } from "../files/FileTree";
@@ -738,8 +739,8 @@ export function RightPanel({
             </p>
             {conflict.remaining > 0 && (
               <label className="viewer-pref-toggle" style={{ marginBottom: 8 }}>
-                <input
-                  type="checkbox"
+                <Toggle
+                  size="sm"
                   checked={conflictAll}
                   onChange={(e) => setConflictAll(e.target.checked)}
                 />
@@ -1458,16 +1459,16 @@ export function RightPanel({
               local-only (Ollama) and opt-in.
             </p>
             <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
-              <input
-                type="checkbox"
+              <Toggle
+                size="sm"
                 checked={settings?.autosave !== false}
                 onChange={(e) => void updateSettings({ autosave: e.target.checked })}
               />
               <span>Autosave edits</span>
             </label>
             <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
-              <input
-                type="checkbox"
+              <Toggle
+                size="sm"
                 checked={settings?.change_tint !== false}
                 onChange={(e) => void updateSettings({ change_tint: e.target.checked })}
               />
@@ -1489,8 +1490,8 @@ export function RightPanel({
                     <span className="viewer-pref-name">{t.label}</span>
                     <span className="viewer-pref-exts">{t.extensions.join(" ")}</span>
                     <label className="viewer-pref-toggle">
-                      <input
-                        type="checkbox"
+                      <Toggle
+                        size="sm"
                         checked={enabled}
                         onChange={(e) => patch({ enabled: e.target.checked })}
                       />
@@ -1499,8 +1500,8 @@ export function RightPanel({
                     {t.autocomplete && (
                       <>
                         <label className="viewer-pref-toggle">
-                          <input
-                            type="checkbox"
+                          <Toggle
+                            size="sm"
                             checked={pref.autocomplete === true}
                             disabled={!enabled}
                             onChange={(e) => patch({ autocomplete: e.target.checked })}
@@ -1526,8 +1527,8 @@ export function RightPanel({
                         {/* Local-model grammar/spelling check — underlines typos
                             (red), grammar (blue), style (green) in the editor. */}
                         <label className="viewer-pref-toggle">
-                          <input
-                            type="checkbox"
+                          <Toggle
+                            size="sm"
                             checked={pref.grammar_check === true}
                             disabled={!enabled}
                             onChange={(e) => patch({ grammar_check: e.target.checked })}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Toggle } from "../common/Toggle";
 import { openLinkedFile } from "../embed/FileViewerPane";
 import { useEditorJumpStore } from "../../stores/editorJump";
 
@@ -145,8 +146,8 @@ export function SearchPanel({
             cursor: "pointer",
           }}
         >
-          <input
-            type="checkbox"
+          <Toggle
+            size="sm"
             checked={caseSensitive}
             onChange={(e) => setCaseSensitive(e.target.checked)}
           />

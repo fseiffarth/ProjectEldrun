@@ -6,6 +6,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, Event } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
 import { isDetachedPtyId } from "../../stores/tabs";
+import { useActivityStore } from "../../stores/activity";
+import { useAgentTaskStore } from "../../stores/agentTask";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -288,6 +290,28 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       invoke("pty_write", { id, data: PTY_ENCODER.encode(data) }).catch(console.error);
     });
 
+    // A terminal bell means the agent wants to be looked at NOW, so it shortcuts
+    // the quiet window the activity store otherwise waits out before calling a
+    // turn finished. It is only a hint, never the source of truth: agents ring it
+    // optionally, and a pane that has never been opened has no xterm to parse it
+    // at all. WHAT the agent wants (a decision vs a finished turn) is worked out
+    // in the store from the raw output tail — reading the screen here would race
+    // the paint, since onBell fires as xterm parses the BEL, before the prompt
+    // that follows it in the same chunk has landed in the buffer.
+    // xterm fires this only for a real BEL control, not an OSC title terminator,
+    // so title changes don't false-trigger. Disposed with `term` on unmount.
+    term.onBell(() => {
+      useActivityStore.getState().noteBell(id);
+    });
+
+    // Agent CLIs set the terminal title (OSC 0/2) to a short summary of what
+    // they're doing — the same signal a native terminal shows in its tab. Capture
+    // it per tab so the tab hover card can surface it as the agent task summary.
+    // Disposed with `term` on unmount.
+    term.onTitleChange((title) => {
+      useAgentTaskStore.getState().setTabTitle(id, title);
+    });
+
     // Copy/paste: xterm binds neither itself, so without this the terminal has no
     // way to copy a selection (the agent-terminal "can't copy" report). Use the
     // standard terminal chords — Ctrl+Shift+C copies the current selection, Ctrl+
@@ -529,6 +553,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // whose tunnel/login must outlive the dialog.
       if (!attachOnly && !isDetachedPtyId(id) && !persistOnUnmount) {
         invoke("pty_kill", { id }).catch(() => {});
+        // Drop the captured agent-task title so a closed tab's summary can't
+        // linger against a future tab that reuses the key.
+        const parts = id.split(":");
+        useAgentTaskStore.getState().clearTabTitle(parts.length > 1 ? parts.slice(1).join(":") : id);
       }
       term.dispose();
     };

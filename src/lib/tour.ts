@@ -113,7 +113,7 @@ export const TOUR_STEPS: TourStep[] = [
     anchor: '[data-hint-anchor="settings"]',
     placement: "bottom",
     title: "Settings and focus mode",
-    body: `Theme, default agent, Git, and shortcuts live behind ⚙ — which also reopens this tour and the Feature Guide. ${FOCUS_MODE_TIP}`,
+    body: `Theme, Git, and shortcuts live behind ⚙ — which also reopens this tour and the Feature Guide. ${FOCUS_MODE_TIP}`,
   },
 ];
 

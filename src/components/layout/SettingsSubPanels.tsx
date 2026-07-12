@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Toggle } from "../common/Toggle";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
@@ -116,8 +117,8 @@ export function GlobalAppsSettings({ onBack }: { onBack: () => void }) {
           const entry = apps[role.key] ?? { exec: "", visible: true };
           return (
             <div className="global-app-settings-row" key={role.key}>
-              <input
-                type="checkbox"
+              <Toggle
+                size="sm"
                 checked={entry.visible !== false}
                 onChange={(e) => updateRole(role.key, { visible: e.target.checked })}
                 title={`Show ${role.label}`}

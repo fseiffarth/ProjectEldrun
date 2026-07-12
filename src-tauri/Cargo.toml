@@ -18,6 +18,11 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# Desktop notifications for calendar reminders. The in-app alarm popup
+# (components/calendar/AlarmPopup.tsx) covers the case where Eldrun is focused;
+# this covers the case where it is not — a reminder is worthless if the window
+# has to be open to see it.
+tauri-plugin-notification = "2"
 # Native OS drag-OUT of files (Windows OLE / macOS NSDraggingSession / Linux GTK).
 # WebKitGTK's HTML5 drag-out won't render a drag image or reliably export files
 # to other apps, so the Ctrl-drag file export goes through this plugin instead.

@@ -38,8 +38,15 @@ workflow); see `src-tauri/CLAUDE.md` for the backend file map.
 |------|---------|
 | `projects/ProjectPill.tsx` | Individual project pill (click/close/drag-reorder/group). |
 | `projects/BoxPill.tsx` | Project-box pill (meta-grouping, #13/#41). |
-| `projects/ActivityCalendar.tsx` | Per-project activity calendar heatmap. |
+| `projects/ActivityCalendar.tsx` | Per-project activity calendar heatmap (unrelated to the calendar tab). |
 | `projects/scaffold.ts` | Pure helpers: name sanitize, SSH-address parse, scaffold/description fill prompts. |
+| `calendar/CalendarPane.tsx` | Calendar tab shell: toolbar, search, ICS import/export, view switch. |
+| `calendar/TimeGrid.tsx` | Day/week hour grid: positioned blocks, drag-create/move/resize, now-line. |
+| `calendar/MonthView.tsx` | Month + multiweek grid, with multi-day spanning bars. |
+| `calendar/AgendaView.tsx` / `calendar/TasksView.tsx` | Flat upcoming list; to-do (VTODO) list. |
+| `calendar/EventDialog.tsx` | Event editor (repeat, reminders, category) + this-vs-all-occurrences prompt. |
+| `calendar/CalendarSidebar.tsx` | Mini-month + calendar list (color, visibility). |
+| `calendar/AlarmPopup.tsx` | In-app reminder popup (snooze/dismiss); mounted in `AppShell`. |
 | `header/Clock.tsx` | Header clock. |
 | `header/AppTimerDisplay.tsx` | Active-project time-tracking readout. |
 | `header/AppResourceDisplay.tsx` | Per-project CPU/resource readout. |
@@ -72,6 +79,8 @@ workflow); see `src-tauri/CLAUDE.md` for the backend file map.
 | `drag.ts` | Isolated per-frame drag state (reference for fine-grained selectors). |
 | `activity.ts` | PTY-output activity outside React (`lastOutputByPty`). |
 | `timer.ts` | Per-project time-tracking state. |
+| `calendar.ts` | Global calendars/events/tasks store (one `calendar.json` across all scopes). |
+| `alarms.ts` | Reminder ticker: fires an OS notification + the in-app popup, exactly once each. |
 | `linkRouting.ts` | Routing of clicked links/URIs to viewers or external apps. |
 | `pdfSync.ts` | Bidirectional PDF/SyncTeX sync state. |
 | `editorJump.ts` | Cross-pane jump-to-location requests. |
@@ -80,3 +89,8 @@ workflow); see `src-tauri/CLAUDE.md` for the backend file map.
 | `hooks/useKeyboard.ts` | Global keyboard-shortcut hook. |
 | `lib/shortcuts.ts` | Shortcut definitions, chord parsing/resolution. |
 | `lib/viewers/{fileUtils,markdown,highlight,tex}.ts` | Pure viewer logic (XSS-safe markdown/highlight, TeX, file utils). |
+| `lib/calendarTime.ts` | Calendar date math: local wall-clock stamps, exclusive ends, overlap layout. |
+| `lib/recurrence.ts` | Recurrence expansion (`expandEvents`) + exdate/override editing. |
+| `lib/ics.ts` | iCalendar parse/serialize (VEVENT/VTODO/VALARM/RRULE), folding + escaping. |
+| `lib/alarms.ts` | Pure alarm logic: which reminders are due, fire-once keys, snooze. |
+| `lib/calendarCategories.ts` | Event category → color palette. |

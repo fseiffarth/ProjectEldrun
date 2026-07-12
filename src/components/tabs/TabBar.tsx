@@ -1,9 +1,10 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   BLOB_TAB_CMD,
   CALENDAR_TAB_CMD,
+  DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
   MONITOR_TAB_CMD,
   EMPTY_GROUP_ID,
@@ -27,13 +28,15 @@ import {
   type StaticMenuItem,
 } from "./newTabItems";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
+import { TabHoverCard } from "./TabHoverCard";
+import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useActivityStore } from "../../stores/activity";
+import { useAgentTaskStore } from "../../stores/agentTask";
 import { useFileSourcesStore } from "../../stores/fileSources";
-import { OrbitSpinner } from "../common/OrbitSpinner";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
  *  detach via the bar drag carries no preview). */
@@ -127,14 +130,29 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const landedNonce = useTabLandStore((s) => s.landed?.nonce ?? 0);
   const clearLanded = useTabLandStore((s) => s.clear);
   // Per-tab "working" map: a tab whose PTY is actively producing output shows a
-  // spinner so busy agents/terminals are visible even when not the active tab.
+  // green status lamp so busy agents are visible even when not the active tab.
+  // Both maps are keyed by the composed PTY id (`<scope>:<tabKey>`), since tab
+  // keys alone can collide across projects.
   const busyByTab = useActivityStore((s) => s.busyByTab);
+  // Per-tab "needs attention" map: an agent tab that finished its turn, or that
+  // is waiting on a decision, while not being looked at pulses until it's viewed.
+  const attentionByTab = useActivityStore((s) => s.attentionByTab);
+  const clearAttention = useActivityStore((s) => s.clearAttention);
+  // Per-tab agent task summary (the terminal title an agent set, like a native
+  // terminal shows), surfaced in the tab hover card.
+  const titleByTab = useAgentTaskStore((s) => s.titleByTab);
   // Active project's name, used to name an agent's own session on launch.
   const projectName = useProjectsStore(
     (s) => s.projects.find((p) => p.id === s.activeId)?.name ?? "",
   );
 
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  // Tab currently hovered → drives the styled hover card (the tab-bar
+  // counterpart to the project pill's hover popup). Anchored to the tab's
+  // bottom-center; cleared on leave, drag, or when a menu opens.
+  const [hoverTab, setHoverTab] = useState<
+    { key: string; x: number; y: number } | null
+  >(null);
   // Right-click on a tab opens this context menu (Close / Close others / Close to
   // the left / Close to the right / Rename). Shift+right-click bypasses it and
   // goes straight to inline rename (#56). Keyed to the clicked tab + its index so
@@ -265,6 +283,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
 
   const activeKey = group?.activeKey ?? null;
 
+  // Looking at a tab clears its "needs attention" flag — activating a tab (click,
+  // keyboard switch, or mounting with it already active) makes it the one on screen.
+  // `recompute` would reach the same conclusion on its next tick; this just spares
+  // the tab you just opened up to an interval's worth of leftover glow.
+  useEffect(() => {
+    if (activeKey) clearAttention(`${scope}:${activeKey}`);
+  }, [scope, activeKey, clearAttention]);
+
   useEffect(() => {
     if (!menuOpen) return;
     const onDown = (e: MouseEvent) => {
@@ -284,27 +310,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     };
   }, [menuOpen]);
 
-  // Keep the add menu inside the viewport. It's positioned at the +'s left/bottom
+  // Keep the add menu inside the viewport: it's positioned at the +'s left/bottom
   // and grows rightward/downward, so a + near the right (or bottom) edge would push
-  // the menu past the window border and clip it off-screen. Once it's mounted we can
-  // measure its real size and shift it back in. Guarded so the corrective setMenuPos
-  // doesn't loop (it re-runs, finds nothing to fix, stops).
-  useLayoutEffect(() => {
-    if (!menuOpen || !menuPos) return;
-    const el = addMenuRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const margin = 8;
-    let nx = menuPos.x;
-    let ny = menuPos.y;
-    if (rect.right > window.innerWidth - margin) {
-      nx = Math.max(margin, window.innerWidth - margin - rect.width);
-    }
-    if (rect.bottom > window.innerHeight - margin) {
-      ny = Math.max(margin, window.innerHeight - margin - rect.height);
-    }
-    if (nx !== menuPos.x || ny !== menuPos.y) setMenuPos({ x: nx, y: ny });
-  }, [menuOpen, menuPos]);
+  // it past the window border and clip it off-screen.
+  useClampToViewport(addMenuRef, menuPos, setMenuPos);
 
   // Dismiss the tab context menu on an outside click or Escape (mirrors the add
   // menu). Clicks inside the menu itself are ignored so its items can fire.
@@ -326,26 +335,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   }, [tabMenu]);
 
   // Keep the tab context menu inside the viewport: it opens at the cursor and
-  // grows right/down, so one near the right/bottom edge would clip. Measure once
-  // mounted and shift it back in (guarded so the corrective set doesn't loop).
-  useLayoutEffect(() => {
-    if (!tabMenu) return;
-    const el = tabMenuRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const margin = 8;
-    let nx = tabMenu.x;
-    let ny = tabMenu.y;
-    if (rect.right > window.innerWidth - margin) {
-      nx = Math.max(margin, window.innerWidth - margin - rect.width);
-    }
-    if (rect.bottom > window.innerHeight - margin) {
-      ny = Math.max(margin, window.innerHeight - margin - rect.height);
-    }
-    if (nx !== tabMenu.x || ny !== tabMenu.y) {
-      setTabMenu((m) => (m ? { ...m, x: nx, y: ny } : m));
-    }
-  }, [tabMenu]);
+  // grows right/down, so one near the right/bottom edge would clip.
+  useClampToViewport(tabMenuRef, tabMenu, setTabMenu);
 
   // Drop inline-rename mode if the edited tab disappears (closed / moved away).
   useEffect(() => {
@@ -420,7 +411,19 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     setMenuPos(null);
   }
 
-  // Open (or focus, if already open) the native calendar tab (root scope only).
+  // Add a disk usage analyzer tab. Unlike the monitor/blob/calendar panes above,
+  // this one is NOT a singleton: each tab holds its own independent scan root, and
+  // comparing two folders side by side is the point — so it stacks (addTab) rather
+  // than focusing an existing one (ensureTab, which matches across the whole scope).
+  function handleAddDiskUsage() {
+    focusGroup(groupId);
+    addTab({ label: "Disk Usage", cmd: DISKUSAGE_TAB_CMD, cwd: projectCwd, kind: "diskusage" });
+    setMenuPos(null);
+  }
+
+  // Open (or focus, if already open) the native calendar tab. The event store is
+  // global, so a calendar tab in any scope shows the same events — one per scope
+  // is enough, hence ensureTab rather than addTab.
   function handleAddCalendar() {
     focusGroup(groupId);
     ensureTab(
@@ -505,6 +508,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       return;
     }
     setMenuPos(null); // close the add (+) menu if it was open
+    setHoverTab(null); // and the hover card, so it doesn't sit atop the menu
     focusGroup(groupId);
     setTabMenu({ x: event.clientX, y: event.clientY, key, index });
   }
@@ -538,6 +542,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     tab: (typeof tabs)[number],
   ) {
     if (e.button !== 0) return;
+    // Dismiss the hover card the moment a click/drag begins so it never lingers
+    // over a drag ghost or the pane below.
+    setHoverTab(null);
     // While this tab is being inline-renamed, the label is an <input>: don't
     // hijack its pointer into a tab drag (lets the caret/selection work).
     if (editingKey === tab.key) return;
@@ -926,20 +933,33 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         // The placeholder slot previewing where the dragged tab will land — shown
         // immediately before the tab occupying the resolved insertion index.
         const showMarkerBefore = isDropTarget && reorderIndex === index;
-        // Only PTY-backed tabs can register terminal output activity.
-        const working = isPtyTabKind(tab.kind) && !!busyByTab[tab.key];
+        // Whole-tab status glow (no dot, no width change):
+        //  - working (green pulse): PTY producing sustained output.
+        //  - needs-decision (orange pulse): an agent you're not looking at went
+        //    quiet with a choice/permission prompt on its screen.
+        //  - finished (green steady): an agent you're not looking at went quiet
+        //    with no prompt — its turn is done and its result is unread.
+        // Working wins. The pulses are an attention-getter for tabs you're not
+        // looking at, so none of them show on the viewed tab — you can already see
+        // what it's doing.
+        const ptyId = `${scope}:${tab.key}`;
+        const working = isPtyTabKind(tab.kind) && !isActive && !!busyByTab[ptyId];
+        const attn =
+          (tab.kind === "agent" || tab.kind === "local_agent") && !isActive
+            ? attentionByTab[ptyId] ?? null
+            : null;
+        const stateClass = working
+          ? " working"
+          : attn === "decision"
+            ? " needs-decision"
+            : attn === "done"
+              ? " finished"
+              : "";
         // Expose the kind colour to CSS on every tab (not just the active one)
         // so the top stripe reads as the tab-group colour consistently — plain
         // themes draw the rail above, fancy themes move it below. Inactive tabs
         // keep a transparent stripe slot; hover/active tint it with this colour.
         const style = { "--tab-accent": TAB_ACCENT[tab.kind] } as React.CSSProperties;
-        // Agent tabs launched with a deterministic session id show it on hover.
-        // This is the launch id (`--session-id <uuid>`): stable and unique per
-        // tab. It does NOT follow a `/clear` (which rolls onto a new id) — that
-        // needs a different mechanism, see TODO #39c.
-        const title = tab.sessionId
-          ? `${tab.label} session\n${tab.sessionId}\ncwd: ${tab.cwd}`
-          : undefined;
         const editing = editingKey === tab.key;
         // A tab freshly dropped into this bar plays the drop-in landing once.
         const landing = !isDragging && landedKey === tab.key;
@@ -947,16 +967,26 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           <Fragment key={tab.key}>
           {showMarkerBefore && dropPlaceholder}
           <div
-            className={`tab ${isActive ? "active" : ""}${working ? " working" : ""}${isDragging ? " dragging" : ""}${editing ? " editing" : ""}${landing ? " landing" : ""}`}
+            className={`tab ${isActive ? "active" : ""}${stateClass}${isDragging ? " dragging" : ""}${editing ? " editing" : ""}${landing ? " landing" : ""}`}
             style={style}
             data-tab-index={index}
             data-kind={tab.kind}
-            title={editing ? undefined : title}
             onContextMenu={(e) => onTabContextMenu(e, tab.key, index)}
             onPointerDown={(e) => onTabPointerDown(e, tab)}
+            // Styled hover card (mirrors the project pill's popup) anchored to
+            // this tab's bottom-center. Skipped while inline-renaming.
+            onMouseEnter={(e) => {
+              if (editing) return;
+              const r = e.currentTarget.getBoundingClientRect();
+              setHoverTab({ key: tab.key, x: r.left + r.width / 2, y: r.bottom });
+            }}
+            onMouseLeave={() =>
+              setHoverTab((h) => (h?.key === tab.key ? null : h))
+            }
             // Clear the landing once it finishes so the class doesn't linger
-            // (guard on currentTarget so a child's animationend — e.g. the
-            // working-spinner pulse — never clears it early).
+            // (guard on currentTarget so a child's animationend never clears it
+            // early; the status glow is an infinite ::after animation and emits
+            // no animationend).
             onAnimationEnd={
               landing
                 ? (e) => {
@@ -965,15 +995,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
                 : undefined
             }
           >
-            {working && (
-              <span
-                className="tab-working"
-                style={{ color: TAB_ACCENT[tab.kind] }}
-                title="Working…"
-              >
-                <OrbitSpinner className="tab-working-spinner" />
-              </span>
-            )}
             {editing ? (
               <input
                 className="tab-label-edit"
@@ -1199,8 +1220,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             </button>
           ))}
 
-          {/* System Monitor is whole-machine, so it's offered in every scope;
-              Network Traffic is per-project (host/SSH link), so root has none. */}
+          {/* System Monitor is whole-machine and Disk Usage picks its own scan
+              root, so both are offered in every scope; Network Traffic is
+              per-project (host/SSH link), so root has none. */}
           <div className="tab-new-menu-group-label">Monitoring</div>
           <button className="tab-new-menu-item" onClick={handleAddMonitor}>
             <span
@@ -1210,6 +1232,15 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
               ●
             </span>
             System Monitor
+          </button>
+          <button className="tab-new-menu-item" onClick={handleAddDiskUsage}>
+            <span
+              className="tab-new-menu-dot"
+              style={{ color: TAB_ACCENT.diskusage }}
+            >
+              ◕
+            </span>
+            Disk Usage
           </button>
           {scope !== "root" && (
             <button className="tab-new-menu-item" onClick={handleAddNetwork}>
@@ -1233,15 +1264,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             </>
           )}
 
-          {scope === "root" && (
-            <>
-              <div className="tab-new-menu-group-label">Calendar</div>
-              <button className="tab-new-menu-item" onClick={handleAddCalendar}>
-                <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT.calendar }}>◆</span>
-                Calendar
-              </button>
-            </>
-          )}
+          <div className="tab-new-menu-group-label">Calendar</div>
+          <button className="tab-new-menu-item" onClick={handleAddCalendar}>
+            <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT.calendar }}>◆</span>
+            Calendar
+          </button>
 
           <div className="tab-new-menu-group-label">Project</div>
           <button
@@ -1320,6 +1347,23 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         </div>,
         document.body,
       )}
+      {/* Styled tab hover card (matches the project pill popup). Suppressed
+          mid-drag and while a menu is open so it never overlaps them. */}
+      {hoverTab && dragKey === null && !menuOpen && !tabMenu && (() => {
+        const tab = tabs.find((t) => t.key === hoverTab.key);
+        if (!tab) return null;
+        return (
+          <TabHoverCard
+            label={tab.label}
+            kind={tab.kind}
+            cwd={tab.cwd}
+            sessionId={tab.sessionId}
+            summary={titleByTab[tab.key]}
+            anchorX={hoverTab.x}
+            anchorY={hoverTab.y}
+          />
+        );
+      })()}
     </div>
   );
 }

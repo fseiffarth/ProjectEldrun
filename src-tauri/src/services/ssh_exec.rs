@@ -312,6 +312,26 @@ pub fn remote_dir_size(spec: &RemoteSpec, remote_dir: &str) -> Result<u64, Strin
     Ok(kb.saturating_mul(1024))
 }
 
+/// Full recursive size tree of a directory on the host, for the Disk Usage
+/// Analyzer pane.
+///
+/// One `du -ak` round-trip (riding the shared ControlMaster) rather than an
+/// N-call SFTP walk: `-a` reports files as well as directories, `-k` fixes the
+/// unit at 1024-byte blocks (portable across GNU and BSD/macOS `du`, unlike
+/// GNU-only `-b`), and `-x` keeps the scan on one filesystem so a network mount
+/// or `/proc` under the root cannot make it run forever. `du` dedups hard links
+/// itself. Parsing lives in [`crate::duscan::parse_du_output`], which is where the
+/// output shape is documented and tested. The path is validated + single-quoted.
+pub fn remote_du_tree(spec: &RemoteSpec, remote_dir: &str) -> Result<crate::duscan::DuScan, String> {
+    validate_arg("remote path", remote_dir)?;
+    let cmd = format!("du -ak -x {} 2>/dev/null", shell_quote(remote_dir));
+    let out = run_remote_shell(spec, &cmd)?;
+    // `du` exits non-zero when *any* entry was unreadable, having still printed
+    // everything it could reach — so the status is ignored and stdout is parsed
+    // regardless. An empty stdout (a genuinely dead connection) fails in the parser.
+    crate::duscan::parse_du_output(remote_dir, &String::from_utf8_lossy(&out.stdout))
+}
+
 /// Best-effort create `spec.remote_path` (and parents) on the host over SSH,
 /// riding the shared ControlMaster. Used when a new remote project is created so
 /// agent tabs / git can `cd` into the project root. `mkdir -p <path>` is handed
