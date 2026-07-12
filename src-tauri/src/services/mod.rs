@@ -9,6 +9,10 @@ pub mod remote_agents;
 pub mod remote_credentials;
 pub mod remote_sync;
 pub mod restore_service;
+// The docker sandbox bind-mounts host paths straight into a Linux container and
+// maps the host uid/gid, so it is Unix-only today. Windows refuses the sandbox
+// outright at the `pty_spawn` call site rather than running the agent unwrapped.
+#[cfg(unix)]
 pub mod sandbox;
 pub mod sftp;
 pub mod ssh_common;

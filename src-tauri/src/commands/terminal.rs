@@ -86,7 +86,14 @@ pub async fn pty_spawn(
     // the `local_only` guard on the sandbox branch preserves that invariant even
     // if a tab were ever marked both `sandbox` and `local_only`.
     if opts.sandbox && !opts.local_only {
+        #[cfg(unix)]
         crate::services::sandbox::wrap_pty_options_docker(&mut opts)?;
+        // The sandbox maps host paths into a Linux container, so on Windows the
+        // container-side mount destinations would be host paths (`C:\…`) that
+        // mean nothing inside it. Refuse rather than silently spawning an agent
+        // the user asked to sandbox with no sandbox at all.
+        #[cfg(windows)]
+        return Err("The Docker sandbox is not supported on Windows yet. Disable the sandbox for this project to run this agent.".to_string());
     } else if !opts.local_only {
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
     }

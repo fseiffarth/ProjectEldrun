@@ -468,6 +468,7 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn filename_has_expected_shape() {
@@ -527,9 +528,17 @@ mod tests {
         let old = dir.path().join("old.png");
         std::fs::write(&old, b"old").unwrap();
 
+        // mtimes come from a coarse kernel clock that only advances on a timer
+        // tick (~1-4ms), so a file written right after a fine-grained `now()` can
+        // land *before* it and be filtered out by the `mtime >= since` cutoff. A
+        // real capture writes seconds later, so straddle the cutoff with sleeps
+        // past one tick instead of racing it.
+        std::thread::sleep(Duration::from_millis(20));
+
         // Spawned now: anything already on disk is older than the cutoff.
         let since = SystemTime::now();
         assert_eq!(locate_shot(dir.path(), None, since), None);
+        std::thread::sleep(Duration::from_millis(20));
 
         std::fs::write(dir.path().join("notes.txt"), b"txt").unwrap();
         let shot = dir.path().join("shot.png");
