@@ -3340,6 +3340,25 @@ mod tests {
         sha
     }
 
+    /// A worktree file as git *checked it out*, with the line endings its filters
+    /// applied normalized back out. Git for Windows defaults to `core.autocrlf=true`,
+    /// so a blob committed with LF lands on disk with CRLF — the assertions below are
+    /// about *which content* a fast-forward wrote, never about its line endings. The
+    /// lockstep code itself never compares raw worktree bytes for this reason: it asks
+    /// git (`hash-object`, which runs the same filters) whether the file already is the
+    /// blob — see `blob_matches_worktree`.
+    fn checked_out(path: &Path) -> Vec<u8> {
+        let bytes = std::fs::read(path).unwrap();
+        let mut out = Vec::with_capacity(bytes.len());
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+                continue;
+            }
+            out.push(b);
+        }
+        out
+    }
+
     #[test]
     fn deleted_between_names_only_what_a_move_removes() {
         // #28q: the audit's whole job is to name the files a HEAD move deletes from the
@@ -3420,10 +3439,7 @@ mod tests {
             head.head,
             Some(HeadRef::Branch { name: "main".into(), sha: sha.clone() })
         );
-        assert_eq!(
-            std::fs::read(dir.join("new.txt")).unwrap(),
-            b"incoming content\n"
-        );
+        assert_eq!(checked_out(&dir.join("new.txt")), b"incoming content\n");
         assert!(!head.dirty_tracked);
     }
 
@@ -3502,10 +3518,7 @@ mod tests {
             ),
             "a file named as proven stale residue must be cleared even though it differs"
         );
-        assert_eq!(
-            std::fs::read(dir.join("keep.txt")).unwrap(),
-            b"also incoming\n"
-        );
+        assert_eq!(checked_out(&dir.join("keep.txt")), b"also incoming\n");
         assert!(matches!(
             probe(&peer).head,
             Some(HeadRef::Branch { sha: ref s, .. }) if s == &sha

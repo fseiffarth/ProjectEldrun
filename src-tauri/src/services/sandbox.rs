@@ -479,7 +479,9 @@ pub fn up(project_id: &str, spec: Option<&SandboxSpec>, project_dir: &str) -> Re
     // `fs::copy` overwrites in place (same inode), so a running container's
     // bind mounts see the refreshed content too.
     let mut rw_mounts = rw_mounts(&home, &live_sessions.to_string_lossy());
-    rw_mounts.extend(staged_config_mounts(&home, &stage));
+    rw_mounts.extend(
+        staged_config_mounts(&home, &stage).into_iter().map(|(src, dst)| format!("{src}:{dst}")),
+    );
     let ro_mounts = ro_mounts(&hooks_dir);
     let harden = harden_opts(spec);
     let image = image_for(project_id, spec);
@@ -943,23 +945,26 @@ fn stage_dir(project_id: &str) -> PathBuf {
 /// shadowed and never touched — a compromised agent cannot repoint the host's
 /// SessionStart hook. Best effort: a file that is absent or fails to copy is
 /// simply not mounted.
-fn staged_config_mounts(home: &str, stage: &Path) -> Vec<String> {
+///
+/// Returned as `(copy on host, original path)` **pairs**, not pre-joined
+/// `src:dst` strings: a host path is not colon-free on every platform (a
+/// Windows drive letter carries one), so joining here would hand the caller a
+/// string it cannot split back apart unambiguously.
+fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, String)> {
+    let home = Path::new(home);
     let mut mounts = Vec::new();
-    for src in [
-        format!("{home}/.claude/settings.json"),
-        format!("{home}/.claude/settings.local.json"),
-        format!("{home}/.codex/config.toml"),
-    ] {
-        let src_path = Path::new(&src);
+    for rel in [".claude/settings.json", ".claude/settings.local.json", ".codex/config.toml"] {
+        // Native separators: the container path is the host original's own path.
+        let src_path = rel.split('/').fold(home.to_path_buf(), |p, seg| p.join(seg));
         if !src_path.is_file() {
             continue;
         }
         // Flatten the host path to a unique leaf so the three files never collide.
-        let leaf = src.trim_start_matches('/').replace(['/', '\\'], "_");
+        let src = src_path.to_string_lossy().into_owned();
+        let leaf = src.trim_start_matches(['/', '\\']).replace(['/', '\\', ':'], "_");
         let dst = stage.join(&leaf);
-        if std::fs::copy(src_path, &dst).is_ok() {
-            // `<copy on host>:<original path in container>` (rw, no `:ro`).
-            mounts.push(format!("{}:{src}", dst.to_string_lossy()));
+        if std::fs::copy(&src_path, &dst).is_ok() {
+            mounts.push((dst.to_string_lossy().into_owned(), src));
         }
     }
     mounts
@@ -1302,12 +1307,12 @@ mod tests {
 
         // Exactly one mount (only settings.json exists), dst == the host path.
         assert_eq!(mounts.len(), 1, "got: {mounts:?}");
-        let (src, dst) = mounts[0].rsplit_once(':').unwrap();
+        let (src, dst) = (mounts[0].0.clone(), mounts[0].1.clone());
         assert_eq!(dst, settings.to_string_lossy());
         // Source is a real copy living under the stage dir, not the host file.
-        assert!(Path::new(src).starts_with(&stage));
-        assert_ne!(Path::new(src), settings.as_path());
-        assert_eq!(std::fs::read(src).unwrap(), b"{\"hooks\":{}}");
+        assert!(Path::new(&src).starts_with(&stage));
+        assert_ne!(Path::new(&src), settings.as_path());
+        assert_eq!(std::fs::read(&src).unwrap(), b"{\"hooks\":{}}");
 
         // Refresh-at-up: a second pass overwrites the same single copy in
         // place (same path, new content) — never a second file.
