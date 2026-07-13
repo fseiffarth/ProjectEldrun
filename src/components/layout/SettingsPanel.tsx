@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEventHandler, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore, clampZoom, MIN_UI_ZOOM, MAX_UI_ZOOM } from "../../stores/settings";
+import { usePowerStore, useEnergySaver } from "../../stores/power";
 import { useProjectsStore } from "../../stores/projects";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
 import type {
@@ -15,6 +16,7 @@ import type {
 import { THEMES } from "../../types";
 import { summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
 import { Toggle } from "../common/Toggle";
+import { OPEN_STATS_EVENT } from "../stats/StatsRecapHost";
 import {
   SHORTCUT_DEFS,
   chordFromEvent,
@@ -38,6 +40,30 @@ const WORKSPACE_LAYOUT_INTRO = IS_MAC
   : `Eldrun keeps your AI-assisted development in a single window. Press ${
       IS_WINDOWS ? "the Windows key" : "Super"
     } while Eldrun is focused to toggle the panels, and F11 for fullscreen.`;
+
+/** A toggle with an explanatory paragraph, as one card (matches .settings-nav-item
+ *  / .lesson-item) instead of a bare switch-row bleeding into a trailing paragraph. */
+function ToggleCard({
+  label,
+  checked,
+  onChange,
+  help,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: ChangeEventHandler<HTMLInputElement>;
+  help?: ReactNode;
+}) {
+  return (
+    <div className="settings-toggle-card">
+      <label className="settings-toggle-card-row">
+        <span>{label}</span>
+        <Toggle checked={checked} onChange={onChange} />
+      </label>
+      {help && <p className="settings-help">{help}</p>}
+    </div>
+  );
+}
 
 interface HelpItem {
   term: string;
@@ -579,8 +605,27 @@ export function SettingsDialog({
 
   const currentTheme = (settings?.color_scheme ?? "light_lavender") as Theme;
 
+  // Live power state for the Energy Saver help line.
+  const energyMode = settings?.energy_saver ?? "battery";
+  const energyActive = useEnergySaver();
+  const powerReady = usePowerStore((s) => s.ready);
+  const powerSupported = usePowerStore((s) => s.supported);
+  const energyStatus = (() => {
+    if (energyMode === "battery" && powerReady && !powerSupported) {
+      return "Power state unavailable — treating as AC (inactive).";
+    }
+    if (energyActive) {
+      return energyMode === "always"
+        ? "Currently active — always on."
+        : "Currently active — running on battery.";
+    }
+    return energyMode === "off"
+      ? "Off — never throttles."
+      : "Inactive — on AC power.";
+  })();
+
   return (
-    <div className="modal-backdrop settings-backdrop" onMouseDown={onClose}>
+    <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
       <div className="settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
         {panel === "main" && (
           <>
@@ -598,77 +643,111 @@ export function SettingsDialog({
               />
             </div>
 
-            <label className="settings-switch-row">
-              <span>Run scripts in background</span>
-              <Toggle
-                checked={settings?.run_scripts_in_background ?? true}
-                onChange={(e) => void updateSettings({ run_scripts_in_background: e.target.checked })}
-              />
-            </label>
+            <ToggleCard
+              label="Run scripts in background"
+              checked={settings?.run_scripts_in_background ?? true}
+              onChange={(e) => void updateSettings({ run_scripts_in_background: e.target.checked })}
+            />
 
-            <label className="settings-switch-row">
-              <span>Claude remote control</span>
-              <Toggle
-                checked={settings?.agent_remote_control ?? true}
-                onChange={(e) => void updateSettings({ agent_remote_control: e.target.checked })}
+            <ToggleCard
+              label="Claude remote control"
+              checked={settings?.agent_remote_control ?? true}
+              onChange={(e) => void updateSettings({ agent_remote_control: e.target.checked })}
+              help={
+                <>
+                  Spawns Claude agent tabs with <code>--remote-control</code> so you can
+                  monitor and steer them from the Claude app or web. Requires a Claude
+                  subscription login (not an API key); only Claude supports it.
+                </>
+              }
+            />
+
+            <ToggleCard
+              label="Plan/Auto toggle on agent tabs (experimental)"
+              checked={settings?.agent_mode_toggle ?? false}
+              onChange={(e) => void updateSettings({ agent_mode_toggle: e.target.checked })}
+              help={
+                <>
+                  Puts a badge on each agent tab that switches it between <b>Plan</b> (reads
+                  and proposes, never edits) and <b>Auto</b> (auto-accepts edits; shell and
+                  network commands still ask) — so one tab can plan while another does the
+                  work, and each comes back in its mode after a restart. Switching restarts
+                  the agent: the conversation is resumed, but the terminal's scrollback is
+                  lost. Only Claude supports it — it is the one agent that can both be
+                  launched into a mode and resume its conversation on restart.
+                </>
+              }
+            />
+
+            <ToggleCard
+              label="Headless remote connections"
+              checked={settings?.connections_headless ?? true}
+              onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
+              help={
+                <>
+                  When on (default), Eldrun makes SSH/OpenVPN connections in the
+                  background, handling the password transiently. Turn it off to instead
+                  open each connection as an interactive terminal in the Eldrun root —
+                  you type the password directly into that terminal and Eldrun never
+                  handles it.
+                </>
+              }
+            />
+
+            <div className="settings-row">
+              <label>Energy saver</label>
+              <Dropdown
+                value={energyMode}
+                onChange={(v) => void updateSettings({ energy_saver: v as "off" | "battery" | "always" })}
+                options={[
+                  { value: "off", label: "Off" },
+                  { value: "battery", label: "On battery" },
+                  { value: "always", label: "Always" },
+                ]}
               />
-            </label>
+            </div>
             <p className="settings-help">
-              Spawns Claude agent tabs with <code>--remote-control</code> so you can
-              monitor and steer them from the Claude app or web. Requires a Claude
-              subscription login (not an API key); only Claude supports it.
+              When active, Eldrun eases off to save power: it pauses the project
+              blob's idle spin, calms the status glows, and slows background
+              refreshes. "On battery" (default) does this only while unplugged.
+              {" "}{energyStatus}
             </p>
 
-            <label className="settings-switch-row">
-              <span>Headless remote connections</span>
-              <Toggle
-                checked={settings?.connections_headless ?? true}
-                onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
-              />
-            </label>
-            <p className="settings-help">
-              When on (default), Eldrun makes SSH/OpenVPN connections in the
-              background, handling the password transiently. Turn it off to instead
-              open each connection as an interactive terminal in the Eldrun root —
-              you type the password directly into that terminal and Eldrun never
-              handles it.
-            </p>
-
-            <label className="settings-switch-row">
-              <span>Debug mode</span>
-              <Toggle
-                checked={settings?.debug ?? false}
-                onChange={(e) => void updateSettings({ debug: e.target.checked })}
-              />
-            </label>
+            <ToggleCard
+              label="Debug mode"
+              checked={settings?.debug ?? false}
+              onChange={(e) => void updateSettings({ debug: e.target.checked })}
+            />
 
             <div className="settings-section-title">Resource monitor</div>
-            <label className="settings-switch-row">
-              <span>Show CPU usage</span>
-              <Toggle
-                checked={settings?.show_cpu_usage ?? true}
-                onChange={(e) => void updateSettings({ show_cpu_usage: e.target.checked })}
-              />
-            </label>
-            <label className="settings-switch-row">
-              <span>Show RAM usage</span>
-              <Toggle
-                checked={settings?.show_ram_usage ?? true}
-                onChange={(e) => void updateSettings({ show_ram_usage: e.target.checked })}
-              />
-            </label>
-            <label className="settings-switch-row">
-              <span>Show GPU usage</span>
-              <Toggle
-                checked={settings?.show_gpu_usage ?? true}
-                onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
-              />
-            </label>
-            <p className="settings-help">
-              CPU and RAM cover Eldrun's own process tree; GPU shows VRAM in use by
-              local models loaded in Ollama. The pill appears in the header next to
-              the timer.
-            </p>
+            <div className="settings-toggle-card">
+              <label className="settings-toggle-card-row">
+                <span>Show CPU usage</span>
+                <Toggle
+                  checked={settings?.show_cpu_usage ?? true}
+                  onChange={(e) => void updateSettings({ show_cpu_usage: e.target.checked })}
+                />
+              </label>
+              <label className="settings-toggle-card-row">
+                <span>Show RAM usage</span>
+                <Toggle
+                  checked={settings?.show_ram_usage ?? true}
+                  onChange={(e) => void updateSettings({ show_ram_usage: e.target.checked })}
+                />
+              </label>
+              <label className="settings-toggle-card-row">
+                <span>Show GPU usage</span>
+                <Toggle
+                  checked={settings?.show_gpu_usage ?? true}
+                  onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
+                />
+              </label>
+              <p className="settings-help">
+                CPU and RAM cover Eldrun's own process tree; GPU shows VRAM in use by
+                local models loaded in Ollama. The pill appears in the header next to
+                the timer.
+              </p>
+            </div>
 
             <div className="settings-section-title">Calendar</div>
             <div className="settings-row">
@@ -701,15 +780,11 @@ export function SettingsDialog({
                 ]}
               />
             </div>
-            <label className="settings-switch-row">
-              <span>24-hour clock</span>
-              <Toggle
-                checked={settings?.calendar_time_format_24h ?? false}
-                onChange={(e) =>
-                  void updateSettings({ calendar_time_format_24h: e.target.checked })
-                }
-              />
-            </label>
+            <ToggleCard
+              label="24-hour clock"
+              checked={settings?.calendar_time_format_24h ?? false}
+              onChange={(e) => void updateSettings({ calendar_time_format_24h: e.target.checked })}
+            />
             <div className="settings-row">
               <label>Day grid starts at</label>
               <Dropdown
@@ -745,13 +820,11 @@ export function SettingsDialog({
             </p>
 
             <div className="settings-section-title">Hints & onboarding</div>
-            <label className="settings-switch-row">
-              <span>Show contextual hints</span>
-              <Toggle
-                checked={settings?.hints_enabled ?? true}
-                onChange={(e) => void updateSettings({ hints_enabled: e.target.checked })}
-              />
-            </label>
+            <ToggleCard
+              label="Show contextual hints"
+              checked={settings?.hints_enabled ?? true}
+              onChange={(e) => void updateSettings({ hints_enabled: e.target.checked })}
+            />
             <div className="settings-link-row">
               <button
                 type="button"
@@ -910,6 +983,30 @@ export function SettingsDialog({
                 Add download folder...
               </button>
             </div>
+
+            <div className="settings-section-title">Usage stats</div>
+            <ToggleCard
+              label="Show the recap at the start of each day"
+              checked={settings?.daily_stats_recap ?? true}
+              onChange={(e) => void updateSettings({ daily_stats_recap: e.target.checked })}
+              help={
+                <>
+                  A summary of the day just finished: which agents you used and how much you
+                  asked them, files created/modified/deleted, commits, and time per project.
+                  Turning this off stops the popup, not the counting — everything stays local.
+                </>
+              }
+            />
+            <button
+              type="button"
+              className="btn-primary btn-block"
+              onClick={() => {
+                onClose();
+                window.dispatchEvent(new CustomEvent(OPEN_STATS_EVENT));
+              }}
+            >
+              Open usage stats
+            </button>
 
             <div className="settings-section-title">More settings</div>
             <div className="settings-nav-list">

@@ -78,6 +78,24 @@ pub struct Settings {
     /// app/web. Only Claude supports the flag; other agents ignore it. Default ON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_remote_control: Option<bool>,
+    /// When true (the default), the usage recap opens by itself on the first
+    /// launch of each day. Turning it off leaves the recap reachable from
+    /// Settings — it stops the popup, it does not stop the counting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_stats_recap: Option<bool>,
+    /// UTC date ("YYYY-MM-DD") the recap was last auto-shown, so it opens once a
+    /// day rather than on every window. Written by the recap host itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_stats_last_shown: Option<String>,
+    /// EXPERIMENTAL, default OFF. When true, agent tabs whose agent supports it
+    /// (currently only Claude) show a Plan/Auto badge that switches the tab's
+    /// authority mode — `--permission-mode plan` vs `acceptEdits`. Switching
+    /// respawns the agent (the mode is a launch flag), which is only safe because
+    /// the backend resumes the conversation; see `services::agent_session`. Purely
+    /// a frontend gate: the flag reaches the backend inside `opts.args` like any
+    /// other launch arg, so nothing in the spawn path reads this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_mode_toggle: Option<bool>,
     /// When true (the default), remote SSH/OpenVPN connections are made headlessly
     /// in the background, with Eldrun handling the password transiently (sshpass /
     /// askpass). When false, those connections are launched as interactive
@@ -86,6 +104,21 @@ pub struct Settings {
     /// (headless) so existing behaviour is preserved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connections_headless: Option<bool>,
+    /// Path of the stored `.ovpn` config Eldrun brings up **on launch**, with no
+    /// project behind it. Unset (the default) = no tunnel is started by itself.
+    ///
+    /// One config, not a list: a tunnel reroutes the whole machine, so arming two
+    /// would be arming them to fight over the routing. The frontend re-checks at
+    /// launch that the connect can still be made without a prompt and stays down if
+    /// it can't (see `lib/vpnAutoConnect.ts`); the backend only round-trips this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vpn_auto_connect: Option<String>,
+    /// Energy-saver mode: "off" | "battery" (default) | "always". When active
+    /// (mode "always", or "battery" while discharging) Eldrun pauses the blob
+    /// auto-spin, collapses idle animations, and widens always-on UI timers.
+    /// Read entirely on the frontend; kept here only so it round-trips.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_saver: Option<String>,
     /// Header resource-monitor row toggles. Each defaults ON when unset so the
     /// pill shows CPU/RAM/GPU by default; flip one off to hide that row. Shown in
     /// every build (independent of `debug`).
@@ -202,8 +235,9 @@ pub struct ViewerPref {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autocomplete: Option<bool>,
     /// Default completion-length mode for this type (#45 modes): `"sentence"`
-    /// (default), `"block"`, or `"scope"`. Cycled live in-editor with
-    /// Ctrl+Shift+Space; this is just the starting mode. Absent → `"sentence"`.
+    /// (default), `"block"`, or `"scope"`. Cycled live in-editor with Shift+Tab
+    /// while a suggestion is showing; this is just the starting mode. Absent →
+    /// `"sentence"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autocomplete_mode: Option<String>,
     /// Whether the local-model grammar/spelling check is enabled for this type.
@@ -226,6 +260,19 @@ impl Settings {
     /// Defaults ON when unset so existing settings files opt in automatically.
     pub fn agent_remote_control(&self) -> bool {
         self.agent_remote_control.unwrap_or(true)
+    }
+
+    /// Whether the usage recap auto-opens once a day. Defaults ON when unset, so
+    /// an existing install gets the recap without having to find the toggle.
+    pub fn daily_stats_recap(&self) -> bool {
+        self.daily_stats_recap.unwrap_or(true)
+    }
+
+    /// Whether the experimental per-tab Plan/Auto agent-mode badge is offered.
+    /// Defaults OFF when unset: it is opt-in, and switching a mode restarts the
+    /// agent, so nobody gets that behaviour without asking for it.
+    pub fn agent_mode_toggle(&self) -> bool {
+        self.agent_mode_toggle.unwrap_or(false)
     }
 
     /// Whether remote SSH/OpenVPN connections are made headlessly (Eldrun handles

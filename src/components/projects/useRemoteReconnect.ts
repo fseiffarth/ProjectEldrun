@@ -2,11 +2,23 @@ import { useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ProjectEntry, StoredVpnConfig } from "../../types";
+import {
+  needsSeparateKeyPassphrase,
+  type ProjectEntry,
+  type StoredVpnConfig,
+  type VpnAuthNeeds,
+} from "../../types";
 import { IS_WINDOWS } from "../../lib/platform";
 import { forgetConnection, markConnectionOpened } from "../../lib/remoteConnect";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore, type ConnState } from "../../stores/remoteStatus";
+import {
+  markVpnConnected,
+  markVpnConnecting,
+  markVpnError,
+  releaseVpn,
+  useVpnStatusStore,
+} from "../../stores/vpnStatus";
 import type { LogLine } from "../common/ConnectionLog";
 
 // OpenVPN prints this once the tunnel is fully up (mirrors the backend's
@@ -30,8 +42,45 @@ const nextReconnectTermId = (kind: string) => `reconnect-${kind}-${++reconnectTe
 
 /** An embedded interactive login terminal: `{ id, command, key }` for a
  *  `TerminalView` that runs `command`, plus the activation dedupe `key` it
- *  pre-marked so the matching stop forgets exactly that key. */
-type LoginTerm = { id: string; command: string; key: string };
+ *  pre-marked so the matching stop forgets exactly that key. `adopted` marks a
+ *  terminal this hook instance did *not* spawn — it inherited a still-running one
+ *  (see `liveTerms`), so it must re-attach rather than spawn a second PTY. */
+type LoginTerm = { id: string; command: string; key: string; adopted?: boolean };
+
+/**
+ * Login terminals outlive the Connect dialog: their PTYs are spawned
+ * `persistOnUnmount`, so an authenticated tunnel/login keeps running once the
+ * modal closes. Holding them only in refs meant a *reopened* dialog no longer knew
+ * their PTY ids — it could neither show them nor re-attach to them.
+ *
+ * (The VPN tunnel itself no longer depends on this for teardown: interactive tunnels
+ * are armed with a `--writepid` the backend owns, so `openvpn_disconnect` reaches
+ * the root daemon directly. It once didn't, and killing the PTY was the only — and
+ * unreliable — way down.)
+ *
+ * So park them per project here (module scope, surviving the remount) and re-adopt
+ * on mount. Re-adopted terminals render `attachOnly`, which skips `pty_spawn` — a
+ * duplicate spawn on the same id would start a *second* `pkexec openvpn` — and, with
+ * no spawn, no `terminal-ready` fires, so the login command isn't re-typed either.
+ */
+const liveTerms = new Map<string, { vpn?: LoginTerm; ssh?: LoginTerm }>();
+
+const rememberTerm = (projectId: string, kind: "vpn" | "ssh", term: LoginTerm) => {
+  const entry = liveTerms.get(projectId) ?? {};
+  entry[kind] = term;
+  liveTerms.set(projectId, entry);
+};
+
+const dropTerm = (projectId: string, kind: "vpn" | "ssh") => {
+  const entry = liveTerms.get(projectId);
+  if (!entry) return;
+  delete entry[kind];
+  if (!entry.vpn && !entry.ssh) liveTerms.delete(projectId);
+};
+
+/** Re-adopt a parked terminal for a fresh hook instance: same PTY, attach-only. */
+const adoptTerm = (term: LoginTerm | undefined): LoginTerm | null =>
+  term ? { ...term, adopted: true } : null;
 
 /**
  * Reconnect lifecycle for an *existing* remote project, providing the same
@@ -63,19 +112,23 @@ export function useRemoteReconnect(project: ProjectEntry) {
   // project carries none yet. Loaded on mount.
   const [vpnConfigs, setVpnConfigs] = useState<StoredVpnConfig[]>([]);
   // Auth username for `auth-user-pass` configs (see the backend's
-  // `config_requires_userpass`). Seeded from the stored spec; `vpnNeedsUsername`
-  // (queried when the config changes) says whether the field must be shown and
-  // filled — without it OpenVPN would prompt for the username on stdin and hang.
+  // `config_requires_userpass`). Seeded from the stored spec; `vpnNeeds` (queried
+  // when the config changes) says which fields must be shown and filled — leave
+  // one out and OpenVPN prompts for it on stdin, which is closed, so the handshake
+  // hangs until it times out.
   const [vpnUsername, setVpnUsername] = useState(remote?.openvpn?.username ?? "");
-  const [vpnNeedsUsername, setVpnNeedsUsername] = useState(false);
+  const [vpnNeeds, setVpnNeeds] = useState<VpnAuthNeeds>({
+    username: false,
+    keyPassphrase: false,
+  });
   useEffect(() => {
     if (!vpnConfig) {
-      setVpnNeedsUsername(false);
+      setVpnNeeds({ username: false, keyPassphrase: false });
       return;
     }
     let cancelled = false;
-    void invoke<boolean>("openvpn_needs_username", { config: vpnConfig })
-      .then((v) => !cancelled && setVpnNeedsUsername(v))
+    void invoke<VpnAuthNeeds>("openvpn_auth_needs", { config: vpnConfig })
+      .then((v) => !cancelled && setVpnNeeds(v))
       .catch(() => {});
     return () => {
       cancelled = true;
@@ -85,8 +138,24 @@ export function useRemoteReconnect(project: ProjectEntry) {
   const status = useRemoteStatusStore((s) => s.byProject[projectId]);
   const sshStatus: ConnState = status?.ssh ?? "off";
   const vpnStatus: ConnState = status?.vpn ?? "off";
+  const machineVpnStatus = useVpnStatusStore((s) =>
+    vpnConfig ? s.byConfig[vpnConfig] : undefined,
+  );
   const setSsh = useRemoteStatusStore((s) => s.setSsh);
   const setVpn = useRemoteStatusStore((s) => s.setVpn);
+
+  // A tunnel can be brought up from the header/global VPN control, without this
+  // project initiating it. If it matches this project's stored config, surface it
+  // here too so the OpenVPN section opens as connected instead of offering a second
+  // connect path for a machine-wide tunnel that is already up.
+  useEffect(() => {
+    if (!vpnConfig) return;
+    if (machineVpnStatus === "connected" && vpnStatus !== "connected") {
+      markVpnConnected(projectId, vpnConfig);
+    } else if (machineVpnStatus === "connecting" && vpnStatus !== "connecting") {
+      markVpnConnecting(projectId, vpnConfig);
+    }
+  }, [machineVpnStatus, projectId, vpnConfig, vpnStatus]);
 
   // Windows has no ssh ControlMaster socket, so an interactive login can't be
   // ridden for the pooled connection — fall back to the headline (key-auth)
@@ -128,6 +197,21 @@ export function useRemoteReconnect(project: ProjectEntry) {
       cancelled = true;
     };
   }, [projectId, remote, vpnConfig]);
+
+  // Auto-connect opt-in: connect this project silently on launch/activation. Only
+  // offerable once the connect needs no input — a saved SSH password, or a host the
+  // backend recorded as key/agent auth (`key_auth`, which is how a passwordless host
+  // proves itself: it has nothing in the keychain to look for). `sshSaved` flips the
+  // moment a "Save password" connect succeeds, so the checkbox comes alive right
+  // there without a reopen.
+  const autoConnect = remote?.auto_connect ?? false;
+  const autoConnectEligible = sshSaved || remote?.key_auth === true;
+  const setAutoConnect = (enabled: boolean) => {
+    void useProjectsStore
+      .getState()
+      .setProjectAutoConnect(projectId, enabled)
+      .catch((e) => setSshError(String(e)));
+  };
 
   // Load the recently-used OpenVPN configs so a project that carries none yet can
   // reuse one without re-browsing. Best-effort.
@@ -177,8 +261,10 @@ export function useRemoteReconnect(project: ProjectEntry) {
     }
   };
 
-  const vpnTermRef = useRef<LoginTerm | null>(null);
-  const sshTermRef = useRef<LoginTerm | null>(null);
+  // Seeded from the parked terminals, so reopening the dialog re-adopts a login /
+  // tunnel that is still running rather than losing its handle (see `liveTerms`).
+  const vpnTermRef = useRef<LoginTerm | null>(adoptTerm(liveTerms.get(projectId)?.vpn));
+  const sshTermRef = useRef<LoginTerm | null>(adoptTerm(liveTerms.get(projectId)?.ssh));
   // Bump to force a re-render when a ref-held terminal is opened/closed (the
   // terminals themselves live in refs so the readiness effects can read the
   // current one without re-subscribing on every status change).
@@ -224,7 +310,12 @@ export function useRemoteReconnect(project: ProjectEntry) {
     void listen<TerminalOutput>("terminal-output", (ev) => {
       if (ev.payload.id !== termId) return;
       buf = (buf + ev.payload.data).slice(-512);
-      if (buf.includes(VPN_READY_MARKER)) setVpn(projectId, "connected");
+      // The marker is the fastest signal the tunnel is up (the backend also knows,
+      // via the pidfile its `--writepid` arming recorded — but only once OpenVPN
+      // gets around to writing it).
+      if (buf.includes(VPN_READY_MARKER) && vpnConfig) {
+        markVpnConnected(projectId, vpnConfig);
+      }
     }).then((u) => {
       if (cancelled) u();
       else un = u;
@@ -235,7 +326,7 @@ export function useRemoteReconnect(project: ProjectEntry) {
     };
     // vpnTerm is ref-held; re-run when its identity changes via the force tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vpnTermRef.current?.id, projectId, setVpn]);
+  }, [vpnTermRef.current?.id, projectId, vpnConfig]);
 
   // Bring the OpenVPN tunnel up in an embedded terminal. The connect command
   // runs interactively so the user types the passphrase in that visible terminal
@@ -248,29 +339,42 @@ export function useRemoteReconnect(project: ProjectEntry) {
       const command = await invoke<string>("openvpn_login_command", { config: vpnConfig });
       const key = `vpn:${vpnConfig}`;
       markConnectionOpened(key);
-      vpnTermRef.current = { id: nextReconnectTermId("vpn"), command, key };
-      setVpn(projectId, "connecting");
+      const term = { id: nextReconnectTermId("vpn"), command, key };
+      vpnTermRef.current = term;
+      rememberTerm(projectId, "vpn", term);
+      markVpnConnecting(projectId, vpnConfig);
       force();
     } catch {
-      setVpn(projectId, "error");
+      markVpnError(projectId, vpnConfig);
     }
   };
 
   // Stop the OpenVPN channel: cancel any in-flight connect (headless invoke or the
   // embedded login terminal) and reset the lamp to off. Bumping the generation
   // abandons a frozen headless connect; killing the PTY + dropping the dedupe mark
-  // tears down an interactive tunnel; `openvpn_disconnect` best-effort kills a
+  // tears down an interactive tunnel; `releaseVpn` drops this project's claim on a
   // tunnel that had already come up. Used by both the terminal Disconnect and the
   // headless Stop button.
+  //
+  // *Releases*, not disconnects: this button is scoped to one project, but the
+  // tunnel is machine-wide and shared by config path, so it only actually comes
+  // down if no other project is still holding it — otherwise stopping the VPN here
+  // would pull the routing out from under that project and the rest of the OS. The
+  // header's VPN indicator is where a tunnel is killed outright.
   const stopVpn = () => {
     vpnGen.current++;
     const term = vpnTermRef.current;
     if (term) {
+      // Close the login terminal. This is no longer the *teardown* — the interactive
+      // tunnel is armed with a `--writepid` the backend owns, so `releaseVpn` below
+      // signals the root daemon properly rather than hoping a dead PTY takes it with
+      // it (it didn't: the daemon is root and outlived the terminal).
       void invoke("pty_kill", { id: term.id }).catch(() => {});
       forgetConnection(term.key);
       vpnTermRef.current = null;
+      dropTerm(projectId, "vpn");
     }
-    if (vpnConfig) void invoke("openvpn_disconnect", { config: vpnConfig }).catch(() => {});
+    releaseVpn(projectId, vpnConfig);
     setVpn(projectId, "off");
     force();
   };
@@ -330,7 +434,9 @@ export function useRemoteReconnect(project: ProjectEntry) {
       const target = `${remote.user ? `${remote.user}@` : ""}${remote.host}`;
       const key = `ssh:${target}:${remote.port ?? ""}`;
       markConnectionOpened(key);
-      sshTermRef.current = { id: nextReconnectTermId("ssh"), command, key };
+      const term = { id: nextReconnectTermId("ssh"), command, key };
+      sshTermRef.current = term;
+      rememberTerm(projectId, "ssh", term);
       const gen = ++sshGen.current;
       setSsh(projectId, "connecting");
       force();
@@ -373,31 +479,49 @@ export function useRemoteReconnect(project: ProjectEntry) {
     };
   }, [vpnConfig]);
 
-  // Bring the OpenVPN tunnel up with the supplied passphrase. Blocks until the
+  // Bring the OpenVPN tunnel up with the supplied secrets. `keyPassphrase` is only
+  // a distinct secret for a config that has an encrypted key *and* an
+  // `auth-user-pass` account (see `needsSeparateKeyPassphrase`); otherwise
+  // `password` already is the key passphrase and this is empty. Blocks until the
   // backend reports the tunnel ready (or fails). Mirrors `useRemoteSession`'s
   // headless `connectVpn`.
-  const connectVpnHeadless = async (password: string, remember = false) => {
+  const connectVpnHeadless = async (
+    password: string,
+    keyPassphrase = "",
+    remember = false,
+  ) => {
     if (!vpnConfig) return;
     const gen = ++vpnGen.current;
-    setVpn(projectId, "connecting");
+    markVpnConnecting(projectId, vpnConfig);
     setVpnError("");
     setVpnLog([]);
     try {
       await invoke("openvpn_connect", {
         config: vpnConfig,
         username: vpnUsername || null,
-        password,
+        // Blank means "use the saved passphrase", never "authenticate with the empty
+        // string" — send null so the backend falls back to the keychain.
+        password: password || null,
+        keyPassphrase: keyPassphrase || null,
         remember,
       });
-      if (gen !== vpnGen.current) return; // stopped mid-connect
+      if (gen !== vpnGen.current) {
+        // Stopped mid-connect — but the tunnel came up anyway: `stopVpn`'s teardown
+        // raced ahead of the handshake it was trying to cancel. Leaving it would
+        // strand the machine's routing on a tunnel nobody asked for and nothing in
+        // the UI claims. Release again now that it's real (a no-op if some *other*
+        // project is holding this config).
+        releaseVpn(projectId, vpnConfig);
+        return;
+      }
       // Persist the (non-secret) username so a later silent activation can reuse
       // it from the keychained password with no prompt.
-      if (vpnNeedsUsername && vpnUsername) persistVpnConfig(vpnConfig);
+      if (vpnNeeds.username && vpnUsername) persistVpnConfig(vpnConfig);
       setVpnSaved(remember);
-      setVpn(projectId, "connected");
+      markVpnConnected(projectId, vpnConfig);
     } catch (e) {
       if (gen !== vpnGen.current) return; // stopped — ignore the stale failure
-      setVpn(projectId, "error");
+      markVpnError(projectId, vpnConfig);
       setVpnError(String(e));
     }
   };
@@ -406,29 +530,88 @@ export function useRemoteReconnect(project: ProjectEntry) {
   // the pool is up and the SSH lamp goes green — which lets the CenterPanel's
   // held remote panes mount and spawn. Mirrors `pollSshReady`'s success branch
   // but with a user-typed password rather than riding an existing ControlMaster.
-  const connectSshHeadless = async (password: string, remember = false) => {
+  const connectSshHeadless = async (password: string, remember?: boolean) => {
     if (!remote) return;
     const gen = ++sshGen.current;
     setSsh(projectId, "connecting");
     setSshError("");
+    // A blank field means "use what's saved" (the secret itself never comes back to
+    // the UI, so a saved password can't be pre-filled — the user just leaves it
+    // empty). Send null, not "": both legs read null as "nothing given" and fall
+    // back to the keychain, where `""` would be taken as the password itself.
+    const secret = password || null;
     try {
       await invoke("ssh_connect", {
         user: remote.user ?? null,
         host: remote.host,
         port: remote.port ?? null,
-        password,
-        remember,
+        password: secret,
+        // The checkbox, or `null` when there isn't one (the Windows key-auth
+        // Connect button): `false` means "the user unticked it" and clears the
+        // saved password — never say that on the user's behalf.
+        remember: remember ?? null,
       });
       if (gen !== sshGen.current) return; // stopped mid-connect
-      await invoke("remote_connect", { projectId, password: null });
+      // The password must be handed to `remote_connect` too, not just the probe.
+      // `ssh_connect` authenticates a throwaway process with `ControlMaster=no`
+      // (reuse-only — it never *creates* a master), so a successful probe leaves
+      // nothing behind for the pool to ride. `remote_connect` is what opens the
+      // master-owning pooled session, and with a null password it drops to
+      // key/agent auth — which a password-auth host rejects. It falls back to a
+      // *saved* password, so this only ever worked with "Save password" ticked.
+      await invoke("remote_connect", { projectId, password: secret });
       if (gen !== sshGen.current) return;
-      setSshSaved(remember);
+      // Only a checkbox-driven connect changed what's in the keychain.
+      if (remember !== undefined) setSshSaved(remember);
       setSsh(projectId, "connected");
     } catch (e) {
       if (gen !== sshGen.current) return; // stopped — ignore the stale failure
       setSsh(projectId, "error");
       setSshError(String(e));
     }
+  };
+
+  // Delete this project's saved SSH password from the OS keychain. Used by both
+  // "Forget saved password" and by unticking "Save password" — unticking is a
+  // request to not have the secret stored, and deferring that to the next connect
+  // would leave it sitting in the keychain for a session that may never reconnect.
+  // The live connection is untouched: forgetting a credential and dropping the pool
+  // are separate acts; the caller pairs them for a full log-out.
+  const forgetSshPassword = async () => {
+    if (!remote) return;
+    try {
+      await invoke("remote_forget_password", {
+        user: remote.user ?? null,
+        host: remote.host,
+        port: remote.port ?? null,
+      });
+      setSshSaved(false);
+      // Auto-connect leaned on that password: with it gone (and no key auth to fall
+      // back on) the opt-in can no longer fire, so clear it rather than leave a
+      // ticked toggle that silently does nothing. `autoConnectRemote` re-checks
+      // eligibility anyway — this just keeps the UI honest.
+      if (remote.auto_connect && remote.key_auth !== true) setAutoConnect(false);
+    } catch (e) {
+      setSshError(String(e));
+    }
+  };
+
+  // Same for the VPN passphrase (and, for a config with both, its key passphrase —
+  // `vpn_forget_password` clears both accounts).
+  const forgetVpnPassword = async () => {
+    if (!vpnConfig) return;
+    try {
+      await invoke("vpn_forget_password", { config: vpnConfig });
+      setVpnSaved(false);
+    } catch (e) {
+      setVpnError(String(e));
+    }
+  };
+
+  // "Forget saved password": drop every credential this project has stored.
+  const forgetPasswords = async () => {
+    await forgetSshPassword();
+    await forgetVpnPassword();
   };
 
   // Stop the SSH channel: cancel any in-flight connect (headless invoke or the
@@ -443,6 +626,7 @@ export function useRemoteReconnect(project: ProjectEntry) {
       void invoke("pty_kill", { id: term.id }).catch(() => {});
       forgetConnection(term.key);
       sshTermRef.current = null;
+      dropTerm(projectId, "ssh");
     }
     void invoke("remote_disconnect", { projectId }).catch(() => {});
     setSsh(projectId, "off");
@@ -456,7 +640,10 @@ export function useRemoteReconnect(project: ProjectEntry) {
     vpnConfigs,
     vpnUsername,
     setVpnUsername,
-    vpnNeedsUsername,
+    vpnNeeds,
+    // A second field is only warranted when the key passphrase is a *different*
+    // secret from the password — see `needsSeparateKeyPassphrase`.
+    vpnNeedsKeyPassphrase: needsSeparateKeyPassphrase(vpnNeeds),
     selectVpnConfig,
     browseVpnConfig,
     winManual,
@@ -473,7 +660,13 @@ export function useRemoteReconnect(project: ProjectEntry) {
     vpnLog,
     sshSaved,
     vpnSaved,
+    autoConnect,
+    autoConnectEligible,
+    setAutoConnect,
     connectVpnHeadless,
     connectSshHeadless,
+    forgetPasswords,
+    forgetSshPassword,
+    forgetVpnPassword,
   };
 }

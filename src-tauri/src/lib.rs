@@ -441,6 +441,9 @@ pub fn run() {
     // Cancel flags for in-flight disk-usage scans, one per scanning pane. See
     // `commands::disk_usage`.
     let disk_scans = commands::disk_usage::new_state();
+    // Recursive file-churn watcher on the active project + the counters it has
+    // seen since the last flush (see `services::usage_stats`).
+    let usage_watch = services::usage_stats::new_state();
 
     tauri::Builder::default()
         .manage(pty_registry)
@@ -448,10 +451,14 @@ pub fn run() {
         .manage(workspace)
         .manage(fs_watch)
         .manage(remote_pool)
+        // Carries PDF pages between two Eldrun windows: they are separate WebViews
+        // with separate JS heaps, so the bytes must cross the process boundary.
+        .manage(commands::pdf_clip::PdfClipboard::default())
         .manage(sync_manifest)
         .manage(auto_sync)
         .manage(git_peer)
         .manage(disk_scans)
+        .manage(usage_watch.clone())
         .setup(|_app| {
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
@@ -520,6 +527,10 @@ pub fn run() {
             // persist. Off-thread so file I/O never blocks startup; additive and
             // idempotent, so a race with the frontend's first load is benign.
             std::thread::spawn(commands::projects::migrate_legacy_projects);
+            // Remove project containers a previous run left behind (a crash
+            // skips the exit teardown) and the staged config copies. Off-thread:
+            // docker may be slow or absent, and neither may block startup.
+            std::thread::spawn(services::sandbox::sweep_orphans);
             // Start the background per-project SSH-link traffic sampler so each
             // remote project's daily/monthly/overall usage accrues even when its
             // Network Traffic tab is closed (see services::net_usage). No-op on
@@ -532,6 +543,10 @@ pub fn run() {
                     .clone();
                 services::net_usage::start(pool);
             }
+            // Periodically fold the file-churn the watcher has seen into
+            // `usage_stats.json` (see services::usage_stats). The watcher itself is
+            // attached on project activation, via `usage_watch_project`.
+            services::usage_stats::start(usage_watch);
             // Place the main window where it was last closed and MAKE IT VISIBLE.
             // Must stay last in `setup`: the window is created hidden (see
             // `restore_main_window`), so anything that returns early before this
@@ -554,7 +569,10 @@ pub fn run() {
             commands::projects::set_project_description,
             commands::projects::set_project_name,
             commands::projects::set_project_sandbox,
+            commands::projects::set_project_sandbox_spec,
+            commands::projects::sandbox_preflight,
             commands::projects::set_project_openvpn,
+            commands::projects::set_project_auto_connect,
             commands::projects::set_project_categories,
             commands::projects::set_project_git_disabled,
             commands::projects::save_tab_layout,
@@ -606,6 +624,7 @@ pub fn run() {
             commands::calendar::calendar_write_ics,
             // SSH / remote projects
             commands::ssh::ssh_connect,
+            commands::ssh::ssh_probe,
             commands::ssh::remote_has_saved_password,
             commands::ssh::remote_forget_password,
             commands::ssh::remote_login_command,
@@ -619,7 +638,14 @@ pub fn run() {
             commands::network::network_host_snapshot,
             commands::network::network_ssh_link_snapshot,
             commands::net_usage::get_net_usage,
+            // Usage counters + daily recap.
+            commands::usage_stats::usage_bump,
+            commands::usage_stats::usage_summary,
+            commands::usage_stats::usage_watch_project,
+            commands::usage_stats::usage_git_stats,
             commands::monitor::system_monitor_snapshot,
+            // AC-vs-battery detection for Energy Saver mode.
+            commands::power::get_power_state,
             // SSH-sync (Phase 1): selective local↔remote mirror sync.
             commands::sync::sync_pull,
             commands::sync::sync_whole_project,
@@ -627,6 +653,7 @@ pub fn run() {
             commands::sync::sync_push,
             commands::sync::sync_mark_selected,
             commands::sync::sync_set_auto,
+            commands::sync::sync_auto_preview,
             commands::sync::sync_status,
             commands::sync::sync_file_meta,
             commands::sync::sync_diff,
@@ -638,11 +665,14 @@ pub fn run() {
             commands::ssh::open_external_url,
             // OpenVPN tunnels for VPN-gated remote projects
             commands::openvpn::openvpn_connect,
-            commands::openvpn::openvpn_needs_username,
+            commands::openvpn::openvpn_auth_needs,
             commands::openvpn::vpn_has_saved_password,
+            commands::openvpn::vpn_can_connect_silently,
+            commands::openvpn::vpn_forget_password,
             commands::openvpn::openvpn_login_command,
             commands::openvpn::openvpn_disconnect,
             commands::openvpn::openvpn_status,
+            commands::openvpn::openvpn_active,
             commands::openvpn::openvpn_store_config,
             commands::openvpn::openvpn_list_configs,
             // Git hosting (GitHub / GitLab) publishing
@@ -656,6 +686,7 @@ pub fn run() {
             commands::timer::timer_flush_app,
             commands::timer::timer_flush_project,
             commands::timer::get_project_activity,
+            commands::timer::get_time_activity_all,
             // File tree + file I/O (commands::fs)
             commands::fs::list_dir,
             commands::fs::list_recent_downloads,
@@ -685,6 +716,8 @@ pub fn run() {
             commands::fs::write_file_text,
             commands::fs::read_file_bytes,
             commands::fs::write_file_bytes,
+            commands::pdf_clip::pdf_clip_set,
+            commands::pdf_clip::pdf_clip_get,
             commands::fs::file_mtime,
             commands::format::format_source,
             commands::format::formatter_available,
@@ -758,6 +791,13 @@ pub fn run() {
             commands::git_peer::git_peer_sync_now,
             commands::git_peer::git_peer_checkout,
             commands::git_peer::git_peer_resolve,
+            commands::git_peer::git_peer_pair_confirm,
+            commands::git_peer::git_peer_backups,
+            commands::git_peer::git_peer_restore_backup,
+            commands::git_peer::git_peer_mirror_dir,
+            // Local-loss warnings (#28q): what lockstep/sync destroyed in the mirror.
+            commands::local_loss::local_loss_list,
+            commands::local_loss::local_loss_ack,
             commands::git::git_diff_file,
             commands::git::git_blame,
             commands::git::git_file_log,
@@ -795,6 +835,7 @@ pub fn run() {
             commands::agents::agent_is_installed,
             commands::agents::npm_is_installed,
             commands::agents::list_agents,
+            commands::agents::codex_hook_status,
             commands::agents::install_agent,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
@@ -827,6 +868,9 @@ pub fn run() {
                 // Tear down any OpenVPN tunnels brought up for VPN-gated
                 // remote projects so no privileged tunnel outlives the app.
                 services::openvpn::disconnect_all();
+                // Remove every project container this run created — container
+                // lifetime is the project session, never longer than the app.
+                services::sandbox::down_all();
                 // Tear down pooled SSH/SFTP connections so no ssh ControlMaster
                 // child (and the master socket it owns) outlives Eldrun.
                 use tauri::Manager;

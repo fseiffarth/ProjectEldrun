@@ -48,7 +48,7 @@ export interface ViewerPref {
   /** Whether Ctrl+Space local autocomplete is enabled for this type (#45). */
   autocomplete?: boolean;
   /** Default completion-length mode for this type (#45 modes). Cycled live
-   *  in-editor with Ctrl+Shift+Space; absent → "sentence". */
+   *  in-editor with Shift+Tab while a suggestion is showing; absent → "sentence". */
   autocomplete_mode?: AutocompleteMode;
   /** Whether the local-model grammar/spelling check is enabled for this type.
    *  Local-only (Ollama) and opt-in; default OFF. */
@@ -111,12 +111,34 @@ export interface Settings {
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
   agent_remote_control?: boolean;
+  /** When true (the default), the usage recap opens by itself on the first launch
+   *  of each day. Turning it off stops the popup, not the counting — the recap
+   *  stays reachable from Settings. */
+  daily_stats_recap?: boolean;
+  /** UTC date ("YYYY-MM-DD") the recap was last auto-shown, so it opens once a day
+   *  rather than once per window. Written by the recap host. */
+  daily_stats_last_shown?: string;
+  /** EXPERIMENTAL, default OFF. Shows a Plan/Auto badge on agent tabs whose agent
+   *  supports an absolute mode flag AND resumes on respawn (currently Claude only —
+   *  see components/tabs/agentModes.ts). Switching restarts the agent; the
+   *  conversation is resumed, the terminal scrollback is not. */
+  agent_mode_toggle?: boolean;
   /** When true (the default), remote SSH/OpenVPN connections are made headlessly
    *  in the background (Eldrun handles the password transiently). When false, they
    *  are launched as interactive terminal tabs in the Eldrun root scope, so the
    *  password is typed directly into the live terminal and Eldrun never handles
    *  it. Default ON (headless) preserves existing behaviour. */
   connections_headless?: boolean;
+  /** Path of the stored `.ovpn` config brought up automatically **on launch** —
+   *  armed from the header's VPN menu, with no project behind it. Unset/null = no
+   *  tunnel starts by itself. Only one config can be armed: a tunnel reroutes the
+   *  whole machine, so two would fight over the routing. */
+  vpn_auto_connect?: string | null;
+  /** Energy-saver mode. "off" never throttles; "battery" (the default) throttles
+   *  only while running on battery; "always" throttles regardless of power. When
+   *  active, Eldrun pauses the blob auto-spin, collapses idle animations, and
+   *  widens always-on UI timers to reduce CPU/battery drain. */
+  energy_saver?: "off" | "battery" | "always";
   /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
   right_panel_pinned?: boolean;
   /** Width of the right (file/git) panel in px. Set by dragging the panel's left
@@ -194,6 +216,15 @@ export interface OpenVpnSpec {
   username?: string;
 }
 
+/** Verdict of `ssh_probe`: a silent, keychain-read-only reachability + auth check.
+ *  `unreachable` distinguishes "this network can't reach the host" from "the host
+ *  rejected the credential" — only the former warrants bringing a VPN tunnel up. */
+export interface SshProbe {
+  ok: boolean;
+  unreachable: boolean;
+  error: string;
+}
+
 /** A previously-used `.ovpn` config copied into Eldrun's store, offered for
  *  reuse so a config need only be browsed for once. */
 export interface StoredVpnConfig {
@@ -203,6 +234,25 @@ export interface StoredVpnConfig {
   name: string;
 }
 
+/** Which secrets a `.ovpn` config needs from the user (`openvpn_auth_needs`), so
+ *  the UI shows exactly the fields that config will be asked for. The two are
+ *  independent — a config can need both, and OpenVPN prompts for them separately,
+ *  so supplying only one hangs the handshake on the other prompt. The local root
+ *  password is a third secret, but polkit/`pkexec` collects that one, not Eldrun. */
+export interface VpnAuthNeeds {
+  /** Bare `auth-user-pass`: server-side account auth, so a username is required. */
+  username: boolean;
+  /** An encrypted private key, whose passphrase OpenVPN asks for separately. */
+  keyPassphrase: boolean;
+}
+
+/** Whether the config's key passphrase is a *separate* field from its password.
+ *  When a config has an encrypted key but no `auth-user-pass` account, the single
+ *  password field already *is* the key passphrase (it goes to `--askpass`), so a
+ *  second field would be asking for the same secret twice. */
+export const needsSeparateKeyPassphrase = (needs: VpnAuthNeeds): boolean =>
+  needs.username && needs.keyPassphrase;
+
 export interface RemoteSpec {
   user?: string;
   host: string;
@@ -210,16 +260,29 @@ export interface RemoteSpec {
   remote_path: string;
   /** Optional OpenVPN tunnel brought up before reaching the host. */
   openvpn?: OpenVpnSpec;
+  /** Opt-in: connect this project on launch/activation instead of waiting for the
+   *  user to bring it up from the pill's connection lamp. Only offered when the
+   *  connect can complete with no prompt (saved SSH password, or `key_auth`), and
+   *  the connect path re-checks that — it never prompts. */
+  auto_connect?: boolean;
+  /** Recorded by the backend, not user-set: the last successful connect to this
+   *  host used no password at all (key/agent auth). A passwordless host has nothing
+   *  in the keychain, so this is the only way the UI can tell it is auto-connectable. */
+  key_auth?: boolean;
 }
 
-/** Per-project Docker sandbox config. When `enabled`, agent tabs run inside a
- *  container that mounts only the project directory (plus minimal agent
- *  auth/state paths). Absent = run on host. The hardening fields below are
- *  optional overrides; unset means the built-in default (see `services::sandbox`
- *  in the backend). */
+/** Per-project container config (TODO #38). When `enabled`, every terminal and
+ *  agent tab of the project execs into ONE session-lived Docker container that
+ *  mounts only the project directory (plus minimal agent auth/state paths) at
+ *  its identical host path. Absent = run on host. The hardening fields below
+ *  are optional overrides; unset means the built-in default (see
+ *  `services::sandbox` in the backend). */
 export interface SandboxSpec {
   enabled: boolean;
   image?: string;
+  /** In-repo Dockerfile (relative to the project dir); when set, the container
+   *  is built from it (`eldrun-<id>:latest`) instead of pulling `image`. */
+  dockerfile?: string;
   /** `--pids-limit` (fork-bomb guard). Unset = generous built-in default. */
   pids_limit?: number;
   /** Hard memory cap, e.g. "4g" (`--memory`). Unset = unlimited. */

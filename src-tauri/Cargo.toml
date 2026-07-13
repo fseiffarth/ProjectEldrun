@@ -1,6 +1,6 @@
 [package]
 name = "eldrun"
-version = "0.1.16"
+version = "0.1.21"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
@@ -69,6 +69,11 @@ futures-util = "0.3"
 # `BytesMut` buffer type for chunked SFTP reads (git-lockstep streaming transport,
 # #28n Phase 3); matches the `bytes` version openssh-sftp-client already resolves.
 bytes = "1"
+# AC-vs-battery detection for Energy Saver mode (`commands/power.rs`). The
+# maintained fork of the `battery` crate; one API over Linux
+# (`/sys/class/power_supply`), Windows (`GetSystemPowerStatus`), and macOS
+# (IOKit), so it needs no cfg-gating here.
+starship-battery = "0.10"
 
 # Linux/Unix: workspace backends + crash signal handling
 [target.'cfg(target_os = "linux")'.dependencies]

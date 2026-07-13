@@ -6,9 +6,10 @@
 //! sync, git). This loop reads that socket's cumulative `bytes_sent` /
 //! `bytes_received` counters for each connected project on a timer — regardless
 //! of whether the Network Traffic tab is open — diffs them against the previous
-//! sample, and folds the deltas into today's UTC bucket. That is what makes the
-//! tab's "today / this month / overall" totals reflect real usage rather than
-//! only what was observed while watching.
+//! sample, and folds the deltas into the current UTC hour bucket (and thereby
+//! the current UTC day). That is what makes the tab's "this hour / today / this
+//! week / this month / overall" totals reflect real usage rather than only what
+//! was observed while watching.
 //!
 //! Reset handling mirrors the pane's client-side `rateFromSamples`: when a
 //! project's ControlMaster restarts (its `connection_id` changes) or its
@@ -140,6 +141,12 @@ mod linux {
     /// Persist and clear the accumulated deltas in one read-modify-write, off the
     /// async runtime thread. Nonzero-only, so an idle interval never rewrites the
     /// file.
+    ///
+    /// Bytes are booked to the hour (and day) the *flush* falls in, not the hour
+    /// each sample fell in. With a ~30 s flush cadence, an hour boundary can
+    /// therefore misattribute at most the last flush interval's bytes to the new
+    /// hour — invisible in a per-hour total, and the day is unaffected except in
+    /// the one flush that straddles midnight.
     async fn flush(pending: &mut HashMap<String, ByteCounts>) {
         let drained: Vec<(String, ByteCounts)> = pending
             .drain()
@@ -150,11 +157,11 @@ mod linux {
         }
         let _ = tauri::async_runtime::spawn_blocking(move || {
             let mut summary = net_usage::load();
-            let date = storage::today_utc();
+            let hour = storage::hour_utc();
             for (id, c) in &drained {
-                summary.add(id, &date, c.rx, c.tx);
+                summary.add(id, &hour, c.rx, c.tx);
             }
-            let _ = net_usage::save(&summary);
+            let _ = net_usage::save(&mut summary);
         })
         .await;
     }

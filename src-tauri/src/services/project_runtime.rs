@@ -210,6 +210,37 @@ pub fn switch(
         window_service::project_tracked_ids(&wins.windows, project_id)
     };
 
+    // 10. Project containers (#38): tear down the container of the project
+    //     being left — unless tabs are still live inside it (a background
+    //     agent keeps its container until they finish or the app exits) — and
+    //     warm up the next project's. On its own thread, not merely off the
+    //     UI thread: `up()` can build an image (minutes) and must never delay
+    //     the switch; the spawn-path `up()` stays the fallback for tabs
+    //     opened before the warm-up completes, and sandbox's lifecycle lock
+    //     serializes rapid switches. Best-effort by design.
+    {
+        use tauri::Manager;
+        let registry = app
+            .state::<crate::commands::terminal::RegistryState>()
+            .inner()
+            .clone();
+        let prev = previous_project_id.map(String::from);
+        let next = project_id.map(String::from);
+        std::thread::spawn(move || {
+            if let Some(prev) = prev {
+                let live = registry.lock().unwrap().any_live_for_scope(&prev);
+                if !live {
+                    crate::services::sandbox::down_for_project(&prev);
+                }
+            }
+            if let Some(next) = next {
+                if let Err(e) = crate::services::sandbox::up_for_project(&next) {
+                    eprintln!("sandbox: container for '{next}': {e}");
+                }
+            }
+        });
+    }
+
     Ok(ProjectRuntimeSwitchedPayload {
         opened_window_ids,
         ..payload

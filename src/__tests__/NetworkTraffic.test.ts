@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   aggregateInterfaceCounters,
   formatBytes,
+  formatFileCount,
   rateFromSamples,
+  isoWeekKeys,
+  summarizeNetFileUsage,
   summarizeNetUsage,
 } from "../components/monitoring/NetworkTrafficPane";
 
@@ -47,26 +50,108 @@ describe("network traffic calculations", () => {
     expect(formatBytes(2 * 1024 * 1024)).toBe("2.0 MiB");
   });
 
-  it("summarizes persisted usage into today / month / overall (UTC)", () => {
-    // 2026-07-03T12:00:00Z → today 2026-07-03, month 2026-07.
-    const now = Date.parse("2026-07-03T12:00:00Z");
+  it("summarizes persisted usage into hour / today / week / month / overall (UTC)", () => {
+    // 2026-07-03T12:30Z is a Friday → hour 2026-07-03T12, ISO week Mon 06-29
+    // through Sun 07-05, month 2026-07. 06-28 (Sunday) is the week before, and
+    // the three June days sit in the month before.
+    const now = Date.parse("2026-07-03T12:30:00Z");
     const totals = summarizeNetUsage(
       {
-        "2026-07-03": { rx: 100, tx: 40 },
-        "2026-07-01": { rx: 10, tx: 5 },
-        "2026-06-30": { rx: 1_000, tx: 2_000 },
+        hours: {
+          "2026-07-03T12": { rx: 7, tx: 3 },
+          "2026-07-03T11": { rx: 93, tx: 37 },
+        },
+        days: {
+          "2026-07-03": { rx: 100, tx: 40 },
+          "2026-06-30": { rx: 10, tx: 5 },
+          "2026-06-29": { rx: 1, tx: 1 },
+          "2026-06-28": { rx: 1_000, tx: 2_000 },
+        },
       },
       now,
     );
+    expect(totals.hour).toEqual({ rx: 7, tx: 3 });
     expect(totals.today).toEqual({ rx: 100, tx: 40 });
-    expect(totals.month).toEqual({ rx: 110, tx: 45 });
-    expect(totals.overall).toEqual({ rx: 1_110, tx: 2_045 });
+    expect(totals.week).toEqual({ rx: 111, tx: 46 });
+    expect(totals.month).toEqual({ rx: 100, tx: 40 });
+    expect(totals.overall).toEqual({ rx: 1_111, tx: 2_046 });
   });
 
-  it("returns zero totals for an empty usage map", () => {
-    const totals = summarizeNetUsage({}, Date.parse("2026-07-03T12:00:00Z"));
+  it("keeps day-derived totals intact when the hour window has been pruned", () => {
+    // Hours are retained for 14 days, days forever: an old day still counts
+    // toward week/month/overall with no hour bucket left to back it.
+    const totals = summarizeNetUsage(
+      { hours: {}, days: { "2026-05-02": { rx: 500, tx: 100 } } },
+      Date.parse("2026-07-03T12:00:00Z"),
+    );
+    expect(totals.hour).toEqual({ rx: 0, tx: 0 });
+    expect(totals.overall).toEqual({ rx: 500, tx: 100 });
+  });
+
+  it("returns zero totals for an empty usage report", () => {
+    const totals = summarizeNetUsage({ hours: {}, days: {} }, Date.parse("2026-07-03T12:00:00Z"));
+    expect(totals.hour).toEqual({ rx: 0, tx: 0 });
     expect(totals.today).toEqual({ rx: 0, tx: 0 });
+    expect(totals.week).toEqual({ rx: 0, tx: 0 });
     expect(totals.month).toEqual({ rx: 0, tx: 0 });
     expect(totals.overall).toEqual({ rx: 0, tx: 0 });
+  });
+
+  it("anchors the ISO week to Monday, including on its Monday and Sunday edges", () => {
+    const week = [
+      "2026-06-29",
+      "2026-06-30",
+      "2026-07-01",
+      "2026-07-02",
+      "2026-07-03",
+      "2026-07-04",
+      "2026-07-05",
+    ];
+    // Monday 00:00 and Sunday 23:59 UTC must yield the same seven days — the
+    // Sunday edge is the one a naive getUTCDay()-based offset gets wrong.
+    expect(isoWeekKeys(Date.parse("2026-06-29T00:00:00Z"))).toEqual(week);
+    expect(isoWeekKeys(Date.parse("2026-07-03T12:30:00Z"))).toEqual(week);
+    expect(isoWeekKeys(Date.parse("2026-07-05T23:59:59Z"))).toEqual(week);
+    // The next Monday rolls over to a fresh week.
+    expect(isoWeekKeys(Date.parse("2026-07-06T00:00:00Z"))[0]).toBe("2026-07-06");
+  });
+
+  it("summarizes per-project FILE counts into hour / today / week / month / overall", () => {
+    const now = Date.parse("2026-07-03T12:30:00Z");
+    const totals = summarizeNetFileUsage(
+      {
+        hours: {},
+        days: {},
+        fileHours: {
+          "2026-07-03T12": { down: 2, up: 0 },
+          "2026-07-03T11": { down: 5, up: 1 },
+        },
+        fileDays: {
+          "2026-07-03": { down: 9, up: 3 },
+          "2026-06-30": { down: 1, up: 0 },
+          "2026-06-28": { down: 100, up: 20 },
+        },
+      },
+      now,
+    );
+    expect(totals.hour).toEqual({ down: 2, up: 0 });
+    expect(totals.today).toEqual({ down: 9, up: 3 });
+    expect(totals.week).toEqual({ down: 10, up: 3 });
+    expect(totals.month).toEqual({ down: 9, up: 3 });
+    expect(totals.overall).toEqual({ down: 110, up: 23 });
+  });
+
+  it("returns zero file totals when the report has no file-count maps yet", () => {
+    const totals = summarizeNetFileUsage(
+      { hours: {}, days: {} },
+      Date.parse("2026-07-03T12:00:00Z"),
+    );
+    expect(totals.hour).toEqual({ down: 0, up: 0 });
+    expect(totals.overall).toEqual({ down: 0, up: 0 });
+  });
+
+  it("formats file counts with locale grouping", () => {
+    expect(formatFileCount(0)).toBe("0");
+    expect(formatFileCount(1234)).toBe("1,234");
   });
 });

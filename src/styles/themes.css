@@ -1166,6 +1166,15 @@ select option {
   font-variant-numeric: tabular-nums;
 }
 
+/* PDF toolbar "current page / total" readout. */
+.file-viewer-pdf-pagenum {
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  padding: 0 4px;
+}
+
 /* Text-size control: the numeric level doubles as a "reset to default" button. */
 .file-viewer-fontsize-level {
   min-width: 22px;
@@ -2578,6 +2587,33 @@ select option {
    a control; suppress the focus ring — the page content carries no caret. */
 .file-viewer-pdf-scroll:focus { outline: none; }
 
+/* Page-number divider under each page: a muted "N / total" label flanked by
+   dashed rules, so page boundaries and numbers are identifiable while
+   scrolling. Lives inside the page wrap (below the canvas) so overlays and the
+   search-marker math, both anchored to the wrap's top, are unaffected. The
+   label itself provides the whole inter-page gap (the pages stack has gap: 0)
+   and vertically centers its text, so the number sits midway between pages.
+   The wrap zeroes line-height for the canvas; restore it here. */
+.file-viewer-pdf-page-gap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 28px;
+  line-height: normal;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.file-viewer-pdf-page-gap::before,
+.file-viewer-pdf-page-gap::after {
+  content: "";
+  flex: 1;
+  border-top: 1px dashed var(--border-color);
+}
+
 /* #71 search-match markers: a non-interactive rail laid over the scroll area's
    native scrollbar, one tick per Ctrl+F hit at its fractional document position
    so off-screen matches stay locatable. pointer-events:none keeps the scrollbar
@@ -2654,7 +2690,9 @@ select option {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  /* Inter-page spacing comes from each wrap's page-gap divider, whose label
+     centers vertically within it — no flex gap on top of that. */
+  gap: 0;
   min-width: min-content;
 }
 
@@ -5909,6 +5947,28 @@ select option {
   }
 }
 
+/* Energy Saver: the agent-status glows/pulses can animate indefinitely (as long
+   as a tab is working or waiting on a prompt), so collapse them to the same
+   steady tints reduced-motion uses. The state stays fully visible; only the
+   continuous repaint stops. Driven by [data-energy-saver="on"] on the document
+   root (set in AppShell from the power/settings signal). */
+:root[data-energy-saver="on"] .tab.working {
+  animation: none;
+  box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 16%, transparent);
+}
+:root[data-energy-saver="on"] .tab.needs-decision {
+  animation: none;
+  box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--warning) 22%, transparent);
+}
+:root[data-energy-saver="on"] .pill-status-bar.working,
+:root[data-energy-saver="on"] .pill-status-bar.needs-decision {
+  animation: none;
+  opacity: 0.85;
+}
+:root[data-energy-saver="on"] .tab-new-btn.empty-hint {
+  animation: none;
+}
+
 .tab-close {
   display: flex;
   align-items: center;
@@ -5962,6 +6022,30 @@ select option {
 .tab-locality.remote,
 .tab-source.remote { color: var(--warning); }
 .tab-locality:hover { background-color: var(--pill-hover-bg); }
+
+/* Planner/doer badge (experimental `agent_mode_toggle`) — same 16px badge box as
+   the locality toggle, sitting beside it on agent tabs. Three states, two of them
+   wired: `unset` (the agent's own ask-each-time default, muted so it reads as
+   "nothing imposed"), `plan` (restrained), `auto` (edits flow). */
+.tab-agent-mode {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  line-height: 1;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: background-color 0.1s, color 0.1s;
+}
+.tab-agent-mode.unset { color: var(--text-muted); opacity: 0.6; }
+.tab-agent-mode.plan { color: var(--info, #4aa3df); }
+.tab-agent-mode.auto { color: var(--warning); }
+.tab-agent-mode:hover { background-color: var(--pill-hover-bg); opacity: 1; }
 
 /* Per-subwindow close (×), shown in the tab bar when >1 subwindow exists.
    The bar scrolls horizontally when tabs overflow; pin this button to the right
@@ -6494,6 +6578,9 @@ select option {
 }
 
 .file-tree-breadcrumb {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -6501,6 +6588,7 @@ select option {
   width: 100%;
   padding: 2px 4px 4px;
   font-size: 12px;
+  background: var(--bg-panel);
 }
 
 .file-tree-up {
@@ -6599,6 +6687,36 @@ select option {
 }
 .right-panel-source-switch .source-seg:last-child.active {
   background: var(--warning);
+}
+
+/* One-click SSH logout beside the Remote/Local switch, shown only while SSH is
+   connected (moved here from the project pill). Same quiet chrome as the
+   switch; the danger tint only appears on hover, so a connected project isn't
+   shouting red at rest. */
+.right-panel-conn-logout {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 2px 7px;
+  height: 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1;
+  cursor: pointer;
+}
+.right-panel-conn-logout:hover {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
 }
 
 .file-tree-crumb {
@@ -7093,6 +7211,17 @@ select option {
   display: inline-block;
   width: 9px;
   font-size: 9px;
+}
+
+.file-tree-path-total {
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 .file-tree-scaffold-toggle {
@@ -7900,10 +8029,32 @@ select option {
 }
 
 .project-search-row small {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Remote projects list two locations (host target + local mirror); the label
+ * keeps its width, the path ellipsizes. */
+.project-search-path-label {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.project-search-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .project-search-empty {
@@ -7957,11 +8108,12 @@ select option {
   background: rgba(0, 0, 0, 0.35);
 }
 
-/* One dialog surface for the whole app — the two shells differ only in size.
+/* One dialog surface for the whole app — the shells differ only in size.
    Shared chrome (bg-panel, accent border, sharp corners, shadow) lives here so
    every modal reads identically. */
 .project-dialog,
-.settings-dialog {
+.settings-dialog,
+.stats-dialog {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -7976,13 +8128,6 @@ select option {
   width: min(680px, calc(100vw - 32px));
   max-height: min(820px, calc(100vh - 40px));
   padding: 22px 24px;
-}
-
-.settings-backdrop {
-  align-items: flex-end;
-  justify-content: flex-end;
-  padding: 0 54px 56px 0;
-  background: transparent;
 }
 
 .settings-dialog {
@@ -8034,7 +8179,7 @@ select option {
    .settings-dialog chrome; the dialog is sized to preview a page and the iframe
    fills the remaining height. */
 .print-preview-dialog {
-  width: min(860px, calc(100vw - 48px));
+  width: min(1020px, calc(100vw - 48px));
   height: min(90vh, calc(100vh - 48px));
   max-height: min(90vh, calc(100vh - 48px));
   padding: 14px 16px;
@@ -8088,6 +8233,260 @@ select option {
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
   background: #fff;
+}
+.print-preview-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.print-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.print-opt-check {
+  cursor: pointer;
+}
+.print-opt:has(:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+.print-opt-label {
+  color: var(--text-secondary);
+}
+.print-opt-select,
+.print-opt-range {
+  border: 1px solid var(--border-color);
+  border-radius: 0;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.print-opt-range {
+  width: 96px;
+}
+.print-opt-select:disabled,
+.print-opt-range:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Page strip: drag-to-reorder / delete, shown only for paged documents. */
+.print-preview-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.print-strip-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.print-strip-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.print-strip-reset {
+  border: 1px solid var(--border-color);
+  border-radius: 0;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 3px 10px;
+  font-size: 11px;
+}
+.print-strip-reset:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+/* The host the print preview mounts its <PageStrip> into. Layout lives on the
+   strip's own root (.page-strip-row), so this only carries the thumbnail vars. */
+.print-strip-pages {
+  min-width: 0;
+}
+
+/* ── Shared page strip (components/common/PageStrip) ────────────────────────────
+   One widget in two homes: the print preview's horizontal strip and the PDF
+   viewer's vertical page rail. Only the axis differs, so only the axis is themed
+   twice. The card box follows the sheet's proportions — portrait paper gets an
+   upright card, landscape a wide one — from the two vars the host sets. */
+.page-strip {
+  display: flex;
+  gap: 8px;
+  padding: 2px;
+}
+.page-strip-row {
+  flex-direction: row;
+  align-items: flex-start;
+  overflow-x: auto;
+}
+.page-strip-column {
+  flex-direction: column;
+  align-items: center;
+  overflow-y: auto;
+}
+.page-strip-card {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--page-thumb-w, 59px);
+  height: var(--page-thumb-h, 84px);
+  border: 1px solid var(--border-color);
+  background: #fff;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none; /* pointer drag owns the gesture */
+  user-select: none;
+}
+.page-strip-card img,
+.page-strip-card canvas {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+/* The print strip's thumbnails are the page's own flat IMAGE, so a turn has to be
+   applied here in CSS. The PDF rail's are canvases pdf.js already rendered at the
+   right rotation — rotating those again would turn them twice, hence img only. */
+.page-strip-card img {
+  transform: translate(-50%, -50%) rotate(var(--page-thumb-rot, 0deg));
+}
+/* A quarter turn swaps the image's box, so the turned image still fills the card
+   instead of spilling out of it (the print stylesheet does the same for paper). */
+.page-strip-card.is-quarter-turned img {
+  width: var(--page-thumb-h, 84px);
+  height: var(--page-thumb-w, 59px);
+}
+.page-strip-blank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: #777;
+  font-size: 16px;
+}
+.page-strip-card.is-excluded {
+  opacity: 0.35;
+}
+.page-strip-card.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.page-strip-card.is-dragging {
+  cursor: grabbing;
+  outline: 2px solid var(--accent);
+  opacity: 0.85;
+}
+.page-strip-num {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  min-width: 16px;
+  padding: 0 3px;
+  background: var(--accent);
+  color: var(--bg-panel);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+}
+.page-strip-del,
+.page-strip-rotate {
+  position: absolute;
+  top: 0;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 16px;
+  opacity: 0;
+}
+.page-strip-del {
+  right: 0;
+}
+.page-strip-rotate {
+  left: 0;
+}
+.page-strip-card:hover .page-strip-del,
+.page-strip-card:hover .page-strip-rotate,
+.page-strip-del:focus-visible,
+.page-strip-rotate:focus-visible {
+  opacity: 1;
+}
+
+/* Where pages dragged from another strip (or another Eldrun window) would land. It
+   sits in the flex flow, so it opens a real gap between the two cards. */
+.page-strip-caret {
+  flex: 0 0 auto;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.page-strip-row .page-strip-caret {
+  width: 3px;
+  align-self: stretch;
+}
+.page-strip-column .page-strip-caret {
+  height: 3px;
+  width: var(--page-thumb-w, 72px);
+}
+
+/* ── PDF viewer: the page rail ──────────────────────────────────────────────────
+   The <PageStrip> stood on its side, beside the reader. Fixed card box + the
+   canvas's own object-fit handles pages of differing sizes. */
+.file-viewer-pdf-rail {
+  --page-thumb-w: 72px;
+  --page-thumb-h: 96px;
+  flex: 0 0 auto;
+  display: flex;
+  min-height: 0;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+.file-viewer-pdf-rail .page-strip-column {
+  padding: 6px;
+}
+
+/* A viewer-wide notice bar (unsaved edits vs. a changed file, a failed save). */
+.file-viewer-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.file-viewer-banner.is-error {
+  color: var(--danger, #e05252);
+}
+.file-viewer-banner button {
+  border: 1px solid var(--border-color);
+  border-radius: 0;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+.file-viewer-zoom-btn.is-dirty {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .settings-row,
@@ -8249,6 +8648,37 @@ select option {
   color: var(--text-secondary);
   font-size: 11.5px;
   line-height: 1.4;
+}
+
+/* A toggle with an explanatory paragraph: same card language as
+   .settings-nav-item/.lesson-item (border, radius, bg-panel) instead of a bare
+   switch-row bleeding into an unrelated-looking paragraph below it. */
+.settings-toggle-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+}
+
+.settings-toggle-card-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.settings-toggle-card-row span:first-child {
+  flex: 1;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.settings-toggle-card > .settings-help {
+  margin: 0;
 }
 
 .settings-help {
@@ -8515,6 +8945,15 @@ select option {
   font-size: 12px;
 }
 
+/* Container settings (#38): the read-only-rootfs switch sits beside its label
+   text, unlike the stacked text fields above it. */
+.project-dialog label.container-settings-toggle {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .project-dialog input,
 .project-dialog select,
 .project-dialog textarea {
@@ -8763,6 +9202,114 @@ select option {
   color: var(--danger);
   font-size: 12px;
   word-break: break-word;
+}
+
+/* Local-loss warning (#28q): what lockstep/sync destroyed in the local mirror.
+   Reuses the one dialog surface; only the title takes the warning colour, because
+   the thing being reported is not an error — it is a correct operation the user is
+   entitled to know happened to their machine. */
+.local-loss-dialog {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.local-loss-title {
+  color: var(--warning);
+}
+
+.local-loss-lede {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.local-loss-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  max-height: 46vh;
+}
+
+.local-loss-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius);
+}
+
+.local-loss-entry-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.local-loss-badge {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.local-loss-badge-deleted {
+  color: var(--danger);
+}
+
+.local-loss-badge-overwritten {
+  color: var(--warning);
+}
+
+.local-loss-when {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.local-loss-op {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.local-loss-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 11px;
+  color: var(--text-primary);
+  max-height: 160px;
+  overflow-y: auto;
+  word-break: break-all;
+}
+
+.local-loss-more {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.local-loss-recovery {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* Nothing to recover from: say so in the colour that means it, rather than
+   leaving the line blank and letting the user assume git has a copy. */
+.local-loss-gone {
+  color: var(--danger);
+}
+
+.local-loss-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .scaffold-popover {
@@ -9060,6 +9607,26 @@ select option {
 /* "Recently used…" picker reuses the address-input look but is a real select. */
 .vpn-config-recent {
   cursor: pointer;
+}
+
+/* The OpenVPN config a remote project currently uses: label + file name + the
+   "Change…" way back to the picker, so a stored choice is visible and swappable
+   rather than a one-shot decision. */
+.vpn-config-current {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.vpn-config-current-name {
+  flex: 1 1 auto;
+  font-family: var(--mono-font, monospace);
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+.vpn-config-change-btn {
+  flex: 0 0 auto;
 }
 
 /* OpenVPN connect button: animate the in-flight handshake and tint the button
@@ -10330,9 +10897,8 @@ select option {
   gap: 6px;
   color: var(--text-primary);
 }
-/* A remote project's live SSH/VPN lamps, rendered as a button (clicking opens
-   the Connect modal), so reset the native button chrome and keep just the lamp
-   row. */
+/* A remote project's live SSH lamp, rendered as a button (clicking opens the
+   Connect modal), so reset the native button chrome and keep just the lamp. */
 .header-conn-menu {
   position: relative;
   display: inline-flex;
@@ -10351,34 +10917,151 @@ select option {
 .header-conn-lamps:hover {
   background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
 }
-/* Collapsed (resting) = single aggregate lamp; hover splits into labeled
-   per-channel lamps. */
-.header-conn-lamps .conn-collapsed {
+
+/* The machine-wide scope, restated where the user is actually handing over the
+   passphrase — the last moment before the routing changes. */
+.vpn-prompt-scope {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* Auto-connect + VPN: the one combination that changes the machine's routing with
+   no prompt at all, so it gets said out loud rather than buried in a tooltip. */
+.remote-connect-vpn-warning {
+  margin: 2px 0 0;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* ── Header VPN indicator (VpnIndicator) ────────────────────────────────────
+   Machine-level, unlike every other VPN surface: it is up whenever a tunnel is,
+   no matter which project is active, because the tunnel reroutes the whole OS.
+   Rides the shared .global-apps-menu / .tab-new-menu chrome so it reads as one
+   of the header menus rather than a bespoke widget. */
+.vpn-indicator-btn {
   display: inline-flex;
   align-items: center;
+  gap: 5px;
+  border: none;
 }
-.header-conn-lamps .conn-expanded {
-  display: none;
-  align-items: center;
-  gap: 9px;
-}
-.header-conn-lamps:hover .conn-collapsed {
-  display: none;
-}
-.header-conn-lamps:hover .conn-expanded {
-  display: inline-flex;
-}
-.conn-chan {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.conn-chan-label {
+.vpn-indicator-label {
   font-size: 9px;
   line-height: 1;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.vpn-indicator-menu {
+  width: 268px;
+  color: var(--text-primary);
+}
+.vpn-indicator-note {
+  padding: 6px 10px 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border, var(--bg-panel));
+}
+.vpn-indicator-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+}
+.vpn-indicator-row + .vpn-indicator-row {
+  border-top: 1px solid var(--border, var(--bg-panel));
+}
+.vpn-indicator-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.vpn-indicator-config {
+  font-family: var(--mono-font, monospace);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vpn-indicator-holders,
+.vpn-indicator-untracked {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.vpn-indicator-disconnect {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 3px 9px;
+  border: 1px solid var(--border, var(--text-secondary));
+  border-radius: 5px;
+  background: transparent;
+  color: var(--danger, var(--text-primary));
+  font-size: 11px;
+  cursor: pointer;
+}
+.vpn-indicator-disconnect:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger, var(--text-secondary)) 14%, transparent);
+}
+.vpn-indicator-disconnect:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* Connect: the header can bring a tunnel *up*, not just take one down — a VPN is
+   something you use, not only a precondition for an SSH project. */
+.vpn-indicator-connect {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 3px 9px;
+  border: 1px solid var(--accent, var(--text-secondary));
+  border-radius: 5px;
+  background: transparent;
+  color: var(--accent, var(--text-primary));
+  font-size: 11px;
+  cursor: pointer;
+}
+.vpn-indicator-connect:hover {
+  background: color-mix(in srgb, var(--accent, var(--text-secondary)) 14%, transparent);
+}
+/* "Connect on launch", per config: the machine-level twin of a project's
+   auto-connect. Sits under the row's action button because it is a property of the
+   tunnel, not of this click. */
+.vpn-indicator-auto {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.vpn-indicator-auto:has(input:disabled) {
+  cursor: default;
+  opacity: 0.6;
+}
+.vpn-indicator-hint {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.vpn-indicator-empty,
+.vpn-indicator-error {
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.vpn-indicator-error {
+  color: var(--danger, var(--text-primary));
+  word-break: break-word;
 }
 
 /* Compact variant: the lamp embedded on a project pill instead of the header,
@@ -13056,4 +13739,159 @@ select option {
 
 .cal-alarm-actions .cal-btn-primary {
   margin-left: auto;
+}
+
+/* ── Usage recap (StatsRecap) ───────────────────────────────────────────────
+   Shares the canonical dialog surface (see the .project-dialog/.settings-dialog
+   rule) and the canonical header/section-title/help classes; only its own
+   sizing, the period switch and the stat primitives live here.
+
+   The stat tile (.stats-metric) and the bar rows deliberately mirror
+   .network-metric — one visual language for "a number Eldrun measured". */
+.stats-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(860px, calc(100vh - 40px));
+  padding: 16px 18px 18px;
+  /* A portaled dialog inherits nothing from body, which has no color set — so
+     this must be explicit or the whole recap renders black-on-panel. */
+  color: var(--text-primary);
+}
+
+.stats-window-label {
+  margin: -4px 0 0;
+}
+
+/* Day / Week / Month, in the title row. */
+.stats-period-switch {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.stats-period-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.stats-period-btn:hover {
+  background: var(--control-hover-bg);
+}
+.stats-period-btn.active {
+  color: var(--bg-main);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.stats-headline {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.stats-headline strong {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.stats-empty {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* Stat tiles — the .network-metric primitive, reused. */
+.stats-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+.stats-metric {
+  display: grid;
+  gap: 4px;
+  padding: 11px 13px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+.stats-metric > span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.stats-metric > strong {
+  font-size: 19px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.stats-metric > small {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Ranked bars (agents by model, time by project). */
+.stats-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.stats-bar-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 150px) 1fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.stats-bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.stats-bar-track {
+  height: 8px;
+  background: var(--control-bg);
+  border-radius: var(--radius);
+}
+.stats-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius);
+}
+.stats-bar-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* Hour-of-day sparkline. */
+.stats-spark-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.stats-spark {
+  width: 100%;
+  height: 60px;
+}
+.stats-spark-bar {
+  fill: var(--accent-secondary);
+}
+.stats-spark-bar.busiest {
+  fill: var(--accent);
+}
+.stats-spark-legend {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.stats-auto-row {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
 }

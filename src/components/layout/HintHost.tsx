@@ -1,10 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useHintsStore } from "../../stores/hints";
+import { useTabsStore } from "../../stores/tabs";
 import { useTourStore } from "../../stores/tour";
-import { HINTS, pickHint, type HintCtx, type HintId } from "../../lib/hints";
+import { HINTS, pickHint, type HintActionId, type HintCtx, type HintId } from "../../lib/hints";
+import {
+  codexHookNeedsTrust,
+  openCodexHooksTab,
+  type CodexHookState,
+} from "../../lib/codexHooks";
 import { HintBubble } from "../common/HintBubble";
+
+/** Handlers for hints that carry a one-click action (`HintDef.action`). */
+const HINT_ACTIONS: Record<HintActionId, () => void> = {
+  "codex-hooks": openCodexHooksTab,
+};
 
 // Don't surface anything until the app has settled (project load, the startup
 // fullscreen/resize churn), then space proactive hints out so they never feel
@@ -33,6 +45,38 @@ export function HintHost() {
   // it runs so the two onboarding surfaces never paint at once.
   const tourActive = useTourStore((s) => s.active);
 
+  // Codex hook trust. Only probed once a Codex tab actually exists, so users who
+  // never touch Codex are never nagged about it. Re-probed on window focus, which
+  // is when the user comes back from having (maybe) enabled it in Codex's /hooks
+  // list — and once it reports enabled, the hint is retired for good.
+  const tabsByScope = useTabsStore((s) => s.tabsByScope);
+  const hasCodexTab = useMemo(
+    () => Object.values(tabsByScope).some((tabs) => tabs.some((t) => t.cmd === "codex")),
+    [tabsByScope],
+  );
+  const [codexHook, setCodexHook] = useState<CodexHookState | null>(null);
+  const markSeen = useHintsStore((s) => s.markSeen);
+
+  useEffect(() => {
+    if (!hasCodexTab) return;
+    let cancelled = false;
+    const probe = () => {
+      invoke<CodexHookState>("codex_hook_status")
+        .then((state) => {
+          if (cancelled) return;
+          setCodexHook(state);
+          if (state === "enabled") markSeen("codex-hook-trust");
+        })
+        .catch(() => {});
+    };
+    probe();
+    window.addEventListener("focus", probe);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", probe);
+    };
+  }, [hasCodexTab, markSeen]);
+
   const mountedAt = useRef(Date.now());
   const lastClearedAt = useRef(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -46,7 +90,11 @@ export function HintHost() {
     if (tourActive) return; // never surface a hint over the guided tour
     if (!settingsLoaded || !projectsLoaded || !hintsEnabled) return;
     const seen = new Set<string>(Array.isArray(seenList) ? (seenList as string[]) : []);
-    const ctx: HintCtx = { projectCount, activeId };
+    const ctx: HintCtx = {
+      projectCount,
+      activeId,
+      codexHookNeedsTrust: hasCodexTab && codexHookNeedsTrust(codexHook),
+    };
     const candidate = pickHint(ctx, seen, hintsEnabled);
     if (!candidate) return;
     const earliest = Math.max(mountedAt.current + GRACE_MS, lastClearedAt.current + GAP_MS);
@@ -70,6 +118,8 @@ export function HintHost() {
     seenList,
     projectCount,
     activeId,
+    hasCodexTab,
+    codexHook,
     show,
   ]);
 
@@ -129,6 +179,9 @@ export function HintHost() {
       placement={def.placement}
       title={def.title}
       body={def.body}
+      action={
+        def.action && { label: def.action.label, run: HINT_ACTIONS[def.action.id] }
+      }
       onDismiss={() => {
         lastClearedAt.current = Date.now();
         dismiss(def.id);

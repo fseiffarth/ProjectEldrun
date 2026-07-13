@@ -63,6 +63,43 @@ pub async fn pty_spawn(
     // twice.)
     opts = crate::services::agent_session::resolve_agent_session(opts);
 
+    // Codex resume, without the hook. Codex will not run Eldrun's SessionStart
+    // hook until the user trusts it (`/hooks`), and an untrusted hook fails
+    // silently — so nothing recorded a tab's live session id and every restored
+    // Codex tab came back blank. Follow Codex's own rollout logs instead and
+    // record the id in the same place the hook would have; `resolve_codex_session`
+    // above then picks it up on the next spawn, unchanged. Tracked here, while
+    // `cmd`/`cwd`/`env` still describe the tab itself — after the wrapping below
+    // they describe `docker`/`ssh`.
+    if opts.cmd == "codex" && crate::services::agent_session::codex_binder_enabled() {
+        // A remote tab's Codex runs on the far host, so its rollouts (and its
+        // cwd) are over there; the local sessions tree would only mis-attribute
+        // someone else's. `local_only` tabs of a remote project are the exception
+        // — they run here, in the local mirror cwd resolved above.
+        let is_remote = !opts.local_only
+            && opts
+                .project_id
+                .as_deref()
+                .is_some_and(|id| crate::services::remote::remote_target_for(id).is_some());
+        if let Some(uid) = opts.env.get("ELDRUN_TAB_UID").filter(|_| !is_remote).cloned() {
+            // Args at this point are `["resume", <id>]` iff we just resumed a
+            // recorded session — hand that id over so the binder claims it for
+            // this tab rather than offering it to a sibling.
+            let resumed = opts
+                .args
+                .iter()
+                .position(|a| a == "resume")
+                .and_then(|i| opts.args.get(i + 1))
+                .cloned();
+            crate::services::codex_bind::track(
+                &opts.id,
+                &uid,
+                std::path::Path::new(&opts.cwd),
+                resumed,
+            );
+        }
+    }
+
     // Claude remote control (global setting `agent_remote_control`, default ON):
     // spawn `claude` agent tabs with `--remote-control` so the running session can
     // be monitored/steered from the Claude app/web. Only Claude has this flag.
@@ -76,24 +113,31 @@ pub async fn pty_spawn(
         opts.args.push("--remote-control".to_string());
     }
 
-    // Sandbox (Docker) and ssh-remote wrapping are mutually exclusive: sandbox
-    // is local-only. When `opts.sandbox` is set (frontend marks agent tabs of a
-    // sandbox-enabled local project), wrap the resolved command into a
-    // `docker run …` argv; otherwise fall back to ssh wrapping for remote
-    // projects. Both run after agent-session resolution so resume args/env ride
-    // into whichever wrapper applies. `local_only` tabs (e.g. Ollama
-    // `local_agent`) must run on the host verbatim, so they take neither path —
-    // the `local_only` guard on the sandbox branch preserves that invariant even
-    // if a tab were ever marked both `sandbox` and `local_only`.
+    // Container (Docker) and ssh-remote wrapping are mutually exclusive: the
+    // project container is local-only. When `opts.sandbox` is set (frontend
+    // marks shell+agent tabs of a container-toggled local project), rewrite the
+    // resolved command into a `docker exec` into the project's session-lived
+    // container (created on demand); otherwise fall back to ssh wrapping for
+    // remote projects. Both run after agent-session resolution so resume
+    // args/env ride into whichever wrapper applies. `local_only` tabs (e.g.
+    // Ollama `local_agent`) must run on the host verbatim, so they take neither
+    // path — the `local_only` guard on the container branch preserves that
+    // invariant even if a tab were ever marked both `sandbox` and `local_only`.
+    if !opts.sandbox {
+        // A respawn of a tab that was containerized before the toggle flipped
+        // off: its old in-container process outlives the docker-exec client the
+        // respawn replaces — reap it (cheap no-op for never-containerized tabs).
+        crate::services::sandbox::kill_tab_process(&opts.id);
+    }
     if opts.sandbox && !opts.local_only {
         #[cfg(unix)]
         crate::services::sandbox::wrap_pty_options_docker(&mut opts)?;
-        // The sandbox maps host paths into a Linux container, so on Windows the
-        // container-side mount destinations would be host paths (`C:\…`) that
-        // mean nothing inside it. Refuse rather than silently spawning an agent
-        // the user asked to sandbox with no sandbox at all.
+        // The container maps host paths into a Linux container, so on Windows
+        // the container-side mount destinations would be host paths (`C:\…`)
+        // that mean nothing inside it. Refuse rather than silently spawning a
+        // tab the user asked to contain with no container at all.
         #[cfg(windows)]
-        return Err("The Docker sandbox is not supported on Windows yet. Disable the sandbox for this project to run this agent.".to_string());
+        return Err("Project containers are not supported on Windows yet. Turn the container toggle off for this project to run this tab.".to_string());
     } else if !opts.local_only {
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
     }

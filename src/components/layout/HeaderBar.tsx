@@ -8,7 +8,9 @@ import { trackWindowMove } from "../../stores/windowMove";
 import { AppTimerDisplay } from "../header/AppTimerDisplay";
 import { AppResourceDisplay } from "../header/AppResourceDisplay";
 import { Clock } from "../header/Clock";
+import { useEnergySaver, saverInterval } from "../../stores/power";
 import { ConnTypeIcon } from "../header/ConnTypeIcon";
+import { VpnIndicator } from "../header/VpnIndicator";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
@@ -61,6 +63,7 @@ export function HeaderBar() {
   const [connType, setConnType] = useState<string | null>(null);
   const activeId = useProjectsStore((s) => s.activeId);
   const setActive = useProjectsStore((s) => s.setActive);
+  const energySaver = useEnergySaver();
 
   useEffect(() => {
     invoke<WorkspaceInfo>("workspace_info").catch(() => {});
@@ -84,9 +87,9 @@ export function HeaderBar() {
         .then(setConnType)
         .catch(() => {});
     poll();
-    const id = setInterval(poll, 10_000);
+    const id = setInterval(poll, saverInterval(10_000, energySaver));
     return () => clearInterval(id);
-  }, []);
+  }, [energySaver]);
 
   const isDev = import.meta.env.DEV;
   const connKind =
@@ -134,6 +137,7 @@ export function HeaderBar() {
         <ProjectSwitcher open />
       </div>
       <div className="header-right no-drag">
+        <VpnIndicator />
         <AppResourceDisplay />
         <AppTimerDisplay />
         <Clock />

@@ -19,6 +19,8 @@ use openssh_sftp_client::Sftp;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::schema::net_usage;
+use crate::services::local_loss;
 use crate::services::remote::{remote_target_for, pooled_sftp, RemotePoolState, RemoteTarget};
 use crate::services::remote_sync::{
     self, ensure_loaded, join_remote, local_meta, local_size_mtime, mirror_local_path, Manifest,
@@ -122,6 +124,11 @@ pub async fn sync_now(
             .map(|(k, _)| k.clone())
             .collect()
     };
+    // #28q: "clears amber → green" means the host wins every file that moved on both
+    // sides. Name the local edits that costs before overwriting them.
+    let doomed = unsynced_local_edits(&project_id, manifest.inner(), &selected).await;
+    warn_overwritten(&project_id, "Sync now (re-pulled every selected file)", doomed);
+
     let total = selected.len();
     emit(&app, &project_id, "start", "", 0, total);
     let mut done = 0usize;
@@ -136,6 +143,7 @@ pub async fn sync_now(
             let m = ensure_loaded(&mut guard, &project_id);
             remote_sync::record_pull(m, &rel, size, mtime, ls, lm);
             let _ = remote_sync::save_manifest(&project_id, m);
+            net_usage::record_files(&project_id, 1, 0);
         }
         done += 1;
         emit(&app, &project_id, "file", &rel, done, total);
@@ -201,6 +209,41 @@ pub async fn sync_set_auto(
         }
     }
     remote_sync::save_manifest(&project_id, m)
+}
+
+/// What turning auto-sync ON over a host subtree would start pulling.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoSyncPreview {
+    pub files: usize,
+    pub bytes: u64,
+}
+
+/// Cost preview for `sync_set_auto(auto = true)` on a directory. Read-only.
+///
+/// Byte-sync's scope is an explicit opt-in manifest and it does **not** read
+/// `.gitignore` — the two systems have different notions of what is in scope. So
+/// marking a host folder auto is the one click that can start hauling a tree the
+/// user deliberately keeps host-side (experiment output, checkpoints: gitignored,
+/// therefore also invisible to lockstep) into the local mirror. The frontend calls
+/// this first and confirms when the answer is large, so the pull is a decision
+/// rather than a surprise.
+///
+/// Walks the **host** because that is the side that holds the bytes in the case
+/// worth warning about; a `rel` that is a file (not a directory) fails the walk
+/// and reports a single entry, which is never large enough to warn on anyway.
+#[tauri::command]
+pub async fn sync_auto_preview(
+    project_id: String,
+    rel_path: String,
+    pool: State<'_, RemotePoolState>,
+) -> Result<AutoSyncPreview, String> {
+    let (target, sftp) = resolve(&project_id, pool.inner()).await?;
+    let files = remote_sync::walk_host_files(&sftp, &target.spec.remote_path, &rel_path).await?;
+    Ok(AutoSyncPreview {
+        files: files.len(),
+        bytes: files.iter().map(|f| f.size).sum(),
+    })
 }
 
 /// Return the sync status of every tracked path, re-stat'ing each selected FILE
@@ -424,6 +467,7 @@ pub async fn sync_push(
                 let m = ensure_loaded(&mut guard, &project_id);
                 remote_sync::record_push(m, &rel, hs, hm, ls, lm);
                 let _ = remote_sync::save_manifest(&project_id, m);
+                net_usage::record_files(&project_id, 0, 1);
                 pushed += 1;
             }
             Err(e) => eprintln!("sync_push: skip '{rel}': {e}"),
@@ -463,6 +507,61 @@ pub async fn sync_diff(
 
 // ── Internals ──────────────────────────────────────────────────────────────
 
+/// The paths, among `rels`, whose mirror copy holds edits that exist **nowhere else**,
+/// and which the pull about to run will therefore overwrite and lose (#28q).
+///
+/// A pull is the one byte-sync operation that destroys something: it writes the host's
+/// bytes over the mirror's, and `sync_now`'s whole job — "clears amber → green" — is to
+/// do exactly that to files that moved on *both* sides. Which reads as bringing things
+/// in step, and is also, silently, choosing the host and discarding the local edit. The
+/// auto-sync engine never does this (it skips an amber file rather than pick a winner);
+/// only the manual commands do, and only because the user asked. So: not blocked, but
+/// no longer silent.
+///
+/// A path qualifies only when we can be sure there was something to lose: it has a
+/// recorded base (byte-sync has synced it before — so the base is a real "as of" mark,
+/// not a zeroed default), its mirror file is still there (a pull that *creates* a file
+/// destroys nothing), and its current size/mtime differ from that base. That is the same
+/// local-divergence rule the file tree already paints amber, so the warning names
+/// exactly the files the user was already being shown as locally changed.
+async fn unsynced_local_edits(
+    project_id: &str,
+    manifest: &SyncManifestState,
+    rels: &[String],
+) -> Vec<String> {
+    let mut guard = manifest.lock().await;
+    let m = ensure_loaded(&mut guard, project_id);
+    rels.iter()
+        .filter(|rel| {
+            let Some(entry) = m.get(rel.as_str()) else {
+                return false; // never synced → no base to have diverged from
+            };
+            if entry.last_pull_ts.is_none() && entry.last_push_ts.is_none() {
+                return false;
+            }
+            let Some(meta) = std::fs::metadata(mirror_local_path(project_id, rel)).ok() else {
+                return false; // no mirror file → the pull only creates
+            };
+            let (_, local_changed) = remote_sync::divergence(entry, None, Some(local_meta(&meta)));
+            local_changed
+        })
+        .cloned()
+        .collect()
+}
+
+/// File the warning for the local edits a pull just overwrote. Called with the list
+/// captured *before* the transfer — afterwards the evidence is, by definition, gone.
+fn warn_overwritten(project_id: &str, op: &str, paths: Vec<String>) {
+    local_loss::record_paths(
+        project_id,
+        local_loss::LossSource::Sync,
+        local_loss::LossKind::Overwritten,
+        op,
+        paths,
+        None, // the edits were only ever in the mirror — there is nowhere to get them back from
+    );
+}
+
 /// Pull `rel` (a single file OR a whole folder subtree) from the host into the
 /// mirror, recording each file's base in the manifest. Shared by `sync_pull` and
 /// `sync_whole_project`.
@@ -497,6 +596,14 @@ async fn pull_subtree(
     let total = files.len();
     emit(app, project_id, "start", rel, 0, total);
 
+    // #28q: whichever transport wins below, a pull writes the host's bytes over the
+    // mirror's. Name the local edits that destroys before either of them runs — after the
+    // transfer the evidence is gone (rsync's fast path in particular leaves nothing to
+    // compare a base against).
+    let rels: Vec<String> = files.iter().map(|f| f.rel.clone()).collect();
+    let doomed = unsynced_local_edits(project_id, manifest, &rels).await;
+    warn_overwritten(project_id, "Pull from the host", doomed);
+
     // rsync fast-path for a directory pull: transfer the bytes in one shot, then
     // fall through to the manifest-recording loop (which only re-stats locally —
     // the bytes are already on disk, so `pull_file` would be a wasteful re-read).
@@ -519,6 +626,7 @@ async fn pull_subtree(
                 let m = ensure_loaded(&mut guard, project_id);
                 remote_sync::record_pull(m, &file.rel, file.size, file.mtime, ls, lm);
                 let _ = remote_sync::save_manifest(project_id, m);
+                net_usage::record_files(project_id, 1, 0);
             }
             None => {
                 // A single oversized/unreadable file shouldn't abort the whole

@@ -6,9 +6,18 @@
 //!
 //! OpenVPN needs root to create the tun device and adjust routing, so it is
 //! launched via `pkexec` (the user authenticates through the system polkit
-//! agent). The password for the VPN itself (encrypted-key passphrase) is never
-//! persisted: callers pass it in, we write it to an owner-only temp file that
-//! OpenVPN reads via `--askpass`, then delete it once the tunnel is up.
+//! agent) — that local password is the system's to collect, never Eldrun's.
+//!
+//! The VPN's own secrets are two *independent* channels, and a config can need
+//! either or **both** — OpenVPN prompts for them separately, so answering only
+//! one leaves the other prompt hanging (stdin is closed) until the connect times
+//! out:
+//!   - an `auth-user-pass` account (username + password) → `--auth-user-pass`, and
+//!   - an encrypted private key's passphrase → `--askpass`.
+//! Which ones a config needs is read off the config itself
+//! ([`config_requires_userpass`] / [`config_requires_key_passphrase`]). Neither
+//! secret is persisted here: callers pass them in, we write them to owner-only
+//! temp files OpenVPN reads, and delete those once the tunnel is up.
 //!
 //! Tunnels are tracked in a process-global registry keyed by the **config path**
 //! so the same config is never connected twice and a connect made during project
@@ -58,6 +67,151 @@ fn registry() -> &'static Mutex<HashMap<String, VpnProc>> {
     static REG: OnceLock<Mutex<HashMap<String, VpnProc>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
+
+/// Registry of **interactive** tunnels (`connections_headless: false`), keyed by
+/// config path → the pidfile OpenVPN writes. Value is a pidfile rather than a
+/// `Child` because Eldrun does not spawn these: they run as `pkexec openvpn` (or
+/// `sudo openvpn`) inside a *terminal tab*, typed into by the user, so there is no
+/// child handle to hold — only the pid the daemon records.
+///
+/// Without this, an interactive tunnel was invisible and unkillable: absent from
+/// [`registry`], it could not be seen by [`is_connected`] / [`active_configs`], nor
+/// killed by [`disconnect`] / [`disconnect_all`] — so it **outlived Eldrun with the
+/// machine's routing still changed**. [`interactive_connect_command`] now appends a
+/// `--writepid` we own and registers it here, which closes all four gaps at once.
+///
+/// Not cfg-gated (unlike [`registry`]) so the bookkeeping unit-tests run anywhere.
+fn interactive_registry() -> &'static Mutex<HashMap<String, PathBuf>> {
+    static REG: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Where an interactive tunnel for `config` records its pid. Deliberately a
+/// different file from the headless `{stem}.pid`, so a stale file from one flavour
+/// can never be mistaken for a live tunnel of the other.
+fn interactive_pidfile(config: &str) -> PathBuf {
+    runtime_dir().join(format!("{}.interactive.pid", safe_stem(config)))
+}
+
+/// Whether `pid` is alive. **EPERM counts as ALIVE**: the OpenVPN daemon runs as
+/// root, so an unprivileged probe gets EPERM for a perfectly healthy tunnel —
+/// treating that as dead is what keeps a VPN lamp dark while the tunnel is up
+/// (the 28l bug).
+#[cfg(unix)]
+fn pid_alive(pid: i32) -> bool {
+    // SAFETY: kill with signal 0 only probes for existence/permission.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Windows analog: no `kill(0)`, so ask the task list. An elevated `openvpn.exe`
+/// is still enumerated for an unelevated query, so there is no EPERM-style trap
+/// here — but a failed probe is treated as *not* alive rather than guessed at.
+#[cfg(target_os = "windows")]
+fn pid_alive(pid: i32) -> bool {
+    let out = crate::paths::command_no_window("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output();
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()),
+        Err(_) => false,
+    }
+}
+
+/// State of the interactive tunnel registered for `config`.
+#[derive(PartialEq, Eq, Debug)]
+enum Interactive {
+    /// No interactive tunnel registered for this config.
+    None,
+    /// Registered, but OpenVPN has not written its pid yet — the user is still at
+    /// the polkit/sudo prompt or typing the passphrase. **Not dead**: the entry is
+    /// kept, or a tunnel would be forgotten in the seconds before it comes up.
+    Pending,
+    /// Registered and its recorded pid is alive: the tunnel is up.
+    Alive(i32),
+}
+
+/// Classify (and reap) the interactive entry for `config`.
+fn interactive_state(config: &str) -> Interactive {
+    let pidfile = match interactive_registry().lock().unwrap().get(config) {
+        Some(p) => p.clone(),
+        None => return Interactive::None,
+    };
+    match pidfile_pid(&pidfile) {
+        Some(pid) if pid_alive(pid) => Interactive::Alive(pid),
+        Some(_) => {
+            // The pid was written and is now gone: the tunnel died (or the user
+            // closed its terminal). Reap the entry and its stale pidfile.
+            interactive_registry().lock().unwrap().remove(config);
+            let _ = std::fs::remove_file(&pidfile);
+            Interactive::None
+        }
+        None => Interactive::Pending,
+    }
+}
+
+/// Whether an interactive tunnel for `config` is *up* (not merely registered).
+fn interactive_connected(config: &str) -> bool {
+    matches!(interactive_state(config), Interactive::Alive(_))
+}
+
+/// Tear down the interactive tunnel for `config`, if any. The daemon is root, so
+/// the kill is elevated the same way the connect was.
+fn disconnect_interactive(config: &str) {
+    let alive = match interactive_state(config) {
+        Interactive::Alive(pid) => Some(pid),
+        // Pending: nothing to kill yet, but drop the claim so a never-authenticated
+        // connect doesn't linger in the registry forever.
+        Interactive::Pending => None,
+        Interactive::None => return,
+    };
+    let pidfile = interactive_registry().lock().unwrap().remove(config);
+    if let Some(pid) = alive {
+        kill_root_pid(pid);
+    }
+    if let Some(pidfile) = pidfile {
+        let _ = std::fs::remove_file(&pidfile);
+    }
+}
+
+/// `kill -TERM` a **root-owned** pid, escalating the same way the platform's
+/// connect does (a plain kill would get EPERM).
+#[cfg(target_os = "linux")]
+fn kill_root_pid(pid: i32) {
+    let _ = Command::new("pkexec")
+        .arg("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
+}
+
+#[cfg(target_os = "macos")]
+fn kill_root_pid(pid: i32) {
+    let script = macos_admin_shell_command(
+        &format!("kill -TERM {pid}"),
+        "Eldrun needs to stop the OpenVPN tunnel.",
+    );
+    let _ = crate::paths::command_no_window("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output();
+}
+
+/// Windows has no privilege escalation to reach for: `openvpn.exe` was started
+/// from an already-elevated context, so `taskkill /F` either works or the user
+/// wasn't elevated to begin with.
+#[cfg(target_os = "windows")]
+fn kill_root_pid(pid: i32) {
+    let _ = crate::paths::command_no_window("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .output();
+}
+
+/// No supported escalation path on other platforms; nothing spawns tunnels there.
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn kill_root_pid(_pid: i32) {}
 
 /// Directory holding OpenVPN runtime files (askpass + pidfiles), created 0700.
 fn runtime_dir() -> PathBuf {
@@ -181,30 +335,32 @@ fn shell_quote(s: &str) -> String {
 /// same tty. `--auth-nocache` keeps the passphrase out of OpenVPN's memory across
 /// re-keys. Windows runs `openvpn.exe` directly (it must be started elevated).
 /// The config path is validated and shell-quoted as a single argument.
+///
+/// **Side effect (deliberate):** every variant appends `--writepid <pidfile>` and
+/// registers that pidfile in [`interactive_registry`] via [`arm_interactive`]. The
+/// tunnel this command starts is not Eldrun's child, so the pid it records is the
+/// *only* handle on a root process that is rerouting the whole machine. Without it,
+/// the tunnel is invisible to [`is_connected`] / [`active_configs`] and unkillable
+/// by [`disconnect`] / [`disconnect_all`] — it outlives the app with the routing
+/// still changed. Building the command is therefore also *claiming* it.
 #[cfg(target_os = "linux")]
 pub fn interactive_connect_command(config: &str) -> Result<String, String> {
-    let config = config.trim();
-    validate_arg("OpenVPN config", config)?;
-    if config.is_empty() {
-        return Err("OpenVPN config path must not be empty".to_string());
-    }
+    let (config, pidfile) = arm_interactive(config)?;
     Ok(format!(
-        "pkexec openvpn --config {} --auth-nocache",
-        shell_quote(config)
+        "pkexec openvpn --config {} --auth-nocache --writepid {}",
+        shell_quote(&config),
+        shell_quote(&pidfile.to_string_lossy())
     ))
 }
 
 /// Windows variant: no `pkexec`; `openvpn.exe` must already be running elevated.
 #[cfg(target_os = "windows")]
 pub fn interactive_connect_command(config: &str) -> Result<String, String> {
-    let config = config.trim();
-    validate_arg("OpenVPN config", config)?;
-    if config.is_empty() {
-        return Err("OpenVPN config path must not be empty".to_string());
-    }
+    let (config, pidfile) = arm_interactive(config)?;
     Ok(format!(
-        "openvpn --config {} --auth-nocache",
-        shell_quote(config)
+        "openvpn --config {} --auth-nocache --writepid {}",
+        shell_quote(&config),
+        shell_quote(&pidfile.to_string_lossy())
     ))
 }
 
@@ -212,15 +368,36 @@ pub fn interactive_connect_command(config: &str) -> Result<String, String> {
 /// interactive root-tab path types the password straight into the terminal).
 #[cfg(target_os = "macos")]
 pub fn interactive_connect_command(config: &str) -> Result<String, String> {
+    let (config, pidfile) = arm_interactive(config)?;
+    Ok(format!(
+        "sudo openvpn --config {} --auth-nocache --writepid {}",
+        shell_quote(&config),
+        shell_quote(&pidfile.to_string_lossy())
+    ))
+}
+
+/// Validate `config` and claim an interactive tunnel for it: pick the pidfile,
+/// delete any stale one (a leftover from a previous run would otherwise read as a
+/// live tunnel), ensure the runtime dir exists for root to write into, and register
+/// the claim. Returns the trimmed config and the pidfile the command must use.
+///
+/// Shared by all three [`interactive_connect_command`] variants so a platform
+/// cannot forget the `--writepid` bookkeeping. Compiled cfg-free so the claim logic
+/// is unit-testable on any host.
+fn arm_interactive(config: &str) -> Result<(String, PathBuf), String> {
     let config = config.trim();
     validate_arg("OpenVPN config", config)?;
     if config.is_empty() {
         return Err("OpenVPN config path must not be empty".to_string());
     }
-    Ok(format!(
-        "sudo openvpn --config {} --auth-nocache",
-        shell_quote(config)
-    ))
+    let pidfile = interactive_pidfile(config);
+    let _ = std::fs::create_dir_all(runtime_dir());
+    let _ = std::fs::remove_file(&pidfile);
+    interactive_registry()
+        .lock()
+        .unwrap()
+        .insert(config.to_string(), pidfile.clone());
+    Ok((config.to_string(), pidfile))
 }
 
 /// True if `openvpn` and `pkexec` are both available on `PATH` (both are needed:
@@ -251,21 +428,22 @@ pub fn openvpn_available() -> bool {
 /// Build the `openvpn` argv (without the leading `pkexec`/`openvpn`) for a
 /// connect. Returned as `Vec<String>` so it is unit-testable without launching.
 ///
-/// `credfile` holds the secret OpenVPN reads non-interactively. `userpass`
-/// selects *which* credential the file is:
-/// - `true`  → `--auth-user-pass <credfile>` (a two-line `username\npassword`
+/// The two credential files are **independent channels**, and a config can need
+/// one, the other, or *both* — OpenVPN prompts for them separately, so feeding
+/// only one leaves the other prompt unanswered and (stdin closed) hangs the
+/// handshake until it times out:
+/// - `userpass_file` → `--auth-user-pass <f>` (a two-line `username\npassword`
 ///   file), for configs with a bare `auth-user-pass` directive (server-side
-///   username+password auth). Without this OpenVPN would prompt for the username
-///   on stdin and, with stdin closed, hang until the connect times out.
-/// - `false` → `--askpass <credfile>` (a one-line passphrase file), for an
+///   username+password auth).
+/// - `askpass_file` → `--askpass <f>` (a one-line passphrase file), for an
 ///   encrypted private key.
 ///
-/// Shape: `--config <cfg> {--auth-user-pass|--askpass} <credfile> --auth-nocache
+/// Shape: `--config <cfg> [--auth-user-pass <f>] [--askpass <f>] --auth-nocache
 ///         --writepid <pidfile> --connect-timeout 20 --connect-retry-max 3`.
 pub fn openvpn_args(
     config: &str,
-    userpass: bool,
-    credfile: &Path,
+    userpass_file: Option<&Path>,
+    askpass_file: Option<&Path>,
     pidfile: &Path,
 ) -> Result<Vec<String>, String> {
     let config = config.trim();
@@ -273,12 +451,16 @@ pub fn openvpn_args(
         return Err("OpenVPN config path must not be empty".to_string());
     }
     validate_arg("OpenVPN config", config)?;
-    let cred_flag = if userpass { "--auth-user-pass" } else { "--askpass" };
-    Ok(vec![
-        "--config".to_string(),
-        config.to_string(),
-        cred_flag.to_string(),
-        credfile.to_string_lossy().into_owned(),
+    let mut args = vec!["--config".to_string(), config.to_string()];
+    if let Some(f) = userpass_file {
+        args.push("--auth-user-pass".to_string());
+        args.push(f.to_string_lossy().into_owned());
+    }
+    if let Some(f) = askpass_file {
+        args.push("--askpass".to_string());
+        args.push(f.to_string_lossy().into_owned());
+    }
+    args.extend([
         "--auth-nocache".to_string(),
         "--writepid".to_string(),
         pidfile.to_string_lossy().into_owned(),
@@ -286,7 +468,8 @@ pub fn openvpn_args(
         "20".to_string(),
         "--connect-retry-max".to_string(),
         "3".to_string(),
-    ])
+    ]);
+    Ok(args)
 }
 
 /// Whether `config` uses server-side username+password auth that OpenVPN would
@@ -313,6 +496,199 @@ pub fn config_requires_userpass(config: &str) -> bool {
         let mut tok = body.split_whitespace();
         tok.next() == Some("auth-user-pass") && tok.next().is_none()
     })
+}
+
+/// Whether a PEM blob holds an *encrypted* private key — the two markers OpenSSL
+/// writes: `Proc-Type: 4,ENCRYPTED` (traditional/PKCS#1) and the PKCS#8
+/// `BEGIN ENCRYPTED PRIVATE KEY` header. An unencrypted key has neither.
+fn pem_is_encrypted(text: &str) -> bool {
+    text.contains("Proc-Type: 4,ENCRYPTED") || text.contains("BEGIN ENCRYPTED PRIVATE KEY")
+}
+
+/// Whether `config` uses a private key whose passphrase OpenVPN would prompt for
+/// (`Enter Private Key Password:`). This is an **independent** channel from
+/// [`config_requires_userpass`]: a config can need both, and OpenVPN asks for
+/// them as two separate prompts, so a connect that supplies only one hangs on the
+/// other. Callers feed this one via `--askpass` (see [`openvpn_args`]).
+///
+/// True when the key is encrypted, whether inlined in a `<key>` block or named by
+/// a `key <file>` directive (resolved relative to the config), and for a `pkcs12`
+/// bundle — PKCS#12 is DER, so its encryption can't be sniffed the way PEM's can,
+/// and the bundles OpenVPN ships are effectively always passphrase-protected.
+/// False when the config carries its own `askpass <file>` (it supplies the
+/// passphrase itself), and false for an unreadable config — best-effort, matching
+/// [`config_requires_userpass`].
+///
+/// Erring toward `true` is the safe bias: a false positive shows one extra field
+/// that, left blank, writes no askpass file and changes nothing; a false negative
+/// hangs the handshake on an unanswered prompt.
+pub fn config_requires_key_passphrase(config: &str) -> bool {
+    let config = config.trim();
+    let Ok(text) = std::fs::read_to_string(config) else {
+        return false;
+    };
+    let config_dir = Path::new(config).parent();
+
+    let mut in_key_block = false;
+    let mut key_file: Option<String> = None;
+    let mut pkcs12 = false;
+    for line in text.lines() {
+        let raw = line.trim();
+        if raw.eq_ignore_ascii_case("<key>") {
+            in_key_block = true;
+            continue;
+        }
+        if raw.eq_ignore_ascii_case("</key>") {
+            in_key_block = false;
+            continue;
+        }
+        // Inside the inline key: the PEM body itself is the evidence. Base64 never
+        // contains `#`/`;`, so no comment-stripping is needed (or wanted) here.
+        if in_key_block {
+            if pem_is_encrypted(raw) {
+                return true;
+            }
+            continue;
+        }
+        let body = line.split(['#', ';']).next().unwrap_or("").trim();
+        let mut tok = body.split_whitespace();
+        match tok.next() {
+            // `askpass <file>` supplies the passphrase itself; a bare `askpass`
+            // means "prompt on the console" and still needs one from us.
+            Some("askpass") if tok.next().is_some() => return false,
+            Some("key") => key_file = tok.next().map(str::to_string),
+            Some("pkcs12") => pkcs12 = true,
+            _ => {}
+        }
+    }
+
+    if pkcs12 {
+        return true;
+    }
+    // An out-of-line key: resolve it against the config's directory when relative,
+    // then sniff the same PEM markers. Unreadable → false (best-effort).
+    let Some(key_file) = key_file else {
+        return false;
+    };
+    let key_path = Path::new(&key_file);
+    let key_path = match (key_path.is_absolute(), config_dir) {
+        (false, Some(dir)) => dir.join(key_path),
+        _ => key_path.to_path_buf(),
+    };
+    std::fs::read_to_string(key_path)
+        .map(|k| pem_is_encrypted(&k))
+        .unwrap_or(false)
+}
+
+/// The credential files a connect must hand OpenVPN, resolved from what the
+/// config actually asks for. Shared by the Linux/Windows/macOS `connect_streaming`
+/// implementations so all three feed the same channels.
+///
+/// `password` is the primary secret and `key_passphrase` the (optional) second
+/// one. Which channel `password` lands in depends on the config:
+/// - bare `auth-user-pass` → `password` is the *account* password, written with
+///   `username` into the two-line userpass file, and `key_passphrase` (when the
+///   config also has an encrypted key) becomes the askpass file.
+/// - otherwise → there is no account to log into, so `password` *is* the key
+///   passphrase and goes to askpass. This is the long-standing single-secret path.
+///
+/// Returns `(userpass_file, askpass_file)`; the caller passes them to
+/// [`openvpn_args`] and deletes both once OpenVPN has read them.
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+fn write_credfiles(
+    config: &str,
+    stem: &str,
+    username: Option<&str>,
+    password: &str,
+    key_passphrase: Option<&str>,
+) -> Result<(Option<PathBuf>, Option<PathBuf>), String> {
+    let userpass = config_requires_userpass(config);
+    let userpass_file = if userpass {
+        Some(write_userpass(stem, username.unwrap_or(""), password)?)
+    } else {
+        None
+    };
+    let key_passphrase = key_passphrase.filter(|p| !p.is_empty());
+    let askpass_file = match key_passphrase {
+        Some(kp) => Some(write_askpass(stem, kp)?),
+        None if !userpass => Some(write_askpass(stem, password)?),
+        None => None,
+    };
+    Ok((userpass_file, askpass_file))
+}
+
+/// Turn OpenVPN's output into a message that names which secret was wrong.
+///
+/// This is the payoff of feeding the two credential channels separately: OpenVPN
+/// reports an `auth-user-pass` rejection (`AUTH_FAILED`) and a bad private-key
+/// passphrase (a decrypt error) with completely different lines, so a headless
+/// connect can tell the user *which* of the fields to retype instead of dumping
+/// the handshake log at them.
+///
+/// `log` is the failure tail (or the whole handshake). Returns `None` when nothing
+/// is recognized, so the caller falls back to the raw tail rather than replacing a
+/// specific error with a vague guess. Most-specific checks run first.
+pub fn explain_openvpn_error(log: &str) -> Option<String> {
+    let s = log.to_ascii_lowercase();
+
+    // Wrong private-key passphrase. OpenVPN/OpenSSL word this several ways
+    // depending on version and key format; all of them mean the same thing.
+    if s.contains("private key password verification failed")
+        || s.contains("error parsing private key")
+        || s.contains("bad decrypt")
+        || s.contains("decryption error")
+        || s.contains("could not load private key")
+    {
+        return Some("Wrong private-key passphrase for this VPN config.".to_string());
+    }
+
+    // Wrong account username/password. AUTH_FAILED is the server explicitly
+    // rejecting the `auth-user-pass` credentials.
+    if s.contains("auth_failed") || s.contains("authenticate/decrypt packet error") {
+        return Some(
+            "VPN authentication failed — check the username and password.".to_string(),
+        );
+    }
+
+    // Elevation: the polkit / macOS admin prompt was dismissed or unavailable. No
+    // credential the user types into Eldrun can fix this one.
+    if s.contains("authorization was declined")
+        || s.contains("request dismissed")
+        || s.contains("not authorized")
+    {
+        return Some(
+            "Elevation was declined — OpenVPN needs root to create the tunnel device."
+                .to_string(),
+        );
+    }
+
+    // Reachability / config problems, which a user easily mistakes for bad creds.
+    if s.contains("cannot resolve host address") || s.contains("resolve: cannot resolve") {
+        return Some(
+            "Cannot resolve the VPN server's address — check the config, and that you're online."
+                .to_string(),
+        );
+    }
+    if s.contains("tls key negotiation failed") || s.contains("tls handshake failed") {
+        return Some(
+            "VPN TLS handshake failed — the server never completed the key exchange. Check \
+             that this config is current and the server is reachable."
+                .to_string(),
+        );
+    }
+    if s.contains("cannot open tun/tap") || s.contains("cannot allocate tun/tap") {
+        return Some(
+            "Could not create the VPN tunnel device — OpenVPN needs root, and the tun module \
+             must be available."
+                .to_string(),
+        );
+    }
+    if s.contains("connection refused") {
+        return Some("The VPN server refused the connection — check the config's port/protocol."
+            .to_string());
+    }
+
+    None
 }
 
 /// Derive a filesystem-safe stem from a config path for naming its runtime
@@ -388,19 +764,27 @@ fn write_userpass(stem: &str, username: &str, password: &str) -> Result<PathBuf,
 /// in [`registry`].
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn is_connected(config: &str) -> bool {
-    let mut reg = registry().lock().unwrap();
-    match reg.get_mut(config) {
-        Some(proc) => match proc.child.try_wait() {
-            Ok(Some(_)) => {
-                // Exited — drop the dead entry.
-                reg.remove(config);
-                false
-            }
-            Ok(None) => true,
-            Err(_) => true,
-        },
-        None => false,
+    {
+        let mut reg = registry().lock().unwrap();
+        let headless = match reg.get_mut(config) {
+            Some(proc) => match proc.child.try_wait() {
+                Ok(Some(_)) => {
+                    // Exited — drop the dead entry.
+                    reg.remove(config);
+                    false
+                }
+                Ok(None) => true,
+                Err(_) => true,
+            },
+            None => false,
+        };
+        if headless {
+            return true;
+        }
     }
+    // Not one of ours — but an *interactive* tunnel (started in a terminal tab) is
+    // just as up, and just as much in charge of the machine's routing.
+    interactive_connected(config)
 }
 
 /// True if a tunnel for `config` is currently up: registered and its recorded
@@ -410,29 +794,73 @@ pub fn is_connected(config: &str) -> bool {
 /// tunnel whose pid is gone is dropped from the registry.
 #[cfg(target_os = "macos")]
 pub fn is_connected(config: &str) -> bool {
-    let mut reg = mac_registry().lock().unwrap();
-    match reg.get(config) {
-        Some(proc) => match pidfile_pid(&proc.pidfile) {
-            Some(pid) if pid_alive(pid) => true,
-            _ => {
-                let dead = reg.remove(config);
-                if let Some(dead) = dead {
-                    let _ = std::fs::remove_file(&dead.pidfile);
-                    let _ = std::fs::remove_file(&dead.logfile);
+    {
+        let mut reg = mac_registry().lock().unwrap();
+        let headless = match reg.get(config) {
+            Some(proc) => match pidfile_pid(&proc.pidfile) {
+                Some(pid) if pid_alive(pid) => true,
+                _ => {
+                    let dead = reg.remove(config);
+                    if let Some(dead) = dead {
+                        let _ = std::fs::remove_file(&dead.pidfile);
+                        let _ = std::fs::remove_file(&dead.logfile);
+                    }
+                    false
                 }
-                false
-            }
-        },
-        None => false,
+            },
+            None => false,
+        };
+        if headless {
+            return true;
+        }
     }
+    // ...or an interactive tunnel from a terminal tab (see `interactive_registry`).
+    interactive_connected(config)
 }
 
-/// Bring up the OpenVPN tunnel for `config`, authenticating with `password`.
-/// No-op (returns `Ok`) if already connected. Blocks until OpenVPN reports the
-/// tunnel up, the process exits, or `CONNECT_TIMEOUT` elapses.
+/// Every config whose tunnel is currently up.
+///
+/// A tunnel is a **machine-level** object — it owns the box's routing (and often
+/// its DNS) for as long as it lives, no matter which project asked for it — so the
+/// UI needs to be able to ask "what is up right now?" without going project by
+/// project. This is that question. It also re-seats the frontend after a reload or
+/// a renderer crash, where the tunnel outlives the window that started it.
+///
+/// Keys are snapshotted before probing: [`is_connected`] takes the registry lock
+/// itself (and reaps dead entries under it), so holding it across the filter would
+/// deadlock.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub fn active_configs() -> Vec<String> {
+    let mut keys: Vec<String> = registry().lock().unwrap().keys().cloned().collect();
+    keys.extend(interactive_registry().lock().unwrap().keys().cloned());
+    keys.sort();
+    keys.dedup();
+    keys.into_iter().filter(|c| is_connected(c)).collect()
+}
+
+/// macOS analog of the above (its tunnels live in [`mac_registry`], keyed the same
+/// way — by config path).
+#[cfg(target_os = "macos")]
+pub fn active_configs() -> Vec<String> {
+    let mut keys: Vec<String> = mac_registry().lock().unwrap().keys().cloned().collect();
+    keys.extend(interactive_registry().lock().unwrap().keys().cloned());
+    keys.sort();
+    keys.dedup();
+    keys.into_iter().filter(|c| is_connected(c)).collect()
+}
+
+/// Bring up the OpenVPN tunnel for `config`, authenticating with `password` (and
+/// `key_passphrase` for a config that *also* has an encrypted private key — see
+/// [`write_credfiles`]). No-op (returns `Ok`) if already connected. Blocks until
+/// OpenVPN reports the tunnel up, the process exits, or `CONNECT_TIMEOUT` elapses.
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-pub fn connect(config: &str, username: Option<&str>, password: &str) -> Result<(), String> {
-    connect_streaming(config, username, password, |_| {})
+pub fn connect(
+    config: &str,
+    username: Option<&str>,
+    password: &str,
+    key_passphrase: Option<&str>,
+) -> Result<(), String> {
+    connect_streaming(config, username, password, key_passphrase, |_| {})
 }
 
 /// Like [`connect`], but invokes `on_line` for every line OpenVPN emits while the
@@ -444,6 +872,7 @@ pub fn connect_streaming(
     config: &str,
     username: Option<&str>,
     password: &str,
+    key_passphrase: Option<&str>,
     on_line: impl Fn(&str),
 ) -> Result<(), String> {
     let config = config.trim();
@@ -462,16 +891,24 @@ pub fn connect_streaming(
     }
 
     let stem = safe_stem(config);
-    // Feed the secret through the channel the config actually reads: a two-line
-    // user+pass file for `auth-user-pass` configs, else a one-line key passphrase.
-    let userpass = config_requires_userpass(config);
-    let credfile = if userpass {
-        write_userpass(&stem, username.unwrap_or(""), password)?
-    } else {
-        write_askpass(&stem, password)?
-    };
+    // Feed the secrets through whichever channels the config actually reads —
+    // both, when it has an `auth-user-pass` account *and* an encrypted key.
+    let (userpass_file, askpass_file) =
+        write_credfiles(config, &stem, username, password, key_passphrase)?;
     let pidfile = runtime_dir().join(format!("{stem}.pid"));
-    let args = openvpn_args(config, userpass, &credfile, &pidfile)?;
+    let args = openvpn_args(
+        config,
+        userpass_file.as_deref(),
+        askpass_file.as_deref(),
+        &pidfile,
+    )?;
+    // The credentials have been read once OpenVPN is up (or has failed); remove
+    // whichever files we wrote, on every exit path.
+    let remove_credfiles = || {
+        for f in [userpass_file.as_deref(), askpass_file.as_deref()].into_iter().flatten() {
+            let _ = std::fs::remove_file(f);
+        }
+    };
 
     let spawn_result = Command::new("pkexec")
         .arg("openvpn")
@@ -484,15 +921,14 @@ pub fn connect_streaming(
     let mut child = match spawn_result {
         Ok(c) => c,
         Err(e) => {
-            let _ = std::fs::remove_file(&credfile);
+            remove_credfiles();
             return Err(format!("failed to launch pkexec openvpn: {e}"));
         }
     };
 
     // Stream stdout/stderr until the ready marker, EOF, or timeout.
     let ready = wait_for_ready(&mut child, &on_line);
-    // The credential has been read by now; remove it regardless of outcome.
-    let _ = std::fs::remove_file(&credfile);
+    remove_credfiles();
 
     match ready {
         Ok(()) => {
@@ -505,7 +941,8 @@ pub fn connect_streaming(
         Err(msg) => {
             let _ = child.kill();
             let _ = child.wait();
-            Err(msg)
+            // Say which secret was wrong; fall back to the raw handshake tail.
+            Err(explain_openvpn_error(&msg).unwrap_or(msg))
         }
     }
 }
@@ -607,6 +1044,8 @@ fn wait_for_ready(child: &mut Child, on_line: &dyn Fn(&str)) -> Result<(), Strin
 /// our child. A missing/already-dead tunnel is treated as success.
 #[cfg(target_os = "linux")]
 pub fn disconnect(config: &str) -> Result<(), String> {
+    // An interactive tunnel has no child of ours — kill it by the pid it wrote.
+    disconnect_interactive(config);
     let proc = registry().lock().unwrap().remove(config);
     let Some(mut proc) = proc else {
         return Ok(());
@@ -640,9 +1079,12 @@ fn kill_pidfile(pidfile: &Path) {
 /// platform [`disconnect`]).
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn disconnect_all() {
+    // Interactive tunnels included: they are the ones that used to survive the app
+    // and leave the machine's routing rewritten with nothing left to undo it.
     let keys: Vec<String> = {
         let reg = registry().lock().unwrap();
-        reg.keys().cloned().collect()
+        let interactive = interactive_registry().lock().unwrap();
+        reg.keys().chain(interactive.keys()).cloned().collect()
     };
     for k in keys {
         let _ = disconnect(&k);
@@ -702,6 +1144,7 @@ pub fn connect_streaming(
     config: &str,
     username: Option<&str>,
     password: &str,
+    key_passphrase: Option<&str>,
     on_line: impl Fn(&str),
 ) -> Result<(), String> {
     let config = config.trim();
@@ -715,16 +1158,22 @@ pub fn connect_streaming(
     let exe = resolve_openvpn().ok_or_else(|| OPENVPN_MISSING.to_string())?;
 
     let stem = safe_stem(config);
-    // Feed the secret through the channel the config actually reads: a two-line
-    // user+pass file for `auth-user-pass` configs, else a one-line key passphrase.
-    let userpass = config_requires_userpass(config);
-    let credfile = if userpass {
-        write_userpass(&stem, username.unwrap_or(""), password)?
-    } else {
-        write_askpass(&stem, password)?
-    };
+    // Feed the secrets through whichever channels the config actually reads —
+    // both, when it has an `auth-user-pass` account *and* an encrypted key.
+    let (userpass_file, askpass_file) =
+        write_credfiles(config, &stem, username, password, key_passphrase)?;
     let pidfile = runtime_dir().join(format!("{stem}.pid"));
-    let args = openvpn_args(config, userpass, &credfile, &pidfile)?;
+    let args = openvpn_args(
+        config,
+        userpass_file.as_deref(),
+        askpass_file.as_deref(),
+        &pidfile,
+    )?;
+    let remove_credfiles = || {
+        for f in [userpass_file.as_deref(), askpass_file.as_deref()].into_iter().flatten() {
+            let _ = std::fs::remove_file(f);
+        }
+    };
 
     // `command_no_window` adds CREATE_NO_WINDOW so the long-lived openvpn.exe
     // does not own a flashing console window.
@@ -738,7 +1187,7 @@ pub fn connect_streaming(
     let mut child = match spawn_result {
         Ok(c) => c,
         Err(e) => {
-            let _ = std::fs::remove_file(&credfile);
+            remove_credfiles();
             return Err(format!(
                 "failed to launch openvpn.exe: {e} — creating the VPN adapter usually \
                  requires running Eldrun as Administrator"
@@ -748,8 +1197,7 @@ pub fn connect_streaming(
 
     // Stream stdout/stderr until the ready marker, EOF, or timeout.
     let ready = wait_for_ready(&mut child, &on_line);
-    // The credential has been read by now; remove it regardless of outcome.
-    let _ = std::fs::remove_file(&credfile);
+    remove_credfiles();
 
     match ready {
         Ok(()) => {
@@ -762,10 +1210,14 @@ pub fn connect_streaming(
         Err(msg) => {
             let _ = child.kill();
             let _ = child.wait();
-            Err(format!(
-                "{msg} — if this is a permissions/adapter error, run Eldrun as \
-                 Administrator or (re)install the OpenVPN TAP/Wintun driver"
-            ))
+            // A recognized credential error stands on its own — appending the
+            // adapter/Administrator hint to "wrong password" would just mislead.
+            Err(explain_openvpn_error(&msg).unwrap_or_else(|| {
+                format!(
+                    "{msg} — if this is a permissions/adapter error, run Eldrun as \
+                     Administrator or (re)install the OpenVPN TAP/Wintun driver"
+                )
+            }))
         }
     }
 }
@@ -909,18 +1361,6 @@ fn mac_registry() -> &'static Mutex<HashMap<String, MacVpn>> {
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Whether `pid` is alive. **EPERM counts as ALIVE**: the daemon runs as root,
-/// so an unprivileged probe gets EPERM for a perfectly healthy tunnel —
-/// treating that as dead keeps the VPN lamp dark (the exact 28l bug).
-#[cfg(target_os = "macos")]
-fn pid_alive(pid: i32) -> bool {
-    // SAFETY: kill with signal 0 only probes for existence/permission.
-    if unsafe { libc::kill(pid, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
 /// Locate `openvpn` as an ABSOLUTE path: PATH first, then the Homebrew /
 /// usr-local prefixes a GUI app's environment usually lacks. Absolute because
 /// the command runs under `do shell script`, whose /bin/sh gets a minimal
@@ -956,6 +1396,7 @@ pub fn connect_streaming(
     config: &str,
     username: Option<&str>,
     password: &str,
+    key_passphrase: Option<&str>,
     on_line: impl Fn(&str),
 ) -> Result<(), String> {
     let config = config.trim();
@@ -972,13 +1413,14 @@ pub fn connect_streaming(
     })?;
 
     let stem = safe_stem(config);
-    // Feed the secret through the channel the config actually reads: a two-line
-    // user+pass file for `auth-user-pass` configs, else a one-line key passphrase.
-    let userpass = config_requires_userpass(config);
-    let credfile = if userpass {
-        write_userpass(&stem, username.unwrap_or(""), password)?
-    } else {
-        write_askpass(&stem, password)?
+    // Feed the secrets through whichever channels the config actually reads —
+    // both, when it has an `auth-user-pass` account *and* an encrypted key.
+    let (userpass_file, askpass_file) =
+        write_credfiles(config, &stem, username, password, key_passphrase)?;
+    let remove_credfiles = || {
+        for f in [userpass_file.as_deref(), askpass_file.as_deref()].into_iter().flatten() {
+            let _ = std::fs::remove_file(f);
+        }
     };
     let pidfile = runtime_dir().join(format!("{stem}.pid"));
     let logfile = runtime_dir().join(format!("{stem}.log"));
@@ -987,7 +1429,12 @@ pub fn connect_streaming(
     let _ = std::fs::remove_file(&pidfile);
     let _ = std::fs::remove_file(&logfile);
 
-    let mut args = openvpn_args(config, userpass, &credfile, &pidfile)?;
+    let mut args = openvpn_args(
+        config,
+        userpass_file.as_deref(),
+        askpass_file.as_deref(),
+        &pidfile,
+    )?;
     args.push("--daemon".to_string());
     args.push("--log".to_string());
     args.push(logfile.to_string_lossy().into_owned());
@@ -1011,12 +1458,12 @@ pub fn connect_streaming(
     let output = match output {
         Ok(out) => out,
         Err(e) => {
-            let _ = std::fs::remove_file(&credfile);
+            remove_credfiles();
             return Err(format!("failed to run osascript: {e}"));
         }
     };
     if !output.status.success() {
-        let _ = std::fs::remove_file(&credfile);
+        remove_credfiles();
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(if stderr.contains("User canceled") {
             "administrator authorization was declined".to_string()
@@ -1040,8 +1487,8 @@ pub fn connect_streaming(
         || pidfile_pid(&pidfile).map(pid_alive).unwrap_or(true),
         &on_line,
     );
-    // The credential has been read by now; remove it regardless of outcome.
-    let _ = std::fs::remove_file(&credfile);
+    // The credentials have been read by now; remove them regardless of outcome.
+    remove_credfiles();
 
     match ready {
         Ok(()) => {
@@ -1051,7 +1498,8 @@ pub fn connect_streaming(
                 .insert(config.to_string(), MacVpn { pidfile, logfile });
             Ok(())
         }
-        Err(msg) => Err(msg),
+        // Say which secret was wrong; fall back to the raw log tail.
+        Err(msg) => Err(explain_openvpn_error(&msg).unwrap_or(msg)),
     }
 }
 
@@ -1061,20 +1509,15 @@ pub fn connect_streaming(
 /// tunnel is treated as success.
 #[cfg(target_os = "macos")]
 pub fn disconnect(config: &str) -> Result<(), String> {
+    // An interactive tunnel has no entry in `mac_registry` — kill it by its pid.
+    disconnect_interactive(config);
     let proc = mac_registry().lock().unwrap().remove(config);
     let Some(proc) = proc else {
         return Ok(());
     };
     if let Some(pid) = pidfile_pid(&proc.pidfile) {
         if pid_alive(pid) {
-            let script = macos_admin_shell_command(
-                &format!("kill -TERM {pid}"),
-                "Eldrun needs to stop the OpenVPN tunnel.",
-            );
-            let _ = crate::paths::command_no_window("osascript")
-                .arg("-e")
-                .arg(&script)
-                .output();
+            kill_root_pid(pid);
         }
     }
     let _ = std::fs::remove_file(&proc.pidfile);
@@ -1086,9 +1529,11 @@ pub fn disconnect(config: &str) -> Result<(), String> {
 /// never blocks (mirrors the Linux/Windows `disconnect_all`).
 #[cfg(target_os = "macos")]
 pub fn disconnect_all() {
+    // Interactive tunnels included — see the Linux/Windows twin.
     let keys: Vec<String> = {
         let reg = mac_registry().lock().unwrap();
-        reg.keys().cloned().collect()
+        let interactive = interactive_registry().lock().unwrap();
+        reg.keys().chain(interactive.keys()).cloned().collect()
     };
     for k in keys {
         let _ = disconnect(&k);
@@ -1104,6 +1549,116 @@ mod tests {
         assert_eq!(shell_quote("/home/u/a.ovpn"), "'/home/u/a.ovpn'");
         assert_eq!(shell_quote("a b"), "'a b'");
         assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+    }
+
+    /// A config nobody connected is not reported as up. The header's VPN indicator
+    /// is driven by this, and a false positive parks a "your machine is being
+    /// rerouted" badge over a machine that isn't.
+    ///
+    /// Asserts about *this* config rather than global emptiness: the registries are
+    /// process-global and the tests below register live entries in parallel.
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn unconnected_config_is_never_reported_up() {
+        let cfg = "/store/never-connected.ovpn";
+        assert!(!is_connected(cfg));
+        assert!(!active_configs().contains(&cfg.to_string()));
+    }
+
+    /// Drop a config from both the interactive registry and the disk, without going
+    /// through `disconnect_interactive` — which would try to `kill` the pid, and in
+    /// these tests that pid is *our own process*.
+    fn forget_interactive(config: &str) {
+        if let Some(pidfile) = interactive_registry().lock().unwrap().remove(config) {
+            let _ = std::fs::remove_file(pidfile);
+        }
+    }
+
+    /// The interactive command must carry a `--writepid` Eldrun chose, and claim it.
+    /// This is the whole fix for #83: without the pid, a root tunnel started in a
+    /// terminal tab is invisible to `is_connected`/`active_configs` and unkillable by
+    /// `disconnect`/`disconnect_all` — it outlives the app still owning the routing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interactive_command_claims_a_pidfile() {
+        let cfg = "/store/test-claims.ovpn";
+        forget_interactive(cfg);
+
+        let cmd = interactive_connect_command(cfg).unwrap();
+        let pidfile = interactive_pidfile(cfg);
+
+        assert!(cmd.contains("--writepid"));
+        assert!(cmd.contains(&shell_quote(&pidfile.to_string_lossy())));
+        // Claimed, but OpenVPN hasn't written a pid yet — the user is still at the
+        // polkit prompt. Pending is NOT dead: reaping here would forget a tunnel in
+        // the seconds before it comes up.
+        assert_eq!(interactive_state(cfg), Interactive::Pending);
+        assert!(!is_connected(cfg));
+
+        forget_interactive(cfg);
+    }
+
+    /// Once the pid is on disk and alive, the tunnel is up — visible to everything
+    /// the frontend asks (`openvpn_status`, `openvpn_active`).
+    #[cfg(unix)]
+    #[test]
+    fn interactive_tunnel_with_a_live_pid_is_up() {
+        let cfg = "/store/test-live.ovpn";
+        forget_interactive(cfg);
+        let _ = interactive_connect_command(cfg).unwrap();
+
+        // Our own pid is, definitionally, alive.
+        let me = std::process::id();
+        std::fs::write(interactive_pidfile(cfg), format!("{me}\n")).unwrap();
+
+        assert_eq!(interactive_state(cfg), Interactive::Alive(me as i32));
+        assert!(is_connected(cfg));
+        assert!(active_configs().contains(&cfg.to_string()));
+
+        forget_interactive(cfg);
+    }
+
+    /// A tunnel whose process is gone (the user closed its terminal) is reaped, not
+    /// reported as up — and its stale pidfile is cleaned up so the next connect
+    /// can't mistake it for a live one.
+    #[cfg(unix)]
+    #[test]
+    fn interactive_tunnel_with_a_dead_pid_is_reaped() {
+        let cfg = "/store/test-dead.ovpn";
+        forget_interactive(cfg);
+        let _ = interactive_connect_command(cfg).unwrap();
+
+        // A pid that is *certainly* dead: spawn a process and reap it.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead = child.id();
+        child.wait().unwrap();
+        let pidfile = interactive_pidfile(cfg);
+        std::fs::write(&pidfile, format!("{dead}\n")).unwrap();
+
+        assert_eq!(interactive_state(cfg), Interactive::None);
+        assert!(!is_connected(cfg));
+        // Reaped from both the registry and the disk.
+        assert!(!interactive_registry().lock().unwrap().contains_key(cfg));
+        assert!(!pidfile.exists());
+    }
+
+    /// Arming twice must not resurrect a stale pidfile: a leftover from a previous
+    /// run would otherwise read as a live tunnel the moment the config is armed.
+    #[cfg(unix)]
+    #[test]
+    fn arming_clears_a_stale_pidfile() {
+        let cfg = "/store/test-stale.ovpn";
+        forget_interactive(cfg);
+        let pidfile = interactive_pidfile(cfg);
+        let _ = std::fs::create_dir_all(runtime_dir());
+        std::fs::write(&pidfile, format!("{}\n", std::process::id())).unwrap();
+
+        let _ = interactive_connect_command(cfg).unwrap();
+
+        assert!(!pidfile.exists());
+        assert_eq!(interactive_state(cfg), Interactive::Pending);
+
+        forget_interactive(cfg);
     }
 
     #[cfg(target_os = "linux")]
@@ -1129,8 +1684,8 @@ mod tests {
     fn openvpn_args_askpass_shape() {
         let args = openvpn_args(
             "/home/u/work.ovpn",
-            false,
-            Path::new("/run/eldrun/openvpn/x.pass"),
+            None,
+            Some(Path::new("/run/eldrun/openvpn/x.pass")),
             Path::new("/run/eldrun/openvpn/x.pid"),
         )
         .unwrap();
@@ -1150,31 +1705,52 @@ mod tests {
     fn openvpn_args_userpass_uses_auth_user_pass() {
         let args = openvpn_args(
             "/home/u/work.ovpn",
-            true,
-            Path::new("/run/eldrun/openvpn/x.auth"),
+            Some(Path::new("/run/eldrun/openvpn/x.auth")),
+            None,
             Path::new("/run/eldrun/openvpn/x.pid"),
         )
         .unwrap();
-        // auth-user-pass configs feed username+password via --auth-user-pass,
-        // never --askpass (which OpenVPN only reads for an encrypted key).
         let ai = args.iter().position(|a| a == "--auth-user-pass").unwrap();
         assert_eq!(args[ai + 1], "/run/eldrun/openvpn/x.auth");
         assert!(!args.iter().any(|a| a == "--askpass"));
     }
 
     #[test]
+    fn openvpn_args_carries_both_channels_at_once() {
+        // The regression this whole change exists for: a config with an
+        // `auth-user-pass` account AND an encrypted key needs BOTH flags. Feeding
+        // only one leaves OpenVPN's other prompt unanswered and the handshake
+        // hangs until it times out.
+        let args = openvpn_args(
+            "/home/u/work.ovpn",
+            Some(Path::new("/run/eldrun/openvpn/x.auth")),
+            Some(Path::new("/run/eldrun/openvpn/x.pass")),
+            Path::new("/run/eldrun/openvpn/x.pid"),
+        )
+        .unwrap();
+        let ui = args.iter().position(|a| a == "--auth-user-pass").unwrap();
+        assert_eq!(args[ui + 1], "/run/eldrun/openvpn/x.auth");
+        let ai = args.iter().position(|a| a == "--askpass").unwrap();
+        assert_eq!(args[ai + 1], "/run/eldrun/openvpn/x.pass");
+        // …and the tail options survive both being present.
+        let pi = args.iter().position(|a| a == "--writepid").unwrap();
+        assert_eq!(args[pi + 1], "/run/eldrun/openvpn/x.pid");
+        assert!(args.iter().any(|a| a == "--auth-nocache"));
+    }
+
+    #[test]
     fn openvpn_args_rejects_leading_dash_config() {
-        assert!(openvpn_args("-evil", false, Path::new("/a"), Path::new("/b")).is_err());
+        assert!(openvpn_args("-evil", None, Some(Path::new("/a")), Path::new("/b")).is_err());
     }
 
     #[test]
     fn openvpn_args_rejects_control_chars() {
-        assert!(openvpn_args("/a\nb.ovpn", false, Path::new("/a"), Path::new("/b")).is_err());
+        assert!(openvpn_args("/a\nb.ovpn", None, Some(Path::new("/a")), Path::new("/b")).is_err());
     }
 
     #[test]
     fn openvpn_args_rejects_empty_config() {
-        assert!(openvpn_args("   ", false, Path::new("/a"), Path::new("/b")).is_err());
+        assert!(openvpn_args("   ", None, Some(Path::new("/a")), Path::new("/b")).is_err());
     }
 
     #[test]
@@ -1209,6 +1785,141 @@ mod tests {
 
         // Missing file → false (best-effort fallback).
         assert!(!config_requires_userpass(
+            dir.join("nope.ovpn").to_str().unwrap()
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explain_openvpn_error_names_which_secret_was_wrong() {
+        // The whole point: a rejected account and a bad key passphrase are two
+        // different fields, and OpenVPN reports them with two different lines.
+        let auth = explain_openvpn_error(
+            "AUTH: Received control message: AUTH_FAILED; SIGTERM[soft,auth-failure] received",
+        )
+        .unwrap();
+        assert!(auth.contains("username and password"), "{auth}");
+
+        let key = explain_openvpn_error(
+            "Cryptographic API error; OpenSSL: error:0308010C:digital envelope routines; \
+             Private Key Password verification failed",
+        )
+        .unwrap();
+        assert!(key.contains("private-key passphrase"), "{key}");
+        // …and they must never be confused for each other.
+        assert!(!key.contains("username"), "{key}");
+        assert!(!auth.contains("private-key"), "{auth}");
+
+        // OpenSSL words a bad decrypt several ways; all mean the same field.
+        for line in ["OpenSSL: error:0700006C:bad decrypt", "Decryption error"] {
+            assert!(
+                explain_openvpn_error(line).unwrap().contains("private-key passphrase"),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn explain_openvpn_error_separates_non_credential_failures() {
+        // Things no retyped password can fix must not be reported as bad creds.
+        let declined = explain_openvpn_error("administrator authorization was declined").unwrap();
+        assert!(declined.contains("Elevation"), "{declined}");
+
+        let dns = explain_openvpn_error("RESOLVE: Cannot resolve host address: vpn.x").unwrap();
+        assert!(dns.contains("resolve"), "{dns}");
+
+        let tls = explain_openvpn_error("TLS Error: TLS key negotiation failed to occur").unwrap();
+        assert!(tls.contains("TLS handshake"), "{tls}");
+
+        let tun = explain_openvpn_error("ERROR: Cannot open TUN/TAP dev /dev/net/tun").unwrap();
+        assert!(tun.contains("tunnel device"), "{tun}");
+    }
+
+    #[test]
+    fn explain_openvpn_error_passes_unknown_output_through() {
+        // Unrecognized output must fall back to the raw tail — replacing a specific
+        // error with a vague guess is worse than showing the real thing.
+        assert_eq!(explain_openvpn_error("Initialization Sequence In Progress"), None);
+        assert_eq!(explain_openvpn_error(""), None);
+    }
+
+    #[test]
+    fn config_requires_key_passphrase_detects_encrypted_keys() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("eldrun-ovpn-key-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let p = dir.join(name);
+            let mut f = std::fs::File::create(&p).unwrap();
+            f.write_all(body.as_bytes()).unwrap();
+            p
+        };
+
+        // Inline encrypted key (traditional PEM) → needs a passphrase.
+        let inline = write(
+            "inline.ovpn",
+            "client\nauth-user-pass\n<key>\n-----BEGIN RSA PRIVATE KEY-----\n\
+             Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,ABC\n\nbase64==\n\
+             -----END RSA PRIVATE KEY-----\n</key>\n",
+        );
+        assert!(config_requires_key_passphrase(inline.to_str().unwrap()));
+        // …and it is orthogonal to the account channel: this config needs both.
+        assert!(config_requires_userpass(inline.to_str().unwrap()));
+
+        // Inline PKCS#8 encrypted key → needs a passphrase.
+        let pkcs8 = write(
+            "pkcs8.ovpn",
+            "client\n<key>\n-----BEGIN ENCRYPTED PRIVATE KEY-----\nb64==\n\
+             -----END ENCRYPTED PRIVATE KEY-----\n</key>\n",
+        );
+        assert!(config_requires_key_passphrase(pkcs8.to_str().unwrap()));
+
+        // Inline *unencrypted* key → does not.
+        let plain = write(
+            "plain.ovpn",
+            "client\n<key>\n-----BEGIN PRIVATE KEY-----\nb64==\n-----END PRIVATE KEY-----\n</key>\n",
+        );
+        assert!(!config_requires_key_passphrase(plain.to_str().unwrap()));
+
+        // Out-of-line key, resolved relative to the config's own directory.
+        write("enc.key", "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nb64==\n");
+        let extenc = write("extenc.ovpn", "client\ncert a.crt\nkey enc.key\n");
+        assert!(config_requires_key_passphrase(extenc.to_str().unwrap()));
+
+        write("plain.key", "-----BEGIN PRIVATE KEY-----\nb64==\n");
+        let extplain = write("extplain.ovpn", "client\ncert a.crt\nkey plain.key\n");
+        assert!(!config_requires_key_passphrase(extplain.to_str().unwrap()));
+
+        // A key file we can't read → false (best-effort, like the userpass twin).
+        let missingkey = write("missingkey.ovpn", "client\nkey nope.key\n");
+        assert!(!config_requires_key_passphrase(missingkey.to_str().unwrap()));
+
+        // `pkcs12` bundles are treated as passphrase-protected (DER — can't sniff).
+        let p12 = write("p12.ovpn", "client\npkcs12 bundle.p12\n");
+        assert!(config_requires_key_passphrase(p12.to_str().unwrap()));
+
+        // A config that supplies its own `askpass <file>` needs nothing from us…
+        let ownaskpass = write(
+            "ownaskpass.ovpn",
+            "client\naskpass /etc/openvpn/pass.txt\n<key>\n\
+             -----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n</key>\n",
+        );
+        assert!(!config_requires_key_passphrase(ownaskpass.to_str().unwrap()));
+        // …but a *bare* `askpass` means "prompt on the console" — we must answer it.
+        let bareaskpass = write(
+            "bareaskpass.ovpn",
+            "client\naskpass\n<key>\n-----BEGIN RSA PRIVATE KEY-----\n\
+             Proc-Type: 4,ENCRYPTED\n</key>\n",
+        );
+        assert!(config_requires_key_passphrase(bareaskpass.to_str().unwrap()));
+
+        // Commented-out key directive / cert-only config → does not.
+        let certonly = write("certonly.ovpn", "client\n# key enc.key\nauth-user-pass\n");
+        assert!(!config_requires_key_passphrase(certonly.to_str().unwrap()));
+
+        // Missing config → false.
+        assert!(!config_requires_key_passphrase(
             dir.join("nope.ovpn").to_str().unwrap()
         ));
 

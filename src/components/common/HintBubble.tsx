@@ -13,6 +13,7 @@ export function HintBubble({
   placement,
   title,
   body,
+  action,
   onDismiss,
   onDisableAll,
 }: {
@@ -20,6 +21,9 @@ export function HintBubble({
   placement: "top" | "bottom";
   title: string;
   body: string;
+  /** Optional button that carries out what the hint describes. Running it also
+   *  dismisses the hint — the user has acted on it. */
+  action?: { label: string; run: () => void };
   onDismiss: () => void;
   onDisableAll: () => void;
 }) {
@@ -59,8 +63,20 @@ export function HintBubble({
         <button type="button" className="hint-bubble-link" onClick={onDisableAll}>
           Don't show hints
         </button>
+        {action && (
+          <button
+            type="button"
+            className="hint-bubble-got-it"
+            onClick={() => {
+              action.run();
+              onDismiss();
+            }}
+          >
+            {action.label}
+          </button>
+        )}
         <button type="button" className="hint-bubble-got-it" onClick={onDismiss}>
-          Got it
+          {action ? "Not now" : "Got it"}
         </button>
       </div>
     </div>,

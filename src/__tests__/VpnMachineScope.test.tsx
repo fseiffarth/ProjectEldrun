@@ -1,0 +1,229 @@
+/**
+ * The OpenVPN tunnel is a machine-level object, not a project's property.
+ *
+ * `pkexec openvpn --config …` runs as root with no routing flags from Eldrun, so a
+ * config that pushes `redirect-gateway` reroutes the *whole computer* — browser and
+ * all — for as long as it is up. Two things follow, and both are locked here:
+ *
+ *  1. **It is shared.** Tunnels are keyed by config path, so two projects on the
+ *     same `.ovpn` ride one tunnel. Logging out of one must not pull it out from
+ *     under the other (and out from under the OS). That was the bug: `logoutRemote`
+ *     and the Connect modal's Disconnect both called `openvpn_disconnect`
+ *     unconditionally.
+ *  2. **It outlives the project view.** A tunnel stays up when you switch away, so
+ *     the header indicator — not the project pill — is where it has to be visible,
+ *     and where it can be brought down.
+ */
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+
+import { invoke } from "@tauri-apps/api/core";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }));
+
+import { VpnIndicator } from "../components/header/VpnIndicator";
+import { useProjectsStore, logoutRemote } from "../stores/projects";
+import { useRemoteStatusStore } from "../stores/remoteStatus";
+import { markVpnConnected, useVpnStatusStore } from "../stores/vpnStatus";
+import { useVpnPromptStore } from "../stores/vpnPrompt";
+import type { ProjectEntry } from "../types";
+
+const invokeMock = vi.mocked(invoke);
+
+const CONFIG = "/store/office.ovpn";
+
+const project = (id: string, name: string): ProjectEntry =>
+  ({
+    id,
+    name,
+    directory: `/local/state/${id}`,
+    position: 0,
+    status: "active",
+    remote: {
+      user: "alice",
+      host: "host.example",
+      remote_path: "/srv/work",
+      openvpn: { config: CONFIG },
+    },
+  }) as unknown as ProjectEntry;
+
+const A = project("p1", "alpha");
+const B = project("p2", "beta");
+
+const disconnects = () =>
+  invokeMock.mock.calls.filter(([name]) => name === "openvpn_disconnect");
+
+beforeEach(() => {
+  invokeMock.mockReset();
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "openvpn_active") return Promise.resolve([]);
+    return Promise.resolve();
+  });
+  useProjectsStore.setState({ projects: [A, B] } as never);
+  useRemoteStatusStore.setState({ byProject: {} } as never);
+  useVpnStatusStore.setState({ byConfig: {}, holders: {} });
+});
+
+describe("a shared tunnel is refcounted by holder", () => {
+  it("survives one holder logging out, and comes down with the last", () => {
+    // Both projects are on the same .ovpn — one tunnel, two holders.
+    markVpnConnected(A.id, CONFIG);
+    markVpnConnected(B.id, CONFIG);
+    expect(useVpnStatusStore.getState().holders[CONFIG]).toEqual([A.id, B.id]);
+
+    // THE BUG: this used to fire openvpn_disconnect unconditionally, killing the
+    // tunnel B is still riding — and the machine's routing with it.
+    logoutRemote(A);
+    expect(disconnects()).toEqual([]);
+    expect(useVpnStatusStore.getState().byConfig[CONFIG]).toBe("connected");
+    expect(useVpnStatusStore.getState().holders[CONFIG]).toEqual([B.id]);
+
+    // Last one out turns off the lights.
+    logoutRemote(B);
+    expect(disconnects()).toEqual([["openvpn_disconnect", { config: CONFIG }]]);
+    expect(useVpnStatusStore.getState().byConfig[CONFIG]).toBeUndefined();
+  });
+
+  it("brings the tunnel down for a lone holder", () => {
+    markVpnConnected(A.id, CONFIG);
+    logoutRemote(A);
+    expect(disconnects()).toEqual([["openvpn_disconnect", { config: CONFIG }]]);
+  });
+});
+
+/** Report the tunnel as live to the backend-reconcile (`refresh`) too, so the
+ *  mount-time reseat doesn't drop a tunnel the test just brought up. */
+const backendReports = (...configs: string[]) =>
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "openvpn_active") return Promise.resolve(configs);
+    if (cmd === "openvpn_list_configs") return Promise.resolve([]);
+    return Promise.resolve();
+  });
+
+describe("the header indicator is the tunnel's own surface", () => {
+  it("appears whenever a tunnel is up — even with no project holding it", async () => {
+    // The reload/crash case: the tunnel outlived the renderer, so nothing in the
+    // frontend claims it. It is still rerouting the machine, so it is still shown.
+    backendReports(CONFIG);
+    render(<VpnIndicator />);
+
+    const btn = await screen.findByRole("button", { name: /openvpn/i });
+    await userEvent.hover(btn);
+    expect(screen.getByText("office.ovpn")).toBeTruthy();
+    expect(screen.getByText(/held by no project/i)).toBeTruthy();
+  });
+
+  it("names the holders and can bring the tunnel down for all of them", async () => {
+    backendReports(CONFIG);
+    markVpnConnected(A.id, CONFIG);
+    markVpnConnected(B.id, CONFIG);
+    render(<VpnIndicator />);
+
+    await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
+    expect(screen.getByText(/for alpha, beta/i)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /disconnect tunnel/i }));
+    await waitFor(() =>
+      expect(disconnects()).toEqual([["openvpn_disconnect", { config: CONFIG }]]),
+    );
+    // Every claim dropped: the user acted on the tunnel, not on a project.
+    expect(useVpnStatusStore.getState().holders[CONFIG]).toBeUndefined();
+    expect(useVpnStatusStore.getState().byConfig[CONFIG]).toBeUndefined();
+  });
+});
+
+describe("the tunnel state follows the backend", () => {
+  it("reconciles away a tunnel the backend no longer reports", async () => {
+    // The tunnel died (or was killed outside Eldrun). The indicator must not keep
+    // claiming the machine is being rerouted when it isn't.
+    markVpnConnected(A.id, CONFIG);
+    await useVpnStatusStore.getState().refresh();
+    expect(useVpnStatusStore.getState().byConfig[CONFIG]).toBeUndefined();
+  });
+
+  it("keeps an in-flight tunnel the backend cannot see yet", async () => {
+    // Mid-handshake: not in the backend registry until it comes up. Reconciling it
+    // away would blank the indicator while the tunnel is actively being built.
+    useVpnStatusStore.getState().setState(CONFIG, "connecting");
+    await useVpnStatusStore.getState().refresh();
+    expect(useVpnStatusStore.getState().byConfig[CONFIG]).toBe("connecting");
+  });
+});
+
+describe("the header can bring a tunnel up, with no project behind it", () => {
+  // A VPN is something you use, not only a precondition for an SSH project — and
+  // requiring a project just to reach the tunnel was backwards.
+  const STORED = [{ path: CONFIG, name: "office.ovpn" }];
+
+  it("offers each stored config, and connects it from the saved passphrase", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "openvpn_active") return Promise.resolve([]);
+      if (cmd === "openvpn_list_configs") return Promise.resolve(STORED);
+      if (cmd === "vpn_can_connect_silently") return Promise.resolve(true);
+      return Promise.resolve();
+    });
+    render(<VpnIndicator />);
+
+    await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^connect$/i }));
+
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter(([name]) => name === "openvpn_connect"),
+      ).toHaveLength(1),
+    );
+    // Up, and held by nobody: it was not brought up on any project's behalf.
+    await waitFor(() =>
+      expect(useVpnStatusStore.getState().byConfig[CONFIG]).toBe("connected"),
+    );
+    expect(useVpnStatusStore.getState().holders[CONFIG]).toBeUndefined();
+    // `remember: null` — no checkbox behind this call, so the keychain is untouched.
+    const [, args] = invokeMock.mock.calls.find(([name]) => name === "openvpn_connect")!;
+    expect((args as { remember: unknown }).remember).toBeNull();
+  });
+
+  /**
+   * Elevation is not free, and a rejected login is not cheap.
+   *
+   * `pkexec` authenticates the *user* before OpenVPN so much as reads the config, so a
+   * connect attempt that was always going to be rejected still costs a polkit dialog —
+   * and the modal that then opens to collect what was missing costs a second one. That
+   * is what this menu did to every `auth-user-pass` config with no project behind it:
+   * the username lives on a project's spec, the header had none to give, so each
+   * connect burned two system password prompts. The fix is to ask whether the connect
+   * would be silent *before* making it, and go straight to the modal when it wouldn't.
+   */
+  it("never elevates on a connect it knows cannot succeed — it asks first", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "openvpn_active") return Promise.resolve([]);
+      if (cmd === "openvpn_list_configs") return Promise.resolve(STORED);
+      // Credentials incomplete (e.g. a username this side has never seen).
+      if (cmd === "vpn_can_connect_silently") return Promise.resolve(false);
+      return Promise.resolve();
+    });
+    render(<VpnIndicator />);
+
+    await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^connect$/i }));
+
+    // The modal owns the connect from here. Crucially, no `openvpn_connect` was fired
+    // on the way to it: that call *is* the polkit prompt.
+    await waitFor(() => expect(useVpnPromptStore.getState().pending?.config).toBe(CONFIG));
+    expect(invokeMock.mock.calls.filter(([name]) => name === "openvpn_connect")).toHaveLength(0);
+  });
+
+  it("is present even when nothing is up — that is how you find it", async () => {
+    // It used to render null unless a tunnel was already running, which made the one
+    // control for a machine-wide thing impossible to find until it was too late.
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "openvpn_active") return Promise.resolve([]);
+      if (cmd === "openvpn_list_configs") return Promise.resolve(STORED);
+      return Promise.resolve();
+    });
+    const { container } = render(<VpnIndicator />);
+    expect(container.firstChild).not.toBeNull();
+    expect(screen.getByRole("button", { name: /openvpn/i })).toBeTruthy();
+  });
+});

@@ -97,10 +97,13 @@ export function RemoteProjectSection({
     vpnConfigs,
     vpnUsername,
     setVpnUsername,
-    vpnNeedsUsername,
+    vpnNeeds,
+    vpnNeedsKeyPassphrase,
     selectVpnConfig,
     vpnPassword,
     setVpnPassword,
+    vpnKeyPassphrase,
+    setVpnKeyPassphrase,
     vpnStatus,
     setVpnStatus,
     vpnError,
@@ -131,6 +134,27 @@ export function RemoteProjectSection({
   };
 
   if (!isRemoteProject) return null;
+
+  // Rendered beside whichever credential field comes last, so the button always
+  // sits at the end of the VPN form rather than mid-way through it.
+  const vpnConnectButton = (
+    <button
+      type="button"
+      className={`vpn-connect-btn vpn-status-${vpnStatus}`}
+      disabled={!vpnConfig || vpnStatus === "connecting"}
+      title={vpnStatusHint(vpnStatus, vpnError, vpnConfig)}
+      onClick={() => void connectVpn()}
+    >
+      {vpnStatus === "connecting" && <span className="vpn-spinner" aria-hidden="true" />}
+      {vpnStatus === "connecting"
+        ? "Connecting…"
+        : vpnStatus === "connected"
+          ? "Connected"
+          : vpnStatus === "error"
+            ? "Retry VPN"
+            : "Connect VPN"}
+    </button>
+  );
 
   // The non-headless login authenticates in a terminal, so its lamp tracks the
   // readiness poll (connecting while the master comes up, green once browsable).
@@ -197,6 +221,10 @@ export function RemoteProjectSection({
                 <span className="toggle-card-desc">
                   Only needed for a VPN-gated host — leave off when you're already on
                   the right network.
+                  <br />
+                  The tunnel is <strong>machine-wide</strong>: while it is up, this
+                  computer's traffic routes through it — your browser too, not just
+                  Eldrun.
                 </span>
               </span>
               <span className="eld-switch">
@@ -242,7 +270,7 @@ export function RemoteProjectSection({
                 </label>
                 {headless ? (
                   <>
-                    {vpnNeedsUsername && (
+                    {vpnNeeds.username && (
                       <label>
                         VPN username{" "}
                         <span className="ssh-optional-hint">(stored with the project)</span>
@@ -259,38 +287,41 @@ export function RemoteProjectSection({
                       </label>
                     )}
                     <label>
-                      {vpnNeedsUsername ? "VPN password" : "VPN passphrase"}{" "}
+                      {vpnNeeds.username ? "VPN password" : "VPN passphrase"}{" "}
                       <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
                       <div className="folder-picker-row">
                         <PasswordInput
                           className="ssh-password-input"
                           value={vpnPassword}
-                          placeholder={vpnNeedsUsername ? "OpenVPN account password" : "VPN passphrase"}
+                          placeholder={vpnNeeds.username ? "OpenVPN account password" : "VPN passphrase"}
                           onChange={(e) => {
                             setVpnPassword(e.target.value);
                             if (vpnStatus !== "idle") setVpnStatus("idle");
                           }}
                         />
-                        <button
-                          type="button"
-                          className={`vpn-connect-btn vpn-status-${vpnStatus}`}
-                          disabled={!vpnConfig || vpnStatus === "connecting"}
-                          title={vpnStatusHint(vpnStatus, vpnError, vpnConfig)}
-                          onClick={() => void connectVpn()}
-                        >
-                          {vpnStatus === "connecting" && (
-                            <span className="vpn-spinner" aria-hidden="true" />
-                          )}
-                          {vpnStatus === "connecting"
-                            ? "Connecting…"
-                            : vpnStatus === "connected"
-                              ? "Connected"
-                              : vpnStatus === "error"
-                                ? "Retry VPN"
-                                : "Connect VPN"}
-                        </button>
+                        {/* The connect button sits with the *last* credential field, so
+                            a config that also needs a key passphrase moves it below. */}
+                        {!vpnNeedsKeyPassphrase && vpnConnectButton}
                       </div>
                     </label>
+                    {vpnNeedsKeyPassphrase && (
+                      <label>
+                        Private key passphrase{" "}
+                        <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
+                        <div className="folder-picker-row">
+                          <PasswordInput
+                            className="ssh-password-input"
+                            value={vpnKeyPassphrase}
+                            placeholder="Passphrase for the config's encrypted key"
+                            onChange={(e) => {
+                              setVpnKeyPassphrase(e.target.value);
+                              if (vpnStatus !== "idle") setVpnStatus("idle");
+                            }}
+                          />
+                          {vpnConnectButton}
+                        </div>
+                      </label>
+                    )}
                     {(vpnStatus === "connecting" || vpnLog.length > 0) && (
                       <ConnectionLog lines={vpnLog} busy={vpnStatus === "connecting"} />
                     )}

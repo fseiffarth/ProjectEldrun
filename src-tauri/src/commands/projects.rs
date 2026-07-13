@@ -653,19 +653,16 @@ pub fn set_project_name(project_id: String, name: String) -> Result<String, Stri
     Ok(cleaned)
 }
 
-/// Toggle the Docker sandbox for a project in both `projects.json` (so the pill
-/// list / frontend can flag it without reading project.json) and the project's
-/// own `project.json`. When `enabled` is false the `sandbox` field is cleared
-/// (treated identically to "never set" — agents run on the host). Returns the
-/// resulting enabled state.
+/// Toggle the project container for a project in both `projects.json` (so the
+/// pill list / frontend can flag it without reading project.json) and the
+/// project's own `project.json`. **Spec-preserving**: only `enabled` is
+/// flipped — hand-tuned `image`/`memory`/`network`/… survive a disable/enable
+/// round-trip (the spec stays stored with `enabled:false` rather than being
+/// cleared). On the *first* enable (no prior spec), in-repo container sources
+/// are auto-detected (`Dockerfile`, else a devcontainer `image`). Returns the
+/// resulting spec so the frontend can mirror it verbatim.
 #[tauri::command]
-pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<bool, String> {
-    let spec = enabled.then(|| SandboxSpec {
-        enabled: true,
-        ..Default::default()
-    });
-
-    // projects.json — mirror into the entry's flattened `sandbox`.
+pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<SandboxSpec, String> {
     let list_path = storage::state_dir().join("projects.json");
     let mut list: ProjectsList = if list_path.exists() {
         storage::read_json(&list_path).map_err(|e| e.to_string())?
@@ -676,28 +673,106 @@ pub fn set_project_sandbox(project_id: String, enabled: bool) -> Result<bool, St
         .iter_mut()
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    match &spec {
-        Some(s) => {
-            let value = serde_json::to_value(s).map_err(|e| e.to_string())?;
-            entry.extra.insert("sandbox".to_string(), value);
-        }
-        None => {
-            entry.extra.remove("sandbox");
+
+    // Existing spec: the projects.json mirror is authoritative; fall back to
+    // project.json for entries predating the mirror.
+    let local_file = entry.local_file.clone();
+    let existing: Option<SandboxSpec> = entry
+        .extra
+        .get("sandbox")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .or_else(|| {
+            storage::read_json::<Project>(&PathBuf::from(&local_file))
+                .ok()
+                .and_then(|p| p.sandbox)
+        });
+    let first_enable = enabled && existing.is_none();
+    let mut spec = existing.unwrap_or_default();
+    spec.enabled = enabled;
+    if first_enable {
+        // First enable ever: prefer what the repo itself declares as its
+        // container over the built-in default image.
+        if let Some(dir) = entry
+            .extra
+            .get("directory")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            crate::services::sandbox::detect_spec_sources(Path::new(dir), &mut spec);
         }
     }
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
 
-    // project.json — keep the per-project file consistent (best effort).
+    write_project_sandbox_spec(&mut list, &list_path, &project_id, &spec)?;
+    Ok(spec)
+}
+
+/// Replace a project's container spec (the knobs dialog's save). `enabled` is
+/// taken from the incoming spec verbatim; blank strings are normalized away so
+/// "cleared field" and "never set" serialize identically. Returns the stored
+/// spec.
+#[tauri::command]
+pub fn set_project_sandbox_spec(
+    project_id: String,
+    mut spec: SandboxSpec,
+) -> Result<SandboxSpec, String> {
+    let clean = |v: &mut Option<String>| {
+        if v.as_deref().map(str::trim).is_none_or(str::is_empty) {
+            *v = None;
+        } else if let Some(s) = v.as_mut() {
+            *s = s.trim().to_string();
+        }
+    };
+    clean(&mut spec.image);
+    clean(&mut spec.dockerfile);
+    clean(&mut spec.memory);
+    clean(&mut spec.cpus);
+    clean(&mut spec.network);
+
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    write_project_sandbox_spec(&mut list, &list_path, &project_id, &spec)?;
+    Ok(spec)
+}
+
+/// Persist a container spec into both stores: the `projects.json` entry's
+/// flattened `sandbox` (the always-local mirror the spawn path reads) and the
+/// project's own `project.json` (best effort — the list is the source of truth).
+fn write_project_sandbox_spec(
+    list: &mut ProjectsList,
+    list_path: &Path,
+    project_id: &str,
+    spec: &SandboxSpec,
+) -> Result<(), String> {
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    let value = serde_json::to_value(spec).map_err(|e| e.to_string())?;
+    entry.extra.insert("sandbox".to_string(), value);
+    let local_file = entry.local_file.clone();
+    storage::write_json(list_path, list).map_err(|e| e.to_string())?;
+
     let proj_path = PathBuf::from(&local_file);
     if proj_path.exists() {
         if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.sandbox = spec;
+            project.sandbox = Some(spec.clone());
             storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
         }
     }
+    Ok(())
+}
 
-    Ok(enabled)
+/// Toggle-time container preflight: is docker installed, is the daemon up, does
+/// the image exist? For a missing image the report carries the shell command
+/// that provides it, so the frontend can run it in a fresh terminal tab
+/// (one-click, per house convention) instead of telling the user to do it.
+#[tauri::command]
+pub fn sandbox_preflight(project_id: String) -> crate::services::sandbox::PreflightReport {
+    crate::services::sandbox::preflight_report(&project_id)
 }
 
 /// Set (or clear) the OpenVPN client config on a **remote** project's SSH spec,
@@ -730,7 +805,17 @@ pub fn set_project_openvpn(
             extra: HashMap::new(),
         });
 
-    // projects.json — patch the `openvpn` field inside the flattened `remote` value.
+    patch_remote_spec(&project_id, |remote| remote.openvpn = spec.clone())?;
+
+    Ok(spec.map(|s| s.config).unwrap_or_default())
+}
+
+/// Apply `patch` to a **remote** project's SSH spec in both places it is stored:
+/// `projects.json` (the flattened `remote` extra, which is the always-local source
+/// of truth `services::remote::remote_target_for` reads) and the project's own
+/// `project.json` (best effort — a remote project's copy may be unreachable).
+/// Errors if the project is unknown or not remote.
+fn patch_remote_spec(project_id: &str, patch: impl Fn(&mut RemoteSpec)) -> Result<(), String> {
     let list_path = storage::state_dir().join("projects.json");
     let mut list: ProjectsList = if list_path.exists() {
         storage::read_json(&list_path).map_err(|e| e.to_string())?
@@ -747,23 +832,49 @@ pub fn set_project_openvpn(
         .ok_or_else(|| "project is not remote".to_string())?;
     let mut remote: RemoteSpec =
         serde_json::from_value(remote_val.clone()).map_err(|e| e.to_string())?;
-    remote.openvpn = spec.clone();
+    patch(&mut remote);
     *remote_val = serde_json::to_value(&remote).map_err(|e| e.to_string())?;
     let local_file = entry.local_file.clone();
     storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
 
-    // project.json — keep the per-project remote spec consistent (best effort).
     let proj_path = PathBuf::from(&local_file);
     if proj_path.exists() {
         if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
             if let Some(r) = project.remote.as_mut() {
-                r.openvpn = spec.clone();
+                patch(r);
                 storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
             }
         }
     }
+    Ok(())
+}
 
-    Ok(spec.map(|s| s.config).unwrap_or_default())
+/// Opt a **remote** project in/out of auto-connect (launch + activation bring the
+/// SSH — and, only if the host isn't directly reachable, the VPN — up with no
+/// prompt). The frontend only offers this once the connection can complete
+/// silently (saved SSH password, or a host recorded as `key_auth`); the connect
+/// path re-checks that itself, so a stale opt-in can never produce a prompt.
+/// Returns the resulting state.
+#[tauri::command]
+pub fn set_project_auto_connect(project_id: String, enabled: bool) -> Result<bool, String> {
+    patch_remote_spec(&project_id, |remote| {
+        remote.auto_connect = enabled.then_some(true);
+    })?;
+    Ok(enabled)
+}
+
+/// Record how a remote project's host authenticated on its last successful connect
+/// (`key_auth` = no password was used at all — key/agent auth). Called by
+/// `remote_connect`; this is the only way the UI can know a passwordless host is
+/// auto-connect-eligible, since such a host has nothing in the keychain to check.
+/// A no-op when the value is unchanged, so an ordinary connect costs no write.
+pub fn record_remote_key_auth(project_id: &str, key_auth: bool) -> Result<(), String> {
+    let current = crate::services::remote::remote_target_for(project_id)
+        .and_then(|t| t.spec.key_auth);
+    if current == Some(key_auth) {
+        return Ok(());
+    }
+    patch_remote_spec(project_id, |remote| remote.key_auth = Some(key_auth))
 }
 
 /// Normalize a list of category tags: trim each, drop blanks, and de-duplicate
@@ -1652,6 +1763,32 @@ pub fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String>
     };
     list.push(entry.clone());
     storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    // Lockstep on by default for a git-backed remote project — the same call
+    // `extend_project_to_remote` makes, for the same reason: the host root was
+    // just created (empty), and the mirror was scaffolded with an initial commit,
+    // so the first pass can only be a one-directional seed, never a divergence.
+    // If the user instead pointed at a host dir that already holds differing
+    // files, pairing refuses and asks (`pairing_conflict`) rather than clobbering.
+    //
+    // Gated on the mirror *actually* being a repo rather than on `git_type` alone:
+    // `skip_scaffold` creates the mirror without `git init`, and lockstep on a
+    // repo-less mirror has no history to seed from. Best-effort — a write failure
+    // just leaves lockstep off (its default), never fails project creation.
+    if let Some(mirror) = mirror.as_deref() {
+        if Path::new(mirror).join(".git").is_dir() {
+            let state = crate::services::git_peer::GitPeerState {
+                enabled: true,
+                ..Default::default()
+            };
+            if let Err(e) = crate::services::git_peer::save_state(&id, &state) {
+                eprintln!(
+                    "create_project: could not enable lockstep for '{id}' \
+                     (leaving it off; user can toggle it on): {e}"
+                );
+            }
+        }
+    }
 
     Ok(entry)
 }

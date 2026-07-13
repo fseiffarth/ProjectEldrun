@@ -20,12 +20,70 @@ use std::process::Stdio;
 
 use futures_util::StreamExt;
 use openssh_sftp_client::{Sftp, SftpOptions};
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStderr, Command};
 
 use crate::services::ssh_common::{
-    ssh_base_args, ssh_master_base_args, ssh_password_base_args, ssh_password_master_base_args,
-    validate_arg,
+    explain_ssh_error, ssh_base_args, ssh_master_base_args, ssh_password_base_args,
+    ssh_password_master_base_args, validate_arg,
 };
+
+/// How much of ssh's stderr to keep. Auth failures are a line or two; the cap only
+/// exists so a long-lived master that chatters for hours can't grow unbounded.
+const STDERR_KEEP: usize = 4096;
+
+/// Drain the child ssh's stderr to EOF on a background task, keeping the last
+/// [`STDERR_KEEP`] bytes, and hand back a handle that yields them.
+///
+/// Draining is not optional once stderr is piped: the pooled master lives for the
+/// whole session, and an unread pipe that fills would block ssh forever. So the
+/// task runs to EOF (i.e. until ssh exits) either way — on the happy path it just
+/// throws the bytes away.
+///
+/// This is what makes a headless failure legible at all. Both openers used to set
+/// `Stdio::null()`, so when a wrong password made ssh exit, the SFTP handshake saw
+/// only a closed pipe and the user got `pooled sftp connection failed: <EOF>` —
+/// the actual reason ("Permission denied") had been thrown away.
+fn drain_stderr(mut stderr: ChildStderr) -> tokio::task::JoinHandle<String> {
+    use tokio::io::AsyncReadExt;
+    tokio::spawn(async move {
+        let mut kept: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            match stderr.read(&mut chunk).await {
+                Ok(0) | Err(_) => break, // EOF, or the pipe broke — either way, done
+                Ok(n) => {
+                    kept.extend_from_slice(&chunk[..n]);
+                    if kept.len() > STDERR_KEEP {
+                        kept.drain(..kept.len() - STDERR_KEEP);
+                    }
+                }
+            }
+        }
+        String::from_utf8_lossy(&kept).trim().to_string()
+    })
+}
+
+/// Turn a failed SFTP handshake into the reason ssh actually gave. The handshake
+/// error itself is just "the pipe closed"; the *why* is on ssh's stderr, so wait
+/// briefly for the drain (ssh has already exited, so this returns at once) and
+/// prefer its explanation. Falls back to the raw stderr, then to the handshake
+/// error, so no information is ever lost — only re-ranked by usefulness.
+async fn handshake_error(drain: Option<tokio::task::JoinHandle<String>>, err: String) -> String {
+    let stderr = match drain {
+        Some(handle) => {
+            tokio::time::timeout(std::time::Duration::from_secs(3), handle)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default()
+        }
+        None => String::new(),
+    };
+    if stderr.is_empty() {
+        return err;
+    }
+    explain_ssh_error(&stderr).unwrap_or(stderr)
+}
 
 /// One entry in a remote directory listing. Structurally identical to the
 /// frontend-facing `commands::ssh::RemoteEntry`; kept separate so this service
@@ -131,7 +189,8 @@ async fn open_session(
 
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        // Piped, not null: this is where ssh says *why* it failed (see drain_stderr).
+        .stderr(Stdio::piped());
     if let Some(path) = crate::paths::effective_path() {
         cmd.env("PATH", path);
     }
@@ -150,11 +209,12 @@ async fn open_session(
         .stdout
         .take()
         .ok_or_else(|| "ssh stdout unavailable".to_string())?;
+    let drain = child.stderr.take().map(drain_stderr);
 
-    let sftp = Sftp::new(stdin, stdout, SftpOptions::default())
-        .await
-        .map_err(|e| format!("sftp connection failed: {e}"))?;
-    Ok((sftp, child))
+    match Sftp::new(stdin, stdout, SftpOptions::default()).await {
+        Ok(sftp) => Ok((sftp, child)),
+        Err(e) => Err(handshake_error(drain, format!("sftp connection failed: {e}")).await),
+    }
 }
 
 /// Open a **master-owning, persistent** SFTP session for the pooled remote
@@ -231,7 +291,10 @@ pub async fn open_pooled_session(
 
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        // Piped, not null: this is where ssh says *why* it failed (see drain_stderr).
+        // This is the connect the headless Connect modal drives, so its error text
+        // is what the user reads — it must carry the reason, not an EOF.
+        .stderr(Stdio::piped());
     if let Some(path) = crate::paths::effective_path() {
         cmd.env("PATH", path);
     }
@@ -250,11 +313,12 @@ pub async fn open_pooled_session(
         .stdout
         .take()
         .ok_or_else(|| "ssh stdout unavailable".to_string())?;
+    let drain = child.stderr.take().map(drain_stderr);
 
-    let sftp = Sftp::new(stdin, stdout, SftpOptions::default())
-        .await
-        .map_err(|e| format!("pooled sftp connection failed: {e}"))?;
-    Ok((sftp, child))
+    match Sftp::new(stdin, stdout, SftpOptions::default()).await {
+        Ok(sftp) => Ok((sftp, child)),
+        Err(e) => Err(handshake_error(drain, format!("pooled sftp connection failed: {e}")).await),
+    }
 }
 
 /// Wait for the ssh child to exit after the `Sftp` client has been dropped, so we

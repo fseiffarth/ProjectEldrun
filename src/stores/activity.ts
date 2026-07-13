@@ -2,8 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { looksLikeDecisionPrompt, stripAnsi } from "../lib/agentPrompt";
+import { METRIC, agentPromptLeaf } from "../lib/usageMetrics";
 import { allGroups, isPtyTabKind, useTabsStore } from "./tabs";
 import type { TabEntry } from "./tabs";
+import { bumpUsage } from "./usage";
 
 /// A scope (project) stays "running" until its PTYs have been quiet for this
 /// window. Short enough to clear quickly when a task ends, long enough to bridge
@@ -27,33 +29,30 @@ const DONE_QUIET_MS = 2500;
 /// the last screenful of a TUI redraw, small enough to be free.
 const TAIL_CAP = 8000;
 
-/// Right after launch, restored/resumed tabs all print their session banners
-/// and reconnection housekeeping at once — real bytes on the wire, but not a
-/// real "working" signal, since nobody actually asked any of them to do
-/// anything yet. Until this window has passed since the store loaded, no tab
-/// reads as busy or as a freshly-finished turn, so a restart doesn't light
-/// every tab up at once with nothing but startup noise. `decision` is exempt:
-/// a resumed agent that's genuinely sitting at an unanswered prompt is real
-/// signal worth surfacing immediately, startup or not.
-const STARTUP_GRACE_MS = 5000;
-let startupGraceUntil = Date.now() + STARTUP_GRACE_MS;
-
-function pastStartupGrace(now: number): boolean {
-  return now >= startupGraceUntil;
-}
-
 // Per-PTY activity, all keyed by the composed PTY id (`<scope>:<tabKey>`, the id
 // the backend emits under): when output last arrived; when the current burst of
 // output began (reset whenever output resumes after a quiet gap); the ANSI-
-// stripped tail of that burst; when the user last had eyes on the tab; and when
-// the agent in it last rang the terminal bell. Kept outside the store: they churn
-// on every output batch (~60/s) and nothing renders off them directly — only the
-// derived maps, recomputed on an interval, drive the UI.
+// stripped tail of that burst; when the user last had eyes on the tab; when the
+// agent in it last rang the terminal bell; and when the user last sent input to
+// it. Kept outside the store: they churn on every output batch (~60/s) and
+// nothing renders off them directly — only the derived maps, recomputed on an
+// interval, drive the UI.
+/// When `recompute` last ran, so the usage recap can bill agent working time by
+/// the real gap between ticks rather than by an assumed interval.
+let lastTickAt: number | null = null;
+
+/// The largest gap between two `recompute` ticks that may be billed as agent
+/// working time. A longer gap means the interval was not running — the laptop
+/// slept, the tab was throttled — and whatever the agents were doing across it is
+/// not something we observed. Billing it would silently invent hours.
+const MAX_WORK_TICK_MS = 5_000;
+
 const lastOutputByPty: Record<string, number> = {};
 const onsetByPty: Record<string, number> = {};
 const tailByPty: Record<string, string> = {};
 const seenAtByPty: Record<string, number> = {};
 const bellByPty: Record<string, number> = {};
+const inputByPty: Record<string, number> = {};
 
 const PTY_MAPS: Record<string, unknown>[] = [
   lastOutputByPty,
@@ -61,6 +60,7 @@ const PTY_MAPS: Record<string, unknown>[] = [
   tailByPty,
   seenAtByPty,
   bellByPty,
+  inputByPty,
 ];
 
 /** Record that a PTY produced output just now, keeping the tail of the current
@@ -85,6 +85,26 @@ export function notePtyOutput(ptyId: string, data = "") {
     const tail = (tailByPty[ptyId] ?? "") + stripAnsi(data);
     tailByPty[ptyId] = tail.length > TAIL_CAP ? tail.slice(-TAIL_CAP) : tail;
   }
+}
+
+/** Record that input was sent to a PTY on the user's behalf — a keystroke, a
+ *  paste, or a user-triggered flow typing its command (`initialInput`). This is
+ *  what makes output COUNT: "working" and "done" only ever arise from output
+ *  produced after input this session, so a restored tab bursting its resume
+ *  banner or replaying a prior transcript — real bytes, but nothing anybody
+ *  asked for — never lights up a tab or its project pill. `decision` is exempt:
+ *  a resumed agent genuinely sitting at an unanswered prompt is real signal
+ *  worth surfacing immediately, commanded or not. */
+export function noteUserInput(ptyId: string) {
+  inputByPty[ptyId] = Date.now();
+}
+
+/** Forget everything recorded about a PTY, called when it is (re)spawned. A
+ *  respawn — app launch, a project closed and reopened, a pane remounting — is
+ *  a new program: input sent to its predecessor mustn't license the successor's
+ *  restore/resume replay as a finished turn. */
+export function notePtySpawn(ptyId: string) {
+  for (const map of PTY_MAPS) delete map[ptyId];
 }
 
 /** Split a composed PTY id (`<scope>:<tabKey>`) into its parts, mirroring
@@ -118,15 +138,11 @@ function isTabDetached(scope: string, key: string): boolean {
   );
 }
 
-/** Test-only: forget all recorded PTY activity so cases start isolated, and
- *  treat the startup grace window as already elapsed — tests run under fake
- *  timers with their own clock, unrelated to the real wall-clock moment this
- *  module loaded, so the grace window must not leak into their assertions. */
+/** Test-only: forget all recorded PTY activity so cases start isolated. */
 export function _clearPtyActivityForTest() {
   for (const map of PTY_MAPS) {
     for (const k of Object.keys(map)) delete map[k];
   }
-  startupGraceUntil = 0;
   useActivityStore.setState({
     busyByScope: {},
     busyByTab: {},
@@ -177,12 +193,14 @@ function attentionFor(
   if (quiet >= DECISION_QUIET_MS && looksLikeDecisionPrompt(tailByPty[ptyId] ?? "")) {
     return "decision";
   }
-  // A bell is the agent explicitly asking to be looked at, so it doesn't have to
-  // wait out the full silence to count as a finished turn. Gated by the startup
-  // grace window: a resumed agent's session-restore banner going quiet is not a
-  // finished turn, and a stray bell replayed from a resumed session isn't a
-  // real request for attention either.
-  if (pastStartupGrace(now) && (bell > seen || quiet >= DONE_QUIET_MS)) return "done";
+  // "Done" means the agent finished work somebody asked for, so it requires
+  // input to have been sent this session (see `noteUserInput`): without it, the
+  // quiet that follows a restore banner or a resumed session's replayed
+  // transcript — and any stray bell replayed with it — would read as a finished
+  // turn on every launch. A bell after real input is the agent explicitly
+  // asking to be looked at, so it doesn't have to wait out the full silence.
+  if (!inputByPty[ptyId]) return null;
+  if (bell > seen || quiet >= DONE_QUIET_MS) return "done";
   // Still streaming: the "working" glow already speaks for it.
   return null;
 }
@@ -354,6 +372,15 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
 
   recompute: () => {
     const now = Date.now();
+    // Seconds of agent work this tick is worth, for the usage recap. Derived from
+    // the gap since the last tick rather than assuming the interval, and clamped:
+    // a suspended laptop or a stalled interval must not book hours of "agent
+    // working time" that never happened.
+    const sinceLastTick = lastTickAt === null ? 0 : now - lastTickAt;
+    const workedDeltaS =
+      sinceLastTick > 0 && sinceLastTick <= MAX_WORK_TICK_MS ? sinceLastTick / 1000 : 0;
+    lastTickAt = now;
+
     const { tabsByScope } = useTabsStore.getState();
     const prevScope = get().busyByScope;
     const prevTab = get().busyByTab;
@@ -375,12 +402,13 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
         live.add(ptyId);
         const ts = lastOutputByPty[ptyId];
         const onset = onsetByPty[ptyId];
-        // Busy = output still recent AND the burst has been sustained past the
-        // onset debounce (so a lone blip never registers as "working"), and past
-        // the startup grace window (so restored tabs bursting resume banners
-        // in lockstep don't all light up "working" together on launch).
+        // Busy = the tab was commanded at some point this session (see
+        // `noteUserInput` — so restored tabs bursting resume banners on launch
+        // never read as "working"), output is still recent, AND the burst has
+        // been sustained past the onset debounce (so a lone blip never
+        // registers as "working").
         const tabBusy =
-          pastStartupGrace(now) &&
+          inputByPty[ptyId] !== undefined &&
           ts !== undefined &&
           now - ts < BUSY_WINDOW_MS &&
           onset !== undefined &&
@@ -393,6 +421,27 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
 
         const attn = attentionFor(scope, t, ptyId, now);
         if (attn) nextAttn[ptyId] = attn;
+
+        // ── Usage recap ────────────────────────────────────────────────────
+        // The busy/attention state this tick is already the truth about what the
+        // agents are doing; the recap just needs it accumulated rather than only
+        // rendered. Only agent tabs count — a busy shell is the user working, not
+        // an agent.
+        if (agentPromptLeaf(t)) {
+          if (tabBusy && workedDeltaS > 0) {
+            // Agent-seconds: two agents working in parallel for a minute is two
+            // agent-minutes. That is the quantity worth reporting.
+            bumpUsage(scope, METRIC.AGENT_WORKED_S, workedDeltaS);
+          }
+          // Count the EDGE, not the state: an agent sitting on a decision prompt
+          // for ten ticks stopped to ask once, not ten times.
+          if (attn && prevAttn[ptyId] !== attn) {
+            bumpUsage(
+              scope,
+              attn === "decision" ? METRIC.AGENT_DECISION : METRIC.AGENT_DONE,
+            );
+          }
+        }
       }
       if (scopeBusy) nextScope[scope] = true;
       if ((prevScope[scope] ?? false) !== scopeBusy) changed = true;

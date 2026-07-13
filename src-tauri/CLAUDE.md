@@ -35,9 +35,11 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 | `calendar.rs` | Calendar/event/task CRUD over `calendar.json` + guarded ICS file read/write. |
 | `subwindow.rs` | Detached/popped-out subwindow lifecycle (#42). |
 | `timer.rs` | Time-tracking commands. |
+| `usage_stats.rs` | Usage recap: batched counter writes (`usage_bump`), rollup reads, watcher attach, and git commits/lines derived on demand from `git log`. |
 | `workspace.rs` | KDE/X11 workspace switch commands. |
 | `settings.rs` | Settings read/update. |
 | `project_runtime.rs` | Project-switch runtime command wrapper (off-UI-thread). |
+| `pdf_clip.rs` | In-memory transfer slot for dragged/copied PDF *pages*. Two Eldrun windows are separate WebViews with separate JS heaps, so the bytes must cross the process boundary; events carry only the token. |
 | `crash.rs` | Receives frontend renderer crash reports. |
 | `debug.rs` | Debug-mode helpers. |
 
@@ -50,11 +52,18 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 | `sftp.rs` | Native SFTP session: list + read/write/create/delete/rename/mkdir/download (pooled `*_on` + one-shot). |
 | `ssh_exec.rs` | Remote command execution over SSH (PTY tabs, git-over-ssh, remote `mkdir`; ControlMaster). |
 | `remote_agents.rs` | Remote agent bootstrap/resume for SSH projects. |
-| `openvpn.rs` | OpenVPN process lifecycle (askpass file, teardown). |
-| `agent_session.rs` | SessionStart hook installer + live-session recording for agent resume. |
-| `project_runtime.rs` | Worker-thread project switch + time flush (`flush_project_secs`). |
+| `remote_sync.rs` | Selective byte-sync core for remote projects: mirror paths, manifest, host/mirror walks, divergence + push/pull primitives. |
+| `sync_auto.rs` | Auto-sync engine on top of `remote_sync` (watcher + interval trigger, safe-direction policy). Skips the git-tracked set when lockstep owns it. |
+| `git_peer.rs` | Git lockstep: keeps the local mirror and host repo in step **semantically** (commits/refs via `git bundle`, never `.git` bytes). **Lockstep owns the git-tracked tree; byte-sync owns everything else** — the invariant that keeps the two transports from racing for the same file (#28p). One consequence worth knowing: enabling lockstep converts a **tracked** file from a continuous byte mirror to commit-gated — a saved edit no longer reaches the peer until it's committed (`docs/git_lockstep_case_matrix.md` #5/#7). |
+| `local_loss.rs` | The record of what lockstep/sync **destroyed in the local mirror** (#28q): a per-project append-only log, written by the destructive sites in `git_peer` (`audit_local_head_move`) and `commands::sync`, raised by `LocalLossDialog`. A file, not an event — the services are `AppHandle`-free and a background pass can delete with no window listening. |
+| `openvpn.rs` | OpenVPN process lifecycle (askpass file, teardown). Two registries, both keyed by config path: headless tunnels Eldrun spawned, and *interactive* ones typed into a terminal tab — the latter armed with a `--writepid` Eldrun owns, so they are visible (`is_connected`/`active_configs`) and killable (`disconnect`/`disconnect_all`) rather than outliving the app with the machine's routing changed. |
+| `agent_session.rs` | Agent-session resolvers (`resolve_{claude,codex}_session`), SessionStart hook installer, live-session records, Codex hook-trust state. |
+| `codex_bind.rs` | Hook-free Codex session binding: follows `~/.codex/sessions` rollouts so Codex tabs resume even when its hook is untrusted. |
+| `sandbox.rs` | Project containers (#38): ONE session-lived, capability-dropped Docker container per toggled project (`eldrun-<id>`); every shell/agent tab `docker exec`s into it. Identical-path mount of the project dir (+ minimal agent auth/state mounts) keeps resume/git/viewers reading host bytes. Lifecycle: idempotent `up` (spec-fingerprint label detects staleness) / `down` on deactivate (skipped while tabs live) / `down_all` at exit / `sweep_orphans` at startup. Tab close TERMs the in-container process via a pidfile kill-wrapper — docker never kills an exec when its client dies. Local projects only; Windows refused at spawn. Plan: `docs/docker_projects_plan.md`. |
+| `project_runtime.rs` | Worker-thread project switch + time flush (`flush_project_secs`); kicks the sandbox container down(prev)/up(next) thread on switch. |
 | `restore_service.rs` | Tab/session restore on relaunch. |
 | `terminal_service.rs` | Tab layout save/restore for terminals. |
+| `usage_stats.rs` | Recursive file-churn watcher on the active project (pure `classify_fs_event`/`is_ignored`/`Debouncer`) + periodic flush into `usage_stats.json`. Local filesystems only — inotify cannot see an SFTP tree. |
 | `window_service.rs` | Window-state helpers. |
 
 **Platform (`platform/`)** — `WorkspaceBackend` strategy.
@@ -77,6 +86,7 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 | `settings.rs` | `settings.json`. |
 | `default_apps.rs` | `default_apps.json`. |
 | `time_log.rs` | `time_log.json` (unbounded `Vec`; Efficiency #2/#12). |
+| `usage_stats.rs` | `usage_stats.json`: rolling hour+day usage counters behind the daily recap. Same bucket/prune shape as `net_usage`, but an **open** metric-key → count map (`metric` module) so a new stat needs no migration. |
 | `boxes.rs` | Project boxes. |
 | `calendar.rs` | `calendar.json`: calendars, events (start/end, rrule, alarms), tasks; migrates the legacy v1 array. |
 | `session.rs` | Live/restorable session state. |
@@ -86,4 +96,4 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | PTY lifecycle + agent-session resolvers (`resolve_{claude,codex}_session`). |
+| `mod.rs` | PTY lifecycle. (Agent-session resolution happens in `commands::terminal::pty_spawn`, before ssh/docker wrapping.) |

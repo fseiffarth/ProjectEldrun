@@ -159,7 +159,24 @@ impl PtyRegistry {
             let _ = e.child.kill();
             // The tree shrank; drop the cached descendant-pid set.
             invalidate_proc_tree_cache();
+            // The tab is gone for good, so stop watching for its Codex session.
+            crate::services::codex_bind::untrack_now(id);
+            // Containerized tab: killing the child above only killed the
+            // `docker exec` CLIENT — TERM the process inside the container too
+            // (best-effort, no-op for tabs that never containerized).
+            crate::services::sandbox::kill_tab_process(id);
         }
+    }
+
+    /// True when any live (not-yet-dead) PTY belongs to `scope`. PTY ids are
+    /// `<scope>:<tab-key>` (CenterPanel), so a prefix match is authoritative.
+    /// Used by the project-container teardown to keep a deactivated project's
+    /// container alive while background tabs still run inside it.
+    pub fn any_live_for_scope(&self, scope: &str) -> bool {
+        let prefix = format!("{scope}:");
+        self.entries
+            .iter()
+            .any(|(id, e)| id.starts_with(&prefix) && !e.dead.load(Ordering::SeqCst))
     }
 
     /// OS process id of the child for `id`, if it is still tracked.
@@ -267,6 +284,11 @@ pub fn spawn_pty(
     });
 
     let id = opts.id.clone();
+    // Token for this *particular* spawn's Codex session tracking (None for any
+    // tab the binder isn't following). A re-spawn under the same id replaces the
+    // tracking and mints a new token, so the old process exiting below can only
+    // ever tear down its own.
+    let bind_seq = crate::services::codex_bind::current_seq(&opts.id);
     tokio::spawn(async move {
         let mut batch: Vec<u8> = Vec::with_capacity(BATCH_MAX_BYTES);
         let mut last_emit = Instant::now();
@@ -318,6 +340,10 @@ pub fn spawn_pty(
         // The child exited on its own; its subtree is gone, so the next CPU
         // sample must rebuild rather than count dead pids.
         invalidate_proc_tree_cache();
+        // Codex quit by itself (`/exit`, crash) — stop watching for its session.
+        if let Some(seq) = bind_seq {
+            crate::services::codex_bind::untrack(&id, seq);
+        }
         let _ = app.emit("terminal-exit", TerminalExit { id, code: None });
     });
 

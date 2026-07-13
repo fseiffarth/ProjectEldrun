@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
+import { useEnergySaver, saverInterval } from "../../stores/power";
 
 /** Subset of the backend `OllamaModelInfo` the menu needs (installed models). */
 interface LocalModelInfo {
@@ -54,6 +55,7 @@ function fmtBytes(n: number): string {
 export function LocalModelMenu() {
   const { settings, updateSettings } = useSettingsStore();
   const activeModel = settings?.ollama_model;
+  const energySaver = useEnergySaver();
   const [installed, setInstalled] = useState(false);
   // Three-state Ollama health for the status lamp: "stopped" (server down, red),
   // "idle" (server up, no model in memory, yellow), "loaded" (a model is loaded
@@ -98,12 +100,12 @@ export function LocalModelMenu() {
         })
         .catch(() => {});
     void check();
-    const id = window.setInterval(check, 5000);
+    const id = window.setInterval(check, saverInterval(5000, energySaver));
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [installed]);
+  }, [installed, energySaver]);
 
   // Track in-flight downloads regardless of which surface started them.
   useEffect(() => {
@@ -172,12 +174,12 @@ export function LocalModelMenu() {
         })
         .catch(() => {});
     void check();
-    const id = window.setInterval(check, 5000);
+    const id = window.setInterval(check, saverInterval(5000, energySaver));
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [installed]);
+  }, [installed, energySaver]);
 
   // Read the full installed-model list (resident + on-disk). Used on hover and
   // re-run after a load completes so a freshly-resident model moves up.

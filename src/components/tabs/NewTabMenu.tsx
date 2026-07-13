@@ -123,7 +123,9 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
         label: model,
         cmd: "vibe",
         args: [],
-        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias },
+        // ELDRUN_LOCAL_MODEL: which model this tab drives, for the usage recap's
+        // per-model breakdown (VIBE_ACTIVE_MODEL is the resolved alias).
+        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model },
         cwd: projectCwd,
         kind: "local_agent",
       });
@@ -146,7 +148,8 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
         label: `${model} · ${label}`,
         cmd,
         args,
-        env: {},
+        // cmd/args are the resolved launcher and name no model — record it here.
+        env: { ELDRUN_LOCAL_MODEL: model },
         cwd: projectCwd,
         kind: "local_agent",
       });

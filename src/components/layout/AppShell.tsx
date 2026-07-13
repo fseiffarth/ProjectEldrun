@@ -7,19 +7,23 @@ import {
   type MutableRefObject,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PLATFORM } from "../../lib/dragPlatform";
 import { nextWindowState } from "../../lib/windowState";
 import { notePtyOutput, useActivityStore } from "../../stores/activity";
+import { usePowerStore, useEnergySaver, saverInterval } from "../../stores/power";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
+import { LocalLossDialog } from "../common/LocalLossDialog";
 import { QuickOpen } from "../files/QuickOpen";
 import { HintHost } from "./HintHost";
 import { TourHost } from "./TourHost";
+import { StatsRecapHost } from "../stats/StatsRecapHost";
 import { HowToStart } from "./HowToStart";
 import { LessonsMenu } from "./LessonsMenu";
 import { useHintsStore } from "../../stores/hints";
@@ -27,12 +31,14 @@ import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/pro
 import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenSyncProgress } from "../../stores/sync";
+import { autoConnectVpnOnLaunch } from "../../lib/vpnAutoConnect";
 import { listenEditorJump } from "../../stores/editorJump";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
+import { flushUsage } from "../../stores/usage";
 import { useKeyboard } from "../../hooks/useKeyboard";
 
 // Width of the right-edge band that reveals the (unpinned) right panel on hover.
@@ -106,6 +112,7 @@ export function AppShell() {
   const clearConnToast = useProjectsStore((s) => s.clearConnToast);
   const initTimer = useTimerStore((s) => s.init);
   const flushTimer = useTimerStore((s) => s.flush);
+  const energySaver = useEnergySaver();
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [rightPinned, setRightPinned] = useState(false);
@@ -261,6 +268,14 @@ export function AppShell() {
     if (projectsLoaded) void loadBoxes();
   }, [projectsLoaded, loadBoxes]);
 
+  // Bring up the tunnel armed as "connect on launch" in the header's VPN menu, if any.
+  // Waits for both stores: the setting says *which* config, and a project's spec may
+  // hold the auth username for it. Self-guarded against a second run, and silent —
+  // it never prompts, so a stale opt-in just leaves the tunnel down.
+  useEffect(() => {
+    if (settingsLoaded && projectsLoaded) void autoConnectVpnOnLaunch();
+  }, [settingsLoaded, projectsLoaded]);
+
   const togglePin = () => {
     setRightPinned((v) => {
       const next = !v;
@@ -386,6 +401,9 @@ export function AppShell() {
     win.onCloseRequested(async (event) => {
       event.preventDefault();
       await flushTimer().catch(() => {});
+      // Counters accrued since the last interval flush would otherwise be lost on
+      // quit — including everything done in the final minutes of a session.
+      await flushUsage().catch(() => {});
       // Capture the window's final geometry before it goes away — a quit inside
       // the 300ms save debounce would otherwise drop the user's last move.
       await saveWindowGeometry().catch(() => {});
@@ -417,6 +435,24 @@ export function AppShell() {
     return () => clearInterval(id);
   }, [flushTimer]);
 
+  // Periodically commit the usage counters accrued in memory (see stores/usage).
+  // Batched on its own, faster cadence than the timer: the counters are cheap to
+  // accumulate but each flush is a whole-file rewrite, so this is the knob that
+  // keeps a burst of typing from becoming a burst of disk writes.
+  useEffect(() => {
+    const id = setInterval(() => void flushUsage(), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Point the file-churn watcher at the active project, so the recap's
+  // created/modified/deleted counts follow whatever the user is working on. The
+  // backend resolves which directory that is (a remote project is watched through
+  // its local mirror; one with no mirror is not watchable at all, since inotify
+  // cannot see an SFTP tree, and records no file stats).
+  useEffect(() => {
+    void invoke("usage_watch_project", { projectId: activeId ?? "" }).catch(() => {});
+  }, [activeId]);
+
   // Track per-project terminal activity for the running-task pill indicator.
   // One global listener covers background projects too (their PTYs keep
   // emitting even while their tab views are unmounted).
@@ -431,9 +467,31 @@ export function AppShell() {
     })
       .then((fn) => { unlisten = fn; })
       .catch(() => {});
-    const id = setInterval(() => useActivityStore.getState().recompute(), 300);
-    return () => { unlisten?.(); clearInterval(id); };
+    return () => { unlisten?.(); };
   }, []);
+
+  // Recompute the running-task indicators on a fixed cadence. Split from the
+  // listener above so re-arming it on an Energy Saver flip doesn't drop the
+  // terminal-output listener. On battery the pill lags a little more but the
+  // 300ms churn stops.
+  useEffect(() => {
+    const id = setInterval(
+      () => useActivityStore.getState().recompute(),
+      saverInterval(300, energySaver),
+    );
+    return () => clearInterval(id);
+  }, [energySaver]);
+
+  // Poll AC/battery state so Energy Saver ("on battery") can react to plug/unplug.
+  useEffect(() => usePowerStore.getState().start(), []);
+
+  // Publish the effective Energy Saver state on the document root so the CSS in
+  // themes.css can collapse continuous idle animations (`[data-energy-saver]`).
+  useEffect(() => {
+    const root = document.documentElement;
+    if (energySaver) root.dataset.energySaver = "on";
+    else delete root.dataset.energySaver;
+  }, [energySaver]);
 
   useEffect(() => {
     if (projectsLoaded) {
@@ -535,6 +593,10 @@ export function AppShell() {
       </div>
       <VpnPasswordPrompt />
       <RemoteConnectDialog />
+      {/* Same reason as the alarm below: lockstep/sync can delete a file from the local
+          mirror during a background pass, and the user must hear about it wherever they
+          are — including when the file panel it happened in is closed (#28q). */}
+      <LocalLossDialog />
       {/* Calendar reminders live at the shell, not in the calendar pane: an alarm
           must reach the user whatever tab they are on — and even if they have
           never opened a calendar tab this session. */}
@@ -542,6 +604,7 @@ export function AppShell() {
       <QuickOpen />
       <HintHost />
       <TourHost />
+      <StatsRecapHost />
       {showHowToStart && <HowToStart onClose={() => setShowHowToStart(false)} />}
       {showLessons && <LessonsMenu onClose={() => setShowLessons(false)} />}
     </div>
