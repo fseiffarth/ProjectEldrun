@@ -31,9 +31,34 @@ pub fn ssh_account(user: &Option<String>, host: &str, port: Option<u16>) -> Stri
     format!("ssh:{user}@{host}:{port}")
 }
 
-/// The keychain account for an OpenVPN tunnel, keyed by its stored config path.
+/// The keychain account for an OpenVPN tunnel's primary secret, keyed by its
+/// stored config path — the `auth-user-pass` account password, or (for a config
+/// with no account) the private-key passphrase.
 pub fn openvpn_account(config: &str) -> String {
     format!("openvpn:{config}")
+}
+
+/// The keychain account for an OpenVPN tunnel's **private-key passphrase**, for
+/// configs that need it *alongside* an `auth-user-pass` account password. Two
+/// independent secrets need two entries; a config that only has a key passphrase
+/// keeps storing it under [`openvpn_account`] (there is no account password to
+/// collide with).
+pub fn openvpn_key_account(config: &str) -> String {
+    format!("openvpn-key:{config}")
+}
+
+/// The keychain account for an OpenVPN tunnel's **auth username** — the one
+/// non-secret in the set, stored here anyway because it is the missing half of a
+/// promptless connect and there is nowhere else to put it.
+///
+/// A username on a *project's* `OpenVpnSpec` only exists for a tunnel a project
+/// owns. A tunnel brought up from the header has no project, so without this the
+/// username was simply unknown on every reconnect: the silent connect ran without
+/// it, `pkexec` raised a polkit prompt, OpenVPN was rejected by the server, and the
+/// modal then asked for it — a second polkit prompt for one tunnel. Saved and
+/// cleared together with the secrets, under the same opt-in checkbox.
+pub fn openvpn_user_account(config: &str) -> String {
+    format!("openvpn-user:{config}")
 }
 
 fn entry(account: &str) -> Result<keyring::Entry, String> {
@@ -73,9 +98,63 @@ pub fn has(account: &str) -> bool {
     get(account).is_some()
 }
 
+/// What a successful connect should do to the stored credential, decided by the
+/// caller's `remember` argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Remember {
+    /// The user ticked "Save password" — persist the working secret.
+    Save,
+    /// The user *unticked* it — drop any previously-saved secret.
+    Clear,
+    /// The caller has no checkbox behind it — do not touch the keychain.
+    Leave,
+}
+
+/// Map a connect command's `remember` argument to a keychain action.
+///
+/// The case that matters is `None → Leave`. Not every connect comes from a form:
+/// a reachability probe, a ControlMaster readiness poll, and a silent auto-connect
+/// all authenticate *using* the saved credential while having no opinion about
+/// storing it. Folding `None` into "unticked" (the old `unwrap_or(false)`) made
+/// each of them delete the very password it had just used — the credential worked
+/// exactly once, then the next connect prompted again.
+pub fn remember_action(remember: Option<bool>) -> Remember {
+    match remember {
+        Some(true) => Remember::Save,
+        Some(false) => Remember::Clear,
+        None => Remember::Leave,
+    }
+}
+
+/// Apply the post-auth keychain write for `account`: save `secret`, clear the
+/// entry, or leave it alone, per [`remember_action`]. Call only *after*
+/// authentication succeeded, so a rejected credential is never stored. Best effort
+/// — a keychain write failure must not fail an already-successful connect.
+pub fn remember_secret(account: &str, remember: Option<bool>, secret: Option<&str>) {
+    match remember_action(remember) {
+        Remember::Save => {
+            let _ = set(account, secret);
+        }
+        Remember::Clear => {
+            let _ = set(account, None);
+        }
+        Remember::Leave => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole point of the tri-state: "no checkbox behind this call" must not be
+    /// read as "the user unticked the box". A probe or a silent reconnect that
+    /// cleared the keychain would delete the password it had just used.
+    #[test]
+    fn remember_none_leaves_the_keychain_alone() {
+        assert_eq!(remember_action(None), Remember::Leave);
+        assert_eq!(remember_action(Some(true)), Remember::Save);
+        assert_eq!(remember_action(Some(false)), Remember::Clear);
+    }
 
     #[test]
     fn ssh_account_normalizes_default_port() {
@@ -108,5 +187,29 @@ mod tests {
     #[test]
     fn openvpn_account_keys_by_config_path() {
         assert_eq!(openvpn_account("/store/x.ovpn"), "openvpn:/store/x.ovpn");
+    }
+
+    #[test]
+    fn openvpn_user_account_is_distinct_from_both_secret_accounts() {
+        // The username shares the config key but must never share an *entry* with a
+        // secret: writing it into either would overwrite the password/passphrase.
+        let c = "/store/x.ovpn";
+        assert_eq!(openvpn_user_account(c), "openvpn-user:/store/x.ovpn");
+        assert_ne!(openvpn_user_account(c), openvpn_account(c));
+        assert_ne!(openvpn_user_account(c), openvpn_key_account(c));
+    }
+
+    #[test]
+    fn openvpn_key_account_is_distinct_from_the_password_account() {
+        // Same config, two secrets — they must never share an entry, or saving one
+        // would overwrite the other.
+        assert_eq!(
+            openvpn_key_account("/store/x.ovpn"),
+            "openvpn-key:/store/x.ovpn"
+        );
+        assert_ne!(
+            openvpn_key_account("/store/x.ovpn"),
+            openvpn_account("/store/x.ovpn")
+        );
     }
 }

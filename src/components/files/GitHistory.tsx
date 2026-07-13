@@ -4,6 +4,7 @@ import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Dropdown } from "../common/Dropdown";
+import { useTabsStore } from "../../stores/tabs";
 
 interface GitCommit {
   hash: string;
@@ -37,7 +38,30 @@ type HeadRef =
   | { kind: "detached"; sha: string }
   | { kind: "unborn" };
 
-type LockstepStatus = "synchronized" | "syncing" | "desynchronized";
+type LockstepStatus =
+  | "synchronized"
+  | "syncing"
+  | "desynchronized"
+  /** #28p D4: the SSH pool is cold, so nothing is known about the host — and, crucially,
+   *  nothing is claimed. This used to render as a green "synchronized". */
+  | "disconnected";
+
+/** The files an initial pairing refused to overwrite (#28p D3). */
+interface PairingConflict {
+  /** True when the repo side is the local mirror, i.e. the files at risk are the host's. */
+  sourceIsLocal: boolean;
+  paths: string[];
+}
+
+/** One `refs/eldrun/backup/*` safety ref (#28p D6). */
+interface BackupRef {
+  peer: "local" | "remote";
+  refname: string;
+  ts: number;
+  branch: string;
+  sha: string;
+  subject: string;
+}
 
 /** Mirrors `services::git_peer::GitPeerState` (camelCase). */
 interface GitPeerState {
@@ -47,6 +71,18 @@ interface GitPeerState {
   localHead: HeadRef | null;
   remoteHead: HeadRef | null;
   lastSyncTs: number | null;
+  localSubject: string | null;
+  remoteSubject: string | null;
+  pairingConflict: PairingConflict | null;
+}
+
+/** `<short sha> subject` for a peer's HEAD — shown so a Use-local/Use-remote choice is
+ *  informed rather than blind (#28p D8). */
+function headLabel(head: HeadRef | null, subject: string | null): string {
+  if (!head || head.kind === "unborn") return "—";
+  const sha = head.sha.slice(0, 7);
+  const name = head.kind === "branch" ? head.name : "(detached)";
+  return subject ? `${name} ${sha} · ${subject}` : `${name} ${sha}`;
 }
 
 interface Props {
@@ -230,6 +266,8 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
   const lockstepEligible = !!(remote && projectId);
   const [lockstep, setLockstep] = useState<GitPeerState | null>(null);
   const [lockstepBusy, setLockstepBusy] = useState(false);
+  // #28p D6: null = the Backups list is closed.
+  const [backups, setBackups] = useState<BackupRef[] | null>(null);
   const [wtForm, setWtForm] = useState<{ path: string; branch: string; newBranch: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -361,6 +399,112 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     },
     [projectId, load, onChanged],
   );
+
+  // #28p D3: pairing refused because the empty side holds files that differ from what
+  // it would be reset to. `reset --hard` destroys those silently, so the overwrite only
+  // happens on an explicit confirmation that has *named* them.
+  const lockstepPairConfirm = useCallback(async () => {
+    const conflict = lockstep?.pairingConflict;
+    if (!projectId || !conflict) return;
+    const side = conflict.sourceIsLocal ? "remote host" : "local mirror";
+    const list = conflict.paths.slice(0, 10).join("\n  ");
+    const more = conflict.paths.length > 10 ? `\n  …and ${conflict.paths.length - 10} more` : "";
+    if (
+      !window.confirm(
+        `Overwrite ${conflict.paths.length} file(s) on the ${side}?\n\n  ${list}${more}\n\n` +
+          `These differ from the version being paired in and are NOT in git — they will be lost.`,
+      )
+    )
+      return;
+    setLockstepBusy(true);
+    setError(null);
+    try {
+      const s = await invoke<GitPeerState>("git_peer_pair_confirm", { projectId });
+      setLockstep(s);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLockstepBusy(false);
+    }
+  }, [projectId, lockstep?.pairingConflict, load, onChanged]);
+
+  // #28p D6: the backup refs every resolve/restore creates were write-only — they
+  // pinned objects forever and nothing could list or restore them, which also hollowed
+  // out the "it's recoverable" promise of Use-local/Use-remote.
+  const loadBackups = useCallback(async () => {
+    if (!projectId) return;
+    setLockstepBusy(true);
+    setError(null);
+    try {
+      const list = await invoke<BackupRef[]>("git_peer_backups", { projectId });
+      setBackups(list);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLockstepBusy(false);
+    }
+  }, [projectId]);
+
+  const restoreBackup = useCallback(
+    async (b: BackupRef) => {
+      if (!projectId) return;
+      if (
+        !window.confirm(
+          `Restore ${b.peer} branch '${b.branch}' to ${b.sha.slice(0, 7)} (${b.subject || "no subject"})?\n\n` +
+            `Its current tip is backed up first, so this is itself undoable. The peers will then differ — resolve that with Use local / Use remote.`,
+        )
+      )
+        return;
+      setLockstepBusy(true);
+      setError(null);
+      try {
+        const s = await invoke<GitPeerState>("git_peer_restore_backup", {
+          projectId,
+          peer: b.peer,
+          refname: b.refname,
+        });
+        setLockstep(s);
+        await loadBackups();
+        await load();
+        onChanged?.();
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setLockstepBusy(false);
+      }
+    },
+    [projectId, load, loadBackups, onChanged],
+  );
+
+  // #28p D8: a genuine two-sided divergence used to offer only "pick a winner". Open a
+  // local shell in the mirror instead — the peer's tip is already parked at
+  // refs/eldrun/peer/<branch> by the reconcile that detected the divergence, so the user
+  // can merge or rebase with plain git and the next pass fast-forwards the host normally.
+  const resolveInTerminal = useCallback(async () => {
+    if (!projectId) return;
+    setError(null);
+    try {
+      const mirror = await invoke<string>("git_peer_mirror_dir", { projectId });
+      const branch =
+        lockstep?.localHead?.kind === "branch" ? lockstep.localHead.name : undefined;
+      useTabsStore.getState().addTab({
+        label: "resolve",
+        cmd: "",
+        cwd: mirror,
+        kind: "shell",
+        // The mirror is a LOCAL working copy; a remote-located shell would cd into the
+        // host tree, where the peer ref isn't.
+        location: "local",
+        initialInput: branch
+          ? `git log --oneline --graph HEAD refs/eldrun/peer/${branch}`
+          : undefined,
+      });
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [projectId, lockstep?.localHead]);
 
   async function checkout(target: string) {
     setLoading(true);
@@ -499,40 +643,116 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                       ? "var(--success, #3fb950)"
                       : lockstep.status === "syncing"
                         ? "var(--warning, #e3b341)"
-                        : "var(--danger, #f85149)",
+                        : lockstep.status === "disconnected"
+                          ? "var(--text-muted, #8b949e)"
+                          : "var(--danger, #f85149)",
                 }}
               >
                 {lockstep.status}
               </span>
-              <button className="tab-add-btn" onClick={lockstepSyncNow} disabled={lockstepBusy} title="Reconcile git state now (retry after resolving a divergence)">
+              <button
+                className="tab-add-btn"
+                onClick={lockstepSyncNow}
+                // Nothing to sync against without a connection — the button would only
+                // produce another "disconnected" (#28p D4).
+                disabled={lockstepBusy || lockstep.status === "disconnected"}
+                title={
+                  lockstep.status === "disconnected"
+                    ? "Connect to the remote host first"
+                    : "Reconcile git state now (retry after resolving a divergence)"
+                }
+              >
                 {lockstep.status === "desynchronized" ? "Retry" : "Sync now"}
               </button>
-              {lockstep.status === "desynchronized" && (
-                <>
-                  <button
-                    className="tab-add-btn"
-                    onClick={() => lockstepResolve("local")}
-                    disabled={lockstepBusy}
-                    title="Resolve the divergence with the local mirror as the source of truth (backs up the remote's overwritten tips first)"
-                  >
-                    Use local
-                  </button>
-                  <button
-                    className="tab-add-btn"
-                    onClick={() => lockstepResolve("remote")}
-                    disabled={lockstepBusy}
-                    title="Resolve the divergence with the remote host as the source of truth (backs up the mirror's overwritten tips first)"
-                  >
-                    Use remote
-                  </button>
-                </>
+              {lockstep.status === "desynchronized" && lockstep.pairingConflict ? (
+                // Pairing was refused: the ONLY action offered is the one that names what
+                // it would destroy (#28p D3) — Use-local/Use-remote would be meaningless
+                // here (there is nothing paired yet to pick a winner between).
+                <button
+                  className="tab-add-btn"
+                  onClick={lockstepPairConfirm}
+                  disabled={lockstepBusy}
+                  title={`Overwrite the differing files on the ${lockstep.pairingConflict.sourceIsLocal ? "host" : "mirror"} and pair (they are not in git and cannot be recovered)`}
+                >
+                  Overwrite {lockstep.pairingConflict.paths.length} file(s) &amp; pair
+                </button>
+              ) : (
+                lockstep.status === "desynchronized" && (
+                  <>
+                    <button
+                      className="tab-add-btn"
+                      onClick={() => lockstepResolve("local")}
+                      disabled={lockstepBusy}
+                      title="Resolve the divergence with the local mirror as the source of truth (backs up the remote's overwritten tips first)"
+                    >
+                      Use local
+                    </button>
+                    <button
+                      className="tab-add-btn"
+                      onClick={() => lockstepResolve("remote")}
+                      disabled={lockstepBusy}
+                      title="Resolve the divergence with the remote host as the source of truth (backs up the mirror's overwritten tips first)"
+                    >
+                      Use remote
+                    </button>
+                    <button
+                      className="tab-add-btn"
+                      onClick={resolveInTerminal}
+                      disabled={lockstepBusy}
+                      title="Open a shell in the local mirror to merge or rebase by hand — the peer's tip is already at refs/eldrun/peer/<branch>"
+                    >
+                      Resolve in terminal
+                    </button>
+                  </>
+                )
               )}
+              <button
+                className="tab-add-btn"
+                onClick={() => (backups ? setBackups(null) : loadBackups())}
+                disabled={lockstepBusy || lockstep.status === "disconnected"}
+                aria-pressed={!!backups}
+                title="List the refs/eldrun/backup/* safety refs a resolve saved, and restore one"
+              >
+                Backups
+              </button>
               {lockstep.status === "desynchronized" && lockstep.detail && (
                 <span style={{ color: "var(--danger, #f85149)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={lockstep.detail}>
                   {lockstep.detail}
                 </span>
               )}
+              {/* Both heads, so a Use-local/Use-remote choice is informed (#28p D8). */}
+              {lockstep.status === "desynchronized" && !lockstep.pairingConflict && (
+                <span style={{ marginLeft: "auto", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                  local: {headLabel(lockstep.localHead, lockstep.localSubject)} · remote:{" "}
+                  {headLabel(lockstep.remoteHead, lockstep.remoteSubject)}
+                </span>
+              )}
             </>
+          )}
+        </div>
+      )}
+
+      {lockstepEligible && backups && (
+        <div className="git-lockstep-backups" style={{ borderBottom: "1px solid var(--border-color)", padding: "3px 6px", fontSize: 10, maxHeight: 140, overflowY: "auto" }}>
+          {backups.length === 0 ? (
+            <div style={{ color: "var(--text-muted)" }}>No backup refs — nothing has been overwritten.</div>
+          ) : (
+            backups.map((b) => (
+              <div key={`${b.peer}:${b.refname}`} style={{ display: "flex", alignItems: "center", gap: 6, padding: "1px 0" }}>
+                <span style={{ color: "var(--text-muted)" }}>{b.peer}</span>
+                <span>{b.branch}</span>
+                <span style={{ color: "var(--text-muted)" }}>{b.sha.slice(0, 7)}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={b.subject}>
+                  {b.subject}
+                </span>
+                <span style={{ color: "var(--text-muted)" }}>
+                  {new Date(b.ts * 1000).toLocaleString()}
+                </span>
+                <button className="tab-add-btn" onClick={() => restoreBackup(b)} disabled={lockstepBusy} title={`Move ${b.peer} '${b.branch}' back to this commit (its current tip is backed up first)`}>
+                  Restore
+                </button>
+              </div>
+            ))
           )}
         </div>
       )}

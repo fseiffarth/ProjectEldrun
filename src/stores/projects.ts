@@ -9,6 +9,7 @@ import {
   type GitProvider,
   type ProjectEntry,
   type RemoteSpec,
+  type SshProbe,
 } from "../types";
 import {
   cmdToKind,
@@ -21,8 +22,10 @@ import { useTimerStore } from "./timer";
 import { useVpnPromptStore } from "./vpnPrompt";
 import { useSettingsStore } from "./settings";
 import { useRemoteStatusStore } from "./remoteStatus";
+import { markVpnConnected, markVpnConnecting, markVpnError, releaseVpn } from "./vpnStatus";
 import { useConnectDialogStore } from "./connectDialog";
 import { openConnectionInRoot } from "../lib/remoteConnect";
+import { canConnectVpnSilently, connectVpnSilently } from "../lib/vpnConnect";
 import { describeScaffoldRepair, type ProjectScaffoldRepair } from "../components/projects/scaffold";
 
 /**
@@ -36,11 +39,21 @@ function connectionsHeadless(): boolean {
   return useSettingsStore.getState().settings?.connections_headless ?? true;
 }
 
+/**
+ * Toast text for a tunnel that just came up. It names the scope on purpose: a
+ * bare "VPN connected · <project>" reads as though the tunnel belongs to the
+ * project, when what actually happened is that the whole machine's routing (and
+ * usually its DNS) moved — browser and all. That is worth one sentence, especially
+ * on the auto-connect path, where this toast is the *only* thing the user sees.
+ */
+function vpnToast(name: string): string {
+  return `VPN up · ${name} — this computer's traffic now routes through the tunnel`;
+}
+
 async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<void> {
   const config = project?.remote?.openvpn?.config;
   if (!config) return;
   const projectId = project!.id;
-  const status = useRemoteStatusStore.getState();
   // Non-headless: surface the tunnel as an interactive root-terminal tab instead
   // of prompting Eldrun for the passphrase. The passphrase is typed directly into
   // that terminal; Eldrun never handles it. Best-effort and non-blocking.
@@ -48,11 +61,15 @@ async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<voi
     try {
       const up = await invoke<boolean>("openvpn_status", { config }).catch(() => false);
       if (up) {
-        status.setVpn(projectId, "connected");
+        markVpnConnected(projectId, config);
         return;
       }
+      // Building the command also *arms* the tunnel: the backend picks a pidfile,
+      // appends `--writepid`, and registers it — so this terminal-started tunnel is
+      // as visible and as killable as a headless one (`openvpn_status` sees it, and
+      // `pollVpnUp` below can therefore actually observe it come up).
       const command = await invoke<string>("openvpn_login_command", { config });
-      status.setVpn(projectId, "connecting");
+      markVpnConnecting(projectId, config);
       openConnectionInRoot({
         label: `OpenVPN · ${project!.name}`,
         command,
@@ -63,7 +80,7 @@ async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<voi
       // and bounded so a never-authenticated tunnel doesn't poll forever.
       pollVpnUp(projectId, config, project!.name);
     } catch (error) {
-      status.setVpn(projectId, "error");
+      markVpnError(projectId, config);
       console.warn("OpenVPN root-terminal connect skipped/failed", error);
     }
     return;
@@ -71,39 +88,41 @@ async function ensureVpnIfNeeded(project: ProjectEntry | undefined): Promise<voi
   try {
     const up = await invoke<boolean>("openvpn_status", { config }).catch(() => false);
     if (up) {
-      status.setVpn(projectId, "connected");
+      markVpnConnected(projectId, config);
       return;
     }
-    status.setVpn(projectId, "connecting");
+    markVpnConnecting(projectId, config);
     // `auth-user-pass` configs need a username too; it's stored on the spec (not a
     // secret) and passed to both the silent connect and the prompt.
     const vpnUser = project!.remote?.openvpn?.username;
-    // Silent auto-connect: if the user opted to save this VPN's passphrase, the
-    // backend brings the tunnel up from the OS keychain with no prompt. A missing
-    // (or no-longer-valid) saved passphrase errors out cheaply, so we fall through
-    // to the modal below.
-    try {
-      await invoke("openvpn_connect", {
-        config,
-        username: vpnUser ?? null,
-        password: null,
-        remember: false,
-      });
-      useRemoteStatusStore.getState().setVpn(projectId, "connected");
-      useProjectsStore.setState({ connToast: `VPN connected · ${project!.name}` });
-      return;
-    } catch {
-      // No saved passphrase (or it failed) — prompt for it.
+    // Silent auto-connect: if the user opted to save this VPN's credentials, the
+    // backend brings the tunnel up from the OS keychain with no prompt.
+    //
+    // Ask *first* whether that can actually succeed, rather than trying and falling
+    // back. A failed attempt is not free: `pkexec` authenticates the user before
+    // OpenVPN even reads the config, so an attempt missing a credential still costs a
+    // polkit dialog — and the modal below then costs a second one for the same tunnel.
+    // `remember: null` = "no checkbox behind this call, leave the keychain alone";
+    // passing `false` would delete the passphrase we just used.
+    if (await canConnectVpnSilently(config, vpnUser)) {
+      try {
+        await connectVpnSilently(config, vpnUser);
+        markVpnConnected(projectId, config);
+        useProjectsStore.setState({ connToast: vpnToast(project!.name) });
+        return;
+      } catch {
+        // Saved credentials the server no longer accepts — prompt for them.
+      }
     }
     // The prompt store now owns the connect, so a failed tunnel is shown in the
     // modal (with a retry) rather than failing silently here. `request` resolves
     // only once the tunnel is up; a cancel rejects and we fall through.
     await useVpnPromptStore.getState().request(config, project!.name, projectId, vpnUser);
-    useRemoteStatusStore.getState().setVpn(projectId, "connected");
-    useProjectsStore.setState({ connToast: `VPN connected · ${project!.name}` });
+    markVpnConnected(projectId, config);
+    useProjectsStore.setState({ connToast: vpnToast(project!.name) });
   } catch (error) {
     // A cancelled prompt or a failed tunnel both leave us not-connected (red).
-    useRemoteStatusStore.getState().setVpn(projectId, "error");
+    markVpnError(projectId, config);
     console.warn("OpenVPN connect skipped/cancelled", error);
   }
 }
@@ -122,18 +141,18 @@ function pollVpnUp(projectId: string, config: string, name: string): void {
     void invoke<boolean>("openvpn_status", { config })
       .then((up) => {
         if (up) {
-          useRemoteStatusStore.getState().setVpn(projectId, "connected");
-          useProjectsStore.setState({ connToast: `VPN connected · ${name}` });
+          markVpnConnected(projectId, config);
+          useProjectsStore.setState({ connToast: vpnToast(name) });
           return;
         }
         if (++attempts >= maxAttempts) {
-          useRemoteStatusStore.getState().setVpn(projectId, "error");
+          markVpnError(projectId, config);
           return;
         }
         setTimeout(tick, 1500);
       })
       .catch(() => {
-        if (++attempts >= maxAttempts) useRemoteStatusStore.getState().setVpn(projectId, "error");
+        if (++attempts >= maxAttempts) markVpnError(projectId, config);
         else setTimeout(tick, 1500);
       });
   };
@@ -205,6 +224,126 @@ function ensureRemotePool(projectId: string): void {
   tryConnect();
 }
 
+/** Projects with an auto-connect attempt in flight, so a switch away and back
+ *  (or a launch racing an activation) can't start a second one. */
+const autoConnecting = new Set<string>();
+
+/**
+ * Connect a remote project that has opted into **auto-connect** (launch and
+ * activation), and do it *silently* — this path never prompts. That is the whole
+ * contract of the toggle: it is only offered once the connection can complete with
+ * no user input (a saved SSH password, or a host recorded as `key_auth`), so an
+ * automatic connect can never ambush the user with a modal. Everything else keeps
+ * the old default: the project surfaces disconnected and the user brings it up from
+ * the pill's connection lamp.
+ *
+ * The tricky part is the VPN, because the *same* project is often reachable
+ * directly on one network and only through the tunnel on another — so whether the
+ * tunnel is needed is a property of the current network, not of the project, and
+ * can't be stored. We therefore probe rather than assume:
+ *
+ *  1. `ssh_probe` the host (read-only; it reuses the saved credential but, unlike
+ *     `ssh_connect`, never rewrites the keychain).
+ *  2. Reachable → open the pooled connection (`remote_connect`, which falls back to
+ *     the keychain itself). The tunnel is left alone — on the network that doesn't
+ *     need it, it is never brought up.
+ *  3. *Unreachable* (not "credential rejected" — see the backend's `ssh_unreachable`;
+ *     no tunnel fixes a wrong password) and the project has an `.ovpn` whose
+ *     passphrase is saved → bring the tunnel up from the keychain and re-probe.
+ *  4. Anything else → red lamp and stop. No prompt, no retry loop.
+ *
+ * Fire-and-forget: it never blocks a switch. Local tabs restore and work on the
+ * mirror regardless, and remote panes stay held until the pool is actually up.
+ */
+async function autoConnectRemote(projectId: string): Promise<void> {
+  const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
+  const remote = project?.remote;
+  if (!remote?.auto_connect) return;
+  // Skip unless the lamp is disconnected: never fight an in-flight attempt, never
+  // re-attack a host that already failed this session (switching back and forth
+  // would otherwise re-probe an unreachable host every time), and never re-connect
+  // a live pool.
+  const state = useRemoteStatusStore.getState().byProject[projectId];
+  if ((state?.ssh ?? "off") !== "off" || autoConnecting.has(projectId)) return;
+  // Claim the project BEFORE the first await: the lamp only turns "connecting" once
+  // the eligibility round-trip is back, so two rapid activations (switch away and
+  // straight back) would otherwise both sail past the guard above.
+  autoConnecting.add(projectId);
+
+  const stillActive = () => useProjectsStore.getState().activeId === projectId;
+  const status = () => useRemoteStatusStore.getState();
+  // Hand the lamp back to "disconnected" when we abandon a connect we started (the
+  // user switched away mid-probe). A lamp left stuck on "connecting" would lie in
+  // the header *and* wedge the project shut: the guard above only re-attempts from
+  // "off". Only ever resets our own "connecting" — never a lamp someone else owns.
+  const abandon = () => {
+    if (status().byProject[projectId]?.ssh === "connecting") status().setSsh(projectId, "off");
+  };
+  try {
+    // Re-check eligibility against the backend rather than trusting the toggle: the
+    // saved password may have been forgotten since it was ticked, and a stale opt-in
+    // must degrade to "stay disconnected", never to a prompt.
+    const sshArgs = {
+      user: remote.user ?? null,
+      host: remote.host,
+      port: remote.port ?? null,
+    };
+    const eligible =
+      remote.key_auth === true ||
+      (await invoke<boolean>("remote_has_saved_password", sshArgs).catch(() => false));
+    if (!eligible || !stillActive()) return;
+
+    status().setSsh(projectId, "connecting");
+    let probe = await invoke<SshProbe>("ssh_probe", sshArgs);
+
+    const config = remote.openvpn?.config;
+    if (!probe.ok && probe.unreachable && config && stillActive()) {
+      const vpnSaved = await invoke<boolean>("vpn_has_saved_password", { config }).catch(
+        () => false,
+      );
+      if (vpnSaved) {
+        markVpnConnecting(projectId, config);
+        try {
+          await invoke("openvpn_connect", {
+            config,
+            username: remote.openvpn?.username ?? null,
+            password: null,
+            keyPassphrase: null,
+            // No checkbox behind an auto-connect: authenticate from the keychain,
+            // and leave it exactly as we found it.
+            remember: null,
+          });
+          markVpnConnected(projectId, config);
+          // The only disclosure on this path: auto-connect never prompts, so this
+          // toast (and the header indicator it lights) is the whole of what the user
+          // is told before their machine's routing changes under them.
+          useProjectsStore.setState({ connToast: vpnToast(project!.name) });
+          probe = await invoke<SshProbe>("ssh_probe", sshArgs);
+        } catch (error) {
+          markVpnError(projectId, config);
+          console.warn("auto-connect: VPN tunnel failed", error);
+        }
+      }
+    }
+
+    if (!stillActive()) return abandon();
+    if (!probe.ok) {
+      console.warn("auto-connect: host not reachable/authenticating", probe.error);
+      status().setSsh(projectId, "error");
+      return;
+    }
+    await invoke("remote_connect", { projectId, password: null });
+    if (!stillActive()) return abandon();
+    status().setSsh(projectId, "connected");
+  } catch (error) {
+    console.warn("auto-connect failed", error);
+    if (stillActive()) status().setSsh(projectId, "error");
+    else abandon();
+  } finally {
+    autoConnecting.delete(projectId);
+  }
+}
+
 /** Tear down a remote project's pooled connection on deactivation. Best-effort. */
 function dropRemotePool(projectId: string): void {
   useRemoteStatusStore.getState().clear(projectId);
@@ -235,6 +374,24 @@ export async function reconnectRemote(projectId: string): Promise<void> {
  *  tabs stay open (their sessions just go dead) until the user reconnects. */
 export function disconnectRemote(projectId: string): void {
   dropRemotePool(projectId);
+}
+
+/**
+ * One-click log out of a *connected* remote project (the pill's logout button):
+ * drop the pooled SSH/SFTP connection and release its claim on the OpenVPN tunnel,
+ * without routing through the Connect modal. The modal's Disconnect does the same
+ * plus cancels an in-flight connect via `useRemoteReconnect`'s generation counters
+ * — unreachable from here, and unnecessary: this button only shows once SSH is
+ * `connected`, so there is no attempt left to abandon.
+ *
+ * *Release*, not disconnect: the tunnel is machine-wide and shared by config path,
+ * so it only actually comes down if no other project is still holding it (see
+ * `releaseVpn`). To bring a tunnel down regardless, the header's VPN indicator is
+ * the place — that acts on the tunnel, not on a project.
+ */
+export function logoutRemote(project: ProjectEntry): void {
+  releaseVpn(project.id, project.remote?.openvpn?.config);
+  dropRemotePool(project.id);
 }
 
 interface ProjectRuntimeSwitchedPayload {
@@ -298,6 +455,11 @@ interface ProjectsStore {
    * which is a disconnected remote project (user reconnects via the pill lamp). */
   extendProjectToRemote: (id: string, remote: RemoteSpec) => Promise<void>;
   setProjectSandbox: (id: string, enabled: boolean) => Promise<void>;
+  /** Opt a remote project in/out of auto-connect (connect it silently on launch
+   *  and activation). Only offered once the connect can complete with no prompt —
+   *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
+   *  re-checks that, so a stale opt-in degrades to staying disconnected. */
+  setProjectAutoConnect: (id: string, enabled: boolean) => Promise<void>;
   /** Attach (or clear) an OpenVPN config on a remote project's SSH spec, so a
    *  project created without a VPN can gain one later when reconnecting from a
    *  VPN-gated network. `config = null`/"" clears it. Mirrors the stored path
@@ -398,11 +560,12 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
         })),
       )
       .catch(() => {});
-    // The initially-active remote project is intentionally NOT auto-connected on
-    // launch. Its saved tabs DO restore (local tabs run on the mirror offline),
-    // but any REMOTE pane is held until the pool is up — the user brings it up
-    // from the pill's connection lamp (the `RemoteConnectDialog` modal). It
-    // starts DISCONNECTED (no status entry → "off" lamp).
+    // The initially-active remote project is NOT connected on launch unless it opted
+    // into auto-connect. Its saved tabs DO restore either way (local tabs run on the
+    // mirror offline), but any REMOTE pane is held until the pool is up — without the
+    // opt-in it starts DISCONNECTED (no status entry → "off" lamp) and the user brings
+    // it up from the pill's connection lamp (the `RemoteConnectDialog` modal).
+    if (activeId) void autoConnectRemote(activeId);
   },
 
   setActive: async (id) => {
@@ -469,10 +632,13 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     });
     await invoke<void>("save_projects", { projects: nextProjects });
     void useTimerStore.getState().setProject(id);
-    // Switching TO a remote project does NOT auto-connect it (same reason as the
-    // initial-load path). It surfaces disconnected: local tabs restore and work
-    // on the mirror, while remote panes are held until the user brings the pool
-    // up from the pill's connection lamp (the `RemoteConnectDialog` modal).
+    // Switching TO a remote project does NOT bring it up by default: it surfaces
+    // disconnected (local tabs restore and work on the mirror; remote panes are held
+    // until the pool is up) and the user connects it from the pill's connection lamp.
+    // The one exception is a project that opted into auto-connect, which is connected
+    // here silently — see `autoConnectRemote`. Fire-and-forget; never blocks the switch.
+    const activated = nextProjects.find((p) => p.id === id);
+    if (activated?.remote) void autoConnectRemote(activated.id);
     // Fire-and-forget: the switch runs on a backend worker thread and returns
     // immediately. The resulting tab layout / right-panel folder arrives via the
     // `project-runtime-switched` event, handled by listenProjectRuntimeSwitched.
@@ -627,15 +793,12 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     if (useConnectDialogStore.getState().projectId === id) {
       useConnectDialogStore.getState().close();
     }
-    // Tear down its OpenVPN tunnel, but only if no OTHER live project shares the
-    // same config (tunnels are keyed by config path and can be shared).
-    const ovpn = entry.remote?.openvpn?.config;
-    if (ovpn) {
-      const stillUsed = get().projects.some(
-        (p) => p.id !== id && p.remote?.openvpn?.config === ovpn,
-      );
-      if (!stillUsed) void invoke("openvpn_disconnect", { config: ovpn }).catch(() => {});
-    }
+    // Release its claim on the OpenVPN tunnel — which comes down only if no other
+    // project is still holding it. (This used to scan the project list for another
+    // project *configured* with the same config, which is a different question: it
+    // kept the tunnel up for projects that weren't even connected. `releaseVpn`
+    // counts actual holders.)
+    releaseVpn(id, entry.remote?.openvpn?.config);
     // Drop its tabs/PTYs/sessions (in memory; the folder move discards the file).
     useTabsStore.getState().closeAllTabs(id);
     // Remove it from any box (clears box_id on it + dissolves a now-singleton box).
@@ -728,6 +891,23 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projects: state.projects.map((project) =>
         project.id === id
           ? { ...project, sandbox: result ? { enabled: true } : undefined }
+          : project,
+      ),
+    }));
+  },
+
+  setProjectAutoConnect: async (id, enabled) => {
+    // Backend patches `auto_connect` on the remote spec in both projects.json and
+    // project.json and returns the resulting state; mirror it into local state so
+    // both surfaces (pill menu + Connect dialog) reflect it at once.
+    const result = await invoke<boolean>("set_project_auto_connect", {
+      projectId: id,
+      enabled,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id && project.remote
+          ? { ...project, remote: { ...project.remote, auto_connect: result || undefined } }
           : project,
       ),
     }));

@@ -1,9 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import { type AgentMode, withAgentMode } from "../components/tabs/agentModes";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
+import { forgetPty } from "../lib/promptCount";
+import { METRIC, agentMetricLeaf, sub } from "../lib/usageMetrics";
 import { useLinkRoutingStore } from "./linkRouting";
+import { bumpUsage } from "./usage";
 
 export type TabKind =
   | "agent"
@@ -167,6 +171,15 @@ export interface TabEntry {
   // default (agents local, shells remote — see effectiveTabLocation). Inert on a
   // local project. Persisted so the choice survives a restart.
   location?: TabLocation;
+  // The tab's agent authority mode — the planner/doer split ("plan" proposes,
+  // "auto" auto-accepts edits). Only meaningful for agents in the capability
+  // table (currently Claude; see components/tabs/agentModes.ts) and only
+  // surfaced when the experimental `agent_mode_toggle` setting is on. Absent →
+  // no mode flag is passed and the agent runs in its own default (ask each
+  // time), which is the behaviour of every tab predating this feature. The mode
+  // rides in `args` as `--permission-mode <x>`; this field is the durable record
+  // of it, since `args` are rebuilt from scratch on restore (loadFromLayout).
+  agentMode?: AgentMode;
 }
 
 export type SplitDir = "row" | "column";
@@ -284,6 +297,9 @@ export interface SavedTabEntry {
   viewerState?: ViewerState;
   // SSH-sync Phase 0: persisted per-tab local/remote locality (see TabEntry).
   location?: TabLocation;
+  // Persisted planner/doer mode (see TabEntry.agentMode). Re-applied to the
+  // launch args on restore, so a tab comes back in the mode it was left in.
+  agentMode?: AgentMode;
 }
 
 /** Serialized layout tree as persisted in project.json's `tab_groups`. */
@@ -376,7 +392,10 @@ interface TabsStore {
   setGroupActive: (groupId: string, key: string) => void;
 
   // tab lifecycle
-  addTab: (tab: Omit<TabEntry, "key">) => TabEntry; // into focused group
+  // `seeded` marks a tab Eldrun opened by itself rather than one the user asked
+  // for (the root scope's default 3D-blob tab). Such a tab must not be counted as
+  // a tab the user opened — see `countTabOpen`.
+  addTab: (tab: Omit<TabEntry, "key">, opts?: { seeded?: boolean }) => TabEntry; // into focused group
   // Add a tab into a SPECIFIC scope's focused group, regardless of which scope is
   // currently active. Used to surface remote SSH/OpenVPN connections in the root
   // scope without disturbing the active project. When `scope` is the current
@@ -410,6 +429,11 @@ interface TabsStore {
   // remote project). No-op when unchanged. The CenterPanel's localOnly/cwd
   // computation reads the result so the next mount spawns on the chosen side.
   setTabLocation: (key: string, location: TabLocation) => void;
+  // Set an agent tab's planner/doer mode. Rewrites the tab's launch args, which
+  // respawns its PTY (TerminalView's spawn effect keys on the args) — the agent
+  // comes back on the same conversation via the backend's resume rewrite. No-op
+  // when unchanged, or for an agent with no mode support.
+  setAgentMode: (key: string, mode: AgentMode) => void;
   // Merge a patch into an embed tab's persisted viewer position (scroll/zoom/
   // pan). The viewer panes call this as the reader scrolls/zooms; the debounced
   // saveLayout effect then flushes it to project.json (see ViewerState).
@@ -622,6 +646,22 @@ interface TabsStore {
   // CenterPanel's current-scope save would otherwise never touch.
   persistScope: (scope: string, localFile: string) => Promise<void>;
   saveLayout: (localFile: string) => Promise<void>;
+}
+
+/**
+ * Count a tab open for the usage recap.
+ *
+ * Deliberately here rather than at the backend's `pty_spawn`: that fires again
+ * for every resumable agent tab respawned on relaunch, so counting there would
+ * report a fresh "agent tab opened" each morning for tabs opened days ago.
+ * `loadFromLayout` builds restored tabs directly and never calls `addTab`, so
+ * these entry points see only tabs a person actually opened — with one exception,
+ * the root scope's auto-seeded 3D-blob tab, which opts out via `{ seeded: true }`.
+ */
+function countTabOpen(scope: string, tab: TabEntry) {
+  bumpUsage(scope, METRIC.TAB_OPENED);
+  const agent = agentMetricLeaf(tab);
+  if (agent) bumpUsage(scope, sub(agent.prefix, agent.leaf));
 }
 
 let _keyCounter = 0;
@@ -1333,10 +1373,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  addTab: (tab) => {
+  addTab: (tab, opts) => {
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one.
     const entry: TabEntry = { ...tab, key };
+    if (!opts?.seeded) countTabOpen(get().scope, entry);
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const nextTabs = [...tabs, entry];
@@ -1369,6 +1410,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   addTabToScope: (scope, tab) => {
     const key = nextKey(tab.kind);
     const entry: TabEntry = { ...tab, key, scope };
+    countTabOpen(scope, entry);
     set((s) => {
       const tabs = s.tabsByScope[scope] ?? [];
       const layout = s.layoutByScope[scope] ?? null;
@@ -1457,6 +1499,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   removeTab: (key) => {
     // Discard any session-only link routes that pointed FROM this tab (#50).
     useLinkRoutingStore.getState().purgeForTab(key);
+    bumpUsage(get().scope, METRIC.TAB_CLOSED);
+    // The PTY is gone; drop its half-typed-prompt state so a recycled id can
+    // never inherit it.
+    forgetPty(`${get().scope}:${key}`);
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const nextTabs = tabs.filter((t) => t.key !== key);
@@ -1538,6 +1584,38 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       });
       // No-op (stable array) when the value is unchanged, so an idle re-toggle
       // doesn't churn the tabs array / wake the saveLayout debounce.
+      if (!changed) return {};
+      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  setAgentMode: (key, mode) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      let changed = false;
+      const nextTabs = tabs.map((t) => {
+        if (t.key !== key || t.agentMode === mode) return t;
+        const prev = t.args ?? [];
+        const args = withAgentMode(t.cmd, prev, mode);
+        // withAgentMode hands back the very same array for an agent with no mode
+        // support — don't record a mode we didn't actually pass.
+        if (args === prev) return t;
+        changed = true;
+        return {
+          ...t,
+          agentMode: mode,
+          // The args change is what respawns the PTY (TerminalView keys its
+          // spawn effect on them).
+          args,
+          // The respawn replays `initialInput` — for Claude that is the
+          // `/rename <project>` launch command. Typing it again into a session
+          // we are *resuming* would be junk, so retire it once the tab has
+          // launched at least once.
+          initialInput: undefined,
+        };
+      });
+      // Stable array when nothing changed, so an idle re-toggle doesn't churn
+      // the tabs array / wake the saveLayout debounce.
       if (!changed) return {};
       return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
     });
@@ -2576,10 +2654,15 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // resume flag so the prior conversation comes back; everyone else starts
       // fresh with no args.
       const tabShape = { kind, cmd: t.cmd, sessionId: t.sessionId };
-      const args =
+      const base =
         isResumableAgentTab(tabShape) && t.sessionId
           ? RESUMABLE_AGENTS[t.cmd](t.sessionId)
           : [];
+      // Args are rebuilt from scratch here, so a persisted planner/doer mode has
+      // to be re-applied onto them or the tab would silently come back in the
+      // agent's default mode — half the point of the toggle is that the split
+      // survives a restart.
+      const args = t.agentMode ? withAgentMode(t.cmd, base, t.agentMode) : base;
       return {
         key: freshKey,
         label: t.label,
@@ -2597,6 +2680,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         viewerState: t.viewerState,
         // SSH-sync Phase 0: restore the persisted per-tab locality.
         location: t.location,
+        // Restore the planner/doer mode (already folded into `args` above).
+        agentMode: t.agentMode,
       };
     });
 
@@ -2732,6 +2817,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         viewerState: t.viewerState,
         // SSH-sync Phase 0: persist the per-tab locality.
         location: t.location,
+        // Persist the planner/doer mode so the tab comes back in it (the args
+        // that carry it are NOT persisted — they're rebuilt in loadFromLayout).
+        agentMode: t.agentMode,
       }));
       // #42: re-dock detached groups into the persisted tree so disk reflects a
       // restart-as-docked layout (their tabs are already in the flat list above

@@ -19,6 +19,7 @@ use openssh_sftp_client::Sftp;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::schema::net_usage;
 use crate::services::remote::{remote_target_for, pooled_sftp, RemotePoolState, RemoteTarget};
 use crate::services::remote_sync::{
     self, ensure_loaded, join_remote, local_meta, local_size_mtime, mirror_local_path, Manifest,
@@ -136,6 +137,7 @@ pub async fn sync_now(
             let m = ensure_loaded(&mut guard, &project_id);
             remote_sync::record_pull(m, &rel, size, mtime, ls, lm);
             let _ = remote_sync::save_manifest(&project_id, m);
+            net_usage::record_files(&project_id, 1, 0);
         }
         done += 1;
         emit(&app, &project_id, "file", &rel, done, total);
@@ -424,6 +426,7 @@ pub async fn sync_push(
                 let m = ensure_loaded(&mut guard, &project_id);
                 remote_sync::record_push(m, &rel, hs, hm, ls, lm);
                 let _ = remote_sync::save_manifest(&project_id, m);
+                net_usage::record_files(&project_id, 0, 1);
                 pushed += 1;
             }
             Err(e) => eprintln!("sync_push: skip '{rel}': {e}"),
@@ -519,6 +522,7 @@ async fn pull_subtree(
                 let m = ensure_loaded(&mut guard, project_id);
                 remote_sync::record_pull(m, &file.rel, file.size, file.mtime, ls, lm);
                 let _ = remote_sync::save_manifest(project_id, m);
+                net_usage::record_files(project_id, 1, 0);
             }
             None => {
                 // A single oversized/unreadable file shouldn't abort the whole

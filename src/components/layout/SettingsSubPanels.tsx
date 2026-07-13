@@ -8,6 +8,11 @@ import { Dropdown } from "../common/Dropdown";
 import { useSettingsStore } from "../../stores/settings";
 import { IS_WINDOWS, PLATFORM } from "../../lib/platform";
 import { runInstallInTab, type InstallShellKind } from "../../lib/installCommand";
+import {
+  codexHookNeedsTrust,
+  openCodexHooksTab,
+  type CodexHookState,
+} from "../../lib/codexHooks";
 import type { GlobalAppEntry } from "../../types";
 
 interface OllamaModelInfo {
@@ -307,6 +312,61 @@ const NODE_INSTALL: Record<
 const NODE_DOWNLOAD_URL = "https://nodejs.org/en/download";
 
 /**
+ * "Codex won't run our session hook" notice for the Manage Agents panel.
+ *
+ * Codex gates user-level hooks behind a one-time trust approval, and an
+ * untrusted one silently never fires — which is why Codex tabs used to restore
+ * into a blank conversation. Eldrun resumes them anyway now (it reconstructs the
+ * session from Codex's rollout logs), but that is a heuristic: it can mix up two
+ * Codex tabs open in the same directory. Enabling the hook makes it exact.
+ *
+ * The contextual hint says the same thing, but it is dismissible for good and is
+ * suppressed outright when hints are off — so this is where a user who waved it
+ * away can still find the fix.
+ */
+function CodexHookNotice() {
+  // null = still probing.
+  const [state, setState] = useState<CodexHookState | null>(null);
+  const recheck = () =>
+    invoke<CodexHookState>("codex_hook_status").then(setState).catch(() => setState(null));
+  useEffect(() => void recheck(), []);
+
+  // Healthy, absent, or still probing → nothing to say.
+  if (!codexHookNeedsTrust(state)) return null;
+
+  return (
+    <div className="ollama-vibe-section agent-list-entry">
+      <div className="settings-section-title">
+        Codex session hook{" "}
+        <span className="ollama-status-text">
+          {state === "disabled" ? "disabled" : "not trusted"}
+        </span>
+      </div>
+      <p className="settings-help">
+        Codex won't run Eldrun's session hook until you trust it, so Eldrun falls
+        back to working out which conversation belongs to which tab from Codex's
+        own logs. That works, but it can mix up two Codex tabs open in the same
+        folder. Enable <strong>eldrun_session_start</strong> in Codex's{" "}
+        <code>/hooks</code> list for exact resume:
+      </p>
+      <div className="ollama-install-cmd-row">
+        <code className="ollama-install-cmd">/hooks</code>
+        <button
+          type="button"
+          className="ollama-action-btn primary"
+          onClick={openCodexHooksTab}
+        >
+          Open in Codex
+        </button>
+        <button type="button" className="ollama-action-btn" onClick={() => void recheck()}>
+          Re-check
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * "Install Node/npm first" helper for the Manage Agents panel. Most agent CLIs
  * install through `npm`, so when `npm` isn't on the host's PATH this points the
  * user at the one-click, no-admin Node install for their OS (and stays hidden
@@ -440,6 +500,7 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
         your <code>PATH</code> — if it's missing, install Node.js first below.
       </p>
       <NodeRuntimeNotice />
+      <CodexHookNotice />
       {agents === null ? (
         <p className="settings-help">Checking installed agents…</p>
       ) : (

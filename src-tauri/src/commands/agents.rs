@@ -248,6 +248,16 @@ pub fn binary_is_installed(bin: &str) -> bool {
         .unwrap_or_else(|| crate::paths::binary_on_path(bin))
 }
 
+/// Whether Codex is actually running Eldrun's `SessionStart` hook — the precise
+/// path for resuming a tab's *current* conversation. Codex gates user-level hooks
+/// behind a one-time trust approval (`/hooks`), and an untrusted one never fires,
+/// silently; Eldrun then falls back to guessing the session from Codex's rollout
+/// logs (`services::codex_bind`). The UI reads this to offer the one-click fix.
+#[tauri::command]
+pub async fn codex_hook_status() -> crate::services::agent_session::CodexHookState {
+    crate::services::agent_session::codex_hook_state()
+}
+
 /// List every known agent CLI with its current installed status.
 #[tauri::command]
 pub async fn list_agents() -> Vec<AgentInfo> {

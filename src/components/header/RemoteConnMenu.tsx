@@ -11,6 +11,12 @@ import type { ProjectEntry } from "../../types";
  * Connect modal (`RemoteConnectDialog`) for this project — the single place to
  * (re)connect or disconnect its pooled SSH/SFTP connection.
  *
+ * One-click logout deliberately does NOT live here — it sits beside the
+ * Remote/Local switch in the right file panel (`RightPanel`), keeping the pill
+ * to status + open-modal only (the modal keeps a Disconnect for the
+ * connecting/error states, where an in-flight attempt still has to be
+ * abandoned).
+ *
  * Remote projects start DISCONNECTED — they are not auto-connected on launch or
  * switch (that raced the tab restore and hung). Local tabs still restore and
  * work on the mirror while disconnected; only remote panes wait for the pool,

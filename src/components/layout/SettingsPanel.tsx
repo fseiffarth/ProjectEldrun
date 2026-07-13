@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore, clampZoom, MIN_UI_ZOOM, MAX_UI_ZOOM } from "../../stores/settings";
+import { usePowerStore, useEnergySaver } from "../../stores/power";
 import { useProjectsStore } from "../../stores/projects";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
 import type {
@@ -15,6 +16,7 @@ import type {
 import { THEMES } from "../../types";
 import { summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
 import { Toggle } from "../common/Toggle";
+import { OPEN_STATS_EVENT } from "../stats/StatsRecapHost";
 import {
   SHORTCUT_DEFS,
   chordFromEvent,
@@ -579,6 +581,25 @@ export function SettingsDialog({
 
   const currentTheme = (settings?.color_scheme ?? "light_lavender") as Theme;
 
+  // Live power state for the Energy Saver help line.
+  const energyMode = settings?.energy_saver ?? "battery";
+  const energyActive = useEnergySaver();
+  const powerReady = usePowerStore((s) => s.ready);
+  const powerSupported = usePowerStore((s) => s.supported);
+  const energyStatus = (() => {
+    if (energyMode === "battery" && powerReady && !powerSupported) {
+      return "Power state unavailable — treating as AC (inactive).";
+    }
+    if (energyActive) {
+      return energyMode === "always"
+        ? "Currently active — always on."
+        : "Currently active — running on battery.";
+    }
+    return energyMode === "off"
+      ? "Off — never throttles."
+      : "Inactive — on AC power.";
+  })();
+
   return (
     <div className="modal-backdrop settings-backdrop" onMouseDown={onClose}>
       <div className="settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
@@ -620,6 +641,23 @@ export function SettingsDialog({
             </p>
 
             <label className="settings-switch-row">
+              <span>Plan/Auto toggle on agent tabs (experimental)</span>
+              <Toggle
+                checked={settings?.agent_mode_toggle ?? false}
+                onChange={(e) => void updateSettings({ agent_mode_toggle: e.target.checked })}
+              />
+            </label>
+            <p className="settings-help">
+              Puts a badge on each agent tab that switches it between <b>Plan</b> (reads
+              and proposes, never edits) and <b>Auto</b> (auto-accepts edits; shell and
+              network commands still ask) — so one tab can plan while another does the
+              work, and each comes back in its mode after a restart. Switching restarts
+              the agent: the conversation is resumed, but the terminal's scrollback is
+              lost. Only Claude supports it — it is the one agent that can both be
+              launched into a mode and resume its conversation on restart.
+            </p>
+
+            <label className="settings-switch-row">
               <span>Headless remote connections</span>
               <Toggle
                 checked={settings?.connections_headless ?? true}
@@ -632,6 +670,25 @@ export function SettingsDialog({
               open each connection as an interactive terminal in the Eldrun root —
               you type the password directly into that terminal and Eldrun never
               handles it.
+            </p>
+
+            <div className="settings-row">
+              <label>Energy saver</label>
+              <Dropdown
+                value={energyMode}
+                onChange={(v) => void updateSettings({ energy_saver: v as "off" | "battery" | "always" })}
+                options={[
+                  { value: "off", label: "Off" },
+                  { value: "battery", label: "On battery" },
+                  { value: "always", label: "Always" },
+                ]}
+              />
+            </div>
+            <p className="settings-help">
+              When active, Eldrun eases off to save power: it pauses the project
+              blob's idle spin, calms the status glows, and slows background
+              refreshes. "On battery" (default) does this only while unplugged.
+              {" "}{energyStatus}
             </p>
 
             <label className="settings-switch-row">
@@ -910,6 +967,30 @@ export function SettingsDialog({
                 Add download folder...
               </button>
             </div>
+
+            <div className="settings-section-title">Usage stats</div>
+            <label className="settings-switch-row">
+              <span>Show the recap at the start of each day</span>
+              <Toggle
+                checked={settings?.daily_stats_recap ?? true}
+                onChange={(e) => void updateSettings({ daily_stats_recap: e.target.checked })}
+              />
+            </label>
+            <p className="settings-help">
+              A summary of the day just finished: which agents you used and how much you
+              asked them, files created/modified/deleted, commits, and time per project.
+              Turning this off stops the popup, not the counting — everything stays local.
+            </p>
+            <button
+              type="button"
+              className="btn-primary btn-block"
+              onClick={() => {
+                onClose();
+                window.dispatchEvent(new CustomEvent(OPEN_STATS_EVENT));
+              }}
+            >
+              Open usage stats
+            </button>
 
             <div className="settings-section-title">More settings</div>
             <div className="settings-nav-list">

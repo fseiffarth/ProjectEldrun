@@ -8,6 +8,7 @@ pub mod projects;
 pub mod session;
 pub mod settings;
 pub mod time_log;
+pub mod usage_stats;
 
 pub use active_session::ActiveSession;
 pub use boxes::{BoxRelation, BoxesList, ProjectBox};
@@ -18,3 +19,4 @@ pub use projects::ProjectEntry;
 pub use session::{FileTabSession, LayoutSession, ProjectState, TerminalSession, WindowSession};
 pub use settings::Settings;
 pub use time_log::TimeLogEntry;
+pub use usage_stats::{Counters, UsageStats};

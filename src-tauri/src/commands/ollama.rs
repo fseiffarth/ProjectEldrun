@@ -1546,8 +1546,8 @@ exactly what the TASK asks for and no more. Never repeat, rewrite, or quote any 
 No preamble, no quotes, no code fences, no explanations, no labels.";
 
 /// How much of a completion to generate (#45 modes). Chosen per file type in
-/// settings and cycled live with Ctrl+Shift+Space. Drives both the TASK hint in
-/// [`completion_prompt`] and the `num_predict` output cap.
+/// settings and cycled live with Shift+Tab while a suggestion is showing. Drives
+/// both the TASK hint in [`completion_prompt`] and the `num_predict` output cap.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CompletionMode {
     /// Finish the current word/sentence/line only (default; least intrusive).

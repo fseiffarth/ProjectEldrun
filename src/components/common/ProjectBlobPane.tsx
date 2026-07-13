@@ -8,6 +8,7 @@ import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../
 import { ActivityCalendar } from "../projects/ActivityCalendar";
 import { CategoryEditor } from "../projects/CategoryEditor";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
+import { energySaverActive } from "../../stores/power";
 import {
   type FileEntry,
   fileIcon,
@@ -373,7 +374,10 @@ export function ProjectBlobPane() {
         convergeProgress.current = Math.min(1, convergeProgress.current + dt / 240);
         convAmt = 1 - Math.pow(1 - convergeProgress.current, 2);
       }
-      if (!dragging.current) rotY.current += AUTO_SPIN;
+      // Energy Saver freezes the idle auto-spin: a static scene re-projects to
+      // identical positions, so the per-frame trig stops mattering. Drag/hover
+      // still work (they mutate rotY/convergeId directly).
+      if (!dragging.current && !energySaverActive()) rotY.current += AUTO_SPIN;
       const rx = rotX.current;
       const ry = rotY.current;
       const scene = sceneRef.current;

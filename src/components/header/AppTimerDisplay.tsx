@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { useTimerStore } from "../../stores/timer";
+import { useEnergySaver, saverInterval } from "../../stores/power";
 import { ActivityCalendar } from "../projects/ActivityCalendar";
 
 function formatTime(secs: number): string {
@@ -48,6 +49,7 @@ export function AppTimerDisplay() {
   const toggle = useTimerStore((s) => s.toggle);
   const [displayText, setDisplayText] = useState("< 1m");
   const [showActivity, setShowActivity] = useState(false);
+  const energySaver = useEnergySaver();
 
   useEffect(() => {
     const update = () => {
@@ -55,9 +57,9 @@ export function AppTimerDisplay() {
     };
     update();
     if (paused) return;
-    const id = setInterval(update, 1000);
+    const id = setInterval(update, saverInterval(1000, energySaver));
     return () => clearInterval(id);
-  }, [paused]);
+  }, [paused, energySaver]);
 
   return (
     <>

@@ -289,6 +289,23 @@ pub fn run_remote_shell(spec: &RemoteSpec, command: &str) -> Result<std::process
         .map_err(|e| format!("failed to run command over ssh: {e}"))
 }
 
+/// Run a POSIX-`sh` script inside the project's remote directory (`cd <path> && <script>`),
+/// riding the shared ControlMaster. This is how `services::git_peer` collapses a probe
+/// that cost six SSH round trips into one (#28p D5).
+///
+/// **`script` is embedded verbatim** — it is the shell program, so it cannot be quoted.
+/// Callers must therefore pass a *constant* script, or one built only from values they
+/// have proven inert (`git_peer::ancestry_script` interpolates hex object names and
+/// nothing else). Never interpolate a path, branch name, or any other user-controlled
+/// string into it; `remote_path` is the sole variable here and it is `shell_quote`d.
+pub fn run_remote_script(spec: &RemoteSpec, script: &str) -> Result<std::process::Output, String> {
+    validate_arg("remote path", &spec.remote_path)?;
+    // The newline before `}` terminates the group's last command, so a script may end in
+    // either `fi` or a trailing `;` without a syntax error either way.
+    let cmd = format!("cd {} && {{ {script}\n}}", shell_quote(&spec.remote_path));
+    run_remote_shell(spec, &cmd)
+}
+
 /// Best-effort recursive byte size of a directory on the host, over SSH.
 ///
 /// Runs `du` on the host (riding the shared ControlMaster) for the given
@@ -481,6 +498,8 @@ mod tests {
             port,
             remote_path: remote_path.to_string(),
             openvpn: None,
+            auto_connect: None,
+            key_auth: None,
             extra: HashMap::new(),
         }
     }

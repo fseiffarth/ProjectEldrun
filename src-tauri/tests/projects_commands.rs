@@ -5,8 +5,8 @@ use std::sync::{Mutex, OnceLock};
 
 use eldrun_lib::commands::projects::{
     archive_project, create_project, delete_archived_project, get_projects, import_project,
-    list_archived_projects, load_project, restore_archived_project, set_project_description,
-    CreateProjectRequest, ImportProjectRequest,
+    list_archived_projects, load_project, restore_archived_project, set_project_auto_connect,
+    set_project_description, CreateProjectRequest, ImportProjectRequest,
 };
 use eldrun_lib::schema::project::RemoteSpec;
 use tempfile::{Builder, TempDir};
@@ -195,6 +195,8 @@ fn create_remote_project_scaffolds_the_local_mirror() {
                 port: None,
                 remote_path: "/home/alice/work".to_string(),
                 openvpn: None,
+                auto_connect: None,
+                key_auth: None,
                 extra: Default::default(),
             }),
             mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
@@ -524,5 +526,86 @@ fn archive_rejects_traversal_ids_and_missing_projects() {
     with_isolated_home("archive-guard-home", |_| {
         assert!(archive_project("../evil".to_string(), "x".to_string()).is_err());
         assert!(archive_project("no-such-id".to_string(), "x".to_string()).is_err());
+    });
+}
+
+/// The auto-connect opt-in has to survive a restart, and it is read from
+/// `projects.json` (the always-local source of truth for a remote project, whose
+/// own `project.json` may live behind the host) — so both copies must carry it, and
+/// clearing it must *remove* the field rather than store `false`, so an opted-out
+/// project is byte-identical to one that never opted in.
+#[test]
+fn set_project_auto_connect_writes_both_copies_and_clears() {
+    with_isolated_home("auto-connect-home", |_| {
+        let mirror_parent = tempdir_in_test_projects("auto-connect-mirror");
+        let entry = create_project(CreateProjectRequest {
+            name: "auto-connect".to_string(),
+            directory: String::new(),
+            description: None,
+            git_type: Some("none".to_string()),
+            skip_scaffold: true,
+            remote: Some(RemoteSpec {
+                user: Some("alice".to_string()),
+                host: "nonexistent.invalid".to_string(),
+                port: None,
+                remote_path: "/home/alice/work".to_string(),
+                openvpn: None,
+                auto_connect: None,
+                key_auth: None,
+                extra: Default::default(),
+            }),
+            mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+        })
+        .expect("create remote project");
+
+        // Reads `auto_connect` off the entry's flattened `remote` in projects.json.
+        let registered = |id: &str| -> Option<bool> {
+            get_projects()
+                .expect("get projects")
+                .into_iter()
+                .find(|p| p.id == id)?
+                .extra
+                .get("remote")?
+                .get("auto_connect")?
+                .as_bool()
+        };
+        let on_disk = |local_file: &str| -> Option<bool> {
+            load_project(local_file.to_string())
+                .expect("load project.json")
+                .remote?
+                .auto_connect
+        };
+
+        assert_eq!(registered(&entry.id), None, "starts opted out");
+
+        assert!(set_project_auto_connect(entry.id.clone(), true).expect("opt in"));
+        assert_eq!(registered(&entry.id), Some(true));
+        assert_eq!(on_disk(&entry.local_file), Some(true));
+
+        assert!(!set_project_auto_connect(entry.id.clone(), false).expect("opt out"));
+        assert_eq!(registered(&entry.id), None, "cleared, not stored as false");
+        assert_eq!(on_disk(&entry.local_file), None);
+    });
+}
+
+/// A local project has no SSH connection to automate, so the opt-in must be
+/// refused rather than silently written into a spec that doesn't exist.
+#[test]
+fn set_project_auto_connect_rejects_local_and_unknown_projects() {
+    with_isolated_home("auto-connect-local-home", |_| {
+        let target = tempdir_in_test_projects("auto-connect-local");
+        let entry = create_project(CreateProjectRequest {
+            name: "local-project".to_string(),
+            directory: target.path().to_string_lossy().to_string(),
+            description: None,
+            git_type: Some("none".to_string()),
+            skip_scaffold: true,
+            remote: None,
+            mirror_parent: None,
+        })
+        .expect("create local project");
+
+        assert!(set_project_auto_connect(entry.id, true).is_err());
+        assert!(set_project_auto_connect("no-such-id".to_string(), true).is_err());
     });
 }

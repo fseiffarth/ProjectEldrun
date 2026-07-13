@@ -730,7 +730,17 @@ pub fn set_project_openvpn(
             extra: HashMap::new(),
         });
 
-    // projects.json — patch the `openvpn` field inside the flattened `remote` value.
+    patch_remote_spec(&project_id, |remote| remote.openvpn = spec.clone())?;
+
+    Ok(spec.map(|s| s.config).unwrap_or_default())
+}
+
+/// Apply `patch` to a **remote** project's SSH spec in both places it is stored:
+/// `projects.json` (the flattened `remote` extra, which is the always-local source
+/// of truth `services::remote::remote_target_for` reads) and the project's own
+/// `project.json` (best effort — a remote project's copy may be unreachable).
+/// Errors if the project is unknown or not remote.
+fn patch_remote_spec(project_id: &str, patch: impl Fn(&mut RemoteSpec)) -> Result<(), String> {
     let list_path = storage::state_dir().join("projects.json");
     let mut list: ProjectsList = if list_path.exists() {
         storage::read_json(&list_path).map_err(|e| e.to_string())?
@@ -747,23 +757,49 @@ pub fn set_project_openvpn(
         .ok_or_else(|| "project is not remote".to_string())?;
     let mut remote: RemoteSpec =
         serde_json::from_value(remote_val.clone()).map_err(|e| e.to_string())?;
-    remote.openvpn = spec.clone();
+    patch(&mut remote);
     *remote_val = serde_json::to_value(&remote).map_err(|e| e.to_string())?;
     let local_file = entry.local_file.clone();
     storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
 
-    // project.json — keep the per-project remote spec consistent (best effort).
     let proj_path = PathBuf::from(&local_file);
     if proj_path.exists() {
         if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
             if let Some(r) = project.remote.as_mut() {
-                r.openvpn = spec.clone();
+                patch(r);
                 storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
             }
         }
     }
+    Ok(())
+}
 
-    Ok(spec.map(|s| s.config).unwrap_or_default())
+/// Opt a **remote** project in/out of auto-connect (launch + activation bring the
+/// SSH — and, only if the host isn't directly reachable, the VPN — up with no
+/// prompt). The frontend only offers this once the connection can complete
+/// silently (saved SSH password, or a host recorded as `key_auth`); the connect
+/// path re-checks that itself, so a stale opt-in can never produce a prompt.
+/// Returns the resulting state.
+#[tauri::command]
+pub fn set_project_auto_connect(project_id: String, enabled: bool) -> Result<bool, String> {
+    patch_remote_spec(&project_id, |remote| {
+        remote.auto_connect = enabled.then_some(true);
+    })?;
+    Ok(enabled)
+}
+
+/// Record how a remote project's host authenticated on its last successful connect
+/// (`key_auth` = no password was used at all — key/agent auth). Called by
+/// `remote_connect`; this is the only way the UI can know a passwordless host is
+/// auto-connect-eligible, since such a host has nothing in the keychain to check.
+/// A no-op when the value is unchanged, so an ordinary connect costs no write.
+pub fn record_remote_key_auth(project_id: &str, key_auth: bool) -> Result<(), String> {
+    let current = crate::services::remote::remote_target_for(project_id)
+        .and_then(|t| t.spec.key_auth);
+    if current == Some(key_auth) {
+        return Ok(());
+    }
+    patch_remote_spec(project_id, |remote| remote.key_auth = Some(key_auth))
 }
 
 /// Normalize a list of category tags: trim each, drop blanks, and de-duplicate
