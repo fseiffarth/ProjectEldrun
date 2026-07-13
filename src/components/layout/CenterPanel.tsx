@@ -1022,12 +1022,17 @@ export function CenterPanel() {
                   // backend spawn detects remoteness explicitly instead of
                   // sniffing the cwd. Harmless for local projects.
                   projectId={scopeKey === "root" ? null : scopeKey}
-                  // Run agent tabs in a Docker sandbox when this tab's project
-                  // has the sandbox toggle on. Local projects only (a remote
-                  // project is ssh-wrapped instead). Derived here, not at tab
-                  // creation, so restored agent tabs are covered too.
+                  // Run this tab inside the project's session container when
+                  // the container toggle is on: every PTY tab except
+                  // `local_agent` (host-bound by definition) execs into the one
+                  // shared container. Local projects only (a remote project is
+                  // ssh-wrapped instead). Derived here, not at tab creation, so
+                  // restored tabs are covered too. NOTE: this flag is in
+                  // TerminalView's spawn deps — flipping the toggle respawns
+                  // every live tab (ProjectPill confirms when that would
+                  // destroy a non-resumable agent conversation).
                   sandbox={
-                    tab.kind === "agent" &&
+                    (tab.kind === "agent" || tab.kind === "shell") &&
                     scopeKey !== "root" &&
                     (() => {
                       const proj = projects.find((p) => p.id === scopeKey);

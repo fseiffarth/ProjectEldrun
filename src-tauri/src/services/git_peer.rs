@@ -34,6 +34,14 @@
 //! ever deletes a file whose content is provably already in the incoming commit. (2)
 //! is why initial pairing pre-checks for colliding, *differing* files
 //! ([`pairing_collisions`]) instead of trusting `reset --hard` to be safe.
+//!
+//! **Every one of those writes can still make a local file disappear** — legitimately:
+//! a fast-forward, a `reset --hard` and a checkout all delete the tracked files their
+//! target commit doesn't carry, and the ff retry deletes untracked ones outright. That
+//! is ordinary git, and (bar a failed retry) recoverable from git — but it happens in
+//! the mirror, during background passes nobody asked for, and it used to happen in
+//! silence. [`audit_local_head_move`] and its call sites file each one as a warning the
+//! UI raises (`services::local_loss`, #28q).
 
 /// Section separator for the batched probe script (ASCII RS — never in git output).
 const RS: char = '\x1e';
@@ -51,6 +59,7 @@ use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::MissedTickBehavior;
 
 use crate::schema::project::RemoteSpec;
+use crate::services::local_loss;
 use crate::services::remote::{remote_target_for, RemotePoolState};
 use crate::services::remote_sync::{self, mirror_dir, mirror_local_path, SyncManifestState};
 use crate::services::sftp;
@@ -347,6 +356,15 @@ pub fn bundle_create_args(path: &str, positives: &[&str], excludes: &[String]) -
         v.extend(excludes.iter().cloned());
     }
     v
+}
+
+/// Whether a failed `git bundle create` failed only because there was nothing to
+/// send — git's own "Refusing to create empty bundle" refusal — as opposed to a
+/// genuine I/O failure (disk full, bad path, permission denied, ...). Load-bearing
+/// for #28p D11: only the empty-bundle case may still let ref application proceed,
+/// since only then does the dest already hold every object being pointed at. Pure.
+fn is_empty_bundle_error(stderr: &str) -> bool {
+    stderr.contains("Refusing to create empty bundle")
 }
 
 /// The two refspecs that import a bundle's refs into the receiver's isolated
@@ -1066,6 +1084,13 @@ async fn transfer_and_apply(
         (Peer::Remote(spec.clone()), Peer::Local(mirror_dir(project_id)))
     };
 
+    // #28q: when the dest is the LOCAL mirror, the apply below can move its checked-out
+    // branch — by fast-forward, or by `reset --hard` under `force` — and either one
+    // deletes the tracked files the incoming commit dropped. Snapshot the tip now so the
+    // audit at the end can name them. `None` for a remote dest (nothing local at risk) or
+    // an unborn local one (nothing there to lose).
+    let local_head_before = if to_remote { None } else { local_head_sha(project_id) };
+
     // …but only the ones the source actually has. An exclude the source has never seen
     // is not a delta hint to git, it is a fatal argument: `bundle create --not <unknown>`
     // aborts the entire bundle. And "the dest's tip is a commit this side has never seen"
@@ -1108,6 +1133,18 @@ async fn transfer_and_apply(
         let specs = incoming_fetch_refspecs();
         let fetch: Vec<&str> = vec!["fetch", &dst_bundle, &specs[0], &specs[1]];
         let _ = dst_peer.run(&fetch); // fetch failure → apply below simply finds nothing
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if !is_empty_bundle_error(&stderr) {
+            // #28p D11: a GENUINE creation failure (disk full, bad path, permission
+            // denied, ...) — as opposed to the empty-bundle refusal handled above —
+            // means no objects moved anywhere. Step 4 must not run: applying a ref
+            // update now would move dest's refs onto shas it was never actually given,
+            // a dangling pointer no object backs, reported as `applied` and computed
+            // to Synchronized — the same false-green shape the empty-bundle fix above
+            // exists to avoid, in the one case that fix must not paper over.
+            return Err(format!("bundle create failed: {}", stderr.trim()));
+        }
     }
 
     // 4. Apply safe updates per branch. One shared timestamp so every safety ref this
@@ -1181,16 +1218,71 @@ async fn transfer_and_apply(
                             // retry; otherwise report what git actually said (#28p D1/D2).
                             let stderr = String::from_utf8_lossy(&o.stderr).to_string();
                             let colliding = parse_untracked_overwrite_paths(&stderr);
-                            let residue = stale_byte_sync_residue(
-                                pool, manifest, project_id, spec, to_remote, &colliding,
-                            )
-                            .await;
-                            if retry_ff_clearing_identical(&dst_peer, &src_ref.sha, &stderr, &residue)
-                            {
-                                forget_synced_paths(manifest, project_id, &colliding).await;
-                                result.applied += 1;
-                            } else {
-                                result.blocked = Some(blocked_detail(&src_ref.name, &stderr));
+                            let residue =
+                                stale_byte_sync_residue(manifest, project_id, &dst_peer, &colliding)
+                                    .await;
+                            match retry_ff_clearing_identical(
+                                &dst_peer,
+                                &src_ref.sha,
+                                &stderr,
+                                &residue,
+                            ) {
+                                FfRetry::Cleared(cleared) => {
+                                    // #28q: the identical files came back byte-for-byte (the ff
+                                    // wrote the same blob), so only the residue ones lost
+                                    // anything — their older byte-synced copy, replaced by the
+                                    // committed content. Report those, and only when the mirror
+                                    // is the side that was cleaned.
+                                    if !to_remote {
+                                        let replaced: Vec<String> = cleared
+                                            .iter()
+                                            .filter(|p| residue.contains(*p))
+                                            .cloned()
+                                            .collect();
+                                        local_loss::record_paths(
+                                            project_id,
+                                            local_loss::LossSource::Git,
+                                            local_loss::LossKind::Overwritten,
+                                            "fast-forward from the host (replaced a stale \
+                                             byte-synced copy)",
+                                            replaced,
+                                            Some(
+                                                "The file now holds the host's committed content. \
+                                                 The copy that was replaced was an older \
+                                                 byte-synced version of the same file and was \
+                                                 never committed anywhere."
+                                                    .to_string(),
+                                            ),
+                                        );
+                                    }
+                                    forget_synced_paths(manifest, project_id, &colliding).await;
+                                    result.applied += 1;
+                                }
+                                FfRetry::ClearedButFailed(cleared) => {
+                                    // The files were removed to clear the way and the ff then
+                                    // failed anyway: the mirror is now short every one of them,
+                                    // with nothing having rewritten them. Loudest case we have.
+                                    if !to_remote {
+                                        local_loss::record_paths(
+                                            project_id,
+                                            local_loss::LossSource::Git,
+                                            local_loss::LossKind::Deleted,
+                                            "fast-forward from the host (cleared blocking \
+                                             untracked files, then failed)",
+                                            cleared,
+                                            Some(format!(
+                                                "The content is in git on the mirror — restore a \
+                                                 file with:  git -C {} show {}:<path> > <path>",
+                                                mirror_dir(project_id).display(),
+                                                &src_ref.sha[..src_ref.sha.len().min(12)]
+                                            )),
+                                        );
+                                    }
+                                    result.blocked = Some(blocked_detail(&src_ref.name, &stderr));
+                                }
+                                FfRetry::Refused => {
+                                    result.blocked = Some(blocked_detail(&src_ref.name, &stderr));
+                                }
                             }
                         }
                         Err(e) => {
@@ -1259,7 +1351,22 @@ async fn transfer_and_apply(
         }
     }
 
-    // 5. Cleanup: drop the incoming namespace + bundle files on both ends.
+    // 5. #28q: if the mirror's HEAD moved above, say what that cost the working tree.
+    //    Scoped to this apply, so a caller that runs a checkout of its own around it
+    //    (`checkout_lockstep`) audits that separately and neither reports the other's.
+    if let Some(before) = &local_head_before {
+        audit_local_head_move(
+            project_id,
+            before,
+            if force {
+                "Use-remote resolve (reset --hard on the mirror)"
+            } else {
+                "fast-forward from the host"
+            },
+        );
+    }
+
+    // 6. Cleanup: drop the incoming namespace + bundle files on both ends.
     cleanup_incoming(&dst_peer);
     cleanup_bundles(pool, project_id, spec, &src_peer, &dst_peer, to_remote).await;
 
@@ -1340,26 +1447,49 @@ fn retry_ff_clearing_identical(
     src_sha: &str,
     stderr: &str,
     stale_residue: &HashSet<String>,
-) -> bool {
+) -> FfRetry {
     let paths = parse_untracked_overwrite_paths(stderr);
     if paths.is_empty() {
-        return false;
+        return FfRetry::Refused;
     }
     if !paths
         .iter()
         .all(|p| blob_matches_worktree(dst_peer, src_sha, p) || stale_residue.contains(p))
     {
-        return false;
+        return FfRetry::Refused;
     }
     for p in &paths {
         // `:(literal)` so a path with glob metacharacters (`*`, `[`, `?`) is matched as
         // itself and can never widen into a pathspec that removes more than it names.
         let _ = dst_peer.run(&["clean", "-f", "-x", "--", &format!(":(literal){p}")]);
     }
-    dst_peer
+    let landed = dst_peer
         .run(&["merge", "--ff-only", src_sha])
         .map(|o| o.status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if landed {
+        FfRetry::Cleared(paths)
+    } else {
+        FfRetry::ClearedButFailed(paths)
+    }
+}
+
+/// What a cleared-fast-forward retry actually did. The two cleared variants used to be
+/// one `false`/`true` bool, which is precisely the distinction #28q needs: the retry
+/// *deletes untracked files* to get the fast-forward through, and whether those files
+/// come back depends on whether the fast-forward then landed.
+enum FfRetry {
+    /// A colliding file was neither provably identical nor provably stale residue, so
+    /// nothing was touched — it is real unsynced work and the ff stays blocked.
+    Refused,
+    /// The named paths were cleaned and the fast-forward landed, so git rewrote each one
+    /// with the incoming commit's blob. For an identical file that is byte-for-byte what
+    /// was there; for stale byte-sync residue it is the newer, committed content — the
+    /// older copy is gone.
+    Cleared(Vec<String>),
+    /// The named paths were cleaned and the fast-forward *still* failed: they are gone
+    /// and nothing rewrote them. The one path here that leaves the mirror short a file.
+    ClearedButFailed(Vec<String>),
 }
 
 /// Whether the dest's on-disk `path` already holds exactly the bytes `<sha>:<path>`
@@ -1388,51 +1518,62 @@ fn blob_matches_worktree(peer: &Peer, sha: &str, path: &str) -> bool {
 /// Which of a blocked ff's colliding untracked paths are provably disposable
 /// **stale byte-sync residue** rather than real, independent work on the dest (case
 /// #12: `docs/git_lockstep_case_matrix.md`). A path qualifies when the sync manifest
-/// holds a base for it (byte-sync touched it before it became tracked) AND the dest's
-/// *current* stat still matches that base exactly — i.e. nothing has written to the
-/// path since byte-sync last put its content there, so whatever is on disk is fully
-/// explained by byte-sync's own prior action, not an untracked edit made independently
-/// on this peer. Reuses `divergence`, the same size+mtime heuristic `compute_state`/
-/// `push_decision` already trust elsewhere, judged against whichever side of the
-/// manifest `dest` actually is.
+/// holds a base for it (byte-sync touched it before it became tracked — the scope
+/// this is meant to cover, kept as a cheap pre-filter) AND its current content is
+/// already a git object `dst_peer`'s own store knows about (#28p D10:
+/// [`object_already_known`]) — proof by content, not by a stat heuristic.
+///
+/// The previous check instead compared the dest's current size+mtime against the
+/// manifest's recorded base, on the theory that an unchanged stat means nothing has
+/// written to the path since byte-sync last put its content there. But a same-size,
+/// same-mtime *different* file (clock skew, a tool that preserves mtimes on copy)
+/// satisfies that heuristic despite differing content — and the caller **deletes**
+/// the file on this verdict, with no backup possible for something that was never a
+/// git object. Proving the content is already a git-known blob removes that gap:
+/// real independent work was never committed or fetched anywhere, so it can never
+/// pass this check by accident.
 async fn stale_byte_sync_residue(
-    pool: &RemotePoolState,
     manifest: &SyncManifestState,
     project_id: &str,
-    spec: &RemoteSpec,
-    to_remote: bool,
+    dst_peer: &Peer,
     paths: &[String],
 ) -> HashSet<String> {
     let mut out = HashSet::new();
     if paths.is_empty() {
         return out;
     }
-    let sftp = if to_remote {
-        crate::services::remote::pooled_sftp(pool, project_id).await
-    } else {
-        None
+    let candidates: Vec<String> = {
+        let mut g = manifest.lock().await;
+        let m = remote_sync::ensure_loaded(&mut g, project_id);
+        paths.iter().filter(|p| m.contains_key(p.as_str())).cloned().collect()
     };
-    let mut g = manifest.lock().await;
-    let m = remote_sync::ensure_loaded(&mut g, project_id);
-    for p in paths {
-        let Some(entry) = m.get(p) else { continue };
-        let safe = if to_remote {
-            let Some(sftp) = &sftp else { continue };
-            let host_abs = remote_sync::join_remote(&spec.remote_path, p);
-            match sftp::metadata_on(sftp, &host_abs).await {
-                Ok(stat) => !remote_sync::divergence(entry, Some(stat), None).0,
-                Err(_) => false,
-            }
-        } else {
-            let local_path = mirror_local_path(project_id, p);
-            let stat = remote_sync::local_size_mtime(std::fs::metadata(&local_path).ok());
-            !remote_sync::divergence(entry, None, Some(stat)).1
-        };
-        if safe {
-            out.insert(p.clone());
+    for p in candidates {
+        if object_already_known(dst_peer, &p) {
+            out.insert(p);
         }
     }
     out
+}
+
+/// Whether the on-disk bytes at `path` (as `git hash-object` would name them) are
+/// already an object `peer`'s own store has — i.e. some commit it has ever held, or
+/// the incoming fetch just deposited, wrote exactly this content at some point
+/// (#28p D10). `git cat-file -e` checks object *existence*, not reachability from any
+/// ref, so this is true for an object the bundle fetch just brought into
+/// `refs/eldrun/incoming/*` even before any ref points at it.
+fn object_already_known(peer: &Peer, path: &str) -> bool {
+    let Some(hash) = peer
+        .run(&["hash-object", "--", path])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return false;
+    };
+    peer.run(&["cat-file", "-e", &hash])
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Drop the sync-manifest bases for paths a cleared ff retry just handed to lockstep
@@ -1450,6 +1591,78 @@ async fn forget_synced_paths(manifest: &SyncManifestState, project_id: &str, pat
         m.remove(p);
     }
     let _ = remote_sync::save_manifest(project_id, m);
+}
+
+// ── Local-loss audit (#28q) ─────────────────────────────────────────────────
+//
+// Every lockstep write that moves the LOCAL mirror's HEAD materializes in its working
+// tree, and a tracked file the incoming commit no longer carries is *deleted* there —
+// by a fast-forward, by a `reset --hard`, by a checkout. That is ordinary git, it is
+// recoverable from git, and it is also exactly how a file the user was looking at
+// vanishes from the mirror during a background pass they never triggered. The audit
+// below is what makes it say so (`services::local_loss`).
+//
+// Each auditor is scoped to ONE mutation and reads the mirror's HEAD itself, before and
+// after. Two consequences worth stating, because they are what keep the audit honest:
+// an op that failed never moved HEAD, so it records nothing (the audit observes, it
+// does not predict); and a nested call that has already moved HEAD sees `from == to`,
+// so an outer op and the reconcile it runs can never both report the same deletion.
+
+/// The mirror's current HEAD sha, or `None` when it is unborn / not a repo.
+fn local_head_sha(project_id: &str) -> Option<String> {
+    Peer::Local(mirror_dir(project_id))
+        .run(&["rev-parse", "--verify", "--quiet", "HEAD"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The tracked paths present at `from` and gone at `to` — i.e. what checking `to` out
+/// over `from` deletes from the working tree.
+fn deleted_between(peer: &Peer, from: &str, to: &str) -> Vec<String> {
+    peer.run(&["diff", "--name-only", "--diff-filter=D", from, to])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Record the tracked files that a lockstep op — which has just moved the mirror's HEAD
+/// away from `from_sha` — deleted from the local working tree. A no-op when HEAD did not
+/// actually move (the op failed, or was a ref-only update on a branch that isn't checked
+/// out) or when it dropped no file.
+fn audit_local_head_move(project_id: &str, from_sha: &str, op: &str) {
+    if from_sha.is_empty() {
+        return;
+    }
+    let Some(to_sha) = local_head_sha(project_id) else {
+        return;
+    };
+    if to_sha == from_sha {
+        return;
+    }
+    let local = Peer::Local(mirror_dir(project_id));
+    let gone = deleted_between(&local, from_sha, &to_sha);
+    let mirror = mirror_dir(project_id);
+    local_loss::record_paths(
+        project_id,
+        local_loss::LossSource::Git,
+        local_loss::LossKind::Deleted,
+        op,
+        gone,
+        Some(format!(
+            "Still in git — restore a file with:  git -C {} checkout {} -- <path>",
+            mirror.display(),
+            &from_sha[..from_sha.len().min(12)]
+        )),
+    );
 }
 
 /// Force-move `dest`'s `branch` from `dst_sha` to the authority's `src_sha` during a
@@ -1733,6 +1946,57 @@ fn hash_objects(peer: &Peer, paths: &[String]) -> HashMap<String, String> {
     out
 }
 
+// ── Force-reset collisions (#28p D9) ────────────────────────────────────────
+
+/// The untracked files on `dest_peer` a force-reset of its checked-out branch to
+/// `target_sha` would silently clobber: paths `target_sha`'s tree holds that also
+/// exist, untracked, on `dest_peer` and differ in content.
+///
+/// This is the same `reset --hard` clobber behaviour (see the module doc comment)
+/// `init_pairing` was hardened against for a not-yet-a-repo dest (D3) — but
+/// `resolve`'s and `restore_backup`'s force-reset of an *existing* repo's checked-out
+/// branch had no equivalent guard. A path git never tracked is invisible to the
+/// `refs/eldrun/backup/*` safety net (that only saves refs), so without this check it
+/// is destroyed with no way back. Conservative like `pairing_collisions`: an
+/// unprovable hash counts as a difference. Reuses `hash_objects`, so it costs no new
+/// primitive.
+fn reset_collisions(source_peer: &Peer, dest_peer: &Peer, target_sha: &str) -> Vec<String> {
+    let target: HashMap<String, Fingerprint> = source_peer
+        .run(&["ls-tree", "-r", "-l", "-z", target_sha])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| parse_ls_tree_long(&o.stdout))
+        .unwrap_or_default();
+    if target.is_empty() {
+        return Vec::new();
+    }
+
+    let listed = match dest_peer.run(&["ls-files", "--others", "-z"]) {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return Vec::new(),
+    };
+    let candidates: Vec<String> = listed
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).replace('\\', "/"))
+        .filter(|p| target.contains_key(p))
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let hashes = hash_objects(dest_peer, &candidates);
+    let mut out: Vec<String> = candidates
+        .into_iter()
+        .filter(|p| match (target[p].hash.as_deref(), hashes.get(p).map(String::as_str)) {
+            (Some(a), Some(b)) => a != b,
+            _ => true, // unprovable → treat as a difference, the safe direction
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 // ── Reconcile + status ──────────────────────────────────────────────────────
 
 /// Probe both peers, transfer + fast-forward in both directions, and compute the new
@@ -1871,6 +2135,21 @@ async fn reconcile_with(
             ));
         } else {
             let conflicts = if opts.allow_pair_overwrite {
+                // The user confirmed the overwrite (`pair_confirm`), so this no longer
+                // blocks — but it is still the exact list of files pairing is about to
+                // destroy, and when the dest is the mirror they are the user's LOCAL
+                // files. Compute it anyway, purely to record what went (#28q), then
+                // proceed. Only runs on the explicit confirm, never on the hot path.
+                if !source_is_local {
+                    local_loss::record_paths(
+                        project_id,
+                        local_loss::LossSource::Git,
+                        local_loss::LossKind::Overwritten,
+                        "initial pairing with the host (you confirmed the overwrite)",
+                        pairing_conflicts(pool, project_id, spec, source_is_local).await,
+                        None, // never a git object on this side — nothing to restore from
+                    );
+                }
                 Vec::new()
             } else {
                 pairing_conflicts(pool, project_id, spec, source_is_local).await
@@ -2151,7 +2430,8 @@ async fn checkout_lockstep_inner(
 
     // 1. Check out on the initiating side if the caller hasn't already.
     if !already_checked_out {
-        let init_peer = if initiating_side == "remote" { &remote } else { &local };
+        let initiating_local = initiating_side != "remote";
+        let init_peer = if initiating_local { &local } else { &remote };
         let out = init_peer.run(&["checkout", target])?;
         if !out.status.success() {
             return Ok(desync_state(
@@ -2162,6 +2442,12 @@ async fn checkout_lockstep_inner(
                     String::from_utf8_lossy(&out.stderr).trim()
                 ),
             ));
+        }
+        // #28q: a checkout deletes the tracked files the target commit doesn't carry.
+        // Audited only when Eldrun ran it — `already_checked_out` means the user ran
+        // `git checkout` themselves in a terminal, where git already said so.
+        if initiating_local {
+            audit_local_head_move(project_id, &old_local_sha, &format!("checkout '{target}'"));
         }
     }
 
@@ -2177,10 +2463,23 @@ async fn checkout_lockstep_inner(
     )
     .await;
 
-    // 3. Guarded checkout on the peer (the side that did NOT initiate).
-    let peer = if initiating_side == "remote" { &local } else { &remote };
-    let peer_name = if initiating_side == "remote" { "local" } else { "remote" };
+    // 3. Guarded checkout on the peer (the side that did NOT initiate). When the peer is
+    //    the mirror, this is the checkout that follows a branch switch made on the host —
+    //    the one the user is least expecting to rewrite their local tree, so #28q audits
+    //    it from the tip as it stands *now* (step 2's fast-forward, if any, already
+    //    reported its own deletions).
+    let peer_is_local = initiating_side == "remote";
+    let peer = if peer_is_local { &local } else { &remote };
+    let peer_name = if peer_is_local { "local" } else { "remote" };
+    let pre_peer_checkout = peer_is_local.then(|| local_head_sha(project_id)).flatten();
     let out = peer.run(&["checkout", target])?;
+    if let Some(before) = &pre_peer_checkout {
+        audit_local_head_move(
+            project_id,
+            before,
+            &format!("checkout '{target}' (following the host)"),
+        );
+    }
     if !out.status.success() {
         state = desync_state(
             project_id,
@@ -2280,6 +2579,37 @@ async fn resolve_inner(
     } else {
         (&remote, &local)
     };
+
+    // #28p D9: a force-reset of dest's checked-out branch runs `reset --hard`, which
+    // silently clobbers a colliding untracked file. Refuse and name it rather than
+    // guess — the same "blocked, user clears it, retries" UX a blocked fast-forward
+    // already gets (D1/D2) — instead of trusting the backup-ref safety net to cover
+    // something it structurally cannot (an untracked file was never a git object).
+    if let Some(HeadRef::Branch { name, sha: dest_sha }) = &dest.head {
+        if let Some(target) = source.branches.iter().find(|r| &r.name == name) {
+            if &target.sha != dest_sha {
+                let (source_peer, dest_peer) = if to_remote {
+                    (Peer::Local(mirror_dir(project_id)), Peer::Remote(spec.clone()))
+                } else {
+                    (Peer::Remote(spec.clone()), Peer::Local(mirror_dir(project_id)))
+                };
+                let collisions = reset_collisions(&source_peer, &dest_peer, &target.sha);
+                if !collisions.is_empty() {
+                    let where_ = if to_remote { "host" } else { "mirror" };
+                    let shown: Vec<&str> = collisions.iter().take(5).map(String::as_str).collect();
+                    let more = collisions.len() - shown.len();
+                    let extra = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+                    return Err(format!(
+                        "Refusing: {} untracked file(s) on the {where_} differ from '{name}' \
+                         and are not in git: {}{extra}. Move or remove them, then retry.",
+                        collisions.len(),
+                        shown.join(", "),
+                    ));
+                }
+            }
+        }
+    }
+
     transfer_and_apply(pool, manifest, project_id, spec, to_remote, source, dest, true).await?;
 
     // A losing local branch was `reset --hard`, rewriting mirror tracked files — refresh
@@ -2363,6 +2693,26 @@ pub async fn restore_backup(
 
     let snap = probe(&peer);
     let is_head = matches!(&snap.head, Some(HeadRef::Branch { name, .. }) if *name == branch);
+
+    // #28p D9: same clobber risk as `resolve` — check before `force_reset_branch`'s
+    // `reset --hard` on the checked-out branch. Resume auto-sync before returning so a
+    // refusal never leaves it paused.
+    if is_head {
+        let collisions = reset_collisions(&peer, &peer, &sha);
+        if !collisions.is_empty() {
+            crate::services::sync_auto::resume(auto, project_id).await;
+            let shown: Vec<&str> = collisions.iter().take(5).map(String::as_str).collect();
+            let more = collisions.len() - shown.len();
+            let extra = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+            return Err(format!(
+                "Refusing to restore: {} untracked file(s) on the {peer_label} differ from \
+                 the backup and are not in git: {}{extra}. Move or remove them, then retry.",
+                collisions.len(),
+                shown.join(", "),
+            ));
+        }
+    }
+
     match sha_of(&snap, RefKind::Head, &branch) {
         // force_reset_branch backs the current tip up before moving it, so the state we
         // are restoring *away from* stays reachable too.
@@ -2372,6 +2722,15 @@ pub async fn restore_backup(
             let _ = peer.run(&["update-ref", &format!("refs/heads/{branch}"), &sha]);
         }
     }
+
+    // #28q: restoring a backup onto the mirror's checked-out branch is a `reset --hard`
+    // like any other — it deletes the tracked files the older tip didn't have. (A no-op
+    // when the restore was on the host: the mirror's HEAD never moved.)
+    audit_local_head_move(
+        project_id,
+        &old_local_sha,
+        &format!("restore backup '{branch}' (reset --hard on the mirror)"),
+    );
 
     restamp_after_checkout(pool, manifest, project_id, spec, &old_local_sha).await;
     crate::services::sync_auto::resume(auto, project_id).await;
@@ -2748,6 +3107,53 @@ mod tests {
         assert!(!args.iter().any(|a| a == "--not"));
     }
 
+    // ── #28p D11: distinguish an empty-bundle no-op from a real failure ──────
+
+    #[test]
+    fn empty_bundle_error_is_recognized_precisely() {
+        // Git's own literal refusal text (verified against a real `git bundle create`).
+        assert!(is_empty_bundle_error("fatal: Refusing to create empty bundle.\n"));
+        // A genuine I/O failure must NOT be mistaken for the no-op case — that is
+        // exactly the false-green D11 exists to close.
+        assert!(!is_empty_bundle_error(
+            "fatal: could not write bundle: No space left on device\n"
+        ));
+        assert!(!is_empty_bundle_error("fatal: bad revision 'HEAD'\n"));
+        assert!(!is_empty_bundle_error(""));
+    }
+
+    #[test]
+    fn bundle_create_fails_empty_with_gits_exact_message() {
+        // Pins the literal string `is_empty_bundle_error` matches against a real git,
+        // so a future git release changing this wording fails loudly here rather than
+        // silently making every genuine failure look like the safe no-op case.
+        if !git_available() {
+            eprintln!("git not on PATH — skipping bundle_create_fails_empty_with_gits_exact_message");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let peer = Peer::Local(dir.to_path_buf());
+        peer.run(&["init", "-q", "."]).expect("git init");
+        peer.run(&["config", "user.email", "t@e"]).expect("git config");
+        peer.run(&["config", "user.name", "t"]).expect("git config");
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        peer.run(&["add", "a.txt"]).expect("git add");
+        peer.run(&["commit", "-qm", "init"]).expect("git commit");
+        let head = String::from_utf8_lossy(
+            &peer.run(&["rev-parse", "HEAD"]).expect("rev-parse").stdout,
+        )
+        .trim()
+        .to_string();
+
+        let bundle_path = dir.join("out.bundle").to_string_lossy().to_string();
+        let args = bundle_create_args(&bundle_path, &["--branches"], &[head]);
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = peer.run(&argv).expect("bundle create");
+        assert!(!out.status.success());
+        assert!(is_empty_bundle_error(&String::from_utf8_lossy(&out.stderr)));
+    }
+
     #[test]
     fn incoming_refspecs_are_namespaced() {
         let specs = incoming_fetch_refspecs();
@@ -2934,6 +3340,41 @@ mod tests {
         sha
     }
 
+    #[test]
+    fn deleted_between_names_only_what_a_move_removes() {
+        // #28q: the audit's whole job is to name the files a HEAD move deletes from the
+        // working tree. `feat` ADDS new.txt/keep.txt on top of `main`, so moving forward
+        // deletes nothing — and moving BACK (a checkout of the older commit, a
+        // `reset --hard` onto it, a restored backup) deletes both. A warning that fired
+        // on the forward move would be crying wolf on every ordinary fast-forward.
+        if !git_available() {
+            eprintln!("git not on PATH — skipping deleted_between_names_only_what_a_move_removes");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let feat = repo_behind_by_one(dir);
+        let peer = Peer::Local(dir.to_path_buf());
+        let main = String::from_utf8_lossy(
+            &peer.run(&["rev-parse", "HEAD"]).expect("rev-parse").stdout,
+        )
+        .trim()
+        .to_string();
+
+        assert!(
+            deleted_between(&peer, &main, &feat).is_empty(),
+            "a fast-forward that only adds files must warn about nothing"
+        );
+
+        let mut back = deleted_between(&peer, &feat, &main);
+        back.sort();
+        assert_eq!(back, vec!["keep.txt".to_string(), "new.txt".to_string()]);
+
+        // An unmoved HEAD (the op failed, or was a ref-only update on a branch that is
+        // not checked out) is not a deletion of anything.
+        assert!(deleted_between(&peer, &feat, &feat).is_empty());
+    }
+
     /// The blocked `merge --ff-only` and its stderr, against a real git.
     fn try_ff(peer: &Peer, sha: &str) -> (bool, String) {
         let o = peer.run(&["merge", "--ff-only", sha]).expect("merge");
@@ -2962,10 +3403,17 @@ mod tests {
         assert!(!ok, "git is expected to refuse over identical untracked files");
         assert!(!parse_untracked_overwrite_paths(&stderr).is_empty());
 
-        assert!(
-            retry_ff_clearing_identical(&peer, &sha, &stderr, &HashSet::new()),
-            "identical untracked files must be cleared and the ff retried"
-        );
+        // #28q: the retry reports WHICH files it deleted to get here, so the caller can
+        // warn about them — a `git diff` never could, they were never tracked.
+        let retry = retry_ff_clearing_identical(&peer, &sha, &stderr, &HashSet::new());
+        let FfRetry::Cleared(cleared) = &retry else {
+            panic!("identical untracked files must be cleared and the ff retried");
+        };
+        // Both collisions are named — the warning the caller files must not under-report
+        // what it deleted just because the ff put identical bytes straight back.
+        let mut named = cleared.clone();
+        named.sort();
+        assert_eq!(named, vec!["keep.txt".to_string(), "new.txt".to_string()]);
         // The fast-forward landed, and the files are now TRACKED at the incoming content.
         let head = probe(&peer);
         assert_eq!(
@@ -2997,7 +3445,10 @@ mod tests {
         let (ok, stderr) = try_ff(&peer, &sha);
         assert!(!ok);
         assert!(
-            !retry_ff_clearing_identical(&peer, &sha, &stderr, &HashSet::new()),
+            matches!(
+                retry_ff_clearing_identical(&peer, &sha, &stderr, &HashSet::new()),
+                FfRetry::Refused
+            ),
             "one differing file must abort the whole retry"
         );
         // All-or-nothing: nothing was deleted — not even the identical one — and the
@@ -3041,8 +3492,14 @@ mod tests {
         let (ok, stderr) = try_ff(&peer, &sha);
         assert!(!ok);
         let residue: HashSet<String> = ["keep.txt".to_string()].into_iter().collect();
+        // Cleared *and named*: `keep.txt`'s old copy is the one thing this retry destroys
+        // that the ff does not put back byte-for-byte, which is what the caller warns
+        // about (#28q).
         assert!(
-            retry_ff_clearing_identical(&peer, &sha, &stderr, &residue),
+            matches!(
+                retry_ff_clearing_identical(&peer, &sha, &stderr, &residue),
+                FfRetry::Cleared(ref cleared) if cleared.contains(&"keep.txt".to_string())
+            ),
             "a file named as proven stale residue must be cleared even though it differs"
         );
         assert_eq!(
@@ -3056,68 +3513,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_residue_recognizes_an_untouched_byte_synced_copy_only() {
-        // #28p case #12: `f.txt` was byte-synced to the local mirror while still
-        // untracked (the manifest recorded that base); nothing has touched the mirror
-        // file since. That base matching the current stat is exactly the proof
-        // `stale_byte_sync_residue` looks for — `other.txt` has no manifest entry at
-        // all, so it proves nothing and must never be treated as safe.
-        let project_id = format!("case12-test-{}-{}", std::process::id(), line!());
+    async fn stale_residue_recognizes_content_already_known_to_git() {
+        // #28p D10: `f.txt` sits on the dest, untracked, holding content that WAS once
+        // committed there (a prior commit, later untracked — the shape a byte-synced
+        // leftover takes once lockstep starts owning the path). `g.txt` holds content
+        // that has never been part of any commit — real, never-synced work — and must
+        // never be treated as safe even though the manifest also has an entry for it.
+        // `h.txt` holds git-known content too, but carries NO manifest entry, so the
+        // scope gate must exclude it regardless of what its content proves.
+        if !git_available() {
+            eprintln!("git not on PATH — skipping stale_residue_recognizes_content_already_known_to_git");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let git = |args: &[&str]| {
+            crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git")
+        };
+        git(&["init", "-q", "."]);
+        git(&["config", "user.email", "t@e"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("f.txt"), b"old committed content\n").unwrap();
+        std::fs::write(dir.join("h.txt"), b"old committed content\n").unwrap();
+        git(&["add", "f.txt", "h.txt"]);
+        git(&["commit", "-qm", "add"]);
+        // Untrack both, then leave f.txt/h.txt holding that SAME (git-known) content,
+        // and g.txt holding content nothing has ever recorded.
+        git(&["rm", "-q", "--cached", "f.txt", "h.txt"]);
+        git(&["commit", "-qm", "untrack"]);
+        std::fs::write(dir.join("g.txt"), b"totally new, never committed\n").unwrap();
+
+        let project_id = format!("d10-test-{}-{}", std::process::id(), line!());
         let manifest = remote_sync::new_manifest_state();
-        let local_path = mirror_local_path(&project_id, "f.txt");
-        std::fs::create_dir_all(local_path.parent().unwrap()).unwrap();
-        std::fs::write(&local_path, b"old byte-synced content\n").unwrap();
-        let stat = remote_sync::local_size_mtime(std::fs::metadata(&local_path).ok());
         {
             let mut g = manifest.lock().await;
             let m = remote_sync::ensure_loaded(&mut g, &project_id);
-            m.insert(
-                "f.txt".to_string(),
-                remote_sync::SyncEntry {
-                    selected: true,
-                    local_size: stat.0,
-                    local_mtime: stat.1,
-                    ..Default::default()
-                },
-            );
+            m.insert("f.txt".to_string(), remote_sync::SyncEntry::default());
+            m.insert("g.txt".to_string(), remote_sync::SyncEntry::default());
+            // h.txt deliberately has no manifest entry.
         }
 
-        let spec = RemoteSpec {
-            user: None,
-            host: "unused".into(),
-            port: None,
-            remote_path: "/unused".into(),
-            openvpn: None,
-            auto_connect: None,
-            key_auth: None,
-            extra: HashMap::new(),
-        };
-        let pool = crate::services::remote::new_pool();
-        let paths = vec!["f.txt".to_string(), "other.txt".to_string()];
-        let residue =
-            stale_byte_sync_residue(&pool, &manifest, &project_id, &spec, false, &paths).await;
+        let peer = Peer::Local(dir.to_path_buf());
+        let paths = vec!["f.txt".to_string(), "g.txt".to_string(), "h.txt".to_string()];
+        let residue = stale_byte_sync_residue(&manifest, &project_id, &peer, &paths).await;
         assert!(
             residue.contains("f.txt"),
-            "an untouched byte-synced base must be recognized as safe residue"
+            "content matching a git-known blob must be recognized as safe residue"
         );
         assert!(
-            !residue.contains("other.txt"),
-            "a path with no manifest entry proves nothing and must not be cleared"
+            !residue.contains("g.txt"),
+            "content nothing has ever recorded must never be treated as safe to delete, \
+             manifest entry or not"
+        );
+        assert!(
+            !residue.contains("h.txt"),
+            "a path outside the manifest's scope must be excluded regardless of content"
         );
 
         forget_synced_paths(&manifest, &project_id, &paths).await;
         {
             let mut g = manifest.lock().await;
             let m = remote_sync::ensure_loaded(&mut g, &project_id);
-            assert!(
-                m.get("f.txt").is_none(),
-                "the base must be dropped once lockstep owns the path"
-            );
+            assert!(m.is_empty(), "the bases must be dropped once lockstep owns the paths");
         }
 
-        let _ = std::fs::remove_dir_all(
-            remote_sync::mirror_dir(&project_id).parent().unwrap(),
-        );
+        if let Some(parent) = remote_sync::manifest_path(&project_id).parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
     }
 
     // ── #28p D3: pairing collisions + symmetric probe-error refusal ──────────
@@ -3548,6 +4014,110 @@ mod tests {
         // A forced pass RESOLVES the divergence, so it clears rather than parks.
         assert_eq!(peer_ref_op(RefAction::Diverged, true), PeerRefOp::Delete);
         assert_eq!(peer_ref_name("feature/x"), "refs/eldrun/peer/feature/x");
+    }
+
+    // ── #28p D9: force-reset collisions ──────────────────────────────────────
+
+    /// A fresh repo at `dir` with one commit tracking `path` = `content`. Returns the
+    /// commit sha.
+    fn init_repo_with_file(dir: &Path, path: &str, content: &[u8]) -> String {
+        let git = |args: &[&str]| {
+            crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git")
+        };
+        git(&["init", "-q", "."]);
+        git(&["config", "user.email", "t@e"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.join(path), content).unwrap();
+        git(&["add", path]);
+        git(&["commit", "-qm", "add"]);
+        String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn reset_collisions_flags_only_the_differing_source_tracked_path() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping reset_collisions_flags_only_the_differing_source_tracked_path");
+            return;
+        }
+        let src_tmp = tempfile::tempdir().expect("tempdir");
+        let sha = init_repo_with_file(src_tmp.path(), "keep.txt", b"committed content\n");
+        let source = Peer::Local(src_tmp.path().to_path_buf());
+
+        let dst_tmp = tempfile::tempdir().expect("tempdir");
+        let dst = dst_tmp.path();
+        crate::paths::command_no_window("git")
+            .args(["init", "-q", "."])
+            .current_dir(dst)
+            .output()
+            .expect("git init");
+        // Differs from what the target sha tracks → at risk.
+        std::fs::write(dst.join("keep.txt"), b"MY UNSAVED WORK\n").unwrap();
+        // Untracked but not something the source's tree even mentions → never at risk.
+        std::fs::write(dst.join("other.txt"), b"unrelated\n").unwrap();
+        let dest = Peer::Local(dst.to_path_buf());
+
+        assert_eq!(reset_collisions(&source, &dest, &sha), vec!["keep.txt"]);
+    }
+
+    #[test]
+    fn reset_collisions_allows_byte_identical_untracked_files() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping reset_collisions_allows_byte_identical_untracked_files");
+            return;
+        }
+        let src_tmp = tempfile::tempdir().expect("tempdir");
+        let sha = init_repo_with_file(src_tmp.path(), "keep.txt", b"committed content\n");
+        let source = Peer::Local(src_tmp.path().to_path_buf());
+
+        let dst_tmp = tempfile::tempdir().expect("tempdir");
+        let dst = dst_tmp.path();
+        crate::paths::command_no_window("git")
+            .args(["init", "-q", "."])
+            .current_dir(dst)
+            .output()
+            .expect("git init");
+        std::fs::write(dst.join("keep.txt"), b"committed content\n").unwrap();
+        let dest = Peer::Local(dst.to_path_buf());
+
+        assert!(
+            reset_collisions(&source, &dest, &sha).is_empty(),
+            "byte-identical untracked content is a no-op for reset --hard, not a collision"
+        );
+    }
+
+    #[test]
+    fn reset_collisions_within_a_single_peer_detects_the_restore_backup_case() {
+        // `restore_backup` calls this with source_peer == dest_peer: the backup ref
+        // and the untracked collision live on the same repo.
+        if !git_available() {
+            eprintln!("git not on PATH — skipping reset_collisions_within_a_single_peer_detects_the_restore_backup_case");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let backup_sha = init_repo_with_file(dir, "secret.env", b"old committed secret\n");
+        let git = |args: &[&str]| {
+            crate::paths::command_no_window("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git")
+        };
+        // A later commit untracks the path (the shape restoring an OLDER backup onto
+        // a repo that has since moved on produces), then the now-untracked file is
+        // edited — real, never-committed work sitting where the backup would land it.
+        git(&["rm", "-q", "--cached", "secret.env"]);
+        git(&["commit", "-qm", "untrack secret"]);
+        std::fs::write(dir.join("secret.env"), b"NEW LOCAL WORK\n").unwrap();
+
+        let peer = Peer::Local(dir.to_path_buf());
+        assert_eq!(reset_collisions(&peer, &peer, &backup_sha), vec!["secret.env"]);
     }
 
     #[test]

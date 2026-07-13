@@ -69,6 +69,16 @@ type DeleteConfirm = { entries: FileEntry[] } | null;
  *  clipboard or a system-clipboard image (screenshot); `name` is the name being
  *  chosen for the pasted result in the current folder. */
 type PastePrompt = { kind: "file" | "image"; name: string; error: string | null };
+/** A folder whose auto-sync toggle would pull enough from the host to be worth
+ *  confirming first (`AUTO_SYNC_WARN_*`), with what it priced. */
+type AutoConfirm = { entry: FileEntry; files: number; bytes: number } | null;
+
+/** Auto-syncing a host folder bigger than either of these asks first. They are
+ *  "would you notice this landing on your disk?" thresholds, not limits — the
+ *  point is that byte-sync ignores `.gitignore`, so a folder full of experiment
+ *  output looks exactly like a folder full of code to it. */
+const AUTO_SYNC_WARN_FILES = 200;
+const AUTO_SYNC_WARN_BYTES = 100 * 1024 * 1024;
 
 export const STATUS_COLOR: Record<string, string> = {
   modified:  "#f85149", // red – tracked, unstaged working-tree change
@@ -212,6 +222,7 @@ export function FileTree({
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   useClampToViewport(contextMenuRef, contextMenu, setContextMenu);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
+  const [autoConfirm, setAutoConfirm] = useState<AutoConfirm>(null);
   const [defaultAppFor, setDefaultAppFor] = useState<FileEntry | null>(null);
   const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
   const [pasteBusy, setPasteBusy] = useState(false);
@@ -275,6 +286,7 @@ export function FileTree({
   const syncFileMeta = useSyncStore((s) => s.fileMeta);
   const syncMarkSelected = useSyncStore((s) => s.markSelected);
   const syncSetAuto = useSyncStore((s) => s.setAuto);
+  const syncAutoPreview = useSyncStore((s) => s.autoPreview);
   // A remote project's `list_dir`/`git_file_statuses` dispatch over SSH/SFTP on
   // the backend. Those are SYNCHRONOUS Tauri commands (they run on the main
   // thread), so calling them while the pooled connection is down blocks on the
@@ -416,6 +428,18 @@ export function FileTree({
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries]);
+
+  // Total bytes contained in each section, kept separate rather than merged
+  // into one figure — the point of splitting scaffold/gitignored out visually
+  // is that their weight (e.g. a huge gitignored build dir) shouldn't hide
+  // inside the "real" content total. Sums whatever `dirSizes`/`e.size` already
+  // know; unresolved subfolder sizes count as 0 until their `dir_size` call
+  // lands, same best-effort as the per-row display above.
+  const groupSizes = useMemo(() => {
+    const total = (list: FileEntry[]) =>
+      list.reduce((sum, e) => sum + (e.is_dir ? (dirSizes[e.path] ?? 0) : e.size), 0);
+    return { regular: total(sections.regular), standard: total(sections.standard), gitignored: total(sections.gitignored) };
+  }, [sections, dirSizes]);
 
   const isEmbeddable = (e: FileEntry): boolean =>
     !e.is_dir && embedByExt[e.extension ?? ""] === true;
@@ -1129,9 +1153,34 @@ export function FileTree({
   // Auto-sync: toggle background bidirectional sync for a file or (recursively) a
   // folder. Turning it on implies tracking; the backend engine reconciles it on
   // its next pass, skipping anything diverged (orange).
+  //
+  // Turning it ON over a FOLDER is the one click in the app that can start hauling
+  // a host tree down in bulk, and byte-sync does not read `.gitignore` — so a
+  // deliberately host-side directory (experiment output, checkpoints) is not
+  // protected by being gitignored the way it is from lockstep. Price it first and
+  // make the user confirm when the answer is big; small folders just proceed.
   async function toggleAutoSyncEntry(entry: FileEntry, on: boolean) {
     setContextMenu(null);
     if (!projectId) return;
+    if (on && entry.is_dir && isRemote) {
+      try {
+        const preview = await syncAutoPreview(projectId, relForEntry(entry));
+        if (preview.files > AUTO_SYNC_WARN_FILES || preview.bytes > AUTO_SYNC_WARN_BYTES) {
+          setAutoConfirm({ entry, ...preview });
+          return;
+        }
+      } catch {
+        // Preview is advisory (a cold pool, an unreadable dir). Failing to price
+        // the pull must not block the toggle the user explicitly asked for.
+      }
+    }
+    await applyAutoSync(entry, on);
+  }
+
+  // The write half of the toggle, shared by the direct path and the confirm modal.
+  async function applyAutoSync(entry: FileEntry, on: boolean) {
+    if (!projectId) return;
+    setAutoConfirm(null);
     try {
       await syncSetAuto(projectId, [relForEntry(entry)], on, entry.is_dir);
     } catch (err) {
@@ -1624,6 +1673,9 @@ export function FileTree({
               </React.Fragment>
             );
           })}
+          <span className="file-tree-path-total" title="Total size of the files shown here">
+            {fmtSize(groupSizes.regular)}
+          </span>
         </div>
         );
       })()}
@@ -1633,6 +1685,9 @@ export function FileTree({
         <label className="file-tree-scaffold-toggle">
           <Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
           Separate scaffold
+          <span className="file-tree-path-total" title="Total size of the files shown here">
+            {fmtSize(groupSizes.regular)}
+          </span>
         </label>
       )}
       {(() => {
@@ -1798,6 +1853,9 @@ export function FileTree({
                 >
                   <span className="file-tree-hidden-caret">{scaffoldExpanded ? "▾" : "▸"}</span>
                   scaffold ({standard.length})
+                  <span className="file-tree-path-total" title="Total size of the scaffold group">
+                    {fmtSize(groupSizes.standard)}
+                  </span>
                 </button>
                 {scaffoldExpanded && standard.map((e) => renderEntry(e, true))}
               </>
@@ -1817,6 +1875,9 @@ export function FileTree({
                 >
                   <span className="file-tree-hidden-caret">{gitignoredExpanded ? "▾" : "▸"}</span>
                   gitignored ({gitignored.length})
+                  <span className="file-tree-path-total" title="Total size of the gitignored group">
+                    {fmtSize(groupSizes.gitignored)}
+                  </span>
                 </button>
                 {gitignoredExpanded && gitignored.map((e) => renderEntry(e, false, true))}
               </>
@@ -2039,6 +2100,35 @@ export function FileTree({
             <div className="file-delete-actions">
               <button type="button" onClick={() => setDeleteConfirm(null)}>Cancel</button>
               <button type="button" className="danger" onClick={confirmDelete}>Delete</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+      {autoConfirm && createPortal(
+        <div className="modal-backdrop" onMouseDown={() => setAutoConfirm(null)}>
+          <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
+            <h2>Auto-sync this folder?</h2>
+            <p>
+              Auto-syncing <strong>{autoConfirm.entry.name}</strong> will pull{" "}
+              <strong>{autoConfirm.files.toLocaleString()} files</strong> (
+              {fmtSize(autoConfirm.bytes)}) from the host into the local mirror, and
+              keep pulling as it changes.
+            </p>
+            <p>
+              Auto-sync copies bytes and <strong>does not read .gitignore</strong>, so
+              files kept on the host on purpose — experiment output, checkpoints, data
+              — are synced like any other.
+            </p>
+            <div className="file-delete-path">{relForEntry(autoConfirm.entry)}</div>
+            <div className="file-delete-actions">
+              <button type="button" onClick={() => setAutoConfirm(null)}>Cancel</button>
+              <button
+                type="button"
+                onClick={() => applyAutoSync(autoConfirm.entry, true)}
+              >
+                Auto-sync anyway
+              </button>
             </div>
           </div>
         </div>,

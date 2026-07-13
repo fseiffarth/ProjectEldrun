@@ -19,6 +19,7 @@ import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
+import { LocalLossDialog } from "../common/LocalLossDialog";
 import { QuickOpen } from "../files/QuickOpen";
 import { HintHost } from "./HintHost";
 import { TourHost } from "./TourHost";
@@ -592,6 +593,10 @@ export function AppShell() {
       </div>
       <VpnPasswordPrompt />
       <RemoteConnectDialog />
+      {/* Same reason as the alarm below: lockstep/sync can delete a file from the local
+          mirror during a background pass, and the user must hear about it wherever they
+          are — including when the file panel it happened in is closed (#28q). */}
+      <LocalLossDialog />
       {/* Calendar reminders live at the shell, not in the calendar pane: an alarm
           must reach the user whatever tab they are on — and even if they have
           never opened a calendar tab this session. */}

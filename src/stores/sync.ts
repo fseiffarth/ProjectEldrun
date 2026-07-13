@@ -60,6 +60,14 @@ export interface SyncFileMeta {
   base_mtime: number | null;
 }
 
+/** Size of the host subtree an auto-sync toggle would put in scope
+ *  (`sync_auto_preview`). Byte-sync ignores `.gitignore`, so this is what stands
+ *  between a right-click and a multi-GB experiment tree landing in the mirror. */
+export interface AutoSyncPreview {
+  files: number;
+  bytes: number;
+}
+
 /** Live transfer progress for a project (null when idle). */
 export interface SyncProgressState {
   rel: string;
@@ -110,6 +118,9 @@ interface SyncStore {
     auto: boolean,
     isDir: boolean,
   ) => Promise<void>;
+  /** What auto-syncing `relPath` would start pulling from the host. Read-only —
+   *  the caller confirms a large answer before committing to `setAuto`. */
+  autoPreview: (projectId: string, relPath: string) => Promise<AutoSyncPreview>;
 }
 
 function indexStatus(rows: SyncStatusEntry[]): Record<string, SyncEntryStatus> {
@@ -199,6 +210,9 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     await invoke("sync_set_auto", { projectId, relPaths, auto, isDir });
     await get().refreshStatus(projectId);
   },
+
+  autoPreview: async (projectId, relPath) =>
+    invoke<AutoSyncPreview>("sync_auto_preview", { projectId, relPath }),
 }));
 
 /** Payload of the backend `auto-sync` event (one per reconcile pass that moved

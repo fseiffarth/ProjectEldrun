@@ -1429,7 +1429,7 @@ export function RightPanel({
         </div>
       )}
       {showSettings && activeProject && localFile && createPortal(
-        <div className="modal-backdrop settings-backdrop" onMouseDown={() => setShowSettings(false)}>
+        <div className="modal-backdrop how-to-start-backdrop" onMouseDown={() => setShowSettings(false)}>
           <div className="settings-dialog project-settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
             <div className="settings-title-row">
               <h2>Project Settings</h2>

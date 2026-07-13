@@ -527,6 +527,10 @@ pub fn run() {
             // persist. Off-thread so file I/O never blocks startup; additive and
             // idempotent, so a race with the frontend's first load is benign.
             std::thread::spawn(commands::projects::migrate_legacy_projects);
+            // Remove project containers a previous run left behind (a crash
+            // skips the exit teardown) and the staged config copies. Off-thread:
+            // docker may be slow or absent, and neither may block startup.
+            std::thread::spawn(services::sandbox::sweep_orphans);
             // Start the background per-project SSH-link traffic sampler so each
             // remote project's daily/monthly/overall usage accrues even when its
             // Network Traffic tab is closed (see services::net_usage). No-op on
@@ -565,6 +569,8 @@ pub fn run() {
             commands::projects::set_project_description,
             commands::projects::set_project_name,
             commands::projects::set_project_sandbox,
+            commands::projects::set_project_sandbox_spec,
+            commands::projects::sandbox_preflight,
             commands::projects::set_project_openvpn,
             commands::projects::set_project_auto_connect,
             commands::projects::set_project_categories,
@@ -647,6 +653,7 @@ pub fn run() {
             commands::sync::sync_push,
             commands::sync::sync_mark_selected,
             commands::sync::sync_set_auto,
+            commands::sync::sync_auto_preview,
             commands::sync::sync_status,
             commands::sync::sync_file_meta,
             commands::sync::sync_diff,
@@ -788,6 +795,9 @@ pub fn run() {
             commands::git_peer::git_peer_backups,
             commands::git_peer::git_peer_restore_backup,
             commands::git_peer::git_peer_mirror_dir,
+            // Local-loss warnings (#28q): what lockstep/sync destroyed in the mirror.
+            commands::local_loss::local_loss_list,
+            commands::local_loss::local_loss_ack,
             commands::git::git_diff_file,
             commands::git::git_blame,
             commands::git::git_file_log,
@@ -858,6 +868,9 @@ pub fn run() {
                 // Tear down any OpenVPN tunnels brought up for VPN-gated
                 // remote projects so no privileged tunnel outlives the app.
                 services::openvpn::disconnect_all();
+                // Remove every project container this run created — container
+                // lifetime is the project session, never longer than the app.
+                services::sandbox::down_all();
                 // Tear down pooled SSH/SFTP connections so no ssh ControlMaster
                 // child (and the master socket it owns) outlives Eldrun.
                 use tauri::Manager;

@@ -9,6 +9,7 @@ import {
   type GitProvider,
   type ProjectEntry,
   type RemoteSpec,
+  type SandboxSpec,
   type SshProbe,
 } from "../types";
 import {
@@ -455,6 +456,10 @@ interface ProjectsStore {
    * which is a disconnected remote project (user reconnects via the pill lamp). */
   extendProjectToRemote: (id: string, remote: RemoteSpec) => Promise<void>;
   setProjectSandbox: (id: string, enabled: boolean) => Promise<void>;
+  /** Replace a project's container spec (the Container settings dialog's save).
+   *  Backend normalizes blank fields away and stores it in both projects.json
+   *  and project.json; the stored spec is mirrored into local state. */
+  setProjectSandboxSpec: (id: string, spec: SandboxSpec) => Promise<void>;
   /** Opt a remote project in/out of auto-connect (connect it silently on launch
    *  and activation). Only offered once the connect can complete with no prompt —
    *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
@@ -883,15 +888,26 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   },
 
   setProjectSandbox: async (id, enabled) => {
-    // Backend writes projects.json + project.json and returns the resulting
-    // enabled state; mirror it into local state so the pill toggle and the
-    // spawn-time gate (CenterPanel) see it immediately.
-    const result = await invoke<boolean>("set_project_sandbox", { projectId: id, enabled });
+    // Backend flips `enabled` on the stored spec (preserving hand-tuned
+    // image/network/… fields, auto-detecting in-repo sources on first enable)
+    // and returns the resulting spec; mirror it into local state so the pill
+    // toggle and the spawn-time gate (CenterPanel) see it immediately.
+    const spec = await invoke<SandboxSpec>("set_project_sandbox", { projectId: id, enabled });
     set((state) => ({
       projects: state.projects.map((project) =>
-        project.id === id
-          ? { ...project, sandbox: result ? { enabled: true } : undefined }
-          : project,
+        project.id === id ? { ...project, sandbox: spec } : project,
+      ),
+    }));
+  },
+
+  setProjectSandboxSpec: async (id, spec) => {
+    const saved = await invoke<SandboxSpec>("set_project_sandbox_spec", {
+      projectId: id,
+      spec,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id ? { ...project, sandbox: saved } : project,
       ),
     }));
   },

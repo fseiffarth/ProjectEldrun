@@ -2,17 +2,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import {
   resolveProjectDirectory,
   type GitHostingInfo,
   type GitProvider,
   type ProjectEntry,
+  type SandboxSpec,
 } from "../../types";
 import { useTimerStore } from "../../stores/timer";
 import { useActivityStore, type TabStatusCounts } from "../../stores/activity";
 import { useProjectsStore } from "../../stores/projects";
-import { useTabsStore } from "../../stores/tabs";
+import { isResumableAgentTab, useTabsStore } from "../../stores/tabs";
+import { IS_WINDOWS } from "../../lib/platform";
+import { runInstallInTab } from "../../lib/installCommand";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
 import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
@@ -646,6 +649,160 @@ function DetachRemoteWindow({
 
 /** Simple confirm for unpublishing (forgetting the push target). Non-destructive:
  *  the hosted repo and local history are both kept. */
+/**
+ * Edit a project's container spec — image/Dockerfile source, network, resource
+ * caps, read-only rootfs (#38). The knobs existed in `SandboxSpec` before but
+ * were hand-edit-only; the spec-preserving toggle is what makes exposing them
+ * safe. Saving only stores the spec: the container itself is replaced lazily —
+ * the spec fingerprint changes, so the next `up` (project activation or tab
+ * spawn) recreates it. The `enabled` flag is owned by the menu toggle and
+ * passed through unchanged.
+ */
+function ContainerSettingsWindow({
+  project,
+  onClose,
+}: {
+  project: ProjectEntry;
+  onClose: () => void;
+}) {
+  const setProjectSandboxSpec = useProjectsStore((s) => s.setProjectSandboxSpec);
+  const spec = project.sandbox;
+  const [dockerfile, setDockerfile] = useState(spec?.dockerfile ?? "");
+  const [image, setImage] = useState(spec?.image ?? "");
+  const [network, setNetwork] = useState(spec?.network ?? "");
+  const [memory, setMemory] = useState(spec?.memory ?? "");
+  const [cpus, setCpus] = useState(spec?.cpus ?? "");
+  const [pids, setPids] = useState(spec?.pids_limit ? String(spec.pids_limit) : "");
+  const [readonly, setReadonly] = useState(spec?.readonly_rootfs ?? false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async () => {
+    if (busy) return;
+    const pidsNum = pids.trim() ? Number(pids.trim()) : undefined;
+    if (pidsNum !== undefined && (!Number.isInteger(pidsNum) || pidsNum <= 0)) {
+      setError("Process limit must be a positive whole number.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    const next: SandboxSpec = {
+      enabled: spec?.enabled ?? false,
+      dockerfile: dockerfile.trim() || undefined,
+      image: image.trim() || undefined,
+      network: network.trim() || undefined,
+      memory: memory.trim() || undefined,
+      cpus: cpus.trim() || undefined,
+      pids_limit: pidsNum,
+      readonly_rootfs: readonly,
+    };
+    try {
+      await setProjectSandboxSpec(project.id, next);
+      onClose();
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{project.name} — Container settings</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <p className="settings-help">
+          Applied at the next container start (project activation or tab spawn) —
+          a running container whose settings changed is replaced automatically.
+        </p>
+        <label>
+          Build from a Dockerfile in this project
+          <input
+            type="text"
+            value={dockerfile}
+            placeholder="e.g. Dockerfile — empty: use the image below"
+            onChange={(e) => setDockerfile(e.target.value)}
+            spellCheck={false}
+          />
+        </label>
+        <label>
+          Image
+          <input
+            type="text"
+            value={image}
+            placeholder="empty: eldrun-agent-sandbox:latest"
+            onChange={(e) => setImage(e.target.value)}
+            spellCheck={false}
+            disabled={Boolean(dockerfile.trim())}
+          />
+        </label>
+        <label>
+          Network
+          <input
+            type="text"
+            value={network}
+            placeholder={'empty: docker bridge — "none" blocks all egress (breaks cloud agents)'}
+            onChange={(e) => setNetwork(e.target.value)}
+            spellCheck={false}
+          />
+        </label>
+        <p className="settings-help">
+          Note: the default bridge still reaches services bound on this machine
+          (Ollama, dev servers) via the docker gateway IP. Fully closed means
+          <code> none</code> or a custom allowlist network.
+        </p>
+        <label>
+          Memory cap
+          <input
+            type="text"
+            value={memory}
+            placeholder="e.g. 4g — empty: unlimited"
+            onChange={(e) => setMemory(e.target.value)}
+            spellCheck={false}
+          />
+        </label>
+        <label>
+          CPU cap
+          <input
+            type="text"
+            value={cpus}
+            placeholder="e.g. 2 — empty: unlimited"
+            onChange={(e) => setCpus(e.target.value)}
+            spellCheck={false}
+          />
+        </label>
+        <label>
+          Process limit
+          <input
+            type="text"
+            value={pids}
+            placeholder="empty: 1024 (fork-bomb guard)"
+            onChange={(e) => setPids(e.target.value)}
+            spellCheck={false}
+          />
+        </label>
+        <label className="container-settings-toggle">
+          <span>Read-only root filesystem (keeps a writable /tmp)</span>
+          <Toggle
+            checked={readonly}
+            onChange={(e) => setReadonly(e.target.checked)}
+            size="sm"
+          />
+        </label>
+        {error && <div className="project-dialog-error">{error}</div>}
+        <div className="project-dialog-actions">
+          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" onClick={() => void save()} disabled={busy}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function UnpublishWindow({
   project,
   onConfirm,
@@ -906,6 +1063,53 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const renameProject = useProjectsStore((s) => s.renameProject);
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
+  const [showContainerSettings, setShowContainerSettings] = useState(false);
+
+  // Flip the project-container toggle. The flag is in every TerminalView's
+  // spawn deps, so flipping respawns each live tab of this project —
+  // Claude/Codex resume across the respawn, but a live NON-resumable agent
+  // (Gemini/Vibe/…) would lose its conversation: confirm before destroying it
+  // (the same hazard class tabs/agentModes.ts exists for). On enable, run the
+  // docker preflight right away so a missing image becomes a one-click build
+  // running in a fresh terminal tab (house convention — never a
+  // copy-it-yourself message) instead of an error at the next tab spawn.
+  const toggleContainer = useCallback(async () => {
+    const enabling = !project.sandbox?.enabled;
+    const tabs = useTabsStore.getState().tabsByScope[project.id] ?? [];
+    const doomed = tabs.filter((t) => t.kind === "agent" && !isResumableAgentTab(t));
+    if (doomed.length > 0) {
+      const names = [...new Set(doomed.map((t) => t.cmd))].join(", ");
+      const ok = await confirm(
+        `Turning the container ${enabling ? "on" : "off"} restarts every tab of this project. ` +
+          `${doomed.length} agent tab${doomed.length > 1 ? "s" : ""} (${names}) cannot resume ` +
+          `and will lose the conversation. Continue?`,
+        { title: "Restart this project's tabs?", kind: "warning" },
+      );
+      if (!ok) return;
+    }
+    await setProjectSandbox(project.id, enabling);
+    if (!enabling) return;
+    try {
+      const pf = await invoke<{ status: string; image: string; build_command: string | null }>(
+        "sandbox_preflight",
+        { projectId: project.id },
+      );
+      if (pf.status === "image_missing" && pf.build_command) {
+        runInstallInTab(`container image ${pf.image}`, pf.build_command, "bash");
+      } else if (pf.status === "daemon_down") {
+        useProjectsStore.setState({
+          switchToast: "Docker isn't running — start it before opening tabs in this project",
+        });
+      } else if (pf.status === "no_docker") {
+        useProjectsStore.setState({
+          switchToast: "Docker isn't installed — the container toggle needs it",
+        });
+      }
+    } catch {
+      // Preflight is advisory; a real problem still surfaces in the next tab spawn.
+    }
+  }, [project.id, project.sandbox?.enabled, setProjectSandbox]);
+
   const setProjectAutoConnect = useProjectsStore((s) => s.setProjectAutoConnect);
   // Auto-connect is only offered when the connect can complete with no prompt: a
   // key/agent-auth host (recorded by the backend on its last successful connect) or
@@ -1215,16 +1419,30 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           {/* Runtime */}
           <div className="context-menu-group">
             <div className="context-menu-group-label">Runtime</div>
-            {!project.remote && (
-              <button
-                onClick={() => {
-                  setContextMenu(null);
-                  void setProjectSandbox(project.id, !project.sandbox?.enabled);
-                }}
-                title="Run this project's agent tabs inside a Docker container that mounts only the project directory"
-              >
-                {project.sandbox?.enabled ? "✓ " : ""}Run agents in Docker sandbox
-              </button>
+            {/* Project container (#38): local projects only (a remote project's
+                tabs already run on its host), hidden on Windows (the backend
+                refuses — host paths mean nothing inside a Linux container). */}
+            {!project.remote && !IS_WINDOWS && (
+              <>
+                <button
+                  onClick={() => {
+                    setContextMenu(null);
+                    void toggleContainer();
+                  }}
+                  title="Run every terminal and agent tab of this project inside one closed Docker container. The project folder stays on the host at its normal path — the container just can't reach anything else."
+                >
+                  {project.sandbox?.enabled ? "✓ " : ""}Run this project in a container
+                </button>
+                <button
+                  onClick={() => {
+                    setContextMenu(null);
+                    setShowContainerSettings(true);
+                  }}
+                  title="Image, network, memory/CPU caps and read-only rootfs for this project's container"
+                >
+                  Container settings…
+                </button>
+              </>
             )}
             {project.remote && (
               <button
@@ -1340,6 +1558,14 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
       {/* Category-tag editor */}
       {editCategories && (
         <CategoryEditor project={project} onClose={() => setEditCategories(false)} />
+      )}
+
+      {/* Project-container spec knobs (image, network, resource caps) */}
+      {showContainerSettings && (
+        <ContainerSettingsWindow
+          project={project}
+          onClose={() => setShowContainerSettings(false)}
+        />
       )}
 
       {/* Extend a local project to remote (attach an SSH host) */}
