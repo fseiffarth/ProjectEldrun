@@ -265,11 +265,15 @@ container) — as opposed to the git **push** axis (#21/#22).*
         parser (`\040`); `wait_for_ready` timeout with no output; mount
         double-spawn; `shell_quote` round-trip incl. NUL/newline.
       - **Refactor / future ideas.**
-        - [ ] **Factor a target-agnostic spawn-rewrite layer before Docker
-          (#38).** `ssh_exec::wrap_pty_options` hardcodes mount-path detection,
-          `AGENT_AUTH_ENV`, `shell_quote`, the `-lc` login wrap, and the
-          `remote_agents` bootstrap; #38 would duplicate all of it. Extract a
-          trait ("PtyOptions + target descriptor → rewritten argv") with SSH and
+        - [ ] **Factor a target-agnostic spawn-rewrite layer (only load-bearing
+          at #38f, remote Docker).** `ssh_exec::wrap_pty_options` hardcodes
+          mount-path detection, `AGENT_AUTH_ENV`, `shell_quote`, the `-lc`
+          login wrap, and the `remote_agents` bootstrap. #38's v2 shape
+          (local project containers, `services/sandbox.rs`) needs none of
+          this — `pty_spawn` keeps its plain two-way dispatch. This refactor
+          only earns its cost once #38f composes a container spawn-rewrite
+          with SSH's (`ssh … docker exec …`). Extract a trait ("PtyOptions +
+          target descriptor → rewritten argv") with SSH and
           Docker impls so the resume fix, the recipes, and Phase-2 composition
           (`ssh … docker exec …`) land once.
         - [ ] **Document the split-model consistency tradeoffs.** git/`list_dir`/
@@ -282,136 +286,92 @@ container) — as opposed to the git **push** axis (#21/#22).*
         - [ ] **Remote-status panel** (mount state, control-master liveness, VPN
           state, last error) for debuggability.
 
-38. **Run projects inside Docker containers.** Let a project be started in a
-    Docker container instead of (or in addition to) directly on the host: the
-    project's terminal/agent tabs run via `docker exec` into a container, with the
-    project directory bind-mounted as the working dir so the file tree and git
-    keep working. Mirrors the two-mechanism split the SSH axis (#28) settled on —
-    a lifecycle service `services/docker_runtime.rs` (cf. `ssh_mount.rs`) and a
-    spawn-rewrite service `services/docker_exec.rs` (cf. `ssh_exec.rs`). **Key
-    difference from #28:** the bytes are already local, so the file tree / git /
-    `list_dir` keep running against the **host** `directory` unchanged — only
-    terminal/agent **spawns** are rewritten into the container. Full plan in
-    `docs/docker_projects_plan.md`. Requires Docker/Podman locally.
+38. **Widen the Docker sandbox into a full project container.** ~~Run projects
+    inside Docker containers~~ — **superseded 2026-07-13: this is now an
+    evolution of the shipped agent sandbox (`services/sandbox.rs`), not a
+    second containerization feature.** There is exactly one such feature.
+    Full plan (v2): `docs/docker_projects_plan.md`. **Implemented 2026-07-13
+    (38a–38e; 38f stays deferred; manual/live Docker QA pending — see the
+    plan's runtime checklist).** The `DockerSpec` /
+    `docker_runtime.rs` / `docker_exec.rs` / `commands/docker.rs` design
+    below (dated 2026-06-19) is **superseded** — kept struck through for
+    history, do not implement it as written:
 
-    **Data model (both phases).** New `DockerSpec` on the project schema +
-    `projects.json` `extra` (same as `RemoteSpec`). The container source must be
-    **exactly one** of `image` / `dockerfile` / `compose_file`+`service` /
-    existing `container` — model it as a **tagged `ContainerSource` enum** (not
-    four parallel `Option`s) so illegal/empty states are unrepresentable, with a
-    `DockerSpec::source()` validator called in `up` and in create/import. Plus
-    `workdir` (default `/workspace`), `run_args`, `engine` (docker|podman), and a
-    Phase-2-only `remote: Option<RemoteSpec>`. A project is containerized iff
-    `docker` is present. `directory` stays the **host** path in Phase 1 (no
-    mountpoint indirection). Mirror in `types/index.ts`.
+    ~~Let a project be started in a Docker container instead of (or in
+    addition to) directly on the host: the project's terminal/agent tabs run
+    via `docker exec` into a container, with the project directory
+    bind-mounted as the working dir so the file tree and git keep working.
+    Mirrors the two-mechanism split the SSH axis (#28) settled on — a
+    lifecycle service `services/docker_runtime.rs` (cf. `ssh_mount.rs`) and a
+    spawn-rewrite service `services/docker_exec.rs` (cf. `ssh_exec.rs`).~~
 
-    **Review notes (2026-06-19, two-reviewer reconciliation).** The two-service
-    split is sound and `ssh_exec.rs` exists as claimed, but three "cf. SSH"
-    shortcuts do **not** carry over and are folded into the bullets below:
-    project-from-cwd resolution (no local analogue — H below), `down_all`
-    enumeration (no on-disk artifact), and the Phase-2 double-quoting. Plus a
-    container-specific security surface SSH never had (`run_args` flags,
-    bind-mount, file ownership).
+    **v2 shape.** The existing per-tab ephemeral sandbox (`SandboxSpec`,
+    `services::sandbox`) grows into a per-project, session-lived container:
+    same toggle, same `SandboxSpec` (gains `dockerfile`), same `sandbox` key
+    in `project.json`/`projects.json` `extra` — already-toggled projects
+    upgrade in place, no migration, no new schema/`DockerSpec`. Mounts stay
+    at their **identical host path** (not `/workspace` — keeps agent session
+    resume valid), so the v1 `container_workdir` translation layer, the
+    `ContainerSource` enum, `run_args`, and `engine` (podman) are all dropped
+    for v1. `services/sandbox.rs` gains the lifecycle half itself
+    (`up`/`down`/`down_all`/`sweep_orphans`, `eldrun-<project-id>` naming +
+    `eldrun.owner`/`eldrun.spec-hash` labels, mirroring `services/remote.rs`'s
+    per-project connection lifecycle) instead of a new `docker_runtime.rs`;
+    `wrap_pty_options_docker` becomes run-once-then-exec-per-tab instead of a
+    new `docker_exec.rs`; no new `commands/docker.rs`. `pty_spawn`'s existing
+    two-way dispatch (sandbox else ssh, `commands/terminal.rs:116-136`) is
+    unchanged — no third rewriter.
 
-    - [ ] **38a — Phase 1: local Docker** (container on the same host;
-      independently shippable).
-      - **Project resolution (do NOT mirror `project_id_from_cwd`).**
-        `ssh_exec::project_id_from_cwd` only works by stripping `mounts_root()`;
-        local docker keeps `directory` = host path with no embedded id, and
-        `ProjectEntry` has no `directory`. **Carry the project id (or the resolved
-        `DockerSpec`) on `PtyOptions` from the frontend at spawn time** (the tab
-        already knows its project) — avoids an O(projects) disk scan and nested-dir
-        ambiguity.
-      - `services/docker_runtime.rs` (new) — lifecycle keyed by project id,
-        `eldrun-<id>` container name convention. `engine_available`,
-        `is_running` (`docker ps` exact match), `up` as a **three-state machine**
-        (missing→`docker run -d -v <host_dir>:<workdir> -w <workdir> … sleep
-        infinity`; stopped→`docker start` (a bare `run` collides on the name);
-        running→no-op), reconciling a **stale config** via an
-        `eldrun.spec-hash=<hash>` label (recreate when the spec diverges);
-        dockerfile→`build` then run; compose→`compose up -d`; existing
-        `container`→verify only. `down`/`down_all` must **never** stop/remove the
-        pre-existing-`container` variant, and scope compose teardown to its file.
-        `down_all` **enumerates from the engine** (`docker ps -q --filter
-        name=^/eldrun-`), not from disk (no mountpoint artifact exists). Serialize
-        per-project `up` so rapid switches don't race two `--name eldrun-<id>`.
-        Argv built as `Vec<String>` for unit-testability.
-      - **Arg validation (stricter than SSH's `validate_arg`).** Keep strict
-        `validate_arg` (no leading-`-`/control chars) for `image`/`workdir`/
-        `container`/`service`; **`run_args` is a separate class** (it legitimately
-        holds flags) — denylist host-escape flags (`--privileged`,
-        `--network=host`, `--pid`/`--ipc=host`, `-v`/`--volume`, `--device`,
-        `--cap-add`, `--security-opt`, `--user`, `--entrypoint`) or gate behind an
-        explicit "advanced/unsafe" ack, and insert a `--` separator before the
-        image/command. Validate `workdir` is **absolute** and reject `/` and
-        system dirs; the bind source is the project `directory` by construction.
-      - **File ownership.** Rootful docker writes root-owned files that break the
-        host file tree/git (which run as the user) — the whole point of the
-        feature. Auto-inject `--user $(id -u):$(id -g)` for image/dockerfile on
-        rootful docker (NOT podman-rootless, whose mapping is inverse), don't
-        relegate it to a manual `run_args` escape hatch.
-      - `services/docker_exec.rs` (new) — rewrite a containerized tab's
-        `PtyOptions` to `docker exec -it -w <in_cwd> [-e K=V…] <name> <cmd…>` (or
-        login shell when cmd empty; `compose exec <service>` for compose).
-        `container_workdir` translates host cwd → in-container path (genuine
-        `remote_subdir` mirror). For the `-e` path, **re-implement** the auth-var
-        (`AGENT_AUTH_ENV`) / `TERM`/`COLORTERM` stripping `remote_command` does
-        (the SSH version exports in a shell string, not `-e` flags); decide
-        whether a local container is denied host API keys. Honor the existing
-        **`local_only`** flag verbatim and sit inside the same
-        `if !opts.local_only` guard at `commands/terminal.rs:30`, mutually
-        exclusive with ssh-wrap in Phase 1.
-      - Wiring: `project_runtime::switch` best-effort `up` on switch to a docker
-        project (precedent: `ensure_remote_mounted` at `project_runtime.rs:93`);
-        `CreateProjectRequest`/`ImportProjectRequest` gain optional `docker`;
-        `lib.rs` `RunEvent::Exit` calls `down_all()` alongside `unmount_all()`;
-        new `commands/docker.rs` (`docker_available`, `docker_list_images`,
-        `ensure_project_container`). Engine default: auto-detect docker→podman,
-        frozen per project at create time.
-      - Frontend: `ProjectSwitcher.tsx` "Run in container" dialog section as a
-        **radio** over the four sources (enforces exactly-one) + workdir/run_args/
-        engine; build a `dockerSpec` and add `docker: dockerSpec` to **both**
-        create/import `req` payloads; extend `canSubmit` (refactor the nested
-        ternary to a function) for docker validity; populate via `docker_available`
-        + `docker_list_images` with the existing `project-dialog-error` surfacing.
-        Startup `ensure_project_container` (in `stores/projects.ts::load()`,
-        fire-and-forget like the SSH path) must **only `start` an already-present
-        container — never implicitly pull/build** (minutes-long, no progress behind
-        a `void`); surface "image missing / build needed" as an actionable error
-        with an explicit Build/Pull action.
-      - *Test (e.g.):* create an image-based project → opening a terminal runs
-        inside `eldrun-<id>`, host edits show in the file tree, git works,
-        container stops on app exit.
-      - [ ] 🤖 Automated test — `docker_runtime`/`docker_exec` argv + workdir
-        translation + `run_args` denylist + exactly-one `ContainerSource` +
-        schema round-trip (no daemon needed)
-      - [ ] 🖐️ Manual test
-    - [ ] **38b — Phase 2: remote Docker** (container on an SSH host; composes
-      #28 with 38a, activated when `DockerSpec.remote` is set).
-      - Bytes: as #28 — sshfs-mount the remote dir locally (file tree/git
-        unchanged). Bind-mount source is the **remote** `remote_path` (the remote
-        daemon mounts the remote bytes directly). The in-container workdir is then
-        a **triple** translation (host cwd → sshfs mountpoint → remote_path →
-        container path) — needs its own test, not just argv shape.
-      - Runtime: spawns run `ssh -tt <host> docker exec …`. **Composition caveat:**
-        `ssh_pty_args(remote, remote_command: &str)` takes a single **string**, so
-        the whole `docker exec …` argv must be collapsed and `shell_quote`d a
-        **second** time on top of `docker_exec`'s own pass — two stacked quoting
-        layers the current single-pass tests don't cover. Do NOT also wrap in
-        `remote_command`'s `-lc '<inner>'`; build `docker exec … <name> $SHELL -lc
-        '<inner>'` once, then quote for ssh. `docker_runtime` engine calls gain an
-        `ssh_base_args` prefix when `remote` is set; `down_all` tears down known
-        remote-docker containers by **iterating the project list** (no local
-        inventory of remote containers exists).
-      - Frontend: "Run in container" becomes available after an SSH connection is
-        established (remote-browse flow from #28).
-      - *Test (e.g.):* remote host with docker → terminal execs into the remote
-        container; host file tree (over sshfs) reflects in-container edits.
-      - [ ] 🤖 Automated test — argv builders produce `ssh … docker …` /
-        `ssh -tt … exec docker exec …` when remote (assert the **double-quoting**
-        round-trips, incl. env values with `$`/quotes); triple workdir
-        translation; `DockerSpec.remote` round-trip
-      - [ ] 🖐️ Manual test
+    - [x] **38a — Phase 0: fix the shipped sandbox** (independently
+      shippable, lands first because the lifecycle rewrite touches the same
+      lines): preflight daemon-down vs image-missing misdiagnosis; toggle
+      preserves existing `SandboxSpec` fields instead of resetting to
+      default; `--init` + `eldrun.owner`/`eldrun.project` labels on every
+      container; hide/disable the toggle in the Windows UI (backend already
+      refuses, #86).
+    - [x] **38b — Phase 1: container lifecycle.** `up`/`down`/`down_all`/
+      `sweep_orphans` in `services/sandbox.rs`; three-state machine
+      (running+fingerprint-match → no-op; stopped/mismatch → recreate;
+      missing → create) keyed on a `spec_fingerprint` label; mount/hardening
+      code reused from today's per-tab path, moved to the create step;
+      staged hook-registration copies become per-project
+      (`sandbox-stage/<project-id>/`), refreshed at each `up` (fixes today's
+      per-tab stage-dir leak).
+    - [x] **38c — Phase 2: run → exec + tab-kill contract.**
+      `wrap_pty_options_docker` resolves the container via `up()` then
+      rewrites to `docker exec`; per-tab env (incl. `host_auth_env`) moves to
+      the exec step. Docker does not kill an exec'd process when the exec
+      client dies, so tab close needs an explicit kill path (pidfile wrapper
+      + `docker exec <name> kill …` on the PtyRegistry kill, containerized
+      tabs only) — required, not optional, once tabs share one long-lived
+      container.
+    - [x] **38d — Phase 3: wiring + frontend scope widen.**
+      `project_runtime::switch` calls `up`/`down` on activate/deactivate
+      (worker thread, never main — cf. the remote sync-command freeze
+      lesson); `lib.rs` exit hook calls `down_all()`, startup calls
+      `sweep_orphans()`; `CenterPanel.tsx`'s per-tab gate widens from
+      `tab.kind === "agent"` to any non-`local_only` tab of a toggled
+      project; `ProjectPill.tsx` label becomes "Run this project in a
+      container". Flag stays in `TerminalView`'s spawn-effect deps, so
+      toggling still respawns live tabs — Gemini/Vibe lose their
+      conversation on flip, same hazard class as `tabs/agentModes.ts`.
+    - [x] **38e — Phase 4: spec sources & UX.** Auto-detect an in-repo
+      `Dockerfile`/`.devcontainer/devcontainer.json` as the container source;
+      fall back to the existing `eldrun-agent-sandbox:latest` reference
+      image; preflight's "image missing" error becomes a one-click
+      open-new-tab-paste-run build flow (house convention); minimal spec UI
+      for image/network/memory/cpus/readonly (safe now that 38a makes the
+      toggle spec-preserving).
+    - [ ] **38f — Phase 5 (deferred): compose / pre-existing-container
+      variants, persistent (non-session-scoped) containers, remote Docker
+      (container on an SSH host, composing with #28's `ssh_exec` wrapping —
+      this is where the target-agnostic spawn-rewrite refactor below
+      actually becomes load-bearing), Windows (#86).**
+    - [x] 🤖 Automated test — see `docs/docker_projects_plan.md` Tests
+      section (argv/state-machine assertions, no daemon needed): sandbox.rs
+      unit suite (name/fingerprint/up-decision/create+exec argv/stage refresh)
+      + `projects_commands.rs` toggle-preservation/legacy-spec tests
+    - [ ] 🖐️ Manual test
 
 80. **Native SFTP remote browsing (drop `ssh ls` for the folder picker).**
     Replace the shell-out browse commands in `commands/ssh.rs`
@@ -835,6 +795,49 @@ container) — as opposed to the git **push** axis (#21/#22).*
         a differing `README.md` is refused with the file named and the host file
         intact; disconnect → Sync now reports disconnected rather than green; and a
         two-sided divergence resolved with Use local leaves a listable backup ref.
+
+    - [x] **28q — Warn when sync or git destroys something on the LOCAL side**
+      (2026-07-13; ✅ Code-complete · 🧪 Live-host QA owed). Re-scanning the remote
+      surface for local-side deletions: byte-sync (`sync_auto`) turns out to be
+      non-destructive **by construction** — it pulls only when the local side is
+      unchanged, pushes only when the host is, and skips an amber file rather than
+      pick a winner — so *every* local deletion comes from the git side, plus one
+      overwrite from the manual pull commands. All five were correct, deliberate, and
+      **silent**, which is the bug: they run in the mirror during background passes
+      nobody triggered, so a file the user was looking at simply vanished.
+      - **The five sites**, each now filing a warning (`services::local_loss`, an
+        append-only per-project log): a fast-forward or `reset --hard` on the mirror's
+        checked-out branch (deletes the tracked files the incoming commit dropped); a
+        lockstep checkout, including the one that *follows a branch switch made on the
+        host* — the least expected of the lot; the `git clean` inside
+        `retry_ff_clearing_identical` (deletes **untracked** files, which no `git diff`
+        can ever name); a confirmed initial pairing overwriting the colliding mirror
+        files it warned about; and `sync_now`/`sync_pull` overwriting a mirror file that
+        held unsynced local edits — the only one of the five that is **not
+        recoverable**, since those bytes were never committed or pushed anywhere, and
+        the dialog says so in as many words rather than leaving the recovery line blank.
+      - **Reports, does not gate.** The gates that *prevent* a destructive write already
+        exist (`pairing_conflict`, the blocked-ff refusal, `push_decision`); this is for
+        what they deliberately let through. `audit_local_head_move` reads the mirror's
+        HEAD before and after each mutation, so an op that failed records nothing, and a
+        nested reconcile can never double-report its caller's deletion.
+      - **A file, not an event:** the services are `AppHandle`-free and a background pass
+        can delete with no window listening, so a warning that existed only as an event
+        would be dropped exactly when it mattered. The frontend re-reads the log on every
+        lockstep/sync pass, so a loss recorded while the app was closed still surfaces.
+      - [x] 🤖 Automated test — `deleted_between_names_only_what_a_move_removes` (a
+        forward fast-forward warns about nothing; only a move *back* deletes), the
+        `FfRetry` variants pinned against real git (`Cleared` names what it removed even
+        when the ff puts identical bytes straight back), and
+        `src/__tests__/LocalLossDialog.test.tsx` (raises unacked losses, says outright
+        when nothing can be recovered, acks through the backend, never shows one
+        project's losses over another).
+      - [ ] 🖐️ Manual test — live SSH host: commit a file deletion on the host and let
+        the background pass land it (the warning names the file and gives the
+        `git checkout <sha> -- <path>` line that brings it back); switch branches on the
+        host so the mirror follows into a checkout that drops a file; edit a byte-synced
+        file locally, then Sync now, and confirm the overwrite is reported as
+        unrecoverable; and confirm a project that loses nothing never sees the dialog.
 
 82. **Split-tunnel the OpenVPN connection (per-project opt-in).** Eldrun passes
     OpenVPN *no* routing flags (`services/openvpn::openvpn_args`), so whatever the

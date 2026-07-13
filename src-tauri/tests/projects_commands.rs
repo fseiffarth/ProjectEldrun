@@ -6,9 +6,10 @@ use std::sync::{Mutex, OnceLock};
 use eldrun_lib::commands::projects::{
     archive_project, create_project, delete_archived_project, get_projects, import_project,
     list_archived_projects, load_project, restore_archived_project, set_project_auto_connect,
-    set_project_description, CreateProjectRequest, ImportProjectRequest,
+    set_project_description, set_project_sandbox, set_project_sandbox_spec, CreateProjectRequest,
+    ImportProjectRequest,
 };
-use eldrun_lib::schema::project::RemoteSpec;
+use eldrun_lib::schema::project::{RemoteSpec, SandboxSpec};
 use tempfile::{Builder, TempDir};
 
 const SCAFFOLDS: &[(&str, &str)] = &[
@@ -171,6 +172,82 @@ fn create_project_preserves_existing_scaffolds() {
         assert!(target.path().join("nested/info.txt").exists());
         assert!(target.path().join("project.json").exists());
         assert_project_registered(&target.path().join("project.json"), "create-project");
+    });
+}
+
+/// A new **git-backed** remote project starts with lockstep ON, so the git-tracked
+/// tree is kept in step semantically (commits/refs) from the first launch instead
+/// of waiting for the user to find the toggle. This is the same default
+/// `extend_project_to_remote` applies, and it is safe for the same reason: the host
+/// root was just created empty, so the first pass can only seed one direction.
+///
+/// The companion half of the default is that byte-sync stays opt-in per path (no
+/// marker ⇒ `is_auto` false), which is what leaves gitignored host-side data — the
+/// experiment output a remote project exists to produce — where it is.
+#[test]
+fn create_remote_project_enables_lockstep_when_git_backed() {
+    with_isolated_home("remote-lockstep-home", |_| {
+        let mirror_parent = tempdir_in_test_projects("remote-ls-mirror");
+        let req = CreateProjectRequest {
+            name: "remote-git-project".to_string(),
+            directory: String::new(),
+            description: None,
+            git_type: Some("local".to_string()),
+            skip_scaffold: false,
+            remote: Some(RemoteSpec {
+                user: Some("alice".to_string()),
+                host: "nonexistent.invalid".to_string(),
+                port: None,
+                remote_path: "/home/alice/work".to_string(),
+                openvpn: None,
+                auto_connect: None,
+                key_auth: None,
+                extra: Default::default(),
+            }),
+            mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+        };
+
+        let entry = create_project(req).expect("create remote git project");
+        let state = eldrun_lib::services::git_peer::load_state(&entry.id);
+        assert!(
+            state.enabled,
+            "a git-backed remote project should start with lockstep enabled"
+        );
+    });
+}
+
+/// The gate is the mirror actually being a repo, not the `git_type` tag: a
+/// `none` project has no history to seed a pairing from, so lockstep stays off
+/// (its default) rather than being enabled over an empty non-repo.
+#[test]
+fn create_remote_project_leaves_lockstep_off_without_git() {
+    with_isolated_home("remote-nolockstep-home", |_| {
+        let mirror_parent = tempdir_in_test_projects("remote-nols-mirror");
+        let req = CreateProjectRequest {
+            name: "remote-plain-project".to_string(),
+            directory: String::new(),
+            description: None,
+            git_type: Some("none".to_string()),
+            skip_scaffold: false,
+            remote: Some(RemoteSpec {
+                user: Some("alice".to_string()),
+                host: "nonexistent.invalid".to_string(),
+                port: None,
+                remote_path: "/home/alice/work".to_string(),
+                openvpn: None,
+                auto_connect: None,
+                key_auth: None,
+                extra: Default::default(),
+            }),
+            mirror_parent: Some(mirror_parent.path().to_string_lossy().to_string()),
+        };
+
+        let entry = create_project(req).expect("create remote non-git project");
+        let state = eldrun_lib::services::git_peer::load_state(&entry.id);
+        assert!(
+            !state.enabled,
+            "a non-git remote project has nothing to keep in step; lockstep stays off"
+        );
     });
 }
 
@@ -519,6 +596,96 @@ fn permanent_delete_removes_archived_project() {
         // Restoring a permanently-deleted project is an error (nothing to read).
         assert!(restore_archived_project(id).is_err());
     });
+}
+
+/// Project containers, Phase 0: the toggle must be **spec-preserving** —
+/// re-enabling used to write `SandboxSpec::default()`, wiping hand-tuned
+/// `image`/`memory`/`network`/…. Only `enabled` flips now; the knobs survive a
+/// disable/enable round-trip in BOTH stores. And the *first* enable
+/// auto-detects an in-repo `Dockerfile` as the container source (Phase 4).
+#[test]
+fn set_project_sandbox_preserves_spec_and_detects_dockerfile() {
+    with_isolated_home("sandbox-home", |_| {
+        let target = tempdir_in_test_projects("sandbox-target");
+        let entry = new_local_project("sandbox-project", target.path());
+        let id = entry.id.clone();
+
+        // The project carries a root Dockerfile → the first enable adopts it.
+        fs::write(target.path().join("Dockerfile"), "FROM debian:stable\n").expect("dockerfile");
+        let spec = set_project_sandbox(id.clone(), true).expect("enable");
+        assert!(spec.enabled);
+        assert_eq!(spec.dockerfile.as_deref(), Some("Dockerfile"));
+
+        // Hand-tune the knobs, then flip the toggle off and back on: every
+        // field must survive; only `enabled` may change.
+        let tuned = SandboxSpec {
+            enabled: true,
+            image: None,
+            dockerfile: Some("Dockerfile".to_string()),
+            pids_limit: Some(256),
+            memory: Some("4g".to_string()),
+            cpus: None,
+            network: Some("none".to_string()),
+            readonly_rootfs: true,
+            extra: Default::default(),
+        };
+        set_project_sandbox_spec(id.clone(), tuned).expect("store tuned spec");
+
+        let off = set_project_sandbox(id.clone(), false).expect("disable");
+        assert!(!off.enabled);
+        assert_eq!(off.memory.as_deref(), Some("4g"), "disable must not wipe the spec");
+
+        let on = set_project_sandbox(id.clone(), true).expect("re-enable");
+        assert!(on.enabled);
+        assert_eq!(on.pids_limit, Some(256));
+        assert_eq!(on.memory.as_deref(), Some("4g"));
+        assert_eq!(on.network.as_deref(), Some("none"));
+        assert!(on.readonly_rootfs);
+        assert_eq!(on.dockerfile.as_deref(), Some("Dockerfile"));
+
+        // Both stores carry the tuned spec: the projects.json mirror (what the
+        // spawn path reads) and the project's own project.json.
+        let entry = get_projects()
+            .expect("list")
+            .into_iter()
+            .find(|p| p.id == id)
+            .expect("entry");
+        let mirrored: SandboxSpec = serde_json::from_value(
+            entry.extra.get("sandbox").cloned().expect("sandbox mirrored"),
+        )
+        .expect("parse mirrored spec");
+        assert!(mirrored.enabled && mirrored.readonly_rootfs);
+        assert_eq!(mirrored.pids_limit, Some(256));
+
+        let project: eldrun_lib::schema::project::Project = serde_json::from_str(
+            &fs::read_to_string(&entry.local_file).expect("read project.json"),
+        )
+        .expect("parse project.json");
+        let stored = project.sandbox.expect("project.json carries the spec");
+        assert!(stored.enabled && stored.readonly_rootfs);
+        assert_eq!(stored.network.as_deref(), Some("none"));
+    });
+}
+
+/// Legacy specs (predating the `dockerfile` field) parse unchanged, and a spec
+/// carrying it round-trips.
+#[test]
+fn sandbox_spec_roundtrips_and_reads_legacy_shape() {
+    let legacy: SandboxSpec =
+        serde_json::from_str(r#"{"enabled":true,"image":"img:1","memory":"2g"}"#)
+            .expect("legacy spec parses");
+    assert!(legacy.enabled);
+    assert_eq!(legacy.image.as_deref(), Some("img:1"));
+    assert_eq!(legacy.dockerfile, None);
+
+    let spec = SandboxSpec {
+        enabled: true,
+        dockerfile: Some("docker/Dockerfile.dev".to_string()),
+        ..Default::default()
+    };
+    let back: SandboxSpec =
+        serde_json::from_str(&serde_json::to_string(&spec).expect("serialize")).expect("parse");
+    assert_eq!(back.dockerfile.as_deref(), Some("docker/Dockerfile.dev"));
 }
 
 #[test]

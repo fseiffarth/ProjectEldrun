@@ -1,15 +1,19 @@
 # Git Lockstep Hardening Plan (#28p)
 
-> **Status: implemented 2026-07-13 — all eight defects (D1–D8) fixed.** The design
-> below is what shipped; deviations are noted inline as **[shipped]**. What is still
-> owed is the **live-host QA** at the end of this document: D1 and D3 are precisely the
-> cases a unit test cannot prove, and the 🖐️ box on #28n was never ticked either. Until
-> that runs, treat this as *code-complete, not verified*.
+> **Status: implemented 2026-07-13 — all eight defects (D1–D8) fixed**, plus three
+> more (**D9–D11**) found in a follow-up data-loss-focused audit and fixed the same
+> day. The design below is what shipped; deviations are noted inline as **[shipped]**.
+> What is still owed is the **live-host QA** at the end of this document: D1, D3, and
+> now D9/D11 are precisely the cases a unit test cannot fully prove, and the 🖐️ box on
+> #28n was never ticked either. Until that runs, treat this as *code-complete, not
+> verified*.
 
 Follow-up to **#28n Phases 1–3** (`services/git_peer.rs`, `commands/git_peer.rs`).
 Lockstep is code-complete and unit-tested but has never run against a live host.
 Tracing the full local↔remote case matrix surfaced eight defects — two of them
 data-loss or correctness class. This plan fixes all eight, in dependency order.
+D9–D11 were surfaced later, once #28p D1–D8 already shipped, by re-reading the same
+code specifically for remaining data-loss vectors — see each section below.
 
 ## Background: the invariant that generates the bugs
 
@@ -359,6 +363,141 @@ ones are still cleaned. Frontend: the action spawns a local tab in the mirror.
 
 ---
 
+## D9 — `resolve`/`restore_backup` can clobber untracked files, with no D3-style guard *(data loss; blocking)*
+
+**Problem.** `force_reset_branch` (called by `resolve_inner` for Use-local/Use-remote,
+and by `restore_backup`) runs `git reset --hard <sha>` on the dest's checked-out
+branch. This is *exactly* behaviour 2 from the top of this file — `reset --hard`
+silently clobbers a colliding untracked file — and it is exactly what `init_pairing`
+was hardened against in D3. But `force_reset_branch` has no equivalent check: it
+backs up the branch *ref* to `refs/eldrun/backup/*` and then resets, with nothing
+proving the working tree is safe to overwrite.
+
+The gap is real because a backup ref only saves **committed** history. An untracked
+file was never a git object, so there is nothing to restore it from once `reset
+--hard` overwrites it.
+
+**Concrete scenario.** Lockstep + byte-sync enabled, local and host diverge. The
+user clicks "Use remote." If the local mirror has an untracked file at a path the
+winning remote history tracks (build output, a local-only config, or a file
+byte-synced there before ever being committed), `reset --hard` overwrites it with
+zero backup and zero warning. The confirm dialog (`GitHistory.tsx`) actively
+undersells the risk here: it says the loser's commits are "backed up... first,"
+which reads as "nothing is lost" — true for commits, false for untracked files. The
+pairing-conflict dialog gets this right ("NOT in git — they will be lost"); the
+resolve dialog doesn't carry the equivalent warning because the backend never
+detects the collision in the first place.
+
+**Fix.** Mirror D3: before any `force_reset_branch` call that would move a checked-
+out branch, compute the untracked files on the dest that collide with (and differ
+from) what the target sha's tree holds. If any exist, refuse the whole
+resolve/restore and name them — the same "blocked, user clears it, retries" UX
+`blocked_detail` (D1/D2) already established, rather than a new confirm-override
+flow.
+
+**[shipped]** `reset_collisions(source_peer, dest_peer, target_sha)` — `ls-tree -r -l
+-z` on the source for the target tree, `ls-files --others -z` on the dest for its
+untracked set, `hash_objects` (already used by `pairing_conflicts`) to prove content
+identity. An unprovable hash counts as a difference, the same conservative default as
+`pairing_collisions`. Wired into `resolve_inner` (checked against the *losing* side's
+checked-out branch before `transfer_and_apply(force: true)` runs) and into
+`restore_backup` (checked before `force_reset_branch` whenever the branch being
+restored is the peer's HEAD) — both return `Err` naming the paths instead of
+proceeding, and `restore_backup` resumes auto-sync first so a refusal never leaves it
+paused.
+
+**Files.** `services/git_peer.rs` (`reset_collisions`, `resolve_inner`,
+`restore_backup`).
+
+**Tests.** Rust unit: `reset_collisions` against two real local repos — an
+identical-content collision pairs clean, a differing one is named, an unrelated
+untracked file is ignored. Manual: diverge, drop a colliding untracked file on the
+losing side, click Use-{local,remote} → refused with the filename named, file
+intact.
+
+---
+
+## D10 — Stale-residue deletion trusted a stat heuristic instead of content *(data loss; narrow)*
+
+**Problem.** `retry_ff_clearing_identical`'s two grounds for deleting a colliding
+untracked file before retrying a blocked fast-forward are (a) `blob_matches_worktree`
+— real content equality via `git hash-object` vs the incoming blob — and (b)
+`stale_byte_sync_residue`, which instead relied on `remote_sync::divergence`: a pure
+size+mtime comparison against the sync manifest's recorded base, with **no content
+hash anywhere in `SyncEntry`**. Ground (a) is a proof; ground (b) was a heuristic
+wearing a proof's clothes, and the caller **deletes the file** on either ground with
+the same confidence.
+
+If size and mtime happen to coincide with the manifest's stale base while the actual
+bytes differ (clock skew, a tool that preserves mtimes on copy, or plain bad luck),
+`stale_byte_sync_residue` reports the path safe and `retry_ff_clearing_identical`
+deletes real, never-committed work via `git clean -f -x`, with no backup — untracked
+content has none.
+
+**Fix.** Replace the stat comparison with a content-based proof that needs no schema
+change: the bundle fetch (step 3 of `transfer_and_apply`) has already deposited every
+object the incoming commit needs into the dest's own object store by the time the
+residue check runs. So "the file's current bytes are already a git object the dest's
+store knows about" (`git hash-object` to name it, `git cat-file -e` to check
+existence) proves the content is *some* prior git-known state — either history the
+peer already had, or an object the fetch just brought in — never content nothing has
+ever recorded. That is exactly the distinction that matters: real independent work
+was never a git object anywhere, so it can never pass this check by accident.
+
+**[shipped]** `stale_byte_sync_residue` keeps its manifest gate (only a path
+byte-sync has ever touched is even considered, preserving the D1/case-#12 framing —
+scope, not the safety proof) but the actual verdict is now `object_already_known`
+(`hash-object` + `cat-file -e` on the dest peer, no SFTP, no manifest stat fields
+needed). Dropped the now-unused `pool`/`spec`/`to_remote` params — the check runs
+entirely through `Peer::run`, local or remote alike.
+
+**Files.** `services/git_peer.rs` (`stale_byte_sync_residue`, `object_already_known`).
+
+**Tests.** Rust unit (real repo): content matching a git-known blob (an old commit,
+or an object the incoming fetch deposited) is recognized as safe residue; content
+that has never been part of any commit or fetch is refused even with a matching
+manifest entry; a path outside the manifest is refused regardless of content.
+
+---
+
+## D11 — A genuine bundle-create failure still fell through to ref application *(correctness / potential corruption)*
+
+**Problem.** `transfer_and_apply` creates the bundle, then — regardless of whether
+that succeeded — always runs step 4 (apply safe ref updates per branch). The
+`if out.status.success()` guard only gates steps 2–3 (move + fetch). The reasoning in
+the existing comment is sound for exactly one failure mode: git's "Refusing to
+create empty bundle" refusal, which means the dest already has every object and step
+4 must still run (this is bug #4 from the original #28n live QA). But it does not
+distinguish that from a **genuine** creation failure — disk full, a bad path,
+permission denied — where no objects moved anywhere. In that case step 4 still runs
+using the pre-transfer snapshots and, e.g., blindly `update-ref`s a new branch onto a
+sha the dest never received: a dangling ref pointing at a missing object, reported as
+`applied`, which can compute the whole pass to `Synchronized`. Same "false green"
+shape as the four bugs D1–D8 already fixed, reintroduced by the fix for #4 going one
+conditional too far in the safe direction.
+
+**Fix.** Distinguish the two failure shapes by parsing git's own message: only the
+empty-bundle refusal may still let step 4 proceed. Any other failure aborts the whole
+direction before step 4 ever runs.
+
+**[shipped]** `is_empty_bundle_error(stderr)` (pure — matches git's literal "Refusing
+to create empty bundle" text). On any other bundle-create failure, `transfer_and_apply`
+returns `Err` immediately, before step 4. Every caller already handles `Err` correctly
+(`reconcile_with` surfaces it as `blocked`/`Desynchronized`, per the bug-#2 fix;
+`resolve_inner` propagates it via `?`; `init_pairing` already discarded errors from
+this call and continues to, so its behaviour on a genuine failure only gets safer —
+zero refs applied instead of some applied against missing objects).
+
+**Files.** `services/git_peer.rs` (`transfer_and_apply`, `is_empty_bundle_error`).
+
+**Tests.** Rust unit: `is_empty_bundle_error` recognizes git's exact refusal text and
+rejects an unrelated failure message (e.g. "No space left on device"). Full
+end-to-end proof that a real creation failure aborts the whole direction needs a live
+remote (same caveat as D1/D3's live-only cases) — exercise via `lockstep_drv.rs` when
+next on a live host.
+
+---
+
 ## Phasing
 
 **Phase 1 — trust (blocking; nothing else matters until these land).**
@@ -390,3 +529,6 @@ live matrix:
 | 4 | extend local onto a host dir holding a differing `README.md` → refused, host file intact |
 | 5 | disconnect → Sync now → reports disconnected, not green |
 | 6 | commit on both sides → diverged → Use local → host resets, backup ref present and listable |
+| 7 | diverge, drop a *differing* untracked file at a path the winner tracks on the losing side, Use-{local,remote} → refused, filename named, file untouched (D9) |
+| 8 | same as #7 but the untracked file is byte-identical → resolve proceeds, no refusal |
+| 9 | force a genuine bundle-create failure (e.g. a full disk on the source) → Desynchronized with the real error, no dangling ref on the dest (D11) |

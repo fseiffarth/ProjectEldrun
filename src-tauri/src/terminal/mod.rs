@@ -161,7 +161,22 @@ impl PtyRegistry {
             invalidate_proc_tree_cache();
             // The tab is gone for good, so stop watching for its Codex session.
             crate::services::codex_bind::untrack_now(id);
+            // Containerized tab: killing the child above only killed the
+            // `docker exec` CLIENT — TERM the process inside the container too
+            // (best-effort, no-op for tabs that never containerized).
+            crate::services::sandbox::kill_tab_process(id);
         }
+    }
+
+    /// True when any live (not-yet-dead) PTY belongs to `scope`. PTY ids are
+    /// `<scope>:<tab-key>` (CenterPanel), so a prefix match is authoritative.
+    /// Used by the project-container teardown to keep a deactivated project's
+    /// container alive while background tabs still run inside it.
+    pub fn any_live_for_scope(&self, scope: &str) -> bool {
+        let prefix = format!("{scope}:");
+        self.entries
+            .iter()
+            .any(|(id, e)| id.starts_with(&prefix) && !e.dead.load(Ordering::SeqCst))
     }
 
     /// OS process id of the child for `id`, if it is still tracked.

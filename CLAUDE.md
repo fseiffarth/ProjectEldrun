@@ -56,6 +56,44 @@ Both list only the load-bearing files; the tree is the source of truth.
   `project.json`; the actual tree lives on `host:remote_path`. Remoteness is
   resolved explicitly by `services::remote::remote_target_for{,_dir}`, never by a
   path convention. Plan/history: `docs/mountfree_remote_plan.md`.
+- **Two transports keep a remote project in step, and they split the tree by
+  git.** *Git lockstep* (`services::git_peer`) owns the **git-tracked** files and
+  moves them **semantically** — commits and refs via `git bundle`, never `.git`
+  bytes. *Byte-sync* (`services::sync_auto`) owns **everything else** and moves raw
+  bytes. `drop_tracked` enforces the split so the two never race for one file. One
+  consequence to internalize: with lockstep on, a saved edit to a **tracked** file
+  no longer reaches the host until it is **committed** (`docs/git_lockstep_case_matrix.md`
+  #5/#7). Live-QA log: `docs/git_lockstep_live_qa.md`.
+- **Anything the sync destroys on the local side says so** (#28q, `services::local_loss`).
+  Byte-sync is non-destructive *by construction* — it pulls only when the local side is
+  unchanged, pushes only when the host is, and skips a both-sides-changed file rather than
+  pick a winner — so every local **deletion** comes from the git side: a fast-forward,
+  `reset --hard` or checkout on the mirror drops the tracked files the incoming commit no
+  longer carries, and the `git clean` that un-blocks a refused fast-forward removes
+  untracked ones outright. Correct, git-recoverable, and *silent* — which is the problem,
+  because it happens during background passes nobody triggered. Each site now files a
+  warning that `LocalLossDialog` raises. The exception that is **not** recoverable, and is
+  labelled as such: `sync_now`/`sync_pull` overwriting a mirror file that held unsynced
+  local edits ("clears amber → green" means the host wins). It is a **log file**, not an
+  event: the services are `AppHandle`-free and a background pass can delete with no window
+  listening, so a loss recorded while the app was closed still surfaces on next launch.
+- **Lockstep is ON by default for a new git-backed remote project** — set at
+  creation by both `create_project` and `extend_project_to_remote` (gated on the
+  mirror actually being a repo). It is safe as a default precisely there: the host
+  root was just created empty, so the first pass can only seed one direction, and a
+  host dir that already holds *differing* files makes pairing **refuse** and ask
+  (`pairing_conflict`) rather than clobber. It is written as explicit per-project
+  state, never as `GitPeerState::default()` — `load_state` falls back to that
+  default for every project with no state file, so flipping it there would silently
+  enable lockstep on existing projects that never opted in.
+- **Byte-sync is opt-in per path and does not read `.gitignore`.** Scope comes from
+  an explicit manifest (`is_auto`: nearest marker wins, root `""` = project-wide);
+  no marker ⇒ nothing crosses. This is what leaves a remote project's *deliberately
+  host-side* data — experiment output, checkpoints, everything gitignored and hence
+  invisible to lockstep — on the host. The corollary is that the two systems have
+  **different notions of scope**, so marking a folder auto-sync is the one click
+  that can haul a multi-GB tree into the mirror; the file tree prices the host
+  subtree first (`sync_auto_preview`) and confirms when it is large.
 - A remote project connects **on demand** (the pill's connection lamp opens the
   `RemoteConnectDialog`) — *unless* it opts into `remote.auto_connect`, which
   connects it on launch and on activation and **never prompts**. The toggle is only
@@ -114,8 +152,23 @@ Both list only the load-bearing files; the tree is the source of truth.
   and the backend injects `codex resume <live-id>`. **Codex caveat:** user-level
   Codex hooks need a one-time trust (`/hooks` in Codex) before they run. Gemini
   and Vibe are still dropped (TODO 39d).
-- **Agent authority has three axes**, and they compose: the Docker `sandbox` (OS
-  containment), the tab's `location` (where the process runs), and — behind the
+- **A project can run in a container** (#38, `services::sandbox`,
+  `docs/docker_projects_plan.md`): with the pill's "Run this project in a
+  container" toggle on, every shell/agent tab `docker exec`s into ONE
+  session-lived, capability-dropped container (`eldrun-<id>`); `local_agent`
+  tabs stay on the host. The project dir stays on the host, bind-mounted at its
+  **identical absolute path** — file tree/git/viewers/usage watcher keep reading
+  host bytes, and agent resume keeps working — which is what makes it a toggle,
+  not a data move. Container lifetime = project session (created on
+  activation/first spawn; removed on deactivate *unless tabs are still live in
+  it*, at exit, and swept at startup). The toggle is spec-preserving (knobs in
+  the pill's "Container settings…" survive off/on), the first enable
+  auto-adopts an in-repo `Dockerfile`/devcontainer image, and a missing image
+  becomes a one-click build tab. Flipping the toggle respawns every live tab —
+  the pill confirms when a non-resumable agent conversation would be lost.
+  Local projects only; hidden on Windows.
+- **Agent authority has three axes**, and they compose: the project container
+  `sandbox` (OS containment), the tab's `location` (where the process runs), and — behind the
   experimental `agent_mode_toggle` setting, default off — its `agentMode`: **Plan**
   (`--permission-mode plan`) vs **Auto** (`acceptEdits`). The mode is a *launch
   flag*, so flipping it rewrites the tab's `args`, which respawns the PTY

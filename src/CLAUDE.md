@@ -71,6 +71,7 @@ workflow); see `src-tauri/CLAUDE.md` for the backend file map.
 | `common/mountPageStrip.tsx` | `createRoot` adapter letting the imperative print modal host `PageStrip`. |
 | `common/Dropdown.tsx`, `common/OrbitSpinner.tsx` | Shared primitives. |
 | `common/ConnLamp.tsx` | Red/orange/green SSH/OpenVPN status lamp (dialog + header). |
+| `common/LocalLossDialog.tsx` | Warns that lockstep or sync **destroyed something in the local mirror** (#28q). Mounted at the shell, like the alarm popup: a background pass can delete a file while the user is three tabs away. It reports, it does not confirm — the write has already happened; the gates that prevent one live upstream. |
 | `stats/StatsRecap.tsx` | Usage recap dialog: agents/models used, prompts asked, file churn, commits, time per project, Day/Week/Month. |
 | `stats/StatsRecapHost.tsx` | Decides when the recap is on screen: once per day at launch (anchored on *yesterday*), or on demand via the `eldrun:open-stats` event. Mounted in `AppShell`. |
 
@@ -96,6 +97,7 @@ workflow); see `src-tauri/CLAUDE.md` for the backend file map.
 | `editorJump.ts` | Cross-pane jump-to-location requests. |
 | `vpnPrompt.ts` | State backing `VpnPasswordPrompt`. |
 | `remoteStatus.ts` | Per-project live SSH/VPN connection state for the header lamps. |
+| `localLoss.ts` | The active project's local-loss log (#28q). Pulled from the backend's on-disk record — not pushed as an event — so a deletion during a background pass, or while the app was closed, still surfaces. |
 | `vpnStatus.ts` | **Machine-level** OpenVPN state, keyed by config path: the tunnel reroutes the whole OS, so it outlives the project view and is shared between projects. Owns the holder refcount (`releaseVpn`) and the `markVpn*` helpers. |
 | `hooks/useKeyboard.ts` | Global keyboard-shortcut hook. |
 | `lib/shortcuts.ts` | Shortcut definitions, chord parsing/resolution. |

@@ -10,6 +10,7 @@ import { useRemoteReconnect } from "./useRemoteReconnect";
 import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useProjectsStore, disconnectRemote } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
+import { anyVpnLive, useVpnStatusStore } from "../../stores/vpnStatus";
 import { formatRemoteTarget, resolveLocalMirror, type ProjectEntry } from "../../types";
 
 /**
@@ -128,6 +129,12 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
   const connecting = sshStatus === "connecting";
   // The tunnel is up or on its way — every VPN field/button is locked while so.
   const vpnBusy = vpnStatus === "connecting" || vpnStatus === "connected";
+  // A tunnel is machine-wide, so once *any* config is live there's nothing left for
+  // this project's OpenVPN section to offer — except when it's THIS project's own
+  // attempt that made it live, in which case its controls (log, Stop/Disconnect)
+  // must stay reachable here. `vpnBusy` already mirrors that via the machine store.
+  const vpnGloballyLive = useVpnStatusStore((s) => anyVpnLive(s.byConfig));
+  const showVpnSection = !vpnGloballyLive || vpnBusy;
   // One submit for the whole VPN form: the fields are separate prompts OpenVPN
   // raises, but they're answered in a single connect.
   const submitVpn = () => void connectVpnHeadless(vpnPassword, vpnKeyPassphrase, vpnRemember);
@@ -162,7 +169,22 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
             Shown for every remote project, not only ones that stored a config at
             create time: a project made on a no-VPN network may need a tunnel when
             reconnected from a VPN-gated one. With no config yet, enabling the
-            toggle reveals a picker; the choice is persisted to the project. */}
+            toggle reveals a picker; the choice is persisted to the project.
+            But once *any* tunnel is already up machine-wide, this whole section is
+            redundant — the routing this project needs is already there — so it
+            collapses to a one-line status and the dialog goes straight to SSH. */}
+        {!showVpnSection && (
+          <div className="remote-reconnect-section" role="group" aria-label="OpenVPN tunnel">
+            <div className="remote-field-label">
+              <ConnLamp status="connected" label="OpenVPN" />
+              OpenVPN tunnel already up
+            </div>
+            <span className="ssh-optional-hint">
+              Manage tunnels from the header's VPN control.
+            </span>
+          </div>
+        )}
+        {showVpnSection && (
         <div className="remote-reconnect-section" role="group" aria-label="OpenVPN tunnel">
           <label className={`toggle-card${vpnEnabled ? " is-on" : ""}`}>
             <span className="toggle-card-body">
@@ -294,7 +316,11 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
                     <PasswordInput
                       value={vpnKeyPassphrase}
                       autoComplete="off"
-                      placeholder="Passphrase for the config's encrypted key…"
+                      placeholder={
+                        vpnSaved
+                          ? "Using saved passphrase — leave blank"
+                          : "Passphrase for the config's encrypted key…"
+                      }
                       disabled={vpnBusy}
                       onChange={(e) => setVpnKeyPassphrase(e.target.value)}
                       onKeyDown={(e) => {
@@ -403,6 +429,7 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
               </div>
             ))}
         </div>
+        )}
 
         {/* ── SSH ───────────────────────────────────────────────────────────── */}
         <div className="remote-reconnect-section" role="group" aria-label="SSH login">

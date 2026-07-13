@@ -6578,6 +6578,9 @@ select option {
 }
 
 .file-tree-breadcrumb {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -6585,6 +6588,7 @@ select option {
   width: 100%;
   padding: 2px 4px 4px;
   font-size: 12px;
+  background: var(--bg-panel);
 }
 
 .file-tree-up {
@@ -7207,6 +7211,17 @@ select option {
   display: inline-block;
   width: 9px;
   font-size: 9px;
+}
+
+.file-tree-path-total {
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 .file-tree-scaffold-toggle {
@@ -8115,13 +8130,6 @@ select option {
   padding: 22px 24px;
 }
 
-.settings-backdrop {
-  align-items: flex-end;
-  justify-content: flex-end;
-  padding: 0 54px 56px 0;
-  background: transparent;
-}
-
 .settings-dialog {
   width: min(560px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 96px));
@@ -8642,6 +8650,37 @@ select option {
   line-height: 1.4;
 }
 
+/* A toggle with an explanatory paragraph: same card language as
+   .settings-nav-item/.lesson-item (border, radius, bg-panel) instead of a bare
+   switch-row bleeding into an unrelated-looking paragraph below it. */
+.settings-toggle-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+}
+
+.settings-toggle-card-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.settings-toggle-card-row span:first-child {
+  flex: 1;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.settings-toggle-card > .settings-help {
+  margin: 0;
+}
+
 .settings-help {
   color: var(--text-secondary);
   font-size: 12px;
@@ -8906,6 +8945,15 @@ select option {
   font-size: 12px;
 }
 
+/* Container settings (#38): the read-only-rootfs switch sits beside its label
+   text, unlike the stacked text fields above it. */
+.project-dialog label.container-settings-toggle {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .project-dialog input,
 .project-dialog select,
 .project-dialog textarea {
@@ -9154,6 +9202,114 @@ select option {
   color: var(--danger);
   font-size: 12px;
   word-break: break-word;
+}
+
+/* Local-loss warning (#28q): what lockstep/sync destroyed in the local mirror.
+   Reuses the one dialog surface; only the title takes the warning colour, because
+   the thing being reported is not an error — it is a correct operation the user is
+   entitled to know happened to their machine. */
+.local-loss-dialog {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.local-loss-title {
+  color: var(--warning);
+}
+
+.local-loss-lede {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.local-loss-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  max-height: 46vh;
+}
+
+.local-loss-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius);
+}
+
+.local-loss-entry-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.local-loss-badge {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.local-loss-badge-deleted {
+  color: var(--danger);
+}
+
+.local-loss-badge-overwritten {
+  color: var(--warning);
+}
+
+.local-loss-when {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.local-loss-op {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.local-loss-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 11px;
+  color: var(--text-primary);
+  max-height: 160px;
+  overflow-y: auto;
+  word-break: break-all;
+}
+
+.local-loss-more {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.local-loss-recovery {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* Nothing to recover from: say so in the colour that means it, rather than
+   leaving the line blank and letting the user assume git has a copy. */
+.local-loss-gone {
+  color: var(--danger);
+}
+
+.local-loss-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .scaffold-popover {
@@ -10741,9 +10897,8 @@ select option {
   gap: 6px;
   color: var(--text-primary);
 }
-/* A remote project's live SSH/VPN lamps, rendered as a button (clicking opens
-   the Connect modal), so reset the native button chrome and keep just the lamp
-   row. */
+/* A remote project's live SSH lamp, rendered as a button (clicking opens the
+   Connect modal), so reset the native button chrome and keep just the lamp. */
 .header-conn-menu {
   position: relative;
   display: inline-flex;
@@ -10761,35 +10916,6 @@ select option {
 }
 .header-conn-lamps:hover {
   background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
-}
-/* Collapsed (resting) = single aggregate lamp; hover splits into labeled
-   per-channel lamps. */
-.header-conn-lamps .conn-collapsed {
-  display: inline-flex;
-  align-items: center;
-}
-.header-conn-lamps .conn-expanded {
-  display: none;
-  align-items: center;
-  gap: 9px;
-}
-.header-conn-lamps:hover .conn-collapsed {
-  display: none;
-}
-.header-conn-lamps:hover .conn-expanded {
-  display: inline-flex;
-}
-.conn-chan {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.conn-chan-label {
-  font-size: 9px;
-  line-height: 1;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 /* The machine-wide scope, restated where the user is actually handing over the

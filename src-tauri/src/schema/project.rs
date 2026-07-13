@@ -133,20 +133,26 @@ pub struct OpenVpnSpec {
     pub extra: HashMap<String, Value>,
 }
 
-/// Per-project Docker sandbox config. When present and `enabled`, agent tabs
-/// (Claude/Codex/Gemini/Vibe) for this project are launched inside an ephemeral,
-/// capability-dropped Docker container that mounts only the project directory plus
-/// the minimal agent auth/state paths (see `services::sandbox`), so an agent
-/// cannot reach unrelated host files. Absent (the default) = agents run on the
-/// host exactly as before. Local projects only.
+/// Per-project container config (TODO #38). When present and `enabled`, every
+/// terminal/agent tab of this project execs into ONE session-lived,
+/// capability-dropped Docker container (`eldrun-<id>`) that mounts only the
+/// project directory plus the minimal agent auth/state paths (see
+/// `services::sandbox`), so a process inside cannot reach unrelated host files.
+/// Absent (the default) = tabs run on the host exactly as before. Local
+/// projects only. (Serde key stays `sandbox` so projects that enabled the old
+/// per-tab agent sandbox upgrade in place — no migration.)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SandboxSpec {
-    /// Whether agent tabs run inside the Docker sandbox.
+    /// Whether this project's tabs run inside the container.
     pub enabled: bool,
     /// Optional image override; falls back to the built-in default image when
-    /// absent.
+    /// absent (and is ignored while `dockerfile` is set).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// In-repo Dockerfile (path relative to the project dir); when set, `up`
+    /// builds `eldrun-<id>:latest` from it instead of pulling/expecting `image`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dockerfile: Option<String>,
     /// Max number of processes inside the container (`--pids-limit`). Guards
     /// against a fork-bombing agent. Falls back to a generous built-in default
     /// when absent (see `services::sandbox`).

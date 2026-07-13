@@ -271,14 +271,18 @@ export interface RemoteSpec {
   key_auth?: boolean;
 }
 
-/** Per-project Docker sandbox config. When `enabled`, agent tabs run inside a
- *  container that mounts only the project directory (plus minimal agent
- *  auth/state paths). Absent = run on host. The hardening fields below are
- *  optional overrides; unset means the built-in default (see `services::sandbox`
- *  in the backend). */
+/** Per-project container config (TODO #38). When `enabled`, every terminal and
+ *  agent tab of the project execs into ONE session-lived Docker container that
+ *  mounts only the project directory (plus minimal agent auth/state paths) at
+ *  its identical host path. Absent = run on host. The hardening fields below
+ *  are optional overrides; unset means the built-in default (see
+ *  `services::sandbox` in the backend). */
 export interface SandboxSpec {
   enabled: boolean;
   image?: string;
+  /** In-repo Dockerfile (relative to the project dir); when set, the container
+   *  is built from it (`eldrun-<id>:latest`) instead of pulling `image`. */
+  dockerfile?: string;
   /** `--pids-limit` (fork-bomb guard). Unset = generous built-in default. */
   pids_limit?: number;
   /** Hard memory cap, e.g. "4g" (`--memory`). Unset = unlimited. */
