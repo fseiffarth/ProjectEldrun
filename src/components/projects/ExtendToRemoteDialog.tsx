@@ -43,6 +43,7 @@ export function ExtendToRemoteDialog({
     setRemoteChosenPath,
     remoteChosenPath,
     remoteReady,
+    remotePassword,
     buildRemoteSpec,
   } = remote;
 
@@ -93,14 +94,19 @@ export function ExtendToRemoteDialog({
     try {
       await extendProjectToRemote(project.id, spec);
       // Reaching this step required a live, authenticated SSH session (the flow
-      // browsed/created the remote folder over it), so the host's ControlMaster
-      // is already up. Carry that straight over to the now-remote project rather
-      // than dropping it to a "Connect" prompt: open its pooled SSH/SFTP channel
-      // (rides the existing master, password-less) and light the SSH lamp green.
-      // Fire-and-forget — the lamp reflects connecting → connected as it resolves.
+      // browsed/created the remote folder over it). Carry that straight over to the
+      // now-remote project rather than dropping it to a "Connect" prompt: open its
+      // pooled SSH/SFTP channel and light the SSH lamp green. Fire-and-forget — the
+      // lamp reflects connecting → connected as it resolves.
+      //
+      // Hand it the credential the dialog authenticated with (empty for a key-auth
+      // host). Riding the still-live ControlMaster password-less would connect too,
+      // but the backend reads a password-less connect with nothing in the keychain as
+      // *key* auth and records `key_auth: true` — on a password host that is a lie the
+      // project keeps, and auto-connect later believes.
       const status = useRemoteStatusStore.getState();
       status.setSsh(project.id, "connecting");
-      void invoke("remote_connect", { projectId: project.id, password: null })
+      void invoke("remote_connect", { projectId: project.id, password: remotePassword || null })
         .then(() => useRemoteStatusStore.getState().setSsh(project.id, "connected"))
         .catch((err) => {
           console.warn("remote_connect after extend failed", err);

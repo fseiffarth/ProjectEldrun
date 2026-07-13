@@ -1,7 +1,8 @@
 /**
  * Render tests for the right-panel file tree navigation:
- * - #2 (Group D.1): a file's `.file-name` span carries a native `title` with the
- *   full name so long names are readable on hover (CSS ellipsis aside).
+ * - #2 (Group D.1): a file's full name is readable on hover via the existing
+ *   custom `.file-tooltip` popup (not a native `title` attribute — that used
+ *   to render as an unthemed OS tooltip instead of the app's own hover UI).
  * - #3 (Group D.1): entering a subfolder renders a breadcrumb (↑, ⌂ root crumb,
  *   and a crumb per path segment); clicking the root crumb navigates back.
  */
@@ -88,11 +89,16 @@ describe("file tree navigation", () => {
       selector ? selector(state) : state) as typeof useProjectsStore);
   });
 
-  it("#2 shows the full file name in a title attribute", async () => {
+  it("#2 shows the full file name in the hover tooltip, not a title attribute", async () => {
     await renderPanel();
     const nameSpan = await screen.findByText(LONG_NAME);
     expect(nameSpan.classList.contains("file-name")).toBe(true);
-    expect(nameSpan.getAttribute("title")).toBe(LONG_NAME);
+    expect(nameSpan.getAttribute("title")).toBeNull();
+
+    const row = nameSpan.closest(".file-entry");
+    expect(row).toBeTruthy();
+    fireEvent.mouseEnter(row!);
+    expect(await screen.findByText(LONG_NAME, { selector: ".file-tooltip-name" })).toBeTruthy();
   });
 
   it("#3 builds a breadcrumb on entering a subfolder and the root crumb goes back", async () => {

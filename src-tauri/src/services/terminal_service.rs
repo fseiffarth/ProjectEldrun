@@ -11,13 +11,19 @@ use crate::storage;
 /// `groups` is the opaque split/group layout tree (None clears it).
 /// `sessions` is the opaque list of open agent-session UUIDs: `Some([])` clears
 /// it, `Some(list)` replaces it, and `None` leaves the stored value untouched.
+///
+/// `allow_clear` is what makes an EMPTY `tabs` mean "the user closed every tab"
+/// rather than "the caller had nothing loaded". Only the frontend can tell those
+/// apart, and it only knows for a scope it actually hydrated — see the guard in
+/// `write_terminal_session`.
 pub fn save_tab_layout(
     local_file: &str,
     tabs: &[TabEntry],
     groups: Option<Value>,
     sessions: Option<Value>,
+    allow_clear: bool,
 ) -> Result<(), String> {
-    write_terminal_session(local_file, tabs, 0, groups, sessions)
+    write_terminal_session(local_file, tabs, 0, groups, sessions, allow_clear)
 }
 
 /// Save tab layout with the active tab index.
@@ -31,7 +37,10 @@ pub fn save_terminal_session(
 ) -> Result<(), String> {
     // The project-switch snapshot carries no session list; leave the persisted
     // UUIDs untouched (the active project's debounced save_tab_layout owns them).
-    write_terminal_session(local_file, tabs, active_tab_index, groups, None)
+    // It also never clears: a snapshot is a picture of what was in memory, and an
+    // empty one is far more likely to mean "this scope was never loaded" than
+    // "the user closed everything" — the debounced save owns that intent.
+    write_terminal_session(local_file, tabs, active_tab_index, groups, None, false)
 }
 
 fn write_terminal_session(
@@ -40,7 +49,27 @@ fn write_terminal_session(
     active_tab_index: usize,
     groups: Option<Value>,
     sessions: Option<Value>,
+    allow_clear: bool,
 ) -> Result<(), String> {
+    // An empty layout is DESTRUCTIVE — it drops `tab_layout`/`tab_groups` from
+    // project.json *and* overwrites the `.eldrun` mirror with an empty one, in a
+    // single call. The two are written from the same array, so the mirror is not a
+    // backup: one empty save takes both copies, and a persisted agent tab's
+    // `sessionId` is the only handle on its conversation.
+    //
+    // That is fine when the user really did close every tab, and catastrophic
+    // otherwise — and "otherwise" is reachable, which is how SimpleGNN lost four
+    // tabs on detach: the frontend's debounced autosave persists the tab store's
+    // CURRENT scope into the ACTIVE project's `local_file`, two values it tracks
+    // independently. Detach swaps `local_file` (state dir → promoted mirror) under
+    // a store whose scope has not caught up, the per-scope tab filter correctly
+    // refuses to write another project's tabs into this file, and what lands is an
+    // empty list that reads exactly like a deliberate close-all.
+    //
+    // So an empty layout only clears when the caller states it means one.
+    if tabs.is_empty() && !allow_clear {
+        return Ok(());
+    }
     let path = PathBuf::from(local_file);
     let mut project: crate::schema::project::Project =
         storage::read_json(&path).unwrap_or_default();

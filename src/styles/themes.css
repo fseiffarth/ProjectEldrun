@@ -4410,6 +4410,39 @@ select option {
   color: var(--text-muted);
   font-size: 12px;
 }
+/* Same three states (and the same pulse timings) as `.tab.working` etc — a
+   hidden group's row-level rollup and its header dot use a colour+opacity pulse
+   since they're a single glyph rather than a whole tab's fillable box. */
+.hidden-sw-icon.working {
+  color: var(--success);
+  animation: pill-bar-working 1.5s ease-in-out infinite;
+}
+.hidden-sw-icon.needs-decision {
+  color: var(--warning);
+  animation: pill-bar-decision 1.2s ease-in-out infinite;
+}
+.hidden-sw-icon.finished {
+  color: var(--success);
+}
+.hidden-sw-status-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-left: 2px;
+  text-transform: none;
+}
+.hidden-sw-status-dot.working {
+  background: var(--success);
+  animation: pill-bar-working 1.5s ease-in-out infinite;
+}
+.hidden-sw-status-dot.needs-decision {
+  background: var(--warning);
+  animation: pill-bar-decision 1.2s ease-in-out infinite;
+}
+.hidden-sw-status-dot.finished {
+  background: var(--success);
+}
 .hidden-sw-chips {
   display: flex;
   flex-wrap: wrap;
@@ -4435,6 +4468,17 @@ select option {
 .hidden-sw-chip:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+/* Same glow as `.tab.working`/`.needs-decision`/`.finished` — a hidden tab's PTY
+   is still mounted and running, so its chip keeps reporting status. */
+.hidden-sw-chip.working {
+  animation: tab-glow-working 1.5s ease-in-out infinite;
+}
+.hidden-sw-chip.needs-decision {
+  animation: tab-glow-decision 1.2s ease-in-out infinite;
+}
+.hidden-sw-chip.finished {
+  box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 16%, transparent);
 }
 .hidden-sw-btn {
   flex-shrink: 0;
@@ -5848,10 +5892,13 @@ select option {
    painted behind the label, so it never changes the tab's width and the text
    stays crisp. Three states:
    - working        (green, pulsing): PTY producing sustained output.
-   - needs-decision (orange, pulsing): agent rang the bell with a prompt on
-     screen, on a tab that isn't being looked at.
+   - needs-decision (orange, pulsing): agent gone quiet with a choice/permission
+     prompt on screen — shown on the viewed tab too, since an agent blocked on
+     you stays blocked while you look at it. The glow is an inset fill, so it
+     composites over the active tab's gradient without fighting it.
    - finished       (green, steady): agent rang the bell having simply finished.
-   The two attention states clear the moment the tab is viewed. */
+   Working and finished clear the moment the tab is viewed; a pending decision
+   clears when it is ANSWERED. */
 .tab.working {
   animation: tab-glow-working 1.5s ease-in-out infinite;
 }
@@ -5876,11 +5923,13 @@ select option {
 
 @media (prefers-reduced-motion: reduce) {
   /* Collapse the pulse to a steady tint — the state is still visible. */
-  .tab.working {
+  .tab.working,
+  .hidden-sw-chip.working {
     animation: none;
     box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 16%, transparent);
   }
-  .tab.needs-decision {
+  .tab.needs-decision,
+  .hidden-sw-chip.needs-decision {
     animation: none;
     box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--warning) 22%, transparent);
   }
@@ -5941,7 +5990,11 @@ select option {
 @media (prefers-reduced-motion: reduce) {
   /* Collapse the pulse to a steady bar — the state is still visible. */
   .pill-status-bar.working,
-  .pill-status-bar.needs-decision {
+  .pill-status-bar.needs-decision,
+  .hidden-sw-icon.working,
+  .hidden-sw-icon.needs-decision,
+  .hidden-sw-status-dot.working,
+  .hidden-sw-status-dot.needs-decision {
     animation: none;
     opacity: 0.85;
   }
@@ -5952,16 +6005,22 @@ select option {
    steady tints reduced-motion uses. The state stays fully visible; only the
    continuous repaint stops. Driven by [data-energy-saver="on"] on the document
    root (set in AppShell from the power/settings signal). */
-:root[data-energy-saver="on"] .tab.working {
+:root[data-energy-saver="on"] .tab.working,
+:root[data-energy-saver="on"] .hidden-sw-chip.working {
   animation: none;
   box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--success) 16%, transparent);
 }
-:root[data-energy-saver="on"] .tab.needs-decision {
+:root[data-energy-saver="on"] .tab.needs-decision,
+:root[data-energy-saver="on"] .hidden-sw-chip.needs-decision {
   animation: none;
   box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--warning) 22%, transparent);
 }
 :root[data-energy-saver="on"] .pill-status-bar.working,
-:root[data-energy-saver="on"] .pill-status-bar.needs-decision {
+:root[data-energy-saver="on"] .pill-status-bar.needs-decision,
+:root[data-energy-saver="on"] .hidden-sw-icon.working,
+:root[data-energy-saver="on"] .hidden-sw-icon.needs-decision,
+:root[data-energy-saver="on"] .hidden-sw-status-dot.working,
+:root[data-energy-saver="on"] .hidden-sw-status-dot.needs-decision {
   animation: none;
   opacity: 0.85;
 }
@@ -7269,6 +7328,10 @@ select option {
   margin-right: 8px;
   display: inline-block;
   width: 5.5em;
+}
+.file-tooltip-name {
+  font-weight: 600;
+  margin-bottom: 2px;
 }
 
 .file-delete-dialog {
@@ -8918,6 +8981,19 @@ select option {
   padding-top: 8px;
 }
 
+.remote-host-settings-row {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: minmax(90px, 180px) minmax(120px, 1fr) auto;
+}
+
+.remote-host-settings-add {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+  margin-top: 2px;
+}
+
 .settings-role-icon {
   text-align: center;
 }
@@ -9485,6 +9561,19 @@ select option {
   font-size: 12px;
   font-weight: 400;
   line-height: 1.4;
+}
+
+/* The static twin of `.toggle-card`, borrowing its title/desc typography: shown in
+   place of a dialog's "Connect via OpenVPN" toggle once a tunnel is up machine-wide
+   (`VpnTunnelUpNotice`). Nothing to switch — the tunnel already exists — so it reads
+   as a lit, non-interactive card rather than an off toggle. */
+.vpn-up-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent) 9%, var(--control-bg));
 }
 
 /* Sliding pill switch. The checkbox is the real (focusable) control, layered

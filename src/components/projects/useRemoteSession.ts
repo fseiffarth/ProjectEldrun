@@ -38,6 +38,24 @@ export type RemoteStep = "connect" | "browse" | "details";
 // no ":" so it never collides with a tab PTY id (`<scope>:<key>`) or trips the
 // detached-PTY check. (Module scope so the counter survives re-renders.)
 let dialogTermSeq = 0;
+
+/** The directory a fresh connect/browse should open in for `host`: the
+ *  standard path set in Settings' "Remote Connections" panel if there is one,
+ *  else the SSH-reported home directory. Best-effort — either lookup failing
+ *  just falls through to the next, never blocks the connect that already
+ *  succeeded by the time this runs. */
+const resolveStartDir = async (
+  user: string | null | undefined,
+  host: string,
+  port: number | null | undefined,
+  password: string | null,
+): Promise<string> => {
+  const configured = await invoke<string | null>("remote_get_default_path", { host }).catch(
+    () => null,
+  );
+  if (configured) return configured;
+  return invoke<string>("ssh_default_dir", { user, host, port, password }).catch(() => "");
+};
 const nextDialogTermId = (kind: string) => `dialog-${kind}-${++dialogTermSeq}`;
 
 /**
@@ -69,6 +87,17 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   const [sshPassword, setSshPassword] = useState("");
   const [sshStatus, setSshStatus] = useState<ConnStatus>("idle");
   const [sshError, setSshError] = useState("");
+  // "Save password" opt-in (default OFF), identical in mechanism to the Connect
+  // modal's: the secret goes to the OS keychain **after** a successful auth, keyed
+  // by the *host target* — not by the project, which doesn't exist yet here. That
+  // is what lets the credential typed while creating/extending a project be the one
+  // its later reconnects (and auto-connect) authenticate with, instead of being
+  // thrown away the moment this dialog closes.
+  const [sshRemember, setSshRemember] = useState(false);
+  // Whether this host target already has a saved password. Queried, never received
+  // as a secret. Pre-checks the toggle, so connecting can't silently *clear* a
+  // credential the user saved elsewhere (`remember: false` is an explicit untick).
+  const [sshSaved, setSshSaved] = useState(false);
   // The SSH address that was successfully connected (frozen at connect time so
   // edits to the input don't silently change which host we browse/submit to).
   const [remoteConn, setRemoteConn] = useState<ParsedSshAddress | null>(null);
@@ -111,6 +140,11 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   const [vpnKeyPassphrase, setVpnKeyPassphrase] = useState("");
   const [vpnStatus, setVpnStatus] = useState<ConnStatus>("idle");
   const [vpnError, setVpnError] = useState("");
+  // The VPN twin of `sshRemember`/`sshSaved`, keyed by config path. One toggle for
+  // the whole tunnel (password + key passphrase + username), as in the Connect
+  // modal — the backend saves or clears the set together.
+  const [vpnRemember, setVpnRemember] = useState(false);
+  const [vpnSaved, setVpnSaved] = useState(false);
   // Live OpenVPN handshake output for the headless connect, streamed from the
   // backend (`openvpn-progress`) and shown in a read-only log so the connect
   // isn't an opaque spinner. Reset at the start of each connect attempt.
@@ -246,6 +280,72 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     }
   }, [isRemoteProject]);
 
+  // ── Saved credentials (OS keychain) ─────────────────────────────────────────
+  // Both toggles mirror the Connect modal exactly, because they write the *same*
+  // entries: the keychain is keyed by host target / config path, so there is one
+  // saved credential per host and per tunnel, whichever menu put it there.
+
+  // Does this host target already have a saved password? Re-asked as the typed
+  // address changes, so the toggle always reflects the target being connected.
+  useEffect(() => {
+    const parsed = isRemoteProject ? parseSshAddress(sshAddress) : null;
+    if (!parsed) {
+      setSshSaved(false);
+      return;
+    }
+    let cancelled = false;
+    invoke<boolean>("remote_has_saved_password", {
+      user: parsed.user ?? null,
+      host: parsed.host,
+      port: parsed.port ?? null,
+    })
+      .then((saved) => !cancelled && setSshSaved(saved))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isRemoteProject, sshAddress]);
+  useEffect(() => setSshRemember(sshSaved), [sshSaved]);
+
+  // Same question for the selected `.ovpn` (all of its secrets, so a config that
+  // needs two and has one saved reports "not saved" — a silent connect would fail).
+  useEffect(() => {
+    if (!vpnConfig) {
+      setVpnSaved(false);
+      return;
+    }
+    let cancelled = false;
+    invoke<boolean>("vpn_has_saved_password", { config: vpnConfig })
+      .then((saved) => !cancelled && setVpnSaved(saved))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [vpnConfig]);
+  useEffect(() => setVpnRemember(vpnSaved), [vpnSaved]);
+
+  // Unticking a *saved* toggle is a request to drop the secret now — not at the
+  // next connect, which may never come (the user may be about to abandon this
+  // dialog). Same semantics as the Connect modal's toggles.
+  const forgetSshPassword = async () => {
+    const parsed = parseSshAddress(sshAddress);
+    if (!parsed) return;
+    await invoke("remote_forget_password", {
+      user: parsed.user ?? null,
+      host: parsed.host,
+      port: parsed.port ?? null,
+    }).catch(() => {});
+    setSshSaved(false);
+    setSshRemember(false);
+  };
+
+  const forgetVpnPassword = async () => {
+    if (!vpnConfig) return;
+    await invoke("vpn_forget_password", { config: vpnConfig }).catch(() => {});
+    setVpnSaved(false);
+    setVpnRemember(false);
+  };
+
   // Load the recently-used remote paths for `host` (newest first). Best-effort;
   // an empty/unresolved host just clears the list.
   const refreshRemotePaths = (host: string) => {
@@ -379,10 +479,14 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       await invoke("openvpn_connect", {
         config: vpnConfig,
         username: vpnUsername || null,
+        // Blank + a saved credential = "use the saved one" (the backend falls back
+        // to the keychain), the same contract the Connect modal's blank field has.
         password: vpnPassword,
         keyPassphrase: vpnKeyPassphrase || null,
+        remember: vpnRemember,
       });
       setVpnStatus("connected");
+      setVpnSaved(vpnRemember);
       useVpnStatusStore.getState().setState(vpnConfig, "connected");
     } catch (e) {
       setVpnStatus("error");
@@ -472,12 +576,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     })
       .then(async () => {
         clearSshPoll();
-        const startDir = await invoke<string>("ssh_default_dir", {
-          user: parsed.user,
-          host: parsed.host,
-          port: parsed.port,
-          password: null,
-        }).catch(() => "");
+        const startDir = await resolveStartDir(parsed.user, parsed.host, parsed.port, null);
         setRemoteConn(parsed);
         setRemotePassword(""); // empty → null → rides the master in the listing effect
         setSshStatus("connected");
@@ -577,7 +676,9 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       setSshError("Enter an address like user@host or host:2222");
       return;
     }
-    // Empty password → key/agent auth (Option<String> None on the backend).
+    // Empty password → the backend falls back to a saved one for this host, then to
+    // key/agent auth (Option<String> None). So a blank field is "use what you have",
+    // exactly as in the Connect modal — not "authenticate with nothing".
     const password = sshPassword ? sshPassword : null;
     setSshStatus("connecting");
     setSshError("");
@@ -588,16 +689,16 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
         host: parsed.host,
         port: parsed.port,
         password,
+        // The checkbox, and only the checkbox: save the working password, or clear a
+        // previously-saved one on an explicit untick. Written only now that auth has
+        // succeeded, so a rejected credential is never stored.
+        remember: sshRemember,
       });
-      const startDir = await invoke<string>("ssh_default_dir", {
-        user: parsed.user,
-        host: parsed.host,
-        port: parsed.port,
-        password,
-      }).catch(() => "");
+      const startDir = await resolveStartDir(parsed.user, parsed.host, parsed.port, password);
       setRemoteConn(parsed);
       setRemotePassword(sshPassword);
       setSshStatus("connected");
+      setSshSaved(sshRemember);
       setRemoteBrowsePath(startDir || "");
       // Connection succeeded — remember the address for the recents dropdown.
       rememberSshAddress(sshAddress);
@@ -758,6 +859,14 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     sshPassword,
     sshStatus,
     sshError,
+    sshRemember,
+    setSshRemember,
+    sshSaved,
+    forgetSshPassword,
+    // The credential the live session actually authenticated with, so the caller can
+    // hand it to the project's first *pooled* connect (`remote_connect`) instead of
+    // letting that leg rely on the ControlMaster this dialog happens to have left up.
+    remotePassword,
     remoteBrowsePath,
     remoteEntries,
     remoteListBusy,
@@ -785,6 +894,10 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setVpnStatus,
     vpnError,
     setVpnError,
+    vpnRemember,
+    setVpnRemember,
+    vpnSaved,
+    forgetVpnPassword,
     vpnLog,
     vpnTerm,
     startVpnTerm,

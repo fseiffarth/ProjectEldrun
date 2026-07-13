@@ -618,6 +618,170 @@ pub fn drag_preview_icon() -> String {
     format!("data:image/png;base64,{b64}")
 }
 
+#[cfg(target_os = "linux")]
+thread_local! {
+    /// The in-flight GTK drag, so `cancel_file_drag` can abort it when the
+    /// cursor comes back into the window. GTK/GDK objects are not `Send`, and
+    /// every access is on the GTK main thread (sync Tauri commands and GTK
+    /// signal handlers both run there), so a thread-local is the right home.
+    static ACTIVE_DRAG: std::cell::RefCell<Option<gtk::gdk::DragContext>> =
+        const { std::cell::RefCell::new(None) };
+    /// Set by `cancel_file_drag` so the `cancel` signal it provokes is
+    /// recognised as OURS: the gesture is being handed back to the in-app drag
+    /// and is NOT over, so it must not emit `FILE_DRAG_ENDED`.
+    static CANCEL_REQUESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Emitted when a native drag reaches its true end (dropped, failed, or
+/// cancelled by the user/WM). The frontend keeps a gesture alive across the
+/// handoff, so it needs to hear the end from the OS: once GTK owns the pointer,
+/// the webview never sees the `pointerup` that would otherwise end it.
+#[cfg(target_os = "linux")]
+pub const FILE_DRAG_ENDED: &str = "eldrun:file-drag-ended";
+
+/// Start a native OS drag-out of `paths` from the calling window (Linux/GTK).
+///
+/// Replaces `tauri-plugin-drag`'s GTK path for the Ctrl-drag file export. That
+/// path LOOKS right (OS drag icon, drop animation) but delivers an empty
+/// payload to external targets: it disconnects its `drag-data-get` handler on
+/// `drop-performed` — emitted at the instant of the drop, BEFORE the target
+/// asynchronously requests the `text/uri-list` selection — so a browser's or
+/// file manager's data request finds no provider and the drop silently does
+/// nothing. It also builds `file://{path}` with no percent-encoding (a space
+/// in the name yields an invalid URI strict consumers discard) and passes
+/// `GDK_BUTTON1_MASK` (256) where GTK expects the button NUMBER (1).
+///
+/// Here URIs are encoded canonically (`glib::filename_to_uri`) and teardown is
+/// deferred to `dnd-finished` (the target has read the data), with `cancel` /
+/// `drag-failed` covering the abort paths. Windows/macOS keep the plugin
+/// (their OLE/NSDragging backends are sound).
+///
+/// Deliberately a SYNC command: Tauri dispatches those on the main (GTK)
+/// thread, which is exactly where every call below must run.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn start_file_drag(window: tauri::Window, paths: Vec<String>) -> Result<(), String> {
+    use gtk::{gdk, glib, prelude::*};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    if paths.is_empty() {
+        return Err("start_file_drag: no paths".into());
+    }
+    let uris: Vec<String> = paths
+        .iter()
+        .map(|p| {
+            glib::filename_to_uri(p, None)
+                .map(|u| u.to_string())
+                .map_err(|e| format!("start_file_drag: invalid path {p:?}: {e}"))
+        })
+        .collect::<Result<_, _>>()?;
+
+    let win = window.gtk_window().map_err(|e| e.to_string())?;
+    win.drag_source_set(gdk::ModifierType::BUTTON1_MASK, &[], gdk::DragAction::COPY);
+    win.drag_source_add_uri_targets();
+
+    // Window-level signal handlers live until an end-of-drag signal fires;
+    // the drag-data-get one MUST survive past the drop itself (see above).
+    let handler_ids: Rc<RefCell<Vec<glib::SignalHandlerId>>> = Rc::new(RefCell::new(Vec::new()));
+    {
+        let uris = uris.clone();
+        handler_ids
+            .borrow_mut()
+            .push(win.connect_drag_data_get(move |_, _, data, _, _| {
+                let refs: Vec<&str> = uris.iter().map(String::as_str).collect();
+                data.set_uris(&refs);
+            }));
+    }
+
+    let target_list = win
+        .drag_source_get_target_list()
+        .ok_or("start_file_drag: empty target list")?;
+    let context = win
+        .drag_begin_with_coordinates(&target_list, gdk::DragAction::COPY, 1, None, -1, -1)
+        .ok_or("start_file_drag: drag_begin refused (no pointer grab?)")?;
+    ACTIVE_DRAG.with(|c| *c.borrow_mut() = Some(context.clone()));
+
+    // Idempotent teardown shared by every end-of-drag signal — a cancelled drag
+    // can raise more than one of them for the same gesture. `ours` marks the
+    // cancel WE asked for (handing the gesture back to the in-app drag): the
+    // GTK drag is over, but the user's gesture is not, so no end event.
+    let cleanup = {
+        let win = win.clone();
+        let window = window.clone();
+        let handler_ids = handler_ids.clone();
+        move || {
+            for id in handler_ids.borrow_mut().drain(..) {
+                win.disconnect(id);
+            }
+            win.drag_source_unset();
+            ACTIVE_DRAG.with(|c| *c.borrow_mut() = None);
+            let ours = CANCEL_REQUESTED.with(|f| f.replace(false));
+            if !ours {
+                use tauri::Emitter;
+                let _ = window.emit(FILE_DRAG_ENDED, ());
+            }
+        }
+    };
+    {
+        let cleanup = cleanup.clone();
+        context.connect_dnd_finished(move |_| cleanup());
+    }
+    {
+        let cleanup = cleanup.clone();
+        context.connect_cancel(move |_, _| cleanup());
+    }
+    {
+        let cleanup = cleanup.clone();
+        let id = win.connect_drag_failed(move |_, _, _| {
+            cleanup();
+            // Proceed keeps GTK's snap-back animation for the failed drop.
+            glib::Propagation::Proceed
+        });
+        handler_ids.borrow_mut().push(id);
+    }
+
+    // Same OS drag icon the plugin path used (the app icon).
+    const ICON_PNG: &[u8] = include_bytes!("../../icons/128x128.png");
+    let loader = gtk::gdk_pixbuf::PixbufLoader::new();
+    if loader.write(ICON_PNG).and_then(|_| loader.close()).is_ok() {
+        if let Some(pixbuf) = loader.pixbuf() {
+            context.drag_set_icon_pixbuf(&pixbuf, 0, 0);
+        }
+    }
+    Ok(())
+}
+
+/// Abort the in-flight native drag, handing the still-held button back to the
+/// in-app pointer drag (the cursor re-entered the Eldrun window, so the ghost
+/// and hover take over again from the OS drag icon). A no-op when no native
+/// drag is running, so the frontend can call it unconditionally.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn cancel_file_drag() {
+    use gtk::prelude::DragContextExtManual;
+    let Some(context) = ACTIVE_DRAG.with(|c| c.borrow().clone()) else {
+        return;
+    };
+    // Read back in `cleanup` (via the `cancel` signal this raises) to tell our
+    // own abort apart from a real one.
+    CANCEL_REQUESTED.with(|f| f.set(true));
+    context.drag_cancel();
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+pub fn cancel_file_drag() {}
+
+/// Non-Linux stub so the command registers everywhere; the frontend only
+/// routes to it on Linux (Windows/macOS stay on `tauri-plugin-drag`).
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+pub fn start_file_drag(paths: Vec<String>) -> Result<(), String> {
+    let _ = paths;
+    Err("start_file_drag is Linux-only; use tauri-plugin-drag".into())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbedCapability {
     /// OS can host an embedded frameless window (X11 backend, not XWayland).

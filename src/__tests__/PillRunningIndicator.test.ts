@@ -342,6 +342,48 @@ describe("activity store attention state", () => {
     expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBeUndefined();
   });
 
+  it("keeps flagging a decision on the tab the user IS looking at", () => {
+    // A blocked agent stays blocked while you look at it — the flag is about the
+    // agent's state, not about unread output. (Contrast the "done" case above:
+    // that one IS about unread output, so viewing the tab retires it.)
+    useTabsStore.setState({ scope: "proj-a" }); // agent-1 is now the visible tab
+    runThenPrompt("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBe("decision");
+
+    // And it holds tick after tick: looking at a prompt does not answer it.
+    vi.advanceTimersByTime(5000);
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBe("decision");
+    expect(useActivityStore.getState().attentionByScope["proj-a"]).toBe("decision");
+  });
+
+  it("retires a watched decision when it is answered", () => {
+    // Input is what clears it — the keystroke that picks an option drops the tail
+    // the prompt was matched from (noteUserInput), so the answered menu can't be
+    // matched again as a live one even before the agent's reply arrives.
+    useTabsStore.setState({ scope: "proj-a" });
+    runThenPrompt("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBe("decision");
+
+    noteUserInput("proj-a:agent-1"); // the human picks an option
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBeUndefined();
+  });
+
+  it("does not clear a live decision when the tab is merely viewed", () => {
+    // Switching TO the tab marks its output read (clearAttention), which must not
+    // knock the lamp out for one tick just for `recompute` to raise it right back.
+    runThenPrompt("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBe("decision");
+
+    useActivityStore.getState().clearAttention("proj-a:agent-1");
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBe("decision");
+    expect(useActivityStore.getState().attentionByScope["proj-a"]).toBe("decision");
+  });
+
   it("clears the flag (and scope rollup) once the tab is viewed, for good", () => {
     runThenFinish("proj-a:agent-1");
     useActivityStore.getState().recompute();
@@ -440,6 +482,33 @@ describe("activity store per-scope status counts (pill status bars)", () => {
     expect(useActivityStore.getState().statusCountsByScope["proj-a"]).toEqual({
       working: 1,
       decision: 0,
+      done: 0,
+    });
+  });
+
+  it("counts the tabs of the SELECTED project too, including the visible one", () => {
+    // The strip answers "is anything still running in there?" — a question the
+    // project you are currently in has just as much right to answer. Selecting a
+    // project used to empty its bars, which read as "nothing running".
+    useTabsStore.setState({ scope: "proj-a" }); // agent-1 is the visible tab
+    sustainAll(["proj-a:agent-1", "proj-a:agent-2"]);
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().statusCountsByScope["proj-a"]).toEqual({
+      working: 2,
+      decision: 0,
+      done: 0,
+    });
+  });
+
+  it("keeps a decision bar for the selected project's visible tab", () => {
+    useTabsStore.setState({ scope: "proj-a" }); // agent-1 is the visible tab
+    runThenPrompt("proj-a:agent-1");
+    vi.advanceTimersByTime(200); // let the prompt's own output age out of the busy
+    // window (800ms), so the tab reads as blocked rather than still writing
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().statusCountsByScope["proj-a"]).toEqual({
+      working: 0,
+      decision: 1,
       done: 0,
     });
   });

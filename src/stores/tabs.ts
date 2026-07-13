@@ -416,6 +416,26 @@ interface TabsStore {
   // exact match the label is refreshed to the new basename only when it still
   // equals the old basename (so a user-renamed tab keeps its label). No-op when
   // nothing matches. Delete/rename tab-sync lives in components/files/fileTabSync.
+  /**
+   * Re-point a project's tabs after it is detached from its SSH host, moving every cwd
+   * out of the old remote-project state dir and into the promoted mirror.
+   *
+   * This is not cosmetic; without it a detach silently breaks every agent tab. While a
+   * project is remote its `directory` is the **state dir**
+   * (`~/.local/share/eldrun/remote-projects/<id>/`), and `loadFromLayout` stores exactly
+   * that as each tab's `cwd` (agents unconditionally, others via `t.cwd || defaultCwd`).
+   * Nothing noticed, because `localTabCwd` overrode it at render time to the real mirror —
+   * an override gated on `isRemoteProject`. Detach flips that to false, the override stops
+   * firing, and every tab falls back to the stored cwd it never should have had: the state
+   * dir. Agents then launch inside `~/.local/share/eldrun/remote-projects/<id>/` — a
+   * directory that detach has just emptied — so Claude asks for permissions there and
+   * `--resume` finds no session, because Claude keys its history by cwd and the whole
+   * conversation lives under the mirror's path instead.
+   *
+   * Host-located tabs are converted to local too: their cwd is a path on a machine this
+   * project is no longer attached to.
+   */
+  detachScopeFromRemote: (scope: string, oldDir: string, newDir: string) => void;
   retargetTabs: (oldAbs: string, newAbs: string) => void;
   removeTab: (key: string) => void; // drop; collapse empty groups/splits
   closeGroup: (groupId: string) => void; // close a whole subwindow; siblings resize
@@ -1460,6 +1480,32 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         t.key === key ? { ...t, label: nextLabel } : t,
       );
       return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  detachScopeFromRemote: (scope, oldDir, newDir) => {
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      if (!tabs.length || !oldDir || !newDir || oldDir === newDir) return {};
+      let changed = false;
+      const nextTabs = tabs.map((t) => {
+        const wasRemoteLoc = t.location === "remote";
+        const underOld = t.cwd === oldDir || t.cwd.startsWith(`${oldDir}/`);
+        if (!wasRemoteLoc && !underOld) return t;
+        changed = true;
+        return {
+          ...t,
+          // A tab that ran ON THE HOST has a cwd in the host's filesystem, which means
+          // nothing here — it can only land in the promoted mirror root.
+          cwd: underOld ? `${newDir}${t.cwd.slice(oldDir.length)}` : newDir,
+          // …and it must stop claiming to run on a host this project no longer has.
+          location: wasRemoteLoc ? undefined : t.location,
+        };
+      });
+      if (!changed) return {};
+      const layout = s.layoutByScope[scope] ?? null;
+      const focused = s.focusedGroupByScope[scope] ?? null;
+      return writeScope(s, scope, nextTabs, layout, focused);
     });
   },
 
@@ -2775,6 +2821,26 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   persistScope: async (scope, localFile) => {
     const layout = get().layoutByScope[scope] ?? null;
     const scopeTabs = get().tabsByScope[scope] ?? [];
+    // Whether an EMPTY layout may erase what's on disk. Saving empty is destructive —
+    // it drops `tab_layout`/`tab_groups` AND overwrites the `.eldrun` session mirror,
+    // taking a resumable agent tab's `sessionId` (the only handle on its conversation)
+    // with them. So it must mean "the user closed every tab", and only two things here
+    // can distinguish that from a caller with nothing loaded:
+    //
+    //   hydrated            — the scope has been restored from disk this session. An
+    //                         ABSENT key is a scope we know nothing about; its emptiness
+    //                         is ignorance, not intent. (A scope whose restore found no
+    //                         restorable tabs never creates the key — see CenterPanel.)
+    //   scopeTabs.length    — the scope really holds zero tabs. A scope holding tabs that
+    //                         all get filtered out below (non-restorable, or belonging to
+    //                         another scope) yields an empty list that looks identical to
+    //                         a close-all and is nothing of the sort — that is how
+    //                         SimpleGNN's four tabs were erased on detach.
+    //
+    // Anything else: the backend keeps what it has. Worst case we persist a layout one
+    // save late; the alternative loses conversations.
+    const hydrated = Object.prototype.hasOwnProperty.call(get().tabsByScope, scope);
+    const allowClear = hydrated && scopeTabs.length === 0;
     // Order the flat tab union by the tree's stable left-to-right order so the
     // persisted `tabs` array and `groups` tree agree.
     const keyOrder = orderedTabKeys(layout);
@@ -2833,6 +2899,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         tabs: tabLayout,
         groups,
         sessions,
+        allowClear,
       });
     } catch {
       // tab layout is non-critical

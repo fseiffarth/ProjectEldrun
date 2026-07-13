@@ -286,11 +286,21 @@ pub fn parse_refs(stdout: &str) -> Vec<RefEntry> {
 }
 
 /// Combine `git symbolic-ref --quiet --short HEAD` (branch, empty when detached)
-/// and `git rev-parse HEAD` (sha, fails on an unborn HEAD) into a [`HeadRef`].
+/// and `git rev-parse --verify --quiet HEAD` (sha, empty on an unborn HEAD) into a
+/// [`HeadRef`].
+///
+/// The sha must be a real object name or the head is [`HeadRef::Unborn`] — "not
+/// empty" is NOT enough. A plain `git rev-parse HEAD` on an unborn repo prints the
+/// literal string `HEAD` to **stdout** (and fails only via its exit status), so a
+/// caller that forgets to check that status hands us `("master", "HEAD")`. Trusting
+/// it built `Branch { name: "master", sha: "HEAD" }` — a branch that exists nowhere,
+/// at a sha that is not a sha — which read as a legitimately-checked-out peer and so
+/// masked the one state that actually needed repairing: a `git init`ed host that was
+/// never checked out. Whatever the probe does, an unborn HEAD parses as unborn.
 pub fn parse_head(symbolic: &str, rev: &str) -> HeadRef {
     let branch = symbolic.trim();
     let sha = rev.trim();
-    if sha.is_empty() {
+    if !is_hex_sha(sha) {
         HeadRef::Unborn
     } else if branch.is_empty() {
         HeadRef::Detached {
@@ -551,15 +561,24 @@ pub fn blocked_detail(branch: &str, stderr: &str) -> String {
 /// Contains no interpolation: it is a constant, so there is nothing here to inject
 /// into (the only variable — the project's remote path — is `shell_quote`d by
 /// [`ssh_exec::run_remote_script`], which `cd`s to it).
+/// The batched host probe. Its **output** is its answer; its **exit status** means only
+/// "the probe ran" — hence the trailing `|| true`. An unborn repo makes the final
+/// `git log HEAD` exit 128, and letting that escape would make a legitimately-empty side
+/// indistinguishable from a probe that could not run at all — the one confusion that must
+/// never happen here, since "could not run" is what withholds a `reset --hard`.
+///
+/// Every `rev-parse` inside must likewise report an unborn HEAD by *printing nothing*
+/// (`--verify --quiet`), not by exiting non-zero: a bare `git rev-parse HEAD` prints the
+/// literal `HEAD` to stdout and fails only in its status, which this script discards.
 const PROBE_SCRIPT: &str = "\
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
 printf 'repo\\036'; \
 git symbolic-ref --quiet --short HEAD 2>/dev/null; printf '\\036'; \
-git rev-parse HEAD 2>/dev/null; printf '\\036'; \
+git rev-parse --verify --quiet HEAD 2>/dev/null; printf '\\036'; \
 git for-each-ref --format='%(objectname) %(refname:short)' refs/heads 2>/dev/null; printf '\\036'; \
 git for-each-ref --format='%(objectname) %(refname:short)' refs/tags 2>/dev/null; printf '\\036'; \
 git status --porcelain 2>/dev/null; printf '\\036'; \
-git log -1 --format=%s HEAD 2>/dev/null; \
+git log -1 --format=%s HEAD 2>/dev/null || true; \
 else printf 'norepo'; fi";
 
 /// Parse [`PROBE_SCRIPT`]'s output into a snapshot. `None` means the output was not
@@ -684,19 +703,66 @@ pub fn head_mismatch(local: &PeerSnapshot, remote: &PeerSnapshot) -> Option<Stri
     }
 }
 
+/// Whether a side is **seeded**: a repo whose HEAD is *born* — some commit is actually
+/// checked out. A bare `git init` is a repo but is NOT seeded: nothing has ever been
+/// written to its working tree.
+///
+/// This, not [`PeerSnapshot::is_repo`], is what initial pairing keys on, because
+/// `git init` is pairing's own *first step*. A seed that dies after it (a link that
+/// drops mid-bundle) leaves a dest that is a repo, holds no commit, and has an empty
+/// working tree. Under an `is_repo` gate that state is unrepairable: "exactly one side
+/// is a repo" never fires again, and the steady-state path only ever moves refs
+/// (`update-ref`) — it never positions HEAD or checks anything out, since that is
+/// [`init_pairing`]'s exclusive job. Refs and objects land, the tree stays empty, and
+/// the pill reports an eternal head mismatch against a branch nobody has. Keying on
+/// "has a commit checked out" makes a half-seeded side simply *unpaired*, so the next
+/// pass finishes what the dropped one started. Pure.
+pub fn is_seeded(snap: &PeerSnapshot) -> bool {
+    snap.is_repo
+        && matches!(
+            snap.head,
+            Some(HeadRef::Branch { .. }) | Some(HeadRef::Detached { .. })
+        )
+}
+
+/// What a pass should do with the two sides — the gate `reconcile` runs on. Pure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PairPlan {
+    /// Both sides seeded → the ordinary bidirectional transfer.
+    Sync,
+    /// Exactly one side seeded → initialize the other from it. `source_is_local` names
+    /// the authority; the *other* side is the one `git init` + `reset --hard` touches.
+    Pair { source_is_local: bool },
+    /// Neither side holds a commit → there is nothing to move in either direction.
+    Nothing,
+}
+
+/// Decide the pass from the two snapshots. Pure.
+pub fn pair_plan(local: &PeerSnapshot, remote: &PeerSnapshot) -> PairPlan {
+    match (is_seeded(local), is_seeded(remote)) {
+        (true, true) => PairPlan::Sync,
+        (true, false) => PairPlan::Pair { source_is_local: true },
+        (false, true) => PairPlan::Pair { source_is_local: false },
+        (false, false) => PairPlan::Nothing,
+    }
+}
+
 /// Whether a pass may be skipped entirely (#28p D5). Deliberately narrow: only a
 /// **green** project whose two ref signatures are both unchanged early-outs. Any
 /// non-green state re-runs in full, so a manual Retry after the user clears a blocker
 /// (deleting an untracked collision moves no ref) is never answered from cache. Pure.
+///
+/// `both_seeded` — not "both are repos": a half-seeded side must never be able to
+/// early-out of the pass that would repair it.
 pub fn can_early_out(
     prior: &GitPeerState,
     local_sig: &str,
     remote_sig: &str,
-    both_repos: bool,
+    both_seeded: bool,
     forced: bool,
 ) -> bool {
     !forced
-        && both_repos
+        && both_seeded
         && prior.status == SyncStatus::Synchronized
         && prior.local_sig.as_deref() == Some(local_sig)
         && prior.remote_sig.as_deref() == Some(remote_sig)
@@ -945,8 +1011,11 @@ fn probe_per_command(peer: &Peer) -> PeerSnapshot {
         .run(&["symbolic-ref", "--quiet", "--short", "HEAD"])
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
+    // `--verify --quiet` so an unborn HEAD yields *empty stdout* rather than the
+    // literal `HEAD` that a bare `rev-parse HEAD` prints — the two probes must agree
+    // on what unborn looks like, whichever one a peer happens to take.
     let rev = peer
-        .run(&["rev-parse", "HEAD"])
+        .run(&["rev-parse", "--verify", "--quiet", "HEAD"])
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
@@ -1766,6 +1835,7 @@ async fn init_pairing(
     } else {
         (Peer::Local(mirror_dir(project_id)), false)
     };
+    let dest_label = if source_is_local { "remote host" } else { "local mirror" };
     if let Peer::Local(dir) = &dest_peer {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -1784,35 +1854,74 @@ async fn init_pairing(
         }
     }
 
-    // `git init` the empty side (idempotent on an existing repo, but we only reach
-    // here when the dest is not yet a repo).
+    // The host root must exist before any remote git can run: every remote command is
+    // `cd '<remote_path>' && git …`, so a missing directory fails ALL of them — including
+    // the `git init` below. Eldrun only `mkdir -p`s the root at create/extend time, which
+    // leaves a host whose directory is later removed (or whose creation was refused back
+    // then — it is best-effort there) permanently unpairable. Idempotent, so re-pairing an
+    // existing host costs one cheap round trip.
+    if source_is_local {
+        crate::services::ssh_exec::remote_mkdir_p(spec)
+            .map_err(|e| format!("could not create '{}' on the host: {e}", spec.remote_path))?;
+    }
+
+    // `git init` the empty side. Idempotent, and deliberately so: the dest may already be
+    // a repo here — a bare, never-checked-out one left behind by an earlier seed that died
+    // after this very step. Re-running init on it is a no-op and the pairing carries on.
     let out = dest_peer.run(&["init"])?;
     if !out.status.success() {
         return Err(format!(
-            "git init on {} failed: {}",
-            if source_is_local { "remote host" } else { "local mirror" },
+            "git init on {dest_label} failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
 
     // Transfer every ref from the authority into the freshly-init'd (empty) dest;
     // with no dest shas this is a full bundle and every branch/tag is a create.
+    //
+    // A failure here is fatal to the pairing and must NOT fall through to the checkout
+    // below: `reset --hard` would be aimed at a sha whose objects never arrived, and the
+    // `git init` above has *already run* — so swallowing this (as `let _ =` used to) left
+    // a dest that is a repo, holds no commit, and has an empty working tree, while
+    // reporting `Ok`. That is precisely the half-seeded state `is_seeded` now exists to
+    // recognize; reporting it means the user sees why, and the next pass retries the seed
+    // instead of settling into a permanent head mismatch.
     let dest = probe(&dest_peer);
-    let _ =
-        transfer_and_apply(pool, manifest, project_id, spec, to_remote, source, &dest, false).await;
+    transfer_and_apply(pool, manifest, project_id, spec, to_remote, source, &dest, false).await?;
 
     // Position HEAD + populate the working tree to match the source's HEAD. The
     // `reset --hard` here is only reached once `pairing_conflicts` has confirmed that
     // nothing it would clobber differs from what it is about to write (#28p D3).
+    //
+    // This is the ONLY place lockstep writes a dest's working tree at pairing time, so a
+    // silent failure here is the difference between a seeded peer and an empty directory
+    // with a `.git` in it. Checked, not swallowed.
+    let checked = |what: &str, out: Output| -> Result<(), String> {
+        if out.status.success() {
+            return Ok(());
+        }
+        Err(format!(
+            "{what} on the {dest_label} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    };
     match &source.head {
         Some(HeadRef::Branch { name, sha }) => {
-            let _ = dest_peer.run(&["symbolic-ref", "HEAD", &format!("refs/heads/{name}")]);
-            let _ = dest_peer.run(&["reset", "--hard", sha]);
+            checked(
+                &format!("pointing HEAD at '{name}'"),
+                dest_peer.run(&["symbolic-ref", "HEAD", &format!("refs/heads/{name}")])?,
+            )?;
+            checked(
+                &format!("checking out '{name}'"),
+                dest_peer.run(&["reset", "--hard", sha])?,
+            )?;
         }
         Some(HeadRef::Detached { sha }) => {
-            let _ = dest_peer.run(&["checkout", sha]);
+            checked("checking out the detached HEAD", dest_peer.run(&["checkout", sha])?)?;
         }
         // Unborn/None source → nothing committed yet; leave the empty repo unborn too.
+        // Unreachable via `pair_plan` (an unseeded side is never the source), kept as a
+        // total match rather than a panic.
         _ => {}
     }
 
@@ -2056,6 +2165,7 @@ async fn reconcile_with(
     let local = probe(&Peer::Local(mirror_dir(project_id)));
     let remote = probe(&Peer::Remote(spec.clone()));
     let (local_sig, remote_sig) = (refs_signature(&local), refs_signature(&remote));
+    let plan = pair_plan(&local, &remote);
 
     // #28p D5: nothing moved on either side and we were green → re-emit, skipping the
     // bundle round trip entirely. This is what stops a bare `git add` (which trips the
@@ -2064,7 +2174,7 @@ async fn reconcile_with(
         &prior,
         &local_sig,
         &remote_sig,
-        local.is_repo && remote.is_repo,
+        matches!(plan, PairPlan::Sync),
         opts.forced,
     ) {
         return persist(
@@ -2084,7 +2194,7 @@ async fn reconcile_with(
     let mut pairing_blocked: Option<String> = None;
     let mut pairing_conflict: Option<PairingConflict> = None;
 
-    if local.is_repo && remote.is_repo {
+    if matches!(plan, PairPlan::Sync) {
         // Local → remote, then remote → local (each catches the side that is ahead).
         // A leg that *errors* (bundle unreadable, SFTP transfer died) must not be
         // discarded: dropping it leaves `diverged`/`blocked` empty, which computes to
@@ -2114,9 +2224,11 @@ async fn reconcile_with(
             }
             Err(e) => blocked = blocked.or(Some(format!("Sync from the host failed: {e}"))),
         }
-    } else if local.is_repo != remote.is_repo {
-        // Exactly one side is a repo → initialize the other from it (initial pairing).
-        let source_is_local = local.is_repo;
+    } else if let PairPlan::Pair { source_is_local } = plan {
+        // Exactly one side holds a commit → initialize the other from it (initial
+        // pairing). NB "holds a commit", not "is a repo": a host left as a bare
+        // `git init` by a seed that died mid-way is an unpaired dest, not a peer, and
+        // this is the branch that finishes it (see `is_seeded`).
         // The dest is the side we would `git init` + `reset --hard`. If *its* probe
         // errored (the tree is there, but git couldn't confirm what it is), refuse: a
         // transient git/network failure must never license a wipe of a real repo. This
@@ -2164,18 +2276,22 @@ async fn reconcile_with(
                 });
             } else {
                 let source = if source_is_local { &local } else { &remote };
-                if init_pairing(pool, manifest, project_id, spec, source_is_local, source)
-                    .await
-                    .is_ok()
+                match init_pairing(pool, manifest, project_id, spec, source_is_local, source).await
                 {
-                    // Pairing just materialized both sides to the same HEAD, so every
-                    // tracked file is byte-identical across host and mirror. Seed the
-                    // selective-sync manifest for them so the file tree shows them green
-                    // (in sync) rather than red (untracked by SFTP sync) — there is
-                    // nothing to transfer. This branch only fires at the pairing moment
-                    // (exactly one side a repo), so it runs once and never re-selects a
-                    // file the user later deselects.
-                    seed_manifest_after_pairing(pool, manifest, project_id, spec).await;
+                    Ok(()) => {
+                        // Pairing just materialized both sides to the same HEAD, so every
+                        // tracked file is byte-identical across host and mirror. Seed the
+                        // selective-sync manifest for them so the file tree shows them green
+                        // (in sync) rather than red (untracked by SFTP sync) — there is
+                        // nothing to transfer. This branch only fires at the pairing moment
+                        // (exactly one side seeded), so it runs once and never re-selects a
+                        // file the user later deselects.
+                        seed_manifest_after_pairing(pool, manifest, project_id, spec).await;
+                    }
+                    // A seed that failed part-way leaves the dest a bare, unseeded repo.
+                    // Say so: it used to report `Ok` and settle into a permanent, baffling
+                    // head mismatch. The dest stays unseeded, so the next pass retries.
+                    Err(e) => pairing_blocked = Some(format!("Initial pairing failed: {e}")),
                 }
             }
         }
@@ -4181,5 +4297,202 @@ mod tests {
         assert!(s.enabled);
         assert_eq!(s.status, SyncStatus::Synchronized);
         assert!(s.pairing_conflict.is_none() && s.local_sig.is_none());
+    }
+
+    // ── The half-seeded host: `git init` ran, the checkout never did ─────────
+    //
+    // Live failure (SimpleGNN, extend-local-to-remote): the host ended up holding a
+    // `.git` and an empty working tree, permanently, and the pill blamed a branch that
+    // existed on neither side ("the mirror is on 'transfer-learning', the host is on
+    // 'master'"). Three bugs in series; one test each, plus the gate that repairs it.
+
+    /// Bug 1. `git rev-parse HEAD` on an unborn repo prints the literal `HEAD` to
+    /// **stdout** and reports the failure only in its exit status. `PROBE_SCRIPT`
+    /// discarded that status, so `parse_head` was handed `("master", "HEAD")` and built
+    /// `Branch { name: "master", sha: "HEAD" }` — a branch nobody has, at a sha that is
+    /// not a sha. `parse_head` now demands a real object name, so no probe, however
+    /// broken, can fabricate a checked-out branch again.
+    #[test]
+    fn parse_head_never_invents_a_branch_from_a_non_sha() {
+        assert_eq!(parse_head("master", "HEAD"), HeadRef::Unborn);
+        assert_eq!(parse_head("", "HEAD"), HeadRef::Unborn);
+        assert_eq!(parse_head("main", ""), HeadRef::Unborn);
+        assert_eq!(parse_head("main", "not-a-sha"), HeadRef::Unborn);
+        // …while a real head still parses exactly as before.
+        assert_eq!(
+            parse_head("main", "abc123"),
+            HeadRef::Branch { name: "main".into(), sha: "abc123".into() }
+        );
+        assert_eq!(parse_head("", "abc123"), HeadRef::Detached { sha: "abc123".into() });
+    }
+
+    /// Bug 1, at the level that actually shipped. `parse_probe_block_tolerates_empty_
+    /// sections_and_a_non_repo` already asserted "unborn → `HeadRef::Unborn`", and passed
+    /// throughout — because it *synthesized* the block by hand with an empty sha section,
+    /// encoding the very assumption that was false. So: drive the real `PROBE_SCRIPT`
+    /// through a real `sh` against a real `git init`ed repo, and read what git actually
+    /// prints. This is the test that would have caught it.
+    #[cfg(unix)]
+    #[test]
+    fn probe_script_reports_a_real_unborn_repo_as_unborn() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping probe_script_reports_a_real_unborn_repo");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        crate::paths::command_no_window("git")
+            .args(["init", "-q", "-b", "master", "."])
+            .current_dir(dir)
+            .output()
+            .expect("git init");
+
+        let snap = parse_probe_block(&run_sh(dir, PROBE_SCRIPT)).expect("parses");
+        assert!(snap.is_repo, "a bare `git init` IS a repo…");
+        assert_eq!(
+            snap.head,
+            Some(HeadRef::Unborn),
+            "…but its HEAD is unborn — NOT `Branch {{ name: \"master\", sha: \"HEAD\" }}`"
+        );
+        assert!(snap.branches.is_empty() && snap.head_subject.is_none());
+        // The batched remote probe and the per-command local one must agree about what
+        // unborn looks like, or the bug simply moves to whichever path a peer takes.
+        assert_eq!(snap.head, probe_per_command(&Peer::Local(dir.to_path_buf())).head);
+        // And the whole point: this side is not seeded, so it is still pairable.
+        assert!(!is_seeded(&snap));
+    }
+
+    /// Bug 2. The pairing gate keyed on `is_repo`, but `git init` is pairing's own first
+    /// step — so a seed that died after it flipped the gate shut behind itself. The dest
+    /// was a repo forever after, "exactly one side is a repo" never fired again, and the
+    /// steady-state path only ever moves refs (`update-ref`); it never positions HEAD or
+    /// checks out. Hence: objects and refs on the host, empty tree, forever.
+    #[test]
+    fn a_bare_git_init_is_not_seeded_and_stays_pairable() {
+        let unborn = PeerSnapshot { is_repo: true, head: Some(HeadRef::Unborn), ..Default::default() };
+        let seeded = PeerSnapshot {
+            is_repo: true,
+            head: Some(HeadRef::Branch { name: "transfer-learning".into(), sha: "a5b535d".into() }),
+            branches: vec![RefEntry { name: "transfer-learning".into(), sha: "a5b535d".into() }],
+            ..Default::default()
+        };
+        let absent = PeerSnapshot::default();
+
+        assert!(!is_seeded(&absent), "not a repo");
+        assert!(!is_seeded(&unborn), "a repo, but nothing is checked out");
+        assert!(is_seeded(&seeded));
+        assert!(is_seeded(&PeerSnapshot {
+            is_repo: true,
+            head: Some(HeadRef::Detached { sha: "abc123".into() }),
+            ..Default::default()
+        }));
+
+        // The live case: mirror seeded, host `git init`ed and never checked out.
+        assert_eq!(
+            pair_plan(&seeded, &unborn),
+            PairPlan::Pair { source_is_local: true },
+            "the half-seeded host must be re-paired, not treated as a peer"
+        );
+        // Under the old `is_repo` gate this was `Sync` — which moved refs and never a
+        // single file, which is exactly how it wedged.
+        assert!(seeded.is_repo && unborn.is_repo, "…and both ARE repos, which is the trap");
+
+        assert_eq!(pair_plan(&seeded, &absent), PairPlan::Pair { source_is_local: true });
+        assert_eq!(pair_plan(&absent, &seeded), PairPlan::Pair { source_is_local: false });
+        assert_eq!(pair_plan(&seeded, &seeded), PairPlan::Sync);
+        assert_eq!(pair_plan(&absent, &absent), PairPlan::Nothing);
+        assert_eq!(pair_plan(&unborn, &unborn), PairPlan::Nothing, "nothing to move either way");
+    }
+
+    /// The nastiest shape of bug 2: the refs DID land (the steady-state pass creates them
+    /// with `update-ref`), so the host looks populated by every measure except the only
+    /// one that matters — whether anything is checked out. A gate that looked at branches
+    /// rather than HEAD would call this seeded and wedge exactly as before.
+    #[test]
+    fn a_host_with_refs_but_no_checkout_is_still_unseeded() {
+        let mirror = PeerSnapshot {
+            is_repo: true,
+            head: Some(HeadRef::Branch { name: "transfer-learning".into(), sha: "a5b535d".into() }),
+            branches: vec![RefEntry { name: "transfer-learning".into(), sha: "a5b535d".into() }],
+            ..Default::default()
+        };
+        // Every ref arrived; HEAD is still unborn. Empty working tree.
+        let host = PeerSnapshot {
+            is_repo: true,
+            head: Some(HeadRef::Unborn),
+            branches: vec![
+                RefEntry { name: "transfer-learning".into(), sha: "a5b535d".into() },
+                RefEntry { name: "main".into(), sha: "64bd1c3".into() },
+            ],
+            ..Default::default()
+        };
+        assert!(!is_seeded(&host), "refs are not a checkout");
+        assert_eq!(pair_plan(&mirror, &host), PairPlan::Pair { source_is_local: true });
+    }
+
+    /// Bug 3's other half: a half-seeded side must never be able to *early-out* of the
+    /// very pass that would repair it. `can_early_out` now gates on both sides being
+    /// seeded, not on both being repos.
+    #[test]
+    fn early_out_never_skips_a_half_seeded_side() {
+        let prior = GitPeerState {
+            status: SyncStatus::Synchronized,
+            local_sig: Some("sig".into()),
+            remote_sig: Some("sig".into()),
+            ..Default::default()
+        };
+        assert!(
+            can_early_out(&prior, "sig", "sig", true, false),
+            "both seeded + green + unmoved → skip, as before"
+        );
+        assert!(
+            !can_early_out(&prior, "sig", "sig", false, false),
+            "a side that was never checked out must always be re-examined"
+        );
+    }
+
+    /// The constraint on the repair: it must never cost the user a local file. When the
+    /// mirror is the unseeded side, pairing writes *it* — so the D3 collision guard is
+    /// what stands between `reset --hard` and the user's untracked work, and it must fail
+    /// CLOSED. A dest file that cannot be proven byte-identical to what the source would
+    /// write over it (`hash: None` — the hash could not be computed) is a conflict, which
+    /// blocks the pairing and raises the prompt instead of clobbering.
+    #[test]
+    fn pairing_into_the_mirror_refuses_to_clobber_unproven_local_files() {
+        let source: HashMap<String, Fingerprint> = [
+            ("README.md".to_string(), Fingerprint { size: 10, hash: Some("aaa".into()) }),
+            ("src/a.rs".to_string(), Fingerprint { size: 20, hash: Some("bbb".into()) }),
+        ]
+        .into_iter()
+        .collect();
+
+        // Same path, same size, but the hash could not be established → NOT provably
+        // identical → refused rather than overwritten.
+        let unproven: HashMap<String, Fingerprint> =
+            [("README.md".to_string(), Fingerprint { size: 10, hash: None })].into_iter().collect();
+        assert_eq!(pairing_collisions(&source, &unproven), vec!["README.md".to_string()]);
+
+        // Differing content → refused.
+        let differs: HashMap<String, Fingerprint> =
+            [("src/a.rs".to_string(), Fingerprint { size: 20, hash: Some("zzz".into()) })]
+                .into_iter()
+                .collect();
+        assert_eq!(pairing_collisions(&source, &differs), vec!["src/a.rs".to_string()]);
+
+        // Byte-identical → adopting it is a no-op, so pairing proceeds (the intended
+        // "the mirror already holds these files" path).
+        let identical: HashMap<String, Fingerprint> =
+            [("README.md".to_string(), Fingerprint { size: 10, hash: Some("aaa".into()) })]
+                .into_iter()
+                .collect();
+        assert!(pairing_collisions(&source, &identical).is_empty());
+
+        // A local file the source does not track is not a collision at all — and
+        // `reset --hard` never removes untracked paths, so it survives the pairing.
+        let untracked: HashMap<String, Fingerprint> =
+            [("data/big.npz".to_string(), Fingerprint { size: 999, hash: None })]
+                .into_iter()
+                .collect();
+        assert!(pairing_collisions(&source, &untracked).is_empty());
     }
 }

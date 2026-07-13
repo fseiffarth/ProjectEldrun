@@ -40,7 +40,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanelKind>("main");
   const [showAddMenu, setShowAddMenu] = useState(false);
-  const [dialog, setDialog] = useState<"new" | "import" | null>(null);
+  // "clone" is the import dialog opened straight onto its GitHub/GitLab source —
+  // the same dialog, so the source can still be switched back inside it.
+  const [dialog, setDialog] = useState<"new" | "import" | "clone" | null>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   // Hover-opened, like the header's sibling menus (GlobalAppMenu, LocalModelMenu,
@@ -343,9 +345,10 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         />,
         document.body,
       )}
-      {dialog === "import" && createPortal(
+      {(dialog === "import" || dialog === "clone") && createPortal(
         <ProjectDialog
           kind="import"
+          initialImportSource={dialog === "clone" ? "git" : "folder"}
           onClose={() => setDialog(null)}
           onProject={(project) => addProject(project)}
         />,
@@ -523,6 +526,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               </button>
               <button onClick={() => { setShowAddMenu(false); setDialog("import"); }}>
                 Import Project
+              </button>
+              <button onClick={() => { setShowAddMenu(false); setDialog("clone"); }}>
+                Import from GitHub/GitLab
               </button>
               <button
                 onClick={() => {

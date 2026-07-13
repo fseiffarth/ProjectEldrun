@@ -594,8 +594,16 @@ function ArchiveConfirmWindow({
   );
 }
 
-/** Simple confirm for detaching a remote (SSH) project back to local. The host's
- *  files are never touched — only the local mirror is promoted back in place. */
+/** Confirm for detaching a remote (SSH) project back to local. The host's files are never
+ *  touched — only the local mirror is promoted back in place.
+ *
+ *  Lives in the pill's **danger zone** despite destroying nothing on either side, because
+ *  what it drops is not a file but a *pairing*: `clear_host_bound_state` discards the
+ *  byte-sync manifest (every auto-sync marker the user set up for this host, and every
+ *  size/mtime base behind the file tree's green) along with the lockstep state. That purge
+ *  is mandatory — those records describe ONE host, and a project that keeps its id can be
+ *  re-extended to a different one — but it is not undoable, and re-attaching the very same
+ *  host means choosing the auto-sync scope again from scratch. Say so before, not after. */
 function DetachRemoteWindow({
   project,
   onConfirm,
@@ -632,7 +640,13 @@ function DetachRemoteWindow({
           This turns <strong>{project.name}</strong> back into a plain local
           project: its local working copy stays exactly where it is and becomes
           the project directory again. The files on the remote host are
-          {" "}<strong>not</strong> touched — this only drops the SSH link.
+          {" "}<strong>not</strong> touched, and nothing local is deleted.
+        </p>
+        <p className="settings-help">
+          What it does drop is the <strong>pairing</strong>: git lockstep stops, and the
+          auto-sync scope you chose for this host — which folders cross, and the record of
+          what was already in step — is discarded. Re-attaching the same host later means
+          picking that scope again from scratch.
         </p>
         {error && <div className="project-dialog-error">{error}</div>}
         <div className="project-dialog-actions">
@@ -1049,14 +1063,15 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const catColor = primaryCategoryColor(categories);
 
   const timerPaused = useTimerStore((s) => s.paused);
-  // Whole-pill status glow, matching the tab lamps: working (green pulse) wins,
-  // else an agent in this project needs a decision (orange pulse) or has finished
-  // unseen (green steady). Attention rolls up from the project's background tabs.
   // One little bar per non-idle tab along the bottom edge of the pill, so a
   // glance at the switcher says how many tabs of each project are working
   // (green, pulsing), waiting on a decision (orange, pulsing) or finished unseen
   // (green, steady). This replaced a whole-pill tint that could only ever show
   // one state and said nothing about how many tabs were in it.
+  // The SELECTED project keeps its bars: the strip is a tally of what the project
+  // is doing, not a list of what still needs a glance, and the project you are in
+  // is the one whose agents you most need to see running. Only "finished unseen"
+  // is inherently about unread output, and it can't arise for a tab on screen.
   const statusCounts = useActivityStore((s) => s.statusCountsByScope[project.id]);
   const gitDirty = useGitDirtyStore((s) => s.byId[project.id]);
   const updateProjectDescription = useProjectsStore((s) => s.updateProjectDescription);
@@ -1298,17 +1313,6 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 Move project…
               </button>
             )}
-            {project.remote && (
-              <button
-                onClick={() => {
-                  setContextMenu(null);
-                  setShowDetach(true);
-                }}
-                title="Turn this back into a local project — the local working copy stays put; the remote host's files are untouched"
-              >
-                Detach SSH host…
-              </button>
-            )}
             <button
               onClick={() => {
                 setContextMenu(null);
@@ -1471,8 +1475,8 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   tabsStore.closeDetachedGroup(project.id, g.id);
                 }
                 // Clear this project's in-window tabs. For the ACTIVE project the
-                // debounced saveLayout effect persists the empty layout; for a
-                // non-active project nothing else writes it, so persist explicitly.
+                // debounced persist effect writes the empty layout; for a non-active
+                // project nothing else writes it, so persist explicitly.
                 tabsStore.closeAllTabs(project.id);
                 if (project.local_file) {
                   void invoke("save_tab_layout", {
@@ -1480,6 +1484,11 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                     tabs: [],
                     groups: null,
                     sessions: [],
+                    // This is THE close-all: the one empty save that is meant, by a user
+                    // who clicked a button that says so. Everywhere else an empty layout
+                    // is refused, because it far more often means "the caller had nothing
+                    // loaded" than "erase four tabs and their agent conversations".
+                    allowClear: true,
                   }).catch(() => {});
                 }
               }}
@@ -1491,6 +1500,18 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           {/* Danger zone — irreversible / destructive actions, fenced off */}
           <div className="context-menu-danger-zone">
             <div className="context-menu-group-label">Danger zone</div>
+            {project.remote && (
+              <button
+                className="danger"
+                onClick={() => {
+                  setContextMenu(null);
+                  setShowDetach(true);
+                }}
+                title="Turn this back into a local project. The local working copy stays put and the remote host's files are untouched — but the pairing is dropped: lockstep stops, and the auto-sync scope you set up for this host is discarded."
+              >
+                Detach SSH host…
+              </button>
+            )}
             {!project.remote && project.git_type !== "none" && (
               <button
                 className="danger"

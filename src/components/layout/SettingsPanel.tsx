@@ -25,11 +25,20 @@ import {
   type ShortcutAction,
   type ShortcutMap,
 } from "../../lib/shortcuts";
-import { AgentsPanel, FileTypeSettings, GlobalAppsSettings, OllamaPanel } from "./SettingsSubPanels";
+import {
+  AgentsPanel,
+  FileTypeSettings,
+  GlobalAppsSettings,
+  OllamaPanel,
+  RemoteHostsSettings,
+} from "./SettingsSubPanels";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
+import { canConnectVpnSilently } from "../../lib/vpnConnect";
+import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/vpnAutoConnect";
+import type { StoredVpnConfig } from "../../types";
 
 // The workspace-layout help text. On Linux/Windows a lone modifier (Super / the
 // Windows key) toggles the panels; on macOS that key is reserved for Cmd
@@ -261,6 +270,92 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
           }}
         />
       </label>
+    </>
+  );
+}
+
+/**
+ * Same setting the header's VPN menu arms per config (`settings.vpn_auto_connect`,
+ * see `lib/vpnAutoConnect.ts`) — surfaced here too since the header menu only shows
+ * up once a tunnel exists, which makes this opt-in easy to miss.
+ */
+function VpnAutoConnectSettings({ onBack }: { onBack: () => void }) {
+  const { settings } = useSettingsStore();
+  const armed = settings?.vpn_auto_connect ?? null;
+  const headless = settings?.connections_headless ?? true;
+  const [configs, setConfigs] = useState<StoredVpnConfig[] | null>(null);
+  const [silent, setSilent] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<StoredVpnConfig[]>("openvpn_list_configs")
+      .then(async (list) => {
+        const stored = Array.isArray(list) ? list : [];
+        if (cancelled) return;
+        setConfigs(stored);
+        const checks = await Promise.all(
+          stored.map(async (c) => [c.path, await canConnectVpnSilently(c.path, vpnUsernameFor(c.path))] as const),
+        );
+        if (!cancelled) setSilent(Object.fromEntries(checks));
+      })
+      .catch(() => {
+        if (!cancelled) setConfigs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <>
+      <div className="settings-title-row">
+        <h2>VPN Auto-Connect</h2>
+        <button type="button" onClick={onBack}>Back</button>
+      </div>
+      <p className="settings-help">
+        Arm one stored OpenVPN tunnel to come up automatically when Eldrun starts.
+        It reroutes this computer's traffic — not just Eldrun's — for as long as it
+        is up, so only one config can be armed at a time; arming another disarms the
+        first. Stored configs are added from a remote project's Connect dialog or the
+        VPN menu in the header.
+      </p>
+      {configs === null ? (
+        <p className="settings-help">Loading…</p>
+      ) : configs.length === 0 ? (
+        <div className="settings-empty">
+          No OpenVPN config stored yet. Add one from a remote project's Connect dialog.
+        </div>
+      ) : (
+        <div className="settings-list">
+          {configs.map((c) => {
+            const on = armed === c.path;
+            const eligible = !headless || silent[c.path] === true;
+            return (
+              <div key={c.path} className="settings-toggle-card">
+                <label className="settings-toggle-card-row">
+                  <span title={c.path}>{c.name}</span>
+                  <Toggle
+                    checked={on}
+                    disabled={!eligible && !on}
+                    onChange={(e) => void setVpnAutoConnect(c.path, e.target.checked)}
+                  />
+                </label>
+                {!eligible && !on && (
+                  <p className="settings-help">
+                    Connect once with <b>Save passphrase</b> ticked to enable this —
+                    auto-connect never prompts.
+                  </p>
+                )}
+                {on && (
+                  <p className="settings-help">
+                    Starts with Eldrun{headless ? "" : " (waits in the root terminal)"}.
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </>
   );
 }
@@ -574,7 +669,7 @@ function HelpPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
-export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "archive" | "scaffoldRepair" | "help";
+export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "vpn" | "remoteHosts" | "archive" | "scaffoldRepair" | "help";
 
 /** Sub-panel navigation shown as a card menu at the foot of the main settings
  *  panel (styled like the Lessons / How-to-start menus). */
@@ -584,6 +679,8 @@ const SETTINGS_NAV: {
   blurb: string;
 }[] = [
   { panel: "git", title: "Git Hosting", blurb: "Hosting profile, access token, and publishing." },
+  { panel: "vpn", title: "VPN Auto-Connect", blurb: "Arm a stored tunnel to connect on launch." },
+  { panel: "remoteHosts", title: "Remote Connections", blurb: "Set a standard path per SSH host." },
   { panel: "global", title: "Global Apps", blurb: "Toolbar launchers shown across every project." },
   { panel: "filetypes", title: "File Type Apps", blurb: "Choose which app opens each file type." },
   { panel: "agents", title: "Manage Agents", blurb: "Install or update the agent CLIs." },
@@ -1030,6 +1127,8 @@ export function SettingsDialog({
         {panel === "agents" && <AgentsPanel onBack={() => setPanel("main")} />}
         {panel === "shortcuts" && <ShortcutsSettings onBack={() => setPanel("main")} />}
         {panel === "git" && <GitHostingSettings onBack={() => setPanel("main")} />}
+        {panel === "vpn" && <VpnAutoConnectSettings onBack={() => setPanel("main")} />}
+        {panel === "remoteHosts" && <RemoteHostsSettings onBack={() => setPanel("main")} />}
         {panel === "archive" && <ArchivedProjectsPanel onBack={() => setPanel("main")} />}
         {panel === "scaffoldRepair" && <ScaffoldRepairPanel onBack={() => setPanel("main")} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} />}

@@ -152,6 +152,55 @@ pub fn remote_remember_path(host: String, path: String) -> Result<(), String> {
     crate::storage::write_json(&remote_paths_path(), &store).map_err(|e| e.to_string())
 }
 
+/// File backing the per-host **standard** remote paths set from Settings'
+/// "Remote Connections" panel — a `HashMap<host, path>`, keyed case-
+/// insensitively like `remote_paths.json`. Distinct from that file: this one
+/// holds one explicit, user-chosen default per host, not an auto-remembered
+/// recents list.
+fn remote_host_defaults_path() -> std::path::PathBuf {
+    crate::storage::state_dir().join("remote_host_defaults.json")
+}
+
+/// All per-host standard paths configured from Settings, for the "Remote
+/// Connections" panel to list and edit.
+#[tauri::command]
+pub fn remote_list_default_paths() -> std::collections::HashMap<String, String> {
+    crate::storage::read_json(&remote_host_defaults_path()).unwrap_or_default()
+}
+
+/// The configured standard remote path for `host`, if any. Consulted when a
+/// connect/browse flow would otherwise fall back to `ssh_default_dir`'s SSH
+/// home-directory guess, so a host with a preferred working directory starts
+/// there instead every time.
+#[tauri::command]
+pub fn remote_get_default_path(host: String) -> Option<String> {
+    let store: std::collections::HashMap<String, String> =
+        crate::storage::read_json(&remote_host_defaults_path()).unwrap_or_default();
+    store.get(&host.to_lowercase()).cloned()
+}
+
+/// Set (or, with a blank `path`, clear) the standard remote path for `host`.
+/// Trims and validates a non-empty path the same way `remote_remember_path`
+/// does, so it can't smuggle in an `ssh`/`sftp`-option-looking value or
+/// control characters.
+#[tauri::command]
+pub fn remote_set_default_path(host: String, path: String) -> Result<(), String> {
+    let key = host.trim().to_lowercase();
+    if key.is_empty() {
+        return Err("empty host".to_string());
+    }
+    let mut store: std::collections::HashMap<String, String> =
+        crate::storage::read_json(&remote_host_defaults_path()).unwrap_or_default();
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        store.remove(&key);
+    } else {
+        crate::services::ssh_common::validate_arg("remote path", trimmed)?;
+        store.insert(key, trimmed.to_string());
+    }
+    crate::storage::write_json(&remote_host_defaults_path(), &store).map_err(|e| e.to_string())
+}
+
 /// Open a web URL in the user's default browser. Refuses anything that is not an
 /// `http(s)` URL so it cannot be turned into a launcher for arbitrary local files
 /// or schemes.

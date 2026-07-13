@@ -170,6 +170,47 @@ export function parseSshAddress(raw: string): ParsedSshAddress | null {
   return { user, host, port };
 }
 
+/**
+ * Frontend twin of the backend's clone-URL whitelist (`validate_clone_url` in
+ * `commands/git.rs`): https/http, `ssh://`, `git://`, or the scp-like
+ * `[user@]host:path`. It gates the Import button so a typo is caught before a
+ * `git clone` is spawned — the backend re-validates regardless, since that is
+ * where a hostile URL (`ext::<command>` runs the command) would actually bite.
+ */
+export function isCloneUrl(raw: string): boolean {
+  const url = raw.trim();
+  if (!url) return false;
+
+  const schemeEnd = url.toLowerCase().indexOf("://");
+  if (schemeEnd >= 0) {
+    return ["https", "http", "ssh", "git"].includes(url.slice(0, schemeEnd).toLowerCase());
+  }
+
+  const colon = url.indexOf(":");
+  if (colon < 0) return false;
+  const host = url.slice(0, colon);
+  const path = url.slice(colon + 1);
+  return (
+    host !== "" &&
+    !host.includes("/") &&
+    !host.startsWith("-") &&
+    path !== "" &&
+    !path.startsWith(":")
+  );
+}
+
+/**
+ * The repository's own name from a clone URL — last path segment, minus a
+ * trailing `.git`. Used to pre-fill the project name so the common case needs no
+ * typing. Returns "" when nothing name-like can be read out.
+ */
+export function repoNameFromCloneUrl(raw: string): string {
+  const url = raw.trim().replace(/[/]+$/, "");
+  if (!url) return "";
+  const last = url.split(/[/:]/).pop() ?? "";
+  return last.replace(/\.git$/i, "");
+}
+
 /** Join a remote directory path with a child segment using POSIX separators. */
 export function joinRemotePath(base: string, child: string): string {
   if (!base || base === "/") return `/${child}`;

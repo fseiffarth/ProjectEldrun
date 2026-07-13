@@ -292,6 +292,111 @@ fn walk_dir_size(dir: &Path) -> u64 {
     total
 }
 
+#[derive(Debug, Serialize)]
+pub struct DirSizeBreakdown {
+    pub total: u64,
+    pub ignored: u64,
+}
+
+/// Recursive byte size of a folder split into git-ignored vs
+/// tracked/untracked content, so a mixed folder (e.g. source alongside a
+/// build output dir) can show how much of its weight is ignored content.
+/// Local projects only: splitting by ignore status needs a `git status`
+/// process, and there is no cheap way to run one against a remote host's
+/// index without a dedicated round trip per lazily-shown folder — a remote
+/// folder (or one with no `.git`) just gets `ignored: 0`, same best-effort
+/// fallback as [`dir_size`] on failure.
+#[tauri::command]
+pub async fn dir_size_breakdown(project_dir: String, rel_path: String) -> Result<DirSizeBreakdown, String> {
+    tokio::task::spawn_blocking(move || dir_size_breakdown_local(&project_dir, &rel_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn dir_size_breakdown_local(project_dir: &str, rel_path: &str) -> Result<DirSizeBreakdown, String> {
+    let root = canonical(project_dir)?;
+    let target = if rel_path.is_empty() {
+        root.clone()
+    } else {
+        canonical(&root.join(rel_path).to_string_lossy().to_string())?
+    };
+    enforce_confinement(&root, &target)?;
+
+    if crate::services::remote::remote_target_for_dir(project_dir).is_some() || !root.join(".git").exists() {
+        return Ok(DirSizeBreakdown { total: walk_dir_size(&target), ignored: 0 });
+    }
+
+    let ignored = ignored_paths_under(&root, rel_path);
+    let (total, ignored_bytes) = walk_dir_size_breakdown(&target, rel_path, &ignored);
+    Ok(DirSizeBreakdown { total, ignored: ignored_bytes })
+}
+
+/// The set of repo-root-relative paths (matching git's own porcelain output)
+/// that `git status` reports as ignored (`!!`) anywhere under `rel_path`.
+/// `--untracked-files=all` is what makes this useful: without it, git
+/// collapses a wholly-ignored directory to one line for the directory itself
+/// rather than recursing into it (see `commands::git::git_file_statuses`'s
+/// `wholly_ignored` handling for the same quirk) — here we want every
+/// individual ignored file, at any depth, so [`walk_dir_size_breakdown`] can
+/// classify each file it visits by simple set membership. A failed/absent
+/// `git` yields an empty set, so the breakdown degrades to "0 ignored"
+/// rather than erroring.
+fn ignored_paths_under(root: &Path, rel_path: &str) -> HashSet<String> {
+    let mut args = vec!["status", "--porcelain", "--ignored", "--untracked-files=all"];
+    if !rel_path.is_empty() {
+        args.push("--");
+        args.push(rel_path);
+    }
+    let Ok(out) = crate::paths::command_no_window("git").args(&args).current_dir(root).output() else {
+        return HashSet::new();
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .filter_map(|line| {
+            if line.len() < 4 || &line[..2] != "!!" {
+                return None;
+            }
+            Some(line[3..].trim_matches('"').to_string())
+        })
+        .collect()
+}
+
+/// Like [`walk_dir_size`], but also sums the subset of bytes whose
+/// repo-root-relative path (`rel_prefix` + entry name, built up as recursion
+/// descends) is in `ignored`. Directories themselves never appear in
+/// `ignored` (git only reports leaf files under `--untracked-files=all`), so
+/// this always recurses rather than short-circuiting on a directory match —
+/// the leaf files inside eventually match individually regardless of depth.
+fn walk_dir_size_breakdown(dir: &Path, rel_prefix: &str, ignored: &HashSet<String>) -> (u64, u64) {
+    let mut total = 0u64;
+    let mut ignored_total = 0u64;
+    let Ok(rd) = fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    for entry in rd.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let child_rel = if rel_prefix.is_empty() { name } else { format!("{rel_prefix}/{name}") };
+        if ft.is_dir() {
+            let (t, i) = walk_dir_size_breakdown(&entry.path(), &child_rel, ignored);
+            total = total.saturating_add(t);
+            ignored_total = ignored_total.saturating_add(i);
+        } else if ft.is_file() {
+            if let Ok(m) = entry.metadata() {
+                let bytes = m.len();
+                total = total.saturating_add(bytes);
+                if ignored.contains(&child_rel) {
+                    ignored_total = ignored_total.saturating_add(bytes);
+                }
+            }
+        }
+    }
+    (total, ignored_total)
+}
+
 /// Join a remote project root (`remote_path`) with a project-relative path,
 /// mirroring `ssh_exec::remote_subdir`-style joining: trim a trailing '/', then
 /// append the non-empty rel. Pure, so it is unit-tested without a live host.
@@ -1796,6 +1901,67 @@ mod tests {
             err.contains("/tmp/project"),
             "error must mention root: {err}"
         );
+    }
+
+    // ── dir_size_breakdown ──────────────────────────────────────────────────
+
+    fn git_available() -> bool {
+        crate::paths::command_no_window("git")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn init_repo(dir: &Path) {
+        let run = |args: &[&str]| {
+            assert!(
+                crate::paths::command_no_window("git")
+                    .args(args)
+                    .current_dir(dir)
+                    .output()
+                    .expect("git command should run")
+                    .status
+                    .success(),
+                "git {args:?} failed"
+            );
+        };
+        run(&["init"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test User"]);
+    }
+
+    #[test]
+    fn dir_size_breakdown_splits_ignored_from_tracked() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping dir_size_breakdown_splits_ignored_from_tracked");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo(dir);
+
+        std::fs::write(dir.join(".gitignore"), "whole/\n").unwrap();
+        std::fs::create_dir(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/main.rs"), "12345").unwrap(); // 5 bytes, tracked/untracked
+        std::fs::create_dir_all(dir.join("src/whole/sub")).unwrap();
+        std::fs::write(dir.join("src/whole/a.txt"), "1234567890").unwrap(); // 10 bytes, ignored
+        std::fs::write(dir.join("src/whole/sub/b.txt"), "12345678901234567890").unwrap(); // 20 bytes, ignored
+
+        let breakdown = dir_size_breakdown_local(&dir.to_string_lossy(), "src").expect("breakdown");
+        assert_eq!(breakdown.total, 35);
+        assert_eq!(breakdown.ignored, 30);
+    }
+
+    #[test]
+    fn dir_size_breakdown_no_git_yields_zero_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("a.txt"), "hello").unwrap();
+
+        let breakdown = dir_size_breakdown_local(&dir.to_string_lossy(), "").expect("breakdown");
+        assert_eq!(breakdown.total, 5);
+        assert_eq!(breakdown.ignored, 0);
     }
 
     // ── copy_path / move_path ──────────────────────────────────────────────

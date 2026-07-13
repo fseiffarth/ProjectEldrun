@@ -10,7 +10,8 @@ import { useRemoteReconnect } from "./useRemoteReconnect";
 import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useProjectsStore, disconnectRemote } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
-import { anyVpnLive, useVpnStatusStore } from "../../stores/vpnStatus";
+import { useVpnSectionVisible } from "../../stores/vpnStatus";
+import { VpnTunnelUpNotice } from "../common/VpnTunnelUpNotice";
 import { formatRemoteTarget, resolveLocalMirror, type ProjectEntry } from "../../types";
 
 /**
@@ -133,8 +134,7 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
   // this project's OpenVPN section to offer — except when it's THIS project's own
   // attempt that made it live, in which case its controls (log, Stop/Disconnect)
   // must stay reachable here. `vpnBusy` already mirrors that via the machine store.
-  const vpnGloballyLive = useVpnStatusStore((s) => anyVpnLive(s.byConfig));
-  const showVpnSection = !vpnGloballyLive || vpnBusy;
+  const showVpnSection = useVpnSectionVisible(vpnBusy);
   // One submit for the whole VPN form: the fields are separate prompts OpenVPN
   // raises, but they're answered in a single connect.
   const submitVpn = () => void connectVpnHeadless(vpnPassword, vpnKeyPassphrase, vpnRemember);
@@ -174,14 +174,8 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
             redundant — the routing this project needs is already there — so it
             collapses to a one-line status and the dialog goes straight to SSH. */}
         {!showVpnSection && (
-          <div className="remote-reconnect-section" role="group" aria-label="OpenVPN tunnel">
-            <div className="remote-field-label">
-              <ConnLamp status="connected" label="OpenVPN" />
-              OpenVPN tunnel already up
-            </div>
-            <span className="ssh-optional-hint">
-              Manage tunnels from the header's VPN control.
-            </span>
+          <div className="remote-reconnect-section">
+            <VpnTunnelUpNotice />
           </div>
         )}
         {showVpnSection && (
