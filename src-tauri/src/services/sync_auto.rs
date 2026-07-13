@@ -25,7 +25,7 @@
 //! "couldn't check" and a gone local side's push errors out and is skipped) —
 //! the conservative "never destructive automatically" stance.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,6 +36,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::MissedTickBehavior;
 
+use crate::schema::net_usage;
 use crate::services::remote::{pooled_sftp, remote_target_for, RemotePoolState, RemoteTarget};
 use crate::services::remote_sync::{
     self, ensure_loaded, mirror_dir, mirror_local_path, Manifest, PushDecision, SyncManifestState,
@@ -201,7 +202,7 @@ async fn run_loop(
             _ = cancel.notified() => break,
             _ = interval.tick() => {
                 if paused.load(Ordering::SeqCst) { continue; }
-                reconcile_pass(&app, &pool, &manifest, &target, &project_id).await;
+                reconcile_pass(Some(&app), &pool, &manifest, &target, &project_id).await;
             }
             res = rx.recv() => {
                 if res.is_none() { break; } // watcher gone → stop
@@ -217,16 +218,51 @@ async fn run_loop(
                 // that queued these watcher events are re-based by git_peer before
                 // resume, so dropping this pass loses nothing.
                 if paused.load(Ordering::SeqCst) { continue; }
-                reconcile_pass(&app, &pool, &manifest, &target, &project_id).await;
+                reconcile_pass(Some(&app), &pool, &manifest, &target, &project_id).await;
             }
         }
     }
 }
 
+/// Run exactly one byte-sync reconcile pass, synchronously, with no watcher, no
+/// interval, and no UI event. This is the same pass [`run_loop`] drives — the loop
+/// contributes only the *when*.
+///
+/// Exists for the live-SSH lockstep driver (`examples/lockstep_drv.rs`), which walks
+/// `docs/git_lockstep_case_matrix.md` against a real host: the byte-sync half of the
+/// BS+LS cases has to be the real engine, or the matrix proves nothing about the code
+/// that ships.
+pub async fn reconcile_once(
+    pool: &RemotePoolState,
+    manifest: &SyncManifestState,
+    target: &RemoteTarget,
+    project_id: &str,
+) {
+    reconcile_pass(None, pool, manifest, target, project_id).await;
+}
+
+/// Subtract the git-tracked set from the byte-sync candidates when lockstep owns them
+/// (#28p D1). A no-op when lockstep is off, so a project that never opted in keeps
+/// exactly today's behaviour — including its behaviour for files git happens to track.
+/// Pure.
+pub fn drop_tracked(
+    candidates: &mut BTreeSet<String>,
+    tracked: &HashSet<String>,
+    lockstep_enabled: bool,
+) {
+    if !lockstep_enabled || tracked.is_empty() {
+        return;
+    }
+    candidates.retain(|rel| !tracked.contains(rel));
+}
+
 /// One reconcile pass over the project's auto-sync paths. Bails gracefully if the
 /// pool is cold/dead. Reuses the `remote_sync` primitives throughout.
+///
+/// `app` is `None` when the pass is driven outside the app (see [`reconcile_once`]);
+/// it is used for nothing but the completion event.
 async fn reconcile_pass(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     pool: &RemotePoolState,
     manifest: &SyncManifestState,
     target: &RemoteTarget,
@@ -276,6 +312,18 @@ async fn reconcile_pass(
     // auto-sync is on, so a project-wide auto can still exclude individual subtrees.
     candidates.retain(|rel| remote_sync::is_auto(&snapshot, rel));
 
+    // #28p D1: with git lockstep on, the tracked tree belongs to lockstep — it delivers
+    // those files as *commits*. Shipping them here as loose bytes first lands them on
+    // the peer untracked, which then blocks the very fast-forward that would have
+    // delivered them properly (git refuses to overwrite an untracked file even when it
+    // is byte-identical). Which of those two happened used to be decided by a debounce
+    // race between the two engines — nondeterministically wedging the project.
+    drop_tracked(
+        &mut candidates,
+        &crate::services::git_peer::tracked_paths(project_id),
+        crate::services::git_peer::load_state(project_id).enabled,
+    );
+
     let mut pulled = 0usize;
     let mut pushed = 0usize;
     let mut skipped = 0usize;
@@ -303,6 +351,7 @@ async fn reconcile_pass(
                             let m = ensure_loaded(&mut g, project_id);
                             remote_sync::record_pull(m, &rel, hs, hm, ls, lm);
                             let _ = remote_sync::save_manifest(project_id, m);
+                            net_usage::record_files(project_id, 1, 0);
                             pulled += 1;
                         }
                         Err(e) => eprintln!("auto-sync: pull skip '{rel}': {e}"),
@@ -321,6 +370,7 @@ async fn reconcile_pass(
                             let m = ensure_loaded(&mut g, project_id);
                             remote_sync::record_push(m, &rel, hs, hm, ls, lm);
                             let _ = remote_sync::save_manifest(project_id, m);
+                            net_usage::record_files(project_id, 0, 1);
                             pushed += 1;
                         }
                         Err(e) => eprintln!("auto-sync: push skip '{rel}': {e}"),
@@ -334,14 +384,53 @@ async fn reconcile_pass(
     }
 
     if pulled + pushed > 0 {
-        let _ = app.emit(
-            "auto-sync",
-            AutoSyncEvent {
-                project_id: project_id.to_string(),
-                pulled,
-                pushed,
-                skipped_amber: skipped,
-            },
-        );
+        if let Some(app) = app {
+            let _ = app.emit(
+                "auto-sync",
+                AutoSyncEvent {
+                    project_id: project_id.to_string(),
+                    pulled,
+                    pushed,
+                    skipped_amber: skipped,
+                },
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+    fn hset(items: &[&str]) -> HashSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn tracked_files_are_left_to_lockstep_when_it_is_on() {
+        // #28p D1: byte-sync must not ship a git-tracked file as loose bytes — landing
+        // it untracked on the peer is what blocks the fast-forward that would have
+        // delivered it as a commit.
+        let mut c = set(&["src/a.rs", "notes.md", "build/out.bin"]);
+        drop_tracked(&mut c, &hset(&["src/a.rs", "README.md"]), true);
+        assert_eq!(c, set(&["notes.md", "build/out.bin"]));
+    }
+
+    #[test]
+    fn lockstep_off_changes_nothing() {
+        // A project that never opted in keeps exactly today's behaviour, tracked files
+        // and all — this fix must not quietly stop syncing files for those projects.
+        let mut c = set(&["src/a.rs", "notes.md"]);
+        drop_tracked(&mut c, &hset(&["src/a.rs"]), false);
+        assert_eq!(c, set(&["src/a.rs", "notes.md"]));
+
+        // An empty tracked set (an unborn repo, or `git ls-files` failing) is likewise a
+        // no-op: degrade to the old behaviour rather than syncing nothing at all.
+        let mut c = set(&["src/a.rs"]);
+        drop_tracked(&mut c, &HashSet::new(), true);
+        assert_eq!(c, set(&["src/a.rs"]));
     }
 }

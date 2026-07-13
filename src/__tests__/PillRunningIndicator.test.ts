@@ -5,11 +5,15 @@
  * - only scopes whose tabs produced recent output are flagged
  * Plus the per-tab/-scope "needs attention" state an unwatched agent tab raises
  * once its output goes quiet — finished (done) vs blocked on a prompt (decision).
+ * Both "working" and "done" require the tab to have been COMMANDED this session
+ * (noteUserInput): a restored tab replaying its resume banner shows nothing.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import {
   useActivityStore,
   notePtyOutput,
+  notePtySpawn,
+  noteUserInput,
   _clearPtyActivityForTest,
 } from "../stores/activity";
 import { useTabsStore } from "../stores/tabs";
@@ -37,9 +41,10 @@ function seedTabs() {
   });
 }
 
-// Keep a PTY producing output (gaps < BUSY_WINDOW_MS) long enough to age past
-// the onset debounce (WORK_ONSET_MS = 1500), so it registers as "working".
-function sustainOutput(id: string, totalMs = 1600) {
+// Feed a PTY output (gaps < BUSY_WINDOW_MS) long enough to age past the onset
+// debounce (WORK_ONSET_MS = 1500) — the shape of a resume banner or replayed
+// transcript when nothing has been typed into the tab.
+function replayOutput(id: string, totalMs = 1600) {
   notePtyOutput(id, "working…\n");
   for (let elapsed = 0; elapsed < totalMs; elapsed += 400) {
     vi.advanceTimersByTime(400);
@@ -47,11 +52,21 @@ function sustainOutput(id: string, totalMs = 1600) {
   }
 }
 
+// The same sustained output, but COMMANDED: the user typed into the tab first,
+// which is what lets it register as "working" at all.
+function sustainOutput(id: string, totalMs = 1600) {
+  noteUserInput(id);
+  replayOutput(id, totalMs);
+}
+
 // Same, but for several PTYs at once. They must be fed in lockstep: sustaining
 // them one after the other would let the first go stale (its last output ages
 // past BUSY_WINDOW_MS) while the second is still being fed.
 function sustainAll(ids: string[], totalMs = 1600) {
-  ids.forEach((id) => notePtyOutput(id, "working…\n"));
+  ids.forEach((id) => {
+    noteUserInput(id);
+    notePtyOutput(id, "working…\n");
+  });
   for (let elapsed = 0; elapsed < totalMs; elapsed += 400) {
     vi.advanceTimersByTime(400);
     ids.forEach((id) => notePtyOutput(id, "working…\n"));
@@ -95,6 +110,7 @@ describe("activity store running indicator", () => {
   });
 
   it("ignores a lone output blip (onset debounce)", () => {
+    noteUserInput("proj-a:agent-1");
     notePtyOutput("proj-a:agent-1");
     vi.advanceTimersByTime(300); // within the busy window, but well under onset
     useActivityStore.getState().recompute();
@@ -106,6 +122,7 @@ describe("activity store running indicator", () => {
     // Gaps under BUSY_WINDOW_MS belong to the SAME burst, so they must not reset
     // the onset — otherwise bursty agent output could never age past the debounce
     // and the working indicator would never appear at all.
+    noteUserInput("proj-a:agent-1");
     notePtyOutput("proj-a:agent-1"); // onset at t0
     vi.advanceTimersByTime(700); // < BUSY_WINDOW_MS (800) → still one burst
     notePtyOutput("proj-a:agent-1");
@@ -156,6 +173,16 @@ describe("activity store running indicator", () => {
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().busyByTab["proj-a:agent-1"] ?? false).toBe(false);
   });
+
+  it("never marks an uncommanded tab working (restored tab replaying its resume banner)", () => {
+    // On app launch / project reopen a resumed agent streams its whole prior
+    // transcript — sustained real output, but nobody asked it for anything, so
+    // it must not pulse "working" nor light the project pill.
+    replayOutput("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().busyByTab["proj-a:agent-1"] ?? false).toBe(false);
+    expect(useActivityStore.getState().busyByScope["proj-a"] ?? false).toBe(false);
+  });
 });
 
 describe("activity store attention state", () => {
@@ -182,6 +209,48 @@ describe("activity store attention state", () => {
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBe("decision");
     expect(useActivityStore.getState().attentionByScope["proj-a"]).toBe("decision");
+  });
+
+  it("never flags uncommanded output as done (resume/restart replay)", () => {
+    // The restored-tab case: on launch or project reopen the agent replays its
+    // banner and prior transcript, then goes quiet. Nobody typed anything, so
+    // the quiet is not a finished turn — no green tab, no green pill.
+    replayOutput("proj-a:agent-1");
+    notePtyOutput("proj-a:agent-1", "── session resumed ──\n");
+    vi.advanceTimersByTime(2600); // well past DONE_QUIET_MS
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBeUndefined();
+    expect(useActivityStore.getState().attentionByScope["proj-a"]).toBeUndefined();
+  });
+
+  it("still flags a live prompt in uncommanded output (resumed agent at a real decision)", () => {
+    // A resumed agent genuinely sitting at an unanswered prompt is real signal:
+    // decision is deliberately exempt from the commanded-this-session gate.
+    notePtyOutput(
+      "proj-a:agent-1",
+      "Do you want to make this edit?\n\x1b[32m❯ 1. Yes\x1b[0m\n  2. No, tell Claude what to do\n",
+    );
+    vi.advanceTimersByTime(700); // past DECISION_QUIET_MS
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBe("decision");
+  });
+
+  it("wipes the input stamp on respawn, so the successor's replay stays silent", () => {
+    runThenFinish("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBe("done");
+
+    // The project is closed and reopened in-session: the PTY respawns under the
+    // same id. Input sent to the old program mustn't license the new one.
+    notePtySpawn("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBeUndefined();
+
+    replayOutput("proj-a:agent-1"); // the respawned agent replays the session
+    vi.advanceTimersByTime(2600);
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBeUndefined();
+    expect(useActivityStore.getState().busyByTab["proj-a:agent-1"] ?? false).toBe(false);
   });
 
   it("says nothing while the agent is still streaming", () => {

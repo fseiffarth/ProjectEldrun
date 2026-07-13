@@ -9,7 +9,7 @@ import { GitHistory } from "../files/GitHistory";
 import { GitChangeTree, type ChangeScope } from "../files/GitChangeTree";
 import { SearchPanel } from "../files/SearchPanel";
 import { Dropdown } from "../common/Dropdown";
-import { useProjectsStore } from "../../stores/projects";
+import { useProjectsStore, logoutRemote } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore, amberPaths } from "../../stores/sync";
 import { openLinkedFile } from "../embed/FileViewerPane";
@@ -845,6 +845,20 @@ export function RightPanel({
               Remote
             </button>
           </span>
+          {/* One-click SSH logout, shown while connected. Lives here (not on the
+              project pill) so the pill stays status-only; the danger tint only
+              appears on hover. */}
+          {remoteSshState === "connected" && (
+            <button
+              type="button"
+              className="right-panel-conn-logout"
+              aria-label={`Log out of ${activeProject.remote.host} — disconnect this remote project`}
+              title={`Log out of ${activeProject.remote.host}\nDrops the SSH connection${activeProject.remote.openvpn ? " and the VPN tunnel" : ""}. Open tabs stay, their sessions go dead until you reconnect.`}
+              onClick={() => logoutRemote(activeProject)}
+            >
+              <span aria-hidden="true">⏻</span> Logout
+            </button>
+          )}
           </>
         )}
         {/* Git status/action buttons drop to their own row below the project name

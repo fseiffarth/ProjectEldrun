@@ -5,9 +5,12 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, Event } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
-import { isDetachedPtyId } from "../../stores/tabs";
-import { useActivityStore } from "../../stores/activity";
+import { cmdToKind, isDetachedPtyId, type TabKind } from "../../stores/tabs";
+import { notePtySpawn, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
 import { useAgentTaskStore } from "../../stores/agentTask";
+import { noteInput } from "../../lib/promptCount";
+import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
+import { ROOT_SCOPE, bumpUsage, markAgentActive } from "../../stores/usage";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -285,8 +288,37 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       document.fonts?.ready?.then(() => { if (!cancelled) doFitRef.current?.(); }).catch(() => {});
     };
 
-    // Wire keyboard input → PTY write.
+    // What this tab counts as for the usage recap. A `local_agent` tab always
+    // carries its model in the env Eldrun spawned it with, and that is the only
+    // signal here that distinguishes it from the cloud agent of the same command
+    // (a local model driven through `vibe` still has cmd "vibe") — TerminalView
+    // is handed cmd/env, not the TabEntry's kind.
+    const localModel = env.ELDRUN_LOCAL_MODEL || env.VIBE_ACTIVE_MODEL;
+    const kind: TabKind = localModel ? "local_agent" : cmdToKind(cmd);
+    const agentLeaf = agentPromptLeaf({ kind, cmd, env });
+    const scope = splitPtyId(id)?.scope ?? ROOT_SCOPE;
+
+    /** One thing asked: a prompt to an agent, or a command in a shell. */
+    const countSubmit = () => {
+      if (agentLeaf) {
+        bumpUsage(scope, sub(METRIC.AGENT_PROMPT, agentLeaf));
+        // "Agent tabs you used today" — once per tab per day, however much you
+        // then ask it.
+        markAgentActive(scope, id, sub(METRIC.AGENT_ACTIVE, agentLeaf));
+      } else if (kind === "shell") {
+        bumpUsage(scope, METRIC.SHELL_COMMAND);
+      }
+    };
+
+    // Wire keyboard input → PTY write. The input stamp is what licenses this
+    // tab's later output to show as "working"/"done" (see noteUserInput).
+    //
+    // This is also the one place Eldrun sees everything the user asks an agent,
+    // so the usage recap's "you asked them N things" is counted here (see
+    // lib/promptCount): Enter with content pending = one submit.
     term.onData((data) => {
+      noteUserInput(id);
+      if (noteInput(id, data) > 0) countSubmit();
       invoke("pty_write", { id, data: PTY_ENCODER.encode(data) }).catch(console.error);
     });
 
@@ -359,7 +391,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         navigator.clipboard
           ?.readText()
           .then((text) => {
-            if (text) invoke("pty_write", { id, data: PTY_ENCODER.encode(text) }).catch(console.error);
+            if (text) {
+              noteUserInput(id);
+              invoke("pty_write", { id, data: PTY_ENCODER.encode(text) }).catch(console.error);
+            }
           })
           .catch(() => {});
         return false;
@@ -408,6 +443,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
                 initialEnterTimer.current = setTimeout(typeWhenReady, 100);
                 return;
               }
+              // Typed on the user's behalf — they triggered the flow that
+              // opened this tab with a command, so its work counts as asked-for.
+              noteUserInput(id);
               invoke("pty_write", { id, data: PTY_ENCODER.encode(initialInput) }).catch(console.error);
               initialEnterTimer.current = setTimeout(() => {
                 invoke("pty_write", { id, data: new Uint8Array([0x0d]) }).catch(console.error);
@@ -444,6 +482,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // session. We only subscribe to the broadcast output/input by id.
       if (attachOnly) return;
 
+      // A (re)spawn is a new program: wipe what the activity store recorded
+      // about the previous occupant of this id, so a reopened project's resume
+      // replay can't ride an old input stamp into a "working"/"done" glow.
+      notePtySpawn(id);
       try {
         await invoke("pty_spawn", {
           opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, project_id: projectId ?? null },

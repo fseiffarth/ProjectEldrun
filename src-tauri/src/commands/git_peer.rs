@@ -8,7 +8,9 @@
 
 use tauri::{AppHandle, State};
 
-use crate::services::git_peer::{self, GitPeerRegistry, GitPeerState};
+use crate::services::git_peer::{
+    self, BackupRef, GitPeerRegistry, GitPeerState, ReconcileOpts,
+};
 use crate::services::remote::{remote_target_for, RemotePoolState};
 use crate::services::remote_sync::SyncManifestState;
 use crate::services::sync_auto::AutoSyncState;
@@ -75,10 +77,89 @@ pub async fn git_peer_sync_now(
         auto.inner(),
         &project_id,
         &target.spec,
+        // A manual Retry means "actually look": bypass the D5 ref-signature early-out,
+        // which would otherwise answer from cache after the user cleared a blocker that
+        // moved no ref (deleting an untracked collision, say).
+        ReconcileOpts { forced: true, ..Default::default() },
     )
     .await;
     git_peer::emit_status(&app, &project_id, &state);
     Ok(state)
+}
+
+/// Confirm an initial pairing that would overwrite differing files on the empty side
+/// (#28p D3). Only reachable from the state's `pairingConflict`, whose paths the UI has
+/// already named — this is the explicit consent that the refusal demands, and the only
+/// caller that may set `allow_pair_overwrite`.
+#[tauri::command]
+pub async fn git_peer_pair_confirm(
+    app: AppHandle,
+    pool: State<'_, RemotePoolState>,
+    manifest: State<'_, SyncManifestState>,
+    auto: State<'_, AutoSyncState>,
+    project_id: String,
+) -> Result<GitPeerState, String> {
+    let rt = remote_target_for(&project_id)
+        .ok_or("Git lockstep is only available for SSH remote projects")?;
+    let state = git_peer::detect_and_sync(
+        pool.inner(),
+        manifest.inner(),
+        auto.inner(),
+        &project_id,
+        &rt.spec,
+        ReconcileOpts { forced: true, allow_pair_overwrite: true, ..Default::default() },
+    )
+    .await;
+    git_peer::emit_status(&app, &project_id, &state);
+    Ok(state)
+}
+
+/// List both peers' `refs/eldrun/backup/*` safety refs, newest first (#28p D6).
+#[tauri::command]
+pub async fn git_peer_backups(project_id: String) -> Result<Vec<BackupRef>, String> {
+    let rt = remote_target_for(&project_id)
+        .ok_or("Git lockstep is only available for SSH remote projects")?;
+    Ok(git_peer::list_backups(&project_id, &rt.spec))
+}
+
+/// Move a branch back onto a backup ref, on the peer that holds it (#28p D6). The
+/// branch's current tip is backed up first, so a restore is itself undoable.
+#[tauri::command]
+pub async fn git_peer_restore_backup(
+    app: AppHandle,
+    pool: State<'_, RemotePoolState>,
+    manifest: State<'_, SyncManifestState>,
+    auto: State<'_, AutoSyncState>,
+    project_id: String,
+    peer: String,
+    refname: String,
+) -> Result<GitPeerState, String> {
+    let rt = remote_target_for(&project_id)
+        .ok_or("Git lockstep is only available for SSH remote projects")?;
+    let state = git_peer::restore_backup(
+        pool.inner(),
+        manifest.inner(),
+        auto.inner(),
+        &project_id,
+        &rt.spec,
+        &peer,
+        &refname,
+    )
+    .await?;
+    git_peer::emit_status(&app, &project_id, &state);
+    Ok(state)
+}
+
+/// The local mirror's absolute path — where "Resolve in terminal" (#28p D8) opens its
+/// shell, since that is the working copy the user merges/rebases in.
+#[tauri::command]
+pub async fn git_peer_mirror_dir(project_id: String) -> Result<String, String> {
+    if remote_target_for(&project_id).is_none() {
+        return Err("Git lockstep is only available for SSH remote projects".to_string());
+    }
+    Ok(crate::services::remote_sync::mirror_dir(&project_id)
+        .to_string_lossy()
+        .to_string())
 }
 
 /// Coordinated checkout: check `target` out on the initiating side, bring the peer in

@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useVpnPromptStore } from "../../stores/vpnPrompt";
 import { ConnectionLog, type LogLine } from "../common/ConnectionLog";
 import { PasswordInput } from "../common/PasswordInput";
+import { needsSeparateKeyPassphrase, type VpnAuthNeeds } from "../../types";
 
 /**
  * Activation-time OpenVPN password prompt. Rendered once at the app root; shows
@@ -20,11 +21,16 @@ export function VpnPasswordPrompt() {
   const submit = useVpnPromptStore((s) => s.submit);
   const cancel = useVpnPromptStore((s) => s.cancel);
   const [password, setPassword] = useState("");
-  // Auth username for `auth-user-pass` configs. `needsUsername` (queried per
-  // prompt) decides whether the field is shown; seeded from the pending prompt's
-  // stored spec username.
+  // Auth username for `auth-user-pass` configs. `needs` (queried per prompt)
+  // decides which fields are shown; the username is seeded from the pending
+  // prompt's stored spec.
   const [username, setUsername] = useState("");
-  const [needsUsername, setNeedsUsername] = useState(false);
+  const [needs, setNeeds] = useState<VpnAuthNeeds>({ username: false, keyPassphrase: false });
+  // A config with an encrypted key *and* an account has two secrets — OpenVPN
+  // prompts for them separately. Without an account, `password` already is the
+  // key passphrase, so this field stays hidden rather than asking twice.
+  const [keyPassphrase, setKeyPassphrase] = useState("");
+  const needsKeyPassphrase = needsSeparateKeyPassphrase(needs);
   // Opt-in "Save passphrase" (default off). Pre-checked when a credential is
   // already saved for this config, so the box mirrors the true keychain state.
   const [remember, setRemember] = useState(false);
@@ -43,6 +49,7 @@ export function VpnPasswordPrompt() {
   useEffect(() => {
     if (pending) {
       setPassword("");
+      setKeyPassphrase("");
       setUsername(pending.username ?? "");
       setLog([]);
       inputRef.current?.focus();
@@ -51,8 +58,8 @@ export function VpnPasswordPrompt() {
       void invoke<boolean>("vpn_has_saved_password", { config })
         .then((v) => !cancelled && setRemember(v))
         .catch(() => {});
-      void invoke<boolean>("openvpn_needs_username", { config })
-        .then((v) => !cancelled && setNeedsUsername(v))
+      void invoke<VpnAuthNeeds>("openvpn_auth_needs", { config })
+        .then((v) => !cancelled && setNeeds(v))
         .catch(() => {});
       return () => {
         cancelled = true;
@@ -85,7 +92,18 @@ export function VpnPasswordPrompt() {
   const onSubmit = () => {
     if (!connecting) {
       setLog([]);
-      void submit(password, remember, username);
+      void submit(password, remember, username, keyPassphrase);
+    }
+  };
+  // Enter submits from any field; Escape cancels unless a connect is in flight.
+  const onFieldKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onSubmit();
+    }
+    if (e.key === "Escape" && !connecting) {
+      e.preventDefault();
+      cancel();
     }
   };
 
@@ -95,8 +113,13 @@ export function VpnPasswordPrompt() {
         <h2>VPN password</h2>
         <p className="vpn-prompt-text">
           Connecting OpenVPN for <strong>{pending.projectName}</strong>.
+          <br />
+          <span className="vpn-prompt-scope">
+            While the tunnel is up, this computer's traffic routes through it — your
+            browser too, not just Eldrun.
+          </span>
         </p>
-        {needsUsername && (
+        {needs.username && (
           <label>
             Username
             <input
@@ -106,21 +129,12 @@ export function VpnPasswordPrompt() {
               placeholder="OpenVPN account username…"
               disabled={connecting}
               onChange={(e) => setUsername(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  onSubmit();
-                }
-                if (e.key === "Escape" && !connecting) {
-                  e.preventDefault();
-                  cancel();
-                }
-              }}
+              onKeyDown={onFieldKey}
             />
           </label>
         )}
         <label>
-          {needsUsername ? "Password" : "Passphrase"}{" "}
+          {needs.username ? "Password" : "Passphrase"}{" "}
           <span className="ssh-optional-hint">
             {remember ? "(saved in OS keychain)" : "(not stored)"}
           </span>
@@ -130,18 +144,26 @@ export function VpnPasswordPrompt() {
             autoFocus
             disabled={connecting}
             onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                onSubmit();
-              }
-              if (e.key === "Escape" && !connecting) {
-                e.preventDefault();
-                cancel();
-              }
-            }}
+            onKeyDown={onFieldKey}
           />
         </label>
+        {needsKeyPassphrase && (
+          <label>
+            Private key passphrase
+            <PasswordInput
+              value={keyPassphrase}
+              autoComplete="off"
+              placeholder="Passphrase for the config's encrypted key…"
+              disabled={connecting}
+              onChange={(e) => setKeyPassphrase(e.target.value)}
+              onKeyDown={onFieldKey}
+            />
+            <span className="ssh-optional-hint">
+              This config's private key is encrypted, so OpenVPN asks for its
+              passphrase separately from your account password.
+            </span>
+          </label>
+        )}
         <label className="remote-connect-remember">
           <Toggle
             size="sm"
@@ -149,7 +171,7 @@ export function VpnPasswordPrompt() {
             disabled={connecting}
             onChange={(e) => setRemember(e.target.checked)}
           />
-          Save passphrase
+          {needsKeyPassphrase ? "Save VPN credentials" : "Save passphrase"}
           <span className="ssh-optional-hint">stored securely in your OS keychain</span>
         </label>
         {(connecting || log.length > 0) && <ConnectionLog lines={log} busy={connecting} />}

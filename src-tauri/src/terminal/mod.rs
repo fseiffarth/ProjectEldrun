@@ -159,6 +159,8 @@ impl PtyRegistry {
             let _ = e.child.kill();
             // The tree shrank; drop the cached descendant-pid set.
             invalidate_proc_tree_cache();
+            // The tab is gone for good, so stop watching for its Codex session.
+            crate::services::codex_bind::untrack_now(id);
         }
     }
 
@@ -267,6 +269,11 @@ pub fn spawn_pty(
     });
 
     let id = opts.id.clone();
+    // Token for this *particular* spawn's Codex session tracking (None for any
+    // tab the binder isn't following). A re-spawn under the same id replaces the
+    // tracking and mints a new token, so the old process exiting below can only
+    // ever tear down its own.
+    let bind_seq = crate::services::codex_bind::current_seq(&opts.id);
     tokio::spawn(async move {
         let mut batch: Vec<u8> = Vec::with_capacity(BATCH_MAX_BYTES);
         let mut last_emit = Instant::now();
@@ -318,6 +325,10 @@ pub fn spawn_pty(
         // The child exited on its own; its subtree is gone, so the next CPU
         // sample must rebuild rather than count dead pids.
         invalidate_proc_tree_cache();
+        // Codex quit by itself (`/exit`, crash) — stop watching for its session.
+        if let Some(seq) = bind_seq {
+            crate::services::codex_bind::untrack(&id, seq);
+        }
         let _ = app.emit("terminal-exit", TerminalExit { id, code: None });
     });
 

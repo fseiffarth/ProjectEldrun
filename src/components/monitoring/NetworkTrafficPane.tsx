@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dropdown } from "../common/Dropdown";
+import { isoWeekKeys, summarizeBuckets } from "../../lib/usageRollup";
 
 export interface NetworkInterfaceSnapshot {
   name: string;
@@ -110,41 +111,87 @@ export interface ByteCounts {
   tx: number;
 }
 
-/** Persisted per-project SSH-link usage keyed by UTC date ("YYYY-MM-DD"). */
-export type NetUsageByDay = Record<string, ByteCounts>;
+/** Bucket key ("YYYY-MM-DD" or "YYYY-MM-DDTHH", UTC) → bytes moved in it. */
+export type ByteCountsByBucket = Record<string, ByteCounts>;
+
+/** How many discrete files were downloaded/uploaded by the sync engine. */
+export interface FileCounts {
+  down: number;
+  up: number;
+}
+
+/** Bucket key ("YYYY-MM-DD" or "YYYY-MM-DDTHH", UTC) → files synced in it. */
+export type FileCountsByBucket = Record<string, FileCounts>;
+
+/** Persisted per-project SSH-link usage, at the two granularities stored. */
+export interface NetUsageReport {
+  /** UTC hours ("YYYY-MM-DDTHH"); only the retained window (14 days). */
+  hours: ByteCountsByBucket;
+  /** UTC dates ("YYYY-MM-DD"); full history. */
+  days: ByteCountsByBucket;
+  /** UTC hours ("YYYY-MM-DDTHH"); files transferred, retained window. */
+  fileHours?: FileCountsByBucket;
+  /** UTC dates ("YYYY-MM-DD"); files transferred, full history. */
+  fileDays?: FileCountsByBucket;
+}
+
+export interface NetUsageTotals {
+  hour: ByteCounts;
+  today: ByteCounts;
+  week: ByteCounts;
+  month: ByteCounts;
+  overall: ByteCounts;
+}
+
+export interface NetUsageFileTotals {
+  hour: FileCounts;
+  today: FileCounts;
+  week: FileCounts;
+  month: FileCounts;
+  overall: FileCounts;
+}
+
+// The bucket → calendar-window folding is shared with the usage recap, which
+// reads a store of the same shape (`usage_stats.json`): same UTC keys, same
+// ISO-week alignment, different payload. One implementation, in lib/usageRollup;
+// re-exported here because this pane is where it has always been imported from.
+export { isoWeekKeys };
 
 /**
- * Fold the persisted per-day usage map into today / this-month / overall totals.
- * Keys are UTC dates (the backend buckets by `today_utc()`), so "today" and the
- * month prefix are computed in UTC to match — not local time.
+ * Fold the persisted usage maps into this-hour / today / this-week / this-month
+ * / overall totals — [`summarizeBuckets`] specialised to byte counts.
  */
-export function summarizeNetUsage(
-  data: NetUsageByDay,
-  nowMs: number,
-): { today: ByteCounts; month: ByteCounts; overall: ByteCounts } {
-  const iso = new Date(nowMs).toISOString();
-  const todayKey = iso.slice(0, 10); // YYYY-MM-DD (UTC)
-  const monthKey = iso.slice(0, 7); // YYYY-MM (UTC)
-  const acc = {
-    today: { rx: 0, tx: 0 },
-    month: { rx: 0, tx: 0 },
-    overall: { rx: 0, tx: 0 },
-  };
-  for (const [date, counts] of Object.entries(data)) {
-    const rx = counts?.rx ?? 0;
-    const tx = counts?.tx ?? 0;
-    acc.overall.rx += rx;
-    acc.overall.tx += tx;
-    if (date.startsWith(monthKey)) {
-      acc.month.rx += rx;
-      acc.month.tx += tx;
-    }
-    if (date === todayKey) {
-      acc.today.rx += rx;
-      acc.today.tx += tx;
-    }
-  }
-  return acc;
+export function summarizeNetUsage(report: NetUsageReport, nowMs: number): NetUsageTotals {
+  return summarizeBuckets<ByteCounts>(
+    report,
+    nowMs,
+    () => ({ rx: 0, tx: 0 }),
+    (into, counts) => {
+      into.rx += counts?.rx ?? 0;
+      into.tx += counts?.tx ?? 0;
+    },
+  );
+}
+
+/**
+ * Fold the persisted file-count maps into this-hour / today / this-week /
+ * this-month / overall totals — [`summarizeBuckets`] specialised to how many
+ * files the sync engine downloaded/uploaded, mirroring [`summarizeNetUsage`].
+ */
+export function summarizeNetFileUsage(report: NetUsageReport, nowMs: number): NetUsageFileTotals {
+  return summarizeBuckets<FileCounts>(
+    { hours: report.fileHours, days: report.fileDays },
+    nowMs,
+    () => ({ down: 0, up: 0 }),
+    (into, counts) => {
+      into.down += counts?.down ?? 0;
+      into.up += counts?.up ?? 0;
+    },
+  );
+}
+
+export function formatFileCount(value: number): string {
+  return value.toLocaleString();
 }
 
 export function formatBytes(value: number): string {
@@ -239,7 +286,12 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
   const [query, setQuery] = useState("");
   const [protocol, setProtocol] = useState<"ALL" | "TCP" | "UDP">("ALL");
   const [error, setError] = useState<string | null>(null);
-  const [usage, setUsage] = useState<NetUsageByDay>({});
+  const [usage, setUsage] = useState<NetUsageReport>({
+    hours: {},
+    days: {},
+    fileHours: {},
+    fileDays: {},
+  });
   const previous = useRef<CounterSample | null>(null);
 
   useEffect(() => {
@@ -337,8 +389,15 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
     let cancelled = false;
     const load = async () => {
       try {
-        const data = await invoke<NetUsageByDay>("get_net_usage", { projectId });
-        if (!cancelled) setUsage(data ?? {});
+        const data = await invoke<NetUsageReport>("get_net_usage", { projectId });
+        if (!cancelled) {
+          setUsage({
+            hours: data?.hours ?? {},
+            days: data?.days ?? {},
+            fileHours: data?.fileHours ?? {},
+            fileDays: data?.fileDays ?? {},
+          });
+        }
       } catch {
         // Leave the last-known totals in place on a transient failure.
       }
@@ -354,6 +413,7 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
   const current = history[history.length - 1] ?? { rxRate: 0, txRate: 0 };
   const remote = host?.remote ?? false;
   const usageTotals = useMemo(() => summarizeNetUsage(usage, Date.now()), [usage]);
+  const fileTotals = useMemo(() => summarizeNetFileUsage(usage, Date.now()), [usage]);
   const warning = view === "link" ? link?.warning : host?.warning;
   const available =
     view === "link"
@@ -462,7 +522,9 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
           <span className="network-usage-label">SSH-link usage</span>
           {(
             [
+              ["This hour", usageTotals.hour],
               ["Today", usageTotals.today],
+              ["This week", usageTotals.week],
               ["This month", usageTotals.month],
               ["Overall", usageTotals.overall],
             ] as const
@@ -470,6 +532,26 @@ export function NetworkTrafficPane({ projectId, visible, onConnect }: Props) {
             <span key={label} className="network-usage-stat">
               {label} <span className="rx">↓ {formatBytes(counts.rx)}</span>{" "}
               <span className="tx">↑ {formatBytes(counts.tx)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {remote && (
+        <div className="network-usage-totals">
+          <span className="network-usage-label">Files synced</span>
+          {(
+            [
+              ["This hour", fileTotals.hour],
+              ["Today", fileTotals.today],
+              ["This week", fileTotals.week],
+              ["This month", fileTotals.month],
+              ["Overall", fileTotals.overall],
+            ] as const
+          ).map(([label, counts]) => (
+            <span key={label} className="network-usage-stat">
+              {label} <span className="rx">↓ {formatFileCount(counts.down)}</span>{" "}
+              <span className="tx">↑ {formatFileCount(counts.up)}</span>
             </span>
           ))}
         </div>

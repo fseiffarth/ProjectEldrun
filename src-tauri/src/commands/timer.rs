@@ -28,3 +28,14 @@ pub fn timer_flush_project(project_id: String, secs: f64) {
 pub fn get_project_activity(project_id: String) -> HashMap<String, f64> {
     time_log::load_summary_migrating().activity_for(&project_id)
 }
+
+/// The whole time summary, unfolded: `{ "YYYY-MM-DD" -> { project_id -> secs } }`.
+///
+/// The usage recap needs *every* project's time for a period ("work spent per
+/// project"), which through [`get_project_activity`] would mean one call — and one
+/// full read of the summary file — per project. This hands back the map the store
+/// already holds, in a single read.
+#[tauri::command]
+pub fn get_time_activity_all() -> HashMap<String, HashMap<String, f64>> {
+    time_log::load_summary_migrating().days
+}

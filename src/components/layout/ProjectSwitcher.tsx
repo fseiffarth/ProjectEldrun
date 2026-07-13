@@ -10,6 +10,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
 import { useTabsStore } from "../../stores/tabs";
 import { useGitDirtyStore } from "../../stores/gitDirty";
+import { useEnergySaver, saverInterval } from "../../stores/power";
 import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../../types";
 
 // Re-exported for tests and any external callers that imported these scaffold
@@ -42,6 +43,33 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const [dialog, setDialog] = useState<"new" | "import" | null>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
+  // Hover-opened, like the header's sibling menus (GlobalAppMenu, LocalModelMenu,
+  // VpnIndicator): a short close delay on mouseleave so crossing the gap between
+  // the button and its dropdown doesn't flicker-close it.
+  const settingsCloseTimer = useRef<number | undefined>(undefined);
+  const addCloseTimer = useRef<number | undefined>(undefined);
+
+  const revealSettingsMenu = () => {
+    window.clearTimeout(addCloseTimer.current);
+    setShowAddMenu(false);
+    window.clearTimeout(settingsCloseTimer.current);
+    setShowSettingsMenu(true);
+  };
+  const scheduleCloseSettingsMenu = () => {
+    window.clearTimeout(settingsCloseTimer.current);
+    settingsCloseTimer.current = window.setTimeout(() => setShowSettingsMenu(false), 180);
+  };
+  const revealAddMenu = () => {
+    setShowSettings(false);
+    window.clearTimeout(settingsCloseTimer.current);
+    setShowSettingsMenu(false);
+    window.clearTimeout(addCloseTimer.current);
+    setShowAddMenu(true);
+  };
+  const scheduleCloseAddMenu = () => {
+    window.clearTimeout(addCloseTimer.current);
+    addCloseTimer.current = window.setTimeout(() => setShowAddMenu(false), 180);
+  };
 
   useEffect(() => {
     if (!open) {
@@ -145,15 +173,16 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     () => gitDotTargets.map((t) => `${t.id}:${t.dir}`).join("|"),
     [gitDotTargets],
   );
+  const energySaver = useEnergySaver();
   useEffect(() => {
     if (gitDotTargets.length === 0) return;
     const refresh = useGitDirtyStore.getState().refresh;
     const run = () => gitDotTargets.forEach((t) => void refresh(t.id, t.dir));
     run();
-    const id = window.setInterval(run, 12000);
+    const id = window.setInterval(run, saverInterval(12000, energySaver));
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gitDotSignature]);
+  }, [gitDotSignature, energySaver]);
 
   // Bucket the active pills into boxes (by `box_id`) + an ungrouped remainder,
   // interleaved by switcher position. A pill whose `box_id` points at a missing
@@ -425,15 +454,23 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         </div>
         <div className="project-switcher-separator" />
 
-        <div className="project-switcher-add-wrap" ref={settingsMenuRef} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="project-switcher-add-wrap"
+          ref={settingsMenuRef}
+          onClick={(e) => e.stopPropagation()}
+          onMouseEnter={revealSettingsMenu}
+          onMouseLeave={scheduleCloseSettingsMenu}
+        >
           <button
             className="project-switcher-action-btn"
             data-hint-anchor="settings"
             title="Settings"
-            onClick={() => {
-              setShowAddMenu(false);
-              setShowSettingsMenu((v) => !v);
-            }}
+            // Hover-opened, like its sibling header menus (GlobalAppMenu,
+            // LocalModelMenu, VpnIndicator). Click reveals rather than toggling: a
+            // click also fires mouseenter, so a toggle here would open on enter and
+            // immediately shut.
+            onClick={revealSettingsMenu}
+            onFocus={revealSettingsMenu}
           >
             ⚙
           </button>
@@ -459,16 +496,23 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         </div>
 
 
-        <div className="project-switcher-add-wrap" ref={addMenuRef} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="project-switcher-add-wrap"
+          ref={addMenuRef}
+          onClick={(e) => e.stopPropagation()}
+          onMouseEnter={revealAddMenu}
+          onMouseLeave={scheduleCloseAddMenu}
+        >
           <button
             className="project-switcher-add-btn"
             data-hint-anchor="add-project"
             title="Add or import project"
-            onClick={() => {
-              setShowSettings(false);
-              setShowSettingsMenu(false);
-              setShowAddMenu((v) => !v);
-            }}
+            // Hover-opened, like its sibling header menus (GlobalAppMenu,
+            // LocalModelMenu, VpnIndicator). Click reveals rather than toggling: a
+            // click also fires mouseenter, so a toggle here would open on enter and
+            // immediately shut.
+            onClick={revealAddMenu}
+            onFocus={revealAddMenu}
           >
             +
           </button>

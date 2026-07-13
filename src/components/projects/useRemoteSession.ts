@@ -2,8 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { RemoteEntry, SshTooling, StoredVpnConfig } from "../../types";
+import {
+  needsSeparateKeyPassphrase,
+  type RemoteEntry,
+  type SshTooling,
+  type StoredVpnConfig,
+  type VpnAuthNeeds,
+} from "../../types";
 import { joinRemotePath, parseSshAddress, type ParsedSshAddress } from "./scaffold";
+import { useVpnStatusStore } from "../../stores/vpnStatus";
 import { IS_WINDOWS } from "../../lib/platform";
 import { forgetConnection, markConnectionOpened } from "../../lib/remoteConnect";
 import { useSettingsStore } from "../../stores/settings";
@@ -88,12 +95,20 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // A tunnel is "used" only when the toggle is on AND a config is selected.
   const [vpnConfig, setVpnConfig] = useState("");
   // Auth username for `auth-user-pass` configs (server-side username+password
-  // auth). `vpnNeedsUsername` (queried when the config changes) decides whether
-  // the field is shown and required; the value is persisted onto the new
-  // project's OpenVpnSpec (it is not a secret). See `config_requires_userpass`.
+  // auth). `vpnNeeds` (queried when the config changes) decides which fields are
+  // shown and required; the username is persisted onto the new project's
+  // OpenVpnSpec (it is not a secret). See `config_requires_userpass`.
   const [vpnUsername, setVpnUsername] = useState("");
-  const [vpnNeedsUsername, setVpnNeedsUsername] = useState(false);
+  const [vpnNeeds, setVpnNeeds] = useState<VpnAuthNeeds>({
+    username: false,
+    keyPassphrase: false,
+  });
   const [vpnPassword, setVpnPassword] = useState("");
+  // Second secret, only for a config with an encrypted key *and* an
+  // `auth-user-pass` account — OpenVPN prompts for those independently. Without an
+  // account, `vpnPassword` already is the key passphrase (see
+  // `needsSeparateKeyPassphrase`), so no second field is shown.
+  const [vpnKeyPassphrase, setVpnKeyPassphrase] = useState("");
   const [vpnStatus, setVpnStatus] = useState<ConnStatus>("idle");
   const [vpnError, setVpnError] = useState("");
   // Live OpenVPN handshake output for the headless connect, streamed from the
@@ -190,6 +205,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
       stopSshTerm();
       setVpnConfig("");
       setVpnPassword("");
+      setVpnKeyPassphrase("");
       setVpnStatus("idle");
       setVpnError("");
       stopVpnTerm();
@@ -298,16 +314,18 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     };
   }, [vpnConfig]);
 
-  // Does the chosen config need an auth username (bare `auth-user-pass`)? Drives
-  // whether the username field is shown/required.
+  // Which secrets does the chosen config need (an `auth-user-pass` account, an
+  // encrypted key's passphrase, or both)? Drives which fields are shown/required —
+  // a field OpenVPN wants but we don't supply becomes an unanswered stdin prompt
+  // and hangs the handshake.
   useEffect(() => {
     if (!vpnConfig) {
-      setVpnNeedsUsername(false);
+      setVpnNeeds({ username: false, keyPassphrase: false });
       return;
     }
     let cancelled = false;
-    void invoke<boolean>("openvpn_needs_username", { config: vpnConfig })
-      .then((v) => !cancelled && setVpnNeedsUsername(v))
+    void invoke<VpnAuthNeeds>("openvpn_auth_needs", { config: vpnConfig })
+      .then((v) => !cancelled && setVpnNeeds(v))
       .catch(() => {});
     return () => {
       cancelled = true;
@@ -345,21 +363,31 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   };
 
   // Bring the tunnel up now so a VPN-gated host becomes reachable for browsing.
+  //
+  // This is the *creation* dialog, so there is no project id yet and nobody can be
+  // recorded as a holder — the tunnel comes up unclaimed. It is still machine-wide
+  // and still rerouting everything, so it is registered machine-level regardless:
+  // the header indicator shows it (and can bring it down) even if the user abandons
+  // the dialog without ever creating the project.
   const connectVpn = async () => {
     if (!vpnConfig) return;
     setVpnStatus("connecting");
     setVpnError("");
     setVpnLog([]);
+    useVpnStatusStore.getState().setState(vpnConfig, "connecting");
     try {
       await invoke("openvpn_connect", {
         config: vpnConfig,
         username: vpnUsername || null,
         password: vpnPassword,
+        keyPassphrase: vpnKeyPassphrase || null,
       });
       setVpnStatus("connected");
+      useVpnStatusStore.getState().setState(vpnConfig, "connected");
     } catch (e) {
       setVpnStatus("error");
       setVpnError(String(e));
+      useVpnStatusStore.getState().setState(vpnConfig, "off");
     }
   };
 
@@ -744,10 +772,15 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     vpnConfigs,
     vpnUsername,
     setVpnUsername,
-    vpnNeedsUsername,
+    vpnNeeds,
+    // A second field is only warranted when the key passphrase is a *different*
+    // secret from the password — see `needsSeparateKeyPassphrase`.
+    vpnNeedsKeyPassphrase: needsSeparateKeyPassphrase(vpnNeeds),
     selectVpnConfig,
     vpnPassword,
     setVpnPassword,
+    vpnKeyPassphrase,
+    setVpnKeyPassphrase,
     vpnStatus,
     setVpnStatus,
     vpnError,

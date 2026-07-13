@@ -224,7 +224,7 @@ fn hook_command() -> String {
 
 /// uuid-ish guard: hex digits + dashes only, non-empty. Doubles as path-traversal
 /// protection for the file key.
-fn is_uuidish(s: &str) -> bool {
+pub fn is_uuidish(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
@@ -246,6 +246,173 @@ pub fn read_live_session_in(dir: &std::path::Path, uid: &str) -> Option<String> 
     } else {
         None
     }
+}
+
+/// Record `id` as the live session for `uid` — the same file, in the same
+/// format, that the SessionStart hook writes. This is what lets
+/// [`crate::services::codex_bind`] act as a drop-in stand-in for an untrusted
+/// Codex hook without touching the resolve path.
+pub fn write_live_session(uid: &str, id: &str) -> std::io::Result<()> {
+    write_live_session_in(&live_sessions_dir(), uid, id)
+}
+
+/// Testable core of [`write_live_session`]. The uuid-ish guard on both keys is
+/// path-traversal defense (`uid` becomes a filename). Writes via a temp file +
+/// rename so a hook writing the same key concurrently can never observe a torn
+/// value.
+pub fn write_live_session_in(dir: &std::path::Path, uid: &str, id: &str) -> std::io::Result<()> {
+    if !is_uuidish(uid) || !is_uuidish(id) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "live-session keys must be uuid-ish",
+        ));
+    }
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!(".{uid}.tmp"));
+    std::fs::write(&tmp, id)?;
+    std::fs::rename(&tmp, dir.join(uid))?;
+    Ok(())
+}
+
+// ── Codex hook trust state ──────────────────────────────────────────────────
+
+/// What Eldrun's Codex `SessionStart` hook is actually doing right now.
+///
+/// Codex gates *user-level* hooks behind a one-time trust approval (`/hooks`
+/// inside Codex), recording the verdict in a `[hooks.state."…"]` table. An
+/// untrusted or disabled hook simply never runs — silently — which is why Codex
+/// tabs used to restore into a blank conversation: no live id was ever recorded,
+/// so [`resolve_codex_session`] had nothing to resume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexHookState {
+    /// No `~/.codex` — Codex isn't in use, so there is nothing to report.
+    NoCodex,
+    /// Codex is in use but our hook isn't in its config (registration failed).
+    NotRegistered,
+    /// Registered, but Codex has no trust verdict for it yet → it never runs.
+    Untrusted,
+    /// Registered and known to Codex, but explicitly `enabled = false`.
+    Disabled,
+    /// Registered and trusted → the precise resume path is live.
+    Enabled,
+}
+
+/// Classify Eldrun's hook in the user's Codex config.
+pub fn codex_hook_state() -> CodexHookState {
+    let codex_dir = paths::home_dir().join(".codex");
+    if !codex_dir.is_dir() {
+        return CodexHookState::NoCodex;
+    }
+    let config = codex_dir.join("config.toml");
+    let src = std::fs::read_to_string(&config).unwrap_or_default();
+    codex_hook_state_in(&src, &config.to_string_lossy(), &hook_command())
+}
+
+/// Testable core of [`codex_hook_state`].
+///
+/// A line scanner, not a TOML parse — deliberately, for the same reason
+/// [`register_codex_hook_in`] text-appends: taking a `toml` dependency just to
+/// read two keys isn't worth it, and the shapes involved are fixed.
+///
+/// Codex keys its trust verdicts by *position*: `<config path>:session_start:
+/// <group>:<hook>`, where the indices count `[[hooks.SessionStart]]` tables and
+/// the `[[hooks.SessionStart.hooks]]` tables within each. So we find our hook by
+/// its `command`, note where it sits, and look the verdict up under that key.
+pub fn codex_hook_state_in(src: &str, config_path: &str, cmd: &str) -> CodexHookState {
+    let mut group: i64 = -1;
+    let mut hook: i64 = -1;
+    let mut in_hook_table = false;
+    let mut ours: Option<(i64, i64)> = None;
+    let mut state_key: Option<String> = None;
+    let mut verdicts: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_hook_table = false;
+            state_key = None;
+            if line.starts_with("[[hooks.SessionStart]]") {
+                group += 1;
+                hook = -1;
+            } else if line.starts_with("[[hooks.SessionStart.hooks]]") {
+                hook += 1;
+                in_hook_table = true;
+            } else if let Some(key) = toml_state_table_key(line) {
+                state_key = Some(key);
+            }
+            continue;
+        }
+        if in_hook_table {
+            if toml_value(line, "command").as_deref() == Some(cmd) {
+                ours = Some((group.max(0), hook.max(0)));
+            }
+        } else if let Some(key) = state_key.as_ref() {
+            if let Some(v) = toml_value(line, "enabled") {
+                verdicts.insert(key.clone(), v == "true");
+            }
+        }
+    }
+
+    let Some((g, h)) = ours else {
+        return CodexHookState::NotRegistered;
+    };
+    let suffix = format!(":session_start:{g}:{h}");
+    let verdict = verdicts
+        .get(&format!("{config_path}{suffix}"))
+        // Fall back to any entry at our position: Codex builds the key from the
+        // config path *it* resolved, which can differ from ours in spelling (a
+        // symlinked `$CODEX_HOME`, a `/private` prefix on macOS).
+        .or_else(|| {
+            verdicts
+                .iter()
+                .find(|(k, _)| k.ends_with(&suffix))
+                .map(|(_, v)| v)
+        });
+    match verdict {
+        Some(true) => CodexHookState::Enabled,
+        Some(false) => CodexHookState::Disabled,
+        None => CodexHookState::Untrusted,
+    }
+}
+
+/// `[hooks.state."<key>"]` → `<key>`. Any other table header → `None`.
+fn toml_state_table_key(header: &str) -> Option<String> {
+    let inner = header
+        .strip_prefix("[hooks.state.")?
+        .strip_suffix(']')?
+        .trim();
+    let unquoted = inner
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(inner);
+    Some(unquoted.to_string())
+}
+
+/// `key = <value>` → the value, unquoted. `None` when the line isn't `key`'s.
+fn toml_value(line: &str, key: &str) -> Option<String> {
+    let (lhs, rhs) = line.split_once('=')?;
+    if lhs.trim() != key {
+        return None;
+    }
+    let v = rhs.trim();
+    let unquoted = v
+        .strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .or_else(|| v.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
+        .unwrap_or(v);
+    Some(unquoted.to_string())
+}
+
+/// Whether the hook-free rollout binder ([`crate::services::codex_bind`]) should
+/// run for a Codex tab. It is the *fallback*: when the hook is trusted it is
+/// strictly more precise (it fires on `/clear` immediately and can't confuse two
+/// tabs sharing a cwd), so we stay out of its way.
+pub fn codex_binder_enabled() -> bool {
+    !matches!(codex_hook_state(), CodexHookState::Enabled)
 }
 
 /// Install (idempotently) the `SessionStart` hook and its script for every agent
@@ -399,7 +566,10 @@ fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result
 /// content. Idempotent: skipped once our script path is present.
 ///
 /// NOTE: user-level Codex hooks require a one-time trust approval (`/hooks` in
-/// Codex) before they run, so resume tracking is inert until the user trusts it.
+/// Codex) before they run, so resume tracking through *this* path is inert until
+/// the user trusts it — see [`codex_hook_state`], which detects that, and
+/// [`crate::services::codex_bind`], the hook-free fallback that keeps Codex tabs
+/// resumable meanwhile.
 fn register_codex_hook() -> std::io::Result<()> {
     let codex_dir = paths::home_dir().join(".codex");
     if !codex_dir.is_dir() {
@@ -750,5 +920,130 @@ mod tests {
         assert!(out.contains(HOOK_SCRIPT_NAME));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── Codex hook trust state ──────────────────────────────────────────────
+
+    const CFG: &str = "/home/x/.codex/config.toml";
+    const CMD: &str = "/home/x/.local/share/eldrun/hooks/eldrun_session_start.sh";
+
+    /// Our hook block as `register_codex_hook_in` writes it.
+    fn our_hook() -> String {
+        format!(
+            "[[hooks.SessionStart]]\n\
+             matcher = \"startup|resume|clear|compact\"\n\n\
+             [[hooks.SessionStart.hooks]]\n\
+             type = \"command\"\n\
+             command = '{CMD}'\n\
+             timeout = 10\n"
+        )
+    }
+
+    #[test]
+    fn codex_hook_state_reports_disabled_when_the_trust_gate_is_off() {
+        // Regression test for the bug this whole path exists to fix: Codex had
+        // hashed our hook and recorded `enabled = false`, so it never ran and
+        // Codex tabs silently restored blank.
+        let src = format!(
+            "model = \"o3\"\n\n{}\n[hooks.state]\n\n[hooks.state.\"{CFG}:session_start:0:0\"]\n\
+             trusted_hash = \"sha256:93f0\"\nenabled = false\n",
+            our_hook()
+        );
+        assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Disabled);
+    }
+
+    #[test]
+    fn codex_hook_state_reports_untrusted_without_a_verdict() {
+        let src = our_hook();
+        assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Untrusted);
+    }
+
+    #[test]
+    fn codex_hook_state_reports_enabled_when_trusted() {
+        let src = format!(
+            "{}\n[hooks.state.\"{CFG}:session_start:0:0\"]\nenabled = true\n",
+            our_hook()
+        );
+        assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Enabled);
+    }
+
+    #[test]
+    fn codex_hook_state_indexes_our_hook_past_the_users_own() {
+        // A user hook group precedes ours, so our verdict key is `:0:0` → no,
+        // `:1:0`. Their `enabled = true` at `:0:0` must not be read as ours.
+        let src = format!(
+            "[[hooks.SessionStart]]\n\n[[hooks.SessionStart.hooks]]\n\
+             type = \"command\"\ncommand = '/usr/bin/their-hook.sh'\n\n\
+             {}\n[hooks.state.\"{CFG}:session_start:0:0\"]\nenabled = true\n",
+            our_hook()
+        );
+        assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Untrusted);
+
+        // And with the verdict at *our* index, we read it.
+        let trusted = format!("{src}\n[hooks.state.\"{CFG}:session_start:1:0\"]\nenabled = true\n");
+        assert_eq!(
+            codex_hook_state_in(&trusted, CFG, CMD),
+            CodexHookState::Enabled
+        );
+    }
+
+    #[test]
+    fn codex_hook_state_is_not_registered_without_our_command() {
+        let src = "model = \"o3\"\n\n[projects.\"/home/x\"]\ntrust_level = \"trusted\"\n";
+        assert_eq!(
+            codex_hook_state_in(src, CFG, CMD),
+            CodexHookState::NotRegistered
+        );
+    }
+
+    #[test]
+    fn codex_hook_state_tolerates_a_config_path_spelled_differently() {
+        // Codex builds the key from the path *it* resolved (symlinked CODEX_HOME,
+        // macOS `/private` prefix …), so we fall back to matching our position.
+        let src = format!(
+            "{}\n[hooks.state.\"/private{CFG}:session_start:0:0\"]\nenabled = false\n",
+            our_hook()
+        );
+        assert_eq!(codex_hook_state_in(&src, CFG, CMD), CodexHookState::Disabled);
+    }
+
+    #[test]
+    fn write_live_session_round_trips_and_refuses_junk_keys() {
+        let tmp = unique_tmp("eldrun-live-write");
+        let uid = "11111111-2222-3333-4444-555555555555";
+        let id = "019ea7c8-b7d5-7a13-80e2-1ad6608db5e6";
+
+        write_live_session_in(&tmp, uid, id).unwrap();
+        assert_eq!(read_live_session_in(&tmp, uid).as_deref(), Some(id));
+
+        // The uid becomes a filename, so a traversal key must never be written.
+        assert!(write_live_session_in(&tmp, "../../etc/passwd", id).is_err());
+        assert!(write_live_session_in(&tmp, uid, "not a uuid!").is_err());
+        // …and the good value survives the refused writes.
+        assert_eq!(read_live_session_in(&tmp, uid).as_deref(), Some(id));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_codex_session_reads_a_binder_written_record() {
+        // The seam the hook-free fallback relies on: whatever `codex_bind` writes
+        // with `write_live_session_in` must come back out of the *unchanged*
+        // resolve path as `codex resume <id>`.
+        let live = "019ea7c8-b7d5-7a13-80e2-1ad6608db5e6";
+        let uid = "11111111-2222-3333-4444-555555555555";
+        let root = codex_sessions_with(live);
+        let live_dir = unique_tmp("eldrun-live-seam");
+
+        write_live_session_in(&live_dir, uid, live).unwrap();
+
+        let mut opts = codex_opts();
+        opts.env.insert("ELDRUN_TAB_UID".to_string(), uid.to_string());
+        let out =
+            resolve_codex_session_impl(opts, &root, |u| read_live_session_in(&live_dir, u));
+        assert_eq!(out.args, vec!["resume".to_string(), live.to_string()]);
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&live_dir);
     }
 }

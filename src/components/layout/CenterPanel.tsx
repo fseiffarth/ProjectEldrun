@@ -169,12 +169,17 @@ export function CenterPanel() {
         useProjectsStore.getState().projects.length > 0 &&
         !("root" in useTabsStore.getState().tabsByScope)
       ) {
-        useTabsStore.getState().addTab({
-          label: "Projects",
-          cmd: BLOB_TAB_CMD,
-          cwd: "",
-          kind: "projects3d",
-        });
+        useTabsStore.getState().addTab(
+          {
+            label: "Projects",
+            cmd: BLOB_TAB_CMD,
+            cwd: "",
+            kind: "projects3d",
+          },
+          // Eldrun opened this, not the user — it must not show up in the usage
+          // recap as a tab they opened.
+          { seeded: true },
+        );
       }
       return;
     }

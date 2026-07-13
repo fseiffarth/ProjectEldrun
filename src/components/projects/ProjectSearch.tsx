@@ -1,10 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectBox, ProjectEntry } from "../../types";
+import { formatRemoteTarget, resolveLocalMirror } from "../../types";
 import { projectDirectory } from "./scaffold";
 
 type SearchRow =
   | { kind: "project"; project: ProjectEntry }
   | { kind: "box"; box: ProjectBox };
+
+/** Location line(s) shown under a project's name — and the text the query is
+ *  matched against. A remote (SSH) project lives in two places at once, so both
+ *  its host target and its paired local mirror are listed; its `directory` is
+ *  only an internal state dir and is never shown. */
+function searchPaths(project: ProjectEntry): { label?: string; path: string }[] {
+  if (project.remote) {
+    const mirror = resolveLocalMirror(project);
+    return [
+      { label: "remote", path: formatRemoteTarget(project.remote) },
+      ...(mirror ? [{ label: "local", path: mirror }] : []),
+    ];
+  }
+  const dir = projectDirectory(project);
+  return dir ? [{ path: dir }] : [];
+}
 
 /**
  * The inactive-project / box search box and its results popover. Owns its own
@@ -36,7 +53,11 @@ export function ProjectSearch({
       .map((box) => ({ kind: "box", box }));
     const projectRows: SearchRow[] = projects
       .filter((p) => p.status === "inactive")
-      .filter((p) => p.name.toLowerCase().includes(q) || projectDirectory(p).toLowerCase().includes(q))
+      .filter(
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          searchPaths(p).some((loc) => loc.path.toLowerCase().includes(q)),
+      )
       .sort((a, b) => a.position - b.position)
       .map((project) => ({ kind: "project", project }));
     return [...boxRows, ...projectRows];
@@ -106,9 +127,14 @@ export function ProjectSearch({
                   onClick={() => activateSearchResult(row)}
                 >
                   <span>{row.project.name}</span>
-                  {projectDirectory(row.project) && (
-                    <small>{projectDirectory(row.project)}</small>
-                  )}
+                  {searchPaths(row.project).map((loc) => (
+                    <small key={loc.label ?? "dir"} title={loc.path}>
+                      {loc.label && (
+                        <span className="project-search-path-label">{loc.label}</span>
+                      )}
+                      <span className="project-search-path">{loc.path}</span>
+                    </small>
+                  ))}
                 </button>
               ),
             )

@@ -27,6 +27,7 @@ import {
   buildStaticTabSpec,
   type StaticMenuItem,
 } from "./newTabItems";
+import { type AgentMode, supportsAgentMode } from "./agentModes";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
@@ -96,6 +97,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const ensureTab = useTabsStore((s) => s.ensureTab);
   const removeTab = useTabsStore((s) => s.removeTab);
   const setTabLocation = useTabsStore((s) => s.setTabLocation);
+  const setAgentMode = useTabsStore((s) => s.setAgentMode);
+  // Experimental, default OFF: the per-tab Plan/Auto (planner/doer) badge.
+  const agentModeToggle = useSettingsStore((s) => s.settings?.agent_mode_toggle ?? false);
+  // Timestamp of the last mode flip, for the respawn debounce in handleAgentMode.
+  const lastModeToggle = useRef(0);
   const closeGroup = useTabsStore((s) => s.closeGroup);
   const hideGroup = useTabsStore((s) => s.hideGroup);
   // SSH-sync Phase 0: the local/remote locality toggle is only meaningful for a
@@ -378,6 +384,29 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     setMenuPos(null);
   }
 
+  // Flip an agent tab between Plan and Auto. This rewrites the tab's launch args,
+  // which respawns its PTY — the agent resumes onto the same conversation, but a
+  // turn in flight is killed with it, so a busy tab asks first. The debounce keeps
+  // a burst of clicks from tripping the backend's crash-loop guard (which refuses
+  // to respawn a PTY that has spawned too often in 10s) and leaving a dead tab.
+  function handleAgentMode(key: string, ptyId: string, current?: AgentMode) {
+    const now = Date.now();
+    if (now - lastModeToggle.current < 1000) return;
+    if (
+      busyByTab[ptyId] &&
+      !window.confirm(
+        "This agent is working. Switching mode restarts it — the conversation is " +
+          "resumed, but the current turn is lost. Switch anyway?",
+      )
+    ) {
+      return;
+    }
+    lastModeToggle.current = now;
+    // Unset (the agent's own default) resolves to Plan on first click; after that
+    // it is a straight two-way flip.
+    setAgentMode(key, current === "plan" ? "auto" : "plan");
+  }
+
   function handleAddNetwork() {
     focusGroup(groupId);
     addTab({
@@ -446,7 +475,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         label: model,
         cmd: "vibe",
         args: [],
-        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias },
+        // ELDRUN_LOCAL_MODEL records WHICH model this tab is driving, so the
+        // usage recap can break local agent tabs down by model. `VIBE_ACTIVE_MODEL`
+        // carries the resolved alias, not necessarily the name the user picked.
+        env: { VIBE_HOME: vibe_home, VIBE_ACTIVE_MODEL: alias, ELDRUN_LOCAL_MODEL: model },
         cwd: projectCwd,
         kind: "local_agent",
       });
@@ -472,7 +504,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         label: `${model} · ${label}`,
         cmd,
         args,
-        env: {},
+        // Nothing else here names the model — cmd/args are the resolved launcher —
+        // so record it for the usage recap's per-model breakdown.
+        env: { ELDRUN_LOCAL_MODEL: model },
         cwd: projectCwd,
         kind: "local_agent",
       });
@@ -1038,6 +1072,32 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
                 >
                   {src === "remote" ? "☁" : "⌂"}
                 </span>
+              );
+            })()}
+            {/* Planner/doer badge (experimental, off by default) — click to switch
+                the agent between Plan and Auto. Only for agents that can actually
+                be launched into a mode AND resume on the respawn that costs (see
+                agentModes.ts); every other agent tab is untouched. */}
+            {agentModeToggle && supportsAgentMode(tab.cmd) && (() => {
+              const mode = tab.agentMode;
+              const title =
+                mode === "plan"
+                  ? "Plan: reads and proposes, never edits — click to switch to Auto"
+                  : mode === "auto"
+                    ? "Auto: auto-accepts edits (shell/network still ask) — click to switch to Plan"
+                    : "Agent default: asks before each action — click to switch to Plan";
+              return (
+                <button
+                  className={`tab-agent-mode ${mode ?? "unset"}`}
+                  title={`${title}. Switching restarts the agent; the conversation is resumed.`}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleAgentMode(tab.key, ptyId, mode);
+                  }}
+                >
+                  {mode === "plan" ? "⏸" : mode === "auto" ? "⚡" : "◇"}
+                </button>
               );
             })()}
             {/* SSH-sync Phase 0: local/remote locality badge — click to toggle

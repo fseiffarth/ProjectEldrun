@@ -33,6 +33,20 @@ pub async fn remote_connect(
     password: Option<String>,
 ) -> Result<(), String> {
     remote::connect(pool.inner(), &project_id, password.as_deref()).await?;
+    // The connect succeeded; record whether it needed a password at all. No password
+    // passed *and* none in the keychain means the host authenticated via key/agent —
+    // the only way the UI can tell a passwordless host is auto-connect-eligible,
+    // since such a host has no keychain entry to look for. Best effort.
+    if let Some(target) = remote::remote_target_for(&project_id) {
+        let spec = &target.spec;
+        let saved = crate::services::remote_credentials::has(
+            &crate::services::remote_credentials::ssh_account(&spec.user, &spec.host, spec.port),
+        );
+        let key_auth = password.is_none() && !saved;
+        if let Err(e) = crate::commands::projects::record_remote_key_auth(&project_id, key_auth) {
+            eprintln!("record auth mode for '{project_id}' failed: {e}");
+        }
+    }
     sync_auto::start(
         app.clone(),
         pool.inner().clone(),

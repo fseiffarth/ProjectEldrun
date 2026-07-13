@@ -861,6 +861,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   // popup position, today's time, CPU% and the scaffold-missing flag.
   const hover = useProjectHoverCard(project);
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
+  // Whether a remote project's SSH password sits in the OS keychain — the other way
+  // (besides key auth) an auto-connect can run without asking. Filled when the
+  // context menu opens; see handleContextMenu.
+  const [sshPasswordSaved, setSshPasswordSaved] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
   const [editDescription, setEditDescription] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -902,6 +906,11 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const renameProject = useProjectsStore((s) => s.renameProject);
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
+  const setProjectAutoConnect = useProjectsStore((s) => s.setProjectAutoConnect);
+  // Auto-connect is only offered when the connect can complete with no prompt: a
+  // key/agent-auth host (recorded by the backend on its last successful connect) or
+  // a password in the keychain (looked up when the menu opens).
+  const autoConnectEligible = project.remote?.key_auth === true || sshPasswordSaved;
   const setProjectGitDisabled = useProjectsStore((s) => s.setProjectGitDisabled);
   const repairProjectScaffold = useProjectsStore((s) => s.repairProjectScaffold);
   const publishProject = useProjectsStore((s) => s.publishProject);
@@ -1004,6 +1013,18 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
     e.preventDefault();
     e.stopPropagation();
     hover.close();
+    // Auto-connect is only offerable when connecting needs nothing from the user.
+    // `key_auth` is on the spec already; a saved password has to be asked for (a
+    // local keychain lookup — no network, and the secret never leaves the backend).
+    if (project.remote && project.remote.key_auth !== true) {
+      void invoke<boolean>("remote_has_saved_password", {
+        user: project.remote.user ?? null,
+        host: project.remote.host,
+        port: project.remote.port ?? null,
+      })
+        .then(setSshPasswordSaved)
+        .catch(() => setSshPasswordSaved(false));
+    }
     // Anchor to the pill's bottom-left corner so the menu opens downward, below
     // the bar, with its left edge flush to the pill's left border.
     const rect = pillRef.current?.getBoundingClientRect();
@@ -1203,6 +1224,22 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 title="Run this project's agent tabs inside a Docker container that mounts only the project directory"
               >
                 {project.sandbox?.enabled ? "✓ " : ""}Run agents in Docker sandbox
+              </button>
+            )}
+            {project.remote && (
+              <button
+                disabled={!autoConnectEligible}
+                onClick={() => {
+                  setContextMenu(null);
+                  void setProjectAutoConnect(project.id, !project.remote?.auto_connect);
+                }}
+                title={
+                  autoConnectEligible
+                    ? "Connect this project by itself on launch and when you switch to it. It never asks for anything: it goes straight in when the host is reachable, and brings the VPN up only when it isn't."
+                    : "Save the SSH password (or use key authentication) first — auto-connect is only offered when connecting needs nothing from you."
+                }
+              >
+                {project.remote.auto_connect ? "✓ " : ""}Auto-connect on launch
               </button>
             )}
             <button

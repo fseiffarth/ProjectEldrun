@@ -175,7 +175,12 @@ fn capture(mut cmd: Command, what: &str) -> Result<String, String> {
         if stderr.is_empty() {
             return Err(format!("{what} command failed"));
         }
-        return Err(stderr);
+        // Headless has no terminal for the user to read, so translate what OpenSSH
+        // said into what they got wrong. Unrecognized stderr passes through
+        // verbatim rather than being flattened into a vague guess.
+        return Err(
+            crate::services::ssh_common::explain_ssh_error(&stderr).unwrap_or(stderr)
+        );
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -282,11 +287,17 @@ pub fn remote_login_command(
 /// worker keeps the UI responsive (e.g. the SSH-login button stays clickable while
 /// the OpenVPN tunnel is coming up).
 ///
-/// `remember` opts into saving the working password in the OS keychain (keyed by
-/// the host target) for no-prompt reconnects; it is written **only after auth
-/// succeeds**. A `None`/empty `password` first falls back to any saved credential
-/// (silent reconnect) before dropping to key/agent auth. Unticking (`remember =
-/// false`) clears any previously-saved password.
+/// `remember` is the "Save password" checkbox, and **only** the checkbox:
+/// `Some(true)` persists the working password in the OS keychain (keyed by the host
+/// target, written only *after* auth succeeds) for no-prompt reconnects,
+/// `Some(false)` — an explicit untick — clears any previously-saved one, and `None`
+/// leaves the keychain untouched. That last case is not a nicety: a caller with no
+/// checkbox behind it (a readiness poll riding the ControlMaster, a silent
+/// reconnect) must not delete the credential it just authenticated with — which is
+/// exactly what folding `None` into "unticked" used to do.
+///
+/// A `None`/empty `password` first falls back to any saved credential (silent
+/// reconnect) before dropping to key/agent auth.
 #[tauri::command]
 pub async fn ssh_connect(
     user: Option<String>,
@@ -295,7 +306,6 @@ pub async fn ssh_connect(
     password: Option<String>,
     remember: Option<bool>,
 ) -> Result<(), String> {
-    let remember = remember.unwrap_or(false);
     tokio::task::spawn_blocking(move || {
         use crate::services::remote_credentials as creds;
         let account = creds::ssh_account(&user, &host, port);
@@ -305,10 +315,7 @@ pub async fn ssh_connect(
             .filter(|p| !p.is_empty())
             .or_else(|| creds::get(&account));
         run_ssh_auth(&user, &host, port, effective.as_deref(), &["true"])?;
-        // Auth succeeded — persist (opt-in) or clear per the checkbox. Best-effort:
-        // a keychain write failure must not fail an already-successful connect.
-        let to_store = if remember { effective.as_deref() } else { None };
-        let _ = creds::set(&account, to_store);
+        creds::remember_secret(&account, remember, effective.as_deref());
         Ok(())
     })
     .await
@@ -322,6 +329,72 @@ pub async fn ssh_connect(
 pub fn remote_has_saved_password(user: Option<String>, host: String, port: Option<u16>) -> bool {
     let account = crate::services::remote_credentials::ssh_account(&user, &host, port);
     crate::services::remote_credentials::has(&account)
+}
+
+/// Outcome of a silent reachability probe (`ssh_probe`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SshProbe {
+    /// The host answered and authentication succeeded.
+    pub ok: bool,
+    /// The failure was the *network* not reaching the host — not a rejected
+    /// credential. Only this warrants bringing an OpenVPN tunnel up and retrying.
+    pub unreachable: bool,
+    /// Trimmed ssh stderr (empty when `ok`).
+    pub error: String,
+}
+
+/// Whether an ssh failure means "the host was not reachable from this network"
+/// rather than "the host said no". Auto-connect escalates to the project's VPN
+/// tunnel *only* on the former: a wrong or expired credential must never cause a
+/// tunnel to be brought up, and no tunnel would fix it anyway.
+fn ssh_unreachable(err: &str) -> bool {
+    const MARKERS: [&str; 6] = [
+        "Connection timed out",
+        "Operation timed out",
+        "No route to host",
+        "Network is unreachable",
+        "Connection refused",
+        "Could not resolve hostname",
+    ];
+    let err = err.to_ascii_lowercase();
+    MARKERS
+        .iter()
+        .any(|m| err.contains(&m.to_ascii_lowercase()))
+}
+
+/// Silently probe whether this host is reachable *and* authenticates right now,
+/// classifying a failure as unreachable-vs-rejected. Backs the auto-connect path
+/// (`autoConnectRemote`), which uses the verdict to decide whether the project's
+/// OpenVPN tunnel is needed on the current network.
+///
+/// Deliberately **not** `ssh_connect`: that command rewrites the keychain entry on
+/// every success (clearing it whenever `remember` is falsy), so probing through it
+/// would delete the very saved password auto-connect depends on. This one is
+/// read-only — it reuses the saved credential but never writes one.
+#[tauri::command]
+pub async fn ssh_probe(user: Option<String>, host: String, port: Option<u16>) -> SshProbe {
+    tokio::task::spawn_blocking(move || {
+        use crate::services::remote_credentials as creds;
+        let saved = creds::get(&creds::ssh_account(&user, &host, port));
+        match run_ssh_auth(&user, &host, port, saved.as_deref(), &["true"]) {
+            Ok(_) => SshProbe {
+                ok: true,
+                unreachable: false,
+                error: String::new(),
+            },
+            Err(e) => SshProbe {
+                ok: false,
+                unreachable: ssh_unreachable(&e),
+                error: e,
+            },
+        }
+    })
+    .await
+    .unwrap_or_else(|e| SshProbe {
+        ok: false,
+        unreachable: false,
+        error: format!("ssh probe task failed: {e}"),
+    })
 }
 
 /// Forget any saved SSH password for this host target (explicit "clear" action).
@@ -404,6 +477,34 @@ mod tests {
         // BatchMode + ConnectTimeout present.
         assert!(args.iter().any(|a| a == "BatchMode=yes"));
         assert!(args.iter().any(|a| a == "ConnectTimeout=10"));
+    }
+
+    // ── ssh_unreachable (auto-connect's VPN-escalation gate) ───────────────
+
+    #[test]
+    fn unreachable_recognizes_network_failures() {
+        for err in [
+            "ssh: connect to host build.example port 22: Connection timed out",
+            "ssh: connect to host build.example port 22: No route to host",
+            "ssh: connect to host build.example port 22: Network is unreachable",
+            "ssh: connect to host build.example port 22: Connection refused",
+            "ssh: Could not resolve hostname build.example: Name or service not known",
+        ] {
+            assert!(ssh_unreachable(err), "should be unreachable: {err}");
+        }
+    }
+
+    /// A rejected credential must never escalate to bringing the VPN up: no tunnel
+    /// fixes a wrong password, and the tunnel is not wanted on this network.
+    #[test]
+    fn unreachable_does_not_claim_auth_failures() {
+        for err in [
+            "alice@build.example: Permission denied (publickey,password).",
+            "Received disconnect from 10.0.0.2 port 22:2: Too many authentication failures",
+            "Host key verification failed.",
+        ] {
+            assert!(!ssh_unreachable(err), "should not be unreachable: {err}");
+        }
     }
 
     #[test]

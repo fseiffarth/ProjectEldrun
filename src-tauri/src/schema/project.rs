@@ -95,6 +95,20 @@ pub struct RemoteSpec {
     /// before the sshfs mount / ssh sessions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openvpn: Option<OpenVpnSpec>,
+    /// Opt-in: connect this project automatically (launch + activation) instead of
+    /// waiting for the user to bring it up from the pill's connection lamp. Only
+    /// offered when the connection can complete with no prompt — a saved SSH
+    /// password, or `key_auth` below. The auto-connect never prompts: if it can't
+    /// authenticate silently it stops with a red lamp.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_connect: Option<bool>,
+    /// Recorded (not user-set): the last successful connect to `host` used no
+    /// password at all, so it authenticated via key/agent. This is the only way to
+    /// know a host is passwordless without connecting, and it is what makes
+    /// auto-connect available to key-auth projects (which have nothing in the
+    /// keychain to check). Written by `remote_connect`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_auth: Option<bool>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

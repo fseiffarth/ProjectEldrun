@@ -51,7 +51,17 @@ export const HOW_TO_START_STEPS: HowToStep[] = [
 
 /** Stable id for a contextual hint. Persisted in `settings.hints_seen`, so renaming
  *  one resets it for everyone — pick carefully. */
-export type HintId = "create-project" | "add-tab" | "toggle-panels" | "file-tree";
+export type HintId =
+  | "create-project"
+  | "add-tab"
+  | "toggle-panels"
+  | "file-tree"
+  | "codex-hook-trust";
+
+/** Stable id for a hint's optional one-click action. An id rather than a callback
+ *  so this module stays pure and store-free (and `HINTS` stays a plain constant);
+ *  `HintHost` maps it to the handler. */
+export type HintActionId = "codex-hooks";
 
 /** A snapshot of the bits of app state the hint predicates care about, assembled
  *  by HintHost from the projects/tabs stores. Kept tiny and serializable-ish so
@@ -61,6 +71,10 @@ export interface HintCtx {
   projectCount: number;
   /** The current project scope, or null at root / no active project. */
   activeId: string | null;
+  /** A Codex tab is open and Codex is refusing to run Eldrun's session hook, so
+   *  resume is on the rollout-scanning fallback. Optional: absent means "not
+   *  probed" (no Codex tab open), which is never eligible. */
+  codexHookNeedsTrust?: boolean;
 }
 
 export interface HintDef {
@@ -74,11 +88,27 @@ export interface HintDef {
   placement: "top" | "bottom";
   title: string;
   body: string;
+  /** An extra button that *does* the thing the hint is about, instead of only
+   *  describing it. */
+  action?: { label: string; id: HintActionId };
   /** Eligible to surface only while this returns true for the current context. */
   when: (ctx: HintCtx) => boolean;
 }
 
 export const HINTS: HintDef[] = [
+  {
+    // Actionable and situational rather than onboarding filler, so it outranks
+    // everything but the empty-workspace prompt.
+    id: "codex-hook-trust",
+    priority: 90,
+    anchor: null,
+    placement: "top",
+    title: "Codex resume is running on a fallback",
+    body:
+      "Codex won't run Eldrun's session hook until you trust it, so Eldrun has to work out which conversation belongs to which tab by itself. Enable the hook once for exact resume.",
+    action: { label: "Enable in Codex", id: "codex-hooks" },
+    when: (c) => c.codexHookNeedsTrust === true,
+  },
   {
     id: "create-project",
     priority: 100,

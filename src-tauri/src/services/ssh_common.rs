@@ -351,6 +351,91 @@ pub fn password_auth_available() -> bool {
     }
 }
 
+/// Turn OpenSSH's stderr into a message that says what the user actually got
+/// wrong, so a headless connect (where there is no terminal to read) fails with
+/// "wrong username or password" rather than `Permission denied (publickey,
+/// password).` or — worse, when stderr was discarded — an opaque SFTP EOF.
+///
+/// Returns `None` when nothing is recognized, so callers fall back to the raw
+/// text rather than replacing a specific error with a vague guess. Matching is
+/// case-insensitive and substring-based: these strings are stable OpenSSH
+/// user-facing output, but a locale/version could reword them, and a missed match
+/// costs only the raw message.
+///
+/// Order matters — the checks run most-specific first, since a changed host key
+/// also prints "Permission denied" on some versions.
+pub fn explain_ssh_error(stderr: &str) -> Option<String> {
+    let s = stderr.to_ascii_lowercase();
+
+    // Host identity problems — never conflate these with a bad password: one is a
+    // typo, the other is a possible MITM and must be surfaced as such.
+    if s.contains("remote host identification has changed")
+        || s.contains("host key verification failed")
+    {
+        return Some(
+            "The host's SSH key has changed since you last connected. This can mean the \
+             server was rebuilt — or that the connection is being intercepted. Verify the \
+             new key with the host's admin, then remove the old entry from ~/.ssh/known_hosts."
+                .to_string(),
+        );
+    }
+
+    // Reachability — these look like auth failures to a user but no credential
+    // would fix them. Call out the VPN, since that is the usual cause here.
+    if s.contains("could not resolve hostname") || s.contains("name or service not known") {
+        return Some(
+            "Unknown host — the name could not be resolved. If this host is only visible \
+             inside the VPN, bring the tunnel up first."
+                .to_string(),
+        );
+    }
+    if s.contains("connection timed out") || s.contains("operation timed out") {
+        return Some(
+            "Timed out reaching the host. If it is VPN-gated, bring the tunnel up first; \
+             otherwise check the address and port."
+                .to_string(),
+        );
+    }
+    if s.contains("connection refused") {
+        return Some(
+            "Connection refused — the host is reachable but nothing is listening on that \
+             SSH port. Check the port, and that sshd is running."
+                .to_string(),
+        );
+    }
+    if s.contains("no route to host") || s.contains("network is unreachable") {
+        return Some(
+            "No route to the host. If it is VPN-gated, bring the tunnel up first.".to_string(),
+        );
+    }
+
+    // Authentication. `Permission denied` is what a wrong password looks like; the
+    // parenthesised list is the methods the *server* offers, so it tells us what
+    // the user should have been able to use.
+    if s.contains("too many authentication failures") {
+        return Some(
+            "Too many authentication failures — the server cut the connection. This often \
+             means an ssh-agent offered several wrong keys before the password was tried."
+                .to_string(),
+        );
+    }
+    if s.contains("permission denied") {
+        // Distinguish "the password was wrong" from "this server won't take a
+        // password at all", which no amount of retyping fixes.
+        let offers_password = s.contains("password") || s.contains("keyboard-interactive");
+        return Some(if offers_password {
+            "Authentication failed — check the username and password.".to_string()
+        } else {
+            "Authentication failed — this server does not accept password logins. It wants \
+             a key (the methods it offers are listed in the ssh error). Set up an SSH key, \
+             or ask the host's admin to enable password auth."
+                .to_string()
+        });
+    }
+
+    None
+}
+
 /// A temporary, owner-only askpass shim that feeds a password to OpenSSH via its
 /// built-in `SSH_ASKPASS` mechanism — the in-tree replacement for the external
 /// `sshpass` binary. The shim script holds **no secret**: it prints whatever is
@@ -461,6 +546,68 @@ pub fn make_askpass(password: &str) -> Result<Askpass, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── explain_ssh_error ──────────────────────────────────────────────────
+    // Headless has no terminal to read, so these strings ARE the error UI.
+
+    #[test]
+    fn explain_ssh_error_reports_a_wrong_password_as_such() {
+        // The verbatim stderr a project host returns for a bad password.
+        let msg = explain_ssh_error(
+            "alice@build.example: Permission denied (publickey,password).",
+        )
+        .unwrap();
+        assert!(msg.contains("check the username and password"), "{msg}");
+    }
+
+    #[test]
+    fn explain_ssh_error_distinguishes_a_server_that_refuses_passwords() {
+        // No amount of retyping fixes a key-only server — say so instead of
+        // sending the user round the "is my password wrong?" loop forever.
+        let msg = explain_ssh_error("git@github.com: Permission denied (publickey).").unwrap();
+        assert!(msg.contains("does not accept password logins"), "{msg}");
+        assert!(!msg.contains("check the username and password"), "{msg}");
+    }
+
+    #[test]
+    fn explain_ssh_error_never_calls_a_changed_host_key_a_bad_password() {
+        // A changed host key is a possible MITM. Some OpenSSH versions also print
+        // "Permission denied" for it, so this must be checked FIRST — misreporting
+        // it as a typo would train the user to shrug off an interception.
+        let msg = explain_ssh_error(
+            "@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@\n\
+             Host key verification failed.\nPermission denied (publickey,password).",
+        )
+        .unwrap();
+        assert!(msg.contains("host's SSH key has changed"), "{msg}");
+        assert!(!msg.to_lowercase().contains("check the username"), "{msg}");
+    }
+
+    #[test]
+    fn explain_ssh_error_points_at_the_vpn_for_unreachable_hosts() {
+        // These look like auth failures to a user, but no credential would fix
+        // them — and on this project's hosts the usual cause is a down tunnel.
+        for stderr in [
+            "ssh: Could not resolve hostname build.example: Name or service not known",
+            "ssh: connect to host build.example port 22: Connection timed out",
+            "ssh: connect to host build.example port 22: No route to host",
+        ] {
+            let msg = explain_ssh_error(stderr).unwrap();
+            assert!(msg.contains("VPN"), "{stderr} -> {msg}");
+        }
+        // Refused is different: something answered, so it is a port/sshd problem.
+        let refused =
+            explain_ssh_error("ssh: connect to host h port 22: Connection refused").unwrap();
+        assert!(refused.contains("nothing is listening"), "{refused}");
+    }
+
+    #[test]
+    fn explain_ssh_error_passes_unknown_stderr_through() {
+        // Unrecognized stderr must fall back to the raw text — a vague guess is
+        // worse than the real message.
+        assert_eq!(explain_ssh_error("Kex error: no common kex algorithm"), None);
+        assert_eq!(explain_ssh_error(""), None);
+    }
 
     #[test]
     fn validate_arg_rejects_dash_and_control() {

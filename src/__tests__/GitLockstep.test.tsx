@@ -5,6 +5,11 @@
  * - the status pill reflects the backend `GitPeerState`;
  * - with lockstep disabled the checkout falls back to `git_checkout`;
  * - a local project (no projectId/remote) never shows the lockstep bar.
+ *
+ * Plus the hardening UI (#28p): the disconnected state (D4), the pairing-overwrite
+ * confirm that must name the files it would destroy (D3), the backup-ref list and
+ * restore (D6), and the hand-resolve-in-a-terminal escape hatch + informed head display
+ * (D8).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
@@ -17,6 +22,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { GitHistory } from "../components/files/GitHistory";
+import { useTabsStore } from "../stores/tabs";
 
 const COMMITS = [
   { hash: "aaa111", short: "aaa111", subject: "feat", author: "me", date: "2d", refs: "HEAD -> main", is_head: true, parents: [] },
@@ -46,6 +52,9 @@ const ENABLED = {
   localHead: { kind: "branch", name: "main", sha: "a" },
   remoteHead: { kind: "branch", name: "main", sha: "a" },
   lastSyncTs: 1,
+  localSubject: null,
+  remoteSubject: null,
+  pairingConflict: null,
 };
 const DISABLED = { ...ENABLED, enabled: false };
 
@@ -123,5 +132,148 @@ describe("#28n git lockstep UI", () => {
     });
     expect(screen.queryByText(/Lockstep/)).toBeNull();
     expect(mockInvoke).not.toHaveBeenCalledWith("git_peer_status", expect.anything());
+  });
+});
+
+describe("#28p git lockstep hardening UI", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("D4: renders the disconnected state and disables Sync now", async () => {
+    // The whole point of D4: a cold pool must not read as a green "synchronized".
+    const OFFLINE = {
+      ...ENABLED,
+      status: "disconnected",
+      detail: "Not connected to the remote host",
+    };
+    setup(OFFLINE);
+    await renderRemote(OFFLINE);
+
+    expect(await screen.findByText("disconnected")).toBeTruthy();
+    const sync = await screen.findByRole("button", { name: "Sync now" });
+    expect((sync as HTMLButtonElement).disabled).toBe(true);
+    // No authority actions: there is nothing to resolve against an unseen host.
+    expect(screen.queryByRole("button", { name: "Use local" })).toBeNull();
+  });
+
+  it("D3: a pairing conflict offers only the confirm that names the files at risk", async () => {
+    const CONFLICT = {
+      ...ENABLED,
+      status: "desynchronized",
+      detail: "Pairing would overwrite 2 file(s) on the host that differ: README.md, src/a.rs",
+      pairingConflict: { sourceIsLocal: true, paths: ["README.md", "src/a.rs"] },
+    };
+    setup(CONFLICT);
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await renderRemote(CONFLICT);
+
+    // Use-local/Use-remote would be meaningless (nothing is paired yet) — the only
+    // action is the one that has named what it would destroy.
+    expect(screen.queryByRole("button", { name: "Use local" })).toBeNull();
+    await user.click(await screen.findByRole("button", { name: /Overwrite 2 file/ }));
+
+    // The confirm must actually list the files — that is the whole safety property.
+    expect(confirmSpy.mock.calls[0][0]).toContain("README.md");
+    expect(mockInvoke).toHaveBeenCalledWith("git_peer_pair_confirm", { projectId: "proj1" });
+    confirmSpy.mockRestore();
+  });
+
+  it("D3: dismissing the overwrite confirm pairs nothing", async () => {
+    const CONFLICT = {
+      ...ENABLED,
+      status: "desynchronized",
+      detail: "Pairing would overwrite 1 file(s) on the host that differ: README.md",
+      pairingConflict: { sourceIsLocal: true, paths: ["README.md"] },
+    };
+    setup(CONFLICT);
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await renderRemote(CONFLICT);
+
+    await user.click(await screen.findByRole("button", { name: /Overwrite 1 file/ }));
+    expect(mockInvoke).not.toHaveBeenCalledWith("git_peer_pair_confirm", expect.anything());
+    confirmSpy.mockRestore();
+  });
+
+  it("D6: Backups lists the safety refs and routes Restore to the backend", async () => {
+    const DESYNC = { ...ENABLED, status: "desynchronized", detail: "Diverged: main" };
+    setup(DESYNC);
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "git_log") return Promise.resolve(COMMITS);
+      if (cmd === "git_branches") return Promise.resolve(BRANCHES);
+      if (cmd === "git_worktree_list") return Promise.resolve([]);
+      if (cmd === "git_peer_status") return Promise.resolve(DESYNC);
+      if (cmd === "git_peer_backups")
+        return Promise.resolve([
+          {
+            peer: "remote",
+            refname: "refs/eldrun/backup/1735689600/main",
+            ts: 1735689600,
+            branch: "main",
+            sha: "deadbeefcafe",
+            subject: "The tip a resolve overwrote",
+          },
+        ]);
+      return Promise.resolve(DESYNC);
+    });
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await renderRemote(DESYNC);
+
+    await user.click(await screen.findByRole("button", { name: "Backups" }));
+    expect(await screen.findByText("The tip a resolve overwrote")).toBeTruthy();
+
+    await user.click(await screen.findByRole("button", { name: "Restore" }));
+    expect(mockInvoke).toHaveBeenCalledWith("git_peer_restore_backup", {
+      projectId: "proj1",
+      peer: "remote",
+      refname: "refs/eldrun/backup/1735689600/main",
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it("D8: Resolve in terminal opens a local shell tab in the mirror", async () => {
+    const DESYNC = { ...ENABLED, status: "desynchronized", detail: "Diverged: main" };
+    setup(DESYNC);
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "git_log") return Promise.resolve(COMMITS);
+      if (cmd === "git_branches") return Promise.resolve(BRANCHES);
+      if (cmd === "git_worktree_list") return Promise.resolve([]);
+      if (cmd === "git_peer_mirror_dir") return Promise.resolve("/home/me/mirror");
+      return Promise.resolve(DESYNC);
+    });
+    const user = userEvent.setup();
+    const addTab = vi.spyOn(useTabsStore.getState(), "addTab");
+    await renderRemote(DESYNC);
+
+    await user.click(await screen.findByRole("button", { name: "Resolve in terminal" }));
+
+    const tab = addTab.mock.calls[0][0];
+    expect(tab.kind).toBe("shell");
+    expect(tab.cwd).toBe("/home/me/mirror");
+    // A remote-located shell would cd into the HOST tree, where the parked peer ref
+    // isn't — the merge has to happen in the local mirror.
+    expect(tab.location).toBe("local");
+    expect(tab.initialInput).toContain("refs/eldrun/peer/main");
+    addTab.mockRestore();
+  });
+
+  it("D8: the desync bar shows both heads so the authority choice is informed", async () => {
+    const DESYNC = {
+      ...ENABLED,
+      status: "desynchronized",
+      detail: "Diverged: main",
+      localHead: { kind: "branch", name: "main", sha: "1111111abc" },
+      remoteHead: { kind: "branch", name: "main", sha: "2222222def" },
+      localSubject: "My local work",
+      remoteSubject: "Their host work",
+    };
+    setup(DESYNC);
+    await renderRemote(DESYNC);
+
+    const bar = await screen.findByText(/local: main 1111111/);
+    expect(bar.textContent).toContain("My local work");
+    expect(bar.textContent).toContain("Their host work");
+    expect(bar.textContent).toContain("2222222");
   });
 });

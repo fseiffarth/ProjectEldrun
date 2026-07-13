@@ -95,6 +95,17 @@ fn entry_directory(entry: &ProjectEntry) -> Option<&str> {
     entry.extra.get("directory").and_then(|v| v.as_str())
 }
 
+/// The `directory` recorded for `project_id` in the always-local `projects.json`.
+///
+/// The forward lookup to [`remote_target_for_dir`]'s reverse one. For a LOCAL
+/// project this is where its files are; for a REMOTE project it is the local
+/// per-project state dir, not the tree (which lives on the host).
+pub fn project_directory(project_id: &str) -> Option<String> {
+    let list = read_projects_list()?;
+    let entry = list.iter().find(|e| e.id == project_id)?;
+    entry_directory(entry).map(str::to_string)
+}
+
 /// The `RemoteSpec` mirrored into a `projects.json` entry's flattened
 /// `extra["remote"]`, or `None` for a local project. Pure, so the "remote iff a
 /// spec is present" mapping is testable without the real state dir.
@@ -161,7 +172,14 @@ pub async fn connect(
     // Silent reconnect: the activation path calls this with `None`. Before falling
     // back to key/agent auth, use a saved password for this host target if the user
     // opted to remember one (see `services::remote_credentials`).
+    //
+    // An *empty* password counts as "none given", not as "authenticate with the
+    // empty string": the Connect modal sends a blank field when the user is relying
+    // on the saved credential, and taking that literally made the pooled connect
+    // fail with a saved password sitting right there in the keychain (`ssh_connect`
+    // filters it, so the probe passed and only this leg failed).
     let saved_pw;
+    let password = password.filter(|p| !p.is_empty());
     let password = if password.is_some() {
         password
     } else {
@@ -306,6 +324,8 @@ mod tests {
             port: None,
             remote_path: "/srv/project".to_string(),
             openvpn: None,
+            auto_connect: None,
+            key_auth: None,
             extra: HashMap::new(),
         }
     }
