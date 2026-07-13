@@ -1079,4 +1079,60 @@ mod tests {
         assert!(!is_auto(&m, "README.md"));
         assert!(is_auto(&m, "vendor/keep/x.rs")); // explicit ON still wins
     }
+
+    /// Why `commands::projects::clear_host_bound_state` must exist.
+    ///
+    /// A manifest entry is a claim about **one specific host**. Point the project at a
+    /// different one — detach, then extend to a corrected path, which is the normal way to
+    /// fix a wrong `remote_path` — and every base in it becomes a lie. The state dir is
+    /// keyed by project *id*, which detach preserves, so without an explicit purge the new
+    /// pairing inherits the old host's manifest wholesale.
+    ///
+    /// The two pure functions below then disagree about the same file in the worst
+    /// possible way, and this test pins both halves so the purge can never be quietly
+    /// dropped:
+    ///   * `push_decision` sees `ever_synced` + a missing host file and calls it `Stale` —
+    ///     a deletion to be resolved, not a file to send. So it **refuses to push**.
+    ///   * `divergence` maps the same failed host stat to "couldn't check → don't flag",
+    ///     so with the mirror untouched the file reads `(false, false)` — **green**.
+    ///
+    /// A file the tree reports as fully in sync, on a host that has never had it, which
+    /// byte-sync will never send. It would look like the sync simply worked.
+    #[test]
+    fn a_stale_manifest_against_a_fresh_host_is_a_false_green() {
+        // Synced against the OLD host, and untouched locally since.
+        let stale = SyncEntry {
+            selected: true,
+            auto_sync: true,
+            host_size: 10,
+            host_mtime: Some(100),
+            local_size: 10,
+            local_mtime: Some(100),
+            last_pull_ts: Some(1),
+            ..Default::default()
+        };
+        let local_unchanged = Some((10u64, Some(100u64)));
+
+        // The new host has never heard of this file.
+        assert_eq!(
+            push_decision(&stale, None),
+            PushDecision::Stale,
+            "refuses to push: it reads the absence as a host-side DELETION, not a new host"
+        );
+        assert_eq!(
+            divergence(&stale, None, local_unchanged),
+            (false, false),
+            "…and paints it green while doing so"
+        );
+
+        // Cleared (as a fresh pairing must be), the very same file behaves correctly: it
+        // is simply a local file the host lacks, so it gets created there.
+        let fresh = SyncEntry { selected: true, auto_sync: true, ..Default::default() };
+        assert_eq!(push_decision(&fresh, None), PushDecision::Safe);
+        assert_eq!(
+            divergence(&fresh, None, local_unchanged),
+            (false, true),
+            "local-only change → push, which is exactly the seed a new host needs"
+        );
+    }
 }

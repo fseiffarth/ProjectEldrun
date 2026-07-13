@@ -17,7 +17,6 @@ import {
   markVpnConnecting,
   markVpnError,
   releaseVpn,
-  useVpnStatusStore,
 } from "../../stores/vpnStatus";
 import type { LogLine } from "../common/ConnectionLog";
 
@@ -138,24 +137,22 @@ export function useRemoteReconnect(project: ProjectEntry) {
   const status = useRemoteStatusStore((s) => s.byProject[projectId]);
   const sshStatus: ConnState = status?.ssh ?? "off";
   const vpnStatus: ConnState = status?.vpn ?? "off";
-  const machineVpnStatus = useVpnStatusStore((s) =>
-    vpnConfig ? s.byConfig[vpnConfig] : undefined,
-  );
   const setSsh = useRemoteStatusStore((s) => s.setSsh);
   const setVpn = useRemoteStatusStore((s) => s.setVpn);
 
-  // A tunnel can be brought up from the header/global VPN control, without this
-  // project initiating it. If it matches this project's stored config, surface it
-  // here too so the OpenVPN section opens as connected instead of offering a second
-  // connect path for a machine-wide tunnel that is already up.
-  useEffect(() => {
-    if (!vpnConfig) return;
-    if (machineVpnStatus === "connected" && vpnStatus !== "connected") {
-      markVpnConnected(projectId, vpnConfig);
-    } else if (machineVpnStatus === "connecting" && vpnStatus !== "connecting") {
-      markVpnConnecting(projectId, vpnConfig);
-    }
-  }, [machineVpnStatus, projectId, vpnConfig, vpnStatus]);
+  // Deliberately NOT mirroring a machine-wide tunnel that merely matches this
+  // project's stored config path into this project's own vpn status: that used to
+  // "surface it here too" by marking this project connected and acquiring it as a
+  // holder purely off a path match, even when the tunnel was actually brought up
+  // by the header or another project. Two things followed from that, both wrong:
+  // the OpenVPN section rendered its own "connected" card instead of collapsing to
+  // `VpnTunnelUpNotice` like every other remote dialog does for a tunnel that
+  // isn't its own (see `useVpnSectionVisible`) — and logging out of *this* project
+  // then called `releaseVpn` on a holder slot it never earned, which could drop
+  // the tunnel out from under whoever actually started it. `vpnStatus` is now only
+  // ever set by an action this hook itself took (`connectVpnHeadless`,
+  // `startVpnTerm`'s ready-marker watcher), so `showVpnSection`'s `ownTunnelBusy`
+  // means what it says.
 
   // Windows has no ssh ControlMaster socket, so an interactive login can't be
   // ridden for the pooled connection — fall back to the headline (key-auth)

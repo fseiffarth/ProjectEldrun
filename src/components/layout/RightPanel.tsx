@@ -16,7 +16,8 @@ import { openLinkedFile } from "../embed/FileViewerPane";
 import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useWindowsStore } from "../../stores/windows";
 import { useSettingsStore } from "../../stores/settings";
-import { useTabsStore, orderedTabKeys } from "../../stores/tabs";
+import { useTabsStore, orderedTabKeys, isPtyTabKind, type TabEntry } from "../../stores/tabs";
+import { useActivityStore, type AttentionKind } from "../../stores/activity";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
@@ -135,6 +136,40 @@ function mergeEndings(...groups: string[][]): string[] {
     }
   }
   return [...endings.values()].sort((a, b) => a.localeCompare(b));
+}
+
+/** A hidden subwindow's tab is invisible to the tab bar, so it can't paint its
+ *  own glow — this is the same working/needs-decision/finished precedence
+ *  `TabBar` uses for the live tab glow, applied here to a hidden group's tab
+ *  chips (and rolled up for the group's row) so a hidden pane doesn't go dark
+ *  just because it's parked. */
+function hiddenTabStatus(
+  kind: TabEntry["kind"] | undefined,
+  ptyId: string,
+  busyByTab: Record<string, boolean>,
+  attentionByTab: Record<string, AttentionKind>,
+): "working" | "needs-decision" | "finished" | null {
+  if (!kind) return null;
+  if (isPtyTabKind(kind) && busyByTab[ptyId]) return "working";
+  if (kind === "agent" || kind === "local_agent") {
+    const attn = attentionByTab[ptyId];
+    if (attn === "decision") return "needs-decision";
+    if (attn === "done") return "finished";
+  }
+  return null;
+}
+
+/** Roll several tab statuses up into one, most urgent first — a decision still
+ *  waiting on the user outranks a tab merely working, which outranks one that's
+ *  just finished unseen. Mirrors `attentionByScope`'s decision-over-done
+ *  precedence, extended with `working` for the row-level dot. */
+function rollUpStatus(
+  statuses: Array<"working" | "needs-decision" | "finished" | null>,
+): "working" | "needs-decision" | "finished" | null {
+  if (statuses.includes("needs-decision")) return "needs-decision";
+  if (statuses.includes("working")) return "working";
+  if (statuses.includes("finished")) return "finished";
+  return null;
 }
 
 /** One collapsible root inside the box multi-root file view. Reuses `FileTree`
@@ -426,6 +461,28 @@ export function RightPanel({
   // from there. `unhideGroup`/`closeHiddenGroup` restore or discard them.
   const hiddenGroups = useTabsStore((s) => s.hiddenGroupsByScope[s.scope]);
   const scopeTabs = useTabsStore((s) => s.tabsByScope[s.scope]);
+  // Same working/decision/finished glow the tab bar draws for a live tab — a
+  // hidden subwindow's tabs are still running underneath the pane, so they keep
+  // reporting status even while parked.
+  const busyByTab = useActivityStore((s) => s.busyByTab);
+  const attentionByTab = useActivityStore((s) => s.attentionByTab);
+  // One status per hidden group's tab, rolled up per group and overall, so the
+  // Hidden section still says "something's running in there" without needing
+  // the group unhidden and its tab bar drawn.
+  const hiddenStatus = useMemo(() => {
+    const rows = (hiddenGroups ?? []).map((h) => {
+      const tabStatuses = orderedTabKeys(h.subtree).map((k) =>
+        hiddenTabStatus(
+          scopeTabs?.find((t) => t.key === k)?.kind,
+          `${scope}:${k}`,
+          busyByTab,
+          attentionByTab,
+        ),
+      );
+      return { id: h.id, status: rollUpStatus(tabStatuses), tabStatuses };
+    });
+    return { rows, overall: rollUpStatus(rows.map((r) => r.status)) };
+  }, [hiddenGroups, scopeTabs, scope, busyByTab, attentionByTab]);
   const unhideGroup = useTabsStore((s) => s.unhideGroup);
   const closeHiddenGroup = useTabsStore((s) => s.closeHiddenGroup);
   const [hiddenCollapsed, setHiddenCollapsed] = useState(false);
@@ -995,22 +1052,36 @@ export function RightPanel({
           >
             <span className="hidden-sw-caret">{hiddenCollapsed ? "▸" : "▾"}</span>
             Hidden ({hiddenGroups.length})
+            {hiddenStatus.overall && (
+              <span
+                className={`hidden-sw-status-dot ${hiddenStatus.overall}`}
+                title={
+                  hiddenStatus.overall === "needs-decision"
+                    ? "A hidden subwindow is waiting on you"
+                    : hiddenStatus.overall === "working"
+                      ? "A hidden subwindow is working"
+                      : "A hidden subwindow finished, unseen"
+                }
+              />
+            )}
           </button>
           {!hiddenCollapsed && (
             <div className="hidden-sw-list">
-              {hiddenGroups.map((h) => {
+              {hiddenGroups.map((h, hi) => {
                 const keys = orderedTabKeys(h.subtree);
+                const { status: rowStatus, tabStatuses } = hiddenStatus.rows[hi];
                 return (
                   <div key={h.id} className="hidden-sw-row">
-                    <span className="hidden-sw-icon">⊞</span>
+                    <span className={`hidden-sw-icon${rowStatus ? ` ${rowStatus}` : ""}`}>⊞</span>
                     <div className="hidden-sw-chips">
-                      {keys.map((k) => {
+                      {keys.map((k, ki) => {
                         const label = scopeTabs?.find((t) => t.key === k)?.label ?? k;
+                        const status = tabStatuses[ki];
                         return (
                           <button
                             key={k}
                             type="button"
-                            className="hidden-sw-chip"
+                            className={`hidden-sw-chip${status ? ` ${status}` : ""}`}
                             title={`Restore focused on “${label}”`}
                             onClick={() => unhideGroup(h.id, { activeKey: k })}
                           >

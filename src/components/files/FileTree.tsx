@@ -10,8 +10,15 @@ import { useDragStore, type EmbedCap, type FileDragItem } from "../../stores/dra
 import { commitFileDrop, fileDropGoesToNewWindow } from "../tabs/commitFileDrop";
 import { startDetachedDropSession } from "../tabs/detachedDropTargets";
 import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSync";
-import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
-import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
+import {
+  startCursorPoll,
+  desktopCursor,
+  snapshotFrame,
+  physToClient,
+  type PhysPoint,
+  type WindowFrame,
+} from "../../lib/coords";
+import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
@@ -34,6 +41,12 @@ function sizeCategory(bytes: number): string {
   if (bytes < 500 * 1024) return "size-medium";
   if (bytes < 10 * 1024 * 1024) return "size-large";
   return "size-huge";
+}
+
+/** Hover title for a non-ignored size figure: the total + ignored split when
+ *  there's ignored content to split out, else the plain fallback wording. */
+function sizeTitle(shown: number, ignored: number, fallback: string): string {
+  return ignored > 0 ? `${fmtSize(shown + ignored)} total — ${fmtSize(ignored)} git-ignored` : fallback;
 }
 
 interface Props {
@@ -161,14 +174,37 @@ export function FileTree({
 }: Props) {
   const [rawEntries, setRawEntries] = useState<FileEntry[]>([]);
   // Recursive folder sizes (bytes), keyed by absolute folder path. Filled in
-  // lazily by a per-folder backend `dir_size` call so a big subtree never blocks
-  // the listing — the tree renders immediately and each folder's size appears
+  // lazily by a per-folder backend call so a big subtree never blocks the
+  // listing — the tree renders immediately and each folder's size appears
   // once it resolves. `requestedSizes` guards against re-dispatching the same
   // folder while it's in flight (or after it failed), so fs-watch churn doesn't
   // trigger a request storm; both reset in `load()` (navigation / refresh) so a
-  // re-listed folder recomputes.
+  // re-listed folder recomputes. Shared between the two size-fetch effects
+  // below (plain `dir_size` for the gitignored section, `dir_size_breakdown`
+  // for everything else) so the same folder is never fetched by both — besides
+  // being wasted work, two independent walks of the same folder can disagree
+  // if it's being actively written to, which would make the ignored split
+  // exceed the total from the other call.
   const [dirSizes, setDirSizes] = useState<Record<string, number>>({});
   const requestedSizes = useRef<Set<string>>(new Set());
+  // Which listing the in-flight size calls belong to. Bumped by `load()`, the
+  // only thing that invalidates the cache — so a result is stale ONLY if the
+  // folder was re-listed under it, never merely because the tree re-rendered.
+  // This is load-bearing: the effects below key on `sections`, whose identity
+  // changes on any re-render (`load()` itself sets rawEntries and THEN, a
+  // round-trip later, gitStatuses), and cancelling on that would drop every
+  // size call still in flight — permanently, since `requestedSizes` keeps it
+  // from being re-dispatched. Small folders resolved inside the gap and showed
+  // a size; a big one (the whole point of the feature) never did.
+  const sizeGeneration = useRef(0);
+  // Bytes of a folder's recursive size that are git-ignored, for folders that
+  // are NOT themselves ignored (they sit in the regular/standard section) but
+  // contain ignored content — e.g. a source folder with a build output dir
+  // inside. Filled from the same `dir_size_breakdown` call that fills
+  // `dirSizes` for these folders (one walk, both numbers), so the split can
+  // never exceed the total it was measured against. A folder with no ignored
+  // content is simply absent from this map (nothing to annotate).
+  const [dirIgnoredBytes, setDirIgnoredBytes] = useState<Record<string, number>>({});
   // Which files can be embedded as a frameless in-tab app (Group K #40). Keyed
   // by extension (default-app resolution is per-mime/extension), so we only
   // query the backend once per distinct extension. Only embeddable files get the
@@ -406,40 +442,93 @@ export function FileTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries]);
 
-  // Lazily compute the recursive size of each visible folder. Fires one backend
-  // call per not-yet-requested folder (concurrently — they're independent) and
-  // fills `dirSizes` as each resolves. A failed call is left unresolved; the
-  // `requestedSizes` guard keeps it (and steady-state re-renders / fs-watch
-  // reloads) from re-dispatching.
+  // Lazily compute the recursive size of each visible gitignored-section
+  // folder. Fires one backend call per not-yet-requested folder (concurrently
+  // — they're independent) and fills `dirSizes` as each resolves. A failed
+  // call is left unresolved; the `requestedSizes` guard keeps it (and
+  // steady-state re-renders / fs-watch reloads) from re-dispatching. Plain
+  // `dir_size` is enough here — the whole folder is ignored by definition, so
+  // there's no split to compute, unlike the regular/standard effect below.
   useEffect(() => {
-    const pending = entries.filter((e) => e.is_dir && !requestedSizes.current.has(e.path));
+    const pending = sections.gitignored.filter((e) => e.is_dir && !requestedSizes.current.has(e.path));
     if (pending.length === 0) return;
     pending.forEach((e) => requestedSizes.current.add(e.path));
-    let cancelled = false;
+    const gen = sizeGeneration.current;
     for (const e of pending) {
       invoke<number>("dir_size", { projectDir, relPath: relForEntry(e) })
         .then((bytes) => {
-          if (!cancelled) setDirSizes((m) => ({ ...m, [e.path]: bytes }));
+          if (sizeGeneration.current === gen) setDirSizes((m) => ({ ...m, [e.path]: bytes }));
         })
         .catch(() => {
           /* best-effort display aid — leave unresolved on failure */
         });
     }
-    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries]);
+  }, [sections.gitignored]);
+
+  // Lazily compute the recursive size of each visible regular/standard-section
+  // folder, split into ignored vs. non-ignored bytes in the SAME backend walk
+  // that produces the total — so a folder with e.g. a build output dir mixed
+  // in with source can show that split, and the ignored figure can never
+  // exceed the total it was measured against (two independent walks of the
+  // same folder can disagree if it's being actively written to, which is
+  // exactly the kind of folder — build/output dirs — this feature targets).
+  // Fills both `dirSizes` and `dirIgnoredBytes` from one response, sharing
+  // `requestedSizes` with the effect above so no folder is fetched twice.
+  useEffect(() => {
+    const candidates = [...sections.regular, ...sections.standard];
+    const pending = candidates.filter((e) => e.is_dir && !requestedSizes.current.has(e.path));
+    if (pending.length === 0) return;
+    pending.forEach((e) => requestedSizes.current.add(e.path));
+    const gen = sizeGeneration.current;
+    for (const e of pending) {
+      invoke<{ total: number; ignored: number }>("dir_size_breakdown", { projectDir, relPath: relForEntry(e) })
+        .then(({ total, ignored }) => {
+          if (sizeGeneration.current !== gen) return;
+          setDirSizes((m) => ({ ...m, [e.path]: total }));
+          if (ignored > 0) setDirIgnoredBytes((m) => ({ ...m, [e.path]: ignored }));
+        })
+        .catch(() => {
+          // Fall back to the plain total rather than showing no size at all —
+          // `dir_size_breakdown` can fail for reasons `dir_size` wouldn't (a
+          // backend that hasn't picked up this new command yet, no `git` on
+          // PATH), and a folder's size is more important than its ignored split.
+          invoke<number>("dir_size", { projectDir, relPath: relForEntry(e) })
+            .then((bytes) => {
+              if (sizeGeneration.current === gen) setDirSizes((m) => ({ ...m, [e.path]: bytes }));
+            })
+            .catch(() => {
+              /* best-effort display aid — leave unresolved on failure */
+            });
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sections.regular, sections.standard]);
 
   // Total bytes contained in each section, kept separate rather than merged
   // into one figure — the point of splitting scaffold/gitignored out visually
   // is that their weight (e.g. a huge gitignored build dir) shouldn't hide
   // inside the "real" content total. Sums whatever `dirSizes`/`e.size` already
   // know; unresolved subfolder sizes count as 0 until their `dir_size` call
-  // lands, same best-effort as the per-row display above.
+  // lands, same best-effort as the per-row display above. `regular`/`standard`
+  // are non-ignored-only (mirroring the per-row headline number), with the
+  // ignored portion pulled out separately so callers can put it on hover —
+  // `gitignored` needs no such split, it's ignored content in its entirety.
   const groupSizes = useMemo(() => {
     const total = (list: FileEntry[]) =>
       list.reduce((sum, e) => sum + (e.is_dir ? (dirSizes[e.path] ?? 0) : e.size), 0);
-    return { regular: total(sections.regular), standard: total(sections.standard), gitignored: total(sections.gitignored) };
-  }, [sections, dirSizes]);
+    const ignored = (list: FileEntry[]) =>
+      list.reduce((sum, e) => sum + (e.is_dir ? (dirIgnoredBytes[e.path] ?? 0) : 0), 0);
+    const regularIgnored = ignored(sections.regular);
+    const standardIgnored = ignored(sections.standard);
+    return {
+      regular: total(sections.regular) - regularIgnored,
+      regularIgnored,
+      standard: total(sections.standard) - standardIgnored,
+      standardIgnored,
+      gitignored: total(sections.gitignored),
+    };
+  }, [sections, dirSizes, dirIgnoredBytes]);
 
   const isEmbeddable = (e: FileEntry): boolean =>
     !e.is_dir && embedByExt[e.extension ?? ""] === true;
@@ -467,8 +556,9 @@ export function FileTree({
   // in native-drag mode.
   useEffect(() => {
     // Warm the native drag-out preview icon so its path is ready (sync-readable)
-    // by the time the user starts a Ctrl-drag.
-    void warmDragIcon();
+    // by the time the user starts a Ctrl-drag. Only the plugin path (Win/mac)
+    // needs it — the Linux `start_file_drag` embeds the icon backend-side.
+    if (PLATFORM !== "linux") void warmDragIcon();
     const sync = (e: KeyboardEvent) => setCtrlHeld(e.ctrlKey);
     const clear = () => setCtrlHeld(false);
     window.addEventListener("keydown", sync);
@@ -573,11 +663,14 @@ export function FileTree({
     // does NOT clear — a background re-list must not wipe an in-progress selection.
     clearSelection();
     // Re-listing (navigation or an explicit refresh) recomputes folder sizes:
-    // drop the cache + in-flight guard so the effect re-requests them fresh. The
-    // quiet fs-watch `refresh()` deliberately does NOT do this — folder sizes
-    // stay put through watch churn.
+    // drop the cache + in-flight guard so the effect re-requests them fresh, and
+    // bump the generation so a call still walking the OLD folder can't land its
+    // bytes on the new listing. The quiet fs-watch `refresh()` deliberately does
+    // NOT do this — folder sizes stay put through watch churn.
+    sizeGeneration.current += 1;
     requestedSizes.current.clear();
     setDirSizes({});
+    setDirIgnoredBytes({});
     try {
       const result = await invoke<FileEntry[]>("list_dir", {
         projectDir,
@@ -704,29 +797,53 @@ export function FileTree({
   }
 
   function handleEntryMouseEnter(e: React.MouseEvent<HTMLDivElement>, entry: FileEntry) {
-    if (entry.modified_secs || entry.created_secs) {
-      setTooltip({ rect: e.currentTarget.getBoundingClientRect(), entry });
-    }
+    // Always shows the name (the row can truncate it); Created/Modified/Ignored
+    // lines below are conditional on the entry actually having that data.
+    setTooltip({ rect: e.currentTarget.getBoundingClientRect(), entry });
   }
 
-  function handleEntryDragStart(e: React.DragEvent<HTMLDivElement>, entry: FileEntry) {
-    // WebKitGTK's HTML5 drag-out renders no drag image outside the window and
-    // doesn't reliably export the file to other apps, so suppress it and hand
-    // off to the native OS drag (tauri-plugin-drag): real OLE/NSDragging/GTK
-    // drag, with an OS-rendered icon that crosses into Signal / a browser / a
-    // file manager / the desktop. `mode: "copy"` so the file is never MOVED out
-    // of the project. The preview icon path was warmed at mount (warmDragIcon).
-    e.preventDefault();
-    const begin = (icon: string) =>
-      startDrag({ item: [entry.path], icon, mode: "copy" }).catch((err) =>
+  // Start the native OS drag-out (EXPORT/COPY to another app: a browser, Signal,
+  // a file manager, the desktop). Real OLE/NSDragging/GTK drag with an
+  // OS-rendered icon; copy semantics, so files are never MOVED out of the
+  // project. Reached two ways: a dir's HTML5 dragstart (handleEntryDragStart),
+  // and the mid-drag Ctrl handoff inside onEntryPointerDown.
+  function beginNativeFileDrag(paths: string[]) {
+    // Linux uses our own GTK drag (`start_file_drag`): tauri-plugin-drag's GTK
+    // backend hands external targets an EMPTY payload — it tears down its
+    // drag-data-get handler at drop-performed, before the target requests the
+    // text/uri-list data — so a drop into a browser silently did nothing (it
+    // also ships unencoded file:// URIs, which strict consumers discard).
+    if (PLATFORM === "linux") {
+      void invoke("start_file_drag", { paths }).catch((err) =>
         // Surfaces the most common failure: the backend wasn't rebuilt, so the
-        // `plugin:drag|start_drag` command (and `drag_preview_icon`) don't exist
-        // yet — the drag silently no-ops. Log it so the cause is visible.
+        // command doesn't exist yet — the drag silently no-ops otherwise.
+        console.error("[eldrun] native file drag-out failed:", err),
+      );
+      return;
+    }
+    const begin = (icon: string) =>
+      startDrag({ item: paths, icon, mode: "copy" }).catch((err) =>
+        // Same visibility for the plugin path (`plugin:drag|start_drag` and
+        // `drag_preview_icon` only exist after a backend rebuild).
         console.error("[eldrun] native file drag-out failed:", err),
       );
     // The icon data URL is normally warm by drag time; if not, resolve first.
     if (dragIconDataUrl) void begin(dragIconDataUrl);
     else void warmDragIcon().then(begin);
+  }
+
+  function handleEntryDragStart(e: React.DragEvent<HTMLDivElement>, entry: FileEntry) {
+    // WebKitGTK's HTML5 drag-out renders no drag image outside the window and
+    // doesn't reliably export the file to other apps, so suppress it and hand
+    // off to the native OS drag.
+    e.preventDefault();
+    // Dragging a row that belongs to a >1 selection exports the whole
+    // selection, mirroring the pointer drag-to-tab's multi-drag.
+    const paths =
+      selected.has(entry.path) && selected.size > 1
+        ? entries.filter((en) => selected.has(en.path)).map((en) => en.path)
+        : [entry.path];
+    beginNativeFileDrag(paths);
   }
 
   // Start a pointer-based drag from a file row, mirroring TabBar.onTabPointerDown.
@@ -797,6 +914,67 @@ export function FileTree({
     let lastPhys: PhysPoint | null = null;
     let stopPoll: (() => void) | null = null;
 
+    // Mid-drag Ctrl → arms the native OS EXPORT drag (copy the file(s) out to
+    // whatever app the cursor ends up over). Ctrl *before* the press is the
+    // multi-select toggle, so export is armed by pressing Ctrl AFTER the drag
+    // is underway — symmetric with Shift, which modifies the drop while
+    // already dragging (see DragGhost's modifier highlight). Mirrors that:
+    // holding Ctrl only MARKS the ghost's "copy out" option; the in-app hover
+    // (ghost, folder highlight, popout hover) keeps running unchanged.
+    //
+    // The gesture then switches between two modes at the WINDOW BOUNDARY, and
+    // can switch back and forth as often as the user likes:
+    //  - leaving the window with Ctrl held → the OS drag takes over the still-
+    //    held button (GTK can only BEGIN a drag while the button is physically
+    //    down, so the crossing is the last moment this is possible), and a
+    //    release out there drops into the external app.
+    //  - coming back INTO the window → the OS drag is cancelled and the in-app
+    //    ghost/hover resumes, so re-entering never leaves the user staring at
+    //    an OS drag icon over Eldrun's own window.
+    // While the OS owns the drag the webview sees no pointer events at all, so
+    // the boundary test runs off the OS-cursor poll (physical px → this
+    // window's client px via the frame snapshot), which keeps ticking
+    // regardless of who holds the pointer grab.
+    let nativeActive = false;
+    let frame: WindowFrame | null = null;
+    // The `eldrun:file-drag-ended` subscription (registered below, once the
+    // gesture is real) and whether the gesture has already ended — `listen` is
+    // async, so it can resolve after cleanup and must then unsubscribe at once.
+    let unlistenEnded: (() => void) | null = null;
+    let gestureOver = false;
+    const inWindow = (c: { x: number; y: number }) =>
+      c.x >= 0 && c.y >= 0 && c.x < window.innerWidth && c.y < window.innerHeight;
+    const toNativeDrag = () => {
+      if (!dragging || nativeActive) return;
+      nativeActive = true;
+      // The in-app drop targets are meaningless while the OS owns the drag.
+      setMoveTarget(null);
+      detached.hover(null, { x: 0, y: 0 }, entry.name);
+      beginNativeFileDrag(dragEntries.map((en) => en.path));
+    };
+    const backToInAppDrag = () => {
+      if (!nativeActive) return;
+      nativeActive = false;
+      void invoke("cancel_file_drag").catch(() => {});
+    };
+    // Ctrl, tracked as gesture state rather than read off each pointer event.
+    // Cancelling the GTK drag hands the pointer back, but NOT the implicit grab
+    // the original pointerdown had: the webview then sees plain mousemove while
+    // the cursor is over the window and NOTHING once it leaves. So after one
+    // handoff, `PointerEvent.ctrlKey` stops arriving exactly where the next
+    // handoff would need it — hence a flag the key events maintain, plus the
+    // cursor poll below as the position source. (The keydown arm also covers
+    // Ctrl pressed while the cursor already sits outside the window.)
+    let ctrlDown = false;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key !== "Control") return;
+      ctrlDown = true;
+      if (dragging && !inWindow(lastClient)) toNativeDrag();
+    };
+    const onKeyUp = (ev: KeyboardEvent) => {
+      if (ev.key === "Control") ctrlDown = false;
+    };
+
     const onMove = (ev: PointerEvent) => {
       if (!dragging) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
@@ -830,13 +1008,44 @@ export function FileTree({
             /* capture is best-effort; the OS-cursor poll does not depend on it */
           }
         }
+        // This window's geometry, for mapping the polled OS cursor back into
+        // client px while the OS drag owns the pointer (see `nativeActive`).
+        void snapshotFrame()
+          .then((f) => {
+            frame = f;
+          })
+          .catch(() => {});
         // Poll the OS cursor (physical desktop px) to drive the popout hover past
         // the main viewport — DOM pointermove may not cross the OS window boundary.
         stopPoll = startCursorPoll((p) => {
           lastPhys = p;
+          // The poll is the SOLE arbiter of the window boundary, in BOTH
+          // directions. DOM pointer events can't be: once the OS drag has run
+          // even once, the implicit grab is gone, so they stop at the window
+          // edge — exactly where the crossing has to be detected.
+          const c = frame ? physToClient(frame, p) : null;
+          if (nativeActive) {
+            if (!c) return;
+            // The OS owns the pointer: this poll is also the only position
+            // source, so keep the ghost tracking the cursor for the moment it
+            // comes back in — whereupon the OS drag is cancelled and the
+            // in-app hover takes over again.
+            lastClient = c;
+            useDragStore.getState().move(c.x, c.y);
+            if (inWindow(c)) backToInAppDrag();
+            return;
+          }
+          if (c && ctrlDown && !inWindow(c)) {
+            toNativeDrag();
+            return;
+          }
           detached.hover(detached.at(p), p, entry.name);
         });
       }
+      // While the OS drag owns the pointer, a stray DOM move must not fight the
+      // poll for the ghost position or revive the in-app drop targets.
+      if (nativeActive) return;
+      ctrlDown = ev.ctrlKey;
       lastClient = { x: ev.clientX, y: ev.clientY };
       useDragStore.getState().move(ev.clientX, ev.clientY);
       // Drag-to-move: highlight the folder row / breadcrumb / up button under the
@@ -852,9 +1061,14 @@ export function FileTree({
     // Tear down the move listener, poll, popout highlight, and pointer capture —
     // however the gesture resolves.
     const cleanup = () => {
+      gestureOver = true;
       window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
       setMoveTarget(null);
       stopPoll?.();
+      unlistenEnded?.();
+      unlistenEnded = null;
       // Clear the popout highlight + tear down the panes listener. `targetAt`
       // still hit-tests the cached pane geometry for the commit below.
       detached.dispose();
@@ -868,6 +1082,11 @@ export function FileTree({
     };
 
     const commitRelease = async (shiftKey: boolean) => {
+      // The OS owns the drag: it is dropping into an external app, and the
+      // in-app drop targets don't apply. `eldrun:file-drag-ended` ends the
+      // gesture instead (a stray pointerup here must not ALSO spawn a tab or a
+      // window on top of the export).
+      if (nativeActive) return;
       // Read the drop-target folder BEFORE cleanup() runs — cleanup calls
       // setMoveTarget(null), which nulls moveTargetRef.current, so reading it
       // afterwards always saw null and silently dropped every drag-to-move (the
@@ -972,7 +1191,24 @@ export function FileTree({
     };
 
     window.addEventListener("pointermove", onMove);
-    bindDragRelease({ onCommit: (shiftKey) => void commitRelease(shiftKey), onAbort });
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    const unbindRelease = bindDragRelease({
+      onCommit: (shiftKey) => void commitRelease(shiftKey),
+      onAbort,
+    });
+    // Once the OS drag owns the pointer, the webview never sees the release, so
+    // the backend reports the drop (or the user's abort) that ends the whole
+    // gesture. NOT fired by the cancel we ourselves issue on re-entry — that
+    // hands control back to the in-app drag, which is still very much alive.
+    void listen("eldrun:file-drag-ended", () => {
+      unbindRelease();
+      onAbort();
+    }).then((un) => {
+      // `listen` is async: the gesture can already be over when it resolves.
+      if (gestureOver) un();
+      else unlistenEnded = un;
+    });
   }
 
   function relForEntry(entry: FileEntry): string {
@@ -1673,7 +1909,10 @@ export function FileTree({
               </React.Fragment>
             );
           })}
-          <span className="file-tree-path-total" title="Total size of the files shown here">
+          <span
+            className="file-tree-path-total"
+            title={sizeTitle(groupSizes.regular, groupSizes.regularIgnored, "Total size of the files shown here")}
+          >
             {fmtSize(groupSizes.regular)}
           </span>
         </div>
@@ -1685,7 +1924,10 @@ export function FileTree({
         <label className="file-tree-scaffold-toggle">
           <Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
           Separate scaffold
-          <span className="file-tree-path-total" title="Total size of the files shown here">
+          <span
+            className="file-tree-path-total"
+            title={sizeTitle(groupSizes.regular, groupSizes.regularIgnored, "Total size of the files shown here")}
+          >
             {fmtSize(groupSizes.regular)}
           </span>
         </label>
@@ -1699,6 +1941,13 @@ export function FileTree({
         function renderEntry(e: FileEntry, isScaffold = false, isGitignored = false) {
           const status = isGitignored ? undefined : gitStatuses[e.name];
           const sizeClass = !e.is_dir ? sizeCategory(e.size) : "";
+          // A folder's headline number is its non-ignored weight — the part
+          // that's actually "yours" — with the full total + ignored split
+          // available on hover; the gitignored section shows a folder's whole
+          // size plainly since there nothing but ignored content is left.
+          const dirTotal = e.is_dir ? dirSizes[e.path] : undefined;
+          const dirIgnored = e.is_dir ? dirIgnoredBytes[e.path] : undefined;
+          const dirShown = dirTotal !== undefined ? dirTotal - (dirIgnored ?? 0) : undefined;
           const canRun = !e.is_dir && e.extension === ".sh";
           const isRunning = runningScripts.has(e.path);
           const isCompiling = compiling.has(e.path);
@@ -1827,11 +2076,11 @@ export function FileTree({
                 </span>
               )}
               <span className="file-icon">{e.is_dir ? folderIcon() : fileIcon(e.extension)}</span>
-              <span className="file-name" title={e.name}>{e.name}</span>
+              <span className="file-name">{e.name}</span>
               {e.is_dir
-                ? dirSizes[e.path] !== undefined && (
-                    <span className={`file-size ${sizeCategory(dirSizes[e.path])}`}>
-                      {fmtSize(dirSizes[e.path])}
+                ? dirShown !== undefined && (
+                    <span className={`file-size ${sizeCategory(dirShown)}`}>
+                      {fmtSize(dirShown)}
                     </span>
                   )
                 : <span className={`file-size ${sizeClass}`}>{fmtSize(e.size)}</span>}
@@ -1853,7 +2102,10 @@ export function FileTree({
                 >
                   <span className="file-tree-hidden-caret">{scaffoldExpanded ? "▾" : "▸"}</span>
                   scaffold ({standard.length})
-                  <span className="file-tree-path-total" title="Total size of the scaffold group">
+                  <span
+                    className="file-tree-path-total"
+                    title={sizeTitle(groupSizes.standard, groupSizes.standardIgnored, "Total size of the scaffold group")}
+                  >
                     {fmtSize(groupSizes.standard)}
                   </span>
                 </button>
@@ -2338,11 +2590,19 @@ export function FileTree({
           className="file-tooltip"
           style={{ right: window.innerWidth - tooltip.rect.left + 8, top: tooltip.rect.top }}
         >
+          <div className="file-tooltip-name">{tooltip.entry.name}</div>
           {tooltip.entry.created_secs && (
             <div><span className="file-tooltip-label">Created </span>{fmtModified(tooltip.entry.created_secs)}</div>
           )}
           {tooltip.entry.modified_secs && (
             <div><span className="file-tooltip-label">Modified</span>{fmtModified(tooltip.entry.modified_secs)}</div>
+          )}
+          {tooltip.entry.is_dir && dirIgnoredBytes[tooltip.entry.path] !== undefined && (
+            <div>
+              <span className="file-tooltip-label">Ignored </span>
+              {fmtSize(dirIgnoredBytes[tooltip.entry.path])}
+              {dirSizes[tooltip.entry.path] !== undefined && ` of ${fmtSize(dirSizes[tooltip.entry.path])} total`}
+            </div>
           )}
         </div>,
         document.body

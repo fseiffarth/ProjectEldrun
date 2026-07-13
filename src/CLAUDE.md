@@ -26,7 +26,7 @@ workflow); see `src-tauri/CLAUDE.md` for the backend file map.
 | `DetachedApp.tsx` | Root component for a popped-out/detached subwindow (#42). |
 | `ProjectSwitcher.tsx` | Thin composition root: pill strip + search/dialog/settings wiring. Re-exports scaffold helpers. |
 | `ProjectSearch.tsx` *(in `projects/`)* | Inactive-project/box search box + results popover. |
-| `ProjectDialog.tsx` *(in `projects/`)* | New/Import project dialog incl. SSH + OpenVPN + scaffold-fill sub-flows. |
+| `ProjectDialog.tsx` *(in `projects/`)* | New/Import project dialog incl. SSH + OpenVPN + scaffold-fill sub-flows. An import's source is a local folder **or** a GitHub/GitLab clone (`git_clone` lands the tree, then the ordinary import registers it in place). |
 | `SettingsPanel.tsx` | Settings dialog + sub-panels (theme/git/layout, global apps, file-type apps, Ollama, shortcuts, help). |
 | `RightPanel.tsx` | File-tree overlay panel (git status/history). |
 | `VpnPasswordPrompt.tsx` | Modal prompting for an OpenVPN password on activation. |

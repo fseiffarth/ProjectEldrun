@@ -189,15 +189,40 @@ async function ensureRootSshLoginIfNeeded(project: ProjectEntry | undefined): Pr
 }
 
 /**
+ * The password a create/extend dialog authenticated its SSH session with, handed
+ * over for that project's **first** pooled connect and forgotten the moment it is
+ * used (or the connect gives up). Never persisted — persisting is what the dialog's
+ * "Save password" toggle is for, and a user who declined it must not have the
+ * secret written anywhere.
+ *
+ * Without this, the first `remote_connect` for a just-created remote project ran
+ * with `password: null` and only succeeded because the dialog's ControlMaster was
+ * still up. Two things came out wrong: the pool depended on a master it doesn't own,
+ * and the backend — which reads "no password given, none saved" as *key* auth —
+ * recorded `key_auth: true` on a host that in fact needs a password, so the project
+ * then advertised itself as auto-connect-eligible and the auto-connect failed on the
+ * next launch.
+ */
+const pendingRemotePassword = new Map<string, string>();
+
+/** Hand `projectId`'s first pooled connect the password the dialog just used. */
+export function stashRemotePassword(projectId: string, password: string): void {
+  if (password) pendingRemotePassword.set(projectId, password);
+}
+
+/**
  * Phase 0 (mount-free remote): open the pooled SSH/SFTP connection for a remote
  * project so authentication happens once on activation and every later channel
  * (file browse / I-O, agent tabs, git) rides the shared ControlMaster. Best-
  * effort and fire-and-forget: a failure (offline host, or password-only auth
  * with no live master) is logged and never blocks activation — later access
  * falls back to a one-shot session exactly as before. No-op for local projects
- * (the backend resolves remoteness and returns early). Passes no password (the
- * no-stored-password rule); password-auth hosts authenticate their master via
- * the interactive root-terminal login, which this connection then rides.
+ * (the backend resolves remoteness and returns early).
+ *
+ * The password, in order: the one the create/extend dialog just authenticated with
+ * (`stashRemotePassword`, single-use), else none — in which case the backend falls
+ * back to a saved credential for the host, then to key/agent auth, and finally to
+ * the master an interactive root-terminal login left behind.
  */
 function ensureRemotePool(projectId: string): void {
   const status = useRemoteStatusStore.getState();
@@ -211,10 +236,17 @@ function ensureRemotePool(projectId: string): void {
   const maxAttempts = 6;
   const tryConnect = () => {
     if (useProjectsStore.getState().activeId !== projectId) return;
-    void invoke("remote_connect", { projectId, password: null })
-      .then(() => useRemoteStatusStore.getState().setSsh(projectId, "connected"))
+    // Kept across retries (an early attempt can lose to a still-starting host) and
+    // dropped once the attempt is settled either way.
+    const password = pendingRemotePassword.get(projectId) ?? null;
+    void invoke("remote_connect", { projectId, password })
+      .then(() => {
+        pendingRemotePassword.delete(projectId);
+        useRemoteStatusStore.getState().setSsh(projectId, "connected");
+      })
       .catch((error) => {
         if (++attempts >= maxAttempts) {
+          pendingRemotePassword.delete(projectId);
           console.warn("remote_connect failed", error);
           useRemoteStatusStore.getState().setSsh(projectId, "error");
           return;
@@ -1019,10 +1051,27 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // Backend promotes the local mirror back to the project directory and drops
     // the remote/mirror pointers (host files untouched), returning the updated
     // local entry. Replace the whole entry so the pill lamp + file tree update.
+    const oldDir = get().projects.find((p) => p.id === id)?.directory ?? "";
     const updated = await invoke<ProjectEntry>("detach_project_from_remote", { projectId: id });
     set((state) => ({
       projects: state.projects.map((project) => (project.id === id ? updated : project)),
     }));
+
+    // Re-point the tabs. `directory` just changed out from under them: it was the remote
+    // state dir, and it is now the promoted mirror. Every tab still holds the old one as
+    // its cwd — harmless while the project was remote (localTabCwd rewrote it at render),
+    // instantly wrong the moment it isn't, because that override is gated on the project
+    // BEING remote. Left alone, agents relaunch inside the state dir this detach just
+    // emptied, and Claude — which keys its session history by cwd — can no longer find the
+    // conversation to `--resume`. See `detachScopeFromRemote`.
+    if (oldDir && updated.directory) {
+      useTabsStore.getState().detachScopeFromRemote(id, oldDir, updated.directory);
+    }
+
+    // The SSH/VPN lamp lives in its own store, keyed by project — nothing about replacing
+    // the project entry clears it, so a detached project would keep showing a connection
+    // to a host it no longer has.
+    useRemoteStatusStore.getState().clear(id);
   },
 
   unpublishProject: async (id) => {

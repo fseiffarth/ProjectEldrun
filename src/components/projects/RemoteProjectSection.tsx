@@ -6,6 +6,9 @@ import { ConnectionLog } from "../common/ConnectionLog";
 import { ConnLamp } from "../common/ConnLamp";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
+import { Toggle } from "../common/Toggle";
+import { VpnTunnelUpNotice } from "../common/VpnTunnelUpNotice";
+import { useVpnSectionVisible } from "../../stores/vpnStatus";
 import type { ConnState } from "../../stores/remoteStatus";
 import type { useRemoteSession } from "./useRemoteSession";
 
@@ -83,6 +86,10 @@ export function RemoteProjectSection({
     sshPassword,
     sshStatus,
     sshError,
+    sshRemember,
+    setSshRemember,
+    sshSaved,
+    forgetSshPassword,
     remoteBrowsePath,
     remoteEntries,
     remoteListBusy,
@@ -107,6 +114,10 @@ export function RemoteProjectSection({
     vpnStatus,
     setVpnStatus,
     vpnError,
+    vpnRemember,
+    setVpnRemember,
+    vpnSaved,
+    forgetVpnPassword,
     vpnLog,
     vpnTerm,
     startVpnTerm,
@@ -132,6 +143,15 @@ export function RemoteProjectSection({
     void createRemoteFolder(name);
     setNewFolderName("");
   };
+
+  // Same gate as the Connect modal: a tunnel is machine-wide, so once one is up
+  // (from the header, another project, or connect-on-launch) this dialog has no
+  // tunnel left to offer and collapses its OpenVPN block to a one-line notice —
+  // unless the live tunnel is the one *this* dialog just brought up, whose log and
+  // state belong here. The project simply stores no config in that case; the
+  // Connect modal can still attach one later.
+  const vpnBusy = vpnStatus === "connecting" || vpnStatus === "connected";
+  const showVpnSection = useVpnSectionVisible(vpnBusy);
 
   if (!isRemoteProject) return null;
 
@@ -192,7 +212,7 @@ export function RemoteProjectSection({
                   "Password auth needs OpenSSH 8.4+ or sshpass — update OpenSSH or install sshpass, or use SSH keys (leave the password blank).",
                 );
               }
-              if (vpnEnabled && vpnConfig && !sshTooling.openvpn) {
+              if (showVpnSection && vpnEnabled && vpnConfig && !sshTooling.openvpn) {
                 warnings.push(
                   "openvpn/pkexec not found — VPN-gated hosts can't connect. Install openvpn and polkit.",
                 );
@@ -208,6 +228,11 @@ export function RemoteProjectSection({
             })()}
 
           <div className="ssh-connect-fields" role="group" aria-label="OpenVPN tunnel">
+            {/* A tunnel that is already up machine-wide leaves this section nothing
+                to do — say so in one line and go straight to SSH. */}
+            {!showVpnSection && <VpnTunnelUpNotice />}
+            {showVpnSection && (
+              <>
             {/* OpenVPN is opt-in (default off): reaching the host directly needs
                 no tunnel when you're already on the right network. Flip the toggle
                 only for a VPN-gated host; the config + connect UI stays collapsed
@@ -288,12 +313,24 @@ export function RemoteProjectSection({
                     )}
                     <label>
                       {vpnNeeds.username ? "VPN password" : "VPN passphrase"}{" "}
-                      <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
+                      <span className="ssh-optional-hint">
+                        {vpnSaved
+                          ? "(saved in your OS keychain)"
+                          : "(not stored unless you save it below)"}
+                      </span>
                       <div className="folder-picker-row">
                         <PasswordInput
                           className="ssh-password-input"
                           value={vpnPassword}
-                          placeholder={vpnNeeds.username ? "OpenVPN account password" : "VPN passphrase"}
+                          // A saved secret can't be pre-filled — it never leaves the
+                          // backend — so blank means "use the saved one".
+                          placeholder={
+                            vpnSaved
+                              ? "Using saved passphrase — leave blank"
+                              : vpnNeeds.username
+                                ? "OpenVPN account password"
+                                : "VPN passphrase"
+                          }
                           onChange={(e) => {
                             setVpnPassword(e.target.value);
                             if (vpnStatus !== "idle") setVpnStatus("idle");
@@ -307,12 +344,20 @@ export function RemoteProjectSection({
                     {vpnNeedsKeyPassphrase && (
                       <label>
                         Private key passphrase{" "}
-                        <span className="ssh-optional-hint">(not stored; asked again on activation)</span>
+                        <span className="ssh-optional-hint">
+                          {vpnSaved
+                            ? "(saved in your OS keychain)"
+                            : "(not stored unless you save it below)"}
+                        </span>
                         <div className="folder-picker-row">
                           <PasswordInput
                             className="ssh-password-input"
                             value={vpnKeyPassphrase}
-                            placeholder="Passphrase for the config's encrypted key"
+                            placeholder={
+                              vpnSaved
+                                ? "Using saved passphrase — leave blank"
+                                : "Passphrase for the config's encrypted key"
+                            }
                             onChange={(e) => {
                               setVpnKeyPassphrase(e.target.value);
                               if (vpnStatus !== "idle") setVpnStatus("idle");
@@ -322,6 +367,25 @@ export function RemoteProjectSection({
                         </div>
                       </label>
                     )}
+                    {/* Same opt-in as the Connect modal's, writing the same keychain
+                        entry (keyed by config path). Without it, a tunnel set up here
+                        asked for its passphrase again on the very next activation. */}
+                    <label className="remote-connect-remember">
+                      <Toggle
+                        size="sm"
+                        checked={vpnRemember}
+                        onChange={(e) => {
+                          setVpnRemember(e.target.checked);
+                          if (!e.target.checked && vpnSaved) void forgetVpnPassword();
+                        }}
+                      />
+                      {vpnNeedsKeyPassphrase ? "Save VPN credentials" : "Save passphrase"}
+                      <span className="ssh-optional-hint">
+                        {vpnSaved
+                          ? "saved in your OS keychain — turn off to delete it"
+                          : "stored securely in your OS keychain"}
+                      </span>
+                    </label>
                     {(vpnStatus === "connecting" || vpnLog.length > 0) && (
                       <ConnectionLog lines={vpnLog} busy={vpnStatus === "connecting"} />
                     )}
@@ -384,6 +448,8 @@ export function RemoteProjectSection({
                 )}
               </div>
             )}
+              </>
+            )}
             <label>
               <span className="remote-field-label">
                 <ConnLamp status={sshLamp} label="SSH" />
@@ -422,13 +488,21 @@ export function RemoteProjectSection({
                 <label>
                   Password{" "}
                   <span className="ssh-optional-hint">
-                    (not stored; blank uses SSH key)
+                    {sshSaved
+                      ? "(saved in your OS keychain)"
+                      : "(not stored unless you save it below; blank uses SSH key)"}
                   </span>
                   <div className="folder-picker-row">
                     <PasswordInput
                       className="ssh-password-input"
                       value={sshPassword}
-                      placeholder="leave empty for key/agent auth"
+                      // A saved password never leaves the backend, so it can't be
+                      // pre-filled: blank + Connect authenticates with it.
+                      placeholder={
+                        sshSaved
+                          ? "Using saved password — leave blank"
+                          : "leave empty for key/agent auth"
+                      }
                       onChange={(e) => onSshPasswordChange(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && sshAddress.trim() && sshStatus !== "connecting") {
@@ -450,6 +524,27 @@ export function RemoteProjectSection({
                           : "Connect"}
                     </button>
                   </div>
+                </label>
+                {/* The keychain is keyed by host target, not by project — so the
+                    password saved here is the one this project's later reconnects
+                    (and auto-connect) use, and a host already saved by another
+                    project shows up pre-ticked rather than being silently cleared. */}
+                <label className="remote-connect-remember">
+                  <Toggle
+                    size="sm"
+                    checked={sshRemember}
+                    onChange={(e) => {
+                      setSshRemember(e.target.checked);
+                      // Untick = delete it now, not at a next connect that may never come.
+                      if (!e.target.checked && sshSaved) void forgetSshPassword();
+                    }}
+                  />
+                  Save password
+                  <span className="ssh-optional-hint">
+                    {sshSaved
+                      ? "saved in your OS keychain — turn off to delete it"
+                      : "stored securely in your OS keychain"}
+                  </span>
                 </label>
                 {sshStatus === "error" && sshError && (
                   <div className="project-dialog-error">{sshError}</div>

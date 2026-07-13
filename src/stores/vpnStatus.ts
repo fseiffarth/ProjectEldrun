@@ -128,6 +128,23 @@ export function anyVpnLive(byConfig: Record<string, ConnState>): boolean {
   return Object.values(byConfig).some((s) => s === "connected" || s === "connecting");
 }
 
+/**
+ * Whether a dialog's own "Connect via OpenVPN" section still has anything to offer.
+ * Every remote menu that can start a tunnel asks this, so they all answer it alike:
+ * the Connect modal, and the SSH section the new-project and extend-to-remote
+ * dialogs share.
+ *
+ * A tunnel is machine-wide, so once *any* config is live the routing is already
+ * there and a project-scoped second connect path is noise — the section collapses
+ * to `VpnTunnelUpNotice` and the dialog goes straight to SSH. The exception is a
+ * tunnel **this** dialog brought up (`ownTunnelBusy`): its controls (handshake log,
+ * Stop/Disconnect) must stay reachable where the user started it.
+ */
+export function useVpnSectionVisible(ownTunnelBusy: boolean): boolean {
+  const globallyLive = useVpnStatusStore((s) => anyVpnLive(s.byConfig));
+  return !globallyLive || ownTunnelBusy;
+}
+
 // ── Lamp helpers ────────────────────────────────────────────────────────────────
 // A tunnel has two audiences and every connect path has to serve both: the project
 // that asked for it (its pill lamp) and the machine it reroutes (the header

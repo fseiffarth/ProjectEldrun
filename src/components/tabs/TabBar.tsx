@@ -969,19 +969,23 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         const showMarkerBefore = isDropTarget && reorderIndex === index;
         // Whole-tab status glow (no dot, no width change):
         //  - working (green pulse): PTY producing sustained output.
-        //  - needs-decision (orange pulse): an agent you're not looking at went
-        //    quiet with a choice/permission prompt on its screen.
+        //  - needs-decision (orange pulse): an agent went quiet with a
+        //    choice/permission prompt on its screen.
         //  - finished (green steady): an agent you're not looking at went quiet
         //    with no prompt — its turn is done and its result is unread.
-        // Working wins. The pulses are an attention-getter for tabs you're not
-        // looking at, so none of them show on the viewed tab — you can already see
-        // what it's doing.
+        // Working wins. Working and finished are about output you HAVEN'T seen, so
+        // they never show on the viewed tab — its screen says it better. A pending
+        // decision is the exception: it's about an agent that is BLOCKED, and it
+        // stays blocked whether or not you're looking at it. The lamp holds until
+        // the prompt is answered, so a tab left on screen mid-prompt while you work
+        // elsewhere in the window still says so.
         const ptyId = `${scope}:${tab.key}`;
         const working = isPtyTabKind(tab.kind) && !isActive && !!busyByTab[ptyId];
-        const attn =
-          (tab.kind === "agent" || tab.kind === "local_agent") && !isActive
+        const rawAttn =
+          tab.kind === "agent" || tab.kind === "local_agent"
             ? attentionByTab[ptyId] ?? null
             : null;
+        const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
         const stateClass = working
           ? " working"
           : attn === "decision"

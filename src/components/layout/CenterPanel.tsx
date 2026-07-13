@@ -88,7 +88,12 @@ export function CenterPanel() {
   // this array's identity) — otherwise bounds drags wouldn't reach project.json
   // until the next tab/layout change or app quit.
   const detachedGroups = useTabsStore((s) => s.detachedGroupsByScope[s.scope]);
-  const saveLayout = useTabsStore((s) => s.saveLayout);
+  // `persistScope`, not `saveLayout`: the latter persists the tab store's CURRENT
+  // scope into whatever `localFile` it is handed, and those are two independently
+  // tracked values. `activeId` and `localFile` both come from `activeProject` here,
+  // so passing the scope explicitly makes it impossible to write one project's tabs
+  // (or, worse, an empty layout standing in for them) into another project's file.
+  const persistScope = useTabsStore((s) => s.persistScope);
   const updateTabEnv = useTabsStore((s) => s.updateTabEnv);
   // #42: popouts to re-open for the current scope (restored docked, then detached).
   const pendingRespawn = useTabsStore((s) => s.pendingRespawnByScope[s.scope]);
@@ -246,10 +251,10 @@ export function CenterPanel() {
   useEffect(() => {
     if (!activeId || !localFile) return;
     const timer = window.setTimeout(() => {
-      saveLayout(localFile).catch(() => {});
+      persistScope(activeId, localFile).catch(() => {});
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [activeId, localFile, tabs, layout, detachedGroups, saveLayout]);
+  }, [activeId, localFile, tabs, layout, detachedGroups, persistScope]);
 
   // #42: re-open popouts that were detached when this scope was last saved. The
   // groups were restored DOCKED (above) so their panes mount and spawn their
@@ -1223,19 +1228,26 @@ export function DragGhost() {
   const srcH = useDragStore((s) => s.drag?.previewH ?? 0);
   const thumbRef = useRef<HTMLDivElement>(null);
 
-  // Track Shift live so the options legend can highlight "force new window"
-  // while the file drag is in flight (Shift can toggle without a pointer move,
-  // which wouldn't otherwise re-render the ghost).
+  // Track Shift/Ctrl live so the options legend can highlight "force new
+  // window" / "copy out to another app" while the file drag is in flight (a
+  // modifier can toggle without a pointer move, which wouldn't otherwise
+  // re-render the ghost). Ctrl only marks the option here — FileTree's own
+  // drag gesture decides when to actually hand off to the native OS drag.
   const [shiftHeld, setShiftHeld] = useState(false);
+  const [ctrlHeld, setCtrlHeld] = useState(false);
   useEffect(() => {
     if (!isFileDrag) return;
-    const sync = (e: KeyboardEvent) => setShiftHeld(e.shiftKey);
+    const sync = (e: KeyboardEvent) => {
+      setShiftHeld(e.shiftKey);
+      setCtrlHeld(e.ctrlKey);
+    };
     window.addEventListener("keydown", sync);
     window.addEventListener("keyup", sync);
     return () => {
       window.removeEventListener("keydown", sync);
       window.removeEventListener("keyup", sync);
       setShiftHeld(false);
+      setCtrlHeld(false);
     };
   }, [isFileDrag]);
 
@@ -1261,14 +1273,21 @@ export function DragGhost() {
       <div className="tab-drag-ghost-label">{label}</div>
       {isFileDrag ? (
         <div className="tab-drag-ghost-opts">
+          {/* Exactly ONE option is marked at a time — it is what THIS release
+              would do. Ctrl (copy out) wins over Shift (force a new window),
+              matching the drag itself: once the cursor leaves the window with
+              Ctrl held, the OS drag owns the drop and the in-app targets are
+              out of the picture. */}
           <div className="tab-drag-ghost-opt">Drop on a folder → move file there</div>
-          <div className={`tab-drag-ghost-opt${shiftHeld ? "" : " active"}`}>
+          <div className={`tab-drag-ghost-opt${!shiftHeld && !ctrlHeld ? " active" : ""}`}>
             Drop → open in new window / dock into popout
           </div>
-          <div className={`tab-drag-ghost-opt${shiftHeld ? " active" : ""}`}>
+          <div className={`tab-drag-ghost-opt${shiftHeld && !ctrlHeld ? " active" : ""}`}>
             ⇧ Shift → force a new window
           </div>
-          <div className="tab-drag-ghost-opt">⌃ Ctrl-drag → copy to Signal / browser</div>
+          <div className={`tab-drag-ghost-opt${ctrlHeld ? " active" : ""}`}>
+            ⌃ Ctrl → copy out to another app
+          </div>
         </div>
       ) : null}
       {node ? (

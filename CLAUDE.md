@@ -94,6 +94,20 @@ Both list only the load-bearing files; the tree is the source of truth.
   **different notions of scope**, so marking a folder auto-sync is the one click
   that can haul a multi-GB tree into the mirror; the file tree prices the host
   subtree first (`sync_auto_preview`) and confirms when it is large.
+- **Passwords are never persisted by default**, and the opt-in that persists them is
+  the same in every remote menu — the Connect modal *and* the new-project /
+  extend-to-remote dialogs (`useRemoteSession`, rendered by `RemoteProjectSection`).
+  It can be, because the keychain is keyed by **host target** (`ssh:user@host:port`)
+  and **config path**, never by project id: there is one saved credential per host and
+  per tunnel, whichever menu saved it. Hence the toggle is *pre-ticked* when the target
+  already has one (an untick is an explicit delete, so connecting with it unticked
+  would clear another project's saved password), and a blank password field means "use
+  the saved one", not "authenticate with nothing". The credential a create/extend
+  dialog authenticated with is also handed to that project's **first pooled connect**
+  (`stashRemotePassword`, single-use, never written to disk): connecting it
+  password-less would work — it rides the ControlMaster the dialog left up — but the
+  backend reads "no password given, none saved" as *key* auth and would record
+  `key_auth: true` on a password host, which auto-connect later believes.
 - A remote project connects **on demand** (the pill's connection lamp opens the
   `RemoteConnectDialog`) — *unless* it opts into `remote.auto_connect`, which
   connects it on launch and on activation and **never prompts**. The toggle is only
@@ -112,7 +126,14 @@ Both list only the load-bearing files; the tree is the source of truth.
   a holder refcount — `releaseVpn` means a project logging out never pulls a tunnel out
   from under another project) and surfaced in the header by `VpnIndicator`, which is
   always present, lists every stored `.ovpn`, and can bring a tunnel **up or down with
-  no project behind it**. Every UI that can start a tunnel says so before it does.
+  no project behind it**. Every UI that can start a tunnel says so before it does —
+  and none of them offers a *second* one: while a tunnel is up machine-wide, every
+  project-scoped OpenVPN block (the Connect modal, and the SSH section the
+  new-project and extend-to-remote dialogs share) collapses to a one-line
+  "tunnel already up" notice pointing at the header, via the shared
+  `useVpnSectionVisible` gate + `VpnTunnelUpNotice`. The exception the gate keeps:
+  a tunnel *that* dialog itself brought up stays expanded, so its log and its
+  Disconnect remain where the user started it.
   Interactive (non-headless) tunnels are *armed* at command-build time —
   `interactive_connect_command` appends a `--writepid` Eldrun owns and registers it —
   so a tunnel typed into a terminal tab is as visible and as killable as a headless
