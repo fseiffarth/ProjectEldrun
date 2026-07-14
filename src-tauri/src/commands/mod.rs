@@ -23,6 +23,7 @@ pub mod pdf_clip;
 pub mod power;
 pub mod openvpn;
 pub mod project_runtime;
+pub mod python;
 pub mod projects;
 pub mod remote;
 pub mod screenshot;

@@ -9,6 +9,7 @@ import {
   type ViewerState,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { useExperimental } from "../../lib/experimental";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useConnectDialogStore } from "../../stores/connectDialog";
@@ -53,6 +54,14 @@ import {
   type EditResult,
 } from "../../lib/viewers/markdownEdit";
 import { internalViewerFor, disabledViewers, relFromAbs, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
+import {
+  isPythonPath,
+  pythonLinkRanges,
+  remapBreakpoints,
+  resolvePythonDefinition,
+  snapBreakpointLine,
+} from "../../lib/viewers/python";
+import { debugPythonFile, runCwd, runPythonFile } from "../../lib/pythonRun";
 import {
   basename,
   dirname,
@@ -115,6 +124,8 @@ import {
   phraseAt,
 } from "../../lib/viewers/tex";
 import { PdfView } from "./pdf/PdfViewer";
+import { YamlTree } from "./YamlTree";
+import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
 
 /**
  * Persisted reader-position plumbing for an in-app viewer. Snapshots the tab's
@@ -246,6 +257,12 @@ interface Props {
  *                  to disk (Python, Rust, JSON, config files, …).
  *   - "markdown" → rendered HTML via renderMarkdown, with an Edit/Preview toggle
  *                  that lets you edit the source and save it back to disk.
+ *   - "yaml"     → YAML **and JSON** (which is YAML's flow syntax): the same
+ *                  editor with a Tree/Source toggle, where the tree is an editable
+ *                  structure view (rename a key, retype a value, add a key or a
+ *                  list item, reorder, delete). It splices the file's own text, so
+ *                  comments and layout survive, each collection keeps the style it
+ *                  is written in (block or flow), and both modes share one draft.
  *   - "image"    → the bytes wrapped in a Blob URL, shown in a zoomable/pannable
  *                  <img> (wheel to zoom at cursor, drag to pan, Fit / 1:1).
  *   - "pdf"      → rendered with pdf.js into a scrolling stack of page canvases
@@ -344,6 +361,10 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
     view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} type="html" groupId={groupId} />;
   } else if (viewer === "sqlite") {
     view = <SqliteView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "yaml") {
+    // YAML is the same base editor, with the structure tree as its "preview" half
+    // (#yaml) and its own per-type prefs.
+    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} type="yaml" groupId={groupId} />;
   } else {
     view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   }
@@ -1551,6 +1572,8 @@ function CodeEditor({
   editorApiRef,
   showBlame,
   blame,
+  breakpoints,
+  onToggleBreakpoint,
   initialScrollTop,
   onScrollPersist,
   groupId,
@@ -1622,6 +1645,13 @@ function CodeEditor({
    *  hovercard. `blame` maps 1-based line numbers to their attribution. */
   showBlame?: boolean;
   blame?: Map<number, BlameLine>;
+  /** Debug breakpoints (#py), as 1-based line numbers. When `onToggleBreakpoint`
+   *  is wired the gutter becomes interactive: each line number is a click target
+   *  that toggles a breakpoint, and a breakpointed line paints a red dot. Only the
+   *  Python editor supplies these; every other file type gets the inert,
+   *  aria-hidden gutter it had before. */
+  breakpoints?: ReadonlySet<number>;
+  onToggleBreakpoint?: (line: number) => void;
   /** Persisted vertical scroll (px) to restore once the file loads, so reopening
    *  it (or an Eldrun restart) lands the reader where they left off (#viewerpos).
    *  Applied once on first load; user scrolling thereafter reports via
@@ -3095,22 +3125,52 @@ function CodeEditor({
       {/* Line-number gutter. Fixed-height rows normally; in wrap mode (the LaTeX
           viewer) a logical line can span several visual rows, so each cell is
           sized to its measured wrapped height (`lineHeights`). Lines holding a
-          search match are marked, the current match brightest (#67). */}
-      <div className="file-viewer-gutter" aria-hidden="true">
+          search match are marked, the current match brightest (#67).
+
+          When `onToggleBreakpoint` is wired (the Python editor, #py) the cells
+          become real buttons that set/clear a debug breakpoint, so the gutter
+          stops being decoration and the whole column drops its `aria-hidden` —
+          hiding a control from the accessibility tree would make the feature
+          unreachable without a mouse. */}
+      <div className="file-viewer-gutter" aria-hidden={onToggleBreakpoint ? undefined : "true"}>
         <div className="file-viewer-gutter-inner" ref={gutterInnerRef}>
           {Array.from({ length: lineCount }, (_, i) => {
             const n = i + 1;
             const h = wrap ? lineHeights[i] : undefined;
+            const broken = breakpoints?.has(n) ?? false;
             const cls =
-              n === currentMatchLine
+              (n === currentMatchLine
                 ? "file-viewer-gutter-line current-match"
                 : matchLineSet.has(n)
                   ? "file-viewer-gutter-line has-match"
-                  : "file-viewer-gutter-line";
+                  : "file-viewer-gutter-line") +
+              (onToggleBreakpoint ? " is-breakable" : "") +
+              (broken ? " has-breakpoint" : "");
+            const style = h != null ? { height: h } : undefined;
+
+            if (!onToggleBreakpoint) {
+              return (
+                <div key={i} className={cls} style={style}>
+                  {n}
+                </div>
+              );
+            }
             return (
-              <div key={i} className={cls} style={h != null ? { height: h } : undefined}>
+              <button
+                key={i}
+                type="button"
+                className={cls}
+                style={style}
+                // Keep the caret where it is: clicking the gutter sets a
+                // breakpoint, it does not move the cursor or steal focus.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => onToggleBreakpoint(n)}
+                title={broken ? `Remove breakpoint on line ${n}` : `Break on line ${n}`}
+                aria-pressed={broken}
+                aria-label={broken ? `Remove breakpoint on line ${n}` : `Break on line ${n}`}
+              >
                 {n}
-              </div>
+              </button>
             );
           })}
         </div>
@@ -4240,6 +4300,127 @@ function BlameButton({ active, toggle }: { active: boolean; toggle: () => void }
   );
 }
 
+/**
+ * The editor's debug breakpoints (#py) — the gutter's red dots.
+ *
+ * Two things make this more than a `Set<number>`:
+ *
+ *  - **They must survive edits.** A breakpoint names a line, so typing a new
+ *    import at the top of the file silently re-points every dot below it at the
+ *    wrong statement. Each draft change is therefore diffed against the previous
+ *    one and the lines are remapped (`remapBreakpoints`).
+ *  - **They must be settable only where pdb can break.** Clicking a blank line or
+ *    a comment snaps down to the next executable line rather than setting a
+ *    breakpoint pdb would reject at startup (`snapBreakpointLine`).
+ *
+ * They persist in the tab's `ViewerState`, so they survive closing the file and
+ * an Eldrun restart — the same plumbing (and the same `project.json` write) as the
+ * reader's scroll position.
+ */
+function useBreakpoints(
+  enabled: boolean,
+  draft: string,
+  loaded: boolean,
+  viewPos: ReturnType<typeof useViewerState>,
+) {
+  const [lines, setLines] = useState<number[]>(() =>
+    enabled ? (viewPos.initial?.breakpoints ?? []) : [],
+  );
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  // The draft the current lines were resolved against. Seeded on first load: the
+  // editor's ""→content transition is not an edit, and diffing across it would
+  // look like "every line was replaced" and drop every restored breakpoint.
+  const prevDraft = useRef<string | null>(null);
+  useEffect(() => {
+    if (!enabled || !loaded) return;
+    const before = prevDraft.current;
+    prevDraft.current = draft;
+    if (before === null || before === draft) return;
+    setLines((cur) => {
+      if (cur.length === 0) return cur;
+      const next = remapBreakpoints(before, draft, cur);
+      // Keep the identity stable when nothing moved, so the gutter doesn't
+      // re-render on every keystroke.
+      return next.length === cur.length && next.every((l, i) => l === cur[i]) ? cur : next;
+    });
+  }, [enabled, loaded, draft]);
+
+  // Persist on change only — never on mount, which would rewrite the tab with the
+  // value we just read out of it.
+  const persistedKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    const key = lines.join(",");
+    if (persistedKey.current === null) {
+      persistedKey.current = key;
+      return;
+    }
+    if (persistedKey.current === key) return;
+    persistedKey.current = key;
+    viewPos.persist({ breakpoints: lines });
+  }, [enabled, lines, viewPos]);
+
+  const toggle = useCallback((line: number) => {
+    setLines((cur) => {
+      if (cur.includes(line)) return cur.filter((l) => l !== line);
+      const snapped = snapBreakpointLine(draftRef.current, line);
+      if (snapped == null) return cur; // nothing executable below — no-op
+      if (cur.includes(snapped)) return cur.filter((l) => l !== snapped);
+      return [...cur, snapped].sort((a, b) => a - b);
+    });
+  }, []);
+
+  const set = useMemo(() => new Set(lines), [lines]);
+  return { lines, set, toggle };
+}
+
+/** Run / Debug (#py). Run executes the file in a fresh terminal tab; Debug does
+ *  the same under `pdb`, pre-loaded with the gutter's breakpoints. */
+function RunDebugButtons({
+  breakpointCount,
+  busy,
+  onRun,
+  onDebug,
+}: {
+  breakpointCount: number;
+  busy: boolean;
+  onRun: () => void;
+  onDebug: () => void;
+}) {
+  return (
+    <>
+      <button
+        className="file-viewer-format-btn"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onRun}
+        disabled={busy}
+        title="Run this file in a terminal tab"
+        aria-label="Run file"
+      >
+        ▶ Run
+      </button>
+      <button
+        className="file-viewer-format-btn"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onDebug}
+        disabled={busy}
+        title={
+          breakpointCount > 0
+            ? `Debug under pdb, breaking on ${breakpointCount} line${
+                breakpointCount === 1 ? "" : "s"
+              } (click the gutter to set more)`
+            : "Debug under pdb — stops at the first line. Click a line number to set a breakpoint."
+        }
+        aria-label="Debug file"
+      >
+        🐞 Debug
+      </button>
+    </>
+  );
+}
+
 /** "Compare" toolbar toggle. When active the editor body is replaced by the
  *  three-column compare/merge view (old commit ⇄ live content ⇄ editable result). */
 function CompareButton({ active, toggle }: { active: boolean; toggle: () => void }) {
@@ -4300,12 +4481,89 @@ function TextView({
     [viewPos],
   );
 
+  // ── Python (#py): run/debug + breakpoints + go-to-definition ──────────────
+  // Run/Debug (and the breakpoint gutter, which exists only to feed Debug) sit
+  // behind the experimental `python_run_debug` flag — off by default, on in debug
+  // mode (`lib/experimental.ts`). Run *executes the file*, one click from an
+  // editor, so it is opt-in rather than something you find by mis-clicking.
+  // Go-to-definition is deliberately NOT gated: it reads, it never runs anything.
+  const isPy = useMemo(() => isPythonPath(path), [path]);
+  const pyRunEnabled = useExperimental("python_run_debug");
+  const pyRun = isPy && pyRunEnabled;
+  const projectId = useFileScope();
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const projectDir = project ? resolveProjectDirectory(project) : "";
+  const bp = useBreakpoints(pyRun, draft, loaded, viewPos);
+  const [launching, setLaunching] = useState(false);
+
+  // The tab runs in the project's own scope, not whichever project happens to be
+  // active — a viewer keeps working after you switch projects (see FileScopeContext),
+  // and its Run button must not fire a terminal into a different project's layout.
+  const scope = projectId ?? "root";
+  const cwd = runCwd(projectDir, path);
+
+  const launch = useCallback(
+    async (go: () => Promise<void>) => {
+      setLaunching(true);
+      try {
+        await go();
+      } finally {
+        setLaunching(false);
+      }
+    },
+    [],
+  );
+
+  const onRun = useCallback(
+    () => void launch(() => runPythonFile({ file: path, projectDir: cwd, scope, projectId })),
+    [launch, path, cwd, scope, projectId],
+  );
+  const onDebug = useCallback(
+    () =>
+      void launch(() =>
+        debugPythonFile({
+          file: path,
+          projectDir: cwd,
+          scope,
+          projectId,
+          breakpoints: bp.lines,
+        }),
+      ),
+    [launch, path, cwd, scope, projectId, bp.lines],
+  );
+
+  // Ctrl/Cmd+Click a name to open its `def`/`class` — in this file or in the
+  // module it was imported from. `jumpToSource` handles both: it re-uses an open
+  // editor when there is one (including the same file, and across a detached
+  // window) and otherwise opens the target in this tab's subwindow.
+  const followPython = useCallback(
+    async (caret: number) => {
+      const loc = await resolvePythonDefinition(draft, caret, path, projectDir, async (p) => {
+        try {
+          return await readFileText(p, projectId);
+        } catch {
+          return null; // doesn't exist / unreadable — just not this candidate
+        }
+      });
+      if (loc) jumpToSource(loc.path, loc.line, loc.column);
+    },
+    [draft, path, projectDir, projectId],
+  );
+
   const fmt = useFormatter(path, draft, setDraft);
   const issue = useSyntaxCheck(path, draft, loaded);
   const previewKind = useMemo(() => previewKindForPath(path), [path]);
-  // HTML/SVG open in preview; CSS opens in the editor (its preview is a sample).
+  // #yaml: for YAML and JSON the "preview" is an editable structure tree rather
+  // than a rendered document — it writes back into this very draft (see YamlTree),
+  // which is what lets Tree and Source be two views on one text and keeps
+  // save/undo/format/validation working across both without either mode knowing
+  // about the other. JSON is YAML's flow syntax, so it is the same tree, written
+  // back in the stricter dialect (`strict`).
+  const isYaml = useMemo(() => isTreePath(path), [path]);
+  const jsonStrict = useMemo(() => isJsonPath(path), [path]);
+  // HTML/SVG/YAML open in preview; CSS opens in the editor (its preview is a sample).
   const [mode, setMode] = useState<"preview" | "edit">(
-    previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
+    previewKind === "html" || previewKind === "svg" || isYaml ? "preview" : "edit",
   );
   const fileName = basename(path);
   const jumpToLine = useCallback(
@@ -4314,9 +4572,9 @@ function TextView({
     [path],
   );
 
-  const showEditor = !previewKind || mode === "edit";
+  const showEditor = (!previewKind && !isYaml) || mode === "edit";
   const wheelRef = useNonPassiveWheel((e) => {
-    if (showEditor) onCtrlWheelFont(e, font.inc, font.dec);
+    onCtrlWheelFont(e, font.inc, font.dec);
   });
 
   // Print: HTML/SVG/CSS print their rendered preview document; plain text and
@@ -4336,17 +4594,28 @@ function TextView({
   return (
     <div className="file-viewer">
       <ViewerHeader onOpenExternally={onOpenExternally}>
-        {previewKind && (
+        {(previewKind || isYaml) && (
           <ModeToggle
             value={mode}
             onChange={setMode}
             options={[
-              { value: "preview", label: "Preview" },
-              { value: "edit", label: previewKind === "svg" ? "Source" : "Edit" },
+              { value: "preview", label: isYaml ? "Tree" : "Preview" },
+              {
+                value: "edit",
+                label: isYaml || previewKind === "svg" ? "Source" : "Edit",
+              },
             ]}
           />
         )}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
+        {showEditor && pyRun && (
+          <RunDebugButtons
+            breakpointCount={bp.lines.length}
+            busy={launching}
+            onRun={onRun}
+            onDebug={onDebug}
+          />
+        )}
         {showEditor && <EditorAiControls ai={ai} />}
         {showEditor && fmt.enabled && (
           <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
@@ -4357,7 +4626,9 @@ function TextView({
         {showEditor && (
           <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
         )}
-        {showEditor && (
+        {/* The YAML tree edits the text, so its edits are ordinary undo steps —
+            the buttons stay live in Tree mode, unlike a read-only preview. */}
+        {(showEditor || isYaml) && (
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         )}
         <PrintButton onPrint={handlePrint} disabled={!loaded} />
@@ -4366,19 +4637,30 @@ function TextView({
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {saveError && <div className="file-viewer-error">{saveError}</div>}
       {fmt.status && <div className="file-viewer-status-line">{fmt.status}</div>}
-      {showEditor && <ValidationBanner issue={issue} onJump={jumpToLine} />}
+      {(showEditor || isYaml) && <ValidationBanner issue={issue} onJump={jumpToLine} />}
       <div
         className={`file-viewer-body${showEditor ? " file-viewer-code-body" : ""}`}
         ref={wheelRef}
       >
-        {!showEditor && previewKind ? (
+        {!showEditor && (previewKind || isYaml) ? (
           error != null ? (
             <div className="file-viewer-error">{error}</div>
           ) : !loaded ? (
             <div className="file-viewer-loading">Loading…</div>
+          ) : isYaml ? (
+            // The tree edits the draft in place — the same draft Source shows and
+            // Ctrl+S writes, so an edit made here is dirty, undoable and saveable
+            // exactly like a typed one.
+            <YamlTree
+              text={draft}
+              onChange={setDraft}
+              tabKey={tabKey}
+              fontSize={font.isCustom ? font.fontSize : undefined}
+              strict={jsonStrict}
+            />
           ) : (
             // Preview reflects the live draft, so it tracks unsaved edits.
-            <RenderedPreview kind={previewKind} content={draft} fileName={fileName} />
+            <RenderedPreview kind={previewKind!} content={draft} fileName={fileName} />
           )
         ) : compareOpen ? (
           <CompareView
@@ -4412,6 +4694,10 @@ function TextView({
             onGotoApplied={jump.onGotoApplied}
             showBlame={showBlame}
             blame={blame}
+            breakpoints={pyRun ? bp.set : undefined}
+            onToggleBreakpoint={pyRun ? bp.toggle : undefined}
+            onFollowLink={isPy ? followPython : undefined}
+            linkRanges={isPy ? pythonLinkRanges : undefined}
             initialScrollTop={viewPos.initial?.scrollTop}
             onScrollPersist={persistScroll}
             groupId={groupId}

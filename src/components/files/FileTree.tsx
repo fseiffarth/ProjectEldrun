@@ -1945,8 +1945,13 @@ export function FileTree({
           // that's actually "yours" — with the full total + ignored split
           // available on hover; the gitignored section shows a folder's whole
           // size plainly since there nothing but ignored content is left.
+          // A folder in the gitignored section never subtracts: it may still
+          // carry a `dirIgnoredBytes` entry (the breakdown is dispatched from
+          // the first render, when `git_file_statuses` hasn't landed yet and
+          // every folder still looks regular), and there the ignored figure is
+          // the folder's WHOLE size — subtracting it would show a plain 0 B.
           const dirTotal = e.is_dir ? dirSizes[e.path] : undefined;
-          const dirIgnored = e.is_dir ? dirIgnoredBytes[e.path] : undefined;
+          const dirIgnored = e.is_dir && !isGitignored ? dirIgnoredBytes[e.path] : undefined;
           const dirShown = dirTotal !== undefined ? dirTotal - (dirIgnored ?? 0) : undefined;
           const canRun = !e.is_dir && e.extension === ".sh";
           const isRunning = runningScripts.has(e.path);
@@ -2597,7 +2602,11 @@ export function FileTree({
           {tooltip.entry.modified_secs && (
             <div><span className="file-tooltip-label">Modified</span>{fmtModified(tooltip.entry.modified_secs)}</div>
           )}
-          {tooltip.entry.is_dir && dirIgnoredBytes[tooltip.entry.path] !== undefined && (
+          {/* Same rule as the row: no ignored/total split for a folder that is
+              itself ignored — "412 MB of 412 MB ignored" says nothing. */}
+          {tooltip.entry.is_dir
+            && gitStatuses[tooltip.entry.name] !== "ignored"
+            && dirIgnoredBytes[tooltip.entry.path] !== undefined && (
             <div>
               <span className="file-tooltip-label">Ignored </span>
               {fmtSize(dirIgnoredBytes[tooltip.entry.path])}

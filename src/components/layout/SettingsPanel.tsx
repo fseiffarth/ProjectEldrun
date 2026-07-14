@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ChangeEventHandler, type ReactNode } 
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore, clampZoom, MIN_UI_ZOOM, MAX_UI_ZOOM } from "../../stores/settings";
+import { experimentalEnabled } from "../../lib/experimental";
 import { usePowerStore, useEnergySaver } from "../../stores/power";
 import { useProjectsStore } from "../../stores/projects";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
@@ -760,23 +761,6 @@ export function SettingsDialog({
             />
 
             <ToggleCard
-              label="Plan/Auto toggle on agent tabs (experimental)"
-              checked={settings?.agent_mode_toggle ?? false}
-              onChange={(e) => void updateSettings({ agent_mode_toggle: e.target.checked })}
-              help={
-                <>
-                  Puts a badge on each agent tab that switches it between <b>Plan</b> (reads
-                  and proposes, never edits) and <b>Auto</b> (auto-accepts edits; shell and
-                  network commands still ask) — so one tab can plan while another does the
-                  work, and each comes back in its mode after a restart. Switching restarts
-                  the agent: the conversation is resumed, but the terminal's scrollback is
-                  lost. Only Claude supports it — it is the one agent that can both be
-                  launched into a mode and resume its conversation on restart.
-                </>
-              }
-            />
-
-            <ToggleCard
               label="Headless remote connections"
               checked={settings?.connections_headless ?? true}
               onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
@@ -814,6 +798,49 @@ export function SettingsDialog({
               label="Debug mode"
               checked={settings?.debug ?? false}
               onChange={(e) => void updateSettings({ debug: e.target.checked })}
+            />
+
+            <div className="settings-section-title">Experimental</div>
+            <p className="settings-help">
+              Features that are still moving. Each is off by default and{" "}
+              <b>on by default in Debug mode</b> — so building Eldrun means seeing them
+              without re-ticking this list every time a new one lands. A switch here
+              always wins, in either direction: you can take one on without Debug mode,
+              or turn one off while in it.
+            </p>
+
+            <ToggleCard
+              label="Plan/Auto toggle on agent tabs"
+              checked={experimentalEnabled(settings, "agent_mode_toggle")}
+              onChange={(e) => void updateSettings({ agent_mode_toggle: e.target.checked })}
+              help={
+                <>
+                  Puts a badge on each agent tab that switches it between <b>Plan</b> (reads
+                  and proposes, never edits) and <b>Auto</b> (auto-accepts edits; shell and
+                  network commands still ask) — so one tab can plan while another does the
+                  work, and each comes back in its mode after a restart. Switching restarts
+                  the agent: the conversation is resumed, but the terminal's scrollback is
+                  lost. Only Claude supports it — it is the one agent that can both be
+                  launched into a mode and resume its conversation on restart.
+                </>
+              }
+            />
+
+            <ToggleCard
+              label="Python Run/Debug in the code viewer"
+              checked={experimentalEnabled(settings, "python_run_debug")}
+              onChange={(e) => void updateSettings({ python_run_debug: e.target.checked })}
+              help={
+                <>
+                  Gives a <code>.py</code> file open in the editor a <b>▶ Run</b> and a{" "}
+                  <b>🐞 Debug</b> button, and turns its line numbers into a breakpoint
+                  gutter. Both open a terminal tab in the project — so they run on the host
+                  of a remote project and inside the container of a containerised one — and
+                  use the project's own interpreter. Debug is <code>pdb</code>, pre-loaded
+                  with the gutter's breakpoints. Off by default because Run executes the
+                  file. Ctrl+Click to a definition is not gated: it only reads.
+                </>
+              }
             />
 
             <div className="settings-section-title">Resource monitor</div>

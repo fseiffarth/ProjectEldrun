@@ -35,6 +35,7 @@ import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
+import { useExperimental } from "../../lib/experimental";
 import { useActivityStore } from "../../stores/activity";
 import { useAgentTaskStore } from "../../stores/agentTask";
 import { useFileSourcesStore } from "../../stores/fileSources";
@@ -98,8 +99,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const removeTab = useTabsStore((s) => s.removeTab);
   const setTabLocation = useTabsStore((s) => s.setTabLocation);
   const setAgentMode = useTabsStore((s) => s.setAgentMode);
-  // Experimental, default OFF: the per-tab Plan/Auto (planner/doer) badge.
-  const agentModeToggle = useSettingsStore((s) => s.settings?.agent_mode_toggle ?? false);
+  // Experimental — off by default, on in debug mode: the Plan/Auto badge.
+  const agentModeToggle = useExperimental("agent_mode_toggle");
   // Timestamp of the last mode flip, for the respawn debounce in handleAgentMode.
   const lastModeToggle = useRef(0);
   const closeGroup = useTabsStore((s) => s.closeGroup);

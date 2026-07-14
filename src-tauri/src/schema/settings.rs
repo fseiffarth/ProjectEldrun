@@ -96,6 +96,15 @@ pub struct Settings {
     /// other launch arg, so nothing in the spawn path reads this.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_mode_toggle: Option<bool>,
+    /// EXPERIMENTAL, default OFF. When true, a Python file in the native code
+    /// viewer gets the Run/Debug buttons and the breakpoint gutter (#87). Purely a
+    /// frontend gate, and off by default because Run *executes the file*: the
+    /// button is one click from an editor, so it is opt-in rather than something a
+    /// user discovers by mis-clicking. Go-to-definition is not gated — it reads,
+    /// it never runs anything. Nothing in the backend reads this: Run/Debug open an
+    /// ordinary terminal tab, which reaches `pty_spawn` like any other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_run_debug: Option<bool>,
     /// When true (the default), remote SSH/OpenVPN connections are made headlessly
     /// in the background, with Eldrun handling the password transiently (sshpass /
     /// askpass). When false, those connections are launched as interactive
@@ -268,11 +277,27 @@ impl Settings {
         self.daily_stats_recap.unwrap_or(true)
     }
 
+    /// The rule every experimental flag follows (mirrors `src/lib/experimental.ts`):
+    /// unset means **debug mode decides**, so someone building Eldrun gets each new
+    /// experiment without re-ticking a list, and everyone else gets none of them. An
+    /// explicit value always wins, in both directions — otherwise "turn this off"
+    /// would silently fail for exactly the people most likely to hit a broken one.
+    fn experimental(&self, flag: Option<bool>) -> bool {
+        flag.unwrap_or_else(|| self.debug.unwrap_or(false))
+    }
+
     /// Whether the experimental per-tab Plan/Auto agent-mode badge is offered.
-    /// Defaults OFF when unset: it is opt-in, and switching a mode restarts the
-    /// agent, so nobody gets that behaviour without asking for it.
+    /// Switching a mode restarts the agent, so nobody outside debug mode gets that
+    /// behaviour without asking for it.
     pub fn agent_mode_toggle(&self) -> bool {
-        self.agent_mode_toggle.unwrap_or(false)
+        self.experimental(self.agent_mode_toggle)
+    }
+
+    /// Whether the experimental Python Run/Debug buttons and breakpoint gutter are
+    /// offered in the code viewer. Run *executes the file*, so outside debug mode it
+    /// is opt-in.
+    pub fn python_run_debug(&self) -> bool {
+        self.experimental(self.python_run_debug)
     }
 
     /// Whether remote SSH/OpenVPN connections are made headlessly (Eldrun handles
@@ -280,5 +305,40 @@ impl Settings {
     /// (headless) when unset so existing behaviour is preserved.
     pub fn connections_headless(&self) -> bool {
         self.connections_headless.unwrap_or(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    /// The experimental rule, backend side (the frontend twin lives in
+    /// `src/__tests__/Experimental.test.ts`): unset defers to debug mode, and an
+    /// explicit value wins in BOTH directions.
+    #[test]
+    fn experimental_flags_default_to_debug_mode() {
+        let off = Settings::default();
+        assert!(!off.python_run_debug());
+        assert!(!off.agent_mode_toggle());
+
+        let debug = Settings {
+            debug: Some(true),
+            ..Default::default()
+        };
+        assert!(debug.python_run_debug());
+        assert!(debug.agent_mode_toggle());
+
+        let debug_but_off = Settings {
+            debug: Some(true),
+            python_run_debug: Some(false),
+            ..Default::default()
+        };
+        assert!(!debug_but_off.python_run_debug());
+
+        let opted_in = Settings {
+            python_run_debug: Some(true),
+            ..Default::default()
+        };
+        assert!(opted_in.python_run_debug());
     }
 }

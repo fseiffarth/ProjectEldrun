@@ -492,6 +492,8 @@ interface ProjectsStore {
    *  Backend normalizes blank fields away and stores it in both projects.json
    *  and project.json; the stored spec is mirrored into local state. */
   setProjectSandboxSpec: (id: string, spec: SandboxSpec) => Promise<void>;
+  /** Pin the project's Python interpreter, or `null` to restore auto-detect (#87). */
+  setProjectPython: (id: string, interpreter: string | null) => Promise<void>;
   /** Opt a remote project in/out of auto-connect (connect it silently on launch
    *  and activation). Only offered once the connect can complete with no prompt —
    *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
@@ -940,6 +942,22 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     set((state) => ({
       projects: state.projects.map((project) =>
         project.id === id ? { ...project, sandbox: saved } : project,
+      ),
+    }));
+  },
+
+  setProjectPython: async (id, interpreter) => {
+    // Backend writes both stores (projects.json mirror + project.json) and returns
+    // what it stored — null when cleared back to auto-detect.
+    const saved = await invoke<string | null>("set_project_python", {
+      projectId: id,
+      interpreter,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id
+          ? { ...project, python_interpreter: saved ?? undefined }
+          : project,
       ),
     }));
   },

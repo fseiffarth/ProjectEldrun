@@ -256,6 +256,15 @@ pub struct Project {
     /// Docker sandbox config for agent tabs. Absent = run agents on the host.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxSpec>,
+    /// The interpreter the code viewer's Run/Debug buttons use for this project
+    /// (#87). Absent = **auto-detect** (see `commands::python`), which is what the
+    /// overwhelming majority of projects want; this pins it for the ones auto-detect
+    /// cannot see — a conda env, a Poetry venv outside the tree, a second venv.
+    /// Stored as the command/path verbatim (relative paths resolve against the
+    /// project root, which is the run tab's cwd). Mirrored into the `projects.json`
+    /// entry's `extra["python_interpreter"]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python_interpreter: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
