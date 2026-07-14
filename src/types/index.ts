@@ -123,6 +123,11 @@ export interface Settings {
    *  see components/tabs/agentModes.ts). Switching restarts the agent; the
    *  conversation is resumed, the terminal scrollback is not. */
   agent_mode_toggle?: boolean;
+  /** EXPERIMENTAL, default OFF. Gives a Python file in the code viewer its Run/Debug
+   *  buttons and the breakpoint gutter (#87). Off by default because Run *executes
+   *  the file* — one click away from an editor — so it is opt-in. Go-to-definition
+   *  is not gated: it reads, it never runs anything. */
+  python_run_debug?: boolean;
   /** When true (the default), remote SSH/OpenVPN connections are made headlessly
    *  in the background (Eldrun handles the password transiently). When false, they
    *  are launched as interactive terminal tabs in the Eldrun root scope, so the
@@ -326,6 +331,11 @@ export interface ProjectEntry {
   remote?: RemoteSpec;
   /** Docker sandbox config; when `enabled`, agent tabs run in a container. */
   sandbox?: SandboxSpec;
+  /** The interpreter the code viewer's Run/Debug buttons use (#87). Absent =
+   *  auto-detect, which is right for almost every project; pinning it is for the
+   *  environments auto-detect cannot see (a conda env, a Poetry venv outside the
+   *  tree, a second venv). Set from the pill's "Python interpreter…" dialog. */
+  python_interpreter?: string;
   /** Denormalized inverse of `ProjectBox.member_ids` (the box this pill is in). */
   box_id?: string;
   /** Per-project git-hosting profile URL that overrides the global one. Mirrored

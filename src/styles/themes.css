@@ -1245,6 +1245,337 @@ select option {
   word-break: break-word;
 }
 
+/* YAML structure tree (#yaml) — the editable half of the YAML viewer. Rows are
+   monospace so keys and values line up like the file does; the action buttons are
+   revealed on hover/focus so a big config reads as data, not as a form. */
+.yaml-tree {
+  padding: 8px 10px 24px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.yaml-doc + .yaml-doc {
+  margin-top: 10px;
+}
+
+.yaml-doc-sep {
+  margin: 6px 0 4px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.yaml-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  border-radius: 3px;
+  /* The drop line is drawn as a border, so every row reserves the space for one —
+     otherwise the rows below the pointer would jump by a pixel as it is drawn. */
+  border-top: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+}
+
+.yaml-row:hover {
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+}
+
+/* Reorder-by-drag: the grip appears on hover (it is an affordance, not furniture),
+   but keeps its width at all times so no row shifts when it does. */
+.yaml-grip {
+  flex: none;
+  width: 10px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+  cursor: grab;
+  opacity: 0;
+  touch-action: none;
+}
+
+.yaml-row:hover .yaml-grip,
+.yaml-grip:focus-visible {
+  opacity: 0.7;
+}
+
+.yaml-grip-empty {
+  cursor: default;
+}
+
+.yaml-row-dragging {
+  opacity: 0.45;
+}
+
+.yaml-row-dragging .yaml-grip {
+  cursor: grabbing;
+}
+
+.yaml-row-drop-before {
+  border-top-color: var(--accent, #4493f8);
+}
+
+.yaml-row-drop-after {
+  border-bottom-color: var(--accent, #4493f8);
+}
+
+/* The `#` a commented row wears: visible without a hover, because a config file's
+   comments are the half of it worth reading. The comment itself is on the tooltip
+   (and on the key's), so the row stays the width of its data. */
+.yaml-note {
+  flex: none;
+  background: transparent;
+  border: 0;
+  padding: 0 2px;
+  color: var(--text-muted);
+  font: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.yaml-note:hover {
+  color: var(--accent, #4493f8);
+  opacity: 1;
+}
+
+.yaml-comment-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 46ch;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 0 4px;
+  font: inherit;
+  font-style: italic;
+}
+
+.yaml-comment-input:focus {
+  outline: none;
+  border-color: var(--accent, #4493f8);
+}
+
+.yaml-caret {
+  flex: none;
+  width: 14px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.yaml-caret-empty {
+  cursor: default;
+}
+
+.yaml-key {
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  padding: 1px 2px;
+  color: var(--accent, #4493f8);
+  font: inherit;
+  cursor: text;
+}
+
+.yaml-key:hover {
+  background: color-mix(in srgb, var(--accent, #4493f8) 14%, transparent);
+}
+
+.yaml-colon {
+  color: var(--text-muted);
+}
+
+.yaml-index {
+  flex: none;
+  min-width: 18px;
+  color: var(--text-muted);
+}
+
+.yaml-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* Flow (JSON) style marker on a container: what you are editing stays flow, so
+   the row says so. */
+.yaml-flow-tag {
+  color: var(--accent-secondary);
+  opacity: 0.85;
+  letter-spacing: -0.05em;
+}
+
+.yaml-key-input,
+.yaml-value-input {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 0 4px;
+  font: inherit;
+  min-width: 0;
+}
+
+.yaml-value-input {
+  flex: 1 1 auto;
+  max-width: 46ch;
+}
+
+.yaml-key-input:focus,
+.yaml-value-input:focus {
+  outline: none;
+  border-color: var(--accent, #4493f8);
+}
+
+/* Value colouring by YAML type, so a quoted "8080" reads differently from 8080.
+   Reuses the same semantic variables as the syntax tokens, so it adapts to every
+   theme with no per-theme additions (see .tok-* below). */
+.yaml-val-number { color: var(--warning); }
+.yaml-val-boolean { color: var(--accent-secondary); }
+.yaml-val-null { color: var(--text-muted); font-style: italic; }
+.yaml-val-string { color: var(--text-primary); }
+.yaml-val-other { color: var(--success); }
+
+.yaml-value-locked {
+  color: var(--text-muted);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 46ch;
+}
+
+.yaml-block {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.yaml-block-tag {
+  color: var(--text-muted);
+}
+
+.yaml-block-input {
+  flex: 1 1 auto;
+  max-width: 60ch;
+  resize: vertical;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 2px 4px;
+  font: inherit;
+}
+
+.yaml-block-input:focus {
+  outline: none;
+  border-color: var(--accent, #4493f8);
+}
+
+.yaml-type {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 0 2px;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Row actions stay out of the way until the row is hovered — but never hide from
+   the keyboard, so tabbing through the tree reaches every one of them. */
+.yaml-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0;
+}
+
+.yaml-row:hover .yaml-actions,
+.yaml-actions:focus-within {
+  opacity: 1;
+}
+
+.yaml-act,
+.yaml-add {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.yaml-act:not(:disabled):hover,
+.yaml-add:not(:disabled):hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.yaml-act:disabled,
+.yaml-add:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.yaml-act-del:not(:disabled):hover {
+  color: var(--danger, #f85149);
+  border-color: var(--danger, #f85149);
+}
+
+.yaml-add-inline {
+  display: inline-flex;
+  gap: 2px;
+}
+
+/* The add-entry form and the empty-file seed row are always visible — they are
+   the affordance, not a hover action. */
+.yaml-row-add,
+.yaml-row-form {
+  gap: 4px;
+  padding: 2px 0;
+}
+
+.yaml-row-add .yaml-add {
+  opacity: 1;
+}
+
+.yaml-locked {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-style: italic;
+}
+
+.yaml-tree-notice {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+.yaml-tree-notice-hint {
+  margin-top: 4px;
+}
+
 /* "No LaTeX engine — install one" prompt in the TeX viewer's no-engine state.
    Mirrors the install-cmd rows used in the Ollama/Agents settings panels. */
 .tex-install-banner {
@@ -1387,6 +1718,56 @@ select option {
   background: rgba(255, 145, 0, 0.85);
   border-radius: 2px;
   font-weight: 600;
+}
+
+/* #py: a breakpoint-capable gutter (the Python editor). The cell becomes a real
+   <button>, so it has to be stripped back to looking exactly like the plain
+   number it replaces — same metrics, same colour — and only then gain its
+   affordances. Everything below is either a reset or a hover/active state. */
+.file-viewer-gutter-line.is-breakable {
+  display: block;
+  position: relative;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  cursor: pointer;
+}
+
+/* The dot lives in the gutter's left padding, clear of the numbers. Shown faint
+   on hover so the column advertises what a click does, solid once set. */
+.file-viewer-gutter-line.is-breakable::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  background: #e5484d;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.file-viewer-gutter-line.is-breakable:hover::before {
+  opacity: 0.35;
+}
+.file-viewer-gutter-line.has-breakpoint::before,
+.file-viewer-gutter-line.has-breakpoint:hover::before {
+  opacity: 1;
+}
+.file-viewer-gutter-line.has-breakpoint {
+  color: #e5484d;
+  font-weight: 600;
+}
+.file-viewer-gutter-line.is-breakable:focus-visible {
+  outline: 1px solid var(--accent-color);
+  outline-offset: -1px;
 }
 
 /* Hidden mirror that measures each logical line's wrapped height so the wrap-mode

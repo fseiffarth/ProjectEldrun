@@ -39,6 +39,7 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 | `workspace.rs` | KDE/X11 workspace switch commands. |
 | `settings.rs` | Settings read/update. |
 | `project_runtime.rs` | Project-switch runtime command wrapper (off-UI-thread). |
+| `python.rs` | Which Python the viewer's Run/Debug run (#87), and the **single** source of that precedence — the frontend asks, it never re-derives. A project's pinned `python_interpreter` always wins (and costs no probing); otherwise auto-detect ranks in-tree venv → poetry → active `VIRTUAL_ENV`/`CONDA_PREFIX` → pyenv → system. A **named conda env is offered but never auto-picked**: choosing one of N unrelated envs on the user's behalf is a guess, and a wrong one here is indistinguishable from a bug. Remote projects probe the **host** (one constant `sh` script over `run_remote_script`) — the interpreter that matters is the one on the machine the run tab runs on. |
 | `pdf_clip.rs` | In-memory transfer slot for dragged/copied PDF *pages*. Two Eldrun windows are separate WebViews with separate JS heaps, so the bytes must cross the process boundary; events carry only the token. |
 | `crash.rs` | Receives frontend renderer crash reports. |
 | `debug.rs` | Debug-mode helpers. |

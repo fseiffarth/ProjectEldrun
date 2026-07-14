@@ -235,4 +235,148 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       WebKitGTK-sensitive path. Also re-check the print preview still reorders/prints
       as before, and that saving works on a **remote (SSH)** project's PDF.
 
+87. **Python in the native code viewer: Run, Debug, breakpoints, go-to-definition.**
+    Turn the text editor into a usable Python workbench for the three things a
+    script actually needs, without importing an LSP or a DAP client.
+
+    - **Run / Debug open a terminal tab** (`lib/pythonRun.ts`) rather than a bespoke
+      execution path — the same one-click-open-a-tab-and-run policy as
+      `installCommand.ts`. That is what makes them work everywhere Eldrun already
+      works, *for free*: a shell tab carries the project's locality and sandboxing,
+      so Run on a **remote (SSH)** project runs on the host and Run on a
+      **containerised** project runs inside the container, with no code of its own.
+      It also means the process is a real interactive terminal — `input()` works,
+      `Ctrl+C` works, and the shell outlives the program so the traceback stays on
+      screen and `↑` re-runs it. The project's **virtualenv wins** over the system
+      interpreter (`.venv`/`venv`/`env`, probed via `list_dir`, which resolves over
+      SFTP on a remote project) — running with the bare `python3` would
+      `ModuleNotFoundError` on the project's own deps and read as "Run is broken".
+      Re-running **replaces** the previous run tab for that file rather than
+      re-typing into it: the old PTY may be sitting at a pdb prompt or blocked on
+      input, and the command would go to *that*, not to a shell.
+    - **Debugging is pdb, driven from the gutter.** Breakpoints are handed to it as
+      `-c "b file:N"` followed by `-c continue`, so the session runs straight to the
+      first one. With none set the `continue` is omitted and pdb stops at line 1 —
+      otherwise "debug" would be indistinguishable from "run".
+    - **The gutter is the breakpoint UI** (`CodeEditor`): its line numbers become
+      real buttons (so the column drops its `aria-hidden` — hiding a control from the
+      a11y tree would make the feature mouse-only). Two things make a breakpoint more
+      than a line number, and both live in the pure `lib/viewers/python.ts`: pdb
+      *refuses* blank/comment/decorator lines, so a click **snaps** down to the next
+      executable one; and a line number silently re-points at the wrong statement
+      when you type above it, so every draft change is diffed and the dots are
+      **remapped** (a breakpoint inside the edited span is dropped, not guessed at).
+      They persist in the tab's `ViewerState` — same plumbing as the reader's scroll
+      position, and no backend migration (Rust's `TabEntry` flattens `extra`).
+    - **`Ctrl`/`Cmd`+Click follows a name to its `def`** across files, reusing the
+      #49/#50 link machinery (`linkRanges` + `onFollowLink`) and `jumpToSource` — so
+      it opens in the same subwindow, and works into a detached window. The resolver
+      is deliberately **lexical, not type-inferring**: it walks the import graph
+      (relative levels, aliases, `__init__` re-exports, src-layout) and matches
+      `def`/`class`/module-level bindings. `self.method` resolves in-file. Its honesty
+      is the point — only names it can actually follow are underlined, so the
+      affordance never lies, and `obj.method()` on a local simply isn't a link.
+    - **Which Python it runs** (`commands/python.rs`) is the part that decides whether
+      Run is trustworthy at all: a script run with the bare system `python3` when its
+      deps live in a venv fails with `ModuleNotFoundError`, and that reads as "the Run
+      button is broken", not "wrong interpreter". The backend owns the precedence as
+      the **single** source of it — the frontend asks (`python_interpreter_for`) and
+      never re-derives, since two rankings that can disagree is a bug waiting to
+      happen. A project's pinned interpreter always wins (and then costs no probing);
+      otherwise auto-detect ranks **in-tree venv → poetry → active `VIRTUAL_ENV`/
+      `CONDA_PREFIX` → pyenv → system**. A **named conda env is offered but never
+      auto-picked**: choosing one of N unrelated envs on the user's behalf is a guess,
+      and a wrong guess here is indistinguishable from a bug. Pinning is per project
+      (pill ▸ **Python interpreter…**, stored like the sandbox spec — `projects.json`
+      mirror + `project.json`); the dialog leads with Auto-detect and *shows what it
+      currently resolves to*, rather than asking the user to trust an invisible
+      decision. A **remote** project probes the **host** (one constant `sh` script via
+      `run_remote_script`, so it is one SSH round trip, not six) — the interpreter that
+      matters is the one on the machine the run tab actually runs on.
+    - **Gated** behind the experimental `python_run_debug` flag (`lib/experimental.ts`:
+      off for everyone, on in debug mode). Run *executes a file* one click from an
+      editor, so it is opt-in rather than something found by mis-clicking. Go-to-
+      definition is deliberately **not** gated — it reads, it never runs anything.
+    - [x] 🤖 Automated test (`PythonIntel` — imports/defs/lexer/breakpoint remap +
+      resolution incl. circular re-export; `PythonRun` — command building, both
+      platforms; Rust `commands::python` — conda/probe parsing, ranking, and that a
+      named conda env is never auto-selected; `PythonViewer` — the real UI: gutter
+      click sets/snaps/clears a dot, Run/Debug launch the right tab into the file's own
+      scope with the resolved interpreter, Ctrl+Click opens the sibling module at its
+      `def`, and the flag-off case shows none of it)
+    - [ ] 🖐️ Manual test — **the pdb round trip is the one to watch**: set two
+      breakpoints, hit Debug, confirm it halts on the first and `c` reaches the
+      second. Then check interpreter selection on a project that actually needs it
+      (a script importing a dep that only exists in a venv/conda env — and that
+      pinning one in the pill dialog sticks across a restart), that Run on a
+      **remote (SSH)** project runs on the host with the *host's* interpreter, and
+      that Ctrl+Click into a package (`from .pkg import thing` re-exported by its
+      `__init__`) lands on the real definition.
+
+88. **Native YAML/JSON viewer: an editable structure tree.** Give `.yaml`/`.yml`/
+    `.json` the same shape markdown has — a rendered half and a source half behind
+    one toggle — except that the rendered half is *editable*: rename a key, retype
+    a value, add a key or a list item (with a type picker: text/number/boolean/
+    null/map/list), reorder siblings, delete a subtree. Source is the unchanged
+    code editor, so these files keep everything they already had (highlighting,
+    format, the JSON/YAML validation banner, blame, compare, autocomplete).
+
+    - **The tree edits the TEXT, not a model of it** (`lib/viewers/yaml.ts`): every
+      action is a surgical splice back into the draft. Re-serializing the parsed
+      model — the obvious shortcut, and what most YAML editors do — rewrites the
+      whole file and **drops every comment in it**, which for a config file is the
+      one thing you must not do. Splicing is also what makes Tree and Source two
+      views on ONE draft: switching converts nothing, and save / undo / redo /
+      autosave / the external-change banner keep working on the text underneath
+      without either mode knowing the other exists. A tree edit is an ordinary undo
+      step.
+    - **Both of YAML's syntaxes are first-class, because real files mix them:**
+      *block* (`key:` / `- item`, indentation-structured) and *flow* (`{a: 1,
+      b: [2, 3]}` — which is exactly **JSON**, inline or spread over twenty lines).
+      A flow collection parses into real map/seq nodes with real children, which is
+      what makes a JSON-formatted `.yml` — and a `.json` file, the same thing — a
+      tree instead of one opaque blob. (The first cut only *tolerated* flow: it
+      rendered a multi-line `{` as a single un-editable scalar. That was the bug.)
+      **Which syntax a node is written in decides how it is edited** — block splices
+      LINES, flow splices its SPAN — and the tree keeps the author's choice: adding
+      to `[a, b]` yields `[a, b, c]`, never a silent rewrite into block; deleting
+      from it takes the separating comma with it. Every node therefore carries
+      absolute offsets; block nodes additionally carry the lines they own.
+    - **JSON is a dialect, not a second viewer.** `.json` routes to the same tree
+      with `strict` set: no plain scalars, so keys and strings are always quoted and
+      only numbers/bools/null go bare. An empty `[]`/`{}` is a real (empty) flow
+      collection that grows children in place, in either dialect.
+    - **What it offers, it can do.** A construct it can render but not rewrite
+      safely — an anchor, an alias, a merge key, a plain scalar continued across
+      lines — parses to an `editable: false` node that shows its value as text with
+      *no control behind it* (labelled "source only"), rather than an input that
+      would corrupt the file. A line it cannot classify at all fails the parse and
+      the tree defers to Source, naming the line. Same rule as the Python
+      go-to-definition underline: the affordance never lies.
+    - **Adding is where the types live.** A new entry is written with the literal
+      its picked type demands — so "no" and "8080" chosen as *text* come out quoted,
+      which is what makes them the strings the user meant. A key that already holds
+      a value refuses a child rather than silently destroy it.
+    - Opting the viewer out (#48) falls back to the **plain code editor**, not the
+      external app (`VIEWER_FALLBACK`) — turning off the tree is a vote against the
+      tree, not against editing YAML/JSON in Eldrun.
+    - [x] 🤖 Automated test (`YamlModel` — parse/edit ops: comments, quoting style,
+      CRLF and no-trailing-newline round-trips, block scalars, `- key:` items,
+      anchors, multi-doc; flow: inline and multi-line collections, nesting, add
+      inline-vs-on-its-own-line, delete-with-comma, span-swap reorder, unclosed
+      bracket refused; JSON: whole-document parse, strict writing, empty-file seed;
+      and that an unsupported construct is refused rather than guessed.
+      `YamlViewer` — the real UI: a `.yaml` opens in the tree, an edit saves the
+      file with its comments intact, add/rename/delete/reorder, Source shows the
+      tree's edit and it undoes like a typed one, a JSON-formatted `.yml` renders as
+      a tree (the regression), and a `.json` file writes the strict dialect.
+      `InternalViewer` — `.yaml`/`.yml`/`.json` route to the tree, and the opt-out
+      falls back to the code editor)
+    - [ ] 🖐️ Manual test — open a real config with comments (a CI workflow, a
+      `docker-compose.yml`, a `package.json`): edit a value in the tree and confirm
+      the comments and layout are untouched, that Source shows the same edit, and
+      that `Ctrl`+`Z` walks it back. Check a flow/JSON-formatted file adds and
+      deletes in its own style, and that a file with an anchor/merge key
+      (`<<: *base`) renders those rows read-only instead of offering a broken input.
+
 ---

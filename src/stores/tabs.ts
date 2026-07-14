@@ -99,6 +99,16 @@ export interface ViewerState {
   autocomplete?: boolean;
   autocompleteMode?: AutocompleteMode;
   grammarCheck?: boolean;
+  // Debug breakpoints (#py), as 1-based line numbers into the file. Persisted per
+  // tab like the reader's scroll position, so the dots survive closing the file
+  // and an Eldrun restart. Remapped as the draft is edited (see useBreakpoints);
+  // what is stored is always resolved against the file as last seen.
+  breakpoints?: number[];
+  // Collapsed nodes of the YAML tree (#yaml), as node ids (document + path). Like
+  // the scroll position, folding a big config stays folded across a reopen and a
+  // restart. Ids are re-derived from the file on every parse, so an id that no
+  // longer resolves is simply inert.
+  yamlCollapsed?: string[];
 }
 
 // Detached windows render their tabs from a Tauri-event SEED into local React

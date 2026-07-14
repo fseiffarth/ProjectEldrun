@@ -52,7 +52,8 @@ export type InternalViewer =
   | "odt"
   | "media"
   | "html"
-  | "sqlite";
+  | "sqlite"
+  | "yaml";
 
 // Audio/video formats the webview plays natively via <audio>/<video> from a
 // Blob URL (Dev D). Kept separate from IMAGE_EXTS so the media viewer wins.
@@ -115,10 +116,24 @@ export function internalViewerFor(
 ): InternalViewer | null {
   const viewer = naturalViewerFor(entry);
   // When the user has opted this type out (#48), return null so the file falls
-  // through to the external-app path (commitFileDrop routes it via embedExec).
-  if (viewer && disabled?.has(viewer)) return null;
+  // through to the external-app path (commitFileDrop routes it via embedExec) —
+  // unless the type has a native fallback that is itself still enabled. YAML is
+  // the case: turning off its tree is a vote against the *tree*, not against
+  // editing YAML in Eldrun at all, so it drops back to the plain code editor
+  // (which is where .yaml opened before the tree existed).
+  if (viewer && disabled?.has(viewer)) {
+    const fallback = VIEWER_FALLBACK[viewer];
+    return fallback && !disabled.has(fallback) ? fallback : null;
+  }
   return viewer;
 }
+
+/** Where a type lands when its own viewer is opted out (#48), before the
+ *  external-app path. Only for types whose bytes another native viewer can still
+ *  render honestly. */
+const VIEWER_FALLBACK: Partial<Record<InternalViewer, InternalViewer>> = {
+  yaml: "text",
+};
 
 /** The viewer a file *type* maps to, ignoring any user opt-out. */
 function naturalViewerFor(entry: FileEntry): InternalViewer | null {
@@ -156,6 +171,13 @@ function naturalViewerFor(entry: FileEntry): InternalViewer | null {
   // (Dev E). These are also in TEXT_EXTS, so this specific return must win — like
   // .tex above. Opting it out (#48) falls back to the plain text editor.
   if (ext === ".html" || ext === ".htm" || ext === ".svg") return "html";
+  // .yaml/.yml/.json get the structured tree editor with a Tree/Source toggle
+  // (#yaml). JSON is YAML's flow syntax — the same tree renders it, written back
+  // in the stricter dialect — so the two share a viewer rather than duplicating
+  // one. All three are also in TEXT_EXTS, so this specific return must win, like
+  // .tex above. Opting it out (#48) falls back to the plain code editor, not the
+  // external app (see VIEWER_FALLBACK).
+  if (ext === ".yaml" || ext === ".yml" || ext === ".json") return "yaml";
   if (ext && TEXT_EXTS.has(ext)) return "text";
   if (!ext && TEXT_FILENAMES.has(entry.name.toLowerCase())) return "text";
   // DEFERRED (#51, DECISION B): the remaining OpenDocument / spreadsheet formats
@@ -219,7 +241,7 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
   {
     id: "text",
     label: "Text / code",
-    extensions: [".txt", ".json", ".py", ".rs", ".ts", ".svg", ".bib", "…"],
+    extensions: [".txt", ".toml", ".py", ".rs", ".ts", ".svg", ".bib", "…"],
     autocomplete: true,
   },
   {
@@ -232,6 +254,12 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
     id: "markdown",
     label: "Markdown",
     extensions: [".md", ".markdown", ".mdx"],
+    autocomplete: true,
+  },
+  {
+    id: "yaml",
+    label: "YAML / JSON tree",
+    extensions: [".yaml", ".yml", ".json"],
     autocomplete: true,
   },
   {

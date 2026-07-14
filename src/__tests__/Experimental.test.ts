@@ -1,0 +1,45 @@
+/**
+ * The experimental-flag rule (`lib/experimental.ts`): a flag is a tri-state, and
+ * *unset* means "whatever debug mode says". Explicit always wins — in both
+ * directions, which is the half that is easy to get wrong.
+ */
+import { describe, it, expect } from "vitest";
+import { experimentalEnabled, EXPERIMENTAL_FLAGS } from "../lib/experimental";
+import type { Settings } from "../types";
+
+const s = (o: Partial<Settings>): Settings => o as Settings;
+
+describe("experimentalEnabled", () => {
+  it("is off when the flag is unset and debug mode is off", () => {
+    expect(experimentalEnabled(s({}), "python_run_debug")).toBe(false);
+    expect(experimentalEnabled(s({ debug: false }), "python_run_debug")).toBe(false);
+  });
+
+  it("is on when the flag is unset and debug mode is on", () => {
+    // The point of the gate: a new experiment reaches a debug build with no toggle.
+    expect(experimentalEnabled(s({ debug: true }), "python_run_debug")).toBe(true);
+    expect(experimentalEnabled(s({ debug: true }), "agent_mode_toggle")).toBe(true);
+  });
+
+  it("lets an explicit value win over debug mode, both ways", () => {
+    // Off while in debug mode — "turn this off" must work for the people most
+    // likely to hit a broken experiment.
+    expect(experimentalEnabled(s({ debug: true, python_run_debug: false }), "python_run_debug"))
+      .toBe(false);
+    // On without debug mode — an ordinary user can opt into one experiment.
+    expect(experimentalEnabled(s({ python_run_debug: true }), "python_run_debug")).toBe(true);
+  });
+
+  it("treats settings that have not loaded yet as off", () => {
+    expect(experimentalEnabled(null, "python_run_debug")).toBe(false);
+    expect(experimentalEnabled(undefined, "agent_mode_toggle")).toBe(false);
+  });
+
+  it("applies the same rule to every flag in the list", () => {
+    for (const flag of EXPERIMENTAL_FLAGS) {
+      expect(experimentalEnabled(s({}), flag)).toBe(false);
+      expect(experimentalEnabled(s({ debug: true }), flag)).toBe(true);
+      expect(experimentalEnabled(s({ debug: true, [flag]: false }), flag)).toBe(false);
+    }
+  });
+});
