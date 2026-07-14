@@ -2906,6 +2906,20 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     }
   },
 
+  /**
+   * Persist the CURRENT scope into `localFile`.
+   *
+   * Prefer `persistScope(scope, localFile)`. This overload pairs the store's live
+   * `scope` with a `localFile` the caller supplies, and those are two independently
+   * tracked values: whenever they drift, this writes one project's tabs into another
+   * project's file — or, once the per-scope filter has dropped every foreign tab, an
+   * empty layout, which used to erase the target's tabs outright. That is exactly how
+   * DemoProj lost four of them on detach (which swaps `local_file` under the store).
+   * The backend now refuses an unvouched empty save, so this can no longer destroy
+   * anything, but the mismatch is still wrong at the source. No production caller
+   * remains — CenterPanel passes its scope explicitly, and `detached.ts` derives
+   * `localFile` FROM the scope. Kept for the tests that drive it directly.
+   */
   saveLayout: async (localFile) => {
     await get().persistScope(get().scope, localFile);
   },
