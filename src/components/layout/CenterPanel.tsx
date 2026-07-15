@@ -15,6 +15,7 @@ import {
 } from "../../stores/detached";
 import { TerminalView } from "../terminal/TerminalView";
 import { FileBrowser } from "../files/FileBrowser";
+import { ProjectFilesTab } from "../files/ProjectFilesTab";
 import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
 import { ProjectBlobPane } from "../common/ProjectBlobPane";
@@ -968,6 +969,17 @@ export function CenterPanel() {
                   }
                   projectId={scopeKey === "root" ? null : scopeKey}
                   active={visible}
+                />
+              ) : tab.kind === "projectfiles" ? (
+                // The right panel's file view, in a tab. It resolves the project
+                // (and a disconnected remote's Remote/Local source) itself, so
+                // unlike the FileBrowser tab above it needs no mirror swap here.
+                <ProjectFilesTab
+                  scope={scopeKey}
+                  cwd={tab.cwd}
+                  tabKey={tab.key}
+                  folder={tab.folder}
+                  canOpenTabs
                 />
               ) : tab.kind === "embed" ? (
                 tab.viewer ? (

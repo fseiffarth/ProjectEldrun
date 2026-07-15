@@ -14,6 +14,7 @@ export type TabKind =
   | "local_agent"
   | "shell"
   | "files"
+  | "projectfiles"
   | "embed"
   | "projects3d"
   | "network"
@@ -32,6 +33,15 @@ export type TabKind =
 export type TabLocation = "local" | "remote";
 
 export const FILES_TAB_CMD = "__eldrun_files__";
+
+/**
+ * Sentinel `cmd` for the "Files (Project)" tab: the SAME file view the right
+ * panel shows (`ProjectFilesPane` → `FileTree`), hosted in a tab — git markers,
+ * drag-to-open/move, OS import/export, the remote sync overlay. Distinct from
+ * `FILES_TAB_CMD`, which is the separate two-pane `FileBrowser` explorer; both
+ * are offered, they are different tools.
+ */
+export const PROJECT_FILES_TAB_CMD = "__eldrun_project_files__";
 
 /**
  * Sentinel `cmd` for the 3D project-blob tab (root scope only): a navigable 3D
@@ -109,6 +119,16 @@ export interface ViewerState {
   // restart. Ids are re-derived from the file on every parse, so an id that no
   // longer resolves is simply inert.
   yamlCollapsed?: string[];
+  // The table viewer's column separator (#40), as the literal character. Absent
+  // means "auto" — sniffed from the content on every open. It is persisted only
+  // when the reader *overrides* the guess, because that is the case the sniffer
+  // got wrong: re-sniffing would just talk them back out of it on the next open.
+  delimiter?: string;
+  // The table viewer's hidden columns (#40), as indices into the parsed row. They
+  // are only meaningful for the separator that produced them — a different one
+  // cuts the row into different columns — so the viewer drops them when the
+  // delimiter changes rather than hiding whatever now sits at those indices.
+  hiddenColumns?: number[];
 }
 
 // Detached windows render their tabs from a Tauri-event SEED into local React
@@ -190,6 +210,10 @@ export interface TabEntry {
   // rides in `args` as `--permission-mode <x>`; this field is the durable record
   // of it, since `args` are rebuilt from scratch on restore (loadFromLayout).
   agentMode?: AgentMode;
+  // For "projectfiles" tabs: the project-relative folder the tree is browsed
+  // into. Persisted, so "Open in new tab" on a folder (and the tab's own
+  // navigation) survive a restart instead of coming back at the project root.
+  folder?: string;
 }
 
 export type SplitDir = "row" | "column";
@@ -310,6 +334,8 @@ export interface SavedTabEntry {
   // Persisted planner/doer mode (see TabEntry.agentMode). Re-applied to the
   // launch args on restore, so a tab comes back in the mode it was left in.
   agentMode?: AgentMode;
+  // Persisted browsed folder of a "projectfiles" tab (see TabEntry.folder).
+  folder?: string;
 }
 
 /** Serialized layout tree as persisted in project.json's `tab_groups`. */
@@ -468,6 +494,9 @@ interface TabsStore {
   // pan). The viewer panes call this as the reader scrolls/zooms; the debounced
   // saveLayout effect then flushes it to project.json (see ViewerState).
   setViewerState: (key: string, patch: ViewerState) => void;
+  // Record the folder a "projectfiles" tab is browsed into, so it reopens there
+  // (see TabEntry.folder). No-op when unchanged.
+  setTabFolder: (key: string, folder: string) => void;
 
   // arrangement
   reorderInGroup: (groupId: string, from: number, to: number) => void;
@@ -617,6 +646,19 @@ interface TabsStore {
     detachedGroupId: string,
     tab: Omit<TabEntry, "key">,
     targetGroupId: string,
+  ) => string | null;
+  // Like `addDetachedTab`, but the new tab carves a NEW pane at `edge` of
+  // `targetGroupId` within the popout's subtree instead of appending to it — a
+  // file dropped on a body edge inside a detached popout. Mints the key + owns
+  // the PTY (main window), so it returns the minted key (or null if the popout /
+  // group is gone) for the caller's re-seed. `edge` must be a side, never
+  // "center" (that appends → use `addDetachedTab`).
+  addDetachedTabSplit: (
+    scope: string,
+    detachedGroupId: string,
+    tab: Omit<TabEntry, "key">,
+    targetGroupId: string,
+    edge: DropEdge,
   ) => string | null;
   // Multi-pane popouts: split a tab inside a detached popout's own subtree,
   // carving a new pane at `edge` of `targetGroupId` (a group WITHIN the
@@ -1706,6 +1748,18 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  setTabFolder: (key, folder) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const tab = tabs.find((t) => t.key === key);
+      // No-op when unchanged, so re-listing the same folder doesn't churn the
+      // tabs array and wake the saveLayout debounce for nothing.
+      if (!tab || (tab.folder ?? "") === folder) return {};
+      const nextTabs = tabs.map((t) => (t.key === key ? { ...t, folder } : t));
+      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
   reorderInGroup: (groupId, from, to) => {
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
@@ -2537,6 +2591,45 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     return created;
   },
 
+  addDetachedTabSplit: (scope, detachedGroupId, tab, targetGroupId, edge) => {
+    const key = nextKey(tab.kind);
+    // Spread first so a stray `key` can't shadow the minted one; stamp the scope
+    // (this path never touches the in-window layout, so no writeScope to do it).
+    const entry: TabEntry = { ...tab, key, scope };
+    let created: string | null = null;
+    set((s) => {
+      const entries = s.detachedGroupsByScope[scope] ?? [];
+      const idx = entries.findIndex((d) => d.id === detachedGroupId);
+      if (idx < 0) return {};
+      const rec = entries[idx];
+      // Carve a new pane holding the tab at `edge` of the target group, leaving
+      // the target's own tabs untouched — mirrors `splitWithNewTab`'s edge
+      // branch, but on the popout's subtree. A stale target id → no split.
+      if (!findGroup(rec.subtree, targetGroupId)) return {};
+      const newGroup: GroupNode = {
+        type: "group",
+        id: nextGroupId(),
+        tabKeys: [key],
+        activeKey: key,
+      };
+      const dir: SplitDir = edge === "left" || edge === "right" ? "row" : "column";
+      const before = edge === "left" || edge === "top";
+      const nextSub = insertAdjacent(rec.subtree, targetGroupId, newGroup, dir, before);
+      const nextEntries = [...entries];
+      nextEntries[idx] = { ...rec, subtree: nextSub };
+      // Append the payload so the MAIN window's pane layer mounts + owns the PTY;
+      // the detached window attaches to it after the re-seed.
+      const nextTabs = [...(s.tabsByScope[scope] ?? []), entry];
+      created = key;
+      return {
+        tabsByScope: { ...s.tabsByScope, [scope]: nextTabs },
+        ...(s.scope === scope ? { tabs: nextTabs } : {}),
+        detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: nextEntries },
+      };
+    });
+    return created;
+  },
+
   splitDetachedGroup: (scope, detachedGroupId, key, targetGroupId, edge) => {
     set((s) => {
       const entries = s.detachedGroupsByScope[scope] ?? [];
@@ -2738,6 +2831,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         location: t.location,
         // Restore the planner/doer mode (already folded into `args` above).
         agentMode: t.agentMode,
+        // A "projectfiles" tab reopens on the folder it was browsed into.
+        folder: t.folder,
       };
     });
 
@@ -2896,6 +2991,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // Persist the planner/doer mode so the tab comes back in it (the args
         // that carry it are NOT persisted — they're rebuilt in loadFromLayout).
         agentMode: t.agentMode,
+        // Persist a "projectfiles" tab's browsed folder.
+        folder: t.folder,
       }));
       // #42: re-dock detached groups into the persisted tree so disk reflects a
       // restart-as-docked layout (their tabs are already in the flat list above
@@ -2968,6 +3065,7 @@ const AGENT_CMDS = new Set([
 
 export function cmdToKind(cmd: string): TabKind {
   if (cmd === FILES_TAB_CMD) return "files";
+  if (cmd === PROJECT_FILES_TAB_CMD) return "projectfiles";
   if (cmd === BLOB_TAB_CMD) return "projects3d";
   if (cmd === NETWORK_TAB_CMD) return "network";
   if (cmd === MONITOR_TAB_CMD) return "monitor";
@@ -2994,6 +3092,7 @@ export function isRestorableKind(kind: TabKind): boolean {
   return (
     kind === "shell" ||
     kind === "files" ||
+    kind === "projectfiles" ||
     kind === "network" ||
     kind === "monitor" ||
     // The tab comes back, but on its home screen — a scan is far too expensive to

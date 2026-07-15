@@ -1,3 +1,4 @@
+use crate::gpustat::GpuSample;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -7,8 +8,13 @@ pub struct AppResourceUsage {
     pub process_count: usize,
     /// VRAM (bytes) in use by local models loaded in Ollama's memory. `0` when
     /// the Ollama server is down or no model is resident on the GPU. This is
-    /// system-wide GPU usage by Ollama, not part of Eldrun's own process tree.
+    /// Ollama's *share* of the GPU — one line of the readout's breakdown, and
+    /// the whole readout only on a machine whose GPU we cannot read (`gpus`
+    /// empty). It is not part of Eldrun's own process tree.
     pub vram_bytes: u64,
+    /// Every GPU in the machine and its memory, Ollama's models or not. Empty
+    /// when no GPU can be read; see [`crate::gpustat`].
+    pub gpus: Vec<GpuSample>,
 }
 
 /// Debug-only live resource usage for Eldrun's own process tree.
@@ -36,6 +42,7 @@ pub async fn debug_app_resource_usage() -> Result<AppResourceUsage, String> {
         rss_bytes,
         process_count: pids.len(),
         vram_bytes: crate::commands::ollama::total_vram_in_use(),
+        gpus: crate::gpustat::snapshot(),
     })
 }
 

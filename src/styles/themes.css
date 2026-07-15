@@ -1326,6 +1326,39 @@ select option {
   border-bottom-color: var(--accent, #4493f8);
 }
 
+/* During a reorder drag, an entry the drop can't land on (it owns its item's
+   dash line, so it can't be displaced from first place) is blended out, so the
+   impossible positions read as unavailable rather than silently ignoring a drop. */
+.yaml-row-blocked {
+  opacity: 0.35;
+}
+
+/* Hovering a row's action (move up/down, delete, add) highlights that row, so it
+   is obvious which entry the button will act on — delete tinted with danger, the
+   rest with the accent. `:has()` scopes it to the row whose OWN actions are
+   hovered (a child row's actions live in a separate row element). */
+.yaml-row:has(> .yaml-actions .yaml-act:hover),
+.yaml-row:has(> .yaml-actions .yaml-add:hover) {
+  background: color-mix(in srgb, var(--accent, #4493f8) 14%, transparent);
+}
+
+.yaml-row:has(> .yaml-actions .yaml-act-del:hover) {
+  background: color-mix(in srgb, var(--danger, #f85149) 16%, transparent);
+}
+
+/* The persistent add row: hovering either button tints it, so it's clear a new
+   entry will land here. */
+.yaml-row-add:has(.yaml-add:hover) {
+  background: color-mix(in srgb, var(--accent, #4493f8) 12%, transparent);
+}
+
+/* "Copy last" — the alternative to building a new item — reads as the accent
+   action it is, next to the plain new-entry builder. */
+.yaml-add-copy {
+  color: var(--accent, #4493f8);
+  border-color: color-mix(in srgb, var(--accent, #4493f8) 55%, transparent);
+}
+
 /* The `#` a commented row wears: visible without a hover, because a config file's
    comments are the half of it worth reading. The comment itself is on the tooltip
    (and on the key's), so the row stays the width of its data. */
@@ -1447,7 +1480,10 @@ select option {
 .yaml-val-number { color: var(--warning); }
 .yaml-val-boolean { color: var(--accent-secondary); }
 .yaml-val-null { color: var(--text-muted); font-style: italic; }
-.yaml-val-string { color: var(--text-primary); }
+/* Strings get the string-token green (as in the syntax highlighter) rather than
+   the plain body colour, so a value reads as a value and doesn't disappear into
+   the surrounding text. */
+.yaml-val-string { color: var(--success); }
 .yaml-val-other { color: var(--success); }
 
 .yaml-value-locked {
@@ -4944,6 +4980,88 @@ select option {
   flex-shrink: 0;
 }
 
+/* The Files (Project) tab: the right panel's file view hosted in a pane. The
+   rows inside it (sort / source / scroll / tree) are the panel's own classes —
+   only the shell differs, since a tab has no fixed width, no pin and no slide-in
+   transform. */
+.project-files-tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+.project-files-tab-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.project-files-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.project-files-tab-spacer {
+  margin-left: auto;
+}
+
+.project-files-tab-header .tab-add-btn {
+  font-size: 10px;
+  padding: 1px 6px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+/* Same OS-file-drop affordance as the panel (pulsing glow, dashed inset border,
+   drop hint) — the animations are shared. */
+.project-files-tab.drop-active {
+  animation: right-panel-drop-pulse 1.1s ease-in-out infinite;
+}
+
+.project-files-tab.drop-active::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 2px dashed var(--accent);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 20;
+  animation: right-panel-drop-dash 0.4s ease-out;
+}
+
+.project-files-tab.drop-active::after {
+  content: "＋ Drop to copy into project";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 6px 8px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--bg-panel);
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 21;
+  animation: right-panel-drop-banner 0.18s ease-out;
+}
+
+.project-files-tab.drop-flash {
+  animation: right-panel-drop-flash 0.5s ease-out;
+}
+
 .sort-key-btn {
   background: none;
   border: none;
@@ -7045,6 +7163,150 @@ select option {
 }
 
 .file-tree-up:hover { background-color: var(--pill-hover-bg); }
+
+/* In-tree search (filename + content), shared by the right panel and the
+   Files (Project) tab since both render FileTree. */
+.file-tree-search {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.file-tree-search-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.file-tree-search-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 3px 6px;
+  box-sizing: border-box;
+}
+
+.file-tree-search-clear {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  line-height: 1;
+  font-size: 14px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.file-tree-search-clear:hover { background-color: var(--pill-hover-bg); }
+
+.file-tree-search-modes {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.file-tree-search-mode {
+  font-size: 10px;
+  padding: 1px 7px;
+  height: 18px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.file-tree-search-mode:hover { background-color: var(--pill-hover-bg); }
+.file-tree-search-mode.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.file-tree-search-scope {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+}
+.file-tree-search-scope-folder {
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-search-count {
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 4px 8px 2px;
+}
+
+.file-search-row { cursor: pointer; }
+
+.file-search-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.file-search-hl {
+  background: var(--accent);
+  color: var(--bg-panel);
+  border-radius: 2px;
+}
+
+.file-search-act {
+  flex-shrink: 0;
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  line-height: 1;
+  font-size: 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.file-search-act:hover {
+  background-color: var(--pill-hover-bg);
+  color: var(--text-primary);
+}
+
+.file-search-content { align-items: flex-start; }
+
+.file-search-content-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.file-search-loc {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.file-search-line {
+  font-size: 11px;
+  color: var(--text-primary);
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .file-tree-remote-bar {
   display: flex;
@@ -10741,6 +11003,23 @@ select option {
 .local-model-loaded-badges > span.gpu {
   background: color-mix(in srgb, var(--success) 22%, transparent);
   color: var(--success);
+}
+
+/* ── The device's own GPU memory: how much headroom is left before the next
+      model is loaded. Toned by ratio, like the header's GPU row. ───────────── */
+.local-model-gpu {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.local-model-gpu.low {
+  color: var(--success);
+}
+.local-model-gpu.medium {
+  color: var(--warning);
+}
+.local-model-gpu.high {
+  color: var(--danger);
 }
 
 /* ── Loaded-model row: green "resident" lamp + per-task tag chips ─────────── */

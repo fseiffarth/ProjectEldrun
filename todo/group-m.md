@@ -379,4 +379,70 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       deletes in its own style, and that a file with an anchor/merge key
       (`<<: *base`) renders those rows read-only instead of offering a broken input.
 
+89. **CSV table viewer: a separator you can name, and cells you can edit.** The
+    table viewer (#40) read every `.csv` as comma-delimited because that is what
+    the *extension* implies — so a `;`- or `|`-delimited file (a European export,
+    a database dump) split into rows but not into **columns**, and arrived as one
+    tall single-column table. Four things follow from fixing that properly:
+
+    - **The separator is sniffed, and stays overridable** (`sniffDelimiter`). Each
+      candidate (`,` `;` `\t` `|`) is scored by parsing a sample *with that
+      candidate* — so a comma inside a quoted field can't fool the `;` reading —
+      and asking how rectangular the result is. A character that never splits a row
+      is rejected however consistently it fails to appear, which is what stops `,`
+      from "winning" a semicolon file with a perfect score of one column per row.
+      The header offers Auto / Comma / Semicolon / Tab / Pipe / a **custom
+      character**. An explicit override persists per tab (`ViewerState.delimiter`);
+      Auto deliberately does not, so the sniffer stays free to read better later.
+    - **Cells are editable, and an edit is a SPLICE** (`replaceCell` /
+      `insertRowAfter` / `deleteRow`) into the text draft `useEditableFile` already
+      owns — the same bargain #88 strikes for YAML comments. Re-serializing the
+      parsed rows would rewrite every field in the file, normalising away each
+      one's original quoting and the file's line endings, to change one cell. So
+      the table is a **view on the text**: a cell edit is an ordinary
+      dirty/undoable/autosaved/`Ctrl`+`S` change, and the bytes nobody touched are
+      still there. It is also why sorting and filtering carry each row's **source
+      index** (`RowRef`) — a splice must address the row a cell came *from*, not
+      the row it currently occupies on screen.
+    - **Only the visible rows render.** The old cap ("showing first 2000 rows")
+      is gone; the body is windowed against the scroll position, so a million-row
+      CSV is fully browsable. The column widths are therefore measured over the
+      whole file *up front* — sizing them to what happens to be on screen would
+      resize every column as the reader scrolled.
+    - **A filter box**, matching any cell case-insensitively, and a row-number
+      gutter showing the source row (with a delete, plus `+ Row` in the header).
+    - **Columns hide from a list of their names** (`ColumnsMenu`): click a name to
+      hide that column, click it again to bring it back. It is a *multi*-select, so
+      it does not close on a click — hiding six of twenty columns is one visit to
+      the menu, not six — and a hidden column stays listed, struck through, because
+      the list is the only way back. Two consequences: the row **filter searches
+      only the visible columns** (a row matched on a hidden cell would appear with
+      nothing on it to explain why), and hiding is dropped when the **delimiter**
+      changes, since a hidden column is only an *index* and a different separator
+      cuts the row into different columns. The rendered columns keep their original
+      indices rather than being re-numbered, so an edit still addresses the column
+      the cell came from.
+
+    - [x] 🤖 Automated test (`table.ts` — sniffing: semicolon/pipe/tab/comma, a
+      comma inside a quoted `;` field, the single-column fallback; spans: quoted
+      fields, BOM offsets, CRLF, terminated-vs-unterminated final row; edits:
+      quoting only when needed, other cells' quoting left alone, CRLF preserved,
+      ragged-row padding, insert/delete round-trips; filter/sort keeping the
+      source index; the filter scoped to the visible columns)
+    - [ ] 🖐️ Manual test — open a real `;`-delimited export and confirm it opens
+      **in columns** with `Auto (Semicolon)` shown; force the separator to Comma
+      and back and watch the columns re-cut; set a custom one. Edit a cell in a
+      quoted CSV and confirm in Source that only that field changed. Scroll a
+      large CSV to the bottom (columns must not resize as it scrolls). Sort, then
+      filter, then edit a visible cell — the change must land on the row it was
+      shown in, not the row at that screen position. Hide a few columns from the
+      Columns list, confirm they come back on a second click and survive a reopen,
+      and that editing a cell to the *right* of a hidden one still writes the right
+      field.
+    - [ ] **Deferred:** inserting/deleting a **column** (a row op is one splice; a
+      column op is one splice per row, and every splice invalidates the offsets
+      after it — the same constraint `moveNodeTo` faces in `yaml.ts`). Editing an
+      `.xlsx` also stays out: it arrives pre-parsed from `calamine`, with no source
+      text for a splice to land in.
+
 ---

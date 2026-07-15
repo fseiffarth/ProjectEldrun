@@ -807,10 +807,12 @@ function useEditHistory(initial: string) {
 const RELOAD_POLL_MS = 1500;
 
 /**
- * Editable-file state shared by the code and markdown editors: loads `path`,
- * keeps a `draft` against the last-known-on-disk `baseline` (so "dirty" is just
- * draft !== baseline), and writes the draft back via write_file_text — re-seeding
- * the baseline on success so the dirty flag clears without re-reading the file.
+ * Editable-file state shared by the editable viewers — the code and markdown
+ * editors, and the table viewer, whose cell edits are splices into this same
+ * text draft (see `lib/viewers/table.ts`): loads `path`, keeps a `draft` against
+ * the last-known-on-disk `baseline` (so "dirty" is just draft !== baseline), and
+ * writes the draft back via write_file_text — re-seeding the baseline on success
+ * so the dirty flag clears without re-reading the file.
  *
  * Adds (Group M):
  *  - #46 undo/redo: the draft is backed by `useEditHistory`; `undo`/`redo` are
@@ -821,7 +823,7 @@ const RELOAD_POLL_MS = 1500;
  *    silently re-reads into a clean buffer, or surfaces a non-destructive banner
  *    when the buffer is dirty (Reload / Keep mine) — never clobbering edits.
  */
-function useEditableFile(path: string) {
+export function useEditableFile(path: string) {
   const scope = useFileScope();
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -956,7 +958,7 @@ function useEditableFile(path: string) {
 }
 
 /** The non-destructive external-change banner (#43). */
-function ExternalChangeBanner({
+export function ExternalChangeBanner({
   onReload,
   onKeep,
 }: {
@@ -3512,7 +3514,7 @@ function CodeEditor({
  * than text: a spinner while saving, a filled disk with a dot when there are
  * unsaved edits, and a check when clean. `aria-label="Save"` keeps it findable.
  */
-function SaveButton({
+export function SaveButton({
   isDirty,
   saving,
   save,
@@ -3568,7 +3570,7 @@ function PrintButton({
 }
 
 /** Undo/redo toolbar buttons shared by the editable viewers (#46). */
-function UndoRedoButtons({
+export function UndoRedoButtons({
   undo,
   redo,
   canUndo,
@@ -4381,11 +4383,14 @@ function useBreakpoints(
 function RunDebugButtons({
   breakpointCount,
   busy,
+  showDebug,
   onRun,
   onDebug,
 }: {
   breakpointCount: number;
   busy: boolean;
+  /** Debug (pdb + breakpoint gutter) is behind the experimental gate; Run isn't. */
+  showDebug: boolean;
   onRun: () => void;
   onDebug: () => void;
 }) {
@@ -4401,6 +4406,7 @@ function RunDebugButtons({
       >
         ▶ Run
       </button>
+      {showDebug && (
       <button
         className="file-viewer-format-btn"
         onMouseDown={(e) => e.preventDefault()}
@@ -4417,6 +4423,7 @@ function RunDebugButtons({
       >
         🐞 Debug
       </button>
+      )}
     </>
   );
 }
@@ -4482,18 +4489,18 @@ function TextView({
   );
 
   // ── Python (#py): run/debug + breakpoints + go-to-definition ──────────────
-  // Run/Debug (and the breakpoint gutter, which exists only to feed Debug) sit
-  // behind the experimental `python_run_debug` flag — off by default, on in debug
-  // mode (`lib/experimental.ts`). Run *executes the file*, one click from an
-  // editor, so it is opt-in rather than something you find by mis-clicking.
+  // Run is available for any Python file. Debug (pdb) and the breakpoint gutter
+  // that only exists to feed it sit behind the experimental `python_run_debug`
+  // flag — off by default, on in debug mode (`lib/experimental.ts`).
   // Go-to-definition is deliberately NOT gated: it reads, it never runs anything.
   const isPy = useMemo(() => isPythonPath(path), [path]);
-  const pyRunEnabled = useExperimental("python_run_debug");
-  const pyRun = isPy && pyRunEnabled;
+  const pyDebugEnabled = useExperimental("python_run_debug");
+  const pyRun = isPy;
+  const pyDebug = isPy && pyDebugEnabled;
   const projectId = useFileScope();
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
   const projectDir = project ? resolveProjectDirectory(project) : "";
-  const bp = useBreakpoints(pyRun, draft, loaded, viewPos);
+  const bp = useBreakpoints(pyDebug, draft, loaded, viewPos);
   const [launching, setLaunching] = useState(false);
 
   // The tab runs in the project's own scope, not whichever project happens to be
@@ -4612,6 +4619,7 @@ function TextView({
           <RunDebugButtons
             breakpointCount={bp.lines.length}
             busy={launching}
+            showDebug={pyDebug}
             onRun={onRun}
             onDebug={onDebug}
           />
@@ -4694,8 +4702,8 @@ function TextView({
             onGotoApplied={jump.onGotoApplied}
             showBlame={showBlame}
             blame={blame}
-            breakpoints={pyRun ? bp.set : undefined}
-            onToggleBreakpoint={pyRun ? bp.toggle : undefined}
+            breakpoints={pyDebug ? bp.set : undefined}
+            onToggleBreakpoint={pyDebug ? bp.toggle : undefined}
             onFollowLink={isPy ? followPython : undefined}
             linkRanges={isPy ? pythonLinkRanges : undefined}
             initialScrollTop={viewPos.initial?.scrollTop}

@@ -7,6 +7,7 @@
 //! shared sampler state to race between panes. Sampling itself lives in
 //! [`crate::sysstat`]; this is just the Tauri surface.
 
+use crate::gpustat::{self, GpuSample};
 use crate::sysstat::{self, SystemSnapshot};
 
 /// One whole-system sample. `supported` is `false` on non-Linux targets, where
@@ -14,4 +15,13 @@ use crate::sysstat::{self, SystemSnapshot};
 #[tauri::command]
 pub async fn system_monitor_snapshot() -> Result<SystemSnapshot, String> {
     Ok(sysstat::system_snapshot())
+}
+
+/// GPU memory alone, for callers that want the device's memory without paying
+/// for a whole process table (the local-model menu, which asks "what headroom is
+/// left before I load this?"). Reads the same [`gpustat`] cache the snapshot
+/// does. An empty list means no GPU could be read, not that there is no GPU.
+#[tauri::command]
+pub async fn gpu_memory_snapshot() -> Result<Vec<GpuSample>, String> {
+    Ok(gpustat::snapshot())
 }

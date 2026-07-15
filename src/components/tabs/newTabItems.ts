@@ -1,4 +1,10 @@
-import { FILES_TAB_CMD, RESUMABLE_AGENTS, TabEntry, TabKind } from "../../stores/tabs";
+import {
+  FILES_TAB_CMD,
+  PROJECT_FILES_TAB_CMD,
+  RESUMABLE_AGENTS,
+  TabEntry,
+  TabKind,
+} from "../../stores/tabs";
 
 /**
  * A static entry in the "new tab" add menu. Shared by the main-window `TabBar`
@@ -45,7 +51,14 @@ export const SHELL_ITEMS: StaticMenuItem[] = [
   // fails to spawn on Windows where bash isn't on PATH.
   { label: "Shell", cmd: "",              kind: "shell" },
   { label: "Files", cmd: FILES_TAB_CMD,   kind: "files" },
+  { label: "Files (Project)", cmd: PROJECT_FILES_TAB_CMD, kind: "projectfiles" },
 ];
+
+/** The pure-frontend file panes, offered together under the add menu's "Files"
+ *  group and each kept to one tab per cwd (see TabBar.handleAdd). */
+export function isFileTabKind(kind: TabKind): boolean {
+  return kind === "files" || kind === "projectfiles";
+}
 
 // Re-exported so both menus reference the same dot-accent palette.
 export const TAB_ACCENT: Record<TabKind, string> = {
@@ -53,6 +66,7 @@ export const TAB_ACCENT: Record<TabKind, string> = {
   local_agent: "var(--warning)",
   shell: "var(--success)",
   files: "var(--text-muted)",
+  projectfiles: "var(--text-muted)",
   embed: "var(--info, #4aa3df)",
   projects3d: "var(--accent-secondary)",
   network: "var(--info, #4aa3df)",

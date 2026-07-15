@@ -234,11 +234,15 @@ export type DetachedEdit =
   | { kind: "rename"; key: string; label: string }
   | { kind: "close"; key: string }
   | { kind: "reorder"; tabKeys: string[] }
-  // New tab created FROM the popout's own "+" menu. The detached window can't mint
-  // the store-unique tab key (or own the PTY), so it ships the resolved payload +
-  // the popout group it should land in; the MAIN window mints the key, appends the
-  // payload (spawning/owning the PTY), and re-seeds the popout so it renders it.
-  | { kind: "add"; tab: Omit<TabEntry, "key">; targetGroupId: string }
+  // New tab created FROM the popout's own "+" menu, or a file dropped onto a pane
+  // inside the popout. The detached window can't mint the store-unique tab key (or
+  // own the PTY), so it ships the resolved payload + the popout group it should
+  // land in; the MAIN window mints the key, adds the payload (spawning/owning the
+  // PTY), and re-seeds the popout so it renders it. With `edge` set to a side
+  // (left/right/top/bottom) the tab carves a NEW pane at that edge of the target
+  // group (a file dropped on a body edge); omitted or "center" appends it to the
+  // target group (the "+" menu, or a drop on a tab bar / pane centre).
+  | { kind: "add"; tab: Omit<TabEntry, "key">; targetGroupId: string; edge?: DropEdge }
   // Multi-pane popouts: split `key` into a new pane at `edge` of `targetGroupId`.
   | { kind: "split"; key: string; targetGroupId: string; edge: DropEdge }
   // Multi-pane popouts: resize the divider between children i and i+1 of a split.
@@ -436,8 +440,14 @@ export async function listenDetachedHost(): Promise<() => void> {
       // The main window owns tab creation + the PTY: mint the tab into the
       // popout's subtree (spawning the pane in the main window's flat pane layer),
       // then re-seed the popout so it re-renders — attaching to the new PTY — and
-      // plays the drop-in landing for the freshly-added tab.
-      const key = store.addDetachedTab(scope, groupId, edit.tab, edit.targetGroupId);
+      // plays the drop-in landing for the freshly-added tab. A side `edge` carves
+      // the tab into a NEW pane at that edge (a file dropped on a body edge);
+      // otherwise it appends to the target group (the "+" menu / a pane-centre or
+      // tab-bar drop).
+      const key =
+        edit.edge && edit.edge !== "center"
+          ? store.addDetachedTabSplit(scope, groupId, edit.tab, edit.targetGroupId, edit.edge)
+          : store.addDetachedTab(scope, groupId, edit.tab, edit.targetGroupId);
       if (!key) return;
       const entry = (useTabsStore.getState().detachedGroupsByScope[scope] ?? []).find(
         (d) => d.id === groupId,

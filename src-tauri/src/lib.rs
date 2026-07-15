@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod duscan;
+pub mod gpustat;
 pub mod paths;
 pub mod platform;
 pub mod schema;
@@ -647,6 +648,7 @@ pub fn run() {
             commands::usage_stats::usage_watch_project,
             commands::usage_stats::usage_git_stats,
             commands::monitor::system_monitor_snapshot,
+            commands::monitor::gpu_memory_snapshot,
             // AC-vs-battery detection for Energy Saver mode.
             commands::power::get_power_state,
             // SSH-sync (Phase 1): selective local↔remote mirror sync.

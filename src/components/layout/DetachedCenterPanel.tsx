@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
@@ -28,6 +28,9 @@ import {
 } from "../../stores/detached";
 import { TerminalView } from "../terminal/TerminalView";
 import { FileBrowser } from "../files/FileBrowser";
+import { ProjectFilesTab } from "../files/ProjectFilesTab";
+import { FileDropContext, type FileDropController } from "../files/fileDropContext";
+import { fileDropPayloads } from "../tabs/commitFileDrop";
 import { EmbedPane } from "../embed/EmbedPane";
 import { FileViewerPane } from "../embed/FileViewerPane";
 import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
@@ -86,10 +89,12 @@ interface Props {
   /** Merge `key` into `targetGroupId` (at `index`, else append) — a tab dragged
    *  onto ANOTHER group's bar (or body center) inside a split popout. */
   onMove: (key: string, targetGroupId: string, index?: number) => void;
-  /** Create a new tab (from the popout's own "+" menu) in `targetGroupId`. The
-   *  detached window can't mint the key/own the PTY, so it streams the resolved
-   *  payload to the main window, which creates the tab and re-seeds. */
-  onAddTab: (tab: Omit<TabEntry, "key">, targetGroupId: string) => void;
+  /** Create a new tab in `targetGroupId` — the popout's own "+" menu, or a file
+   *  dropped onto a pane inside the popout. The detached window can't mint the
+   *  key/own the PTY, so it streams the resolved payload to the main window, which
+   *  creates the tab and re-seeds. A side `edge` carves a NEW pane at that edge (a
+   *  file dropped on a body edge); omitted/"center" appends to the group. */
+  onAddTab: (tab: Omit<TabEntry, "key">, targetGroupId: string, edge?: DropEdge) => void;
 }
 
 /**
@@ -369,7 +374,7 @@ export function DetachedCenterPanel({
   // it to this popout's drag store: a tab BAR → within-bar reorder slot; a group
   // BODY → edge split of that group. Mirrors CenterPanel.resolveTarget, but scans
   // this popout's own per-group bar/body refs (it may have several once split).
-  const resolveLocalTarget = (clientX: number, clientY: number) => {
+  const resolveLocalTarget = useCallback((clientX: number, clientY: number) => {
     const setTarget = useDragStore.getState().setTarget;
     const clear = () =>
       setTarget({ overGroup: null, edge: null, reorderGroup: null, reorderIndex: null });
@@ -403,7 +408,39 @@ export function DetachedCenterPanel({
       return;
     }
     clear();
-  };
+  }, []);
+
+  // #42: a FILE dragged out of the file tree (a Files (Project) tab) onto a pane
+  // inside THIS popout. The main window's `commitFileDrop` can't run here (the
+  // popout doesn't own the tab store), so commit the resolved target as a
+  // detached `add` edit: a bar / pane-centre → append; a body side edge → carve a
+  // new pane. Provided to the tree via `FileDropContext`, with `resolveLocalTarget`
+  // as its per-move target resolver so the split/merge preview lights up.
+  const fileDrop = useMemo<FileDropController>(
+    () => ({
+      resolveTarget: resolveLocalTarget,
+      commit: (d, projectCwd) => {
+        const drag = useDragStore.getState().drag;
+        if (!drag) return;
+        const payloads = fileDropPayloads(d, projectCwd);
+        if (payloads.length === 0) return;
+        // Body side edge → the first file carves a new pane at that edge; any
+        // further files (a multi-selection) append to the target group, since the
+        // popout can't reference the pane the main window is about to mint.
+        if (drag.overGroup && drag.edge && drag.edge !== "center") {
+          onAddTab(payloads[0], drag.overGroup, drag.edge);
+          for (const p of payloads.slice(1)) onAddTab(p, drag.overGroup);
+          return;
+        }
+        // A pane centre/body, or a tab bar → append to that group. No pane under
+        // the cursor (released over empty space) → nothing (never leak a file out).
+        const target = drag.overGroup ?? drag.reorderGroup;
+        if (!target) return;
+        for (const p of payloads) onAddTab(p, target);
+      },
+    }),
+    [resolveLocalTarget, onAddTab],
+  );
 
   // A per-tab drag released over THIS popout: commit the LAST resolved target
   // (set by resolveLocalTarget during the drag) — a bar slot reorders, a body
@@ -1007,6 +1044,12 @@ export function DetachedCenterPanel({
                       projectId={scope === "root" ? null : scope}
                       active={visible}
                     />
+                  ) : tab.kind === "projectfiles" ? (
+                    // No `tabKey`: a popout runs on a streamed COPY of the tab
+                    // payloads with no write channel back to the main window, so
+                    // the browsed folder stays this window's (same reason the
+                    // Disk Usage pane above doesn't rename its tab here).
+                    <ProjectFilesTab scope={scope} cwd={tab.cwd} folder={tab.folder} />
                   ) : tab.kind === "embed" ? (
                     tab.viewer ? (
                       <FileViewerPane
@@ -1099,6 +1142,7 @@ export function DetachedCenterPanel({
     "Subwindow";
 
   return (
+    <FileDropContext.Provider value={fileDrop}>
     <div className={`detached-center center-panel${windowDragging ? " moving" : ""}`}>
       {/* #42: the popout's own title bar — a full-width strip ABOVE the tab layout
           that always hosts the min/max/close controls top-right. They used to live
@@ -1170,5 +1214,6 @@ export function DetachedCenterPanel({
         })()}
       <DragGhost />
     </div>
+    </FileDropContext.Provider>
   );
 }

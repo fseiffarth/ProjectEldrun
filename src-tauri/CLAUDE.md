@@ -12,6 +12,7 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 | `storage.rs` | JSON persistence helpers (read/write state files). |
 | `paths.rs` | Canonical Eldrun directory paths. |
 | `sysstat.rs` | Per-process CPU sampling via `/proc` (`descendant_pids`). |
+| `gpustat.rs` | Whole-**device** GPU memory (the header row, the monitor pane, the model menu's headroom line) — Ollama's `/api/ps` figure is now one line of its breakdown, not the reading. Reports a GPU's **two** pools separately because on an APU only one is real: the dedicated VRAM carve-out (~512 MB — the framebuffer, permanently ~full, so it alone says nothing) and the shared pool mapped out of system RAM (amdgpu's GTT, where a model actually lands); callers sum them, and on a discrete card the shared half is 0 so the sum collapses to plain VRAM. Sources: **DRM sysfs** (`mem_info_*` + `gpu_busy_percent` — no tool, no root) and **`nvidia-smi`** (the only portable NVIDIA read; a process spawn, so its *absence* is remembered rather than re-paid every poll). A card is only reported when it states a `vram_total` — Intel's `i915` exposes none, and a zero is not a measurement. One ~1 s cache serves all three surfaces. |
 
 **Commands (`commands/`)** — Tauri command handlers exposed to the frontend.
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
@@ -9,6 +9,7 @@ import { useTabsStore } from "../../stores/tabs";
 import { useDragStore, type EmbedCap, type FileDragItem } from "../../stores/drag";
 import { commitFileDrop, fileDropGoesToNewWindow } from "../tabs/commitFileDrop";
 import { startDetachedDropSession } from "../tabs/detachedDropTargets";
+import { FileDropContext } from "./fileDropContext";
 import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSync";
 import {
   startCursorPoll,
@@ -28,7 +29,10 @@ import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { basename } from "../../lib/paths";
+import { isPythonPath } from "../../lib/viewers/python";
+import { runPythonFile, runCwd } from "../../lib/pythonRun";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
+import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 
 // Persist whether the collapsed "gitignored" files section is expanded, so the
@@ -61,6 +65,11 @@ interface Props {
   shownPaths?: string[];
   initialRelPath?: string | null;
   onRelPathChange?: (relPath: string) => void;
+  /** When given, the context menu offers "Open in a new tab" — on a folder, and
+   *  on the background for the folder currently browsed. The host decides what
+   *  that tab is (a Files (Project) tab) and which scope it lands in; a tree with
+   *  no way to own a tab (a box root, a detached window) simply omits this. */
+  onOpenFolderTab?: (relPath: string) => void;
   /** SSH-sync Phase 1: which side of a remote project this tree shows. `"remote"`
    *  = the host source with the sync overlay + select-to-sync affordance; `"local"`
    *  = the local mirror (browsed/watched as a plain local tree). Absent = a normal
@@ -170,8 +179,13 @@ export function FileTree({
   shownPaths = [],
   initialRelPath = "",
   onRelPathChange,
+  onOpenFolderTab,
   syncSource,
 }: Props) {
+  // Non-null inside a detached popout: replaces the main window's CenterPanel
+  // drop authority (which this window can't reach) for a file dragged onto a
+  // pane. See fileDropContext.
+  const fileDrop = useContext(FileDropContext);
   const [rawEntries, setRawEntries] = useState<FileEntry[]>([]);
   // Recursive folder sizes (bytes), keyed by absolute folder path. Filled in
   // lazily by a per-folder backend call so a big subtree never blocks the
@@ -247,6 +261,21 @@ export function FileTree({
   // when Ctrl is pressed/released.
   const [ctrlHeld, setCtrlHeld] = useState(false);
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
+  // In-tree search: while `search` is non-empty the tree body is replaced by a
+  // flat result list (FileTreeSearch). `searchMode` picks filename vs. content
+  // search; `searchCase` only applies to content search (name search is fuzzy).
+  // Both backends walk the canonical LOCAL path, so the search box is only shown
+  // for a non-remote-source tree (see `remoteListing` below).
+  const [search, setSearch] = useState("");
+  const [searchMode, setSearchMode] = useState<"name" | "content">("name");
+  const [searchCase, setSearchCase] = useState(false);
+  // Search scope: false (default) confines the search to the browsed folder
+  // (`relPath`); true searches from the project root. Only meaningful in a
+  // subfolder — at the root the two are identical.
+  const [searchRoot, setSearchRoot] = useState(false);
+  // A pending "reveal in tree" (jump-to-path) request from a search result: the
+  // parent folder to navigate to and the entry name to select once it lists.
+  const [pendingReveal, setPendingReveal] = useState<{ parent: string; name: string } | null>(null);
   // Drag-to-move: the rel path of the folder / breadcrumb under the cursor while
   // a file is being dragged (null = none). The ref carries the live value into
   // the drag's window-bound release handler (which captured an earlier closure);
@@ -711,6 +740,55 @@ export function FileTree({
     setGitStatuses((prev) => (stringMapsEqual(prev, statuses) ? prev : statuses));
   }
 
+  // Jump-to-path: reveal a project-relative path in the tree. A folder navigates
+  // into it; a file navigates to its parent folder and selects+scrolls it. Leaves
+  // search mode so the tree (with the target selected) is what's shown. Used by
+  // every search result (both name and content hits).
+  function revealPath(rel: string, isDir: boolean) {
+    setSearch("");
+    if (isDir) {
+      load(rel);
+      return;
+    }
+    const parts = rel.split("/").filter(Boolean);
+    const name = parts[parts.length - 1] ?? "";
+    const parent = parts.slice(0, -1).join("/");
+    // Expand the collapsible sections so the row is rendered wherever it lives
+    // (a scaffold or gitignored file would otherwise be hidden). The subsequent
+    // effect selects and scrolls once the folder has listed.
+    setScaffoldExpanded(true);
+    setGitignoredExpanded(true);
+    setPendingReveal({ parent, name });
+    if (parent !== relPath) load(parent);
+  }
+
+  // Resolve a pending reveal once the target folder is listed: select the entry
+  // and scroll its row into view, then clear the request. Gives up (clears) if
+  // the entry isn't in the listing — e.g. hidden by a filter.
+  useEffect(() => {
+    if (!pendingReveal) return;
+    if (pendingReveal.parent !== relPath) return; // still navigating
+    const entry = entries.find((e) => e.name === pendingReveal.name);
+    if (!entry) {
+      setPendingReveal(null);
+      return;
+    }
+    anchorRef.current = entry.path;
+    setSelected(new Set([entry.path]));
+    const path = entry.path;
+    requestAnimationFrame(() => {
+      try {
+        document
+          .querySelector(`[data-entry-path="${CSS.escape(path)}"]`)
+          ?.scrollIntoView({ block: "center" });
+      } catch {
+        /* best-effort scroll */
+      }
+    });
+    setPendingReveal(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries, pendingReveal, relPath]);
+
   function handleClick(entry: FileEntry) {
     if (entry.is_dir) {
       const rel = relPath ? `${relPath}/${entry.name}` : entry.name;
@@ -1056,6 +1134,11 @@ export function FileTree({
       const moveEl = overEl?.closest<HTMLElement>("[data-move-rel]") ?? null;
       const moveRel = moveEl?.getAttribute("data-move-rel") ?? null;
       setMoveTarget(moveRel != null && moveRel !== relPath ? moveRel : null);
+      // Inside a detached popout, CenterPanel's window-wide drop authority isn't
+      // there to resolve the pane under the cursor — do it here so the popout's
+      // split/merge preview lights up and the release has a target to commit to.
+      // (In the main window CenterPanel owns this; `fileDrop` is null there.)
+      if (fileDrop) fileDrop.resolveTarget(ev.clientX, ev.clientY);
     };
 
     // Tear down the move listener, poll, popout highlight, and pointer capture —
@@ -1118,6 +1201,16 @@ export function FileTree({
       // open or an empty embed tab. (Multi drags qualify when any file member can
       // become a tab — see `canDrop`.)
       if (!canDrop) {
+        useDragStore.getState().end();
+        return;
+      }
+      // Inside a detached popout: commit against the pane resolved above by the
+      // injected controller (a new embed tab into that pane, streamed to the main
+      // window as an `add` edit). The main window's cross-window branches below —
+      // dock into ANOTHER popout, spawn a new standalone window — don't apply
+      // here (a popout can't own the main tab store), so this is the whole commit.
+      if (fileDrop) {
+        fileDrop.commit(d, projectDir);
         useDragStore.getState().end();
         return;
       }
@@ -1724,12 +1817,38 @@ export function FileTree({
     }
     const scriptRel = relFromAbs(projectDir, entry.path);
     addTab({
-      label: entry.name,
+      label: `▶ ${entry.name}`,
       cmd: "bash",
       cwd: projectDir,
       kind: "shell",
       initialInput: `bash ${shellQuote(scriptRel)}`,
     });
+  }
+
+  /** Run a Python file: open a terminal tab in the project's scope running the
+   *  project's interpreter on it. Same mechanism as the viewer's Run button
+   *  (`lib/pythonRun`), so it inherits remote-host/container locality and picks
+   *  up the project's pinned/auto-detected interpreter. */
+  function runPythonScript(event: React.MouseEvent<HTMLButtonElement>, entry: FileEntry) {
+    event.preventDefault();
+    event.stopPropagation();
+    // TEMP DIAGNOSTIC: make the click + its outcome visible in the tree banner so
+    // we can see where it breaks without DevTools.
+    const scope0 = useTabsStore.getState().scope;
+    const before = useTabsStore.getState().tabs.length;
+    setError(`[py-run] clicked ${entry.name} · scope=${scope0} · tabs=${before}`);
+    runPythonFile({
+      file: entry.path,
+      projectDir: runCwd(projectDir, entry.path),
+      scope: projectId ?? "root",
+      projectId,
+      focused: true,
+    })
+      .then(() => {
+        const s = useTabsStore.getState();
+        setError(`[py-run] done · scope=${s.scope} · tabs=${s.tabs.length} · active=${s.activeKey}`);
+      })
+      .catch((err) => setError(`[py-run] FAILED: ${String(err)}`));
   }
 
   /** Open (or refresh) the in-app PDF viewer tab for a freshly compiled PDF.
@@ -1839,6 +1958,15 @@ export function FileTree({
     );
   }
 
+  // Whether the search results replace the browsed listing. The search box is
+  // only offered on a local-source tree (its backends walk the local path).
+  const canSearch = !remoteListing;
+  const searching = canSearch && search.trim().length > 0;
+  // Folder the search is confined to: the browsed folder by default, the whole
+  // project when "root" is chosen (or when already at the root).
+  const searchScope = searchRoot ? "" : relPath;
+  const scopeLabel = relPath ? basename(relPath) || relPath : "";
+
   return (
     <div
       className={`file-tree${isDragOver ? " drag-over" : ""}`}
@@ -1869,7 +1997,101 @@ export function FileTree({
           )}
         </div>
       )}
-      {relPath && (() => {
+      {canSearch && (
+        <div className="file-tree-search">
+          <div className="file-tree-search-row">
+            <input
+              type="text"
+              className="file-tree-search-input"
+              value={search}
+              placeholder={
+                searchMode === "name"
+                  ? searchScope
+                    ? `Find files in ${scopeLabel}…`
+                    : "Find files…"
+                  : searchScope
+                    ? `Search in ${scopeLabel}…`
+                    : "Search in files…"
+              }
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                // Keep the tree's Enter/Escape handler out of the input.
+                e.stopPropagation();
+                if (e.key === "Escape") setSearch("");
+              }}
+            />
+            {search && (
+              <button
+                type="button"
+                className="file-tree-search-clear"
+                title="Clear search"
+                aria-label="Clear search"
+                onClick={() => setSearch("")}
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="file-tree-search-modes">
+            <button
+              type="button"
+              className={`file-tree-search-mode${searchMode === "name" ? " active" : ""}`}
+              aria-pressed={searchMode === "name"}
+              onClick={() => setSearchMode("name")}
+              title="Search file and folder names"
+            >
+              Name
+            </button>
+            <button
+              type="button"
+              className={`file-tree-search-mode${searchMode === "content" ? " active" : ""}`}
+              aria-pressed={searchMode === "content"}
+              onClick={() => setSearchMode("content")}
+              title="Search inside file contents"
+            >
+              Content
+            </button>
+            {searchMode === "content" && (
+              <button
+                type="button"
+                className={`file-tree-search-mode${searchCase ? " active" : ""}`}
+                aria-pressed={searchCase}
+                onClick={() => setSearchCase((v) => !v)}
+                title="Case sensitive"
+              >
+                Aa
+              </button>
+            )}
+            {/* Scope: search under the browsed folder (default) or the whole
+                project. Only shown in a subfolder — at the root they're the same. */}
+            {relPath && (
+              <span className="file-tree-search-scope">
+                <button
+                  type="button"
+                  className={`file-tree-search-mode file-tree-search-scope-folder${!searchRoot ? " active" : ""}`}
+                  aria-pressed={!searchRoot}
+                  onClick={() => setSearchRoot(false)}
+                  title={`Search under ${relPath}`}
+                >
+                  {scopeLabel}
+                </button>
+                <button
+                  type="button"
+                  className={`file-tree-search-mode${searchRoot ? " active" : ""}`}
+                  aria-pressed={searchRoot}
+                  onClick={() => setSearchRoot(true)}
+                  title="Search the whole project"
+                >
+                  root
+                </button>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+      {!searching && relPath && (() => {
         // Parent of the current folder — the up button doubles as a drag-to-move
         // target ("move into the parent dir"). The breadcrumb crumbs cover the
         // other ancestors (and ⌂ the project root).
@@ -1920,7 +2142,7 @@ export function FileTree({
       })()}
       {loading && <div className="file-tree-loading">Loading…</div>}
       {error && <div className="file-tree-error">{error}</div>}
-      {!relPath && (
+      {!searching && !relPath && (
         <label className="file-tree-scaffold-toggle">
           <Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
           Separate scaffold
@@ -1932,7 +2154,18 @@ export function FileTree({
           </span>
         </label>
       )}
-      {(() => {
+      {searching && (
+        <FileTreeSearch
+          projectDir={projectDir}
+          projectId={projectId}
+          query={search}
+          mode={searchMode}
+          caseSensitive={searchCase}
+          scopeRel={searchScope}
+          onReveal={revealPath}
+        />
+      )}
+      {!searching && (() => {
         // Sections (regular / collapsible scaffold / collapsible gitignored) are
         // computed once in the `sections` memo above and shared with the
         // selection click handler so a shift-range spans exactly these rows.
@@ -1953,7 +2186,9 @@ export function FileTree({
           const dirTotal = e.is_dir ? dirSizes[e.path] : undefined;
           const dirIgnored = e.is_dir && !isGitignored ? dirIgnoredBytes[e.path] : undefined;
           const dirShown = dirTotal !== undefined ? dirTotal - (dirIgnored ?? 0) : undefined;
-          const canRun = !e.is_dir && e.extension === ".sh";
+          const canShRun = !e.is_dir && e.extension === ".sh";
+          const canPyRun = !e.is_dir && isPythonPath(e.path);
+          const canRun = canShRun || canPyRun;
           const isRunning = runningScripts.has(e.path);
           const isCompiling = compiling.has(e.path);
           const dragTarget = draggableToTab(e);
@@ -1976,6 +2211,8 @@ export function FileTree({
             <div
               key={e.path}
               className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold || isGitignored ? " scaffold" : ""}${isMoveTarget ? " move-drop-target" : ""}${selected.has(e.path) ? " selected" : ""}`}
+              // Row key for jump-to-path reveal scroll (search results).
+              data-entry-path={e.path}
               // Folders are drag-to-move destinations: dropping a dragged file
               // here relocates it (hit-tested by data-move-rel in the drag).
               data-move-rel={e.is_dir ? relForEntry(e) : undefined}
@@ -2065,7 +2302,7 @@ export function FileTree({
                   className={`file-run-btn${isRunning ? " running" : ""}`}
                   title={isRunning ? `Running ${e.name}…` : `Run ${e.name}`}
                   aria-label={isRunning ? `Running ${e.name}` : `Run ${e.name}`}
-                  onClick={(ev) => runShellScript(ev, e)}
+                  onClick={(ev) => (canPyRun ? runPythonScript(ev, e) : runShellScript(ev, e))}
                   disabled={isRunning}
                 >
                   {isRunning ? <span className="file-run-spinner" /> : "▶"}
@@ -2164,6 +2401,19 @@ export function FileTree({
         >
           {!contextMenu.entry && (
             <>
+              {onOpenFolderTab && (
+                <>
+                  <button
+                    onClick={() => {
+                      setContextMenu(null);
+                      onOpenFolderTab(relPath);
+                    }}
+                  >
+                    Open this view in a new tab
+                  </button>
+                  <hr />
+                </>
+              )}
               <button onClick={() => createEntry("file")}>
                 New File
               </button>
@@ -2221,6 +2471,19 @@ export function FileTree({
             const autoOn = syncTracked ? !!syncStatus?.[entryRel]?.auto : false;
             return (
               <>
+                {onOpenFolderTab && entry.is_dir && (
+                  <>
+                    <button
+                      onClick={() => {
+                        setContextMenu(null);
+                        onOpenFolderTab(entryRel);
+                      }}
+                    >
+                      Open in a new tab
+                    </button>
+                    <hr />
+                  </>
+                )}
                 {remoteListing && (
                   <>
                     <button onClick={() => syncEntryToLocal(entry)}>

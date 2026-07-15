@@ -6,6 +6,7 @@ import {
   deleteNode,
   addChild,
   addRootEntry,
+  duplicateNode,
   moveNode,
   moveNodeTo,
   setComment,
@@ -142,6 +143,49 @@ describe("parseYaml", () => {
     const mapped = at("- - name: api\n    port: 80\n", [0, 0]);
     expect(mapped.kind).toBe("map");
     expect(mapped.children.map((c) => c.key)).toEqual(["name", "port"]);
+  });
+
+  it("reads a block sequence written at its key's own column", () => {
+    // Valid YAML: a sequence needn't indent past its key. The items sit at the
+    // SAME column as `values:`, and the mapping continues (`cutoff:`) after them.
+    const text = `props:\n  values:\n  - 1\n  - 2\n  - 3\n  cutoff: 1\n`;
+    const doc = parseYaml(text);
+    expect(doc.error).toBeNull();
+    const values = at(text, ["props", "values"]);
+    expect(values.kind).toBe("seq");
+    expect(values.children.map((c) => c.value)).toEqual(["1", "2", "3"]);
+    // The mapping resumes after the same-indent sequence.
+    expect(at(text, ["props", "cutoff"]).value).toBe("1");
+  });
+
+  it("reads a same-column sequence of scalars followed by more keys (the ZINC shape)", () => {
+    const text = `labels:\n  label_type:\n  - induced_cycles\n  - primary\n  min_cycle_length: 6\n`;
+    const lt = at(text, ["labels", "label_type"]);
+    expect(lt.kind).toBe("seq");
+    expect(lt.children.map((c) => c.value)).toEqual(["induced_cycles", "primary"]);
+    expect(at(text, ["labels", "min_cycle_length"]).value).toBe("6");
+  });
+
+  it("keeps a top-level same-column list as the key's value, not a second document", () => {
+    // `models:` then a nested list at column 0 is ONE document (a map whose
+    // `models` is a list of lists), not a map plus an orphaned sequence.
+    const text = `models:\n- - a: 1\n  - b: 2\n`;
+    const doc = parseYaml(text);
+    expect(doc.error).toBeNull();
+    expect(doc.docs).toHaveLength(1);
+    const models = at(text, ["models"]);
+    expect(models.kind).toBe("seq");
+    expect(models.children).toHaveLength(1);
+    expect(models.children[0].kind).toBe("seq");
+    expect(models.children[0].children).toHaveLength(2);
+  });
+
+  it("adds an item to a same-column sequence at that same column", () => {
+    const text = `props:\n  values:\n  - 1\n  - 2\n  cutoff: 1\n`;
+    const doc = parseYaml(text);
+    const values = at(text, ["props", "values"]);
+    const next = addChild(text, doc, values, "item", "", "3");
+    expect(next).toBe(`props:\n  values:\n  - 1\n  - 2\n  - 3\n  cutoff: 1\n`);
   });
 
   it("splits multiple documents", () => {
@@ -422,6 +466,44 @@ describe("moveNode", () => {
     expect(moveNode(CONFIG, root.children, root.children[0], -1)).toBe(CONFIG);
     expect(moveNode(CONFIG, root.children, root.children[1], 1)).toBe(CONFIG);
   });
+
+  it("refuses to drop onto an entry that owns a shared dash line", () => {
+    // In `- name: a`, `name` shares the item's dash line and can't be displaced
+    // from first place — so a reorder targeting it is a no-op (the UI blends it
+    // out during a drag).
+    const text = `- name: a\n  port: 1\n  host: x\n`;
+    const item = at(text, [0]);
+    expect(item.children[0].deletable).toBe(false);
+    // `host` (index 2) dropped onto `name` (index 0) does nothing.
+    expect(moveNodeTo(text, item.children, item.children[2], 0)).toBe(text);
+    // But dropping it onto `port` (index 1, which owns its line) works.
+    expect(moveNodeTo(text, item.children, item.children[2], 1)).toBe(
+      `- name: a\n  host: x\n  port: 1\n`,
+    );
+  });
+});
+
+describe("duplicateNode", () => {
+  it("appends a verbatim copy of a block list item", () => {
+    const text = `tags:\n  - web\n  - prod\n`;
+    const last = at(text, ["tags", 1]);
+    expect(duplicateNode(text, last)).toBe(`tags:\n  - web\n  - prod\n  - prod\n`);
+  });
+
+  it("copies a whole mapping item, nested block and all", () => {
+    const text = `items:\n  - name: a\n    port: 1\n  - name: b\n    port: 2\n`;
+    const last = at(text, ["items", 1]);
+    expect(duplicateNode(text, last)).toBe(
+      `items:\n  - name: a\n    port: 1\n  - name: b\n    port: 2\n  - name: b\n    port: 2\n`,
+    );
+  });
+
+  it("won't duplicate an entry that doesn't own its line", () => {
+    const text = `- name: a\n  port: 1\n`;
+    const firstKey = at(text, [0, 0]);
+    expect(firstKey.deletable).toBe(false);
+    expect(duplicateNode(text, firstKey)).toBe(text);
+  });
 });
 
 describe("comments", () => {
@@ -464,6 +546,30 @@ describe("comments", () => {
       .toContain("    - web  # public\n");
     expect(comment(MATRIX, at(MATRIX, ["matrix", 0, 1]), "second"))
       .toBe("matrix:\n  - - 1\n    - 2  # second\n  - - 3\n");
+  });
+
+  it("comments a mapping list item above its dash line, not behind the first key", () => {
+    // `- name: api` — a comment behind the dash line would belong to `name`, so
+    // the whole item is documented on the line above it instead.
+    const text = `services:\n  - name: api\n    port: 80\n  - name: web\n    port: 443\n`;
+    const item = at(text, ["services", 0]);
+    expect(canAddChild(item, "key")).toBe(true); // it's a mapping item
+    const commented = comment(text, item, "the API service");
+    expect(commented).toBe(
+      `services:\n  # the API service\n  - name: api\n    port: 80\n  - name: web\n    port: 443\n`,
+    );
+    // It reads back as the item's own comment, and clears back to the original.
+    const item2 = at(commented, ["services", 0]);
+    expect(commentOf(item2)).toBe("the API service");
+    expect(comment(commented, item2, "")).toBe(text);
+  });
+
+  it("comments a nested-sequence list item above its dash line", () => {
+    // `- - 1` — the outer item is a sequence written on the dash line.
+    const item = at(MATRIX, ["matrix", 0]);
+    expect(comment(MATRIX, item, "first row")).toBe(
+      "matrix:\n  # first row\n  - - 1\n    - 2\n  - - 3\n",
+    );
   });
 
   it("clears a comment without leaving the whitespace behind it", () => {

@@ -67,6 +67,9 @@ pub struct SystemSnapshot {
     pub load_avg: [f64; 3],
     pub uptime_secs: f64,
     pub processes: Vec<ProcSample>,
+    /// Every GPU the machine will report memory for; empty when none can be read
+    /// (macOS, an Intel-only box, no `nvidia-smi`). See [`crate::gpustat`].
+    pub gpus: Vec<crate::gpustat::GpuSample>,
 }
 
 /// Generation counter bumped whenever a PTY is spawned or dies (see
@@ -202,8 +205,15 @@ pub fn cmdline(pid: u32) -> Option<String> {
 /// A whole-system sample (all processes + per-core CPU + memory/load) for the
 /// htop-like monitor pane. Delegates to the per-OS backend; non-`/proc` targets
 /// return `SystemSnapshot { supported: false, .. }`.
+///
+/// The GPUs are stapled on here rather than inside each backend: they are read
+/// from a different place entirely ([`crate::gpustat`] — DRM sysfs or
+/// `nvidia-smi`, both of which have their own per-OS story) and an empty list is
+/// a legitimate answer on every platform, including a supported one.
 pub fn system_snapshot() -> SystemSnapshot {
-    platform::system_snapshot()
+    let mut snapshot = platform::system_snapshot();
+    snapshot.gpus = crate::gpustat::snapshot();
+    snapshot
 }
 
 // ── Pure `/proc` parsers (Linux; compiled under test on any OS) ──────────────
@@ -538,6 +548,7 @@ mod platform {
             load_avg,
             uptime_secs,
             processes,
+            gpus: Vec::new(), // filled by `system_snapshot()`, not by this backend
         }
     }
 }
@@ -797,6 +808,7 @@ mod platform {
             load_avg: [0.0; 3],
             uptime_secs,
             processes,
+            gpus: Vec::new(), // filled by `system_snapshot()`, not by this backend
         }
     }
 }
@@ -1129,6 +1141,7 @@ mod platform {
             load_avg,
             uptime_secs,
             processes,
+            gpus: Vec::new(), // filled by `system_snapshot()`, not by this backend
         }
     }
 }
