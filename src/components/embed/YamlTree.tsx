@@ -7,6 +7,7 @@ import {
   deleteNode,
   addChild,
   addRootEntry,
+  duplicateNode,
   moveNode,
   moveNodeTo,
   canAddChild,
@@ -152,6 +153,7 @@ export function YamlTree({
                 );
                 setAdding(null);
               }}
+              onCopyLast={copyLastAction(root, text, onChange, () => setAdding(null))}
             />
           ) : (
             <AddControls node={root} adding={adding} setAdding={setAdding} />
@@ -232,7 +234,13 @@ function YamlRows({
     const d = live.current;
     live.current = null;
     setDrag(null);
-    if (d && d.to !== d.from) onChange(moveNodeTo(text, nodes, nodes[d.from], d.to));
+    // Only commit onto a position a reorder can actually land on: the target must
+    // own its own line (the entry sharing a `- key:` / `- - x` dash line can't be
+    // displaced from it). moveNodeTo also guards this, but checking here keeps a
+    // drop onto an impossible slot from firing a no-op onChange.
+    if (d && d.to !== d.from && nodes[d.to]?.deletable) {
+      onChange(moveNodeTo(text, nodes, nodes[d.from], d.to));
+    }
   };
 
   return (
@@ -258,13 +266,20 @@ function YamlRows({
           dragging={drag?.from === i}
           // The drop line goes on the row the node would land at, on the side it
           // would come to rest — so the gesture shows where the text will end up.
+          // Only a row a reorder can actually land on gets a line: a fixed
+          // dash-line entry (`node.deletable === false`) can't be displaced, so it
+          // shows none and is blended out instead (see `blocked`).
           dropSide={
-            drag && drag.to === i && drag.to !== drag.from
+            drag && drag.to === i && drag.to !== drag.from && node.deletable
               ? drag.to < drag.from
                 ? "before"
                 : "after"
               : null
           }
+          // While a drag is in flight, an entry that can't be a drop target (it
+          // owns its dash line, so it can't be moved off first place) is dimmed to
+          // show the reorder won't land there.
+          blocked={drag != null && !node.deletable}
           onDragStart={start}
           onDragOver={over}
           onDragEnd={drop}
@@ -290,6 +305,7 @@ function YamlRow({
   rowRef,
   dragging,
   dropSide,
+  blocked,
   onDragStart,
   onDragOver,
   onDragEnd,
@@ -309,6 +325,7 @@ function YamlRow({
   rowRef: (el: HTMLDivElement | null) => void;
   dragging: boolean;
   dropSide: "before" | "after" | null;
+  blocked: boolean;
   onDragStart: (index: number) => void;
   onDragOver: (clientY: number) => void;
   onDragEnd: () => void;
@@ -345,6 +362,7 @@ function YamlRow({
           "yaml-row",
           dragging ? "yaml-row-dragging" : "",
           dropSide ? `yaml-row-drop-${dropSide}` : "",
+          blocked ? "yaml-row-blocked" : "",
         ]
           .filter(Boolean)
           .join(" ")}
@@ -465,10 +483,15 @@ function YamlRow({
         <span className="yaml-actions">
           {/* An empty key (`key:`, `key: null`, `key: []`) offers both — its first
               child is what decides whether it becomes a mapping or a list. A LIST
-              offers both too: "+ key" on it adds an item that IS a mapping. */}
-          {(canAddChild(node, "key") || canAddChild(node, "item")) && (
-            <AddControls node={node} adding={adding} setAdding={setAdding} inline />
-          )}
+              offers both too: "+ key" on it adds an item that IS a mapping.
+              An OPEN container shows its add affordance as the persistent row at
+              the end of its children instead, so the inline hover buttons here are
+              only for a collapsed container (whose children aren't shown) or an
+              empty placeholder (which has no child rows to host the add row). */}
+          {!(isContainer && isOpen) &&
+            (canAddChild(node, "key") || canAddChild(node, "item")) && (
+              <AddControls node={node} adding={adding} setAdding={setAdding} inline />
+            )}
           {!note && !noting && canComment(doc, node) && (
             <button
               className="yaml-act"
@@ -537,8 +560,13 @@ function YamlRow({
         />
       )}
 
-      {/* The add form opens as the last child of the row it belongs to. */}
-      {adding?.startsWith(`${node.id}:`) && (
+      {/* The add form opens as the last child of the row it belongs to; when it
+          isn't open, an OPEN container shows a persistent add row in its place, so
+          every list / mapping carries a visible "+ item" / "+ key" at the point a
+          new entry lands — not only the hover buttons on its (often far-off)
+          header row. A collapsed container keeps just the header's hover buttons
+          (the form still opens from them, below the hidden children). */}
+      {adding?.startsWith(`${node.id}:`) ? (
         <AddRow
           depth={depth + 1}
           kind={adding.endsWith(":item") ? "item" : "key"}
@@ -547,27 +575,49 @@ function YamlRow({
             onChange(addChild(text, doc, node, kind, key, literalFor(type, value, doc.strict)));
             setAdding(null);
           }}
+          onCopyLast={copyLastAction(node, text, onChange, () => setAdding(null))}
         />
+      ) : (
+        isContainer &&
+        isOpen && (
+          <AddControls node={node} depth={depth + 1} adding={adding} setAdding={setAdding} />
+        )
       )}
     </>
   );
 }
 
-/** The `+ key` / `+ item` buttons a node offers, given what it can actually take. */
+/** The `+ key` / `+ item` buttons a node offers, given what it can actually take.
+ *  `inline` renders them into a row's hover actions; otherwise it is a standalone,
+ *  always-visible add row indented to `depth` (the children's level). */
 function AddControls({
   node,
   adding,
   setAdding,
   inline,
+  depth = 0,
 }: {
   node: YamlNode;
   adding: string | null;
   setAdding: (v: string | null) => void;
   inline?: boolean;
+  depth?: number;
 }) {
   const open = adding?.startsWith(`${node.id}:`);
   return (
-    <span className={inline ? "yaml-add-inline" : "yaml-row yaml-row-add"}>
+    <span
+      className={inline ? "yaml-add-inline" : "yaml-row yaml-row-add"}
+      style={inline ? undefined : { paddingLeft: `${depth * 14 + 4}px` }}
+    >
+      {/* Stand in for the grip + caret columns every entry row leads with, so the
+          add buttons line up under the existing keys/items, not 32px to their
+          left. Inline (hover-action) controls need no alignment. */}
+      {!inline && (
+        <>
+          <span className="yaml-grip yaml-grip-empty" aria-hidden="true" />
+          <span className="yaml-caret yaml-caret-empty" aria-hidden="true" />
+        </>
+      )}
       {canAddChild(node, "key") && (
         <button
           className="yaml-add"
@@ -596,17 +646,39 @@ function AddControls({
   );
 }
 
-/** The inline form a new entry is composed in: key (mappings only), type, value. */
+/** The "copy the last item" action for a container, or undefined when there's
+ *  nothing to copy (not a list, empty, or the last entry owns a shared dash line
+ *  and so can't be duplicated on its own). */
+function copyLastAction(
+  container: YamlNode,
+  text: string,
+  onChange: (next: string) => void,
+  done: () => void,
+): (() => void) | undefined {
+  if (container.kind !== "seq") return undefined;
+  const last = container.children[container.children.length - 1];
+  if (!last || !last.deletable) return undefined;
+  return () => {
+    onChange(duplicateNode(text, last));
+    done();
+  };
+}
+
+/** The inline form a new entry is composed in: key (mappings only), type, value.
+ *  When adding an item to a non-empty list, `onCopyLast` offers the alternative of
+ *  duplicating the last entry (handy for a list of like-shaped mappings). */
 function AddRow({
   depth,
   kind,
   onAdd,
   onCancel,
+  onCopyLast,
 }: {
   depth: number;
   kind: "key" | "item";
   onAdd: (kind: "key" | "item", key: string, type: YamlValueType, value: string) => void;
   onCancel: () => void;
+  onCopyLast?: () => void;
 }) {
   const [key, setKey] = useState("");
   const [type, setType] = useState<YamlValueType>("text");
@@ -637,7 +709,20 @@ function AddRow({
         }
       }}
     >
+      <span className="yaml-grip yaml-grip-empty" aria-hidden="true" />
       <span className="yaml-caret yaml-caret-empty" aria-hidden="true" />
+      {/* Adding to a non-empty list: offer copying the last entry as the other
+          way to add one — for a list of like-shaped items (e.g. per-head configs)
+          it's far quicker to duplicate and tweak than to rebuild from scratch. */}
+      {kind === "item" && onCopyLast && (
+        <button
+          className="yaml-add yaml-add-copy"
+          onClick={onCopyLast}
+          title="Add a copy of the last item, to edit in place"
+        >
+          Copy last
+        </button>
+      )}
       {kind === "key" ? (
         <input
           ref={first}

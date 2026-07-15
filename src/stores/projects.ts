@@ -18,7 +18,9 @@ import {
   useTabsStore,
   type SavedLayoutTree,
   type TabKind,
+  type ViewerState,
 } from "./tabs";
+import { type AgentMode } from "../components/tabs/agentModes";
 import { useTimerStore } from "./timer";
 import { useVpnPromptStore } from "./vpnPrompt";
 import { useSettingsStore } from "./settings";
@@ -440,7 +442,11 @@ interface ProjectRuntimeSwitchedPayload {
     embedPath?: string;
     embedExec?: string;
     viewer?: "pdf" | "image" | "markdown" | "text";
+    viewerState?: ViewerState;
     location?: "local" | "remote";
+    agentMode?: AgentMode;
+    /** A "projectfiles" tab's browsed folder (see TabEntry.folder). */
+    folder?: string;
   }>;
   // Opaque split/group layout tree (camelCased by the backend's serde rename);
   // absent → restored as a single group.
@@ -685,6 +691,12 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       previousProjectId: previousId,
       previousSnapshot: {
+        // Keep in step with the canonical persist in `tabs.ts` (persistScope):
+        // this snapshot OVERWRITES the previous project's project.json on switch,
+        // so any field dropped here is lost on a switch even though the debounced
+        // save wrote it. That is how a Files (Project) tab's browsed `folder` (and
+        // a viewer's scroll position / an agent's plan-mode) went missing on
+        // switch-away.
         tabLayout: tabs.map((t) => ({
           key: t.key,
           label: t.label,
@@ -696,7 +708,10 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
           embedPath: t.embedPath,
           embedExec: t.embedExec,
           viewer: t.viewer,
+          viewerState: t.viewerState,
           location: t.location,
+          agentMode: t.agentMode,
+          folder: t.folder,
         })),
         tabGroups,
         activeTabIndex,

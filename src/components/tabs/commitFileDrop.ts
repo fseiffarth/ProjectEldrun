@@ -5,10 +5,55 @@ import {
   useTabsStore,
   type DetachedDockTarget,
   type DropEdge,
+  type TabEntry,
   type WindowBounds,
 } from "../../stores/tabs";
 import { useWindowsStore } from "../../stores/windows";
 import { reseedDetached } from "./detachedDropTargets";
+
+/**
+ * The embed-tab payload a dropped file becomes. Shared by every file-drop path —
+ * the main window's `commitFileDrop`, the detached window's own drop (see
+ * DetachedCenterPanel) — so the tab a file turns into is identical wherever it
+ * lands. `f` is a multi-drag member (its own viewer, no capability probe) or
+ * `null` for the single primary file (which keeps its cap-resolved `embedExec`).
+ */
+export function fileEmbedPayload(
+  d: TabDrag,
+  f: FileDragItem | null,
+  projectCwd: string,
+): Omit<TabEntry, "key"> {
+  if (f) {
+    return {
+      label: f.name,
+      cmd: "",
+      cwd: projectCwd,
+      kind: "embed",
+      embedPath: f.path,
+      viewer: f.viewer,
+    };
+  }
+  const cap = d.embedCap;
+  return {
+    label: d.fileName ?? "",
+    cmd: "",
+    cwd: projectCwd,
+    kind: "embed",
+    embedPath: d.filePath ?? "",
+    // A built-in viewer (pdf/markdown/text) renders the file in-app and takes
+    // precedence over the external handler — so don't carry embedExec then.
+    embedExec: d.viewer ? undefined : (cap?.resolved_exec ?? d.fileExec),
+    viewer: d.viewer,
+  };
+}
+
+/** The ordered embed-tab payloads a file drag commits to — one per file (a
+ *  multi-selection), else the single primary. */
+export function fileDropPayloads(d: TabDrag, projectCwd: string): Array<Omit<TabEntry, "key">> {
+  const multi = d.files && d.files.length > 1 ? d.files : null;
+  const items: (FileDragItem | null)[] = multi ?? [null];
+  return items.map((f) => fileEmbedPayload(d, f, projectCwd));
+}
 
 /**
  * Should a released file drag open its OWN standalone window rather than land
@@ -89,39 +134,15 @@ export function commitFileDrop(
   const overTabBar = d.reorderGroup != null && d.reorderIndex != null;
   const overSplit = d.overGroup != null && d.edge != null;
 
-  // Shared embed-tab payload for both the tab-bar and the new-subwindow paths.
-  const tabPayload = {
-    label: d.fileName,
-    cmd: "",
-    cwd: projectCwd,
-    kind: "embed" as const,
-    embedPath: d.filePath,
-    // A built-in viewer (pdf/markdown/text) renders the file in-app and takes
-    // precedence over the external handler — so don't carry embedExec then.
-    embedExec: d.viewer ? undefined : (cap?.resolved_exec ?? d.fileExec),
-    viewer: d.viewer,
-  };
-
   // Multi-file drag (a selection dragged from the FileTree): replay each drop
   // branch once per file. `items` is that list; a `null` sentinel means "the
-  // single primary file", which keeps the original single-file path on
-  // `tabPayload` (with its cap-resolved embedExec) byte-for-byte unchanged. A
-  // multi-file member has no per-file capability probe, so its tab carries no
-  // embedExec — EmbedPane opens a non-viewer file externally, matching the
-  // single-file fallback.
+  // single primary file", which keeps the original single-file path (with its
+  // cap-resolved embedExec) byte-for-byte unchanged. A multi-file member has no
+  // per-file capability probe, so its tab carries no embedExec — EmbedPane opens
+  // a non-viewer file externally, matching the single-file fallback.
   const multi = d.files && d.files.length > 1 ? d.files : null;
   const items: (FileDragItem | null)[] = multi ?? [null];
-  const payloadFor = (f: FileDragItem | null) =>
-    f
-      ? {
-          label: f.name,
-          cmd: "",
-          cwd: projectCwd,
-          kind: "embed" as const,
-          embedPath: f.path,
-          viewer: f.viewer,
-        }
-      : tabPayload;
+  const payloadFor = (f: FileDragItem | null) => fileEmbedPayload(d, f, projectCwd);
 
   // Released over an open popout → dock the file as a new embed tab INTO it. We
   // create the tab in this scope, then move it into the popout's subtree (the

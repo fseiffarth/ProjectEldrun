@@ -13,6 +13,7 @@ import {
   SHELL_ITEMS,
   TAB_ACCENT,
   buildStaticTabSpec,
+  isFileTabKind,
   type StaticMenuItem,
 } from "./newTabItems";
 
@@ -223,7 +224,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
       ))}
 
       <div className="tab-new-menu-group-label">Files</div>
-      {SHELL_ITEMS.filter((i) => i.kind === "files").map((item) => (
+      {SHELL_ITEMS.filter((i) => isFileTabKind(i.kind)).map((item) => (
         <button
           key={item.cmd}
           className="tab-new-menu-item"

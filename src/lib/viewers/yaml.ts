@@ -110,6 +110,11 @@ export interface YamlNode {
    *  that shares its line with the `-` of its sequence item (`- name: a`) — there
    *  the line belongs to the item, so the item is what you delete. */
   deletable: boolean;
+  /** Whether this node's comment lives ABOVE its line (a lead comment) rather than
+   *  behind it. Set for a mapping/sequence written on a `-` dash line: a comment
+   *  behind that line would belong to the item's first child (which owns the line),
+   *  so the whole entry is documented on the line above it instead. */
+  leadComment?: boolean;
   children: YamlNode[];
 }
 
@@ -817,6 +822,9 @@ class Parser {
         // The item is written at the dash's column, so that is where the prose about
         // it sits — not at the nested list's.
         lead: this.leadAt(at, indent),
+        // A comment on this item is written above its dash line (a comment behind
+        // it would belong to the nested list's first entry, which owns the line).
+        leadComment: true,
       };
     }
 
@@ -844,6 +852,9 @@ class Parser {
         id: idFor(docIndex, path),
         start: this.off(at, indent),
         lead: this.leadAt(at, indent),
+        // A comment on this item is written above its dash line — behind it would
+        // belong to the first key, which owns the line (`- name: a  # …`).
+        leadComment: true,
       };
     }
 
@@ -886,7 +897,12 @@ class Parser {
     }
 
     if (v.style === "empty" || (v.opaque && v.raw !== "" && this.hasChildBlock(indent))) {
-      const child = this.childBlock(indent, path, docIndex);
+      // A block sequence may sit at the SAME column as its key — `key:` on one
+      // line, `- item` at the key's own indent below — which is valid YAML (a
+      // sequence needn't indent past its key). `childBlock` only sees a deeper
+      // block, so try the same-indent sequence when it finds nothing.
+      const child = this.childBlock(indent, path, docIndex)
+        ?? this.sameIndentSeq(indent, path, docIndex);
       if (child) {
         const node = this.container(
           child.kind, k, path, docIndex, at, child.endLine, indent, child.children,
@@ -931,6 +947,36 @@ class Parser {
     if (!this.hasChildBlock(indent)) return null;
     this.skipIgnorable();
     return this.parseCollection(indentOf(this.view[this.i]), path, docIndex);
+  }
+
+  /**
+   * A key's value written as a block SEQUENCE at the key's OWN column — valid
+   * YAML (a sequence needn't indent past its key), e.g.
+   *     values:
+   *     - 1
+   *     - 2
+   * Unambiguous in a mapping: a bare `- item` at the key's indent can only be
+   * that key's value, since a map holds `key:` entries, never a lone seq item.
+   * (This is why it's resolved here, not in `childBlock`, which is also called for
+   * a bare `-` seq item, where a same-indent dash is a SIBLING, not a child.)
+   * Returns null — cursor untouched — when the next line isn't such a sequence.
+   */
+  private sameIndentSeq(
+    indent: number,
+    path: (string | number)[],
+    docIndex: number,
+  ): YamlNode | null {
+    const save = this.i;
+    this.skipIgnorable();
+    if (
+      this.atBoundary() ||
+      indentOf(this.view[this.i]) !== indent ||
+      !this.isSeqDash(this.view[this.i], indent)
+    ) {
+      this.i = save;
+      return null;
+    }
+    return this.parseSeq(indent, path, docIndex);
   }
 
   /** Consume the lines indented past `indent` (a plain scalar's continuation). */
@@ -1377,6 +1423,24 @@ export function deleteNode(text: string, node: YamlNode): string {
   return splice(text, from, to, "");
 }
 
+/**
+ * Insert a copy of `node` right after it, as a new sibling — what "copy last
+ * item" does when growing a list. A BLOCK node's own lines (its nested block and
+ * the comment behind it, but NOT the prose above it — a copy is not the original)
+ * are duplicated verbatim, so the new entry keeps the source's exact shape and
+ * indentation. A FLOW node's span is duplicated after it with a separating comma.
+ */
+export function duplicateNode(text: string, node: YamlNode): string {
+  if (!node.deletable) return text;
+  if (!node.inFlow) {
+    const { lines } = indexLines(text);
+    const copy = lines.slice(node.line, node.endLine + 1);
+    return insertLines(text, node.endLine + 1, copy);
+  }
+  const body = text.slice(node.start, node.end);
+  return splice(text, node.end, node.end, `, ${body}`);
+}
+
 /** True when the node holds nothing yet, so its first child can replace the
  *  placeholder: `key:` or `key: null`. (An empty `[]`/`{}` is NOT a placeholder —
  *  it is a real, empty flow collection, and it grows children in flow style.) */
@@ -1603,7 +1667,9 @@ export function commentOf(node: YamlNode): string {
  *  YAML dialect thing — the format simply has no comments), and inside a flow
  *  collection a `#` would swallow the closing bracket and everything up to it. */
 export function canComment(doc: YamlDoc, node: YamlNode): boolean {
-  return !doc.strict && node.commentAnchor >= 0;
+  // A dash-line item carries its comment above (`leadComment`), so it needs no
+  // trailing anchor of its own; every other node needs a place to put one.
+  return !doc.strict && (node.commentAnchor >= 0 || !!node.leadComment);
 }
 
 /**
@@ -1617,10 +1683,16 @@ export function setComment(text: string, doc: YamlDoc, node: YamlNode, next: str
   const body = next.trim();
   const leadLines = node.lead === "" ? 0 : node.lead.split("\n").length;
 
-  if (leadLines > 0 && node.commentStart < 0) {
+  // A comment written ABOVE the node's line: when it already has a lead run (any
+  // node), or when it's a dash-line item whose comment lives above by rule. An
+  // existing run is replaced (empty body clears it); a brand-new one is inserted.
+  if ((leadLines > 0 && node.commentStart < 0) || (node.leadComment && node.commentStart < 0)) {
     const pad = " ".repeat(Math.max(0, node.indent));
     const written = body === "" ? [] : body.split("\n").map((l) => `${pad}# ${l}`.trimEnd());
-    return replaceLines(text, node.line - leadLines, node.line - 1, written);
+    if (leadLines > 0) {
+      return replaceLines(text, node.line - leadLines, node.line - 1, written);
+    }
+    return insertLines(text, node.line, written);
   }
 
   const idx = indexLines(text);

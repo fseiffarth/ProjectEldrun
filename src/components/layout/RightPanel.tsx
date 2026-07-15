@@ -1,29 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FileTree } from "../files/FileTree";
-import { DownloadsSection } from "../files/DownloadsSection";
 import { GitHistory } from "../files/GitHistory";
 import { GitChangeTree, type ChangeScope } from "../files/GitChangeTree";
 import { SearchPanel } from "../files/SearchPanel";
-import { Dropdown } from "../common/Dropdown";
+import {
+  FileSourceSwitch,
+  ProjectFilesPane,
+  useBoxRoots,
+  useFileSource,
+  useRemoteBlocked,
+} from "../files/ProjectFilesPane";
+import { ProjectFilesSettingsDialog, useProjectFileFilters } from "../files/ProjectFilesSettings";
+import { openProjectFilesTab } from "../files/ProjectFilesTab";
+import { useImportDrop } from "../files/importDrop";
 import { useProjectsStore, logoutRemote } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore, amberPaths } from "../../stores/sync";
 import { openLinkedFile } from "../embed/FileViewerPane";
-import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useWindowsStore } from "../../stores/windows";
-import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore, orderedTabKeys, isPtyTabKind, type TabEntry } from "../../stores/tabs";
 import { useActivityStore, type AttentionKind } from "../../stores/activity";
-import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
-import { type SortKey, VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
-import { basename, dirname, fromFileUri } from "../../lib/paths";
-import type { ViewerPref } from "../../types";
+import type { SortKey } from "../../lib/viewers/fileUtils";
+import { basename, dirname } from "../../lib/paths";
 import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
 
@@ -52,91 +51,6 @@ interface Props {
 }
 
 type View = "files" | "windows" | "git" | "search" | "orange";
-type ProjectJson = Record<string, unknown>;
-
-const PANEL_HIDDEN_ENDINGS_KEY = "panel_hidden_endings";
-const PANEL_HIDDEN_PATHS_KEY = "panel_hidden_paths";
-const PANEL_SHOWN_PATHS_KEY = "panel_shown_paths";
-
-function readHiddenEndings(project: ProjectJson | null): string[] {
-  return readStringList(project, PANEL_HIDDEN_ENDINGS_KEY);
-}
-
-function readHiddenPaths(project: ProjectJson | null): string[] {
-  return readStringList(project, PANEL_HIDDEN_PATHS_KEY);
-}
-
-function readShownPaths(project: ProjectJson | null): string[] {
-  return readStringList(project, PANEL_SHOWN_PATHS_KEY);
-}
-
-function readStringList(project: ProjectJson | null, key: string): string[] {
-  const raw = project?.[key];
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((item): item is string => typeof item === "string");
-}
-
-type ConflictChoice = "replace" | "rename" | "skip";
-
-/** Heuristic: is this drag an external OS file drag (vs. an internal pill/text
- *  drag)? `dragDropEnabled` stays false so HTML5 DnD keeps working for the
- *  app's pointer/HTML drags; an OS file drag advertises Files/uri-list/html
- *  (WebKitGTK uses text/html here). During dragover WebKit may hide the type
- *  list, so an empty list is treated as a file drag too. */
-function isExternalFileDrag(dt: DataTransfer): boolean {
-  const types = Array.from(dt.types ?? []);
-  if (types.length === 0) return true;
-  return (
-    types.includes("Files") ||
-    types.includes("text/uri-list") ||
-    types.includes("text/html")
-  );
-}
-
-/** Convert one `file://` URI to an absolute local path (decoding `%20` etc.).
- * Delegates to the shared OS-aware helper, including UNC authorities. */
-function fileUriToPath(uri: string): string | null {
-  return fromFileUri(uri);
-}
-
-/** Extract absolute local paths from an OS HTML5 file drop. WebKitGTK withholds
- *  `Files`/`text/uri-list` data here but leaks the `file://` URL inside
- *  `text/html`, so scan every text payload for `file://` URIs and dedupe.
- *  NOTE: this drag path is best-effort — some file managers only expose ONE
- *  file this way. Use the Import button for reliable multi-file selection. */
-function parseDroppedFilePaths(dataTransfer: DataTransfer): string[] {
-  const sources = [
-    dataTransfer.getData("text/uri-list"),
-    dataTransfer.getData("text/plain"),
-    dataTransfer.getData("text/html"),
-  ];
-  const FILE_URI = /file:\/\/[^\s"'<>]+/g;
-  const seen = new Set<string>();
-  const paths: string[] = [];
-  for (const raw of sources) {
-    if (!raw) continue;
-    for (const match of raw.match(FILE_URI) ?? []) {
-      const p = fileUriToPath(match);
-      if (p && !seen.has(p)) {
-        seen.add(p);
-        paths.push(p);
-      }
-    }
-  }
-  return paths;
-}
-
-function mergeEndings(...groups: string[][]): string[] {
-  const endings = new Map<string, string>();
-  for (const group of groups) {
-    for (const ending of group) {
-      const trimmed = ending.trim();
-      if (!trimmed) continue;
-      endings.set(trimmed.toLowerCase(), trimmed);
-    }
-  }
-  return [...endings.values()].sort((a, b) => a.localeCompare(b));
-}
 
 /** A hidden subwindow's tab is invisible to the tab bar, so it can't paint its
  *  own glow — this is the same working/needs-decision/finished precedence
@@ -172,68 +86,6 @@ function rollUpStatus(
   return null;
 }
 
-/** One collapsible root inside the box multi-root file view. Reuses `FileTree`
- *  as-is for a single directory; per-root navigation persists via the projects
- *  store's `rightPanelFolderByProject` map keyed by the root's id. */
-function BoxRootSection({
-  rootId,
-  label,
-  icon,
-  dir,
-  localFile,
-  variant,
-  sortKey,
-  descending,
-}: {
-  rootId: string;
-  label: string;
-  icon: string;
-  dir: string;
-  localFile?: string;
-  variant: "box" | "member";
-  sortKey: SortKey;
-  descending: boolean;
-}) {
-  const [collapsed, setCollapsed] = useState(false);
-  const rel = useProjectsStore((s) => s.rightPanelFolderByProject[rootId] ?? "");
-  const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
-  return (
-    <div className={`file-root file-root--${variant}${collapsed ? " is-collapsed" : ""}`}>
-      <button
-        type="button"
-        className="file-root-header"
-        onClick={() => setCollapsed((c) => !c)}
-        title={dir}
-      >
-        <span className="file-root-caret" aria-hidden>
-          {collapsed ? "▸" : "▾"}
-        </span>
-        <span className="file-root-icon" aria-hidden>
-          {icon}
-        </span>
-        <span className="file-root-name">{label}</span>
-        <span className="file-root-kind">{variant === "box" ? "box" : "project"}</span>
-      </button>
-      {!collapsed && (
-        <div className="file-root-body">
-          <FileTree
-            projectDir={dir}
-            projectId={rootId}
-            localFile={localFile}
-            sortKey={sortKey}
-            descending={descending}
-            hiddenEndings={[]}
-            hiddenPaths={[]}
-            shownPaths={[]}
-            initialRelPath={rel}
-            onRelPathChange={(folder) => setRightPanelFolder(rootId, folder)}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function RightPanel({
   open,
   pinned,
@@ -250,31 +102,15 @@ export function RightPanel({
   const rightPanelFolderByProject = useProjectsStore((s) => s.rightPanelFolderByProject);
   const setRightPanelFolder = useProjectsStore((s) => s.setRightPanelFolder);
   const { windows, refresh, untrack } = useWindowsStore();
-  const settings = useSettingsStore((s) => s.settings);
-  const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [view, setView] = useState<View>("files");
-  // SSH-sync Phase 1: which side of a remote project the files view shows — the
-  // host (remote, SFTP-listed, with the sync overlay) or the local mirror.
-  const [fileSource, setFileSource] = useState<"remote" | "local">("remote");
-  const [dropActive, setDropActive] = useState(false);
-  const [dropFlash, setDropFlash] = useState(false);
-  const [conflict, setConflict] = useState<
-    { name: string; remaining: number; resolve: (r: { choice: ConflictChoice; all: boolean }) => void } | null
-  >(null);
-  const [conflictAll, setConflictAll] = useState(false);
-  const dropFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   // Toggles the Downloads section stacked below the file tree (fast-copy of
   // recent downloads into the project). Toolbar ⬇⬇ button; files view only.
   const [showDownloads, setShowDownloads] = useState(false);
+  // Kept here, not in the pane: the pane unmounts while the panel shows Git or
+  // Search, and the chosen sort must survive the trip back to Files.
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [descending, setDescending] = useState(false);
-  const [localProjectSettings, setLocalProjectSettings] = useState<ProjectJson | null>(null);
-  const [hiddenEndings, setHiddenEndings] = useState<string[]>([]);
-  const [availableEndings, setAvailableEndings] = useState<string[]>([]);
-  const [hiddenPaths, setHiddenPaths] = useState<string[]>([]);
-  const [shownPaths, setShownPaths] = useState<string[]>([]);
-  const [settingsError, setSettingsError] = useState<string | null>(null);
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const [unpushedCommits, setUnpushedCommits] = useState<string[]>([]);
@@ -330,7 +166,6 @@ export function RightPanel({
   useEffect(() => {
     return () => {
       if (refreshGitTimer.current) clearTimeout(refreshGitTimer.current);
-      if (dropFlashTimer.current) clearTimeout(dropFlashTimer.current);
     };
   }, []);
 
@@ -363,10 +198,14 @@ export function RightPanel({
   // commands (run on the main thread). Calling them while the pool is down blocks
   // on the dead session and freezes the window, so suppress them until the remote
   // project is connected. Local projects are never blocked.
-  const remoteSshState = useRemoteStatusStore((s) =>
-    activeId ? s.byProject[activeId]?.ssh : undefined,
-  );
-  const remoteBlocked = !!activeProject?.remote && remoteSshState !== "connected";
+  const { remoteSshState, remoteBlocked } = useRemoteBlocked(activeId, !!activeProject?.remote);
+  // SSH-sync Phase 1: which side of a remote project the files view shows — the
+  // host (remote, SFTP-listed, with the sync overlay) or the local mirror. The
+  // switch lives in the header (below); the tree it drives lives in the pane.
+  const [fileSource, setFileSource] = useFileSource(activeId, !!activeProject?.remote);
+  // Which endings/paths the tree hides, from the project's own project.json —
+  // shared with the Files (Project) tab, so both views hide the same files.
+  const filters = useProjectFileFilters({ localFile, projectDir, remoteBlocked });
   const rightPanelFolder = activeId ? rightPanelFolderByProject[activeId] ?? "" : "";
 
   // Detect a nested git repo: if the folder currently browsed in the file tree
@@ -417,19 +256,6 @@ export function RightPanel({
   // The local mirror root, to open an amber file's mirror copy for inspection.
   const mirrorRoot =
     resolveLocalMirror(activeProject) ?? (projectDir ? `${projectDir}/mirror` : null);
-
-  // Default the file source to whichever side is actually usable when a remote
-  // project becomes active: connected → Remote (the host tree), disconnected →
-  // Local (the mirror, so the panel doesn't open on a Connect prompt). Only
-  // resets on a project switch — it never fights a mid-session manual toggle
-  // (e.g. the user flips to Remote, then the connection drops: the Connect
-  // placeholder below takes over, but the toggle stays put).
-  useEffect(() => {
-    if (activeId && activeProject?.remote) {
-      setFileSource(remoteSshState === "connected" ? "remote" : "local");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId]);
 
   // Resolve the scaffold-missing flag whenever the active project changes.
   // Failures fall back to "present" so a probe error doesn't flash the tag.
@@ -486,36 +312,9 @@ export function RightPanel({
   const unhideGroup = useTabsStore((s) => s.unhideGroup);
   const closeHiddenGroup = useTabsStore((s) => s.closeHiddenGroup);
   const [hiddenCollapsed, setHiddenCollapsed] = useState(false);
-  const boxes = useBoxesStore((s) => s.boxes);
-  const activeBox = useMemo(
-    () =>
-      scope.startsWith(BOX_SCOPE_PREFIX)
-        ? boxes.find((b) => boxScopeId(b.id) === scope) ?? null
-        : null,
-    [scope, boxes],
-  );
-  const boxRoots = useMemo(() => {
-    if (!activeBox) return [];
-    const roots: {
-      rootId: string;
-      label: string;
-      icon: string;
-      dir: string;
-      localFile?: string;
-      variant: "box" | "member";
-    }[] = [];
-    if (activeBox.folder) {
-      roots.push({ rootId: scope, label: activeBox.name, icon: "▣", dir: activeBox.folder, variant: "box" });
-    }
-    for (const id of activeBox.member_ids) {
-      const p = projects.find((m) => m.id === id);
-      if (!p) continue;
-      const dir = resolveProjectDirectory(p);
-      if (!dir) continue;
-      roots.push({ rootId: p.id, label: p.name, icon: "📁", dir, localFile: p.local_file, variant: "member" });
-    }
-    return roots;
-  }, [activeBox, projects, scope]);
+  // A box scope shows a multi-root file view (the box folder + every member
+  // project's root) instead of one project tree; the pane renders it.
+  const { activeBox } = useBoxRoots(scope);
 
   const openInOsBrowser = () => {
     if (!projectDir) return;
@@ -524,93 +323,19 @@ export function RightPanel({
     invoke("open_in_file_manager", { path }).catch((e) => console.error("open_in_file_manager", e));
   };
 
-  // OS file drop → copy into the project. Confined to a single active project
-  // (a box scope has no single destination root). Driven by Tauri's NATIVE
-  // drag-drop event (dragDropEnabled=true) because WebKitGTK withholds the file
-  // paths from HTML5 drops; the native event hands us every dropped path.
-  const canImportDrop = !!projectDir && !activeBox;
-
-  const flashDrop = () => {
-    if (dropFlashTimer.current) clearTimeout(dropFlashTimer.current);
-    setDropFlash(false);
-    requestAnimationFrame(() => setDropFlash(true));
-    dropFlashTimer.current = setTimeout(() => setDropFlash(false), 500);
-  };
-
-  // Ask the user how to resolve a name collision; resolves via the modal's
-  // buttons. Returns the choice plus whether to apply it to all remaining.
-  const askConflict = (name: string, remaining: number) =>
-    new Promise<{ choice: ConflictChoice; all: boolean }>((resolve) => {
-      setConflictAll(false);
-      setConflict({ name, remaining, resolve });
-    });
-
-  // Copy each absolute source path into the project, prompting on collisions.
-  const importPaths = (paths: string[]) => {
-    if (!canImportDrop || !projectDir || paths.length === 0) return;
-    flashDrop();
-    const destRel = view === "files" ? rightPanelFolder : "";
-    void (async () => {
-      let blanket: ConflictChoice | null = null;
-      for (let i = 0; i < paths.length; i++) {
-        const sourcePath = paths[i];
-        const name = basename(sourcePath) || sourcePath;
-        const rel = destRel ? `${destRel}/${name}` : name;
-        let choice: ConflictChoice = "rename";
-        const exists = await invoke<boolean>("project_path_exists", { projectDir, relPath: rel }).catch(() => false);
-        if (exists) {
-          if (blanket) {
-            choice = blanket;
-          } else {
-            const res = await askConflict(name, paths.length - 1 - i);
-            setConflict(null);
-            choice = res.choice;
-            if (res.all) blanket = res.choice;
-          }
-        }
-        if (choice === "skip") continue;
-        try {
-          await invoke("import_external_file", { projectDir, sourcePath, destRel, replace: choice === "replace" });
-        } catch (err) {
-          console.error("import_external_file", sourcePath, err);
-        }
-      }
-      // FileTree auto-reloads via its fs-watch; refresh git so new untracked
-      // files show in the status counts immediately.
-      refreshGit(effectiveGitRoot);
-    })();
-  };
-
-  // HTML5 drag-and-drop (dragDropEnabled stays false so pointer drags — tabs,
-  // splits, pills — keep working). Best-effort: WebKitGTK only leaks file paths
-  // via text/html and sometimes just one; the Import button is the reliable
-  // multi-file path.
-  const handleImportDragOver = (e: React.DragEvent) => {
-    if (!canImportDrop || !isExternalFileDrag(e.dataTransfer)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
-    if (!dropActive) setDropActive(true);
-  };
-
-  const handleImportDragLeave = (e: React.DragEvent) => {
-    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    setDropActive(false);
-  };
-
-  const handleImportDrop = (e: React.DragEvent) => {
-    setDropActive(false);
-    if (!canImportDrop || !isExternalFileDrag(e.dataTransfer)) return;
-    e.preventDefault();
-    importPaths(parseDroppedFilePaths(e.dataTransfer));
-  };
-
-  // Reliable multi-file import: native OS file picker → same copy+conflict flow.
-  const importViaDialog = async () => {
-    if (!canImportDrop) return;
-    const picked = await openDialog({ multiple: true, directory: false }).catch(() => null);
-    if (!picked) return;
-    importPaths(Array.isArray(picked) ? picked : [picked]);
-  };
+  // OS file drop → copy into the project, prompting on collisions. Confined to a
+  // single active project (a box scope has no single destination root). The
+  // whole panel is the drop zone, so a drop outside the files view lands at the
+  // project root; inside it, on the browsed folder. Shared with the Files
+  // (Project) tab so an import behaves the same wherever it is dropped.
+  const importDrop = useImportDrop({
+    projectDir,
+    enabled: !activeBox,
+    destRel: view === "files" ? rightPanelFolder : "",
+    // The tree auto-reloads via its fs-watch; refresh git so new untracked files
+    // show in the status counts immediately.
+    onImported: () => refreshGit(effectiveGitRoot),
+  });
 
   useEffect(() => {
     if (open && activeId) {
@@ -626,46 +351,11 @@ export function RightPanel({
     }
   }, [open, effectiveGitRoot, remoteBlocked]);
 
+  // The gear dialog belongs to the project it was opened on; a project switch
+  // reloads the filters under it, so close it rather than let it re-target.
   useEffect(() => {
     setShowSettings(false);
-    setSettingsError(null);
-    if (!localFile || !projectDir) {
-      setLocalProjectSettings(null);
-      setHiddenEndings([]);
-      setAvailableEndings([]);
-      setHiddenPaths([]);
-      setShownPaths([]);
-      return;
-    }
-    // `list_project_endings` scans the project dir over SFTP for a remote project —
-    // skip it while disconnected (would freeze the main thread). `load_project`
-    // reads the LOCAL project.json, so it's always safe to run.
-    Promise.all([
-      invoke<ProjectJson>("load_project", { localFile }),
-      remoteBlocked
-        ? Promise.resolve<string[]>([])
-        : invoke<string[]>("list_project_endings", { projectDir }).catch(() => []),
-    ])
-      .then(([project, endings]) => {
-        const savedHiddenEndings = readHiddenEndings(project);
-        const savedHiddenPaths = readHiddenPaths(project);
-        const savedShownPaths = readShownPaths(project);
-        const allEndings = mergeEndings(endings, savedHiddenEndings);
-        setLocalProjectSettings(project);
-        setHiddenEndings(savedHiddenEndings);
-        setAvailableEndings(allEndings);
-        setHiddenPaths(savedHiddenPaths);
-        setShownPaths(savedShownPaths);
-      })
-      .catch((error) => {
-        setLocalProjectSettings(null);
-        setHiddenEndings([]);
-        setAvailableEndings([]);
-        setHiddenPaths([]);
-        setShownPaths([]);
-        setSettingsError(String(error));
-      });
-  }, [localFile, projectDir, remoteBlocked]);
+  }, [localFile, projectDir]);
 
   const handleAdd = async () => {
     if (!effectiveGitRoot) return;
@@ -730,44 +420,13 @@ export function RightPanel({
     }
   };
 
-  const saveHiddenEndings = async (nextEndings: string[]) => {
-    if (!localFile || !localProjectSettings) return;
-    const nextProject = {
-      ...localProjectSettings,
-      [PANEL_HIDDEN_ENDINGS_KEY]: nextEndings,
-      [PANEL_HIDDEN_PATHS_KEY]: hiddenPaths,
-      [PANEL_SHOWN_PATHS_KEY]: shownPaths,
-    };
-    setHiddenEndings(nextEndings);
-    setLocalProjectSettings(nextProject);
-    setSettingsError(null);
-    try {
-      await invoke("save_project", { localFile, project: nextProject });
-    } catch (e) {
-      setSettingsError(String(e));
-    }
-  };
-
-  const toggleHiddenEnding = (ending: string, checked: boolean) => {
-    const existing = new Set(hiddenEndings.map((item) => item.toLowerCase()));
-    const nextEndings = checked
-      ? existing.has(ending.toLowerCase())
-        ? hiddenEndings
-        : [...hiddenEndings, ending]
-      : hiddenEndings.filter((item) => item.toLowerCase() !== ending.toLowerCase());
-    void saveHiddenEndings(nextEndings);
-  };
-
   return (
     <div
-      className={`right-panel ${open ? "open" : ""}${dropActive ? " drop-active" : ""}${dropFlash ? " drop-flash" : ""}${resizing ? " resizing" : ""}`}
+      className={`right-panel ${open ? "open" : ""}${importDrop.dropActive ? " drop-active" : ""}${importDrop.dropFlash ? " drop-flash" : ""}${resizing ? " resizing" : ""}`}
       style={width ? { width } : undefined}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
-      onDragEnter={handleImportDragOver}
-      onDragOver={handleImportDragOver}
-      onDragLeave={handleImportDragLeave}
-      onDrop={handleImportDrop}
+      {...importDrop.handlers}
     >
       {/* Drag the left border to resize the panel; width persists in settings.
           Pointer capture (set in onResizeStart) keeps the drag alive once the
@@ -782,47 +441,7 @@ export function RightPanel({
           aria-hidden
         />
       )}
-      {conflict && createPortal(
-        <div
-          className="modal-backdrop"
-          onMouseDown={() => conflict.resolve({ choice: "skip", all: conflictAll })}
-        >
-          <div className="settings-dialog" style={{ maxWidth: 380 }} onMouseDown={(e) => e.stopPropagation()}>
-            <div className="settings-title-row">
-              <h2>File already exists</h2>
-            </div>
-            <p className="settings-help" style={{ wordBreak: "break-all" }}>
-              <code>{conflict.name}</code> already exists in this folder. Replace it, or keep both (the new copy is renamed)?
-            </p>
-            {conflict.remaining > 0 && (
-              <label className="viewer-pref-toggle" style={{ marginBottom: 8 }}>
-                <Toggle
-                  size="sm"
-                  checked={conflictAll}
-                  onChange={(e) => setConflictAll(e.target.checked)}
-                />
-                <span>Apply to the {conflict.remaining} remaining file{conflict.remaining > 1 ? "s" : ""}</span>
-              </label>
-            )}
-            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-              <button className="tab-add-btn" onClick={() => conflict.resolve({ choice: "skip", all: conflictAll })}>
-                Skip
-              </button>
-              <button className="tab-add-btn" onClick={() => conflict.resolve({ choice: "rename", all: conflictAll })}>
-                Keep both
-              </button>
-              <button
-                className="tab-add-btn"
-                style={{ color: "var(--danger, #f85149)" }}
-                onClick={() => conflict.resolve({ choice: "replace", all: conflictAll })}
-              >
-                Replace
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )}
+      {importDrop.conflictModal}
       <div className="right-panel-header">
         {onTogglePin && (
           <button
@@ -882,26 +501,7 @@ export function RightPanel({
           {/* Breaker: drop the switch onto its own row so it left-aligns with the
               pin/name (header padding edge) instead of trailing the tags. */}
           <span style={{ flexBasis: "100%", width: 0, height: 0 }} />
-          <span className="right-panel-source-switch" role="group" aria-label="File source">
-            <button
-              type="button"
-              className={`source-seg${fileSource === "local" ? " active" : ""}`}
-              aria-pressed={fileSource === "local"}
-              onClick={() => setFileSource("local")}
-              title="Show the local synced mirror copy."
-            >
-              Local
-            </button>
-            <button
-              type="button"
-              className={`source-seg${fileSource === "remote" ? " active" : ""}`}
-              aria-pressed={fileSource === "remote"}
-              onClick={() => setFileSource("remote")}
-              title="Show the host tree over SFTP (remote)."
-            >
-              Remote
-            </button>
-          </span>
+          <FileSourceSwitch source={fileSource} onChange={setFileSource} />
           {/* One-click SSH logout, shown while connected. Lives here (not on the
               project pill) so the pill stays status-only; the danger tint only
               appears on hover. */}
@@ -1140,11 +740,11 @@ export function RightPanel({
             ± {orangeFiles.length > 0 && <span className="right-panel-orange-count">{orangeFiles.length}</span>}
           </button>
         )}
-        {canImportDrop && (
+        {importDrop.canImport && (
           <button
             className="tab-add-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
-            onClick={() => void importViaDialog()}
+            onClick={() => void importDrop.importViaDialog()}
             title="Import files into this folder"
           >
             ⬇
@@ -1308,171 +908,32 @@ export function RightPanel({
       )}
 
       {view === "files" && (
-        <>
-          {/* The Remote/Local toggle now lives in the header (right of the project
-              name); this row carries the whole-tree sync action for the active
-              source: Remote → pull the host tree into the mirror; Local → push the
-              mirror back to the host (skipping host-diverged/orange files). Both
-              need a live connection, so the row is gated on !remoteBlocked. */}
-          {!activeBox && activeProject?.remote && activeId && !remoteBlocked && (
-            <div className="right-panel-source">
-              {/* Project-wide auto-sync toggle: the root "" marker. When on, the
-                  whole tree bidirectionally auto-syncs; individual files/folders
-                  can still be carved out (or opted in) from their own context
-                  menu, which overrides this. */}
-              {(() => {
-                const autoAll = !!syncMap?.[""]?.auto;
-                return (
-                  <button
-                    className="tab-add-btn"
-                    style={{
-                      fontSize: 10,
-                      padding: "1px 6px",
-                      height: 20,
-                      ...(autoAll
-                        ? { color: "var(--accent)", borderColor: "var(--accent)" }
-                        : {}),
-                    }}
-                    onClick={() =>
-                      void useSyncStore.getState().setAuto(activeId, [""], !autoAll, true)
-                    }
-                    title={
-                      autoAll
-                        ? "Auto-syncing the whole project (⟳). Click to stop. Individual files/folders can still be excluded or included from their right-click menu."
-                        : "Auto-sync the whole project bidirectionally (host ⇄ local mirror). Diverged files are left for manual resolution; per-file/folder toggles override this."
-                    }
-                  >
-                    {autoAll ? "⟳ Auto-sync: all" : "Auto-sync all"}
-                  </button>
-                );
-              })()}
-              {fileSource === "remote" ? (
-                <button
-                  className="tab-add-btn"
-                  style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
-                  onClick={() => void useSyncStore.getState().syncWholeProject(activeId)}
-                  title="Sync the whole project tree into the local mirror (remote → local)"
-                >
-                  Sync all
-                </button>
-              ) : (
-                <button
-                  className="tab-add-btn"
-                  style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
-                  onClick={() => void useSyncStore.getState().pushWholeProject(activeId)}
-                  title="Push the whole local mirror to the host (local → remote). Files that diverged on the host (orange) are skipped, never overwritten."
-                >
-                  Sync all
-                </button>
-              )}
-            </div>
-          )}
-          <div className="right-panel-sort">
-            {(["name", "size", "type", "created", "modified"] as SortKey[]).map((key) => (
-              <button
-                key={key}
-                className={`sort-key-btn${sortKey === key ? " active" : ""}`}
-                onClick={() => sortKey === key ? setDescending((d) => !d) : setSortKey(key)}
-                title={sortKey === key ? (descending ? "Descending — click to reverse" : "Ascending — click to reverse") : `Sort by ${key}`}
-              >
-                {key}{sortKey === key ? (descending ? " ↓" : " ↑") : ""}
-              </button>
-            ))}
-          </div>
-          <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
-            {open && activeBox ? (
-              boxRoots.length === 0 ? (
-                <div className="file-tree-empty">No member project folders</div>
-              ) : (
-                boxRoots.map((r) => (
-                  <BoxRootSection
-                    key={r.rootId}
-                    rootId={r.rootId}
-                    label={r.label}
-                    icon={r.icon}
-                    dir={r.dir}
-                    localFile={r.localFile}
-                    variant={r.variant}
-                    sortKey={sortKey}
-                    descending={descending}
-                  />
-                ))
-              )
-            ) : (
-              open && (() => {
-                // SSH-sync Phase 1: a remote project's "Local" source points the
-                // tree at the local mirror dir (browsed as a plain local tree);
-                // "Remote" keeps the host (SFTP) tree with the sync overlay. A
-                // local project ignores the toggle entirely.
-                const isRemoteProject = !!activeProject?.remote;
-                // Disconnected remote source: don't mount the SFTP-backed tree
-                // (its main-thread list_dir would freeze the window). Keep the
-                // panel looking the same — the Remote/Local toggle stays up — but
-                // show a Connect prompt in the tree area. Selecting "Local" still
-                // browses the offline mirror. The whole-window freeze rationale
-                // lives on `remoteBlocked` above.
-                if (isRemoteProject && fileSource === "remote" && remoteBlocked) {
-                  return (
-                    <div className="file-tree-empty" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-                      <div>
-                        {remoteSshState === "connecting"
-                          ? "Connecting to the remote host…"
-                          : "Disconnected — connect to browse the remote tree."}
-                      </div>
-                      {remoteSshState !== "connecting" && activeId && (
-                        <button
-                          type="button"
-                          className="dialog-connect-btn"
-                          onClick={() => useConnectDialogStore.getState().open(activeId)}
-                        >
-                          Connect
-                        </button>
-                      )}
-                    </div>
-                  );
-                }
-                // The relocatable mirror override (projects.json `extra["mirror"]`,
-                // updated by `move_remote_mirror`) is authoritative; fall back to the
-                // default `<state_dir>/mirror` only for legacy projects that never
-                // persisted one. Computing `${projectDir}/mirror` unconditionally
-                // pointed the Local tree at the pre-move location after a relocate.
-                const mirrorDir =
-                  resolveLocalMirror(activeProject) ??
-                  (projectDir
-                    ? `${projectDir.replace(/[/\\]+$/, "")}/mirror`
-                    : projectDir);
-                const treeDir =
-                  isRemoteProject && fileSource === "local" ? mirrorDir : projectDir;
-                return (
-                  <FileTree
-                    projectDir={treeDir}
-                    projectId={activeId}
-                    localFile={localFile}
-                    sortKey={sortKey}
-                    descending={descending}
-                    hiddenEndings={hiddenEndings}
-                    hiddenPaths={hiddenPaths}
-                    shownPaths={shownPaths}
-                    initialRelPath={rightPanelFolder}
-                    onRelPathChange={(folder) => {
-                      if (activeId) setRightPanelFolder(activeId, folder);
-                    }}
-                    syncSource={isRemoteProject ? fileSource : undefined}
-                  />
-                );
-              })()
-            )}
-          </div>
-          {showDownloads && !activeBox && projectDir && (
-            <DownloadsSection
-              projectDir={projectDir}
-              projectId={activeId}
-              targetFolder={rightPanelFolder}
-              isRemote={!!activeProject?.remote}
-              onClose={() => setShowDownloads(false)}
-            />
-          )}
-        </>
+        <ProjectFilesPane
+          scope={scope}
+          project={activeProject ?? null}
+          projectDir={projectDir}
+          folder={rightPanelFolder}
+          onFolderChange={(folder) => {
+            if (activeId) setRightPanelFolder(activeId, folder);
+          }}
+          source={fileSource}
+          hiddenEndings={filters.hiddenEndings}
+          hiddenPaths={filters.hiddenPaths}
+          shownPaths={filters.shownPaths}
+          sortKey={sortKey}
+          descending={descending}
+          onSortChange={(key, desc) => {
+            setSortKey(key);
+            setDescending(desc);
+          }}
+          showDownloads={showDownloads}
+          onCloseDownloads={() => setShowDownloads(false)}
+          // Right-click → "Open in a new tab": the same file view, on that
+          // folder, as a Files (Project) tab in this project's scope.
+          onOpenFolderTab={(rel) => openProjectFilesTab(projectDir, rel)}
+          // A closed panel keeps no tree mounted (and so no fs-watch).
+          mountTree={open}
+        />
       )}
 
       {view === "windows" && (
@@ -1499,153 +960,12 @@ export function RightPanel({
           )}
         </div>
       )}
-      {showSettings && activeProject && localFile && createPortal(
-        <div className="modal-backdrop how-to-start-backdrop" onMouseDown={() => setShowSettings(false)}>
-          <div className="settings-dialog project-settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
-            <div className="settings-title-row">
-              <h2>Project Settings</h2>
-              <button type="button" className="dialog-close-btn" onClick={() => setShowSettings(false)}>×</button>
-            </div>
-
-            <div className="settings-section-title">Panel File Hiding</div>
-            <p className="settings-help">
-              Click an ending to hide matching files in the right panel. Dimmed endings are hidden.
-            </p>
-            {availableEndings.length === 0 ? (
-              <div className="settings-empty">No file endings found in this project.</div>
-            ) : (
-              <div className="settings-list project-ending-list">
-                {availableEndings.map((ending) => {
-                  const checked = hiddenEndings.some((item) => item.toLowerCase() === ending.toLowerCase());
-                  return (
-                    <button
-                      type="button"
-                      className={`project-ending-toggle${checked ? " is-hidden" : ""}`}
-                      key={ending}
-                      aria-pressed={checked}
-                      onClick={() => toggleHiddenEnding(ending, !checked)}
-                      title={checked ? `Show ${ending} files` : `Hide ${ending} files`}
-                    >
-                      {ending}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            {settingsError && <div className="settings-error">{settingsError}</div>}
-
-            {/* #48 per-file-type native-viewer settings (global, not per-project).
-                Toggles opt-in local autocomplete (#45) per type, plus the global
-                autosave (#47). */}
-            <div className="settings-section-title">Native Viewers</div>
-            <p className="settings-help">
-              Eldrun renders these file types in-app. Disable a type to open its
-              files in your external default app instead. Autocomplete is
-              local-only (Ollama) and opt-in.
-            </p>
-            <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
-              <Toggle
-                size="sm"
-                checked={settings?.autosave !== false}
-                onChange={(e) => void updateSettings({ autosave: e.target.checked })}
-              />
-              <span>Autosave edits</span>
-            </label>
-            <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
-              <Toggle
-                size="sm"
-                checked={settings?.change_tint !== false}
-                onChange={(e) => void updateSettings({ change_tint: e.target.checked })}
-              />
-              <span>Highlight recent edits (new→old colour trail)</span>
-            </label>
-            <div className="viewer-prefs-list">
-              {VIEWER_PREF_TYPES.map((t) => {
-                const pref: ViewerPref = settings?.viewer_prefs?.[t.id] ?? {};
-                const enabled = pref.enabled !== false;
-                const patch = (next: ViewerPref) =>
-                  void updateSettings({
-                    viewer_prefs: {
-                      ...(settings?.viewer_prefs ?? {}),
-                      [t.id]: { ...pref, ...next },
-                    },
-                  });
-                return (
-                  <div className="viewer-pref-row" key={t.id}>
-                    <span className="viewer-pref-name">{t.label}</span>
-                    <span className="viewer-pref-exts">{t.extensions.join(" ")}</span>
-                    <label className="viewer-pref-toggle">
-                      <Toggle
-                        size="sm"
-                        checked={enabled}
-                        onChange={(e) => patch({ enabled: e.target.checked })}
-                      />
-                      <span>Enabled</span>
-                    </label>
-                    {t.autocomplete && (
-                      <>
-                        <label className="viewer-pref-toggle">
-                          <Toggle
-                            size="sm"
-                            checked={pref.autocomplete === true}
-                            disabled={!enabled}
-                            onChange={(e) => patch({ autocomplete: e.target.checked })}
-                          />
-                          <span>Autocomplete</span>
-                        </label>
-                        {/* #45 default completion-length mode; toggled live
-                            in-editor with Shift+Tab while a suggestion shows. */}
-                        <Dropdown
-                          className="viewer-pref-mode"
-                          value={pref.autocomplete_mode ?? "sentence"}
-                          disabled={!enabled || pref.autocomplete !== true}
-                          title="Default completion length (toggle live with Shift+Tab)"
-                          onChange={(v) =>
-                            patch({ autocomplete_mode: v as ViewerPref["autocomplete_mode"] })
-                          }
-                          options={[
-                            { value: "sentence", label: "Sentence" },
-                            { value: "block", label: "Block" },
-                            { value: "scope", label: "Scope" },
-                          ]}
-                        />
-                        {/* Local-model grammar/spelling check — underlines typos
-                            (red), grammar (blue), style (green) in the editor. */}
-                        <label className="viewer-pref-toggle">
-                          <Toggle
-                            size="sm"
-                            checked={pref.grammar_check === true}
-                            disabled={!enabled}
-                            onChange={(e) => patch({ grammar_check: e.target.checked })}
-                          />
-                          <span>Grammar</span>
-                        </label>
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {settings?.debug && (
-              <>
-                <div className="settings-section-title">Debug</div>
-                <button
-                  className="tab-add-btn"
-                  style={{ fontSize: 11, padding: "2px 8px", width: "100%", color: "var(--danger, #f85149)" }}
-                  onClick={() => {
-                    invoke("clear_project_session", { localFile }).then(() => {
-                      window.location.reload();
-                    }).catch(console.error);
-                  }}
-                >
-                  Clear session storage
-                </button>
-              </>
-            )}
-          </div>
-        </div>,
-        document.body,
+      {showSettings && activeProject && localFile && (
+        <ProjectFilesSettingsDialog
+          localFile={localFile}
+          filters={filters}
+          onClose={() => setShowSettings(false)}
+        />
       )}
     </div>
   );

@@ -149,8 +149,13 @@ export function openPythonTab(opts: {
   /** The scope owning the tab: the project's id, or "root". */
   scope: string;
   command: string;
+  /** Place the tab in the CURRENT focused subwindow (like the file tree's `.sh`
+   *  Run) rather than the given scope's default group. The file tree runs from
+   *  the right panel, which carries no project id for a local project, so a
+   *  scope-based placement would land the tab in the invisible "root" scope. */
+  focused?: boolean;
 }): void {
-  const { mode, file, projectDir, scope, command } = opts;
+  const { mode, file, projectDir, scope, command, focused } = opts;
   const store = useTabsStore.getState();
 
   const prior = store.tabs.find(
@@ -161,14 +166,18 @@ export function openPythonTab(opts: {
   );
   if (prior) store.removeTab(prior.key);
 
-  const entry = useTabsStore.getState().addTabToScope(scope, {
+  const tab = {
     label: pyTabLabel(mode, file),
     cmd: "", // the host's default shell
     cwd: projectDir,
-    kind: "shell",
+    kind: "shell" as const,
     env: { [PY_TARGET_ENV]: file, [PY_MODE_ENV]: mode },
     initialInput: command,
-  });
+  };
+  const entry = focused
+    ? useTabsStore.getState().addTab(tab)
+    : useTabsStore.getState().addTabToScope(scope, tab);
+  console.log("[py-run] tab added", { key: entry.key, scope: useTabsStore.getState().scope, focused, tabs: useTabsStore.getState().tabs.length });
   useTabsStore.getState().setActive(entry.key);
 }
 
@@ -179,6 +188,8 @@ export async function runPythonFile(opts: {
   scope: string;
   /** The project whose pinned interpreter applies; null in the root scope. */
   projectId: string | null;
+  /** Open in the current focused subwindow instead of `scope`'s default group. */
+  focused?: boolean;
 }): Promise<void> {
   const platform = currentPlatform();
   const interp = await resolveInterpreter(opts.projectId, opts.projectDir, platform);
@@ -188,6 +199,7 @@ export async function runPythonFile(opts: {
     projectDir: opts.projectDir,
     scope: opts.scope,
     command: buildRunCommand(interp, opts.file, platform),
+    focused: opts.focused,
   });
 }
 
@@ -198,6 +210,8 @@ export async function debugPythonFile(opts: {
   scope: string;
   projectId: string | null;
   breakpoints: number[];
+  /** Open in the current focused subwindow instead of `scope`'s default group. */
+  focused?: boolean;
 }): Promise<void> {
   const platform = currentPlatform();
   const interp = await resolveInterpreter(opts.projectId, opts.projectDir, platform);
@@ -207,6 +221,7 @@ export async function debugPythonFile(opts: {
     projectDir: opts.projectDir,
     scope: opts.scope,
     command: buildDebugCommand(interp, opts.file, opts.breakpoints, platform),
+    focused: opts.focused,
   });
 }
 

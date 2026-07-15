@@ -3,6 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
 import { useEnergySaver, saverInterval } from "../../stores/power";
+import {
+  formatBytes,
+  gpuAdapterTooltip,
+  gpuTone,
+  gpuTotals,
+  type GpuSample,
+} from "../../lib/gpu";
 
 /** Subset of the backend `OllamaModelInfo` the menu needs (installed models). */
 interface LocalModelInfo {
@@ -34,11 +41,6 @@ const MODEL_ROLES: Array<{ key: string; label: string }> = [
   { key: "tabs", label: "Tabs" },
 ];
 
-function fmtBytes(n: number): string {
-  if (n === 0) return "0 B";
-  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(0) + " MB";
-  return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
-}
 
 /**
  * Header button (left of the global-apps button) for the local (Ollama) models.
@@ -65,6 +67,8 @@ export function LocalModelMenu() {
   // Every installed model (from list_ollama_models_detailed). Resident ones are
   // selectable as the active local model; the rest can be loaded into memory.
   const [models, setModels] = useState<LocalModelInfo[]>([]);
+  /** The machine's GPUs; empty when none can be read, and then no headroom line. */
+  const [gpus, setGpus] = useState<GpuSample[]>([]);
   // Installed agent CLIs (from list_agents), shown in the Agents section so the
   // ones already available are visible without opening "Manage agents".
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -180,6 +184,26 @@ export function LocalModelMenu() {
       window.clearInterval(id);
     };
   }, [installed, energySaver]);
+
+  // The GPU's own memory, polled only while the menu is open: the question this
+  // menu raises is "will the next model fit?", which each model's `size_vram`
+  // (its own share) cannot answer — only the free headroom on the device can.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const check = () =>
+      invoke<GpuSample[]>("gpu_memory_snapshot")
+        .then((g) => {
+          if (!cancelled) setGpus(g);
+        })
+        .catch(() => {});
+    void check();
+    const id = window.setInterval(check, saverInterval(2000, energySaver));
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [open, energySaver]);
 
   // Read the full installed-model list (resident + on-disk). Used on hover and
   // re-run after a load completes so a freshly-resident model moves up.
@@ -343,6 +367,7 @@ export function LocalModelMenu() {
   // Resident models are selectable; the rest are offered as "load into memory".
   const running = models.filter((m) => m.running);
   const available = models.filter((m) => !m.running);
+  const { used: gpuUsed, total: gpuTotal } = gpuTotals(gpus);
 
   return (
     <div className="global-apps-menu no-drag" onMouseEnter={reveal} onMouseLeave={scheduleClose}>
@@ -428,6 +453,20 @@ export function LocalModelMenu() {
               ))}
             </div>
           )}
+          {/* The device's memory, not any model's share of it: what is free here
+              is what the next model has to fit into. Absent when no GPU can be
+              read (macOS, an Intel-only box) — a zero would read as "no room". */}
+          {gpus.length > 0 && (
+            <div
+              className={`tab-new-menu-hint local-model-gpu ${gpuTone(gpuUsed, gpuTotal)}`}
+              title={gpus.map(gpuAdapterTooltip).join("\n")}
+            >
+              <span>
+                GPU {formatBytes(gpuUsed)} / {formatBytes(gpuTotal)}
+              </span>
+              <span>{formatBytes(Math.max(0, gpuTotal - gpuUsed))} free</span>
+            </div>
+          )}
           {!installed ? (
             <div className="tab-new-menu-hint">Ollama not installed</div>
           ) : loading && models.length === 0 ? (
@@ -465,7 +504,7 @@ export function LocalModelMenu() {
                         {m.parameter_size && <span>{m.parameter_size}</span>}
                         {m.quantization && <span>{m.quantization}</span>}
                         <span className={m.size_vram > 0 ? "gpu" : "cpu"}>
-                          {m.size_vram > 0 ? `GPU ${fmtBytes(m.size_vram)}` : "CPU"}
+                          {m.size_vram > 0 ? `GPU ${formatBytes(m.size_vram)}` : "CPU"}
                         </span>
                       </span>
                     </button>

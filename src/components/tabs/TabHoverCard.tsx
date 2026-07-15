@@ -10,6 +10,7 @@ const KIND_LABEL: Record<TabKind, string> = {
   local_agent: "Local agent",
   shell: "Shell",
   files: "Files",
+  projectfiles: "Files (Project)",
   embed: "Embedded app",
   projects3d: "Projects (3D)",
   network: "Network traffic",

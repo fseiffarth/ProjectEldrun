@@ -317,7 +317,9 @@ export function DetachedApp({ param }: Props) {
       onMove={(key, targetGroupId, index) =>
         pushEdit({ kind: "move", key, targetGroupId, index })
       }
-      onAddTab={(tab, targetGroupId) => pushEdit({ kind: "add", tab, targetGroupId })}
+      onAddTab={(tab, targetGroupId, edge) =>
+        pushEdit({ kind: "add", tab, targetGroupId, edge })
+      }
     />
   );
 }

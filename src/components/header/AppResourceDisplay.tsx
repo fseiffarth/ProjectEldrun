@@ -2,24 +2,28 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { useEnergySaver, saverInterval } from "../../stores/power";
+import {
+  formatBytes,
+  gpuBusy,
+  gpuTone,
+  gpuTooltip,
+  gpuTotals,
+  type GpuSample,
+} from "../../lib/gpu";
 
 interface AppResourceUsage {
   cpu_percent: number;
   rss_bytes: number;
   process_count: number;
-  /** VRAM bytes in use by Ollama models; 0 when no model is resident on GPU. */
+  /** Ollama's *share* of the GPU: 0 when no model is resident. */
   vram_bytes: number;
+  /** Every GPU in the machine; empty when none can be read (see `lib/gpu`). */
+  gpus: GpuSample[];
 }
 
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";
-  const mib = bytes / 1024 / 1024;
-  if (mib < 1024) return `${Math.round(mib)} MB`;
-  return `${(mib / 1024).toFixed(1)} GB`;
-}
-
-function usageTone(kind: "cpu" | "ram" | "gpu", value: number): "low" | "medium" | "high" {
-  // CPU is a percentage; RAM/GPU are byte counts with their own thresholds.
+function usageTone(kind: "cpu" | "ram", value: number): "low" | "medium" | "high" {
+  // CPU is a percentage; RAM is a byte count with its own thresholds. The GPU
+  // row tones by ratio instead (`gpuTone`) — its figure is the whole device's.
   const warn = kind === "cpu" ? 35 : 1024 * 1024 * 1024;
   const hot = kind === "cpu" ? 75 : 2 * 1024 * 1024 * 1024;
   if (value >= hot) return "high";
@@ -77,15 +81,45 @@ export function AppResourceDisplay() {
           <span>{formatBytes(usage.rss_bytes)}</span>
         </span>
       )}
-      {showGpu && (
-        <span
-          className={`app-resource-row ${usageTone("gpu", usage.vram_bytes)}`}
-          title="GPU VRAM in use by local models (Ollama)"
-        >
-          <span className="app-resource-symbol" aria-hidden>GPU</span>
-          <span>{usage.vram_bytes > 0 ? formatBytes(usage.vram_bytes) : "—"}</span>
-        </span>
-      )}
+      {showGpu && <GpuRow gpus={usage.gpus} ollamaBytes={usage.vram_bytes} />}
     </div>
+  );
+}
+
+/**
+ * The whole device's memory (both pools, every adapter) plus its utilization —
+ * not just what Ollama holds, which is what this row used to show and now shows
+ * as one line of its tooltip.
+ */
+function GpuRow({ gpus, ollamaBytes }: { gpus: GpuSample[]; ollamaBytes: number }) {
+  // No GPU we can read (macOS, an Intel-only box, no `nvidia-smi`): fall back to
+  // exactly what this row did before — Ollama's models, and "—" when none are
+  // loaded. Better a narrow reading than a zero pretending to be a measurement.
+  if (gpus.length === 0) {
+    return (
+      <span
+        className={`app-resource-row ${usageTone("ram", ollamaBytes)}`}
+        title="GPU memory in use by local models (Ollama) — this machine's GPU reports no memory of its own"
+      >
+        <span className="app-resource-symbol" aria-hidden>GPU</span>
+        <span>{ollamaBytes > 0 ? formatBytes(ollamaBytes) : "—"}</span>
+      </span>
+    );
+  }
+
+  const { used, total } = gpuTotals(gpus);
+  const busy = gpuBusy(gpus);
+
+  return (
+    <span
+      className={`app-resource-row ${gpuTone(used, total)}`}
+      title={gpuTooltip(gpus, ollamaBytes)}
+    >
+      <span className="app-resource-symbol" aria-hidden>GPU</span>
+      <span>
+        {busy != null ? `${Math.round(busy)}% · ` : ""}
+        {formatBytes(used)} / {formatBytes(total)}
+      </span>
+    </span>
   );
 }

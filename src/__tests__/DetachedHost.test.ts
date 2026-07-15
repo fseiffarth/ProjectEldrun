@@ -175,6 +175,43 @@ describe("detached host (#42)", () => {
     expect(payloadSeed.tabs.map((t) => t.key)).toEqual([bKey, newKey]);
   });
 
+  it("an 'add' edit with a side edge carves a NEW pane in the popout (a file dropped on a body edge)", async () => {
+    const { groupId, label, bKey } = detachSecond();
+    await listenDetachedHost();
+    emitted.length = 0;
+
+    handlers.get(DETACHED_EDIT)!({
+      payload: {
+        scope: "p",
+        groupId,
+        edit: {
+          kind: "add",
+          targetGroupId: groupId,
+          edge: "right",
+          tab: { label: "readme.md", cmd: "", cwd: "/p", kind: "embed", embedPath: "/p/readme.md" },
+        },
+      },
+    });
+
+    // The popout's subtree is now a split: the original group + a NEW group
+    // holding the dropped file's embed tab (the target's own tab is untouched).
+    const rec = useTabsStore.getState().detachedGroupsByScope["p"]![0];
+    const sub = rec.subtree as { type: string; children: GroupNode[] };
+    expect(sub.type).toBe("split");
+    expect(sub.children).toHaveLength(2);
+    const original = sub.children.find((g) => g.tabKeys.includes(bKey))!;
+    const carved = sub.children.find((g) => !g.tabKeys.includes(bKey))!;
+    expect(original.tabKeys).toEqual([bKey]);
+    expect(carved.tabKeys).toHaveLength(1);
+    const newKey = carved.tabKeys[0];
+    // The embed payload lives in the main store (its pane mounts + owns anything).
+    const payload = useTabsStore.getState().tabsByScope["p"]!.find((t) => t.key === newKey);
+    expect(payload).toMatchObject({ kind: "embed", embedPath: "/p/readme.md", scope: "p" });
+    // The popout is re-seeded with the landed key so it renders the new pane.
+    const seed = emitted.find((e) => e.event === detachedSeedEvent(label));
+    expect((seed!.payload as DetachedSeed & { landedKey?: string }).landedKey).toBe(newKey);
+  });
+
   it("an active-scope dock re-docks the group and closes the OS window", async () => {
     const { groupId, label } = detachSecond();
     await listenDetachedHost();

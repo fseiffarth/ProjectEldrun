@@ -25,6 +25,7 @@ import {
   SHELL_ITEMS,
   TAB_ACCENT,
   buildStaticTabSpec,
+  isFileTabKind,
   type StaticMenuItem,
 } from "./newTabItems";
 import { type AgentMode, supportsAgentMode } from "./agentModes";
@@ -370,10 +371,15 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   function handleAdd(item: StaticMenuItem) {
     // addTab/ensureTab insert into the focused group; focus this one first.
     focusGroup(groupId);
-    if (item.kind === "files") {
+    // Both file panes are one-per-cwd: a second identical view of the same
+    // project is never what the click meant, so re-picking focuses the open one.
+    // A Files (Project) tab opened ON A FOLDER (the tree's "Open in a new tab")
+    // is not that tab, though — it is its own view — so it never absorbs this
+    // click, which would otherwise leave no way to get the project root back.
+    if (isFileTabKind(item.kind)) {
       ensureTab(
         { label: item.label, cmd: item.cmd, cwd: projectCwd, kind: item.kind },
-        (tab) => tab.kind === "files" && tab.cwd === projectCwd,
+        (tab) => tab.kind === item.kind && tab.cwd === projectCwd && !tab.folder,
       );
       setMenuPos(null);
       return;
@@ -1273,7 +1279,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           ))}
 
           <div className="tab-new-menu-group-label">Files</div>
-          {SHELL_ITEMS.filter((i) => i.kind === "files").map((item) => (
+          {SHELL_ITEMS.filter((i) => isFileTabKind(i.kind)).map((item) => (
             <button
               key={item.cmd}
               className="tab-new-menu-item"

@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  formatBytes,
+  gpuAdapterTooltip,
+  gpuBusy,
+  gpuPercent,
+  gpuTotals,
+  type GpuSample,
+} from "../../lib/gpu";
 
 // ── Backend snapshot shape (mirrors sysstat::SystemSnapshot, snake_case) ──────
 
@@ -32,6 +40,8 @@ export interface SystemSnapshot {
   load_avg: [number, number, number];
   uptime_secs: number;
   processes: ProcSample[];
+  /** Every GPU whose memory the machine reports; empty when none (see `lib/gpu`). */
+  gpus: GpuSample[];
 }
 
 interface Props {
@@ -147,9 +157,20 @@ function sortRows(rows: ProcRow[], key: SortKey, asc: boolean): ProcRow[] {
 
 // ── Small presentational bits ─────────────────────────────────────────────────
 
-function Meter({ label, pct, caption }: { label: string; pct: number; caption?: string }) {
+function Meter({
+  label,
+  pct,
+  caption,
+  title,
+}: {
+  label: string;
+  pct: number;
+  caption?: string;
+  /** Hover detail — the GPU meters use it to name the adapter and split its pools. */
+  title?: string;
+}) {
   return (
-    <div className="sysmon-meter">
+    <div className="sysmon-meter" title={title}>
       <span className="sysmon-meter-label">{label}</span>
       <span className="sysmon-meter-bar">
         <span
@@ -272,7 +293,26 @@ export function SystemMonitorPane({ visible }: Props) {
                     : "none"
                 }
               />
+              {/* One meter per adapter, and both its pools summed — on an APU the
+                  dedicated carve-out alone is just the framebuffer (see lib/gpu). */}
+              {(snap.gpus ?? []).map((gpu, i) => {
+                const { used, total } = gpuTotals([gpu]);
+                return (
+                  <Meter
+                    key={`${gpu.name}-${i}`}
+                    label="GPU"
+                    pct={gpuPercent(used, total)}
+                    caption={`${formatBytes(used)} / ${formatBytes(total)}`}
+                    title={gpuAdapterTooltip(gpu)}
+                  />
+                );
+              })}
               <div className="sysmon-stats">
+                {gpuBusy(snap.gpus ?? []) != null && (
+                  <span>
+                    gpu <b>{Math.round(gpuBusy(snap.gpus)!)}%</b>
+                  </span>
+                )}
                 <span>
                   load <b>{snap.load_avg.map((n) => n.toFixed(2)).join(" ")}</b>
                 </span>

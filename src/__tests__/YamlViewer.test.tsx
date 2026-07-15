@@ -164,6 +164,27 @@ describe("yaml tree viewer (#yaml)", () => {
     expect(await saveAndRead()).toContain("    - prod\n    - eu-west\n");
   });
 
+  it("adds a copy of the last list item when Copy last is chosen", async () => {
+    await renderYaml();
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Add an item to this list"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Copy last" }));
+    });
+    // The last tag (`prod`) is duplicated verbatim, at the list's own indent.
+    expect(await saveAndRead()).toContain("    - web\n    - prod\n    - prod\n");
+  });
+
+  it("gives an open list a persistent add row at its end, not just a hover action", async () => {
+    await renderYaml();
+    const addItem = screen.getByTitle("Add an item to this list");
+    // It lives in the always-visible add row at the end of the list's children,
+    // not in the header row's hover-only actions.
+    expect(addItem.closest(".yaml-row-add")).not.toBeNull();
+    expect(addItem.closest(".yaml-actions")).toBeNull();
+  });
+
   it("renames a key without touching its value or its comment", async () => {
     await renderYaml();
     await act(async () => {
