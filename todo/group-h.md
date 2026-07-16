@@ -89,16 +89,27 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [x] 🤖 Automated test — shared filename/date tests retained; build verified
       - [ ] 🖐️ Manual test
     - [x] **30f — VPN-gated projects on Windows.** ✅ Done — and since upgraded
-      from the original graceful-degradation stub to a **real backend**:
-      `services/openvpn.rs` spawns `openvpn.exe` directly (resolved via PATH /
-      per-user dirs / `Program Files\OpenVPN\bin`) with the same
-      `--askpass`/`--auth-user-pass` credential-file flow as Linux, suppresses
-      the console window, parses stdout/stderr for the ready marker, and tears
-      down via `taskkill /T`. No UAC elevation system: creating the TAP/Wintun
-      adapter typically needs Eldrun itself to run as Administrator, and the
-      error messages say so. Linux pkexec path unchanged.
+      twice: first from the original graceful-degradation stub to a **real
+      backend** (direct `openvpn.exe` spawn — worked only from an elevated
+      Eldrun), then (2026-07-16) to an **unelevated interactive-service flow**:
+      `connect_streaming` now asks `OpenVPNServiceInteractive` over
+      `\\.\pipe\openvpn\service` first (UTF-16LE startup message; the SYSTEM
+      service spawns `openvpn.exe` with the user's token and does the
+      privileged adapter/route work itself via `--msg-channel`), readiness is
+      tailed from `--log` via the shared `wait_for_ready_logfile`, and teardown
+      is a user-level `taskkill` + dropping the control pipe (the service
+      reverts routes via its undo lists — and kills the tunnel if Eldrun dies,
+      so it can't outlive the app). Non-admins need one-time membership in the
+      "OpenVPN Administrators" local group (the refusal message says exactly
+      that, with the `net localgroup` one-liner); the direct spawn remains only
+      as fallback when the service is missing. Windows `disconnect` also gained
+      the `disconnect_interactive` call Linux/macOS always had. Linux pkexec
+      path unchanged.
       - [x] 🤖 Automated test — `cargo test --lib openvpn` passes on Windows
-      - [ ] 🖐️ Manual test — connect a VPN-gated project from an elevated Eldrun
+        (svc startup-message encoding, reply parsing, cmdline quoting)
+      - [ ] 🖐️ Manual test — connect a VPN-gated project from an *unelevated*
+        Eldrun with `OpenVPNServiceInteractive` running (expect the group-
+        membership refusal first if not in "OpenVPN Administrators")
     - [x] **30g — Windows crash hook** (2026-07-11; ✅ Done · 🧪 CI-unverified).
       The native-fault analog of the Unix signal handlers: `install_seh_filter`
       (`lib.rs`) opens crash.log at startup, keeps the raw HANDLE in
@@ -162,6 +173,46 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         x86_64-pc-windows-msvc`); the pure occlusion logic is X11/macOS-side
       - [ ] 🖐️ Manual test — file drop places the app on the drop monitor; a
         popout behind the main window refuses the drop-merge
+
+    - [x] **30l — Windows panel-toggle key: F9, not the Win key** (2026-07-15;
+      ✅ Done). The lone-Meta panel toggle was enabled on Windows, but the lone
+      Win key belongs to the OS: Start opens on key *release* at the shell
+      level (`preventDefault()` can't stop it), and every global Win+X shortcut
+      pressed while Eldrun is focused fired a lone "Meta" keydown first,
+      spuriously toggling the panels. Lone Super is now Linux-only; Windows
+      uses **F9** (`useKeyboard.ts`), and the onboarding/help copy
+      (`hints.ts PANEL_TOGGLE_KEY`, `SettingsPanel.tsx`) says so.
+      - [x] 🤖 Automated test — existing shortcut tests unaffected; behavior is
+        a fixed key branch
+      - [ ] 🖐️ Manual test — F9 toggles panels on Windows; Win+X no longer
+        flickers them
+    - [x] **30m — Windows one-click agent install** (2026-07-15; ✅ Done).
+      `install_agent` hard-refused off Linux/macOS even though the registry
+      already carried `install_cmd_windows` for most agents. Now
+      `installer_command` picks the interpreter per command — PowerShell for
+      `irm … | iex`, `cmd /C` for plain npm/python lines (which may chain with
+      `&&`; Windows PowerShell 5.1 doesn't parse that) — with stdout+stderr
+      merged in-shell as on Linux. The Manage Agents panel shows the Install
+      button whenever the platform has a one-line installer (was `!IS_WINDOWS`);
+      agents without one (Mistral/vibe, Cursor) keep the docs-link fallback.
+      - [x] 🤖 Automated test —
+        `windows_installer_command_picks_interpreter_per_command` (Windows-run)
+      - [ ] 🖐️ Manual test — one-click install of an agent on Windows streams
+        its log and flips to "installed"
+    - [x] **30n — Windows disk-capacity probe** (2026-07-15; ✅ Done).
+      `duscan::capacity_of` returned `None` on Windows, silently dropping the
+      disk-usage pane's total/free capacity bar. Added a `#[cfg(windows)]` arm
+      via `GetDiskFreeSpaceExW` (total + caller-available bytes, quota-aware —
+      matching the Unix `f_blocks`/`f_bavail` semantics).
+      - [x] 🤖 Automated test — `capacity_of_home_reports_a_plausible_volume`
+        (runs on every OS)
+      - [ ] 🖐️ Manual test — disk-usage pane shows the capacity bar on Windows
+    - [x] **30o — no docker spawn at Windows startup** (2026-07-15; ✅ Done).
+      Containers are Unix-only, but `sandbox::sweep_orphans` ran unconditionally
+      at startup, spawning `docker --version` (and `docker ps` when Docker
+      Desktop exists) for nothing on Windows. Now gated on `cfg!(unix)`.
+      - [x] 🤖 Automated test — compile-covered; behavior is an early return
+      - [ ] 🖐️ Manual test — n/a
 
 31. **macOS support follow-ups.** macOS has initial cross-platform code (state
     paths, default shell, browser profiles, network detection, Unix symlinks),

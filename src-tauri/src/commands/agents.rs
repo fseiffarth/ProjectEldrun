@@ -279,7 +279,63 @@ pub async fn list_agents() -> Vec<AgentInfo> {
         .collect()
 }
 
-/// Install an agent CLI via its official install command (Linux/macOS).
+/// Build the process that runs `spec`'s installer for the host OS, with stdout
+/// and stderr merged in-shell (the read loop only drains stdout — merging in the
+/// shell keeps interleaving right and avoids a stderr-fill deadlock).
+///
+/// Linux/macOS run `install_cmd` via `sh`. Windows runs `install_cmd_windows`
+/// via PowerShell when the command is PowerShell-only (`irm … | iex`), else via
+/// `cmd /C` — plain `npm`/`python` installs may chain with `&&`, which Windows
+/// PowerShell 5.1 does not parse but cmd does.
+fn installer_command(spec: &AgentSpec) -> Result<std::process::Command, String> {
+    #[cfg(windows)]
+    {
+        let cmd_str = spec.install_cmd_windows.ok_or_else(|| {
+            format!(
+                "{} has no one-line Windows installer. See {}.",
+                spec.label, spec.docs
+            )
+        })?;
+        let mut c;
+        if windows_shell_kind(cmd_str) == "powershell" {
+            c = crate::paths::command_no_window("powershell");
+            c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
+                // Scriptblock-wrap so `2>&1` merges the whole pipeline's error
+                // stream, not just the last command's.
+                .arg(format!("& {{ {cmd_str} }} 2>&1"));
+        } else {
+            c = crate::paths::command_no_window("cmd");
+            // cmd doesn't take an argv — hand it the raw line un-requoted.
+            use std::os::windows::process::CommandExt;
+            c.raw_arg(format!("/C {cmd_str} 2>&1"));
+        }
+        Ok(c)
+    }
+    #[cfg(not(windows))]
+    {
+        if !cfg!(any(target_os = "linux", target_os = "macos")) {
+            return Err(format!(
+                "Automatic install is not supported on this OS. See {}.",
+                spec.docs
+            ));
+        }
+        let mut c = crate::paths::command_no_window("sh");
+        c.arg("-c").arg(format!("{} 2>&1", spec.install_cmd));
+        Ok(c)
+    }
+}
+
+/// The command string to suggest re-running manually when the installer fails,
+/// for the host OS.
+fn manual_install_cmd(spec: &AgentSpec) -> &'static str {
+    if cfg!(windows) {
+        spec.install_cmd_windows.unwrap_or(spec.install_cmd)
+    } else {
+        spec.install_cmd
+    }
+}
+
+/// Install an agent CLI via its official install command.
 ///
 /// Streams the installer's combined stdout+stderr to the frontend line-by-line
 /// via `agent-install-progress` events (`{ id, line }`) so the UI can show live
@@ -296,13 +352,6 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
         return Ok(format!("{} is already installed.", spec.label));
     }
 
-    if !cfg!(any(target_os = "linux", target_os = "macos")) {
-        return Err(format!(
-            "Automatic install is only supported on Linux/macOS. See {}.",
-            spec.docs
-        ));
-    }
-
     let id_owned = id.clone();
     let emit = move |line: &str| {
         let _ = app.emit(
@@ -312,9 +361,7 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
     };
     emit(&format!("Starting {} installer…", spec.label));
 
-    let mut child = crate::paths::command_no_window("sh")
-        .arg("-c")
-        .arg(format!("{} 2>&1", spec.install_cmd))
+    let mut child = installer_command(spec)?
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -343,7 +390,7 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
         return Err(if tail.is_empty() {
             format!(
                 "installer exited unsuccessfully ({status}). Run `{}` in a terminal.",
-                spec.install_cmd
+                manual_install_cmd(spec)
             )
         } else {
             tail
@@ -355,7 +402,8 @@ pub async fn install_agent(app: tauri::AppHandle, id: String) -> Result<String, 
         return Err(format!(
             "installer ran but `{}` is still not detected. It may need a new shell so \
             the install dir is on PATH — run `{}` in a terminal.\n\n{combined}",
-            spec.bin, spec.install_cmd
+            spec.bin,
+            manual_install_cmd(spec)
         ));
     }
 
@@ -412,6 +460,28 @@ mod tests {
                 spec.id
             );
         }
+    }
+
+    /// Windows one-click install picks its interpreter per command: PowerShell
+    /// for `irm … | iex`, `cmd /C` for plain npm/python lines (which may chain
+    /// with `&&` — cmd parses that, Windows PowerShell 5.1 does not), and a
+    /// clear error when there is no one-line Windows installer at all.
+    #[cfg(windows)]
+    #[test]
+    fn windows_installer_command_picks_interpreter_per_command() {
+        use std::ffi::OsStr;
+        let claude = find_spec("claude").unwrap(); // irm | iex
+        assert_eq!(
+            installer_command(claude).unwrap().get_program(),
+            OsStr::new("powershell")
+        );
+        let codex = find_spec("codex").unwrap(); // npm install -g …
+        assert_eq!(
+            installer_command(codex).unwrap().get_program(),
+            OsStr::new("cmd")
+        );
+        let vibe = find_spec("vibe").unwrap(); // no Windows installer
+        assert!(installer_command(vibe).is_err());
     }
 
     #[test]

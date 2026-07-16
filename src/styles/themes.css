@@ -5003,17 +5003,22 @@ select option {
   background: var(--bg-elevated, rgba(255, 255, 255, 0.04));
   color: var(--text-secondary);
   cursor: pointer;
-  filter: grayscale(1) opacity(0.6);
-  transition: filter 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+  /* Dim the unpinned pin with plain opacity, NOT a CSS filter. Applying `filter`
+     (grayscale/opacity) to the 📌 color-emoji glyph makes it render invisible in
+     WebView2 on Windows — the color glyph doesn't compose through the filter
+     shader path — while WebKitGTK on Linux shows it fine. That vanished the pin
+     entirely in the packaged Windows build. Opacity dims without breaking emoji. */
+  opacity: 0.6;
+  transition: opacity 0.12s ease, background 0.12s ease, border-color 0.12s ease;
 }
 
 .right-panel-pin:hover {
-  filter: grayscale(0) opacity(1);
+  opacity: 1;
   border-color: var(--accent, #58a6ff);
 }
 
 .right-panel-pin.pinned {
-  filter: none;
+  opacity: 1;
   background: var(--accent, #58a6ff);
   border-color: var(--accent, #58a6ff);
   box-shadow: 0 0 0 1px var(--accent, #58a6ff);
@@ -7608,6 +7613,20 @@ select option {
 .file-entry.file * {
   -webkit-user-drag: none;
   user-drag: none;
+}
+
+/* …EXCEPT while a row is explicitly armed draggable (Ctrl held → native OS
+   drag-out, FileTree's handleEntryDragStart). Chromium/WebView2 resolves the
+   drag source from the computed -webkit-user-drag alone — its UA sheet maps
+   [draggable=true] to `element`, so the author-origin `none` above outranks
+   the attribute and `dragstart` never fires: the Ctrl file export silently
+   did nothing on Windows. (WebKitGTK honors the attribute, so Linux never
+   hit this.) Children are re-armed too so a press landing on the name/size
+   spans still starts the drag. */
+.file-entry.file[draggable="true"],
+.file-entry.file[draggable="true"] * {
+  -webkit-user-drag: element;
+  user-drag: element;
 }
 
 /* Drag-to-move highlight: the folder row / breadcrumb / up button currently
@@ -12283,6 +12302,42 @@ select option {
   height: 120px;
   transform: translateY(-50%);
   pointer-events: none;
+}
+
+/* Click affordance to open the closed, unpinned right file panel. The hover-only
+   right-edge reveal isn't reliable under WebView2 on Windows — the OS resize
+   border eats mousemove in the last few edge pixels, so the reveal band never
+   fires and the in-panel pin can't be reached. This tab sits just inside that
+   dead-zone and opens the panel on click (delivered even where mousemove isn't).
+   Unmounts as soon as the panel is open, so it never overlaps the panel. */
+.right-panel-reveal-handle {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  background-color: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  z-index: 11;
+  transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+}
+
+.right-panel-reveal-handle:hover {
+  opacity: 1;
+  color: var(--text-primary);
+  background-color: var(--bg-hover, var(--bg-panel));
 }
 
 /* Full-screen layer hosting the blocker, spotlight, and bubble. Above the hint
