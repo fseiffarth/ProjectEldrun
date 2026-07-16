@@ -30,7 +30,7 @@ import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { basename } from "../../lib/paths";
 import { isPythonPath } from "../../lib/viewers/python";
-import { runPythonFile, runCwd } from "../../lib/pythonRun";
+import { runPythonFile, runCwd, placeForFocused } from "../../lib/pythonRun";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
@@ -166,6 +166,42 @@ function warmDragIcon(): Promise<string> {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Which interpreter runs a script of this extension, keyed by lowercased ending.
+ *  The cross-platform shells run everywhere; `.ps1`/`.bat`/`.cmd` are Windows-only
+ *  here (`pwsh` on Linux is too rarely installed to advertise the action). Returns
+ *  null for an ending we don't know how to run — no Run button is offered. */
+function shellRunnerFor(extension: string | null): string | null {
+  const ext = (extension ?? "").toLowerCase();
+  const win = PLATFORM === "windows";
+  switch (ext) {
+    case ".sh":
+    case ".bash":
+      return "bash";
+    case ".zsh":
+      return "zsh";
+    case ".fish":
+      return "fish";
+    case ".ksh":
+      return "ksh";
+    case ".ps1":
+      return win ? "powershell" : null;
+    case ".bat":
+    case ".cmd":
+      return win ? "cmd" : null;
+    default:
+      return null;
+  }
+}
+
+/** The command line that runs `scriptRel` under `interp`. PowerShell and cmd take
+ *  a flag before the path; the POSIX shells take it as a bare argument. */
+function shellRunCommand(interp: string, scriptRel: string): string {
+  const quoted = shellQuote(scriptRel);
+  if (interp === "powershell") return `powershell -File ${quoted}`;
+  if (interp === "cmd") return `cmd /c ${quoted}`;
+  return `${interp} ${quoted}`;
 }
 
 export function FileTree({
@@ -321,8 +357,24 @@ export function FileTree({
   // currently compiling, for the inline build spinner.
   const [texCap, setTexCap] = useState<TexCapability | null>(null);
   const [compiling, setCompiling] = useState<Set<string>>(new Set());
+  // Per-file arguments for the ▶ Run button, remembered so a re-run reuses them.
+  // Set via the right-click popover (`argsPopover`, positioned at the cursor).
+  const [pyArgsByPath, setPyArgsByPath] = useState<Record<string, string>>({});
+  const [argsPopover, setArgsPopover] = useState<{
+    entry: FileEntry;
+    x: number;
+    y: number;
+    draft: string;
+  } | null>(null);
+  const argsPopoverRef = useRef<HTMLDivElement | null>(null);
+  const argsInputRef = useRef<HTMLInputElement | null>(null);
+  useClampToViewport(argsPopoverRef, argsPopover, setArgsPopover);
+  useEffect(() => {
+    if (!argsPopover) return;
+    argsInputRef.current?.focus();
+    argsInputRef.current?.select();
+  }, [argsPopover?.entry.path]);
   const { openFile } = useWindowsStore();
-  const addTab = useTabsStore((s) => s.addTab);
   const runInBackground = useSettingsStore((s) => s.settings?.run_scripts_in_background ?? true);
   const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
   const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
@@ -1815,14 +1867,20 @@ export function FileTree({
       runScript(entry.path, projectDir);
       return;
     }
+    const interp = shellRunnerFor(entry.extension);
+    if (!interp) return; // not a shell type we know how to run
     const scriptRel = relFromAbs(projectDir, entry.path);
-    addTab({
+    const tab = {
       label: `▶ ${entry.name}`,
-      cmd: "bash",
+      cmd: interp,
       cwd: projectDir,
-      kind: "shell",
-      initialInput: `bash ${shellQuote(scriptRel)}`,
-    });
+      kind: "shell" as const,
+      initialInput: shellRunCommand(interp, scriptRel),
+    };
+    // Same placement policy as the Python Run: stream into a detached popout when
+    // we're in one, else the focused subwindow of this project.
+    if (fileDrop) fileDrop.openTab(tab);
+    else useTabsStore.getState().addTabToScope(projectId ?? "root", tab);
   }
 
   /** Run a Python file: open a terminal tab in the project's scope running the
@@ -1832,23 +1890,23 @@ export function FileTree({
   function runPythonScript(event: React.MouseEvent<HTMLButtonElement>, entry: FileEntry) {
     event.preventDefault();
     event.stopPropagation();
-    // TEMP DIAGNOSTIC: make the click + its outcome visible in the tree banner so
-    // we can see where it breaks without DevTools.
-    const scope0 = useTabsStore.getState().scope;
-    const before = useTabsStore.getState().tabs.length;
-    setError(`[py-run] clicked ${entry.name} · scope=${scope0} · tabs=${before}`);
+    launchPython(entry, pyArgsByPath[entry.path]);
+  }
+
+  /** Open a run terminal for `entry`, appending `args` to the command line (see
+   *  `lib/pythonRun`). Same placement as the viewer's Run; failures surface into
+   *  the tree's error banner. */
+  function launchPython(entry: FileEntry, args?: string) {
     runPythonFile({
       file: entry.path,
       projectDir: runCwd(projectDir, entry.path),
       scope: projectId ?? "root",
       projectId,
-      focused: true,
-    })
-      .then(() => {
-        const s = useTabsStore.getState();
-        setError(`[py-run] done · scope=${s.scope} · tabs=${s.tabs.length} · active=${s.activeKey}`);
-      })
-      .catch((err) => setError(`[py-run] FAILED: ${String(err)}`));
+      args,
+      // In a detached popout `fileDrop` is set → the tab streams into that window;
+      // in the main window it lands in the project's focused subwindow.
+      place: placeForFocused(fileDrop),
+    }).catch((err) => setError(`Run failed: ${String(err)}`));
   }
 
   /** Open (or refresh) the in-app PDF viewer tab for a freshly compiled PDF.
@@ -1978,6 +2036,14 @@ export function FileTree({
       onMouseDown={() => setContextMenu(null)}
       onContextMenu={showRootContextMenu}
     >
+      {/* Sticky header: the remote/refresh bar, the in-tree search box and the
+          breadcrumb path line stay pinned while the tree body scrolls (the sort
+          row lives above the scroll container and is already fixed). They share
+          ONE sticky wrapper so they stack instead of each pinning to top:0 and
+          colliding — which is what hid the path line behind the search box.
+          Shared by the right panel and the Files (Project) tab (both render
+          FileTree), so both get the fixed path line. */}
+      <div className="file-tree-head">
       {remoteListing && (
         <div className="file-tree-remote-bar" title="Remote project — live updates are off; refresh to re-list">
           <button
@@ -2140,6 +2206,7 @@ export function FileTree({
         </div>
         );
       })()}
+      </div>
       {loading && <div className="file-tree-loading">Loading…</div>}
       {error && <div className="file-tree-error">{error}</div>}
       {!searching && !relPath && (
@@ -2186,7 +2253,7 @@ export function FileTree({
           const dirTotal = e.is_dir ? dirSizes[e.path] : undefined;
           const dirIgnored = e.is_dir && !isGitignored ? dirIgnoredBytes[e.path] : undefined;
           const dirShown = dirTotal !== undefined ? dirTotal - (dirIgnored ?? 0) : undefined;
-          const canShRun = !e.is_dir && e.extension === ".sh";
+          const canShRun = !e.is_dir && shellRunnerFor(e.extension) !== null;
           const canPyRun = !e.is_dir && isPythonPath(e.path);
           const canRun = canShRun || canPyRun;
           const isRunning = runningScripts.has(e.path);
@@ -2300,9 +2367,32 @@ export function FileTree({
                 <button
                   type="button"
                   className={`file-run-btn${isRunning ? " running" : ""}`}
-                  title={isRunning ? `Running ${e.name}…` : `Run ${e.name}`}
+                  title={
+                    isRunning
+                      ? `Running ${e.name}…`
+                      : canPyRun
+                        ? `Run ${e.name}${
+                            pyArgsByPath[e.path] ? ` (args: ${pyArgsByPath[e.path]})` : ""
+                          }\nRight-click to set arguments`
+                        : `Run ${e.name}`
+                  }
                   aria-label={isRunning ? `Running ${e.name}` : `Run ${e.name}`}
                   onClick={(ev) => (canPyRun ? runPythonScript(ev, e) : runShellScript(ev, e))}
+                  // Right-click a Python Run button → set arguments (sys.argv). For a
+                  // shell script there's nothing to offer, so just swallow it so it
+                  // doesn't fall through to the row's file context menu.
+                  onContextMenu={(ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    if (canPyRun) {
+                      setArgsPopover({
+                        entry: e,
+                        x: ev.clientX,
+                        y: ev.clientY,
+                        draft: pyArgsByPath[e.path] ?? "",
+                      });
+                    }
+                  }}
                   disabled={isRunning}
                 >
                   {isRunning ? <span className="file-run-spinner" /> : "▶"}
@@ -2392,6 +2482,72 @@ export function FileTree({
         />,
         document.body,
       )}
+      {argsPopover &&
+        createPortal(
+          <div className="file-run-args-backdrop" onMouseDown={() => setArgsPopover(null)}>
+            <div
+              ref={argsPopoverRef}
+              className="file-run-args"
+              style={{ left: argsPopover.x, top: argsPopover.y }}
+              onMouseDown={(ev) => ev.stopPropagation()}
+              role="dialog"
+              aria-label={`Run arguments for ${argsPopover.entry.name}`}
+            >
+              <label className="file-run-args-label">
+                Arguments (sys.argv) — {argsPopover.entry.name}
+              </label>
+              <input
+                ref={argsInputRef}
+                className="file-run-args-input"
+                value={argsPopover.draft}
+                spellCheck={false}
+                placeholder="--epochs 5 data.csv"
+                onChange={(ev) =>
+                  setArgsPopover((p) => (p ? { ...p, draft: ev.target.value } : p))
+                }
+                onKeyDown={(ev) => {
+                  if (ev.key === "Enter") {
+                    ev.preventDefault();
+                    const a = argsPopover.draft.trim();
+                    setPyArgsByPath((m) => ({ ...m, [argsPopover.entry.path]: a }));
+                    launchPython(argsPopover.entry, a);
+                    setArgsPopover(null);
+                  } else if (ev.key === "Escape") {
+                    ev.preventDefault();
+                    setArgsPopover(null);
+                  }
+                }}
+              />
+              <div className="file-run-args-row">
+                <button
+                  type="button"
+                  className="file-run-args-btn"
+                  onClick={() => {
+                    const a = argsPopover.draft.trim();
+                    setPyArgsByPath((m) => ({ ...m, [argsPopover.entry.path]: a }));
+                    launchPython(argsPopover.entry, a);
+                    setArgsPopover(null);
+                  }}
+                >
+                  ▶ Run
+                </button>
+                <button
+                  type="button"
+                  className="file-run-args-btn"
+                  onClick={() => {
+                    const a = argsPopover.draft.trim();
+                    setPyArgsByPath((m) => ({ ...m, [argsPopover.entry.path]: a }));
+                    setArgsPopover(null);
+                  }}
+                  title="Remember these arguments without running now"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
       {contextMenu && createPortal(
         <div
           ref={contextMenuRef}

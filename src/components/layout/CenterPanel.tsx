@@ -13,16 +13,7 @@ import {
   type DetachedDragMove,
   type DetachedDragStart,
 } from "../../stores/detached";
-import { TerminalView } from "../terminal/TerminalView";
-import { FileBrowser } from "../files/FileBrowser";
-import { ProjectFilesTab } from "../files/ProjectFilesTab";
-import { EmbedPane } from "../embed/EmbedPane";
-import { FileViewerPane } from "../embed/FileViewerPane";
-import { ProjectBlobPane } from "../common/ProjectBlobPane";
-import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
-import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
-import { DiskUsagePane } from "../monitoring/DiskUsagePane";
-import { CalendarPane } from "../calendar/CalendarPane";
+import { TabPane } from "../tabs/TabPane";
 import { Subwindow } from "../tabs/Subwindow";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
@@ -63,7 +54,6 @@ import {
 import { dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useConnectDialogStore } from "../../stores/connectDialog";
-import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 
@@ -904,6 +894,42 @@ export function CenterPanel() {
             paneDisconnected &&
             isPtyTabKind(tab.kind) &&
             effectiveTabLocation(tab) === "remote";
+          // The Files-tab browse dir: while a remote project is disconnected the
+          // SFTP tree can't be listed (it would freeze the main thread), so browse
+          // the local mirror instead — the same synced working copy the local tabs
+          // use. FileBrowser re-lists on `projectDir` change, so it swaps back to
+          // the remote tree once the pool connects. (Resolved here, not inside
+          // TabPane, because the popout has no projects store to resolve it.)
+          const filesProjectDir = paneDisconnected
+            ? localTabCwd(
+                { kind: "files" },
+                {
+                  isRemoteProject: true,
+                  projectDirectory: resolveProjectDirectory(paneProject),
+                  mirror: resolveLocalMirror(paneProject),
+                  fallback: tab.cwd,
+                },
+              )
+            : tab.cwd;
+          // SSH-sync Phase 0: a local-on-remote tab runs in the project's local
+          // mirror (state dir), not the remote tree it can't reach.
+          const terminalCwd = localTabCwd(tab, {
+            isRemoteProject: !!paneProject?.remote,
+            projectDirectory: resolveProjectDirectory(paneProject),
+            mirror: resolveLocalMirror(paneProject),
+            fallback: tab.cwd,
+          });
+          // Run this tab inside the project's session container when the toggle is
+          // on: every PTY tab except `local_agent` (host-bound) execs into the one
+          // shared container. Local projects only. Derived here so restored tabs
+          // are covered too. NOTE: this flag is in TerminalView's spawn deps —
+          // flipping the toggle respawns every live tab (ProjectPill confirms when
+          // that would destroy a non-resumable agent conversation).
+          const sandbox =
+            (tab.kind === "agent" || tab.kind === "shell") &&
+            scopeKey !== "root" &&
+            !!paneProject?.sandbox?.enabled &&
+            !paneProject?.remote;
           return (
             <div
               key={`${scopeKey}/${tab.key}`}
@@ -924,145 +950,24 @@ export function CenterPanel() {
               }}
               style={style}
             >
-              {tab.kind === "projects3d" ? (
-                <ProjectBlobPane />
-              ) : tab.kind === "calendar" ? (
-                <CalendarPane visible={visible} />
-              ) : tab.kind === "network" ? (
-                <NetworkTrafficPane
-                  projectId={scopeKey}
-                  visible={visible}
-                  onConnect={() => openConnectDialog(scopeKey)}
-                />
-              ) : tab.kind === "monitor" ? (
-                <SystemMonitorPane visible={visible} />
-              ) : tab.kind === "diskusage" ? (
-                <DiskUsagePane
-                  projectId={scopeKey === "root" ? null : scopeKey}
-                  projectCwd={tab.cwd}
-                  // Lets the pane retitle its own tab after the folder it scans.
-                  // Several Disk Usage tabs can be open at once, so "Disk Usage"
-                  // three times over would tell the user nothing.
-                  tabKey={tab.key}
-                  visible={visible}
-                />
-              ) : tab.kind === "files" ? (
-                <FileBrowser
-                  // While a remote project is disconnected the SFTP tree can't be
-                  // listed (it would freeze the main thread), so browse the local
-                  // mirror instead — the same synced working copy the local tabs
-                  // use. `list_dir` routes the mirror path locally; FileBrowser
-                  // re-lists when `projectDir` changes, so it swaps back to the
-                  // remote tree automatically once the pool is connected.
-                  projectDir={
-                    paneDisconnected
-                      ? localTabCwd(
-                          { kind: "files" },
-                          {
-                            isRemoteProject: true,
-                            projectDirectory: resolveProjectDirectory(paneProject),
-                            mirror: resolveLocalMirror(paneProject),
-                            fallback: tab.cwd,
-                          },
-                        )
-                      : tab.cwd
-                  }
-                  projectId={scopeKey === "root" ? null : scopeKey}
-                  active={visible}
-                />
-              ) : tab.kind === "projectfiles" ? (
-                // The right panel's file view, in a tab. It resolves the project
-                // (and a disconnected remote's Remote/Local source) itself, so
-                // unlike the FileBrowser tab above it needs no mirror swap here.
-                <ProjectFilesTab
-                  scope={scopeKey}
-                  cwd={tab.cwd}
-                  tabKey={tab.key}
-                  folder={tab.folder}
-                  canOpenTabs
-                />
-              ) : tab.kind === "embed" ? (
-                tab.viewer ? (
-                  <FileViewerPane
-                    viewer={tab.viewer}
-                    path={tab.embedPath ?? ""}
-                    projectId={scopeKey === "root" ? null : scopeKey}
-                    tabKey={tab.key}
-                    visible={visible}
-                    groupId={groupId}
-                  />
-                ) : (
-                  <EmbedPane
-                    path={tab.embedPath ?? ""}
-                    exec={tab.embedExec}
-                    projectId={scopeKey === "root" ? null : scopeKey}
-                    visible={visible}
-                  />
-                )
-              ) : holdRemoteTerminal ? (
-                // Remote terminal pane while the pool is down: don't mount
-                // TerminalView (it would spawn `ssh -tt` and block on the dead
-                // pool). Show a Connect placeholder; when the project connects
-                // this pane re-renders, mounts TerminalView, and spawns — a
-                // resumable agent resumes via its saved args.
-                <RemotePaneHold
-                  host={paneProject?.remote?.host ?? ""}
-                  onConnect={() => openConnectDialog(scopeKey)}
-                />
-              ) : (
-                <TerminalView
-                  // PTY ids must include the scope: tab keys alone can collide
-                  // across projects (restored layouts), which would attach two
-                  // projects' terminals to the same PTY stream.
-                  id={`${scopeKey}:${tab.key}`}
-                  cmd={tab.cmd}
-                  args={tab.args ?? []}
-                  env={tab.env ?? {}}
-                  initialInput={tab.initialInput}
-                  // SSH-sync Phase 0: a local-on-remote tab runs in the project's
-                  // local mirror (state dir), not the remote tree it can't reach.
-                  cwd={localTabCwd(tab, {
-                    isRemoteProject: !!projects.find((p) => p.id === scopeKey)?.remote,
-                    projectDirectory: resolveProjectDirectory(
-                      projects.find((p) => p.id === scopeKey),
-                    ),
-                    mirror: resolveLocalMirror(
-                      projects.find((p) => p.id === scopeKey),
-                    ),
-                    fallback: tab.cwd,
-                  })}
-                  // SSH-sync Phase 0: agents default LOCAL on a remote project,
-                  // shells default REMOTE; the per-tab toggle overrides. local_agent
-                  // stays fixed-local (effectiveTabLocation handles it).
-                  localOnly={effectiveTabLocation(tab) === "local"}
-                  // The owning project's id (null for the root scope), so the
-                  // backend spawn detects remoteness explicitly instead of
-                  // sniffing the cwd. Harmless for local projects.
-                  projectId={scopeKey === "root" ? null : scopeKey}
-                  // Run this tab inside the project's session container when
-                  // the container toggle is on: every PTY tab except
-                  // `local_agent` (host-bound by definition) execs into the one
-                  // shared container. Local projects only (a remote project is
-                  // ssh-wrapped instead). Derived here, not at tab creation, so
-                  // restored tabs are covered too. NOTE: this flag is in
-                  // TerminalView's spawn deps — flipping the toggle respawns
-                  // every live tab (ProjectPill confirms when that would
-                  // destroy a non-resumable agent conversation).
-                  sandbox={
-                    (tab.kind === "agent" || tab.kind === "shell") &&
-                    scopeKey !== "root" &&
-                    (() => {
-                      const proj = projects.find((p) => p.id === scopeKey);
-                      return !!proj?.sandbox?.enabled && !proj?.remote;
-                    })()
-                  }
-                  // Agent panes are font-zoomable (Ctrl+wheel / Ctrl +/-/0);
-                  // plain shells keep the fixed default size.
-                  zoomable={tab.kind === "agent" || tab.kind === "local_agent"}
-                  visible={visible}
-                  focused={visible}
-                />
-              )}
+              {/* The shared per-tab render switch (`components/tabs/TabPane`), the
+                  SAME one every detached popout renders. The main window owns the
+                  tab store (`ownsTabs`) and the projects store, so it resolves the
+                  mirror/sandbox/hold props the popout can't. New pane kinds/props
+                  go in TabPane so they reach both windows at once. */}
+              <TabPane
+                tab={tab}
+                scope={scopeKey}
+                visible={visible}
+                groupId={groupId}
+                ownsTabs
+                onConnect={() => openConnectDialog(scopeKey)}
+                holdRemoteTerminal={holdRemoteTerminal}
+                remoteHost={paneProject?.remote?.host ?? ""}
+                filesProjectDir={filesProjectDir}
+                terminalCwd={terminalCwd}
+                sandbox={sandbox}
+              />
             </div>
           );
         })}

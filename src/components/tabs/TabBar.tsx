@@ -757,8 +757,22 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       // new window). Hit-tested at the final physical cursor so it reflects exactly
       // where the cursor ended. The popout's panes attach-only to PTYs the main
       // keeps mounted, so the tab's terminal survives the move.
+      //
+      // But `detached.at()` is a PURE GEOMETRIC AABB against the popout's OUTER rect —
+      // it matches a popout even when it sits BEHIND the main window at the same screen
+      // coords (the press that started this drag raised the main window). Docking into
+      // a popout the user can't see — while the split preview showed in the visible
+      // main window — is exactly the reported bug. So confirm the popout is actually
+      // FRONTMOST under the cursor before docking; an occluded one falls through to the
+      // in-window integration below, so the visible main window always wins. Mirrors
+      // FileTree's file-drag path (`detached_window_frontmost`).
       const overDetached = phys ? detached.at(phys) : null;
-      if (overDetached && phys) {
+      const overFrontDetached =
+        overDetached &&
+        (await invoke<boolean>("detached_window_frontmost", {
+          registryId: overDetached.label,
+        }).catch(() => true));
+      if (overDetached && overFrontDetached && phys) {
         // Dock into the SPECIFIC pane under the cursor (a body edge splits, a bar
         // merges) — resolved synchronously at the release coords, so no stale
         // cross-window cache and never always-the-first-pane.
@@ -779,11 +793,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         useDragStore.getState().end();
         return;
       }
-      // Released in FREE SPACE — outside the main window and not over a popout, so
-      // no Eldrun window is under the cursor (e.g. dragged onto the desktop or
-      // another monitor). Pop this tab into its own standalone OS window. Client
-      // coords falling outside [0,inner) is the outside-the-window signal (DOM
-      // clientX/Y is reliable CSS px on every engine).
+      // Released in FREE SPACE — outside the main window and not over a FRONT popout,
+      // so no visible Eldrun window is under the cursor (e.g. dragged onto the desktop
+      // or another monitor). Pop this tab into its own standalone OS window. Client
+      // coords outside [0,inner) is the outside-the-window signal (DOM clientX/Y is
+      // reliable CSS px on every engine). An OCCLUDED popout is deliberately NOT
+      // "outside" here: the main window is what's actually under the cursor, so the
+      // release falls through to the in-window integration below.
       const outside =
         lastClient.x < 0 ||
         lastClient.y < 0 ||

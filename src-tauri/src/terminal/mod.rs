@@ -99,6 +99,84 @@ fn invalidate_proc_tree_cache() {
     crate::sysstat::invalidate_descendant_cache();
 }
 
+/// How aggressively [`reap_child_subtree`] signals a doomed process subtree.
+enum ReapMode {
+    /// SIGTERM now, then SIGKILL any survivors after a short grace period on a
+    /// detached thread. Used on tab close / respawn, where the app stays alive
+    /// long enough to deliver the escalation.
+    Graceful,
+    /// SIGKILL immediately. Used at app exit, where a delayed escalation thread
+    /// would be torn down with the process before it could fire.
+    Immediate,
+}
+
+/// Best-effort abort of a PTY child's **entire process subtree**.
+///
+/// `portable_pty`'s [`Child::kill`] signals only the shell leader; anything it
+/// spawned (a dev server, a build, a training run) is otherwise orphaned and
+/// keeps running after its tab — or the whole app — is gone. So we walk the
+/// subtree rooted at the leader and signal every pid. The walk must happen
+/// *before* the leader is killed: once it dies its children reparent to init and
+/// the tree rooted at its pid is no longer reachable.
+///
+/// The leader pid is included in the returned set; re-signalling a leader the
+/// caller also `Child::kill`s is a harmless no-op (a dead pid yields ESRCH).
+fn reap_child_subtree(leader_pid: u32, mode: ReapMode) {
+    // Force a fresh process-tree walk rather than reusing a cached CPU sample
+    // that may predate a just-spawned child.
+    crate::sysstat::invalidate_descendant_cache();
+    let subtree = crate::sysstat::descendant_pids(&[leader_pid]);
+    reap_pids(subtree, mode);
+}
+
+/// Signal a set of pids best-effort. Every pid came from a live process walk
+/// moments earlier, so a stale one is expected and ignored (ESRCH on Unix, a
+/// failed `OpenProcess` on Windows).
+#[cfg(unix)]
+fn reap_pids(pids: Vec<u32>, mode: ReapMode) {
+    if pids.is_empty() {
+        return;
+    }
+    // SAFETY: `libc::kill` takes no pointers and a real signal number; a stale
+    // pid returns ESRCH, which we ignore.
+    let signal = |pids: &[u32], sig: libc::c_int| unsafe {
+        for &pid in pids {
+            libc::kill(pid as libc::pid_t, sig);
+        }
+    };
+    match mode {
+        ReapMode::Immediate => signal(&pids, libc::SIGKILL),
+        ReapMode::Graceful => {
+            signal(&pids, libc::SIGTERM);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(2));
+                signal(&pids, libc::SIGKILL);
+            });
+        }
+    }
+}
+
+/// Windows has no SIGTERM/SIGKILL split — `TerminateProcess` is the only per-pid
+/// primitive — so both modes reap immediately.
+#[cfg(windows)]
+fn reap_pids(pids: Vec<u32>, _mode: ReapMode) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    for pid in pids {
+        // SAFETY: the handle is closed before the next iteration; a failed open
+        // (the pid already exited) is ignored.
+        unsafe {
+            if let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+                let _ = TerminateProcess(handle, 1);
+                let _ = CloseHandle(handle);
+            }
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn reap_pids(_pids: Vec<u32>, _mode: ReapMode) {}
+
 // ── PtyRegistry ───────────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -126,6 +204,12 @@ impl PtyRegistry {
         let crash_times = match self.entries.remove(&id) {
             Some(mut old) => {
                 old.dead.store(true, Ordering::SeqCst);
+                // A respawn under the same id replaces the old child; reap its
+                // whole subtree, not just the leader, so a process it spawned
+                // does not survive the tab it belonged to.
+                if let Some(pid) = old.child.process_id() {
+                    reap_child_subtree(pid, ReapMode::Graceful);
+                }
                 let _ = old.child.kill();
                 old.crash_times
             }
@@ -156,6 +240,15 @@ impl PtyRegistry {
     pub fn kill(&mut self, id: &str) {
         if let Some(mut e) = self.entries.remove(id) {
             e.dead.store(true, Ordering::SeqCst);
+            // Abort the child's whole process subtree, not just the shell leader.
+            // `child.kill()` below reaps only the leader, so a long-running
+            // descendant (a dev server, a build, a training run) started in the
+            // tab would otherwise be orphaned and keep running after the tab
+            // closes. Gather the subtree first — it is unreachable once the
+            // leader dies and its children reparent to init.
+            if let Some(pid) = e.child.process_id() {
+                reap_child_subtree(pid, ReapMode::Graceful);
+            }
             let _ = e.child.kill();
             // The tree shrank; drop the cached descendant-pid set.
             invalidate_proc_tree_cache();
@@ -166,6 +259,33 @@ impl PtyRegistry {
             // (best-effort, no-op for tabs that never containerized).
             crate::services::sandbox::kill_tab_process(id);
         }
+    }
+
+    /// Abort every live PTY and its process subtree. Called once at app exit so
+    /// no terminal's inner process (a dev server, a build, a training run)
+    /// outlives Eldrun — dropping the registry alone kills only the shell
+    /// leaders and orphans everything they spawned. Uses [`ReapMode::Immediate`]
+    /// because a delayed escalation thread would die with the exiting process.
+    pub fn kill_all(&mut self) {
+        // One process-tree walk over all leaders (their subtrees include the
+        // leader pids themselves, which `child.kill()` below re-kills harmlessly).
+        let leaders: Vec<u32> = self
+            .entries
+            .values()
+            .filter_map(|e| e.child.process_id())
+            .collect();
+        crate::sysstat::invalidate_descendant_cache();
+        let subtree = crate::sysstat::descendant_pids(&leaders);
+
+        for (id, mut e) in self.entries.drain() {
+            e.dead.store(true, Ordering::SeqCst);
+            let _ = e.child.kill();
+            // Containerized tab: also TERM the in-container process (the docker
+            // exec client we just killed is not it).
+            crate::services::sandbox::kill_tab_process(&id);
+        }
+        reap_pids(subtree, ReapMode::Immediate);
+        invalidate_proc_tree_cache();
     }
 
     /// True when any live (not-yet-dead) PTY belongs to `scope`. PTY ids are
@@ -492,5 +612,66 @@ mod tests {
         drop(reg);
 
         registry.lock().unwrap().kill("test");
+    }
+
+    /// Closing a tab must abort the process **inside** it, not just the shell
+    /// leader: a `sh` whose child is a long-running `sleep` must leave no live
+    /// `sleep` behind once the PTY is killed.
+    #[test]
+    fn kill_reaps_the_child_subtree() {
+        let pty_system = NativePtySystem::default();
+        let pair = pty_system
+            .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+            .expect("openpty");
+
+        // The trailing `; true` defeats the shell's exec-optimization so `sleep`
+        // is a genuine *child* of `sh` (the leader), not the leader itself.
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.arg("-c");
+        cmd.arg("sleep 300; true");
+        let child = pair.slave.spawn_command(cmd).expect("spawn sh");
+        let leader = child.process_id().expect("leader pid");
+        let writer = pair.master.take_writer().expect("take writer");
+        let master = pair.master;
+
+        let registry = Arc::new(Mutex::new(PtyRegistry::default()));
+        let dead = Arc::new(AtomicBool::new(false));
+        registry
+            .lock()
+            .unwrap()
+            .insert("test".to_string(), master, writer, child, dead);
+
+        // SAFETY: kill(pid, 0) probes existence without signalling; no pointers.
+        let alive = |pid: u32| unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+
+        // Wait for the `sleep` child to appear as a descendant of the leader.
+        let mut sleep_pid = None;
+        for _ in 0..100 {
+            crate::sysstat::invalidate_descendant_cache();
+            if let Some(&pid) = crate::sysstat::descendant_pids(&[leader])
+                .iter()
+                .find(|&&p| p != leader)
+            {
+                sleep_pid = Some(pid);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let sleep_pid = sleep_pid.expect("sleep child should have spawned");
+        assert!(alive(sleep_pid), "sleep child should be running before kill");
+
+        registry.lock().unwrap().kill("test");
+
+        // The graceful SIGTERM terminates `sleep` (default disposition); init
+        // then reaps the reparented zombie. Poll until the pid is truly gone.
+        let mut gone = false;
+        for _ in 0..250 {
+            if !alive(sleep_pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(gone, "the inner process must be aborted when the tab is closed");
     }
 }

@@ -23,7 +23,14 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { basename, dirname } from "./paths";
-import { useTabsStore } from "../stores/tabs";
+import { useTabsStore, type TabEntry } from "../stores/tabs";
+
+/** How a run/debug tab is inserted into the layout. Given the built (keyless)
+ *  tab, place it and return the created entry — or null when it streamed the tab
+ *  elsewhere (a detached popout owns its own tabs), so the caller does nothing.
+ *  The default (no placer) opens in the owning project's focused subwindow; a
+ *  placer is supplied only to stream into a popout. See {@link placeForFocused}. */
+export type PyTabPlacer = (tab: Omit<TabEntry, "key">) => TabEntry | null;
 
 export type PyPlatform = "windows" | "unix";
 
@@ -49,9 +56,21 @@ export function systemInterpreter(platform: PyPlatform): string {
   return platform === "windows" ? "python" : "python3";
 }
 
-/** `<interp> <file>` — the Run button's command line. */
-export function buildRunCommand(interp: string, file: string, platform: PyPlatform): string {
-  return `${shellQuote(interp, platform)} ${shellQuote(file, platform)}`;
+/** `<interp> <file> [args]` — the Run button's command line.
+ *
+ * `args` is appended **verbatim** (only trimmed), not shell-quoted: it is a raw
+ * argument string the user typed to be parsed by the host shell, so `main.py`
+ * plus `--epochs 5 "out dir"` runs with two real arguments. The tab is a real
+ * terminal (see the module header), so this is the natural place to type them. */
+export function buildRunCommand(
+  interp: string,
+  file: string,
+  platform: PyPlatform,
+  args?: string,
+): string {
+  const base = `${shellQuote(interp, platform)} ${shellQuote(file, platform)}`;
+  const extra = args?.trim();
+  return extra ? `${base} ${extra}` : base;
 }
 
 /**
@@ -67,6 +86,7 @@ export function buildDebugCommand(
   file: string,
   breakpoints: number[],
   platform: PyPlatform,
+  args?: string,
 ): string {
   const parts = [shellQuote(interp, platform), "-m", "pdb"];
   const sorted = [...new Set(breakpoints)].sort((a, b) => a - b);
@@ -75,6 +95,11 @@ export function buildDebugCommand(
   }
   if (sorted.length > 0) parts.push("-c", shellQuote("continue", platform));
   parts.push(shellQuote(file, platform));
+  // Script arguments follow the file, exactly as `python -m pdb script.py args…`
+  // expects them. Appended verbatim (see buildRunCommand) — pdb hands them to the
+  // debugged program's `sys.argv`.
+  const extra = args?.trim();
+  if (extra) parts.push(extra);
   return parts.join(" ");
 }
 
@@ -146,16 +171,16 @@ export function openPythonTab(opts: {
   file: string;
   /** cwd for the tab — the project root, so relative paths and the venv resolve. */
   projectDir: string;
-  /** The scope owning the tab: the project's id, or "root". */
+  /** The scope owning the tab: the project's id, or "root". Only used by the
+   *  default placement (when no `place` is supplied). */
   scope: string;
   command: string;
-  /** Place the tab in the CURRENT focused subwindow (like the file tree's `.sh`
-   *  Run) rather than the given scope's default group. The file tree runs from
-   *  the right panel, which carries no project id for a local project, so a
-   *  scope-based placement would land the tab in the invisible "root" scope. */
-  focused?: boolean;
+  /** Where to insert the tab. Supplied only to stream the run into a detached
+   *  popout; when absent (the normal case) the tab lands in the owning project's
+   *  focused subwindow via `addTabToScope`. See {@link placeForFocused}. */
+  place?: PyTabPlacer;
 }): void {
-  const { mode, file, projectDir, scope, command, focused } = opts;
+  const { mode, file, projectDir, scope, command, place } = opts;
   const store = useTabsStore.getState();
 
   const prior = store.tabs.find(
@@ -166,18 +191,24 @@ export function openPythonTab(opts: {
   );
   if (prior) store.removeTab(prior.key);
 
-  const tab = {
+  const tab: Omit<TabEntry, "key"> = {
     label: pyTabLabel(mode, file),
     cmd: "", // the host's default shell
     cwd: projectDir,
-    kind: "shell" as const,
+    kind: "shell",
     env: { [PY_TARGET_ENV]: file, [PY_MODE_ENV]: mode },
     initialInput: command,
   };
-  const entry = focused
-    ? useTabsStore.getState().addTab(tab)
-    : useTabsStore.getState().addTabToScope(scope, tab);
-  console.log("[py-run] tab added", { key: entry.key, scope: useTabsStore.getState().scope, focused, tabs: useTabsStore.getState().tabs.length });
+  // A placer OWNS insertion. It returns the created entry for a main-window store
+  // write (which we then activate), or null when it streamed the tab elsewhere (a
+  // detached popout, which owns its own tabs) — in which case there's nothing in
+  // this store to activate. Only with NO placer do we use the default scope group.
+  if (place) {
+    const entry = place(tab);
+    if (entry) useTabsStore.getState().setActive(entry.key);
+    return;
+  }
+  const entry = useTabsStore.getState().addTabToScope(scope, tab);
   useTabsStore.getState().setActive(entry.key);
 }
 
@@ -188,8 +219,10 @@ export async function runPythonFile(opts: {
   scope: string;
   /** The project whose pinned interpreter applies; null in the root scope. */
   projectId: string | null;
-  /** Open in the current focused subwindow instead of `scope`'s default group. */
-  focused?: boolean;
+  /** Raw argument string appended after the file (see buildRunCommand). */
+  args?: string;
+  /** Where to insert the run tab (see openPythonTab); defaults to the scope group. */
+  place?: PyTabPlacer;
 }): Promise<void> {
   const platform = currentPlatform();
   const interp = await resolveInterpreter(opts.projectId, opts.projectDir, platform);
@@ -198,8 +231,8 @@ export async function runPythonFile(opts: {
     file: opts.file,
     projectDir: opts.projectDir,
     scope: opts.scope,
-    command: buildRunCommand(interp, opts.file, platform),
-    focused: opts.focused,
+    command: buildRunCommand(interp, opts.file, platform, opts.args),
+    place: opts.place,
   });
 }
 
@@ -210,8 +243,10 @@ export async function debugPythonFile(opts: {
   scope: string;
   projectId: string | null;
   breakpoints: number[];
-  /** Open in the current focused subwindow instead of `scope`'s default group. */
-  focused?: boolean;
+  /** Raw argument string appended after the file (see buildDebugCommand). */
+  args?: string;
+  /** Where to insert the debug tab (see openPythonTab); defaults to the scope group. */
+  place?: PyTabPlacer;
 }): Promise<void> {
   const platform = currentPlatform();
   const interp = await resolveInterpreter(opts.projectId, opts.projectDir, platform);
@@ -220,8 +255,8 @@ export async function debugPythonFile(opts: {
     file: opts.file,
     projectDir: opts.projectDir,
     scope: opts.scope,
-    command: buildDebugCommand(interp, opts.file, opts.breakpoints, platform),
-    focused: opts.focused,
+    command: buildDebugCommand(interp, opts.file, opts.breakpoints, platform, opts.args),
+    place: opts.place,
   });
 }
 
@@ -229,4 +264,27 @@ export async function debugPythonFile(opts: {
  *  else the file's own directory (a file opened in the root scope). */
 export function runCwd(projectDir: string | null | undefined, file: string): string {
   return projectDir && projectDir.trim() ? projectDir : dirname(file) || "/";
+}
+
+/**
+ * The placer for the "Run opens in the focused subwindow" policy — where every
+ * viewer (the right-panel tree, the Files (Project) tab, and a code editor tab)
+ * sends its run/debug terminal.
+ *
+ * Inside a detached popout (`fileDrop` non-null) the main tab store isn't ours, so
+ * the tab must stream into THAT window via its controller (returns null so no
+ * main-store activate happens). Otherwise it returns `undefined`, which tells
+ * {@link openPythonTab} to use its default placement: `addTabToScope(scope, …)` —
+ * the focused subwindow of the project that owns the file. That is deliberately
+ * NOT "beside the tab you clicked from": a Run always lands where the user is
+ * looking, not in whichever subwindow happens to host the trigger.
+ */
+export function placeForFocused(
+  fileDrop: { openTab: (tab: Omit<TabEntry, "key">) => void } | null,
+): PyTabPlacer | undefined {
+  if (!fileDrop) return undefined;
+  return (tab) => {
+    fileDrop.openTab(tab);
+    return null;
+  };
 }

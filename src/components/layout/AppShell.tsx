@@ -407,6 +407,18 @@ export function AppShell() {
       // Capture the window's final geometry before it goes away — a quit inside
       // the 300ms save debounce would otherwise drop the user's last move.
       await saveWindowGeometry().catch(() => {});
+      // Flush the active scope's tab layout for the same reason: CenterPanel
+      // debounces its persistScope by 300ms, so a quit right after navigating a
+      // Files (Project) tab into a subfolder (or any tab/split change) would drop
+      // it and the tab would reopen at the project root. The right-panel folder
+      // is saved eagerly and needs no flush; only the tab layout is debounced.
+      const { activeId, projects } = useProjectsStore.getState();
+      const localFile = activeId
+        ? projects.find((p) => p.id === activeId)?.local_file
+        : undefined;
+      if (localFile) {
+        await useTabsStore.getState().saveLayout(localFile).catch(() => {});
+      }
       // Close any popped-out subwindows so they don't strand on screen; they
       // persist + re-open at their saved bounds next launch (see the helper).
       await shutdownDetachedWindows().catch(() => {});

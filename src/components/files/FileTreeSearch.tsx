@@ -118,37 +118,39 @@ export function FileTreeSearch({
   const trimmed = query.trim();
 
   // Fetch the project path list once per projectDir, only when name search is
-  // actually used (a query in name mode).
+  // actually used (a query in name mode). The fetch is keyed to the *directory*,
+  // not the query — every keystroke re-runs this effect (via `trimmed`), so it
+  // must NOT abort the in-flight fetch on a query change: the once-per-dir guard
+  // (`pathsFor.current === projectDir`) would then skip re-fetching and the
+  // results would never load ("Searching…" forever). Instead we tag the request
+  // with the dir it was for and drop only results whose dir is no longer current
+  // — so a second keystroke can never strand the first (and only) fetch.
   useEffect(() => {
     if (mode !== "name" || !projectDir || !trimmed) return;
-    if (pathsFor.current === projectDir) return;
+    if (pathsFor.current === projectDir) return; // already fetched/fetching this dir
     pathsFor.current = projectDir;
     setNamesLoaded(false);
     setPaths([]);
-    let cancelled = false;
+    const forDir = projectDir;
     invoke<PathEntry[]>("list_project_paths", { projectDir })
       .then((entries) => {
-        if (cancelled) return;
+        if (pathsFor.current !== forDir) return; // dir changed since; stale result
         setPaths(entries);
         setNamesLoaded(true);
       })
       .catch(() => {
-        if (cancelled) return;
+        if (pathsFor.current !== forDir) return;
         pathsFor.current = null; // let a retry re-fetch
         setPaths([]);
         setNamesLoaded(true);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [mode, projectDir, trimmed]);
 
-  // Reset the cache when the project dir changes.
-  useEffect(() => {
-    pathsFor.current = null;
-    setPaths([]);
-    setNamesLoaded(false);
-  }, [projectDir]);
+  // A dir change needs no separate reset effect: the fetch above already keys on
+  // `projectDir`, so a genuine switch re-runs it (`pathsFor.current !== new dir`)
+  // and it clears + re-fetches for the new dir. With an empty query the stale
+  // `paths` are never shown either — `nameResults` guards on `!trimmed`. A second
+  // effect resetting `pathsFor` here would only race and strand that fetch.
 
   const nameResults = useMemo(() => {
     if (mode !== "name" || !trimmed) return [];
@@ -241,7 +243,11 @@ export function FileTreeSearch({
           {nameResults.length >= MAX_NAME_RESULTS ? "+" : ""} file
           {nameResults.length === 1 ? "" : "s"}
         </div>
-        {nameResults.map((e) => (
+        {nameResults.map((e) => {
+          // Display the path relative to the browsed scope; reveal/open stay
+          // project-rooted (`e.path`).
+          const displayPath = scopeRel ? e.path.slice(scopeRel.length + 1) : e.path;
+          return (
           <div
             key={e.path}
             className={`file-entry file-search-row ${e.is_dir ? "dir" : "file"}`}
@@ -251,7 +257,7 @@ export function FileTreeSearch({
           >
             <span className="file-icon">{e.is_dir ? folderIcon() : fileIcon(extensionOf(e.path))}</span>
             <span className="file-name file-search-path">
-              <HighlightedPath text={e.path} query={trimmed} />
+              <HighlightedPath text={displayPath} query={trimmed} />
             </span>
             {!e.is_dir && (
               <button
@@ -268,7 +274,8 @@ export function FileTreeSearch({
               </button>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
     );
   }
@@ -310,7 +317,7 @@ export function FileTreeSearch({
           >
             <div className="file-search-content-body">
               <span className="file-search-loc">
-                {projectRel}:{m.line}
+                {m.rel}:{m.line}
               </span>
               <span className="file-search-line">
                 {parts ? (
