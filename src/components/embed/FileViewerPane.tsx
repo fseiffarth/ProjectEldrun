@@ -61,7 +61,8 @@ import {
   resolvePythonDefinition,
   snapBreakpointLine,
 } from "../../lib/viewers/python";
-import { debugPythonFile, runCwd, runPythonFile } from "../../lib/pythonRun";
+import { debugPythonFile, runCwd, runPythonFile, placeForFocused } from "../../lib/pythonRun";
+import { FileDropContext } from "../files/fileDropContext";
 import {
   basename,
   dirname,
@@ -4379,11 +4380,17 @@ function useBreakpoints(
 }
 
 /** Run / Debug (#py). Run executes the file in a fresh terminal tab; Debug does
- *  the same under `pdb`, pre-loaded with the gutter's breakpoints. */
+ *  the same under `pdb`, pre-loaded with the gutter's breakpoints.
+ *
+ *  Right-clicking Run opens a small popover to type **arguments** (`sys.argv`) —
+ *  appended to the command line and reused by every subsequent Run/Debug, so a
+ *  plain left-click re-runs with them (the tooltip shows what they are). */
 function RunDebugButtons({
   breakpointCount,
   busy,
   showDebug,
+  args,
+  setArgs,
   onRun,
   onDebug,
 }: {
@@ -4391,40 +4398,136 @@ function RunDebugButtons({
   busy: boolean;
   /** Debug (pdb + breakpoint gutter) is behind the experimental gate; Run isn't. */
   showDebug: boolean;
+  /** The current argument string, and its setter (right-click popover edits it). */
+  args: string;
+  setArgs: (v: string) => void;
   onRun: () => void;
   onDebug: () => void;
 }) {
+  const [argsOpen, setArgsOpen] = useState(false);
+  // Local draft so typing doesn't rebuild the run command on every keystroke; it
+  // is committed to the shared `args` on Run or when the popover closes.
+  const [draft, setDraft] = useState(args);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const open = useCallback(() => {
+    setDraft(args);
+    setArgsOpen(true);
+  }, [args]);
+  const commit = useCallback(() => {
+    setArgs(draft.trim());
+    setArgsOpen(false);
+  }, [draft, setArgs]);
+
+  // Focus the field when the popover opens, and close it on an outside click or Esc.
+  useEffect(() => {
+    if (!argsOpen) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) commit();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [argsOpen, commit]);
+
+  const argsHint = args ? ` (args: ${args})` : "";
   return (
-    <>
+    <div className="file-viewer-run-controls" ref={wrapRef}>
       <button
         className="file-viewer-format-btn"
-        onMouseDown={(e) => e.preventDefault()}
+        // Right-click opens the args popover. We act on mousedown, not the
+        // contextmenu event: preventing the button's default focus-steal (needed
+        // to keep the editor caret) suppresses `contextmenu` under WebKitGTK, so
+        // that event never arrives. Left-click still runs via onClick.
+        onMouseDown={(e) => {
+          e.preventDefault();
+          if (e.button === 2) open();
+        }}
         onClick={onRun}
+        onContextMenu={(e) => e.preventDefault()}
         disabled={busy}
-        title="Run this file in a terminal tab"
+        title={`Run this file in a terminal tab${argsHint}\nRight-click to set arguments`}
         aria-label="Run file"
       >
-        ▶ Run
+        ▶ Run{args ? " *" : ""}
       </button>
       {showDebug && (
       <button
         className="file-viewer-format-btn"
-        onMouseDown={(e) => e.preventDefault()}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          if (e.button === 2) open();
+        }}
         onClick={onDebug}
+        onContextMenu={(e) => e.preventDefault()}
         disabled={busy}
         title={
-          breakpointCount > 0
+          (breakpointCount > 0
             ? `Debug under pdb, breaking on ${breakpointCount} line${
                 breakpointCount === 1 ? "" : "s"
               } (click the gutter to set more)`
-            : "Debug under pdb — stops at the first line. Click a line number to set a breakpoint."
+            : "Debug under pdb — stops at the first line. Click a line number to set a breakpoint.") +
+          `${argsHint}\nRight-click to set arguments`
         }
         aria-label="Debug file"
       >
         🐞 Debug
       </button>
       )}
-    </>
+      {argsOpen && (
+        <div className="file-viewer-run-args" role="dialog" aria-label="Run arguments">
+          <label className="file-viewer-run-args-label">Arguments (sys.argv)</label>
+          <input
+            ref={inputRef}
+            className="file-viewer-run-args-input"
+            value={draft}
+            spellCheck={false}
+            placeholder="--epochs 5 data.csv"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                setArgs(draft.trim());
+                setArgsOpen(false);
+                onRun();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setArgsOpen(false);
+              }
+            }}
+          />
+          <div className="file-viewer-run-args-row">
+            <button
+              type="button"
+              className="file-viewer-format-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setArgs(draft.trim());
+                setArgsOpen(false);
+                onRun();
+              }}
+            >
+              ▶ Run
+            </button>
+            <button
+              type="button"
+              className="file-viewer-format-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setDraft("");
+                setArgs("");
+              }}
+              disabled={!draft}
+              title="Clear arguments"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -4502,6 +4605,13 @@ function TextView({
   const projectDir = project ? resolveProjectDirectory(project) : "";
   const bp = useBreakpoints(pyDebug, draft, loaded, viewPos);
   const [launching, setLaunching] = useState(false);
+  // Arguments typed into the Run button's right-click popover, appended to the
+  // command line (see pythonRun.buildRunCommand). Kept on the tab so a re-run — and
+  // a Debug launch — reuse them, and shown back in the button's tooltip.
+  const [pyArgs, setPyArgs] = useState("");
+  // Non-null inside a detached popout → the run terminal must stream into THIS
+  // window, not the main tab store (see placeForFocused).
+  const fileDrop = useContext(FileDropContext);
 
   // The tab runs in the project's own scope, not whichever project happens to be
   // active — a viewer keeps working after you switch projects (see FileScopeContext),
@@ -4521,9 +4631,21 @@ function TextView({
     [],
   );
 
+  // Open the run/debug terminal in the focused subwindow of this project — where
+  // the user is looking — rather than beside this tab's group.
   const onRun = useCallback(
-    () => void launch(() => runPythonFile({ file: path, projectDir: cwd, scope, projectId })),
-    [launch, path, cwd, scope, projectId],
+    () =>
+      void launch(() =>
+        runPythonFile({
+          file: path,
+          projectDir: cwd,
+          scope,
+          projectId,
+          args: pyArgs,
+          place: placeForFocused(fileDrop),
+        }),
+      ),
+    [launch, path, cwd, scope, projectId, pyArgs, fileDrop],
   );
   const onDebug = useCallback(
     () =>
@@ -4534,9 +4656,11 @@ function TextView({
           scope,
           projectId,
           breakpoints: bp.lines,
+          args: pyArgs,
+          place: placeForFocused(fileDrop),
         }),
       ),
-    [launch, path, cwd, scope, projectId, bp.lines],
+    [launch, path, cwd, scope, projectId, bp.lines, pyArgs, fileDrop],
   );
 
   // Ctrl/Cmd+Click a name to open its `def`/`class` — in this file or in the
@@ -4620,6 +4744,8 @@ function TextView({
             breakpointCount={bp.lines.length}
             busy={launching}
             showDebug={pyDebug}
+            args={pyArgs}
+            setArgs={setPyArgs}
             onRun={onRun}
             onDebug={onDebug}
           />

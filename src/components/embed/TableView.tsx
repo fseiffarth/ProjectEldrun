@@ -735,7 +735,10 @@ export function TableView({
                       textAlign: "right",
                       whiteSpace: "nowrap",
                       fontSize: 11,
-                      opacity: 0.55,
+                      // Opacity dims only the number, not the cell — a translucent
+                      // sticky gutter would let the scrolling body cells bleed
+                      // through it. The background stays solid.
+                      color: "var(--text-secondary, var(--text-primary))",
                     }}
                   >
                     {/* The source row number, not the position on screen: it is the

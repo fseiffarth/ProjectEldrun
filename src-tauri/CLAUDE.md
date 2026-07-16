@@ -98,4 +98,4 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | PTY lifecycle. (Agent-session resolution happens in `commands::terminal::pty_spawn`, before ssh/docker wrapping.) |
+| `mod.rs` | PTY lifecycle. (Agent-session resolution happens in `commands::terminal::pty_spawn`, before ssh/docker wrapping.) **Closing a tab (`kill`) — or the app (`kill_all`, wired into `RunEvent::Exit`) — reaps the child's whole process *subtree*, not just the shell leader**: `portable_pty::Child::kill()` signals only the leader, so a long-running descendant (dev server, build, training run) would otherwise be orphaned. The subtree is walked (`sysstat::descendant_pids`) *before* the leader dies (its children reparent to init once it's gone), then signalled — SIGTERM→SIGKILL-after-grace on tab close, immediate SIGKILL at exit (a delayed escalation thread would die with the process). |

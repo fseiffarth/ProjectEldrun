@@ -37,6 +37,23 @@ describe("buildRunCommand", () => {
       "'.venv/bin/python' '/proj/a b/main.py'",
     );
   });
+
+  it("appends the user's arguments verbatim after the file", () => {
+    // The args are a raw shell string the host shell parses, not one quoted
+    // token — so `--epochs 5 "out dir"` reaches the program as three arguments.
+    expect(
+      buildRunCommand("python3", "/proj/main.py", "unix", '--epochs 5 "out dir"'),
+    ).toBe(`'python3' '/proj/main.py' --epochs 5 "out dir"`);
+  });
+
+  it("adds nothing for empty or whitespace-only args", () => {
+    expect(buildRunCommand("python3", "/proj/main.py", "unix", "")).toBe(
+      "'python3' '/proj/main.py'",
+    );
+    expect(buildRunCommand("python3", "/proj/main.py", "unix", "   ")).toBe(
+      "'python3' '/proj/main.py'",
+    );
+  });
 });
 
 describe("buildDebugCommand", () => {
@@ -67,6 +84,12 @@ describe("buildDebugCommand", () => {
   it("quotes a windows path (whose drive colon must survive pdb's file:line split)", () => {
     expect(buildDebugCommand("python", "C:\\p\\main.py", [7], "windows")).toBe(
       '"python" -m pdb -c "b C:\\p\\main.py:7" -c "continue" "C:\\p\\main.py"',
+    );
+  });
+
+  it("passes the script's arguments after the file, as pdb expects", () => {
+    expect(buildDebugCommand("python3", FILE, [12], "unix", "--verbose in.txt")).toBe(
+      "'python3' -m pdb -c 'b /proj/main.py:12' -c 'continue' '/proj/main.py' --verbose in.txt",
     );
   });
 });

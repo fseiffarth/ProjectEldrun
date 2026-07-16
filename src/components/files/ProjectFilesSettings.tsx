@@ -5,7 +5,8 @@ import { Toggle } from "../common/Toggle";
 import { Dropdown } from "../common/Dropdown";
 import { useSettingsStore } from "../../stores/settings";
 import { VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
-import type { ViewerPref } from "../../types";
+import { PythonInterpreterWindow } from "../projects/PythonInterpreterWindow";
+import type { ProjectEntry, ViewerPref } from "../../types";
 
 /**
  * The file-view filters (which endings/paths a project's tree hides) and the
@@ -19,6 +20,10 @@ type ProjectJson = Record<string, unknown>;
 const PANEL_HIDDEN_ENDINGS_KEY = "panel_hidden_endings";
 const PANEL_HIDDEN_PATHS_KEY = "panel_hidden_paths";
 const PANEL_SHOWN_PATHS_KEY = "panel_shown_paths";
+
+/** File endings that mark a project as holding Python — gates the interpreter
+ *  picker, mirroring the pill's `PYTHON_ENDINGS`. */
+const PYTHON_ENDINGS = new Set([".py", ".pyw", ".pyi"]);
 
 function readStringList(project: ProjectJson | null, key: string): string[] {
   const raw = project?.[key];
@@ -143,16 +148,29 @@ export function useProjectFileFilters(opts: {
  *  gear and the Files (Project) tab's. */
 export function ProjectFilesSettingsDialog({
   localFile,
+  project,
   filters,
   onClose,
 }: {
   localFile: string;
+  /** The project this gear belongs to — used to offer the Python interpreter
+   *  picker (the same one the project pill opens). Null in root/box scope. */
+  project: ProjectEntry | null;
   filters: ProjectFileFilters;
   onClose: () => void;
 }) {
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const { availableEndings, hiddenEndings, error, toggleHiddenEnding } = filters;
+  const [showPython, setShowPython] = useState(false);
+
+  // Offer the Python interpreter picker on the same terms the pill does: the
+  // project holds Python files (a probed ending), or it's remote (probed on the
+  // host, which may hold Python the local mirror doesn't).
+  const hasPython =
+    !!project &&
+    (!!project.remote ||
+      availableEndings.some((e) => PYTHON_ENDINGS.has(e.toLowerCase())));
 
   return createPortal(
     <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
@@ -188,6 +206,24 @@ export function ProjectFilesSettingsDialog({
           </div>
         )}
         {error && <div className="settings-error">{error}</div>}
+
+        {hasPython && project && (
+          <>
+            <div className="settings-section-title">Python</div>
+            <p className="settings-help">
+              Which interpreter the code viewer's Run and Debug buttons use.
+              Auto-detect by default; pin a venv or other environment when
+              Eldrun can't infer it.
+            </p>
+            <button
+              className="tab-add-btn"
+              style={{ fontSize: 11, padding: "2px 8px" }}
+              onClick={() => setShowPython(true)}
+            >
+              {project.python_interpreter ? "✓ " : ""}Python interpreter…
+            </button>
+          </>
+        )}
 
         {/* #48 per-file-type native-viewer settings (global, not per-project).
             Toggles opt-in local autocomplete (#45) per type, plus the global
@@ -299,6 +335,10 @@ export function ProjectFilesSettingsDialog({
           </>
         )}
       </div>
+
+      {showPython && project && (
+        <PythonInterpreterWindow project={project} onClose={() => setShowPython(false)} />
+      )}
     </div>,
     document.body,
   );

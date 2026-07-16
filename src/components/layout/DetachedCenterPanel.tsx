@@ -26,29 +26,27 @@ import {
   type DetachedPanesRequest,
   type PaneRect,
 } from "../../stores/detached";
-import { TerminalView } from "../terminal/TerminalView";
-import { FileBrowser } from "../files/FileBrowser";
-import { ProjectFilesTab } from "../files/ProjectFilesTab";
 import { FileDropContext, type FileDropController } from "../files/fileDropContext";
 import { fileDropPayloads } from "../tabs/commitFileDrop";
-import { EmbedPane } from "../embed/EmbedPane";
-import { FileViewerPane } from "../embed/FileViewerPane";
-import { NetworkTrafficPane } from "../monitoring/NetworkTrafficPane";
-import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
-import { DiskUsagePane } from "../monitoring/DiskUsagePane";
-import { CalendarPane } from "../calendar/CalendarPane";
+import { TabPane } from "../tabs/TabPane";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { pickEdge } from "../tabs/dragGeometry";
+import {
+  chordMatches,
+  resolveChord,
+  type ShortcutAction,
+  type ShortcutMap,
+} from "../../lib/shortcuts";
+import { isEditableTarget } from "../../hooks/useKeyboard";
 import { useDragStore } from "../../stores/drag";
 import { useTabLandStore } from "../../stores/tabLand";
 import { useSettingsStore } from "../../stores/settings";
 import {
   DEFAULT_MIN_SUBWINDOW_PX,
   allGroups,
-  effectiveTabLocation,
   findGroup,
   type DropEdge,
   type GroupNode,
@@ -175,6 +173,96 @@ export function DetachedCenterPanel({
     const ids = allGroups(tree).map((g) => g.id);
     setFocusedGroupId((cur) => (cur && ids.includes(cur) ? cur : (ids[0] ?? null)));
   }, [tree]);
+
+  // ── Keyboard shortcuts (parity with the main window) ──────────────────────
+  // The popout is a separate JS heap, inert to the tabs store, so the main
+  // window's `useKeyboard` (which drives `useTabsStore`) can't run here. Instead
+  // we handle the WINDOW-LOCAL chords against THIS popout's own layout + edit
+  // protocol, resolving each chord through the SAME `shortcuts.ts` map (incl. the
+  // user's overrides) so a rebound key behaves identically in both windows.
+  //
+  // Only the actions with a popout equivalent are wired: close tab, prev/next/
+  // cycle tab, cycle subwindow focus, and F11 OS-fullscreen. The rest are
+  // deliberately absent because the popout has no matching concept:
+  // app-internal fullscreen, hide/close-subwindow (no such edit), and
+  // cycle-project (a popout owns no project switcher). Live values are read
+  // through a ref so the window listener binds once and never churns on the
+  // per-render identity of the edit callbacks.
+  const kbRef = useRef({ tree, focusedGroupId, onActivate, onClose });
+  kbRef.current = { tree, focusedGroupId, onActivate, onClose };
+  useEffect(() => {
+    const win = getCurrentWindow();
+    const onKeyDown = async (e: KeyboardEvent) => {
+      // F11 — OS fullscreen (Windows: maximize toggle, matching the main window,
+      // since real fullscreen strips the styles native dragging relies on).
+      // Handled before the editable-target guard so it works from a terminal too.
+      if (e.key === "F11") {
+        e.preventDefault();
+        if (PLATFORM === "windows") {
+          if (await win.isMaximized()) void win.unmaximize();
+          else void win.maximize();
+        } else {
+          const isFs = await win.isFullscreen();
+          void win.setFullscreen(!isFs);
+        }
+        return;
+      }
+      // Never steal keys from a focused text field / xterm textarea (same rule
+      // the main window applies) — otherwise typing in a terminal would trip the
+      // nav chords.
+      if (isEditableTarget(e.target)) return;
+
+      const overrides = useSettingsStore.getState().settings
+        ?.keyboard_shortcuts as ShortcutMap | undefined;
+      const is = (action: ShortcutAction) =>
+        chordMatches(resolveChord(action, overrides), e);
+      const { tree: t, focusedGroupId: fid, onActivate: activate, onClose: close } =
+        kbRef.current;
+      const focused = (fid && findGroup(t, fid)) || allGroups(t)[0] || null;
+
+      // Close the active tab of the focused subwindow. DetachedApp's handleClose
+      // closes the whole window when it was the last tab.
+      if (is("closeTab")) {
+        if (focused?.activeKey) {
+          e.preventDefault();
+          close(focused.activeKey);
+        }
+        return;
+      }
+
+      // Previous / next / cycle tab within the focused subwindow.
+      const prev = is("prevTab");
+      if (prev || is("nextTab") || is("cycleTabs")) {
+        if (focused && focused.tabKeys.length > 1) {
+          e.preventDefault();
+          const len = focused.tabKeys.length;
+          const cur = focused.activeKey ? focused.tabKeys.indexOf(focused.activeKey) : 0;
+          const next = focused.tabKeys[(cur + (prev ? -1 : 1) + len) % len];
+          activate(next);
+        }
+        return;
+      }
+
+      // Cycle which subwindow is focused (only meaningful once the popout is
+      // split into several panes). A direct move — the popout has a focus frame
+      // but not the main window's numbered Shift-preview nav.
+      const down = is("subwindowDown");
+      if (down || is("subwindowUp")) {
+        const ids = allGroups(t).map((g) => g.id);
+        if (ids.length >= 2) {
+          e.preventDefault();
+          const from = fid ? ids.indexOf(fid) : -1;
+          const base = from >= 0 ? from : 0;
+          setFocusedGroupId(ids[(base + (down ? 1 : -1) + ids.length) % ids.length]);
+        }
+        return;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // Bind once: live state is read via kbRef; the resolver reads settings live.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Pane-region measurement (for the split-preview overlay) ───────────────
   // Recompute every group body's rect (relative to the panel) so the overlay can
@@ -438,8 +526,14 @@ export function DetachedCenterPanel({
         if (!target) return;
         for (const p of payloads) onAddTab(p, target);
       },
+      // No drag involved (a button click): drop the tab into the popout's focused
+      // group, else its first group, streamed to the main window via onAddTab.
+      openTab: (tab) => {
+        const target = focusedGroupId ?? allGroups(tree)[0]?.id;
+        if (target) onAddTab(tab, target);
+      },
     }),
-    [resolveLocalTarget, onAddTab],
+    [resolveLocalTarget, onAddTab, focusedGroupId, tree],
   );
 
   // A per-tab drag released over THIS popout: commit the LAST resolved target
@@ -1022,67 +1116,20 @@ export function DetachedCenterPanel({
                 : { display: "none" };
               return (
                 <div key={tab.key} className="center-pane" data-tab-key={tab.key} style={style}>
-                  {tab.kind === "network" ? (
-                    <NetworkTrafficPane projectId={scope} visible={visible} />
-                  ) : tab.kind === "calendar" ? (
-                    <CalendarPane visible={visible} />
-                  ) : tab.kind === "monitor" ? (
-                    <SystemMonitorPane visible={visible} />
-                  ) : tab.kind === "diskusage" ? (
-                    <DiskUsagePane
-                      projectId={scope === "root" ? null : scope}
-                      projectCwd={tab.cwd}
-                      // No `tabKey` on purpose: a popout runs on a streamed COPY of
-                      // the tab payloads in its own JS heap, with no rename channel
-                      // back to the main window — renaming here would silently
-                      // diverge. A detached tab keeps the label it was given.
-                      visible={visible}
-                    />
-                  ) : tab.kind === "files" ? (
-                    <FileBrowser
-                      projectDir={tab.cwd}
-                      projectId={scope === "root" ? null : scope}
-                      active={visible}
-                    />
-                  ) : tab.kind === "projectfiles" ? (
-                    // No `tabKey`: a popout runs on a streamed COPY of the tab
-                    // payloads with no write channel back to the main window, so
-                    // the browsed folder stays this window's (same reason the
-                    // Disk Usage pane above doesn't rename its tab here).
-                    <ProjectFilesTab scope={scope} cwd={tab.cwd} folder={tab.folder} />
-                  ) : tab.kind === "embed" ? (
-                    tab.viewer ? (
-                      <FileViewerPane
-                        viewer={tab.viewer}
-                        path={tab.embedPath ?? ""}
-                        projectId={scope === "root" ? null : scope}
-                        tabKey={tab.key}
-                        visible={visible}
-                      />
-                    ) : (
-                      <EmbedPane
-                        path={tab.embedPath ?? ""}
-                        exec={tab.embedExec}
-                        projectId={scope === "root" ? null : scope}
-                        visible={visible}
-                      />
-                    )
-                  ) : (
-                    <TerminalView
-                      id={`${scope}:${tab.key}`}
-                      cmd={tab.cmd}
-                      args={tab.args ?? []}
-                      env={tab.env ?? {}}
-                      cwd={tab.cwd}
-                      // attachOnly: the main window owns the spawn, so localOnly is
-                      // cosmetic here — kept aligned with CenterPanel's locality.
-                      localOnly={effectiveTabLocation(tab) === "local"}
-                      zoomable={tab.kind === "agent" || tab.kind === "local_agent"}
-                      visible={visible}
-                      focused={visible}
-                      attachOnly
-                    />
-                  )}
+                  {/* The shared per-tab render switch (`components/tabs/TabPane`),
+                      the SAME one the main window uses. A popout is attach-only (the
+                      main window owns the PTY) and doesn't own the tab store, so it
+                      passes no `ownsTabs`/`onConnect`/mirror props — the cwd is just
+                      the tab's, since the projects store the mirror-swap needs isn't
+                      here. See TabPane for why each prop differs between windows. */}
+                  <TabPane
+                    tab={tab}
+                    scope={scope}
+                    visible={visible}
+                    attachOnly
+                    filesProjectDir={tab.cwd}
+                    terminalCwd={tab.cwd}
+                  />
                 </div>
               );
             })}

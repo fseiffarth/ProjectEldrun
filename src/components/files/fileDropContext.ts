@@ -1,5 +1,6 @@
 import { createContext } from "react";
 import type { TabDrag } from "../../stores/drag";
+import type { TabEntry } from "../../stores/tabs";
 
 /**
  * How a file dragged out of the file tree is resolved and committed — the seam
@@ -23,6 +24,10 @@ export interface FileDropController {
   resolveTarget: (clientX: number, clientY: number) => void;
   /** Commit a released file drag against the last resolved target. */
   commit: (d: TabDrag, projectCwd: string) => void;
+  /** Open a tab INSIDE this popout (its focused group), streamed to the main
+   *  window like the "+" button and file drops. Used by the Python ▶ Run so the
+   *  terminal appears in the detached window, not the main window's tab store. */
+  openTab: (tab: Omit<TabEntry, "key">) => void;
 }
 
 /** Non-null only inside a detached window. See {@link FileDropController}. */

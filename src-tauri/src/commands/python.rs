@@ -22,6 +22,11 @@
 //! auto-picked — choosing one of the user's N unrelated envs on their behalf would
 //! be a guess, and a wrong guess here is indistinguishable from a bug.
 //!
+//! A project can hold **more than one** venv (a top-level `.venv` plus a
+//! per-subproject one), so the in-tree scan walks the tree for `pyvenv.cfg`
+//! markers rather than checking only the root — the dialog lists them all, and the
+//! shallowest (a root `.venv`) is the one auto-detect prefers.
+//!
 //! Remote projects probe **the host**, over the pooled ControlMaster, with a single
 //! constant `sh` script (`run_remote_script`) — the interpreter that matters is the
 //! one on the machine the run tab will actually run on.
@@ -73,9 +78,94 @@ fn default_interpreter() -> String {
 /// The venv directory names we look for in the project root, in preference order.
 const VENV_DIRS: [&str; 3] = [".venv", "venv", "env"];
 
+/// How deep the tree scan hunts for venvs below the project root. A project may
+/// carry more than one (a top-level `.venv` plus a per-subproject one), so a
+/// root-only scan misses the rest; the cap keeps a deep tree from being walked in
+/// full for one dialog.
+const VENV_SCAN_MAX_DEPTH: usize = 4;
+
+/// Directory names never descended into while hunting for venvs: heavy or
+/// irrelevant subtrees (a venv's own `pyvenv.cfg` sits at its root, so we never
+/// need to walk *into* one, and `node_modules`/`.git` never hold a project venv).
+fn prunes_venv_scan(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | "__pycache__"
+            | ".mypy_cache"
+            | ".pytest_cache"
+            | ".ruff_cache"
+            | ".tox"
+            | ".idea"
+            | ".vscode"
+            | "site-packages"
+    )
+}
+
 /// The interpreter inside a venv root, relative to it.
 fn venv_python_rel() -> &'static str {
     if WINDOWS { "Scripts\\python.exe" } else { "bin/python" }
+}
+
+/// True when `dir` is a venv root: it carries a `pyvenv.cfg` (PEP 405, the
+/// canonical marker every `python -m venv`/`virtualenv` writes) *and* the
+/// interpreter. Requiring the marker is what keeps the recursive scan from
+/// mistaking a stray `env/bin/python` for an environment.
+fn is_venv_root(dir: &Path) -> bool {
+    dir.join("pyvenv.cfg").is_file() && dir.join(venv_python_rel()).is_file()
+}
+
+/// The label for a discovered in-tree venv: leads with its path relative to the
+/// project root, so two venvs in one project are told apart (`.venv` vs
+/// `services/api/.venv`).
+fn venv_label(rel: &Path) -> String {
+    format!("{} (in this project)", rel.to_string_lossy())
+}
+
+/// Every venv *anywhere* under the project root (bounded by `VENV_SCAN_MAX_DEPTH`),
+/// each as a project-relative interpreter path — the run tab's cwd is the project
+/// root, so a relative path keeps working when the project moves. A venv is never
+/// descended into (its `pyvenv.cfg` is at its root), and heavy dirs are pruned.
+/// Sorted shallowest-first so a top-level `.venv` sorts ahead of a nested one and
+/// wins auto-select.
+fn find_venvs(root: &Path) -> Vec<PyInterpreter> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for child in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+            if is_venv_root(&child) {
+                roots.push(child); // a venv root — record it, don't walk into it
+                continue;
+            }
+            let name = child.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if depth < VENV_SCAN_MAX_DEPTH && !prunes_venv_scan(name) {
+                stack.push((child, depth + 1));
+            }
+        }
+    }
+    // Shallowest first, then lexicographic — a stable, sensible dropdown order that
+    // also puts the top-level venv (the auto-detect winner) ahead of nested ones.
+    roots.sort_by(|a, b| {
+        a.components()
+            .count()
+            .cmp(&b.components().count())
+            .then_with(|| a.cmp(b))
+    });
+    roots
+        .into_iter()
+        .filter_map(|d| {
+            let rel = d.strip_prefix(root).ok()?.to_path_buf();
+            Some(PyInterpreter {
+                kind: "venv".into(),
+                path: rel.join(venv_python_rel()).to_string_lossy().into_owned(),
+                label: venv_label(&rel),
+            })
+        })
+        .collect()
 }
 
 // ── Local discovery ──────────────────────────────────────────────────────────
@@ -103,7 +193,10 @@ fn probe(dir: &Path, program: &str, args: &[&str]) -> Option<String> {
 pub fn discover_local(dir: &Path) -> Vec<PyInterpreter> {
     let mut out: Vec<PyInterpreter> = Vec::new();
 
-    // 1. venvs in the project tree.
+    // 1. venvs in the project tree — ALL of them, not just the root's, since a
+    //    project can carry several. `find_venvs` walks the tree for `pyvenv.cfg`
+    //    markers; the classic root names catch a venv that predates the marker.
+    out.extend(find_venvs(dir));
     for name in VENV_DIRS {
         let py = dir.join(name).join(venv_python_rel());
         if py.is_file() {
@@ -238,6 +331,11 @@ fn dedupe_and_rank(mut list: Vec<PyInterpreter>) -> Vec<PyInterpreter> {
 const REMOTE_PROBE: &str = r#"
 emit() { printf '%s\t%s\t%s\n' "$1" "$2" "$3"; }
 for d in .venv venv env; do
+  [ -x "$d/bin/python" ] && emit venv "$d/bin/python" "$d (in this project)"
+done
+find . -maxdepth 4 \( -name node_modules -o -name .git -o -name site-packages \) -prune \
+  -o -name pyvenv.cfg -type f -print 2>/dev/null | while read -r cfg; do
+  d=${cfg%/pyvenv.cfg}; d=${d#./}
   [ -x "$d/bin/python" ] && emit venv "$d/bin/python" "$d (in this project)"
 done
 if command -v poetry >/dev/null 2>&1; then
@@ -471,6 +569,60 @@ mod tests {
         // The system interpreter is always offered as the last resort.
         assert!(found.iter().any(|i| i.kind == "system"));
 
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Build a fake venv (interpreter + `pyvenv.cfg`) at `root/rel`.
+    #[cfg(test)]
+    fn make_fake_venv(root: &Path, rel: &str) {
+        let venv = root.join(rel);
+        let bin = venv.join(if WINDOWS { "Scripts" } else { "bin" });
+        std::fs::create_dir_all(&bin).unwrap();
+        let py = bin.join(if WINDOWS { "python.exe" } else { "python" });
+        std::fs::write(&py, b"#!/bin/sh\n").unwrap();
+        std::fs::write(venv.join("pyvenv.cfg"), b"home = /usr\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&py, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_discovery_finds_every_venv_in_the_tree_not_only_the_root() {
+        let tmp = std::env::temp_dir().join(format!("eldrun-py-multi-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        make_fake_venv(&tmp, ".venv");
+        make_fake_venv(&tmp, "services/api/.venv");
+
+        let found = discover_local(&tmp);
+        let venvs: Vec<&str> = found
+            .iter()
+            .filter(|i| i.kind == "venv")
+            .map(|i| i.path.as_str())
+            .collect();
+        let root_py = PathBuf::from(".venv").join(venv_python_rel());
+        let nested_py = PathBuf::from("services/api/.venv").join(venv_python_rel());
+        assert!(venvs.contains(&root_py.to_string_lossy().as_ref()), "root venv missing: {venvs:?}");
+        assert!(
+            venvs.contains(&nested_py.to_string_lossy().as_ref()),
+            "nested venv missing: {venvs:?}"
+        );
+        // The top-level venv sorts first, so it stays the auto-detect winner.
+        assert_eq!(found[0].path, root_py.to_string_lossy());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn venv_scan_prunes_heavy_dirs() {
+        // A venv buried inside node_modules is not the project's — don't offer it,
+        // and don't pay to walk that subtree.
+        let tmp = std::env::temp_dir().join(format!("eldrun-py-prune-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        make_fake_venv(&tmp, "node_modules/pkg/.venv");
+        let found = find_venvs(&tmp);
+        assert!(found.is_empty(), "should not descend into node_modules: {found:?}");
         std::fs::remove_dir_all(&tmp).ok();
     }
 

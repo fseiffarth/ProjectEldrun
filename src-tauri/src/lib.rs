@@ -877,6 +877,14 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
+                use tauri::Manager;
+                // Abort every terminal's process subtree so no inner process (a
+                // dev server, a build, a training run) outlives Eldrun. Runs
+                // before the container teardown below, since a containerized
+                // tab's in-container process is TERMed via its still-live
+                // container. Dropping the registry alone would kill only the
+                // shell leaders and orphan everything they spawned.
+                _app.state::<RegistryState>().lock().unwrap().kill_all();
                 // Tear down any OpenVPN tunnels brought up for VPN-gated
                 // remote projects so no privileged tunnel outlives the app.
                 services::openvpn::disconnect_all();
@@ -885,7 +893,6 @@ pub fn run() {
                 services::sandbox::down_all();
                 // Tear down pooled SSH/SFTP connections so no ssh ControlMaster
                 // child (and the master socket it owns) outlives Eldrun.
-                use tauri::Manager;
                 // Stop every auto-sync task first (cancel loops + drop watchers)
                 // so none races the pool teardown below.
                 let auto = _app

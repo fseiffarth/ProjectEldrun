@@ -18,8 +18,10 @@ interface KeyboardOptions {
 }
 
 /** True when keystrokes belong to a text field (input/textarea/contenteditable)
- *  — we must not steal those for navigation chords. */
-function isEditableTarget(target: EventTarget | null): boolean {
+ *  — we must not steal those for navigation chords. Exported so the detached
+ *  popout's keyboard hook applies the exact same "don't shadow a focused text
+ *  field / xterm textarea" rule as the main window. */
+export function isEditableTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el) return false;
   const tag = el.tagName;

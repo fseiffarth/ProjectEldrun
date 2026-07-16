@@ -968,6 +968,54 @@ select option {
   border-color: var(--text-muted);
 }
 
+/* #py Run/Debug: the wrapper anchors the right-click "arguments" popover. */
+.file-viewer-run-controls {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* Right-click-Run "arguments" popover — canonical panel chrome (see the menu
+   layout convention): explicit colours so a portal-free child never inherits
+   the body's default black text. */
+.file-viewer-run-args {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+  padding: 8px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.file-viewer-run-args-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.file-viewer-run-args-input {
+  background: var(--bg-input, var(--bg-panel));
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+.file-viewer-run-args-input:focus {
+  outline: none;
+  border-color: var(--accent, #4493f8);
+}
+.file-viewer-run-args-row {
+  display: flex;
+  gap: 4px;
+}
+
 /* #45 in-tab AI-assist controls: Autocomplete on/off + length mode, Grammar
    on/off. Same chrome as the save/format buttons; the "active" (enabled) state is
    accent-filled so it's obvious at a glance whether each is on for this tab. */
@@ -6925,6 +6973,68 @@ select option {
   font-style: italic;
 }
 
+/* #py right-click-Run "arguments" popover on a file-tree row. A transparent
+   full-window backdrop catches the outside click that closes it; the panel is
+   pinned at the cursor (clamped on-screen by useClampToViewport). Canonical
+   panel chrome + explicit colours (a portal child inherits none). */
+.file-run-args-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+.file-run-args {
+  position: fixed;
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 240px;
+  padding: 8px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.36);
+}
+.file-run-args-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-run-args-input {
+  background: var(--bg-input, var(--control-bg));
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+.file-run-args-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.file-run-args-row {
+  display: flex;
+  gap: 6px;
+}
+.file-run-args-btn {
+  flex: 1;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.file-run-args-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
 /* ── Context menus ───────────────────────────────────────────────────── */
 .context-menu {
   position: fixed;
@@ -7135,10 +7245,17 @@ select option {
   padding: 4px;
 }
 
-.file-tree-breadcrumb {
+/* The pinned header (remote bar + search + breadcrumb). ONE sticky element so
+   its rows stack in flow instead of each sticking to top:0 and overlapping —
+   the path line used to hide behind the search box. Sits above the tree rows. */
+.file-tree-head {
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 3;
+  background: var(--bg-panel);
+}
+
+.file-tree-breadcrumb {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -7167,9 +7284,6 @@ select option {
 /* In-tree search (filename + content), shared by the right panel and the
    Files (Project) tab since both render FileTree. */
 .file-tree-search {
-  position: sticky;
-  top: 0;
-  z-index: 3;
   display: flex;
   flex-direction: column;
   gap: 3px;
