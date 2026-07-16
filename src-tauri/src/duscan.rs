@@ -427,8 +427,8 @@ fn build_remote(
 // ── Capacity ──────────────────────────────────────────────────────────────────
 
 /// `(total, available)` bytes of the filesystem holding `path`. `None` where the
-/// platform gives us no portable answer (Windows), in which case the pane simply
-/// omits its capacity bar.
+/// platform gives us no answer, in which case the pane simply omits its
+/// capacity bar.
 #[cfg(unix)]
 pub fn capacity_of(path: &Path) -> Option<(u64, u64)> {
     use std::ffi::CString;
@@ -449,7 +449,33 @@ pub fn capacity_of(path: &Path) -> Option<(u64, u64)> {
     Some((total, free))
 }
 
-#[cfg(not(unix))]
+/// Windows: `GetDiskFreeSpaceExW` on the volume holding `path`. Total-bytes and
+/// caller-available bytes (quota-aware), matching the Unix arm's
+/// `f_blocks`/`f_bavail` semantics.
+#[cfg(windows)]
+pub fn capacity_of(path: &Path) -> Option<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut avail: u64 = 0;
+    let mut total: u64 = 0;
+    // SAFETY: `wide` is a valid NUL-terminated UTF-16 string for the duration of
+    // the call; the out-params are plain u64s the API fills on success.
+    unsafe {
+        GetDiskFreeSpaceExW(
+            PCWSTR(wide.as_ptr()),
+            Some(&mut avail as *mut u64),
+            Some(&mut total as *mut u64),
+            None,
+        )
+        .ok()?;
+    }
+    Some((total, avail))
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn capacity_of(_path: &Path) -> Option<(u64, u64)> {
     None
 }
@@ -481,6 +507,16 @@ mod tests {
 
     fn no_cancel() -> AtomicBool {
         AtomicBool::new(false)
+    }
+
+    /// The capacity probe answers for the volume holding the home dir on every
+    /// OS we ship (statvfs on Unix, GetDiskFreeSpaceExW on Windows) — this used
+    /// to be `None` on Windows, silently dropping the pane's capacity bar.
+    #[test]
+    fn capacity_of_home_reports_a_plausible_volume() {
+        let (total, free) = capacity_of(&crate::paths::home_dir()).expect("capacity");
+        assert!(total > 0, "volume total should be non-zero");
+        assert!(free <= total, "free bytes cannot exceed the volume size");
     }
 
     fn scan(root: &Path) -> DuScan {

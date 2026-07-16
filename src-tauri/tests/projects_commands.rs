@@ -40,28 +40,47 @@ fn test_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Every env var the backend resolves user-state locations from. `HOME` feeds
+/// `paths::home_dir`/`storage::state_dir` on Unix; on Windows `home_dir` reads
+/// `USERPROFILE` (then `HOMEDRIVE`/`HOMEPATH`) and `state_dir` reads `APPDATA` —
+/// overriding only `HOME` there sent every test write into the REAL
+/// `~\eldrun\projects` and `%APPDATA%\eldrun\projects.json` (junk projects in
+/// the user's live store). All of them must point into the temp home.
+const HOME_ENV_KEYS: &[&str] = &["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA"];
+
 struct HomeGuard {
-    old_home: Option<std::ffi::OsString>,
+    old: Vec<(&'static str, Option<std::ffi::OsString>)>,
 }
 
 impl HomeGuard {
     fn set(home: &Path) -> Self {
-        let old_home = env::var_os("HOME");
-        // HOME is mutated only while holding the test lock.
+        // Env is mutated only while holding the test lock.
+        let old = HOME_ENV_KEYS
+            .iter()
+            .map(|&key| (key, env::var_os(key)))
+            .collect();
         unsafe {
             env::set_var("HOME", home);
+            env::set_var("USERPROFILE", home);
+            // Neutralize the HOMEDRIVE/HOMEPATH fallback rather than try to
+            // split a temp path into drive+path.
+            env::remove_var("HOMEDRIVE");
+            env::remove_var("HOMEPATH");
+            env::set_var("APPDATA", home.join("AppData").join("Roaming"));
         }
-        Self { old_home }
+        Self { old }
     }
 }
 
 impl Drop for HomeGuard {
     fn drop(&mut self) {
-        // Restore the caller's HOME as soon as the scoped test ends.
+        // Restore the caller's env as soon as the scoped test ends.
         unsafe {
-            match &self.old_home {
-                Some(home) => env::set_var("HOME", home),
-                None => env::remove_var("HOME"),
+            for (key, value) in &self.old {
+                match value {
+                    Some(v) => env::set_var(key, v),
+                    None => env::remove_var(key),
+                }
             }
         }
     }

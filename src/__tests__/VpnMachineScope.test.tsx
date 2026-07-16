@@ -19,9 +19,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(() => Promise.resolve(null)) }));
 
 import { VpnIndicator } from "../components/header/VpnIndicator";
 import { useProjectsStore, logoutRemote } from "../stores/projects";
@@ -31,6 +33,7 @@ import { useVpnPromptStore } from "../stores/vpnPrompt";
 import type { ProjectEntry } from "../types";
 
 const invokeMock = vi.mocked(invoke);
+const openDialogMock = vi.mocked(openDialog);
 
 const CONFIG = "/store/office.ovpn";
 
@@ -57,6 +60,8 @@ const disconnects = () =>
 
 beforeEach(() => {
   invokeMock.mockReset();
+  openDialogMock.mockReset();
+  openDialogMock.mockResolvedValue(null);
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === "openvpn_active") return Promise.resolve([]);
     return Promise.resolve();
@@ -212,6 +217,92 @@ describe("the header can bring a tunnel up, with no project behind it", () => {
     // on the way to it: that call *is* the polkit prompt.
     await waitFor(() => expect(useVpnPromptStore.getState().pending?.config).toBe(CONFIG));
     expect(invokeMock.mock.calls.filter(([name]) => name === "openvpn_connect")).toHaveLength(0);
+  });
+
+  /**
+   * With nothing stored, the header used to be a dead end: it told you to go add a
+   * config from some project's Connect dialog. A VPN with no project has no such
+   * dialog. So the empty state now carries a Connect button that browses for a
+   * `.ovpn`, stores it, and brings it straight up — no project required.
+   */
+  it("with no config stored, Connect browses for a .ovpn, stores it, then connects", async () => {
+    const PICKED = "/home/alice/Downloads/office.ovpn";
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "openvpn_active") return Promise.resolve([]);
+      if (cmd === "openvpn_list_configs") return Promise.resolve([]); // nothing stored yet
+      if (cmd === "openvpn_store_config") return Promise.resolve(CONFIG); // copied into the store
+      if (cmd === "vpn_can_connect_silently") return Promise.resolve(true);
+      return Promise.resolve();
+    });
+    openDialogMock.mockResolvedValue(PICKED);
+    render(<VpnIndicator />);
+
+    await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^connect…$/i }));
+
+    // The picked file is copied into Eldrun's store before anything is dialled.
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter(([name]) => name === "openvpn_store_config"),
+      ).toEqual([["openvpn_store_config", { config: PICKED }]]),
+    );
+    // …and then the stored copy — not the original path — is brought up.
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.filter(([name]) => name === "openvpn_connect")).toHaveLength(1),
+    );
+    const [, args] = invokeMock.mock.calls.find(([name]) => name === "openvpn_connect")!;
+    expect((args as { config: string }).config).toBe(CONFIG);
+    await waitFor(() =>
+      expect(useVpnStatusStore.getState().byConfig[CONFIG]).toBe("connected"),
+    );
+  });
+
+  it("cancelling the file browse stores and connects nothing", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "openvpn_active") return Promise.resolve([]);
+      if (cmd === "openvpn_list_configs") return Promise.resolve([]);
+      return Promise.resolve();
+    });
+    openDialogMock.mockResolvedValue(null); // user hit Cancel
+    render(<VpnIndicator />);
+
+    await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^connect…$/i }));
+
+    expect(invokeMock.mock.calls.filter(([name]) => name === "openvpn_store_config")).toHaveLength(0);
+    expect(invokeMock.mock.calls.filter(([name]) => name === "openvpn_connect")).toHaveLength(0);
+  });
+
+  /**
+   * The store is add-only and a VPN need not belong to a project, so switching to a
+   * different `.ovpn` can't require opening some project's Connect dialog. Even with
+   * configs already listed, a "Browse for a config…" action adds/switches through the
+   * same browse→store→connect path.
+   */
+  it("with configs stored, Browse adds a different .ovpn and connects it", async () => {
+    const OTHER_STORED = "/store/other.ovpn";
+    const PICKED = "/home/alice/Downloads/other.ovpn";
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "openvpn_active") return Promise.resolve([]);
+      if (cmd === "openvpn_list_configs") return Promise.resolve(STORED); // office.ovpn already stored
+      if (cmd === "openvpn_store_config") return Promise.resolve(OTHER_STORED);
+      if (cmd === "vpn_can_connect_silently") return Promise.resolve(true);
+      return Promise.resolve();
+    });
+    openDialogMock.mockResolvedValue(PICKED);
+    render(<VpnIndicator />);
+
+    await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /browse for a config/i }));
+
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter(([name]) => name === "openvpn_store_config"),
+      ).toEqual([["openvpn_store_config", { config: PICKED }]]),
+    );
+    await waitFor(() =>
+      expect(useVpnStatusStore.getState().byConfig[OTHER_STORED]).toBe("connected"),
+    );
   });
 
   it("is present even when nothing is up — that is how you find it", async () => {
