@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ConnLamp } from "../common/ConnLamp";
 import { Toggle } from "../common/Toggle";
 import { useProjectsStore } from "../../stores/projects";
@@ -131,6 +132,35 @@ export function VpnIndicator() {
     },
     [requestPassword, setVpnState],
   );
+
+  /**
+   * Connect with nothing stored yet: browse for a `.ovpn`, copy it into Eldrun's
+   * store (`openvpn_store_config`, the same import the Connect dialog uses), then
+   * connect it through the ordinary path above. Before this, a machine with no
+   * project and no stored config had no way to reach the tunnel from here at all —
+   * the header sent you off to a project's Connect dialog just to register a file.
+   */
+  const browseAndConnect = useCallback(async () => {
+    setError("");
+    const picked = await openDialog({
+      multiple: false,
+      filters: [{ name: "OpenVPN config", extensions: ["ovpn", "conf"] }],
+    }).catch(() => null);
+    if (typeof picked !== "string") return;
+    let stored: string;
+    try {
+      stored = await invoke<string>("openvpn_store_config", { config: picked });
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    setConfigs((prev) =>
+      prev.some((c) => c.path === stored)
+        ? prev
+        : [...prev, { path: stored, name: fileOf(stored) }],
+    );
+    await connect(stored);
+  }, [connect]);
 
   const live = Object.entries(byConfig).filter(
     ([, state]) => state === "connected" || state === "connecting",
@@ -278,10 +308,35 @@ export function VpnIndicator() {
             </>
           )}
 
-          {live.length === 0 && idle.length === 0 && (
-            <div className="vpn-indicator-empty">
-              No OpenVPN config stored yet. Add one from a remote project's Connect
-              dialog.
+          {live.length === 0 && idle.length === 0 ? (
+            <div className="vpn-indicator-row">
+              <div className="vpn-indicator-empty">
+                No OpenVPN config stored yet — browse for a <code>.ovpn</code> and it
+                connects straight away.
+              </div>
+              <button
+                type="button"
+                className="vpn-indicator-connect"
+                title="Pick a .ovpn file, store it in Eldrun, and bring the tunnel up. It will route this computer's traffic — not only Eldrun's."
+                onClick={() => void browseAndConnect()}
+              >
+                Connect…
+              </button>
+            </div>
+          ) : (
+            // Configs already exist, but you may want a different one — the store is
+            // add-only, so browsing here adds/switches without going through a
+            // project's Connect dialog. Same browse→store→connect path as the empty
+            // state; a cancelled browse changes nothing.
+            <div className="vpn-indicator-row vpn-indicator-browse">
+              <button
+                type="button"
+                className="vpn-indicator-connect"
+                title="Pick a different .ovpn file, store it in Eldrun, and bring it up. It will route this computer's traffic — not only Eldrun's."
+                onClick={() => void browseAndConnect()}
+              >
+                Browse for a config…
+              </button>
             </div>
           )}
           {error && <div className="vpn-indicator-error">{error}</div>}

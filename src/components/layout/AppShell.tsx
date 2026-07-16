@@ -590,6 +590,26 @@ export function AppShell() {
         {panelTarget && !panelsHidden && (
           <div className="tour-edge-marker" data-hint-anchor="file-tree-edge" aria-hidden />
         )}
+        {/* Always-visible CLICK affordance to open the (closed, unpinned) file
+            panel. The hover-only right-edge reveal (handleBodyMouseMove) depends
+            on WebView2 delivering mousemove in the last few edge pixels — which it
+            does NOT do reliably in the packaged Windows window, where the OS resize
+            border swallows them. That left no way to open the panel at all, and so
+            no way to reach the pin that lives inside it. A click is delivered even
+            where the mousemove stream isn't, so this is the reliable path; it
+            unmounts the moment the panel is open (revealRight). */}
+        {panelTarget && !panelsHidden && !revealRight && (
+          <button
+            type="button"
+            className="right-panel-reveal-handle"
+            aria-label="Show files panel"
+            title="Show files panel"
+            onClick={() => reveal(rightCloseTimer, setRightOpen)}
+            onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+        )}
       </div>
       <VpnPasswordPrompt />
       <RemoteConnectDialog />

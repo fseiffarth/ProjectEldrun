@@ -594,7 +594,10 @@ pub fn down_all() {
 pub fn sweep_orphans() {
     let stage_root = storage::state_dir().join("sandbox-stage");
     let _ = std::fs::remove_dir_all(&stage_root);
-    if preflight_docker().is_err() {
+    // Containers are Unix-only (`up_for_project` is a no-op and spawn refuses on
+    // Windows), so a previous run can't have left one behind — don't spawn
+    // `docker --version`/`docker ps` at every Windows startup for nothing.
+    if !cfg!(unix) || preflight_docker().is_err() {
         return;
     }
     remove_all_owned();

@@ -152,6 +152,10 @@ describe("network traffic calculations", () => {
 
   it("formats file counts with locale grouping", () => {
     expect(formatFileCount(0)).toBe("0");
-    expect(formatFileCount(1234)).toBe("1,234");
+    // The grouping separator is deliberately the *runtime's* locale ("," en,
+    // "." de, narrow-NBSP fr…), so pin the expectation to the same API rather
+    // than to en-US — hardcoding "1,234" fails on any non-English machine.
+    expect(formatFileCount(1234)).toBe((1234).toLocaleString());
+    expect(formatFileCount(1234)).toMatch(/^1\D234$/); // grouping did happen
   });
 });

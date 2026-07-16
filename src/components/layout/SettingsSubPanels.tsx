@@ -6,7 +6,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { GLOBAL_APP_ROLES } from "./GlobalAppBar";
 import { Dropdown } from "../common/Dropdown";
 import { useSettingsStore } from "../../stores/settings";
-import { IS_WINDOWS, PLATFORM } from "../../lib/platform";
+import { PLATFORM } from "../../lib/platform";
 import { runInstallInTab, type InstallShellKind } from "../../lib/installCommand";
 import {
   codexHookNeedsTrust,
@@ -521,10 +521,12 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
               </div>
               {!a.installed && (
                 <>
-                  {/* Auto-install runs the Unix installer via `sh`, so it only
-                      works on Linux/macOS. On Windows we show the manual
-                      PowerShell command instead. */}
-                  {!IS_WINDOWS && (
+                  {/* Auto-install runs the official installer via `sh` on
+                      Linux/macOS and via PowerShell/cmd on Windows. It is only
+                      hidden when this platform has no one-line installer at all
+                      (install_cmd empty — Windows-only case, see AgentInfo);
+                      the docs-link fallback below covers that. */}
+                  {a.install_cmd !== "" && (
                     <>
                       <div className="ollama-install-cmd-row">
                         <button
@@ -554,9 +556,10 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
                   )}
                   {a.install_cmd ? (
                     <>
+                      {/* Whenever install_cmd is non-empty the one-click button
+                          above is also shown, so this is always the "or". */}
                       <p className="settings-help">
-                        {IS_WINDOWS ? "Install it in a " : "Or install it in a "}
-                        <strong>{a.shell}</strong> terminal tab:
+                        Or install it in a <strong>{a.shell}</strong> terminal tab:
                       </p>
                       <div className="ollama-install-cmd-row">
                         <code className="ollama-install-cmd">{a.install_cmd}</code>

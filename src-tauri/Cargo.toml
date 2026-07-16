@@ -105,6 +105,9 @@ windows = { version = "0.61", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_IO",
     "Win32_System_Kernel",
+    # Unelevated OpenVPN connects through the interactive service: message-mode
+    # reads + PeekNamedPipe liveness probe on its control pipe (`services/openvpn.rs`).
+    "Win32_System_Pipes",
     # Per-process CPU/memory sampling + process-tree walk for the project resource
     # readout (the Windows analogue of Linux's `/proc` parsing in `sysstat.rs`).
     "Win32_System_Diagnostics_ToolHelp",

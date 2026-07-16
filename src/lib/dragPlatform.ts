@@ -11,8 +11,22 @@
 // OS detection lives in the dependency-free `platform.ts` single source of
 // truth; re-exported here so existing `dragPlatform` importers keep working.
 import { PLATFORM } from "./platform";
+// TEMPORARY (Windows drag QA — remove together with every releaseDbg call):
+// mirrors each gesture's terminal event into crash.log so a dead gesture can be
+// diagnosed without devtools. `invoke` throws outside a Tauri webview (vitest),
+// hence the try/catch.
+import { invoke } from "@tauri-apps/api/core";
 
 export { PLATFORM };
+
+// TEMPORARY drag QA logger — see import note above.
+function releaseDbg(message: string) {
+  try {
+    void invoke("report_frontend_error", { kind: "drag-debug", message, stack: null }).catch(() => {});
+  } catch {
+    /* diagnostics must never affect the gesture */
+  }
+}
 
 export interface DragPlatform {
   /**
@@ -73,6 +87,16 @@ export const dragPlatform: DragPlatform =
  *                       spurious WebKitGTK `blur` mid-drag must not abort the gesture
  *                       (keeps the working platform byte-for-byte unchanged).
  *
+ * Shift at commit: the terminal event's OWN `shiftKey` cannot be trusted on
+ * Windows — WebView2 ends these drags with a `pointercancel` it synthesizes
+ * (see `cancelCommits`), and a synthesized pointer event carries NO modifier
+ * state, so `ev.shiftKey` is always false there and the Shift gestures
+ * (force-a-new-window on tab/file drops) never fired. The binding therefore
+ * tracks the real Shift state itself — from keydown/keyup and from every
+ * `pointermove` (whose modifiers are trustworthy on all engines) — and commits
+ * with `ev.shiftKey || tracked`. Purely additive: a genuine `pointerup` with
+ * `shiftKey: true` behaves exactly as before, so Linux is unchanged.
+ *
  * Single-fire: the first terminal event unbinds the rest. Callers keep their own
  * idempotency guards (store `end()` is a no-op once cleared), so a redundant fire
  * elsewhere is harmless.
@@ -84,6 +108,13 @@ export function bindDragRelease(opts: {
 }): () => void {
   const target = opts.target ?? window;
   let done = false;
+  // Real Shift state, self-tracked because a WebView2-synthesized pointercancel
+  // reports no modifiers (see the doc comment above). keydown/keyup catch a
+  // Shift pressed while stationary; pointermove keeps it honest either way.
+  let shiftHeld = false;
+  const trackMove = (ev: PointerEvent) => {
+    shiftHeld = ev.shiftKey;
+  };
   const unbind = () => {
     if (target === window) {
       window.removeEventListener("pointerup", onUp);
@@ -92,7 +123,9 @@ export function bindDragRelease(opts: {
       target.removeEventListener("pointerup", onUp as EventListener);
       target.removeEventListener("pointercancel", onCancel as EventListener);
     }
+    window.removeEventListener("pointermove", trackMove);
     window.removeEventListener("keydown", onKey);
+    window.removeEventListener("keyup", onKeyUp);
     if (dragPlatform.needsPointerCapture) window.removeEventListener("blur", onBlur);
   };
   const fire = (fn: () => void) => {
@@ -101,15 +134,33 @@ export function bindDragRelease(opts: {
     unbind();
     fn();
   };
-  const onUp = (ev: PointerEvent) => fire(() => opts.onCommit(ev.shiftKey));
-  const onCancel = (ev: PointerEvent) =>
-    fire(() =>
-      dragPlatform.cancelCommits ? opts.onCommit(ev.shiftKey) : opts.onAbort(),
-    );
-  const onKey = (ev: KeyboardEvent) => {
-    if (ev.key === "Escape") fire(opts.onAbort);
+  const onUp = (ev: PointerEvent) => {
+    releaseDbg(`terminal pointerup shift=${ev.shiftKey} tracked=${shiftHeld}`); // TEMPORARY drag QA
+    fire(() => opts.onCommit(ev.shiftKey || shiftHeld));
   };
-  const onBlur = () => fire(opts.onAbort);
+  const onCancel = (ev: PointerEvent) => {
+    // TEMPORARY drag QA
+    releaseDbg(
+      `terminal pointercancel commits=${dragPlatform.cancelCommits} shift=${ev.shiftKey} tracked=${shiftHeld}`,
+    );
+    fire(() =>
+      dragPlatform.cancelCommits ? opts.onCommit(ev.shiftKey || shiftHeld) : opts.onAbort(),
+    );
+  };
+  const onKey = (ev: KeyboardEvent) => {
+    shiftHeld = ev.shiftKey;
+    if (ev.key === "Escape") {
+      releaseDbg("terminal escape → abort"); // TEMPORARY drag QA
+      fire(opts.onAbort);
+    }
+  };
+  const onKeyUp = (ev: KeyboardEvent) => {
+    shiftHeld = ev.shiftKey;
+  };
+  const onBlur = () => {
+    releaseDbg("terminal blur → abort"); // TEMPORARY drag QA
+    fire(opts.onAbort);
+  };
   if (target === window) {
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
@@ -117,7 +168,9 @@ export function bindDragRelease(opts: {
     target.addEventListener("pointerup", onUp as EventListener);
     target.addEventListener("pointercancel", onCancel as EventListener);
   }
+  window.addEventListener("pointermove", trackMove);
   window.addEventListener("keydown", onKey);
+  window.addEventListener("keyup", onKeyUp);
   if (dragPlatform.needsPointerCapture) window.addEventListener("blur", onBlur);
   return unbind;
 }

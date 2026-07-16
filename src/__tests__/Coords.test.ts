@@ -168,3 +168,57 @@ describe("dragPlatform — per-platform event flags", () => {
     });
   });
 });
+
+describe("bindDragRelease — Shift survives a modifier-less pointercancel", () => {
+  // WebView2 ends drags with a SYNTHESIZED pointercancel that carries no
+  // modifier state, so the binding must track Shift itself (keydown/keyup +
+  // pointermove) rather than trust the terminal event. jsdom has no
+  // PointerEvent; MouseEvent carries shiftKey and listeners match on type.
+  const original = Object.getOwnPropertyDescriptor(navigator, "platform");
+  async function loadFor(platform: string) {
+    Object.defineProperty(navigator, "platform", { value: platform, configurable: true });
+    vi.resetModules();
+    return (await import("../lib/dragPlatform")).bindDragRelease;
+  }
+  afterEach(() => {
+    if (original) Object.defineProperty(navigator, "platform", original);
+  });
+
+  it("commits shift=true from a prior shift-held pointermove (WebView2 cancel)", async () => {
+    const bind = await loadFor("Win32");
+    const onCommit = vi.fn();
+    const onAbort = vi.fn();
+    bind({ onCommit, onAbort });
+    window.dispatchEvent(new MouseEvent("pointermove", { shiftKey: true }));
+    window.dispatchEvent(new MouseEvent("pointercancel", { shiftKey: false }));
+    expect(onCommit).toHaveBeenCalledWith(true);
+    expect(onAbort).not.toHaveBeenCalled();
+  });
+
+  it("counts a Shift pressed while stationary (keydown, no pointermove)", async () => {
+    const bind = await loadFor("Win32");
+    const onCommit = vi.fn();
+    bind({ onCommit, onAbort: vi.fn() });
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", shiftKey: true }));
+    window.dispatchEvent(new MouseEvent("pointercancel", { shiftKey: false }));
+    expect(onCommit).toHaveBeenCalledWith(true);
+  });
+
+  it("a Shift released again before the drop commits shift=false", async () => {
+    const bind = await loadFor("Win32");
+    const onCommit = vi.fn();
+    bind({ onCommit, onAbort: vi.fn() });
+    window.dispatchEvent(new MouseEvent("pointermove", { shiftKey: true }));
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", shiftKey: false }));
+    window.dispatchEvent(new MouseEvent("pointercancel", { shiftKey: false }));
+    expect(onCommit).toHaveBeenCalledWith(false);
+  });
+
+  it("a genuine pointerup keeps its own shiftKey (Linux unchanged)", async () => {
+    const bind = await loadFor("Linux x86_64");
+    const onCommit = vi.fn();
+    bind({ onCommit, onAbort: vi.fn() });
+    window.dispatchEvent(new MouseEvent("pointerup", { shiftKey: true }));
+    expect(onCommit).toHaveBeenCalledWith(true);
+  });
+});

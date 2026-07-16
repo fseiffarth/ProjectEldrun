@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../lib/dragPlatform";
-import { IS_MAC } from "../lib/platform";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
@@ -41,7 +40,8 @@ function isEditableTarget(target: EventTarget | null): boolean {
  * The navigation chords are user-rebindable (see `src/lib/shortcuts.ts` and the
  * "Keyboard Shortcuts" settings panel); the defaults below are applied when
  * `settings.keyboard_shortcuts` has no override for an action. F11 (OS
- * fullscreen), Super (panels) and Escape (exit fullscreen) are fixed.
+ * fullscreen), Super/F9 (panels — Super on Linux, F9 on Windows where the lone
+ * Win key belongs to the OS) and Escape (exit fullscreen) are fixed.
  *
  * Default bindings:
  *   - Ctrl+Enter           → toggle fullscreen for the focused subwindow
@@ -75,11 +75,23 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Super key — toggle right panel. Disabled on macOS: there Cmd reports as
+      // Super key — toggle right panel. Linux only: on macOS Cmd reports as
       // "Meta" and is the platform-primary shortcut modifier (see
       // shortcuts.chordMatches), so a lone-key toggle would fire on every Cmd+key
-      // chord. Mac users reveal the panels via the cursor-to-edge hover instead.
-      if (!IS_MAC && (e.key === "Meta" || e.key === "Super")) {
+      // chord. On Windows the lone Win key belongs to the OS — the Start menu
+      // opens on key *release* at the shell level and preventDefault() cannot
+      // stop it, and every global Win+X shortcut pressed while Eldrun is focused
+      // fires a lone "Meta" keydown first, spuriously toggling the panels.
+      // Windows therefore uses F9 (below) instead.
+      if (PLATFORM === "linux" && (e.key === "Meta" || e.key === "Super")) {
+        e.preventDefault();
+        onTogglePanels();
+        return;
+      }
+
+      // F9 — panel toggle on Windows (see above; also harmless elsewhere, but
+      // only advertised on Windows to keep the per-OS onboarding copy simple).
+      if (e.key === "F9") {
         e.preventDefault();
         onTogglePanels();
         return;

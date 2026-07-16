@@ -31,14 +31,15 @@ import { PasswordInput } from "../common/PasswordInput";
 import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
 
-// The workspace-layout help text. On Linux/Windows a lone modifier (Super / the
-// Windows key) toggles the panels; on macOS that key is reserved for Cmd
-// shortcuts, so the lone-key toggle is disabled (see useKeyboard) — there the
-// panels stay reachable via the cursor-to-edge reveal. Keep the copy honest per OS.
+// The workspace-layout help text. On Linux a lone Super toggles the panels; on
+// Windows it's F9 (the lone Win key is OS-reserved — Start opens on release, see
+// useKeyboard); on macOS the Meta key is reserved for Cmd shortcuts, so the
+// lone-key toggle is disabled — there the panels stay reachable via the
+// cursor-to-edge reveal. Keep the copy honest per OS.
 const WORKSPACE_LAYOUT_INTRO = IS_MAC
   ? "Eldrun keeps your AI-assisted development in a single window. Push your cursor to a screen edge to reveal the panels, and press F11 for fullscreen."
   : `Eldrun keeps your AI-assisted development in a single window. Press ${
-      IS_WINDOWS ? "the Windows key" : "Super"
+      IS_WINDOWS ? "F9" : "Super"
     } while Eldrun is focused to toggle the panels, and F11 for fullscreen.`;
 
 /** A toggle with an explanatory paragraph, as one card (matches .settings-nav-item

@@ -199,9 +199,10 @@ fn kill_root_pid(pid: i32) {
         .output();
 }
 
-/// Windows has no privilege escalation to reach for: `openvpn.exe` was started
-/// from an already-elevated context, so `taskkill /F` either works or the user
-/// wasn't elevated to begin with.
+/// Windows analog: `taskkill /F`. A service-started tunnel's `openvpn.exe` runs
+/// with this user's token (the privilege lives in the interactive service), so
+/// an unelevated kill reaches it; a direct-spawn tunnel was started from an
+/// already-elevated context, whose `taskkill` is equally elevated.
 #[cfg(target_os = "windows")]
 fn kill_root_pid(pid: i32) {
     let _ = crate::paths::command_no_window("taskkill")
@@ -439,7 +440,8 @@ pub fn openvpn_available() -> bool {
 ///   encrypted private key.
 ///
 /// Shape: `--config <cfg> [--auth-user-pass <f>] [--askpass <f>] --auth-nocache
-///         --writepid <pidfile> --connect-timeout 20 --connect-retry-max 3`.
+///         --writepid <pidfile> --connect-timeout 20 --connect-retry-max 3
+///         --verb 3 --mute 0`.
 pub fn openvpn_args(
     config: &str,
     userpass_file: Option<&Path>,
@@ -468,6 +470,17 @@ pub fn openvpn_args(
         "20".to_string(),
         "--connect-retry-max".to_string(),
         "3".to_string(),
+        // Readiness is detected by watching OpenVPN's output for READY_MARKER,
+        // so logging must be deterministic no matter what the config says: a
+        // config's `mute N` suppresses consecutive same-category lines — the
+        // marker follows a burst of route additions, so it was exactly the line
+        // a `mute 16` swallowed, and Eldrun then "timed out" on (and killed) a
+        // tunnel that was up. `verb 0` would hide the marker the same way.
+        // Command-line options are applied after `--config`, so these override.
+        "--verb".to_string(),
+        "3".to_string(),
+        "--mute".to_string(),
+        "0".to_string(),
     ]);
     Ok(args)
 }
@@ -782,6 +795,14 @@ pub fn is_connected(config: &str) -> bool {
             return true;
         }
     }
+    // A service-started tunnel (Windows): the control pipe is the liveness
+    // signal — the service closes it when the openvpn.exe it spawned exits.
+    #[cfg(target_os = "windows")]
+    {
+        if svc_connected(config) {
+            return true;
+        }
+    }
     // Not one of ours — but an *interactive* tunnel (started in a terminal tab) is
     // just as up, and just as much in charge of the machine's routing.
     interactive_connected(config)
@@ -833,6 +854,8 @@ pub fn is_connected(config: &str) -> bool {
 pub fn active_configs() -> Vec<String> {
     let mut keys: Vec<String> = registry().lock().unwrap().keys().cloned().collect();
     keys.extend(interactive_registry().lock().unwrap().keys().cloned());
+    #[cfg(target_os = "windows")]
+    keys.extend(svc_registry().lock().unwrap().keys().cloned());
     keys.sort();
     keys.dedup();
     keys.into_iter().filter(|c| is_connected(c)).collect()
@@ -1084,28 +1107,399 @@ pub fn disconnect_all() {
     let keys: Vec<String> = {
         let reg = registry().lock().unwrap();
         let interactive = interactive_registry().lock().unwrap();
-        reg.keys().chain(interactive.keys()).cloned().collect()
+        #[cfg(target_os = "windows")]
+        let svc = svc_registry().lock().unwrap();
+        let keys = reg.keys().chain(interactive.keys());
+        #[cfg(target_os = "windows")]
+        let keys = keys.chain(svc.keys());
+        keys.cloned().collect()
     };
     for k in keys {
         let _ = disconnect(&k);
     }
 }
 
-// --- Windows: best-effort tunnel management --------------------------------
+// --- Windows: interactive-service-first tunnel management --------------------
 //
-// Windows has no `pkexec`/polkit, so there is no non-interactive privilege
-// escalation analogue. OpenVPN on Windows instead expects to run either elevated
-// (Administrator) or via the bundled OpenVPN interactive service. Eldrun spawns
-// `openvpn.exe` directly with the same `--askpass`-file credential flow as Linux
-// (the askpass file is cross-platform), suppressing the console window, parsing
-// stdout for the ready marker, and tracking the child so teardown can terminate
-// it via its handle / `taskkill`.
+// Windows has no `pkexec`/polkit, but it has something better suited: the
+// **OpenVPN Interactive Service** (`OpenVPNServiceInteractive`, installed and
+// auto-started by the community installer), which exists precisely so an
+// UNELEVATED client can bring a tunnel up. The client sends one startup
+// message over `\\.\pipe\openvpn\service` — three NUL-terminated UTF-16LE
+// strings: working directory, openvpn command line, stdin data — and the
+// SYSTEM service spawns `openvpn.exe` with the *client's* token, appending a
+// `--msg-channel` through which the privileged work (TUN adapter open, routes,
+// DNS) is done by the service itself. It replies `0x%08x\n%ls\n%ls`: code 0 +
+// the spawned pid on success, an error code + text otherwise. The service also
+// ties the tunnel to the client: when the pipe drops or the process exits, it
+// reverts the routes/DNS it applied (its undo lists) — a service-started
+// tunnel can never outlive Eldrun with the machine's routing still changed.
 //
-// NOTE (runtime-verify): creating the VPN adapter (TAP/Wintun) typically needs
-// Administrator rights. If Eldrun is not elevated, the spawn or the handshake
-// will fail and the error message points the user at running as Administrator.
-// A non-elevated flow would require integrating with the OpenVPN interactive
-// service (named-pipe IPC), which is out of scope and needs runtime testing.
+// `connect_streaming` therefore tries the service FIRST. The service owns the
+// spawned process's stdio, so the handshake is followed by tailing a `--log`
+// file (`wait_for_ready_logfile`, shared with macOS). Authorization caveat: a
+// user who is neither elevated nor a member of the "OpenVPN Administrators"
+// local group may only use configs inside the machine config directory —
+// Eldrun's stored configs live under %APPDATA%, so [`explain_service_refusal`]
+// turns that refusal into the one-time `net localgroup` fix.
+//
+// Only when the service pipe does not exist (service not installed / not
+// running) does the old path run: spawn `openvpn.exe` directly with the same
+// `--askpass`-file credential flow as Linux, parsing stdout for the ready
+// marker — which only works when Eldrun itself is elevated (creating the
+// TAP/Wintun adapter needs Administrator rights), and the error messages say so.
+
+/// Quote one argument for a Windows command line so `CommandLineToArgvW` —
+/// which the interactive service uses to parse the options string — reads it
+/// back as a single argv item. MSVCRT rules: backslashes are literal except in
+/// front of a `"`, where each doubles and the quote itself is escaped; trailing
+/// backslashes double so they can't eat the closing quote. Compiled cfg-free
+/// for Linux-run unit tests.
+pub fn win_cmdline_quote(arg: &str) -> String {
+    if !arg.is_empty() && !arg.chars().any(|c| matches!(c, ' ' | '\t' | '"')) {
+        return arg.to_string();
+    }
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for ch in arg.chars() {
+        match ch {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.extend(std::iter::repeat('\\').take(backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.extend(std::iter::repeat('\\').take(backslashes));
+                out.push(ch);
+                backslashes = 0;
+            }
+        }
+    }
+    out.extend(std::iter::repeat('\\').take(backslashes * 2));
+    out.push('"');
+    out
+}
+
+/// Join an argv into the single options string the service startup message
+/// carries (the service re-parses it with `CommandLineToArgvW`).
+pub fn svc_options_string(args: &[String]) -> String {
+    args.iter()
+        .map(|a| win_cmdline_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Encode the interactive service's startup message: three NUL-terminated
+/// UTF-16LE strings back to back — working directory, openvpn command line
+/// (WITHOUT the program name; the service prepends its registered exe), and
+/// stdin data (empty here: credentials travel in files, as on every other
+/// platform). Compiled cfg-free for Linux-run unit tests.
+pub fn svc_startup_message(workdir: &str, options: &str, stdin_data: &str) -> Vec<u8> {
+    let mut msg = Vec::with_capacity((workdir.len() + options.len() + stdin_data.len() + 3) * 2);
+    for s in [workdir, options, stdin_data] {
+        for unit in s.encode_utf16().chain(std::iter::once(0)) {
+            msg.extend_from_slice(&unit.to_le_bytes());
+        }
+    }
+    msg
+}
+
+/// A decoded reply from the interactive service: `0x%08x\n%ls\n%ls` in
+/// UTF-16LE. `code` 0 is success, with `detail` carrying the spawned
+/// `openvpn.exe` pid (also `0x%08x`); otherwise `detail`/`message` are the
+/// failing function and its error text.
+pub struct SvcResponse {
+    pub code: u32,
+    pub detail: String,
+    pub message: String,
+}
+
+/// Parse a service reply. `None` when the bytes aren't the expected shape —
+/// the caller reports an unrecognized reply rather than inventing a verdict.
+pub fn svc_parse_response(bytes: &[u8]) -> Option<SvcResponse> {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let text = String::from_utf16_lossy(&units);
+    let text = text.trim_end_matches('\0');
+    let mut lines = text.splitn(3, '\n');
+    let code = lines.next()?.trim();
+    let code = u32::from_str_radix(code.trim_start_matches("0x"), 16).ok()?;
+    Some(SvcResponse {
+        code,
+        detail: lines.next().unwrap_or("").trim().to_string(),
+        message: lines.next().unwrap_or("").trim().to_string(),
+    })
+}
+
+/// The pid the service reports on success (`code` 0, pid in `detail`).
+pub fn svc_response_pid(resp: &SvcResponse) -> Option<u32> {
+    if resp.code != 0 {
+        return None;
+    }
+    u32::from_str_radix(resp.detail.trim_start_matches("0x"), 16).ok()
+}
+
+/// Turn a service refusal into an actionable message. The refusal a non-admin
+/// actually hits is the authorization check (Eldrun's stored configs are not
+/// inside the machine config directory), and the fix is the one-time group
+/// membership the official OpenVPN GUI also sets up — so say exactly that,
+/// keeping the raw service text for everything else. The group's member list
+/// is re-read per connect, so no re-logon is needed after adding.
+pub fn explain_service_refusal(resp: &SvcResponse) -> String {
+    let raw = match (resp.message.is_empty(), resp.detail.is_empty()) {
+        (false, false) => format!("{} ({})", resp.message, resp.detail),
+        (false, true) => resp.message.clone(),
+        (true, false) => resp.detail.clone(),
+        (true, true) => format!("error 0x{:08x}", resp.code),
+    };
+    format!(
+        "the OpenVPN Interactive Service refused to start the tunnel: {raw} — if this is \
+         an authorization error, add your account to the \"OpenVPN Administrators\" group \
+         once (from an elevated prompt: net localgroup \"OpenVPN Administrators\" \
+         \"%USERNAME%\" /add) and reconnect"
+    )
+}
+
+/// The interactive service's control pipe (default instance name).
+#[cfg(target_os = "windows")]
+const SVC_PIPE: &str = r"\\.\pipe\openvpn\service";
+
+/// How long the service gets to answer the startup message. It only has to
+/// validate and `CreateProcess` — the handshake itself is tailed separately.
+#[cfg(target_os = "windows")]
+const SVC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A tunnel brought up through the interactive service: the control pipe
+/// (dropping it is the teardown signal — see [`disconnect`]), the spawned
+/// `openvpn.exe` pid, and the runtime files to reap.
+#[cfg(target_os = "windows")]
+struct SvcVpn {
+    pipe: std::fs::File,
+    pid: u32,
+    pidfile: PathBuf,
+    logfile: PathBuf,
+}
+
+/// Registry of service-started tunnels, keyed by config path (the Windows
+/// third registry, alongside [`registry`] and [`interactive_registry`]).
+#[cfg(target_os = "windows")]
+fn svc_registry() -> &'static Mutex<HashMap<String, SvcVpn>> {
+    static REG: OnceLock<Mutex<HashMap<String, SvcVpn>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Open the service control pipe. `None` = no interactive service on this
+/// machine (pipe absent) — the caller falls back to the direct spawn. A busy
+/// pipe (another client connecting this instant) is retried briefly: the
+/// service re-creates its listening instance right after each accept.
+#[cfg(target_os = "windows")]
+fn svc_open_pipe() -> Option<std::fs::File> {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    for _ in 0..5 {
+        match std::fs::OpenOptions::new().read(true).write(true).open(SVC_PIPE) {
+            Ok(pipe) => return Some(pipe),
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Bytes waiting on `pipe`, or `None` when the service end is closed. The
+/// service closes the pipe when the `openvpn.exe` it spawned for us exits, so
+/// `None` doubles as "tunnel over".
+#[cfg(target_os = "windows")]
+fn pipe_avail(pipe: &std::fs::File) -> Option<usize> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Pipes::PeekNamedPipe;
+    let mut avail = 0u32;
+    unsafe {
+        PeekNamedPipe(
+            HANDLE(pipe.as_raw_handle()),
+            None,
+            0,
+            None,
+            Some(&mut avail),
+            None,
+        )
+    }
+    .ok()
+    .map(|()| avail as usize)
+}
+
+/// Liveness probe for a service tunnel, draining (and discarding) any pending
+/// service chatter so the pipe buffer can never fill up and stall the service.
+#[cfg(target_os = "windows")]
+fn pipe_alive(pipe: &std::fs::File) -> bool {
+    use std::io::Read;
+    match pipe_avail(pipe) {
+        None => false,
+        Some(0) => true,
+        Some(n) => {
+            let mut scratch = vec![0u8; n];
+            let mut reader: &std::fs::File = pipe;
+            let _ = reader.read(&mut scratch);
+            true
+        }
+    }
+}
+
+/// Read the service's reply to the startup message: poll for bytes (a named
+/// pipe read would block indefinitely), then take everything available —
+/// message-read mode was set at connect, so that is exactly one reply. `None`
+/// on timeout or a broken pipe.
+#[cfg(target_os = "windows")]
+fn svc_read_response(pipe: &mut std::fs::File, timeout: Duration) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let start = Instant::now();
+    loop {
+        let avail = pipe_avail(pipe)?;
+        if avail > 0 {
+            let mut buf = vec![0u8; avail];
+            let n = pipe.read(&mut buf).ok()?;
+            buf.truncate(n);
+            return Some(buf);
+        }
+        if start.elapsed() >= timeout {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Outcome of a service-first connect: `Done` is authoritative — the service
+/// was there, and its verdict (up, or why not) is the connect's. Only
+/// `Unavailable` (no pipe: service not installed / not running) falls back to
+/// the direct spawn.
+#[cfg(target_os = "windows")]
+enum SvcAttempt {
+    Done(Result<(), String>),
+    Unavailable,
+}
+
+/// Ask the interactive service to bring the tunnel up (see the section comment
+/// for the protocol). `args` is the argv [`openvpn_args`] built; the caller
+/// still owns the credential files' lifetime.
+#[cfg(target_os = "windows")]
+fn svc_connect_streaming(
+    config: &str,
+    stem: &str,
+    args: &[String],
+    pidfile: &Path,
+    on_line: &impl Fn(&str),
+) -> SvcAttempt {
+    let Some(mut pipe) = svc_open_pipe() else {
+        return SvcAttempt::Unavailable;
+    };
+    // Message-read mode, so each service reply comes out of `read` whole.
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_READMODE_MESSAGE};
+        let mode = PIPE_READMODE_MESSAGE;
+        let _ = unsafe {
+            SetNamedPipeHandleState(HANDLE(pipe.as_raw_handle()), Some(&mode), None, None)
+        };
+    }
+
+    // The service owns the spawned process's stdio, so the handshake is tailed
+    // from a logfile instead (the macOS pattern). Start clean: a stale logfile
+    // would satisfy the tail spuriously.
+    let logfile = runtime_dir().join(format!("{stem}.svc.log"));
+    let _ = std::fs::remove_file(&logfile);
+    let mut svc_args = args.to_vec();
+    svc_args.push("--log".to_string());
+    svc_args.push(logfile.to_string_lossy().into_owned());
+
+    // Working dir = the config's directory, so relative paths inside the config
+    // (ca/cert/key) resolve the same as for a direct spawn.
+    let workdir = Path::new(config)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let msg = svc_startup_message(&workdir, &svc_options_string(&svc_args), "");
+    if pipe.write_all(&msg).is_err() {
+        return SvcAttempt::Done(Err(
+            "could not send the connect request to the OpenVPN Interactive Service".to_string(),
+        ));
+    }
+
+    let resp = match svc_read_response(&mut pipe, SVC_RESPONSE_TIMEOUT) {
+        Some(bytes) => match svc_parse_response(&bytes) {
+            Some(resp) => resp,
+            None => {
+                return SvcAttempt::Done(Err(
+                    "unrecognized reply from the OpenVPN Interactive Service".to_string(),
+                ));
+            }
+        },
+        None => {
+            return SvcAttempt::Done(Err(
+                "the OpenVPN Interactive Service did not answer the connect request".to_string(),
+            ));
+        }
+    };
+    let Some(pid) = svc_response_pid(&resp) else {
+        return SvcAttempt::Done(Err(explain_service_refusal(&resp)));
+    };
+    on_line(&format!(
+        "OpenVPN Interactive Service started openvpn.exe (pid {pid})"
+    ));
+
+    let ready = wait_for_ready_logfile(
+        &logfile,
+        CONNECT_TIMEOUT,
+        Duration::from_millis(300),
+        || pipe_alive(&pipe),
+        |line| on_line(line),
+    );
+    match ready {
+        Ok(()) => {
+            svc_registry().lock().unwrap().insert(
+                config.to_string(),
+                SvcVpn {
+                    pipe,
+                    pid,
+                    pidfile: pidfile.to_path_buf(),
+                    logfile,
+                },
+            );
+            SvcAttempt::Done(Ok(()))
+        }
+        Err(msg) => {
+            // Kill the half-up tunnel; the service sees the exit, reverts any
+            // routes/DNS it applied (its undo lists), and closes the pipe.
+            kill_root_pid(pid as i32);
+            let _ = std::fs::remove_file(&logfile);
+            SvcAttempt::Done(Err(explain_openvpn_error(&msg).unwrap_or(msg)))
+        }
+    }
+}
+
+/// Whether the service-started tunnel for `config` is still up; a dead entry
+/// (service closed the pipe: its openvpn exited) is reaped with its files.
+#[cfg(target_os = "windows")]
+fn svc_connected(config: &str) -> bool {
+    let mut reg = svc_registry().lock().unwrap();
+    match reg.get(config) {
+        Some(svc) if pipe_alive(&svc.pipe) => true,
+        Some(_) => {
+            if let Some(dead) = reg.remove(config) {
+                let _ = std::fs::remove_file(&dead.pidfile);
+                let _ = std::fs::remove_file(&dead.logfile);
+            }
+            false
+        }
+        None => false,
+    }
+}
 
 /// Actionable "openvpn not found" message for Windows.
 #[cfg(target_os = "windows")]
@@ -1137,8 +1531,9 @@ fn resolve_openvpn() -> Option<PathBuf> {
 }
 
 /// Like [`connect`], but invokes `on_line` for every line OpenVPN emits while the
-/// tunnel comes up (stdout + stderr), so the caller can stream the live handshake
-/// into a read-only log.
+/// tunnel comes up, so the caller can stream the live handshake into a read-only
+/// log. Interactive-service-first (see the section comment); the direct spawn
+/// below is only the fallback for a machine without the service.
 #[cfg(target_os = "windows")]
 pub fn connect_streaming(
     config: &str,
@@ -1155,7 +1550,6 @@ pub fn connect_streaming(
     if is_connected(config) {
         return Ok(());
     }
-    let exe = resolve_openvpn().ok_or_else(|| OPENVPN_MISSING.to_string())?;
 
     let stem = safe_stem(config);
     // Feed the secrets through whichever channels the config actually reads —
@@ -1175,6 +1569,21 @@ pub fn connect_streaming(
         }
     };
 
+    // Service first: its verdict is final. Only a missing service (no pipe)
+    // falls through to the direct spawn, which needs an elevated Eldrun.
+    match svc_connect_streaming(config, &stem, &args, &pidfile, &on_line) {
+        SvcAttempt::Done(result) => {
+            remove_credfiles();
+            return result;
+        }
+        SvcAttempt::Unavailable => {}
+    }
+
+    let Some(exe) = resolve_openvpn() else {
+        remove_credfiles();
+        return Err(OPENVPN_MISSING.to_string());
+    };
+
     // `command_no_window` adds CREATE_NO_WINDOW so the long-lived openvpn.exe
     // does not own a flashing console window.
     let spawn_result = crate::paths::command_no_window(&exe)
@@ -1189,8 +1598,8 @@ pub fn connect_streaming(
         Err(e) => {
             remove_credfiles();
             return Err(format!(
-                "failed to launch openvpn.exe: {e} — creating the VPN adapter usually \
-                 requires running Eldrun as Administrator"
+                "failed to launch openvpn.exe: {e} — the OpenVPN Interactive Service is not \
+                 running, and a direct spawn needs Eldrun itself to run as Administrator"
             ));
         }
     };
@@ -1214,19 +1623,35 @@ pub fn connect_streaming(
             // adapter/Administrator hint to "wrong password" would just mislead.
             Err(explain_openvpn_error(&msg).unwrap_or_else(|| {
                 format!(
-                    "{msg} — if this is a permissions/adapter error, run Eldrun as \
-                     Administrator or (re)install the OpenVPN TAP/Wintun driver"
+                    "{msg} — if this is a permissions/adapter error, start the OpenVPN \
+                     Interactive Service (OpenVPNServiceInteractive) so Eldrun can connect \
+                     unelevated, run Eldrun as Administrator, or (re)install the OpenVPN \
+                     TAP/Wintun driver"
                 )
             }))
         }
     }
 }
 
-/// Tear down the tunnel for `config` if it is up. Best-effort: terminates the
-/// `openvpn.exe` child (and any descendants) via `taskkill /T`, then reaps it.
-/// A missing/already-dead tunnel is treated as success.
+/// Tear down the tunnel for `config` if it is up. Best-effort, three flavours:
+/// an interactive tunnel (typed into a terminal tab) by the pid it wrote; a
+/// service-started tunnel by user-level `taskkill` (its `openvpn.exe` runs with
+/// THIS user's token) plus dropping the control pipe — the service sees the
+/// exit, reverts the routes/DNS it applied, and closes its end; a direct-spawn
+/// child via `taskkill /T` on its handle. A missing/already-dead tunnel is
+/// treated as success.
 #[cfg(target_os = "windows")]
 pub fn disconnect(config: &str) -> Result<(), String> {
+    // An interactive tunnel has no child of ours — kill it by the pid it wrote
+    // (this was missing on Windows; Linux/macOS have always done it).
+    disconnect_interactive(config);
+    let svc = svc_registry().lock().unwrap().remove(config);
+    if let Some(svc) = svc {
+        kill_root_pid(svc.pid as i32);
+        drop(svc.pipe);
+        let _ = std::fs::remove_file(&svc.pidfile);
+        let _ = std::fs::remove_file(&svc.logfile);
+    }
     let proc = registry().lock().unwrap().remove(config);
     let Some(mut proc) = proc else {
         return Ok(());
@@ -1681,6 +2106,72 @@ mod tests {
     }
 
     #[test]
+    fn win_cmdline_quote_shapes() {
+        // No metacharacters → unquoted, byte for byte (backslashes are literal).
+        assert_eq!(win_cmdline_quote("plain"), "plain");
+        assert_eq!(win_cmdline_quote(r"C:\dir\file.ovpn"), r"C:\dir\file.ovpn");
+        assert_eq!(win_cmdline_quote(r"end\"), r"end\");
+        // Spaces / emptiness force quotes.
+        assert_eq!(win_cmdline_quote("has space"), "\"has space\"");
+        assert_eq!(win_cmdline_quote(""), "\"\"");
+        // A quote inside: preceding backslashes double and the quote is escaped.
+        assert_eq!(win_cmdline_quote(r#"a"b"#), r#""a\"b""#);
+        assert_eq!(win_cmdline_quote(r#"a\"b"#), r#""a\\\"b""#);
+        // Trailing backslashes double so they can't eat the closing quote.
+        assert_eq!(win_cmdline_quote(r"e nd\"), "\"e nd\\\\\"");
+        // The options string is the quoted args joined by single spaces.
+        assert_eq!(
+            svc_options_string(&["--config".to_string(), r"C:\a b\c.ovpn".to_string()]),
+            r#"--config "C:\a b\c.ovpn""#
+        );
+    }
+
+    #[test]
+    fn svc_startup_message_is_three_nul_terminated_utf16_strings() {
+        // Non-ASCII on purpose: the message is UTF-16LE, not the ANSI codepage.
+        let msg = svc_startup_message("C:\\wä", "--config a.ovpn", "");
+        assert_eq!(msg.len() % 2, 0);
+        let units: Vec<u16> = msg
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        // Exactly three NULs, one terminating each string (the last is empty).
+        assert_eq!(units.iter().filter(|&&u| u == 0).count(), 3);
+        assert_eq!(units.last(), Some(&0));
+        let parts: Vec<String> = units
+            .split(|&u| u == 0)
+            .map(|p| String::from_utf16(p).unwrap())
+            .collect();
+        assert_eq!(parts, ["C:\\wä", "--config a.ovpn", "", ""]);
+    }
+
+    #[test]
+    fn svc_parse_response_reads_pid_and_refusals() {
+        let enc = |s: &str| -> Vec<u8> {
+            s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
+        };
+        // Success: code 0, pid on line 2 (both `0x%08x`), description on line 3.
+        let ok = svc_parse_response(&enc("0x00000000\n0x00001a2b\nProcess ID")).unwrap();
+        assert_eq!(ok.code, 0);
+        assert_eq!(svc_response_pid(&ok), Some(0x1a2b));
+        // Refusal: nonzero code — never a pid, and the explanation must carry
+        // both the service's own text and the actionable one-time fix.
+        let err = svc_parse_response(&enc(
+            "0x20000001\nValidateOptions\nconfig is not in the allowed location",
+        ))
+        .unwrap();
+        assert_eq!(err.code, 0x2000_0001);
+        assert_eq!(svc_response_pid(&err), None);
+        let msg = explain_service_refusal(&err);
+        assert!(msg.contains("config is not in the allowed location"), "{msg}");
+        assert!(msg.contains("OpenVPN Administrators"), "{msg}");
+        assert!(msg.contains("net localgroup"), "{msg}");
+        // Garbage is None, not a fabricated verdict.
+        assert!(svc_parse_response(&enc("not-a-code\nx\ny")).is_none());
+        assert!(svc_parse_response(&[]).is_none());
+    }
+
+    #[test]
     fn openvpn_args_askpass_shape() {
         let args = openvpn_args(
             "/home/u/work.ovpn",
@@ -1699,6 +2190,32 @@ mod tests {
         let pi = args.iter().position(|a| a == "--writepid").unwrap();
         assert_eq!(args[pi + 1], "/run/eldrun/openvpn/x.pid");
         assert!(args.iter().any(|a| a == "--auth-nocache"));
+    }
+
+    /// Readiness is detected by scanning OpenVPN's output for the
+    /// "Initialization Sequence Completed" marker, so the argv must pin the
+    /// logging knobs a config could otherwise sabotage it with: a `mute 16`
+    /// (as shipped in real configs) suppresses the marker — it follows a burst
+    /// of same-category route-addition lines — and Eldrun then reported
+    /// "timed out" on, and killed, a tunnel that was actually up. `verb 0`
+    /// hides the marker outright. Both are overridden because command-line
+    /// options are applied after `--config`.
+    #[test]
+    fn openvpn_args_pin_logging_so_the_ready_marker_survives() {
+        let args = openvpn_args(
+            "/home/u/work.ovpn",
+            None,
+            Some(Path::new("/run/eldrun/openvpn/x.pass")),
+            Path::new("/run/eldrun/openvpn/x.pid"),
+        )
+        .unwrap();
+        let vi = args.iter().position(|a| a == "--verb").unwrap();
+        assert_eq!(args[vi + 1], "3");
+        let mi = args.iter().position(|a| a == "--mute").unwrap();
+        assert_eq!(args[mi + 1], "0");
+        // Overrides only win from *after* the config file's own directives.
+        let ci = args.iter().position(|a| a == "--config").unwrap();
+        assert!(vi > ci && mi > ci);
     }
 
     #[test]

@@ -228,6 +228,14 @@ export function SystemMonitorPane({ visible }: Props) {
     () => (snap ? snap.per_core.map((c, i) => coreUsagePercent(pair?.prev?.per_core[i], c)) : []),
     [snap, pair],
   );
+  // Fallback when a backend can't enumerate per-core times (e.g. the Windows
+  // ntdll per-core query fails, or any OS returning an empty `per_core`): the
+  // aggregate `cpu` field is always populated, so show one machine-wide bar
+  // rather than an empty CPU section.
+  const aggregateUsage = useMemo(
+    () => (snap ? coreUsagePercent(pair?.prev?.cpu, snap.cpu) : 0),
+    [snap, pair],
+  );
 
   const arrow = (key: SortKey) => (key === sortKey ? (asc ? " ▲" : " ▼") : "");
 
@@ -245,9 +253,11 @@ export function SystemMonitorPane({ visible }: Props) {
         <>
           <div className="sysmon-header">
             <div className="sysmon-cores">
-              {coreUsages.map((pct, i) => (
-                <Meter key={i} label={`${i}`} pct={pct} />
-              ))}
+              {coreUsages.length > 0 ? (
+                coreUsages.map((pct, i) => <Meter key={i} label={`${i}`} pct={pct} />)
+              ) : (
+                <Meter label="CPU" pct={aggregateUsage} />
+              )}
             </div>
             <div className="sysmon-gauges">
               <Meter
