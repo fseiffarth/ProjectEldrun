@@ -5,6 +5,14 @@ import type { Settings, Theme, WindowState } from "../types";
 
 function applyTheme(scheme: string) {
   document.documentElement.setAttribute("data-theme", scheme);
+  // Cache for index.html's pre-paint inline script, so the next launch
+  // paints the right theme immediately instead of flashing the CSS
+  // :root default until settings arrive over the async invoke.
+  try {
+    localStorage.setItem("eldrun-theme", scheme);
+  } catch {
+    // localStorage unavailable — worst case is the old one-frame flash.
+  }
 }
 
 /** Global UI zoom (4K-monitor scaling). `1` is 100% (the current/default look);

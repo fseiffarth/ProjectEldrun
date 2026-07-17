@@ -198,6 +198,7 @@ export function openPythonTab(opts: {
     kind: "shell",
     env: { [PY_TARGET_ENV]: file, [PY_MODE_ENV]: mode },
     initialInput: command,
+    runFile: file,
   };
   // A placer OWNS insertion. It returns the created entry for a main-window store
   // write (which we then activate), or null when it streamed the tab elsewhere (a

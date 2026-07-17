@@ -50,7 +50,19 @@ describe("internalViewerFor", () => {
     expect(internalViewerFor(file("photo.png", ".png"))).toBe("image");
     expect(internalViewerFor(file("photo.jpg", ".jpg"))).toBe("image");
     expect(internalViewerFor(file("photo.jpeg", ".jpeg"))).toBe("image");
-    expect(internalViewerFor(file("anim.gif", ".gif"))).toBe("image");
+  });
+
+  it("maps .gif to the animated-GIF viewer (wins over the generic image viewer)", () => {
+    expect(internalViewerFor(file("anim.gif", ".gif"))).toBe("gif");
+    // Opting the transport out (#48) degrades to the image viewer — the webview
+    // still animates <img> GIFs natively, it just loses frame control.
+    expect(internalViewerFor(file("anim.gif", ".gif"), new Set(["gif"] as const))).toBe("image");
+    expect(
+      internalViewerFor(file("anim.gif", ".gif"), new Set(["gif", "image"] as const)),
+    ).toBeNull();
+    const disabled = disabledViewers({ gif: { enabled: false } });
+    expect(disabled.has("gif")).toBe(true);
+    expect(internalViewerFor(file("anim.gif", ".gif"), disabled)).toBe("image");
   });
 
   it("maps .html/.htm/.svg to the rendered-preview viewer (wins over text)", () => {

@@ -63,8 +63,10 @@ pub struct WindowRegistry {
     pub windows: HashMap<String, TrackedWindow>,
     /// Detached-subwindow display numbers, keyed by the window's stable label.
     /// Assigned in `detach_subwindow` (lowest free positive int) so each popout's
-    /// OS title reads "Eldrun win-N", and freed in `attach_subwindow` on
-    /// dock-back/close so numbers stay small and reuse freed slots.
+    /// OS title reads "Eldrun win-N", and freed on dock-back/close
+    /// (`attach_subwindow`) and on any other window destruction (the
+    /// `WindowEvent::Destroyed` hook in `lib.rs`) so numbers stay small and
+    /// reuse freed slots — a lone popout is always "win-1".
     pub detached_seqs: HashMap<String, u32>,
 }
 

@@ -106,10 +106,15 @@ export interface YamlNode {
   commentAnchor: number;
   /** Whether the tree may rewrite this node's value in place. */
   editable: boolean;
-  /** Whether this node can be removed on its own. False only for a mapping key
-   *  that shares its line with the `-` of its sequence item (`- name: a`) — there
-   *  the line belongs to the item, so the item is what you delete. */
+  /** Whether this node can be removed on its own. */
   deletable: boolean;
+  /** This entry STARTS ON ITS LIST ITEM'S DASH LINE (`- name: a` → the `name`
+   *  key, `- - x` → the first nested item): its first line is shared with the
+   *  dash, so every whole-line edit must splice around the dash — take the line's
+   *  content but leave (or hand over) the `- ` prefix — rather than take the
+   *  line. Its `lead` is also NOT its own to move: a comment run above the dash
+   *  line reads as the item's prose and stays put. */
+  onDash?: boolean;
   /** Whether this node's comment lives ABOVE its line (a lead comment) rather than
    *  behind it. Set for a mapping/sequence written on a `-` dash line: a comment
    *  behind that line would belong to the item's first child (which owns the line),
@@ -809,9 +814,9 @@ class Parser {
       // each level blanks its own dash before handing on.
       this.view[at] = line.slice(0, indent) + " " + line.slice(indent + 1);
       const seq = this.parseSeq(content, path, docIndex);
-      // The outer item owns the dash line, so the nested list's first entry cannot be
-      // removed (or reordered) on its own — the line is not its to give up.
-      if (seq.children.length) seq.children[0].deletable = false;
+      // The nested list's first entry shares the outer item's dash line, so its
+      // whole-line edits must splice around the dash (see YamlNode.onDash).
+      if (seq.children.length) seq.children[0].onDash = true;
       return {
         ...seq,
         line: at,
@@ -842,8 +847,9 @@ class Parser {
       // where its siblings on the lines below also sit.
       this.view[at] = line.slice(0, indent) + " " + line.slice(indent + 1);
       const map = this.parseMap(content, path, docIndex);
-      // The item owns the dash line, so its first key cannot be deleted on its own.
-      if (map.children.length) map.children[0].deletable = false;
+      // The first key shares the item's dash line, so its whole-line edits must
+      // splice around the dash (see YamlNode.onDash).
+      if (map.children.length) map.children[0].onDash = true;
       return {
         ...map,
         line: at,
@@ -1373,6 +1379,67 @@ export function setValue(text: string, doc: YamlDoc, node: YamlNode, next: strin
   return splice(text, node.valueStart, node.valueEnd, lead + literal);
 }
 
+/**
+ * The values of a list the tree can show — and edit — as ONE comma-separated
+ * line, or null when it must stay rows. Every item has to be a single-line
+ * scalar the tree could rewrite, carrying nothing a `a, b, c` reading would
+ * drop: no comment (the line has nowhere to keep it), no nested collection, no
+ * anchor, no shared dash line, no comma or newline inside a value (the display
+ * could not round-trip), no empty value (an invisible token between commas).
+ * A flow list spread over lines also stays rows — collapsing it onto one line
+ * would rewrite the author's layout, which the tree never does.
+ */
+export function inlineListValues(node: YamlNode): string[] | null {
+  if (node.kind !== "seq" || !node.editable || !node.children.length) return null;
+  if (isFlow(node) && node.endLine !== node.line) return null;
+  const out: string[] = [];
+  for (const c of node.children) {
+    // The shared-dash check is what keeps a nested `- - x` list in rows: its
+    // first item's line is the outer item's dash line, which the comma line's
+    // rewrite (setListItems replaces whole item lines) would overwrite.
+    if (c.kind !== "scalar" || !c.editable || !c.deletable || c.onDash) return null;
+    if (c.style === "block" || c.style === "empty") return null;
+    if (c.comment || c.lead) return null;
+    if (c.value === "" || /[\n,]/.test(c.value)) return null;
+    out.push(c.value);
+  }
+  return out;
+}
+
+/**
+ * Rewrite an inline-edited list ({@link inlineListValues}) to exactly `values`,
+ * in the list's own style: a flow list inside its brackets, a block list as
+ * `- item` lines at the items' own indent. A value an existing item already
+ * holds keeps that item's written form (its quotes), so reordering or appending
+ * never restyles a neighbour; a new value is written as typed — plain unless it
+ * NEEDS quoting (typing `8080` into a list of ports means the number), quoted
+ * in the strict (JSON) dialect. An empty `values` empties the list: a flow list
+ * to `[]`, a block list down to its bare key.
+ */
+export function setListItems(
+  text: string,
+  doc: YamlDoc,
+  node: YamlNode,
+  values: string[],
+): string {
+  if (inlineListValues(node) === null) return text;
+  const rawFor = new Map<string, string>();
+  for (const c of node.children) if (!rawFor.has(c.value)) rawFor.set(c.value, c.raw);
+  const enc = (v: string) => rawFor.get(v) ?? encodeScalar(v, "plain", doc.strict);
+
+  if (isFlow(node)) {
+    return splice(text, node.flowOpen, node.end, `[${values.map(enc).join(", ")}]`);
+  }
+  const first = node.children[0];
+  const pad = " ".repeat(first.indent);
+  return replaceLines(
+    text,
+    first.line,
+    node.endLine,
+    values.map((v) => `${pad}- ${enc(v)}`),
+  );
+}
+
 /** Rename a mapping key in place, in the dialect it is written in. */
 export function renameKey(text: string, doc: YamlDoc, node: YamlNode, nextKey: string): string {
   if (node.keyRaw === null || node.keyStart < 0 || nextKey === "") return text;
@@ -1398,6 +1465,21 @@ function blockSpan(node: YamlNode): [number, number] {
  */
 export function deleteNode(text: string, node: YamlNode): string {
   if (!node.deletable) return text;
+  if (node.onDash && !node.inFlow) {
+    // The entry shares its item's dash line, so the dash is not its to take:
+    // pull the next sibling up onto it when one follows on its own line
+    // (`- name: a\n  port: 1` minus `name` → `- port: 1`), otherwise leave a
+    // bare `-` — a comment-led sibling keeps its lead run where it is, above
+    // its own line, rather than have the pull-up drag a comment onto the dash.
+    const { lines, starts } = indexLines(text);
+    const next = lines[node.endLine + 1];
+    if (next !== undefined && next.trim() !== "" && !isComment(next) && indentOf(next) === node.indent) {
+      return splice(text, node.start, starts[node.endLine + 1] + node.indent, "");
+    }
+    return replaceLines(text, node.line, node.endLine, [
+      lines[node.line].slice(0, node.indent).trimEnd(),
+    ]);
+  }
   if (!node.inFlow) {
     const [from, to] = blockSpan(node);
     return replaceLines(text, from, to, []);
@@ -1435,10 +1517,109 @@ export function duplicateNode(text: string, node: YamlNode): string {
   if (!node.inFlow) {
     const { lines } = indexLines(text);
     const copy = lines.slice(node.line, node.endLine + 1);
+    // A dash-line entry's first line carries the item's `- `; the copy gets
+    // spaces there instead — the dash is the item's, not the entry's.
+    if (node.onDash) copy[0] = " ".repeat(node.indent) + copy[0].slice(node.indent);
     return insertLines(text, node.endLine + 1, copy);
   }
   const body = text.slice(node.start, node.end);
   return splice(text, node.end, node.end, `, ${body}`);
+}
+
+// ── Copy & paste ────────────────────────────────────────────────────────────
+
+/** An entry captured by the tree's copy button: the node's own source, ready to
+ *  be put back down after another node ({@link pasteAfter}) or handed to the
+ *  system clipboard. A BLOCK entry carries its lines dedented to column 0, so
+ *  `text` reads as a clean fragment and a paste only has to indent it to its new
+ *  siblings' column; a FLOW entry is its span, pasted back between commas. */
+export interface YamlClip {
+  /** The entry as YAML text — what goes on the system clipboard. */
+  text: string;
+  /** Block form: the node's own lines (its trailing comment included, the lead
+   *  run above it not — a copy is not the original; same rule as
+   *  {@link duplicateNode}), dedented to column 0. Empty for a flow entry. */
+  lines: string[];
+  /** Captured from inside a flow collection — pastes back into one. */
+  inFlow: boolean;
+  /** `key: …` (a mapping entry) vs a bare item — decides which containers can
+   *  take it (see {@link canPasteAfter}). */
+  isMapEntry: boolean;
+  kind: YamlKind;
+  /** What the copy is called in the banner and the paste button. */
+  label: string;
+}
+
+function leadingSpaces(line: string): number {
+  let n = 0;
+  while (n < line.length && line[n] === " ") n++;
+  return n;
+}
+
+/** Capture a node for copy/paste, or null when it cannot be removed on its own
+ *  (a copy exists to be pasted, and a paste of it must be deletable again). */
+export function copyNode(text: string, node: YamlNode, label?: string): YamlClip | null {
+  if (!node.deletable) return null;
+  const isMapEntry = node.key !== null;
+  const name = label ?? node.key ?? "item";
+  if (node.inFlow) {
+    const body = text.slice(node.start, node.end);
+    return { text: body, lines: [], inFlow: true, isMapEntry, kind: node.kind, label: name };
+  }
+  const { lines } = indexLines(text);
+  // Dedent by the node's own column — but never past a line's actual indent, so
+  // an oddly out-dented line loses only what it has (a blank line stays blank).
+  const own = lines
+    .slice(node.line, node.endLine + 1)
+    .map((l) => l.slice(Math.min(node.indent, leadingSpaces(l))));
+  // A dash-line entry's first line: the min-guard above would keep the item's
+  // `- ` (the dash sits before the entry's column), so it dedents past it here —
+  // the copy is the entry, not the item.
+  if (node.onDash) own[0] = lines[node.line].slice(node.indent);
+  return { text: own.join("\n"), lines: own, inFlow: false, isMapEntry, kind: node.kind, label: name };
+}
+
+/**
+ * Whether {@link pasteAfter} can put `clip` down as `anchor`'s next sibling. The
+ * entry must FIT the container it would land in — a `key: …` belongs in a
+ * mapping, a bare item in a list, and a block entry has no place inside a flow
+ * collection (nor a flow span on a block line of its own) — so the paste cursor
+ * simply never lands where the splice would tear the file.
+ */
+export function canPasteAfter(clip: YamlClip, anchor: YamlNode, parentKind: string): boolean {
+  if (anchor.inFlow !== clip.inFlow) return false;
+  if (parentKind === "map") return clip.isMapEntry;
+  if (parentKind === "seq") return !clip.isMapEntry;
+  return false;
+}
+
+/**
+ * Insert a copied entry as `anchor`'s next sibling — the spot the paste cursor
+ * marks. A BLOCK clip's lines land right after the anchor's block, re-indented
+ * to the anchor's own column ({@link duplicateNode}'s insertion point, with the
+ * re-indent a copy from another depth needs). A FLOW clip splices in after the
+ * anchor's span — on its own line at the anchor's column when the collection is
+ * spread over lines, inline with a `, ` when it isn't (mirroring how
+ * {@link addChild} grows a flow collection).
+ */
+export function pasteAfter(text: string, anchor: YamlNode, clip: YamlClip): string {
+  if (clip.inFlow) {
+    if (!anchor.inFlow) return text;
+    const { starts, eol } = indexLines(text);
+    const line = lineOfOffset(starts, anchor.start);
+    const ownLine = /^[ \t]*$/.test(text.slice(starts[line], anchor.start));
+    const col = anchor.start - starts[line];
+    return ownLine
+      ? splice(text, anchor.end, anchor.end, `,${eol}${" ".repeat(col)}${clip.text}`)
+      : splice(text, anchor.end, anchor.end, `, ${clip.text}`);
+  }
+  if (anchor.inFlow) return text;
+  const pad = " ".repeat(anchor.indent);
+  return insertLines(
+    text,
+    anchor.endLine + 1,
+    clip.lines.map((l) => (l === "" ? "" : pad + l)),
+  );
 }
 
 /** True when the node holds nothing yet, so its first child can replace the
@@ -1611,8 +1792,6 @@ export function moveNodeTo(
   const from = siblings.findIndex((s) => s.id === node.id);
   if (from < 0 || to < 0 || to >= siblings.length || to === from) return text;
   const target = siblings[to];
-  // The entry that shares its list item's dash line does not own that line, so it
-  // can neither leave it nor be displaced from it.
   if (!node.deletable || !target.deletable) return text;
 
   if (node.inFlow && target.inFlow) {
@@ -1627,16 +1806,34 @@ export function moveNodeTo(
   }
 
   const { lines } = indexLines(text);
-  const [nodeFrom, nodeTo] = blockSpan(node);
-  const [targetFrom, targetTo] = blockSpan(target);
+  // A dash-line entry's span is its own lines only — never blockSpan's, whose
+  // lead is the prose above the item's dash line and not the entry's to move.
+  const spanOf = (n: YamlNode): [number, number] =>
+    n.onDash ? [n.line, n.endLine] : blockSpan(n);
+  const [nodeFrom, nodeTo] = spanOf(node);
+  const [targetFrom, targetTo] = spanOf(target);
   // Rewrite only the run of lines the two of them span, so nothing outside it —
   // another sibling's comment, a blank line, the trailing newline — is touched.
   const lo = Math.min(nodeFrom, targetFrom);
   const hi = Math.max(nodeTo, targetTo);
   const span = lines.slice(lo, hi + 1);
+  // When first place changes hands, so does the item's dash: the current first
+  // entry gives its `- ` prefix up (its line is dedashed inside the span)…
+  const dash = siblings[0].onDash && (from === 0 || to === 0) ? siblings[0] : null;
+  const prefix = dash ? lines[dash.line].slice(0, dash.indent) : "";
+  if (dash) {
+    span[dash.line - lo] = " ".repeat(dash.indent) + span[dash.line - lo].slice(dash.indent);
+  }
   const block = span.splice(nodeFrom - lo, nodeTo - nodeFrom + 1);
   const at = to < from ? targetFrom - lo : targetTo + 1 - lo - block.length;
   span.splice(at, 0, ...block);
+  // …and the new first entry takes it, on its ENTRY line — its lead comments
+  // stay above the dash line, which is exactly where an item's prose lives
+  // (`leadComment`). The entry line is the span's first line of real content.
+  if (dash) {
+    const entry = span.findIndex((l) => l.trim() !== "" && !isComment(l));
+    if (entry >= 0) span[entry] = prefix + span[entry].slice(prefix.length);
+  }
   return replaceLines(text, lo, hi, span);
 }
 

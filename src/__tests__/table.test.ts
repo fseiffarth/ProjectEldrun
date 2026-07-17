@@ -4,6 +4,7 @@ import {
   parseTable,
   sortRows,
   sortRefs,
+  sortRefsByIndex,
   bodyRefs,
   filterRefs,
   delimiterForPath,
@@ -421,6 +422,26 @@ describe("sortRefs", () => {
       ["2"],
     ]);
     expect(sortRefs(refs, 0, "asc").map((r) => r.index)).toEqual([2, 1]);
+  });
+});
+
+describe("sortRefsByIndex", () => {
+  it("asc restores the file's row order after a column sort reordered it", () => {
+    const refs = bodyRefs([["n"], ["10"], ["2"], ["7"]]);
+    const byValue = sortRefs(refs, 0, "asc"); // 2, 7, 10 → indices [2, 3, 1]
+    expect(byValue.map((r) => r.index)).toEqual([2, 3, 1]);
+    expect(sortRefsByIndex(byValue, "asc").map((r) => r.index)).toEqual([1, 2, 3]);
+  });
+
+  it("desc reverses the file's row order", () => {
+    const refs = bodyRefs([["n"], ["a"], ["b"], ["c"]]);
+    expect(sortRefsByIndex(refs, "desc").map((r) => r.index)).toEqual([3, 2, 1]);
+  });
+
+  it("does not mutate its input", () => {
+    const refs = bodyRefs([["n"], ["a"], ["b"]]);
+    sortRefsByIndex(refs, "desc");
+    expect(refs.map((r) => r.index)).toEqual([1, 2]);
   });
 });
 

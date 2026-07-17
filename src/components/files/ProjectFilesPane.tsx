@@ -207,6 +207,9 @@ interface Props {
   /** False keeps the tree unmounted (the right panel does this while closed, so
    *  a hidden panel costs no fs-watch). */
   mountTree?: boolean;
+  /** Compact (docked subwindow) mode: hide the remote-sync row and the sort row
+   *  so the tree's find-files search box is the topmost element. */
+  compact?: boolean;
 }
 
 export function ProjectFilesPane({
@@ -226,6 +229,7 @@ export function ProjectFilesPane({
   onCloseDownloads,
   onOpenFolderTab,
   mountTree = true,
+  compact,
 }: Props) {
   const { activeBox, boxRoots } = useBoxRoots(scope);
   const projectId = project?.id ?? null;
@@ -239,7 +243,7 @@ export function ProjectFilesPane({
           tree into the mirror; Local → push the mirror back to the host (skipping
           host-diverged/orange files). Both need a live connection, so the row is
           gated on !remoteBlocked. */}
-      {!activeBox && isRemoteProject && projectId && !remoteBlocked && (
+      {!compact && !activeBox && isRemoteProject && projectId && !remoteBlocked && (
         <div className="right-panel-source">
           {/* Project-wide auto-sync toggle: the root "" marker. When on, the
               whole tree bidirectionally auto-syncs; individual files/folders
@@ -292,6 +296,7 @@ export function ProjectFilesPane({
           )}
         </div>
       )}
+      {!compact && (
       <div className="right-panel-sort">
         {(["name", "size", "type", "created", "modified"] as SortKey[]).map((key) => (
           <button
@@ -308,6 +313,7 @@ export function ProjectFilesPane({
           </button>
         ))}
       </div>
+      )}
       <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
         {mountTree && activeBox ? (
           boxRoots.length === 0 ? (

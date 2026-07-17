@@ -8,6 +8,8 @@ import {
   gpuTotals,
   type GpuSample,
 } from "../../lib/gpu";
+import { useProjectsStore } from "../../stores/projects";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
 
 // ── Backend snapshot shape (mirrors sysstat::SystemSnapshot, snake_case) ──────
 
@@ -45,11 +47,19 @@ export interface SystemSnapshot {
 }
 
 interface Props {
-  /** Whole-machine view — no project scope. */
+  /** Owning project, or `null` in the root scope. A remote (SSH) project unlocks
+   *  a source toggle so the pane can sample the **host** instead of this machine. */
+  projectId: string | null;
   visible: boolean;
 }
 
+/** Which machine the pane samples: this one, or a connected remote project's host. */
+type Source = "local" | "remote";
+
 const POLL_MS = 1500;
+/** The host sample is one SSH round-trip reading its whole `/proc`, so it polls
+ *  more gently than the local `/proc` read to keep host load and traffic down. */
+const REMOTE_POLL_MS = 3000;
 
 // ── Pure delta helpers (unit-tested in SystemMonitorSampling.test.ts) ─────────
 
@@ -183,7 +193,7 @@ function Meter({
   );
 }
 
-export function SystemMonitorPane({ visible }: Props) {
+export function SystemMonitorPane({ projectId, visible }: Props) {
   const [pair, setPair] = useState<{ snap: SystemSnapshot; prev: SystemSnapshot | null } | null>(
     null,
   );
@@ -193,15 +203,49 @@ export function SystemMonitorPane({ visible }: Props) {
   const [filter, setFilter] = useState("");
   const prevRef = useRef<SystemSnapshot | null>(null);
 
-  // Poll only while visible; the pane stays mounted across scope switches, so
-  // pausing here stops a hidden monitor from sampling in the background (mirrors
-  // AppResourceDisplay / NetworkTrafficPane).
+  // A remote (SSH) project can sample its host — the same store reads the Disk
+  // Usage pane uses to reach the host over the shared pool.
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const sshState = useRemoteStatusStore((s) =>
+    projectId ? s.byProject[projectId]?.ssh : undefined,
+  );
+  const isRemoteProject = !!project?.remote;
+  const hostConnected = isRemoteProject && sshState === "connected";
+  const remoteHost = project?.remote?.host ?? "the host";
+
+  const [source, setSource] = useState<Source>("local");
+  // Auto-follow the host: point at "remote" once it is connected, "local"
+  // otherwise — until the user picks a side explicitly, which pins the choice.
+  const pinnedRef = useRef(false);
   useEffect(() => {
-    if (!visible) return;
+    if (!pinnedRef.current) setSource(hostConnected ? "remote" : "local");
+  }, [hostConnected]);
+  function pickSource(next: Source) {
+    pinnedRef.current = true;
+    setSource(next);
+  }
+
+  const onHost = source === "remote";
+  // Whether the pane is actually sampling (and so the table/meters below apply).
+  const sampling = visible && !(onHost && !hostConnected);
+
+  // Poll only while visible and (for the host) while it is connected; the pane
+  // stays mounted across scope switches, so pausing here stops a hidden monitor
+  // from sampling in the background (mirrors AppResourceDisplay /
+  // NetworkTrafficPane). CPU/MEM percentages are diffs of successive samples, so
+  // switching machine drops the stale previous sample — a delta across two
+  // different machines is meaningless.
+  useEffect(() => {
+    prevRef.current = null;
+    setPair(null);
+    setError(null);
+    if (!sampling) return;
     let cancelled = false;
     async function poll() {
       try {
-        const next = await invoke<SystemSnapshot>("system_monitor_snapshot");
+        const next = await invoke<SystemSnapshot>("system_monitor_snapshot", {
+          projectId: onHost ? projectId : null,
+        });
         if (cancelled) return;
         const prev = prevRef.current;
         prevRef.current = next;
@@ -212,12 +256,12 @@ export function SystemMonitorPane({ visible }: Props) {
       }
     }
     void poll();
-    const id = window.setInterval(poll, POLL_MS);
+    const id = window.setInterval(poll, onHost ? REMOTE_POLL_MS : POLL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [visible]);
+  }, [sampling, onHost, projectId]);
 
   const rows = useMemo(() => {
     if (!pair) return [];
@@ -264,7 +308,34 @@ export function SystemMonitorPane({ visible }: Props) {
     <div className="sysmon-root">
       <style>{SYSMON_CSS}</style>
 
-      {snap && !snap.supported ? (
+      {isRemoteProject && (
+        <div className="sysmon-source" role="tablist" aria-label="Monitor source">
+          <button
+            className={source === "local" ? "sysmon-source-btn active" : "sysmon-source-btn"}
+            onClick={() => pickSource("local")}
+            role="tab"
+            aria-selected={source === "local"}
+          >
+            This machine
+          </button>
+          <button
+            className={source === "remote" ? "sysmon-source-btn active" : "sysmon-source-btn"}
+            onClick={() => pickSource("remote")}
+            role="tab"
+            aria-selected={source === "remote"}
+            title={hostConnected ? `System monitor on ${remoteHost}` : undefined}
+          >
+            {remoteHost}
+            {!hostConnected && <span className="sysmon-source-off"> · offline</span>}
+          </button>
+        </div>
+      )}
+
+      {onHost && !hostConnected ? (
+        <div className="sysmon-placeholder">
+          Connect this project to view {remoteHost}&rsquo;s system monitor.
+        </div>
+      ) : snap && !snap.supported ? (
         <div className="sysmon-placeholder">
           The system monitor is currently available on Linux only.
         </div>
@@ -417,6 +488,41 @@ const SYSMON_CSS = `
   color: var(--text-muted);
   padding: 24px;
   text-align: center;
+}
+.sysmon-source {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-color);
+  flex: 0 0 auto;
+}
+.sysmon-source-btn {
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius, 4px);
+  color: var(--text-secondary);
+  padding: 3px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sysmon-source-btn:hover {
+  background: var(--control-hover-bg);
+}
+.sysmon-source-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+.sysmon-source-off {
+  color: var(--text-muted);
+}
+.sysmon-source-btn.active .sysmon-source-off {
+  color: var(--accent-contrast, #fff);
+  opacity: 0.8;
 }
 .sysmon-header {
   display: flex;

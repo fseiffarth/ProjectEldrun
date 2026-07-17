@@ -119,6 +119,11 @@ export interface ViewerState {
   // restart. Ids are re-derived from the file on every parse, so an id that no
   // longer resolves is simply inert.
   yamlCollapsed?: string[];
+  // The YAML TREE's scroll position (#yaml). Kept apart from `scrollTop` (the
+  // Source editor's) because Tree and Source are two views of one file with
+  // unrelated pixel heights — one scroll offset can't serve both — so switching
+  // Tree↔Source restores each side where it was.
+  yamlScrollTop?: number;
   // The table viewer's column separator (#40), as the literal character. Absent
   // means "auto" — sniffed from the content on every open. It is persisted only
   // when the reader *overrides* the guess, because that is the case the sniffer
@@ -180,6 +185,11 @@ export interface TabEntry {
   // `--session-id <uuid>`), the UUID Eldrun minted and launched the agent with.
   // Surfaced on tab hover and intended to later drive session resume.
   sessionId?: string;
+  // Absolute path of the script this terminal tab was launched to run (Python
+  // Run/Debug, or a foreground shell-script run). Lets the activity store pulse
+  // the file's run button while the tab is producing output. Busy-gated on read,
+  // so a restored non-busy run tab never falsely lights up.
+  runFile?: string;
   // For "embed" tabs (a file dragged from the FileTree onto a tab bar): the
   // absolute path of the embedded file and the resolved executable that opens
   // it. Phase 1 opens the file externally; Phase 2 will reparent the app's
@@ -233,6 +243,20 @@ export interface GroupNode {
   id: string;
   tabKeys: string[]; // order shown in this subwindow's tab bar
   activeKey: string | null; // active tab within this group
+  // Per-subwindow right file viewer: when true this group renders a docked
+  // file-viewer column (the shared ProjectFilesView, hosted by
+  // SubwindowFilesSidebar) on its right edge — in the main window and in a
+  // detached popout alike. Persisted with the layout tree so it survives a
+  // restart, and carried through detach/attach so a popped-out subwindow keeps
+  // its viewer.
+  filesOpen?: boolean;
+  // The sidebar column's width in px (unset → the component default).
+  filesWidth?: number;
+  // The browsed folder (project-relative) the docked viewer last showed, so the
+  // subwindow reopens where it was left. Lives on the node — like the open flag
+  // and width — so it persists with the layout, travels with a detach, and is
+  // freed when the group (subwindow) is dropped.
+  filesFolder?: string;
 }
 
 export type LayoutNode = SplitNode | GroupNode;
@@ -308,7 +332,11 @@ export type DetachedEditPayload =
   | { kind: "resize"; splitId: string; dividerIndex: number; fraction: number }
   // Multi-pane popouts: move `key` into `targetGroupId` (at `index`, else append),
   // merging it across the popout's groups (collapses an emptied source pane).
-  | { kind: "move"; key: string; targetGroupId: string; index?: number };
+  | { kind: "move"; key: string; targetGroupId: string; index?: number }
+  // Toggle/resize a popout group's docked file-viewer column (the per-subwindow
+  // right file viewer), or record the folder it browsed to. Applied to the group
+  // node inside the popout's subtree.
+  | { kind: "files"; groupId: string; open?: boolean; width?: number; folder?: string };
 
 /** Flat tab shape as persisted in project.json's `tab_layout`. */
 export interface SavedTabEntry {
@@ -369,6 +397,10 @@ export type SavedLayoutTree =
       // When true, this group was HIDDEN (see the split variant's note). Restore
       // moves it into `hiddenGroupsByScope` rather than docking it live.
       hidden?: boolean;
+      // Per-subwindow right file viewer (see GroupNode.filesOpen/filesWidth).
+      filesOpen?: boolean;
+      filesWidth?: number;
+      filesFolder?: string;
     };
 
 /**
@@ -512,6 +544,23 @@ interface TabsStore {
     edge: DropEdge,
   ) => TabEntry | null;
   resizeSplit: (splitId: string, dividerIndex: number, fraction: number) => void;
+  // Merge two adjacent subwindows into one (double-click the divider between
+  // them): append every tab of `sourceGroupId` onto `targetGroupId`, then let
+  // `writeScope`'s collapse pass drop the emptied source and unwrap the split.
+  // PTYs are preserved (tabs move, not close); the survivor keeps its activeKey.
+  // No-op if either group is missing or they are the same group.
+  mergeGroups: (targetGroupId: string, sourceGroupId: string) => void;
+
+  // Per-subwindow right file viewer: open/close a group's docked file-viewer
+  // column, and persist its width. Both write the flag onto the group NODE
+  // (GroupNode.filesOpen/filesWidth), so the sidebar persists with the layout
+  // tree and travels with a detach. No-ops if the group isn't in the current
+  // scope's live layout (popout-side toggles arrive via applyDetachedEdit).
+  setGroupFiles: (groupId: string, open: boolean) => void;
+  setGroupFilesWidth: (groupId: string, width: number) => void;
+  // Persist the folder the group's docked viewer last browsed to (see
+  // GroupNode.filesFolder). Same node-write path as the flag/width.
+  setGroupFilesFolder: (groupId: string, folder: string) => void;
 
   // #42: detach / re-attach a subwindow (group) to/from its own OS window.
   // `detachGroup` removes the group from the in-window tree, records it in
@@ -576,6 +625,36 @@ interface TabsStore {
     tabKey: string,
     opts?: { targetGroupId?: string; edge?: DropEdge; skipBackend?: boolean },
   ) => void;
+  // #42: dock ONE PANE (an inner group) of a MULTI-pane popout back into a
+  // scope's layout — the per-pane analog of attachDetachedTab, fired when a
+  // pane's bar grip is dragged onto the main window. Moves the pane's tabs as
+  // one group into the layout at `targetGroupId`/`edge` (center merges, an edge
+  // splits, default lands as its own pane) and removes the group node from the
+  // popout's subtree, leaving the sibling panes floating. If the pane is the
+  // popout's ONLY group this IS a whole-popout dock and delegates to
+  // attachGroup / dropDetachedGroup (which also close the OS window). The tab
+  // payloads already live in `tabsByScope`, so they survive the move. No-op if
+  // the popout or pane is gone.
+  attachDetachedPane: (
+    scope: string,
+    detachedGroupId: string,
+    paneId: string,
+    opts?: { targetGroupId?: string; edge?: DropEdge; skipBackend?: boolean },
+  ) => void;
+  // #42: pop ONE PANE (an inner group) of a MULTI-pane popout into its OWN brand
+  // new detached OS window — the per-pane analog of detachTabToNewWindow, fired
+  // when a pane's bar grip is dragged and released in FREE SPACE. Removes the
+  // group node from the source popout's subtree and records a fresh detached
+  // entry holding just that group at `bounds`, then spawns its OS window. The
+  // tab payloads stay in `tabsByScope` (shared). Refuses (returns null) when the
+  // popout/pane is gone OR the pane is the popout's only group — the popout
+  // already IS that pane's window. Returns the new window label.
+  detachPaneToNewWindow: (
+    scope: string,
+    fromGroupId: string,
+    paneId: string,
+    bounds: WindowBounds,
+  ) => string | null;
   // #42: pop a SINGLE tab OUT of an existing detached popout into its OWN brand
   // new detached OS window (the popout analog of TabBar's `popToNewWindow`),
   // fired when a tab dragged out of a popout is released in FREE SPACE — outside
@@ -1277,7 +1356,16 @@ function currentScopeState(s: TabsStore) {
 export function serializeTree(node: LayoutNode | null): SavedLayoutTree | null {
   if (!node) return null;
   if (node.type === "group") {
-    return { type: "group", tabKeys: [...node.tabKeys], activeKey: node.activeKey };
+    return {
+      type: "group",
+      tabKeys: [...node.tabKeys],
+      activeKey: node.activeKey,
+      // Persist the per-subwindow file viewer (open flag + width + browsed
+      // folder) so it comes back on restart.
+      ...(node.filesOpen ? { filesOpen: true } : {}),
+      ...(node.filesWidth != null ? { filesWidth: node.filesWidth } : {}),
+      ...(node.filesFolder ? { filesFolder: node.filesFolder } : {}),
+    };
   }
   return {
     type: "split",
@@ -1330,7 +1418,15 @@ function deserializeTree(
     if (saved.hidden && hiddenOut) {
       hiddenOut.push(id);
     }
-    return { type: "group", id, tabKeys, activeKey };
+    return {
+      type: "group",
+      id,
+      tabKeys,
+      activeKey,
+      ...(saved.filesOpen ? { filesOpen: true } : {}),
+      ...(saved.filesWidth != null ? { filesWidth: saved.filesWidth } : {}),
+      ...(saved.filesFolder ? { filesFolder: saved.filesFolder } : {}),
+    };
   }
   const children = saved.children
     .map((c) => deserializeTree(c, keyMap, detachedOut, hiddenOut))
@@ -1730,6 +1826,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const cur = tab.viewerState ?? {};
       if (
         cur.scrollTop === merged.scrollTop &&
+        cur.yamlScrollTop === merged.yamlScrollTop &&
         cur.scrollLeft === merged.scrollLeft &&
         cur.scale === merged.scale &&
         cur.offsetX === merged.offsetX &&
@@ -1820,6 +1917,30 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         return { ...g, tabKeys, activeKey: key };
       });
       // Source may have emptied → collapse handles it; focus the target.
+      return writeScope(s, s.scope, tabs, next, targetGroupId);
+    });
+  },
+
+  mergeGroups: (targetGroupId, sourceGroupId) => {
+    set((s) => {
+      const { tabs, layout } = currentScopeState(s);
+      if (!layout || targetGroupId === sourceGroupId) return {};
+      const target = findGroup(layout, targetGroupId);
+      const source = findGroup(layout, sourceGroupId);
+      if (!target || !source) return {};
+      const moved = source.tabKeys;
+      // Append source's tabs onto the target (survivor keeps its own activeKey),
+      // then empty the source so collapse drops it and unwraps the split.
+      let next = mapGroup(layout, targetGroupId, (g) => ({
+        ...g,
+        tabKeys: [...g.tabKeys, ...moved],
+        activeKey: g.activeKey ?? moved[0] ?? null,
+      }));
+      next = mapGroup(next, sourceGroupId, (g) => ({
+        ...g,
+        tabKeys: [],
+        activeKey: null,
+      }));
       return writeScope(s, s.scope, tabs, next, targetGroupId);
     });
   },
@@ -1922,6 +2043,36 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
+  setGroupFiles: (groupId, open) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      if (!layout || !findGroup(layout, groupId)) return {};
+      const next = mapGroup(layout, groupId, (g) => ({ ...g, filesOpen: open }));
+      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+    });
+  },
+
+  setGroupFilesWidth: (groupId, width) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      if (!layout || !findGroup(layout, groupId)) return {};
+      const next = mapGroup(layout, groupId, (g) => ({ ...g, filesWidth: width }));
+      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+    });
+  },
+
+  setGroupFilesFolder: (groupId, folder) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const g = layout && findGroup(layout, groupId);
+      // No-op when unchanged, so re-listing the same folder doesn't churn the
+      // layout and wake the saveLayout debounce for nothing (mirrors setTabFolder).
+      if (!g || (g.filesFolder ?? "") === folder) return {};
+      const next = mapGroup(layout, groupId, (grp) => ({ ...grp, filesFolder: folder }));
+      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+    });
+  },
+
   detachGroup: (groupId, opts) => {
     const scope = get().scope;
     const layout = get().layoutByScope[scope] ?? null;
@@ -1939,7 +2090,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // Snapshot the popout's subtree: a single GroupNode, or the whole split node
     // (multi-pane popout) verbatim — its ids are reused as the popout's content.
     const subtree: LayoutNode = group
-      ? { type: "group", id: group.id, tabKeys: [...group.tabKeys], activeKey: group.activeKey }
+      // Spread so per-group extras (the files sidebar's open flag + width)
+      // travel with the subtree.
+      ? { ...group, tabKeys: [...group.tabKeys] }
       : (split as SplitNode);
     // Group ids that leave the in-window layout (one for a group, several for a
     // split) — used to drop focus if it pointed into the detached subtree.
@@ -2156,7 +2309,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 
     const label = `hidden-${scope}-${groupId}`;
     const subtree: LayoutNode = group
-      ? { type: "group", id: group.id, tabKeys: [...group.tabKeys], activeKey: group.activeKey }
+      // Spread so per-group extras (the files sidebar's open flag + width)
+      // travel with the subtree.
+      ? { ...group, tabKeys: [...group.tabKeys] }
       : (split as SplitNode);
     const hiddenGroupIds = new Set(allGroups(subtree).map((g) => g.id));
 
@@ -2330,6 +2485,78 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     }
   },
 
+  attachDetachedPane: (scope, detachedGroupId, paneId, opts) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const entry = entries.find((d) => d.id === detachedGroupId);
+    if (!entry) return;
+    const pane = findGroup(entry.subtree, paneId);
+    if (!pane) return;
+
+    // The pane is the popout's only group → this IS a whole-popout dock; the
+    // whole-group paths also close the OS window.
+    const remaining = removeNodeById(entry.subtree, paneId);
+    if (!remaining) {
+      if (get().scope === scope) get().attachGroup(detachedGroupId, opts);
+      else get().dropDetachedGroup(scope, detachedGroupId);
+      return;
+    }
+
+    set((s) => {
+      // 1. Inject the pane into the destination layout as one group (fresh id so
+      //    it can never collide with a live node id). Its tab payloads already
+      //    live in tabsByScope[scope]; only the keys move.
+      let layout = s.layoutByScope[scope] ?? null;
+      const fresh: GroupNode = {
+        type: "group",
+        id: nextGroupId(),
+        tabKeys: [...pane.tabKeys],
+        activeKey: pane.activeKey ?? pane.tabKeys[0] ?? null,
+      };
+      let destId = fresh.id;
+      if (!layout) {
+        layout = fresh; // empty scope → the pane becomes the root group.
+      } else {
+        const target =
+          (opts?.targetGroupId && findGroup(layout, opts.targetGroupId)) ||
+          allGroups(layout)[0];
+        if (!target) {
+          layout = fresh;
+        } else if (opts?.edge === "center") {
+          // Merge the pane's tabs into the target group.
+          layout = mapGroup(layout, target.id, (g) => ({
+            ...g,
+            tabKeys: [...g.tabKeys, ...pane.tabKeys],
+            activeKey: pane.activeKey ?? g.activeKey,
+          }));
+          destId = target.id;
+        } else {
+          // Default (no resolved target): land as its own pane on the right —
+          // a pane is a subwindow, so it keeps being one (mirrors attachGroup).
+          const edge = opts?.edge ?? "right";
+          const dir: SplitDir = edge === "left" || edge === "right" ? "row" : "column";
+          const before = edge === "left" || edge === "top";
+          layout = insertAdjacent(layout, target.id, fresh, dir, before);
+        }
+      }
+
+      // 2. Drop the pane's group node from the popout's subtree — the sibling
+      //    panes stay floating in the popout.
+      const nextEntries = (s.detachedGroupsByScope[scope] ?? []).map((d) =>
+        d.id === detachedGroupId ? { ...d, subtree: remaining } : d,
+      );
+
+      const tabs = s.tabsByScope[scope] ?? [];
+      const base = writeScope(s, scope, tabs, layout, destId);
+      return {
+        ...base,
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: nextEntries,
+        },
+      };
+    });
+  },
+
   detachTabToNewWindow: (scope, fromGroupId, tabKey, bounds) => {
     const entries = get().detachedGroupsByScope[scope] ?? [];
     const src = entries.find((d) => d.id === fromGroupId);
@@ -2356,6 +2583,55 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const existing = s.detachedGroupsByScope[scope] ?? [];
       // One atomic update: strip the tab from the source popout's subtree AND
       // append the new detached entry. The payload in `tabsByScope` is untouched.
+      const nextEntries = existing.map((d) =>
+        d.id === fromGroupId ? { ...d, subtree: remaining } : d,
+      );
+      return {
+        detachedGroupsByScope: {
+          ...s.detachedGroupsByScope,
+          [scope]: [...nextEntries, { id: groupId, subtree, label, bounds }],
+        },
+      };
+    });
+
+    invoke("detach_subwindow", {
+      projectId: scope,
+      groupId,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.w,
+      height: bounds.h,
+    }).catch(() => {});
+    return label;
+  },
+
+  detachPaneToNewWindow: (scope, fromGroupId, paneId, bounds) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const src = entries.find((d) => d.id === fromGroupId);
+    if (!src) return null;
+    const pane = findGroup(src.subtree, paneId);
+    if (!pane) return null;
+    // A lone-pane popout dragged by its grip is already its own window —
+    // re-detaching it would empty the source and churn for nothing.
+    const remaining = removeNodeById(src.subtree, paneId);
+    if (!remaining) return null;
+
+    const groupId = nextGroupId();
+    const label = `detached-${scope}-${groupId}`;
+    // The pane becomes the whole subtree of a fresh popout; its tab payloads
+    // stay in tabsByScope (shared), so the new popout self-seeds and the PTYs
+    // never unmount (mirrors detachTabToNewWindow).
+    const subtree: GroupNode = {
+      type: "group",
+      id: groupId,
+      tabKeys: [...pane.tabKeys],
+      activeKey: pane.activeKey ?? pane.tabKeys[0] ?? null,
+    };
+
+    set((s) => {
+      const existing = s.detachedGroupsByScope[scope] ?? [];
+      // One atomic update: strip the pane from the source popout's subtree AND
+      // append the new detached entry. The payloads in `tabsByScope` are untouched.
       const nextEntries = existing.map((d) =>
         d.id === fromGroupId ? { ...d, subtree: remaining } : d,
       );
@@ -2530,6 +2806,15 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           // Merge a tab across the popout's groups: null (removal emptied the
           // tree — impossible for a cross-group move) leaves the popout unchanged.
           nextSub = moveKeyInTree(sub, edit.key, edit.targetGroupId, edit.index) ?? sub;
+          break;
+        case "files":
+          // The popout toggled/resized a group's docked file-viewer column.
+          nextSub = mapGroup(sub, edit.groupId, (grp) => ({
+            ...grp,
+            ...(edit.open != null ? { filesOpen: edit.open } : {}),
+            ...(edit.width != null ? { filesWidth: edit.width } : {}),
+            ...(edit.folder != null ? { filesFolder: edit.folder } : {}),
+          }));
           break;
       }
       const nextEntries = [...entries];
@@ -3219,6 +3504,10 @@ export function pruneSavedTree(
       // Carry the hidden tag through pruning so a hidden group stays parked on
       // restore rather than docking live (mirrors the detached tag).
       ...(tree.hidden ? { hidden: true } : {}),
+      // Carry the per-subwindow file viewer through pruning (same rationale).
+      ...(tree.filesOpen ? { filesOpen: true } : {}),
+      ...(tree.filesWidth != null ? { filesWidth: tree.filesWidth } : {}),
+      ...(tree.filesFolder ? { filesFolder: tree.filesFolder } : {}),
     };
   }
   const kept = tree.children

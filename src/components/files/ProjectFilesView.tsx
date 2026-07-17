@@ -76,6 +76,13 @@ export interface ProjectFilesViewProps {
    *  `ProjectFilesPane`. */
   mountTree: boolean;
 
+  /** Compact mode: strip everything above the tree's find-files search box — the
+   *  project-name header, the view-switcher toolbar (Files/Git/Search/Apps/±),
+   *  and the sync + sort rows (`ProjectFilesPane`) — so the search is topmost.
+   *  Set only by the docked subwindow viewer (`SubwindowFilesSidebar`); the right
+   *  panel and the Files (Project) tab leave it unset and keep the full chrome. */
+  compact?: boolean;
+
   /** Host callback for the tree's "Open in a new tab"; omitted where a tab can't
    *  be owned (a box root, a popout on a streamed tab copy). */
   onOpenFolderTab?: (relPath: string) => void;
@@ -111,6 +118,7 @@ export function ProjectFilesView({
   resizeHandle,
   pin,
   hidden,
+  compact,
 }: ProjectFilesViewProps) {
   const { windows, refresh, untrack } = useWindowsStore();
   const [view, setView] = useState<View>("files");
@@ -397,6 +405,12 @@ export function ProjectFilesView({
     >
       {resizeHandle}
       {importDrop.conflictModal}
+      {/* Compact (docked subwindow) viewer: everything from here down to the git
+          commit block is above the tree's find-files search, so it's stripped —
+          leaving the search box topmost. The right panel / Files (Project) tab
+          render with `compact` unset and keep the full chrome. */}
+      {!compact && (
+        <>
       <div className="right-panel-header">
         {pin}
         <span
@@ -694,6 +708,8 @@ export function ProjectFilesView({
           )}
         </>
       )}
+        </>
+      )}
 
       {view === "git" && (
         <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
@@ -807,6 +823,7 @@ export function ProjectFilesView({
           onOpenFolderTab={onOpenFolderTab}
           // A closed panel keeps no tree mounted (and so no fs-watch).
           mountTree={mountTree}
+          compact={compact}
         />
       )}
 

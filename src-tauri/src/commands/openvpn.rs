@@ -234,3 +234,15 @@ pub async fn openvpn_store_config(config: String) -> Result<String, String> {
 pub async fn openvpn_list_configs() -> Result<Vec<openvpn::StoredConfig>, String> {
     Ok(openvpn::list_configs())
 }
+
+/// Remove a stored `.ovpn` config from Eldrun's store, and with it every
+/// credential saved for it — a keychain entry keyed by a config that no longer
+/// exists is exactly the stale half `vpn_forget_password` exists to prevent.
+/// Order matters: the removal is the guarded step (must be a stored path, tunnel
+/// must be down), so it goes first — a refused removal leaves the credentials
+/// alone. Deletes Eldrun's copy only, never the user's original file.
+#[tauri::command]
+pub fn openvpn_remove_config(config: String) -> Result<(), String> {
+    openvpn::remove_config(&config)?;
+    vpn_forget_password(config)
+}

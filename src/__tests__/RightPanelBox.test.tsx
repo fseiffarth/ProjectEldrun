@@ -7,7 +7,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, act } from "@testing-library/react";
 import type { ProjectBox, ProjectEntry } from "../types";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue([]) }));
+vi.mock("@tauri-apps/api/core", () => ({
+  // Listing commands resolve to []; git_repo_root returns a path string or null,
+  // so the blanket [] would leak a non-string into ProjectFilesView's norm().
+  invoke: vi.fn((cmd: string) => Promise.resolve(cmd === "git_repo_root" ? null : [])),
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
 import { RightPanel } from "../components/layout/RightPanel";

@@ -299,9 +299,12 @@ describe("the experimental gate (`python_run_debug`, default off)", () => {
     delete settingsState.settings.python_run_debug; // unset, not false
   });
 
-  it("hides Run/Debug and the breakpoint gutter on a Python file", async () => {
+  it("hides Debug and the breakpoint gutter on a Python file, but keeps Run", async () => {
     await renderViewer();
-    expect(screen.queryByLabelText("Run file")).toBeNull();
+    // Run is deliberately ungated: it opens a plain terminal tab, nothing
+    // experimental about it. Only Debug (pdb) and the gutter that feeds it
+    // sit behind the flag.
+    expect(screen.queryByLabelText("Run file")).not.toBeNull();
     expect(screen.queryByLabelText("Debug file")).toBeNull();
     // The gutter exists only to feed Debug, so it goes with it.
     expect(screen.queryByLabelText("Break on line 3")).toBeNull();
@@ -319,7 +322,7 @@ describe("the experimental gate (`python_run_debug`, default off)", () => {
     settingsState.settings.debug = true;
     settingsState.settings.python_run_debug = false;
     await renderViewer();
-    expect(screen.queryByLabelText("Run file")).toBeNull();
+    expect(screen.queryByLabelText("Debug file")).toBeNull();
     delete settingsState.settings.debug;
   });
 

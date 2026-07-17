@@ -28,6 +28,7 @@ import {
   isFileTabKind,
   type StaticMenuItem,
 } from "./newTabItems";
+import { AddTabMenuList } from "./AddTabMenuList";
 import { type AgentMode, supportsAgentMode } from "./agentModes";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
@@ -38,7 +39,6 @@ import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { useActivityStore } from "../../stores/activity";
-import { useAgentTaskStore } from "../../stores/agentTask";
 import { useFileSourcesStore } from "../../stores/fileSources";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
@@ -106,6 +106,9 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   const lastModeToggle = useRef(0);
   const closeGroup = useTabsStore((s) => s.closeGroup);
   const hideGroup = useTabsStore((s) => s.hideGroup);
+  // Per-subwindow right file viewer: toggle state lives on the group node.
+  const filesOpen = !!group?.filesOpen;
+  const setGroupFiles = useTabsStore((s) => s.setGroupFiles);
   // SSH-sync Phase 0: the local/remote locality toggle is only meaningful for a
   // remote (SSH) project's agent/shell tabs. Subscribe to a single boolean so a
   // project edit elsewhere doesn't re-render every bar.
@@ -146,9 +149,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // is waiting on a decision, while not being looked at pulses until it's viewed.
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
   const clearAttention = useActivityStore((s) => s.clearAttention);
-  // Per-tab agent task summary (the terminal title an agent set, like a native
-  // terminal shows), surfaced in the tab hover card.
-  const titleByTab = useAgentTaskStore((s) => s.titleByTab);
   // Active project's name, used to name an agent's own session on launch.
   const projectName = useProjectsStore(
     (s) => s.projects.find((p) => p.id === s.activeId)?.name ?? "",
@@ -1193,6 +1193,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       )}
       {groupId !== EMPTY_GROUP_ID && (
         <button
+          className={`subwindow-files-toggle${filesOpen ? " open" : ""}`}
+          title={filesOpen ? "Close this subwindow's file viewer" : "Open a file viewer in this subwindow"}
+          // Same self-contained interaction discipline as the hide/close buttons:
+          // stop the bar's focusGroup mousedown and don't let the click bubble.
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); setGroupFiles(groupId, !filesOpen); }}
+        >
+          ◫
+        </button>
+      )}
+      {groupId !== EMPTY_GROUP_ID && (
+        <button
           className="subwindow-hide"
           title="Hide subwindow (bring it back from the right panel)"
           // Same self-contained interaction discipline as the close button below:
@@ -1223,152 +1235,134 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           ref={addMenuRef}
           style={{ position: "fixed", left: menuPos.x, top: menuPos.y }}
         >
-          <div className="tab-new-menu-group-label">Agents</div>
-          {AGENT_ITEMS.filter((item) => installedAgents?.has(item.cmd)).map((item) => (
-            <button
-              key={item.cmd}
-              className="tab-new-menu-item"
-              onClick={() => handleAdd(item)}
-            >
-              <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT[item.kind] }}>●</span>
-              {item.label}
-            </button>
-          ))}
-
-          <div className="tab-new-menu-group-label">
-            {localModel ? `Local Model · ${localModel}` : "Local Model"}
-          </div>
-          {localModel ? (
-            (() => {
+          <AddTabMenuList
+            groups={[
+              {
+                label: "Agents",
+                entries: AGENT_ITEMS.filter((item) => installedAgents?.has(item.cmd)).map(
+                  (item) => ({
+                    key: item.cmd,
+                    label: item.label,
+                    color: TAB_ACCENT[item.kind],
+                    onPick: () => handleAdd(item),
+                  }),
+                ),
+              },
               // Only offer agents whose binary is actually installed: Mistral/vibe
               // (checked against `installedAgents`) and the drivers the backend
               // already marks `available` (which now includes an installed check).
-              const vibeInstalled = installedAgents?.has("vibe") ?? false;
-              const drivers = localDrivers.filter((d) => d.available);
-              if (!vibeInstalled && drivers.length === 0) {
-                return (
-                  <div className="tab-new-menu-hint">
-                    No local agent installed — install one in the 🧠 menu
-                  </div>
-                );
-              }
-              return (
-                <>
-                  {/* Mistral/vibe keeps its bespoke per-model VIBE_HOME path. */}
-                  {vibeInstalled && (
-                    <button
-                      className="tab-new-menu-item"
-                      onClick={() => handleOllamaModel(localModel)}
-                    >
-                      <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
-                      Mistral
-                    </button>
-                  )}
-                  {/* Other agents drive the same model via `ollama launch` / fallback. */}
-                  {drivers.map((d) => (
-                    <button
-                      key={d.id}
-                      className="tab-new-menu-item"
-                      onClick={() => handleLocalLaunch(d.id, d.label, localModel)}
-                    >
-                      <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["local_agent"] }}>●</span>
-                      {d.label}
-                    </button>
-                  ))}
-                </>
-              );
-            })()
-          ) : (
-            <div className="tab-new-menu-hint">No local model set — pick one in the app bar</div>
-          )}
-
-          <div className="tab-new-menu-group-label">Shell</div>
-          {SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => (
-            <button
-              key={item.cmd}
-              className="tab-new-menu-item"
-              onClick={() => handleAdd(item)}
-            >
-              <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT[item.kind] }}>●</span>
-              {item.label}
-            </button>
-          ))}
-
-          <div className="tab-new-menu-group-label">Files</div>
-          {SHELL_ITEMS.filter((i) => isFileTabKind(i.kind)).map((item) => (
-            <button
-              key={item.cmd}
-              className="tab-new-menu-item"
-              disabled={!projectCwd}
-              onClick={() => handleAdd(item)}
-            >
-              <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT[item.kind] }}>●</span>
-              {item.label}
-            </button>
-          ))}
-
-          {/* System Monitor is whole-machine and Disk Usage picks its own scan
-              root, so both are offered in every scope; Network Traffic is
-              per-project (host/SSH link), so root has none. */}
-          <div className="tab-new-menu-group-label">Monitoring</div>
-          <button className="tab-new-menu-item" onClick={handleAddMonitor}>
-            <span
-              className="tab-new-menu-dot"
-              style={{ color: TAB_ACCENT.monitor }}
-            >
-              ●
-            </span>
-            System Monitor
-          </button>
-          <button className="tab-new-menu-item" onClick={handleAddDiskUsage}>
-            <span
-              className="tab-new-menu-dot"
-              style={{ color: TAB_ACCENT.diskusage }}
-            >
-              ◕
-            </span>
-            Disk Usage
-          </button>
-          {scope !== "root" && (
-            <button className="tab-new-menu-item" onClick={handleAddNetwork}>
-              <span
-                className="tab-new-menu-dot"
-                style={{ color: TAB_ACCENT.network }}
-              >
-                ●
-              </span>
-              Network Traffic
-            </button>
-          )}
-
-          {showBlobItem && (
-            <>
-              <div className="tab-new-menu-group-label">Workspace</div>
-              <button className="tab-new-menu-item" onClick={handleAddBlob}>
-                <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT["projects3d"] }}>◍</span>
-                Projects (3D)
-              </button>
-            </>
-          )}
-
-          <div className="tab-new-menu-group-label">Calendar</div>
-          <button className="tab-new-menu-item" onClick={handleAddCalendar}>
-            <span className="tab-new-menu-dot" style={{ color: TAB_ACCENT.calendar }}>◆</span>
-            Calendar
-          </button>
-
-          <div className="tab-new-menu-group-label">Project</div>
-          <button
-            className="tab-new-menu-item"
-            disabled={!hasAnyTabs}
-            onClick={() => {
-              closeAllTabs();
-              setMenuPos(null);
-            }}
-          >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
-            Close all tabs
-          </button>
+              {
+                label: localModel ? `Local Model · ${localModel}` : "Local Model",
+                entries: localModel
+                  ? [
+                      // Mistral/vibe keeps its bespoke per-model VIBE_HOME path.
+                      ...(installedAgents?.has("vibe")
+                        ? [{
+                            key: "vibe",
+                            label: "Mistral",
+                            color: TAB_ACCENT["local_agent"],
+                            onPick: () => void handleOllamaModel(localModel),
+                          }]
+                        : []),
+                      // Other agents drive the same model via `ollama launch` / fallback.
+                      ...localDrivers.filter((d) => d.available).map((d) => ({
+                        key: d.id,
+                        label: d.label,
+                        color: TAB_ACCENT["local_agent"],
+                        onPick: () => void handleLocalLaunch(d.id, d.label, localModel),
+                      })),
+                    ]
+                  : [],
+                hint: localModel
+                  ? "No local agent installed — install one in the 🧠 menu"
+                  : "No local model set — pick one in the app bar",
+              },
+              {
+                label: "Shell",
+                entries: SHELL_ITEMS.filter((i) => i.kind === "shell").map((item) => ({
+                  key: item.cmd || "shell",
+                  label: item.label,
+                  color: TAB_ACCENT[item.kind],
+                  onPick: () => handleAdd(item),
+                })),
+              },
+              {
+                label: "Files",
+                entries: SHELL_ITEMS.filter((i) => isFileTabKind(i.kind)).map((item) => ({
+                  key: item.cmd,
+                  label: item.label,
+                  color: TAB_ACCENT[item.kind],
+                  disabled: !projectCwd,
+                  onPick: () => handleAdd(item),
+                })),
+              },
+              // System Monitor is whole-machine and Disk Usage picks its own scan
+              // root, so both are offered in every scope; Network Traffic is
+              // per-project (host/SSH link), so root has none.
+              {
+                label: "Monitoring",
+                entries: [
+                  {
+                    key: "monitor",
+                    label: "System Monitor",
+                    color: TAB_ACCENT.monitor,
+                    onPick: handleAddMonitor,
+                  },
+                  {
+                    key: "diskusage",
+                    label: "Disk Usage",
+                    dot: "◕",
+                    color: TAB_ACCENT.diskusage,
+                    onPick: handleAddDiskUsage,
+                  },
+                  ...(scope !== "root"
+                    ? [{
+                        key: "network",
+                        label: "Network Traffic",
+                        color: TAB_ACCENT.network,
+                        onPick: handleAddNetwork,
+                      }]
+                    : []),
+                ],
+              },
+              ...(showBlobItem
+                ? [{
+                    label: "Workspace",
+                    entries: [{
+                      key: "blob",
+                      label: "Projects (3D)",
+                      dot: "◍",
+                      color: TAB_ACCENT["projects3d"],
+                      onPick: handleAddBlob,
+                    }],
+                  }]
+                : []),
+              {
+                label: "Calendar",
+                entries: [{
+                  key: "calendar",
+                  label: "Calendar",
+                  dot: "◆",
+                  color: TAB_ACCENT.calendar,
+                  onPick: handleAddCalendar,
+                }],
+              },
+              {
+                label: "Project",
+                entries: [{
+                  key: "close-all",
+                  label: "Close all tabs",
+                  dot: "×",
+                  color: "var(--danger, #d9534f)",
+                  disabled: !hasAnyTabs,
+                  onPick: () => {
+                    closeAllTabs();
+                    setMenuPos(null);
+                  },
+                }],
+              },
+            ]}
+          />
         </div>,
         document.body,
       )}
@@ -1435,17 +1429,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         document.body,
       )}
       {/* Styled tab hover card (matches the project pill popup). Suppressed
-          mid-drag and while a menu is open so it never overlaps them. */}
+          mid-drag and while a menu is open so it never overlaps them. The card
+          derives its own content from the tab + this window's stores. */}
       {hoverTab && dragKey === null && !menuOpen && !tabMenu && (() => {
         const tab = tabs.find((t) => t.key === hoverTab.key);
         if (!tab) return null;
         return (
           <TabHoverCard
-            label={tab.label}
-            kind={tab.kind}
-            cwd={tab.cwd}
-            sessionId={tab.sessionId}
-            summary={titleByTab[tab.key]}
+            tab={tab}
+            scope={scope}
+            isRemote={isRemoteScope}
             anchorX={hoverTab.x}
             anchorY={hoverTab.y}
           />

@@ -8,6 +8,7 @@ import {
   DETACHED_DRAG_MOVE,
   DETACHED_DRAG_START,
   decideDetachedGroupDrop,
+  decideDetachedPaneDrop,
   decideDetachedTabDrop,
   type DetachedDragEnd,
   type DetachedDragMove,
@@ -36,6 +37,7 @@ import {
 import { useSettingsStore } from "../../stores/settings";
 import { useDragStore } from "../../stores/drag";
 import { useSubwindowNavStore } from "../../stores/subwindowNav";
+import { useWindowFocused } from "../../hooks/useWindowFocused";
 import { useScrollSyncStore } from "../../stores/scrollSync";
 import { useWindowMoveStore } from "../../stores/windowMove";
 import { useDetachAnimStore } from "../../stores/detachAnim";
@@ -73,6 +75,7 @@ export function CenterPanel() {
   const setScope = useTabsStore((s) => s.setScope);
   const loadFromLayout = useTabsStore((s) => s.loadFromLayout);
   const resizeSplit = useTabsStore((s) => s.resizeSplit);
+  const mergeGroups = useTabsStore((s) => s.mergeGroups);
   const tabs = useTabsStore((s) => s.tabs);
   // #42: the current scope's detached popouts. Subscribed here so the debounced
   // save below re-fires when a popout is moved/resized (setDetachedBounds swaps
@@ -556,7 +559,8 @@ export function CenterPanel() {
 
     reg(
       listen<DetachedDragStart>(DETACHED_DRAG_START, (ev) => {
-        const { scope: dScope, groupId, label, cursorPhysX, cursorPhysY, tabKey } = ev.payload;
+        const { scope: dScope, groupId, label, cursorPhysX, cursorPhysY, tabKey, paneId } =
+          ev.payload;
         // Open a popout drop session for THIS gesture so sibling popouts of the
         // scope become live drop targets (highlight on MOVE, dock on END) — the
         // same machinery `TabBar` uses for main→popout drags.
@@ -577,6 +581,7 @@ export function CenterPanel() {
           detachedScope: dScope,
           detachedGroupId: groupId,
           detachedTabKey: tabKey,
+          detachedPaneId: paneId,
         });
         resolveTargetRef.current(seed.x, seed.y);
         void refreshFrame().then(() => {
@@ -705,6 +710,60 @@ export function CenterPanel() {
           return;
         }
 
+        // ── One pane of a multi-pane popout: dock JUST that pane, or pop it into
+        // its own window — NEVER the whole popout (a pane drop must not haul its
+        // sibling panes into the main window). ────────────────────────────────
+        if (f?.kind === "detached" && f.detachedScope && f.detachedGroupId && f.detachedPaneId) {
+          const scope = f.detachedScope;
+          const srcGroup = f.detachedGroupId;
+          const paneId = f.detachedPaneId;
+          const decision = decideDetachedPaneDrop({
+            cancelled: ev.payload.cancelled,
+            shift: ev.payload.shift ?? false,
+            inMain,
+            overPopoutId,
+            srcGroupId: srcGroup,
+          });
+          switch (decision.kind) {
+            case "dockMain": {
+              // Dock only the dragged pane at the resolved target (bar → merge;
+              // body edge → split; else its own pane). Targets only apply when
+              // the popout's scope IS the active one.
+              const sameScope = store.scope === scope;
+              const target =
+                sameScope && f.reorderGroup
+                  ? { targetGroupId: f.reorderGroup, edge: "center" as const }
+                  : sameScope && f.overGroup && f.edge
+                    ? { targetGroupId: f.overGroup, edge: f.edge }
+                    : undefined;
+              store.attachDetachedPane(scope, srcGroup, paneId, target);
+              reseedDetached(scope, srcGroup);
+              break;
+            }
+            case "newWindow": {
+              // Shift, or a free-space release: the pane becomes its own popout
+              // at the physical cursor. A lone-pane source is refused downstream
+              // (null) → clean no-op.
+              if (phys) {
+                const bounds = {
+                  x: Math.round(phys.x - 80),
+                  y: Math.round(phys.y - 8),
+                  w: 900,
+                  h: 640,
+                };
+                const newLabel = store.detachPaneToNewWindow(scope, srcGroup, paneId, bounds);
+                if (newLabel) reseedDetached(scope, srcGroup);
+              }
+              break;
+            }
+            case "none":
+              // Cancelled / released over the source or a sibling popout — stay put.
+              break;
+          }
+          done();
+          return;
+        }
+
         // ── Whole group: dock into main, or stay floating ───────────────────────
         if (f?.kind === "detached" && f.detachedGroupId && f.detachedScope) {
           const decision = decideDetachedGroupDrop({
@@ -817,6 +876,7 @@ export function CenterPanel() {
           node={renderLayout}
           projectCwd={projectCwd}
           resizeSplit={resizeSplit}
+          mergeGroups={mergeGroups}
           panelRef={panelRef}
           registerGroupBody={registerGroupBody}
           onResized={measure}
@@ -1075,6 +1135,9 @@ export function FocusFrameOverlay({
   const focusedGroupId = useTabsStore((s) => s.focusedGroupId);
   const navActive = useSubwindowNavStore((s) => s.active);
   const previewGroupId = useSubwindowNavStore((s) => s.previewGroupId);
+  // Only the OS-focused window draws its focus frame, so a blurred main window
+  // doesn't show an active subwindow alongside a focused popout (#42).
+  const windowFocused = useWindowFocused();
 
   const frameId = navActive && previewGroupId ? previewGroupId : focusedGroupId;
   const frameRect = frameId ? groupRects[frameId] : undefined;
@@ -1083,7 +1146,7 @@ export function FocusFrameOverlay({
 
   return (
     <>
-      {frameRect && (
+      {windowFocused && frameRect && (
         <div
           className="focus-frame"
           style={{
@@ -1265,6 +1328,9 @@ interface TreeProps {
   node: LayoutNode;
   projectCwd: string;
   resizeSplit: (splitId: string, dividerIndex: number, fraction: number) => void;
+  /** Merge the two groups adjacent to a divider (double-click). Wired only when
+   *  both sides are leaf groups — see the divider's `onDoubleClick`. */
+  mergeGroups: (targetGroupId: string, sourceGroupId: string) => void;
   panelRef: React.RefObject<HTMLDivElement>;
   registerGroupBody: (id: string) => (el: HTMLDivElement | null) => void;
   onResized: () => void;
@@ -1356,6 +1422,18 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
             <div
               className={`split-divider split-divider-${node.dir}`}
               onPointerDown={startDrag(i)}
+              // Double-click merges the two adjacent subwindows into one — but
+              // only when both sides are leaf groups (mirroring the ScrollLink
+              // guard below); next to a nested split it's a no-op. Survivor is
+              // the left/top child; the divider drag uses onPointerDown, so the
+              // two gestures don't collide.
+              onDoubleClick={() => {
+                const a = node.children[i];
+                const b = node.children[i + 1];
+                if (a.type === "group" && b.type === "group") {
+                  props.mergeGroups(a.id, b.id);
+                }
+              }}
             >
               {/* Scroll-link toggle: only between two adjacent leaf subwindows
                   whose active tabs are both syncable viewers (text/markdown/PDF). */}

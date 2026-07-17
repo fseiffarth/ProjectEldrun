@@ -320,6 +320,7 @@ export function DetachedApp({ param }: Props) {
       onAddTab={(tab, targetGroupId, edge) =>
         pushEdit({ kind: "add", tab, targetGroupId, edge })
       }
+      onFiles={(groupId, patch) => pushEdit({ kind: "files", groupId, ...patch })}
     />
   );
 }

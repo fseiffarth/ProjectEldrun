@@ -314,8 +314,21 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
 
   const canMutate = selected.size > 0;
 
+  // Delete key removes the current selection — the keyboard twin of the Delete
+  // button / context-menu action. Ignored while a text field (path/search/rename
+  // prompt) has focus so it never eats a keystroke there.
+  function handleKeyDown(ev: React.KeyboardEvent) {
+    if (ev.key !== "Delete" || selected.size === 0) return;
+    const target = ev.target as HTMLElement | null;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+      return;
+    }
+    ev.preventDefault();
+    void deleteSelected();
+  }
+
   return (
-    <section className={`file-browser ${active ? "active" : ""}`}>
+    <section className={`file-browser ${active ? "active" : ""}`} tabIndex={0} onKeyDown={handleKeyDown}>
       <div className="file-browser-toolbar">
         <button onClick={goBack} disabled={history.length === 0} title="Back">‹</button>
         <button onClick={goForward} disabled={future.length === 0} title="Forward">›</button>

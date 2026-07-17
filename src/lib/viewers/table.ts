@@ -411,6 +411,18 @@ export function sortRefs(refs: RowRef[], col: number, dir: "asc" | "desc"): RowR
   return indexed.map((x) => x.r);
 }
 
+/**
+ * Return a new copy of `refs` ordered by each row's **source index** — the file's
+ * own row order (`asc`) or its reverse (`desc`). This is what the row-number
+ * gutter sorts on: the gutter shows each row's source index, so ordering by it
+ * restores (asc) the order the rows have in the file — whatever a column sort did
+ * to the view — or reverses it (desc). Does not mutate the input.
+ */
+export function sortRefsByIndex(refs: RowRef[], dir: "asc" | "desc"): RowRef[] {
+  const sorted = [...refs].sort((a, b) => a.index - b.index);
+  return dir === "asc" ? sorted : sorted.reverse();
+}
+
 /** {@link sortRefs} over bare rows, for callers with no source indices to keep. */
 export function sortRows(
   rows: string[][],

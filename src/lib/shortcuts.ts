@@ -34,6 +34,7 @@ export type ShortcutAction =
   | "subwindowDown"
   | "cycleTabs"
   | "hideSubwindow"
+  | "toggleSubwindowFiles"
   | "closeSubwindow"
   | "closeTab"
   | "closeAllTabs";
@@ -90,6 +91,11 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     action: "hideSubwindow",
     label: "Hide focused subwindow",
     default: { key: "h", ctrl: true, shift: true },
+  },
+  {
+    action: "toggleSubwindowFiles",
+    label: "Toggle subwindow file viewer",
+    default: { key: "f", shift: true },
   },
   {
     action: "closeSubwindow",
