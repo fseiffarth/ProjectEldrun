@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+} from "react";
 import { useViewerState } from "./FileViewerPane";
 import {
   parseYaml,
@@ -12,11 +20,17 @@ import {
   moveNodeTo,
   canAddChild,
   canComment,
+  canPasteAfter,
   commentOf,
+  copyNode,
+  inlineListValues,
+  setListItems,
+  pasteAfter,
   setComment,
   isFlow,
   literalFor,
   scalarType,
+  type YamlClip,
   type YamlDoc,
   type YamlNode,
   type YamlValueType,
@@ -42,6 +56,31 @@ import {
  * with its edit affordances withheld rather than a control that would corrupt the
  * file.
  */
+
+// ── The copy buffer ─────────────────────────────────────────────────────────
+// Module-level, not component state: copying in one tab and pasting in another
+// (or after the viewer remounts) is the point of a clipboard. The system
+// clipboard receives the same text, but the paste cursor works from THIS one —
+// it carries the structure (block/flow, mapping entry/item) a raw string no
+// longer has, which is what lets the cursor refuse a spot the paste would tear.
+let clipCurrent: YamlClip | null = null;
+const clipSubs = new Set<() => void>();
+
+function setClip(next: YamlClip | null) {
+  clipCurrent = next;
+  for (const fn of clipSubs) fn();
+}
+
+function useClip(): YamlClip | null {
+  return useSyncExternalStore(
+    (cb) => {
+      clipSubs.add(cb);
+      return () => clipSubs.delete(cb);
+    },
+    () => clipCurrent,
+  );
+}
+
 export function YamlTree({
   text,
   onChange,
@@ -79,6 +118,33 @@ export function YamlTree({
 
   // The row currently showing its "add entry" form, as `${parentId}:${kind}`.
   const [adding, setAdding] = useState<string | null>(null);
+
+  // Copy → paste: the app-wide buffer, and where THIS tree's paste cursor sits
+  // (the id of the entry the paste would follow). The buffer is shared so a copy
+  // travels between tabs; the cursor is per tree — two views of two files must
+  // not fight over one insertion point.
+  const clip = useClip();
+  const [cursorId, setCursorId] = useState<string | null>(null);
+
+  // Esc cancels the whole paste mode — cursor and buffer both — but never while
+  // typing in one of the tree's inputs, whose own Escape means "revert this
+  // field". A buffer cleared elsewhere (another tab's Esc, the banner's ×) takes
+  // this tree's cursor with it.
+  useEffect(() => {
+    if (!clip) {
+      setCursorId(null);
+      return;
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const t = e.target as HTMLElement | null;
+      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+      setCursorId(null);
+      setClip(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [clip]);
 
   if (doc.error) {
     return (
@@ -127,6 +193,27 @@ export function YamlTree({
 
   return (
     <div className="yaml-tree" style={fontSize ? { fontSize: `${fontSize}px` } : undefined}>
+      {/* What the copy button captured, and how to use or drop it — the banner is
+          also the one cancel affordance a mouse-only user has. */}
+      {clip && (
+        <div className="yaml-clip-banner">
+          <span>
+            Copied <strong>{clip.label}</strong> — click an entry to place the paste cursor after
+            it
+          </span>
+          <button
+            className="yaml-act"
+            onClick={() => {
+              setCursorId(null);
+              setClip(null);
+            }}
+            title="Forget the copied entry (Esc)"
+            aria-label="Forget the copied entry"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {doc.docs.map((root, i) => (
         <div className="yaml-doc" key={root.id}>
           {doc.docs.length > 1 && <div className="yaml-doc-sep">document {i + 1}</div>}
@@ -141,6 +228,8 @@ export function YamlTree({
             toggle={toggle}
             adding={adding}
             setAdding={setAdding}
+            cursorId={cursorId}
+            setCursor={setCursorId}
           />
           {adding?.startsWith(`${root.id}:`) ? (
             <AddRow
@@ -175,6 +264,55 @@ export function YamlTree({
  * added to the window mid-gesture, because listeners registered once a gesture is
  * already under way are the ones WebKitGTK drops.
  */
+/** How an ancestor's hover marks the rows beneath it: the plain substructure
+ *  highlight, the accent tint of a hovered whole-entry action (copy, move,
+ *  comment), the accent-plus-pull of the drag grip (the block shifts a few px
+ *  out, showing it is what the handle moves), or the danger tint of a hovered
+ *  delete. */
+type SubtreeMark = "row" | "act" | "grab" | "del" | null;
+
+/** The row class a mark paints. Shared by the entry rows AND the add/form rows
+ *  inside a container's block, so a marked area colors contiguously instead of
+ *  leaving its `+ key` / `+ item` rows white holes. */
+const markClass = (m: SubtreeMark): string =>
+  m === "del"
+    ? "yaml-row-marked-del"
+    : m === "grab"
+      ? "yaml-row-marked-act yaml-row-pulled"
+      : m === "act"
+        ? "yaml-row-marked-act"
+        : m
+          ? "yaml-row-marked"
+          : "";
+
+/** Width of the fixed action gutter every row reserves on its LEFT, where the
+ *  entry's hover buttons (⠿ # ⧉ ↑ ↓ ×) live — a stable column in front of the
+ *  tree, instead of a target that drifts right with the panel's width. Sized to
+ *  the full slot set; mirrored by `.yaml-gutter` in themes.css. */
+const GUTTER = 130;
+
+/** How many per-level guide colors themes.css defines (`--yaml-guide-N`). */
+const GUIDE_COLORS = 4;
+
+/** Every row's left padding — the action gutter, then the tree indent — plus
+ *  one vertical guide line per ancestor level (colors cycling by depth), so the
+ *  tree's structure reads at a glance. The guides are a background IMAGE, which
+ *  is what lets them coexist with the hover/marked background COLORS: those are
+ *  stylesheet shorthands, and the inline image wins the image slot alone. */
+const rowPad = (depth: number): CSSProperties => {
+  const style: CSSProperties = { paddingLeft: `${GUTTER + depth * 14 + 4}px` };
+  if (depth > 0) {
+    const stops = Array.from({ length: depth }, (_, k) => {
+      // Under each ancestor level's caret column.
+      const x = GUTTER + 4 + k * 14 + 5;
+      const c = `var(--yaml-guide-${k % GUIDE_COLORS})`;
+      return `transparent ${x}px, ${c} ${x}px, ${c} ${x + 1}px, transparent ${x + 1}px`;
+    }).join(", ");
+    style.backgroundImage = `linear-gradient(to right, ${stops})`;
+  }
+  return style;
+};
+
 function YamlRows({
   nodes,
   parent,
@@ -186,6 +324,9 @@ function YamlRows({
   toggle,
   adding,
   setAdding,
+  cursorId,
+  setCursor,
+  marked = null,
 }: {
   nodes: YamlNode[];
   parent: YamlNode;
@@ -197,12 +338,26 @@ function YamlRows({
   toggle: (id: string) => void;
   adding: string | null;
   setAdding: (v: string | null) => void;
+  cursorId: string | null;
+  setCursor: (v: string | null) => void;
+  /** A hovered ancestor marks every row under it (see {@link SubtreeMark}). */
+  marked?: SubtreeMark;
 }) {
   const rows = useRef<(HTMLDivElement | null)[]>([]);
   // The live gesture is a ref (the pointer handlers read it without re-binding) and
   // state (the drop line has to render).
   const live = useRef<{ from: number; to: number } | null>(null);
   const [drag, setDrag] = useState<{ from: number; to: number } | null>(null);
+
+  // Several keys at one level pad to one column, so their values start on a
+  // shared left edge (the tree is monospace, so `ch` is exact). The widest key
+  // sets the column — capped, so one novella of a key can't shove every sibling's
+  // value off screen. A lone key needs no column.
+  const keyWidth = useMemo(() => {
+    const keyed = nodes.filter((n) => n.key != null);
+    if (keyed.length < 2) return null;
+    return Math.min(40, Math.max(...keyed.map((n) => n.key!.length)));
+  }, [nodes]);
 
   // Which sibling the pointer is over. A sibling's band runs from its own row down
   // to the next sibling's — so pointing anywhere inside a container's subtree lands
@@ -234,10 +389,10 @@ function YamlRows({
     const d = live.current;
     live.current = null;
     setDrag(null);
-    // Only commit onto a position a reorder can actually land on: the target must
-    // own its own line (the entry sharing a `- key:` / `- - x` dash line can't be
-    // displaced from it). moveNodeTo also guards this, but checking here keeps a
-    // drop onto an impossible slot from firing a no-op onChange.
+    // Only commit onto a removable target (moveNodeTo also guards this, but
+    // checking here keeps a drop onto such a slot from firing a no-op onChange).
+    // A dash-line entry IS a real target: moveNodeTo hands the item's `- ` to
+    // whichever entry ends up first.
     if (d && d.to !== d.from && nodes[d.to]?.deletable) {
       onChange(moveNodeTo(text, nodes, nodes[d.from], d.to));
     }
@@ -260,15 +415,18 @@ function YamlRows({
           toggle={toggle}
           adding={adding}
           setAdding={setAdding}
+          cursorId={cursorId}
+          setCursor={setCursor}
+          marked={marked}
+          keyWidth={keyWidth}
           rowRef={(el) => {
             rows.current[i] = el;
           }}
           dragging={drag?.from === i}
           // The drop line goes on the row the node would land at, on the side it
           // would come to rest — so the gesture shows where the text will end up.
-          // Only a row a reorder can actually land on gets a line: a fixed
-          // dash-line entry (`node.deletable === false`) can't be displaced, so it
-          // shows none and is blended out instead (see `blocked`).
+          // Only a removable row gets a line; an unremovable one is blended out
+          // instead (see `blocked`).
           dropSide={
             drag && drag.to === i && drag.to !== drag.from && node.deletable
               ? drag.to < drag.from
@@ -276,9 +434,8 @@ function YamlRows({
                 : "after"
               : null
           }
-          // While a drag is in flight, an entry that can't be a drop target (it
-          // owns its dash line, so it can't be moved off first place) is dimmed to
-          // show the reorder won't land there.
+          // While a drag is in flight, an entry that can't be a drop target is
+          // dimmed to show the reorder won't land there.
           blocked={drag != null && !node.deletable}
           onDragStart={start}
           onDragOver={over}
@@ -302,6 +459,10 @@ function YamlRow({
   toggle,
   adding,
   setAdding,
+  cursorId,
+  setCursor,
+  marked,
+  keyWidth,
   rowRef,
   dragging,
   dropSide,
@@ -322,6 +483,11 @@ function YamlRow({
   toggle: (id: string) => void;
   adding: string | null;
   setAdding: (v: string | null) => void;
+  cursorId: string | null;
+  setCursor: (v: string | null) => void;
+  marked: SubtreeMark;
+  /** The sibling group's key column, in ch — null when this key stands alone. */
+  keyWidth: number | null;
   rowRef: (el: HTMLDivElement | null) => void;
   dragging: boolean;
   dropSide: "before" | "after" | null;
@@ -332,23 +498,58 @@ function YamlRow({
 }) {
   const [renaming, setRenaming] = useState(false);
   const [noting, setNoting] = useState(false);
+  // This row's own hover, handed down to its children: a container's row names
+  // the whole block beneath it, so pointing at the row marks the block — and
+  // pointing at its delete marks the block in danger, since that is what the ×
+  // will take.
+  const [mark, setMark] = useState<SubtreeMark>(null);
   const isContainer = node.kind !== "scalar";
   const isOpen = !collapsed.has(node.id);
   const inSeq = parentKind === "seq";
+
+  // While the copy buffer holds an entry, a row the paste FITS after (a mapping
+  // entry after a mapping entry, an item after an item — see canPasteAfter) is a
+  // click target for the paste cursor; every other row stays an ordinary row.
+  const clip = useClip();
+  const pastable = clip != null && canPasteAfter(clip, node, parentKind);
+  // Hovering a pastable row previews the landing point (see the preview row).
+  const [pasteHover, setPasteHover] = useState(false);
 
   // What this row is called in an action's label. A list item has no key, and
   // "Delete item" would name every sibling equally — to a screen reader and to a
   // test alike — so it is named by its index.
   const label = inSeq ? `item ${index}` : (node.key ?? "");
+  // A list of plain values reads — and edits — better as the values themselves:
+  // `web, prod` in one input, where typing a comma adds an item and deleting one
+  // removes it. Such a list renders as this ONE line, no item rows: the line IS
+  // the list. Only when every item can ride a comma line (see inlineListValues) —
+  // a list of mappings, or an item carrying its own comment, stays rows.
+  const inlineList = node.kind === "seq" ? inlineListValues(node) : null;
   const count = isContainer
     ? node.kind === "seq"
       ? `${node.children.length} item${node.children.length === 1 ? "" : "s"}`
       : `${node.children.length} key${node.children.length === 1 ? "" : "s"}`
     : null;
 
-  // The same rule as the ↑/↓ buttons: an entry that does not own its line (the key
-  // written on its item's dash) cannot be moved off it.
   const movable = node.deletable && siblings.length > 1;
+  // Whether hovering this row has a substructure to mark: an open container with
+  // visible child rows (an inline comma list has none — the line is the list).
+  const marksSubtree = isContainer && isOpen && !inlineList && node.children.length > 0;
+  // A whole-entry action (grip, copy, move, comment) hands the accent tint down
+  // the substructure the same way the × hands down danger: everything tinted is
+  // what the button will act on — the entry is its block, not its one line.
+  const actMark = marksSubtree
+    ? { onMouseEnter: () => setMark("act"), onMouseLeave: () => setMark("row") }
+    : {};
+  // The grip's own mark: the same accent, plus the block "pulling out" a few px —
+  // the affordance that this handle is what moves it.
+  const grabMark = marksSubtree
+    ? { onMouseEnter: () => setMark("grab"), onMouseLeave: () => setMark("row") }
+    : {};
+  // What this row's block content (child rows, its add/form rows) is marked
+  // with. A row being DRAGGED keeps the grab mark for the whole gesture — the
+  // grip's hover mark would die the moment the pointer moves off it.
+  const childMark: SubtreeMark = dragging ? "grab" : (mark ?? marked);
   const note = commentOf(node);
   // What the key says about itself on hover: its comment if it has one, since that
   // is the only place a YAML file documents a key.
@@ -363,40 +564,149 @@ function YamlRow({
           dragging ? "yaml-row-dragging" : "",
           dropSide ? `yaml-row-drop-${dropSide}` : "",
           blocked ? "yaml-row-blocked" : "",
+          pastable ? "yaml-row-pastable" : "",
+          markClass(marked),
         ]
           .filter(Boolean)
           .join(" ")}
-        style={{ paddingLeft: `${depth * 14 + 4}px` }}
+        style={rowPad(depth)}
+        onMouseEnter={() => {
+          if (marksSubtree) setMark("row");
+          if (pastable) setPasteHover(true);
+        }}
+        onMouseLeave={() => {
+          if (marksSubtree) setMark(null);
+          setPasteHover(false);
+        }}
+        // Placing the paste cursor is a click on the row itself — its background
+        // and gaps — never on one of its controls, which keep their own meaning
+        // (rename, edit, collapse) while a copy is held.
+        onClick={
+          pastable
+            ? (e) => {
+                const t = e.target as HTMLElement;
+                if (t.closest("button, input, textarea, select")) return;
+                setCursor(cursorId === node.id ? null : node.id);
+              }
+            : undefined
+        }
       >
-        {movable ? (
-          <button
-            className="yaml-grip"
-            title="Drag to reorder"
-            aria-label={`Reorder ${label}`}
-            onPointerDown={(e) => {
-              // Pointer capture keeps every later event on the grip, so the gesture
-              // survives the pointer leaving the row (which is the whole point of it).
-              // Optional because it is the one part of this not every environment
-              // implements — jsdom has no pointer capture, and the drag is still the
-              // drag without it.
-              e.preventDefault();
-              e.currentTarget.setPointerCapture?.(e.pointerId);
-              onDragStart(index);
-            }}
-            onPointerMove={(e) => onDragOver(e.clientY)}
-            onPointerUp={(e) => {
-              e.currentTarget.releasePointerCapture?.(e.pointerId);
-              onDragEnd();
-            }}
-            onPointerCancel={onDragEnd}
-          >
-            ⠿
-          </button>
-        ) : (
-          <span className="yaml-grip yaml-grip-empty" aria-hidden="true" />
-        )}
+        {/* The entry's own actions, in the fixed gutter on the row's LEFT — one
+            stable column for every row, whatever its depth. Shown on the row's
+            hover, like the old right-edge cluster. */}
+        {/* SIX FIXED SLOTS (⠿ # ⧉ ↑ ↓ ×), an action the row doesn't offer
+            rendered as an empty slot — so every button keeps its column on
+            every row, and the pointer never has to chase a shifting target. */}
+        <span className="yaml-actions yaml-gutter">
+          {movable ? (
+            <button
+              className="yaml-grip"
+              title="Drag to reorder"
+              aria-label={`Reorder ${label}`}
+              {...grabMark}
+              onPointerDown={(e) => {
+                // Pointer capture keeps every later event on the grip, so the gesture
+                // survives the pointer leaving the row (which is the whole point of it).
+                // Optional because it is the one part of this not every environment
+                // implements — jsdom has no pointer capture, and the drag is still the
+                // drag without it.
+                e.preventDefault();
+                e.currentTarget.setPointerCapture?.(e.pointerId);
+                onDragStart(index);
+              }}
+              onPointerMove={(e) => onDragOver(e.clientY)}
+              onPointerUp={(e) => {
+                e.currentTarget.releasePointerCapture?.(e.pointerId);
+                onDragEnd();
+              }}
+              onPointerCancel={onDragEnd}
+            >
+              ⠿
+            </button>
+          ) : (
+            <span className="yaml-slot yaml-slot-grip" aria-hidden="true" />
+          )}
+          {!note && !noting && canComment(doc, node) ? (
+            <button
+              className="yaml-act"
+              onClick={() => setNoting(true)}
+              title="Add a comment"
+              aria-label={`Comment on ${label}`}
+              {...actMark}
+            >
+              #
+            </button>
+          ) : (
+            <span className="yaml-slot" aria-hidden="true" />
+          )}
+          {/* Copy the entry into the paste buffer (and, as text, onto the system
+              clipboard). */}
+          {node.deletable ? (
+            <button
+              className="yaml-act"
+              onClick={() => {
+                const c = copyNode(text, node, label);
+                if (!c) return;
+                setClip(c);
+                navigator.clipboard?.writeText(c.text).catch(() => {});
+              }}
+              title="Copy this entry — then click an entry to paste after it"
+              aria-label={`Copy ${label}`}
+              {...actMark}
+            >
+              ⧉
+            </button>
+          ) : (
+            <span className="yaml-slot" aria-hidden="true" />
+          )}
+          {movable ? (
+            <>
+              <button
+                className="yaml-act"
+                disabled={index === 0}
+                onClick={() => onChange(moveNode(text, siblings, node, -1))}
+                title="Move up"
+                aria-label={`Move ${label} up`}
+                {...actMark}
+              >
+                ↑
+              </button>
+              <button
+                className="yaml-act"
+                disabled={index === siblings.length - 1}
+                onClick={() => onChange(moveNode(text, siblings, node, 1))}
+                title="Move down"
+                aria-label={`Move ${label} down`}
+                {...actMark}
+              >
+                ↓
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="yaml-slot" aria-hidden="true" />
+              <span className="yaml-slot" aria-hidden="true" />
+            </>
+          )}
+          {node.deletable ? (
+            <button
+              className="yaml-act yaml-act-del"
+              onClick={() => onChange(deleteNode(text, node))}
+              // Hovering a container's × tints its whole substructure in danger:
+              // everything marked is what the click will take.
+              onMouseEnter={marksSubtree ? () => setMark("del") : undefined}
+              onMouseLeave={marksSubtree ? () => setMark("row") : undefined}
+              title={isContainer ? "Delete this entry and everything under it" : "Delete this entry"}
+              aria-label={`Delete ${label}`}
+            >
+              ×
+            </button>
+          ) : (
+            <span className="yaml-slot" aria-hidden="true" />
+          )}
+        </span>
 
-        {isContainer && node.children.length > 0 ? (
+        {isContainer && node.children.length > 0 && !inlineList ? (
           <button
             className="yaml-caret"
             onClick={() => toggle(node.id)}
@@ -425,7 +735,14 @@ function YamlRow({
             onCancel={() => setRenaming(false)}
           />
         ) : (
-          <button className="yaml-key" onClick={() => setRenaming(true)} title={keyTitle}>
+          <button
+            className="yaml-key"
+            // +1 for the colon the button also holds; the padding is uniform
+            // across siblings, so the values land on one left edge.
+            style={keyWidth != null ? { minWidth: `${keyWidth + 1}ch` } : undefined}
+            onClick={() => setRenaming(true)}
+            title={keyTitle}
+          >
             {node.key}
             <span className="yaml-colon">:</span>
           </button>
@@ -437,6 +754,22 @@ function YamlRow({
             label={label}
             onCommit={(next) => onChange(setValue(text, doc, node, next))}
           />
+        ) : inlineList ? (
+          <>
+            {isFlow(node) && (
+              <span className="yaml-count">
+                <span className="yaml-flow-tag" title="Written in flow (JSON) style">
+                  [ ]
+                </span>
+              </span>
+            )}
+            <InlineListCell
+              node={node}
+              values={inlineList}
+              label={label}
+              onCommit={(vals) => onChange(setListItems(text, doc, node, vals))}
+            />
+          </>
         ) : (
           <span className="yaml-count">
             {/* Flow (JSON) style is visible, because it is what the row's edits
@@ -475,77 +808,39 @@ function YamlRow({
             title={`# ${note}`}
             aria-label={`Comment on ${label}`}
             onClick={() => setNoting(true)}
+            {...actMark}
           >
             #
           </button>
         )}
 
-        <span className="yaml-actions">
-          {/* An empty key (`key:`, `key: null`, `key: []`) offers both — its first
-              child is what decides whether it becomes a mapping or a list. A LIST
-              offers both too: "+ key" on it adds an item that IS a mapping.
-              An OPEN container shows its add affordance as the persistent row at
-              the end of its children instead, so the inline hover buttons here are
-              only for a collapsed container (whose children aren't shown) or an
-              empty placeholder (which has no child rows to host the add row). */}
-          {!(isContainer && isOpen) &&
-            (canAddChild(node, "key") || canAddChild(node, "item")) && (
+        {/* An empty key (`key:`, `key: null`, `key: []`) offers both — its first
+            child is what decides whether it becomes a mapping or a list. A LIST
+            offers both too: "+ key" on it adds an item that IS a mapping.
+            An OPEN container shows its add affordance as the persistent row at
+            the end of its children instead, so the inline hover buttons here are
+            only for a collapsed container (whose children aren't shown) or an
+            empty placeholder (which has no child rows to host the add row).
+            They stay IN the row, next to what they grow — the gutter is for
+            actions on the entry itself. */}
+        {!(isContainer && isOpen) &&
+          !inlineList &&
+          (canAddChild(node, "key") || canAddChild(node, "item")) && (
+            <span className="yaml-actions yaml-actions-row">
               <AddControls node={node} adding={adding} setAdding={setAdding} inline />
-            )}
-          {!note && !noting && canComment(doc, node) && (
-            <button
-              className="yaml-act"
-              onClick={() => setNoting(true)}
-              title="Add a comment"
-              aria-label={`Comment on ${label}`}
-            >
-              #
-            </button>
-          )}
-          {movable && (
-            <>
-              <button
-                className="yaml-act"
-                disabled={index === 0}
-                onClick={() => onChange(moveNode(text, siblings, node, -1))}
-                title="Move up"
-                aria-label={`Move ${label} up`}
-              >
-                ↑
-              </button>
-              <button
-                className="yaml-act"
-                disabled={index === siblings.length - 1}
-                onClick={() => onChange(moveNode(text, siblings, node, 1))}
-                title="Move down"
-                aria-label={`Move ${label} down`}
-              >
-                ↓
-              </button>
-            </>
-          )}
-          {node.deletable && (
-            <button
-              className="yaml-act yaml-act-del"
-              onClick={() => onChange(deleteNode(text, node))}
-              title={isContainer ? "Delete this entry and everything under it" : "Delete this entry"}
-              aria-label={`Delete ${label}`}
-            >
-              ×
-            </button>
-          )}
-          {!node.editable && (
-            <span
-              className="yaml-locked"
-              title="The tree can't rewrite this safely (an anchor, a merge key, or a multi-line value) — edit it in Source."
-            >
-              source only
             </span>
           )}
-        </span>
+        {!node.editable && (
+          <span
+            className="yaml-locked"
+            title="The tree can't rewrite this safely (an anchor, a merge key, or a multi-line value) — edit it in Source."
+          >
+            source only
+          </span>
+        )}
       </div>
 
-      {isContainer && isOpen && (
+      {isContainer && isOpen && !inlineList && (
         <YamlRows
           nodes={node.children}
           parent={node}
@@ -557,6 +852,11 @@ function YamlRow({
           toggle={toggle}
           adding={adding}
           setAdding={setAdding}
+          cursorId={cursorId}
+          setCursor={setCursor}
+          // This row's own hover outranks an ancestor's: the innermost pointed-at
+          // container is the one whose block the pointer means.
+          marked={childMark}
         />
       )}
 
@@ -570,6 +870,7 @@ function YamlRow({
         <AddRow
           depth={depth + 1}
           kind={adding.endsWith(":item") ? "item" : "key"}
+          marked={childMark}
           onCancel={() => setAdding(null)}
           onAdd={(kind, key, type, value) => {
             onChange(addChild(text, doc, node, kind, key, literalFor(type, value, doc.strict)));
@@ -579,9 +880,56 @@ function YamlRow({
         />
       ) : (
         isContainer &&
-        isOpen && (
-          <AddControls node={node} depth={depth + 1} adding={adding} setAdding={setAdding} />
+        isOpen &&
+        !inlineList && (
+          <AddControls
+            node={node}
+            depth={depth + 1}
+            adding={adding}
+            setAdding={setAdding}
+            // The add row is part of this block: it carries the block's mark, so
+            // a marked area colors contiguously instead of leaving it a white gap.
+            marked={childMark}
+          />
         )
+      )}
+
+      {/* While a copy is held, HOVERING a row it can follow previews the landing
+          point: the same accent line the placed cursor row draws, right after
+          this entry's whole block — so the click's outcome is visible before
+          the click. Zero-height, so nothing below it shifts. */}
+      {pastable && pasteHover && cursorId !== node.id && clip && (
+        <div className="yaml-row yaml-paste-preview" style={rowPad(depth)} aria-hidden="true">
+          <span className="yaml-paste-preview-line" />
+        </div>
+      )}
+
+      {/* The paste cursor: a horizontal line at the very point the copied entry
+          would land — right AFTER this entry's whole block, as its next sibling
+          (the same spot duplicateNode inserts at) — with the button that lands
+          it. The buffer survives the paste, so one copy can be put down more
+          than once. */}
+      {pastable && cursorId === node.id && clip && (
+        <div className="yaml-row yaml-cursor-row" style={rowPad(depth)}>
+          <span className="yaml-caret yaml-caret-empty" aria-hidden="true" />
+          <button
+            className="yaml-add yaml-paste-here"
+            onClick={() => {
+              onChange(pasteAfter(text, node, clip));
+              setCursor(null);
+            }}
+          >
+            paste {clip.label} here
+          </button>
+          <button
+            className="yaml-act"
+            onClick={() => setCursor(null)}
+            title="Remove the paste cursor"
+            aria-label="Remove the paste cursor"
+          >
+            ×
+          </button>
+        </div>
       )}
     </>
   );
@@ -596,25 +944,31 @@ function AddControls({
   setAdding,
   inline,
   depth = 0,
+  marked = null,
 }: {
   node: YamlNode;
   adding: string | null;
   setAdding: (v: string | null) => void;
   inline?: boolean;
   depth?: number;
+  /** The surrounding block's mark — the add row is part of the block. */
+  marked?: SubtreeMark;
 }) {
   const open = adding?.startsWith(`${node.id}:`);
   return (
     <span
-      className={inline ? "yaml-add-inline" : "yaml-row yaml-row-add"}
-      style={inline ? undefined : { paddingLeft: `${depth * 14 + 4}px` }}
+      className={
+        inline
+          ? "yaml-add-inline"
+          : ["yaml-row", "yaml-row-add", markClass(marked)].filter(Boolean).join(" ")
+      }
+      style={inline ? undefined : rowPad(depth)}
     >
       {/* Stand in for the grip + caret columns every entry row leads with, so the
           add buttons line up under the existing keys/items, not 32px to their
           left. Inline (hover-action) controls need no alignment. */}
       {!inline && (
         <>
-          <span className="yaml-grip yaml-grip-empty" aria-hidden="true" />
           <span className="yaml-caret yaml-caret-empty" aria-hidden="true" />
         </>
       )}
@@ -640,6 +994,192 @@ function AddControls({
           title="Add an item to this list"
         >
           + item
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** The tone a comma-line token would carry as its own row. An existing item is
+ *  toned by its NODE (so a quoted "8080" stays a string, exactly as its row
+ *  would show it); a token the file doesn't hold yet — mid-edit — is toned by
+ *  its text, which is what it will parse as when committed plain. */
+type ValTone = "string" | "number" | "boolean" | "null";
+
+function tokenTone(t: string, known: Map<string, ValTone>): ValTone {
+  const k = known.get(t);
+  if (k) return k;
+  if (t === "" || t === "null" || t === "~") return "null";
+  if (/^-?(\d+|\d*\.\d+)([eE][+-]?\d+)?$/.test(t) || /^0[xob][0-9a-fA-F_]+$/.test(t)) {
+    return "number";
+  }
+  if (/^(true|false|yes|no|on|off)$/i.test(t)) return "boolean";
+  return "string";
+}
+
+/**
+ * The comma-line editor for a scalar-only list, with overflow chevrons: when the
+ * joined values outgrow the field, ‹ › appear beside it and HOVERING one glides
+ * the content that way — the whole list is reachable without grabbing the caret
+ * or a scrollbar an input doesn't have. The glide stops on leave, and at the
+ * edge (whose chevron then reads disabled).
+ *
+ * The entries keep the value colors their own rows would give them. An input
+ * cannot color parts of itself, so the input's text is transparent (caret kept)
+ * and a pointer-blind MIRROR on top renders the same buffer token by token,
+ * scroll-synced — the classic highlighted-input overlay.
+ */
+function InlineListCell({
+  node,
+  values,
+  label,
+  onCommit,
+}: {
+  node: YamlNode;
+  values: string[];
+  label: string;
+  onCommit: (vals: string[]) => void;
+}) {
+  const ref = useRef<HTMLInputElement | null>(null);
+  const mirrorRef = useRef<HTMLSpanElement | null>(null);
+  const raf = useRef<number | null>(null);
+  const [can, setCan] = useState({ left: false, right: false });
+
+  // The draft buffer, exactly TextCommit's contract: commit on Enter/blur,
+  // revert on Escape — owned here because the mirror has to color it live.
+  const initial = values.join(", ");
+  const [buf, setBuf] = useState(initial);
+  const dirty = useRef(false);
+  useEffect(() => {
+    if (!dirty.current) setBuf(initial);
+  }, [initial]);
+  const commit = () => {
+    dirty.current = false;
+    if (buf !== initial) {
+      onCommit(buf.split(",").map((v) => v.trim()).filter((v) => v !== ""));
+    }
+  };
+
+  // Each existing item's tone, by its node — the same call its row would make.
+  const known = useMemo(() => {
+    const m = new Map<string, ValTone>();
+    for (const c of node.children) if (!m.has(c.value)) m.set(c.value, scalarType(c));
+    return m;
+  }, [node]);
+
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    // The mirror rides the input's scroll, or the colors would drift off the text.
+    if (mirrorRef.current) mirrorRef.current.scrollLeft = el.scrollLeft;
+    const max = el.scrollWidth - el.clientWidth;
+    const next = { left: el.scrollLeft > 0, right: el.scrollLeft < max - 1 };
+    setCan((cur) => (cur.left === next.left && cur.right === next.right ? cur : next));
+  }, []);
+
+  // Re-measure on everything that can move the overflow: typing (the buffer),
+  // a re-parse changing the values, scrolling, and the pane resizing.
+  useEffect(measure, [buf, measure]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.addEventListener("scroll", measure);
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", measure);
+      ro?.disconnect();
+    };
+  }, [measure]);
+
+  const stop = useCallback(() => {
+    if (raf.current != null) cancelAnimationFrame(raf.current);
+    raf.current = null;
+  }, []);
+  useEffect(() => stop, [stop]);
+
+  const glide = (dir: -1 | 1) => {
+    stop();
+    const step = () => {
+      const el = ref.current;
+      if (!el) return;
+      const before = el.scrollLeft;
+      el.scrollLeft = before + dir * 4;
+      measure();
+      // The edge: a disabled chevron swallows the mouseleave that would end the
+      // glide, so the glide ends itself when the scroll stops moving.
+      if (el.scrollLeft === before) return;
+      raf.current = requestAnimationFrame(step);
+    };
+    raf.current = requestAnimationFrame(step);
+  };
+
+  // The buffer, cut into pieces the mirror renders 1:1 — values keep their own
+  // spacing (the mirror must match the input to the character), commas stay
+  // muted like the tree's other punctuation.
+  const pieces = buf.match(/[^,]+|,/g) ?? [];
+
+  const shown = can.left || can.right;
+  return (
+    <span className="yaml-list-wrap">
+      {shown && (
+        <button
+          className="yaml-list-chevron"
+          disabled={!can.left}
+          onMouseEnter={() => glide(-1)}
+          onMouseLeave={stop}
+          tabIndex={-1}
+          aria-label={`Scroll ${label} left`}
+        >
+          ‹
+        </button>
+      )}
+      <span className="yaml-list-field">
+        <input
+          ref={ref}
+          className="yaml-value-input yaml-list-input"
+          value={buf}
+          aria-label={`Value of ${label}`}
+          onChange={(e) => {
+            dirty.current = true;
+            setBuf(e.target.value);
+          }}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              dirty.current = false;
+              setBuf(initial);
+            }
+          }}
+        />
+        <span className="yaml-list-mirror" aria-hidden="true" ref={mirrorRef}>
+          {pieces.map((p, i) =>
+            p === "," ? (
+              <span key={i} className="yaml-colon">
+                ,
+              </span>
+            ) : (
+              <span key={i} className={`yaml-val-${tokenTone(p.trim(), known)}`}>
+                {p}
+              </span>
+            ),
+          )}
+        </span>
+      </span>
+      {shown && (
+        <button
+          className="yaml-list-chevron"
+          disabled={!can.right}
+          onMouseEnter={() => glide(1)}
+          onMouseLeave={stop}
+          tabIndex={-1}
+          aria-label={`Scroll ${label} right`}
+        >
+          ›
         </button>
       )}
     </span>
@@ -673,12 +1213,15 @@ function AddRow({
   onAdd,
   onCancel,
   onCopyLast,
+  marked = null,
 }: {
   depth: number;
   kind: "key" | "item";
   onAdd: (kind: "key" | "item", key: string, type: YamlValueType, value: string) => void;
   onCancel: () => void;
   onCopyLast?: () => void;
+  /** The surrounding block's mark — the form row is part of the block. */
+  marked?: SubtreeMark;
 }) {
   const [key, setKey] = useState("");
   const [type, setType] = useState<YamlValueType>("text");
@@ -697,8 +1240,8 @@ function AddRow({
 
   return (
     <div
-      className="yaml-row yaml-row-form"
-      style={{ paddingLeft: `${depth * 14 + 4}px` }}
+      className={["yaml-row", "yaml-row-form", markClass(marked)].filter(Boolean).join(" ")}
+      style={rowPad(depth)}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -709,7 +1252,6 @@ function AddRow({
         }
       }}
     >
-      <span className="yaml-grip yaml-grip-empty" aria-hidden="true" />
       <span className="yaml-caret yaml-caret-empty" aria-hidden="true" />
       {/* Adding to a non-empty list: offer copying the last entry as the other
           way to add one — for a list of like-shaped items (e.g. per-head configs)

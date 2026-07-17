@@ -87,7 +87,7 @@ export function TabPane({
     case "network":
       return <NetworkTrafficPane projectId={scope} visible={visible} onConnect={onConnect} />;
     case "monitor":
-      return <SystemMonitorPane visible={visible} />;
+      return <SystemMonitorPane projectId={projectId} visible={visible} />;
     case "diskusage":
       return (
         <DiskUsagePane

@@ -87,6 +87,13 @@ export function notePtyOutput(ptyId: string, data = "") {
   }
 }
 
+/** When a PTY last produced output (ms epoch), or undefined if none was seen
+ *  this session. Read-only view for the tab hover card's "quiet for…" line —
+ *  the raw map stays module-private because it churns per output batch. */
+export function lastPtyOutputAt(ptyId: string): number | undefined {
+  return lastOutputByPty[ptyId];
+}
+
 /** Record that input was sent to a PTY on the user's behalf — a keystroke, a
  *  paste, or a user-triggered flow typing its command (`initialInput`). This is
  *  what makes output COUNT: "working" and "done" only ever arise from output
@@ -301,6 +308,13 @@ function countStatusScopes(
   return next;
 }
 
+/** True when two string sets hold exactly the same members. */
+function sameStringSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
 function withoutScript(set: Set<string>, scriptPath: string): Set<string> {
   if (!set.has(scriptPath)) return set;
   const next = new Set(set);
@@ -341,6 +355,13 @@ interface ActivityStore {
   /** Absolute paths of `.sh` scripts currently running detached. The run_id
    *  used with the backend is the script's absolute path (see runScript). */
   runningScripts: Set<string>;
+  /** Absolute paths of files whose run-launched terminal tab (Python Run/Debug
+   *  or a foreground shell run, tagged via `TabEntry.runFile`) is producing
+   *  sustained output right now. Derived by `recompute` from `busyByTab`, so it
+   *  drops out the moment the tab closes or goes quiet. Drives the green pulse on
+   *  the file tree's ▶ run button for the tab-backed run paths (the detached `.sh`
+   *  path uses `runningScripts` instead). */
+  runningRunFiles: Set<string>;
   /** Spawn a `.sh` script detached and track it so the run button can show a
    *  spinner until the backend emits `script-finished`. */
   runScript: (scriptPath: string, cwd: string) => void;
@@ -353,6 +374,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
   attentionByScope: {},
   statusCountsByScope: {},
   runningScripts: new Set(),
+  runningRunFiles: new Set(),
 
   noteBell: (ptyId) => {
     if (!splitPtyId(ptyId)) return;
@@ -408,6 +430,9 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     const nextScope: Record<string, boolean> = {};
     const nextTab: Record<string, boolean> = {};
     const nextAttn: Record<string, AttentionKind> = {};
+    // Files whose run-launched tab is busy this tick (see `runningRunFiles`).
+    // Collected from live tabs only, so a closed/replaced run tab drops out.
+    const nextRunFiles = new Set<string>();
     const live = new Set<string>();
     let changed = false;
 
@@ -436,6 +461,10 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
         if (tabBusy) {
           nextTab[ptyId] = true;
           scopeBusy = true;
+          // A run-launched tab (Python Run/Debug, foreground shell run) pulses
+          // its source file's ▶ run button while it produces output. Busy-gated,
+          // so a restored-but-quiet run tab never lights up.
+          if (t.runFile) nextRunFiles.add(t.runFile);
         }
         if ((prevTab[ptyId] ?? false) !== tabBusy) changed = true;
 
@@ -487,7 +516,12 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     // The tally can move even when no tab flipped busy — a tab carrying an
     // attention flag was closed, say — so it gates the publish independently.
     const countsChanged = !sameCountMaps(prevCounts, nextCounts);
-    if (!changed && !attnChanged && !countsChanged) return;
+    // The run-file set can move independently of `busyByTab` — a run tab going
+    // busy flips both, but a run tab closing while still "busy" drops out here
+    // via `live` even if some other tab keeps the same busy tally — so gate it
+    // on its own comparison, same as the other maps.
+    const runFilesChanged = !sameStringSet(get().runningRunFiles, nextRunFiles);
+    if (!changed && !attnChanged && !countsChanged && !runFilesChanged) return;
     // Only re-publish the maps that actually moved: every tab bar subscribes to
     // the whole `busyByTab` object, so handing it a fresh-but-equal one on each
     // interval tick would re-render them all for nothing.
@@ -497,6 +531,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
         ? { attentionByTab: nextAttn, attentionByScope: rollupAttentionScopes(nextAttn) }
         : {}),
       ...(countsChanged ? { statusCountsByScope: nextCounts } : {}),
+      ...(runFilesChanged ? { runningRunFiles: nextRunFiles } : {}),
     });
   },
 }));

@@ -30,6 +30,7 @@ import { useProjectsStore, logoutRemote } from "../stores/projects";
 import { useRemoteStatusStore } from "../stores/remoteStatus";
 import { markVpnConnected, useVpnStatusStore } from "../stores/vpnStatus";
 import { useVpnPromptStore } from "../stores/vpnPrompt";
+import { useSettingsStore } from "../stores/settings";
 import type { ProjectEntry } from "../types";
 
 const invokeMock = vi.mocked(invoke);
@@ -274,10 +275,10 @@ describe("the header can bring a tunnel up, with no project behind it", () => {
   });
 
   /**
-   * The store is add-only and a VPN need not belong to a project, so switching to a
-   * different `.ovpn` can't require opening some project's Connect dialog. Even with
-   * configs already listed, a "Browse for a config…" action adds/switches through the
-   * same browse→store→connect path.
+   * A VPN need not belong to a project, so switching to a different `.ovpn` can't
+   * require opening some project's Connect dialog. Even with configs already listed,
+   * a "Browse for a config…" action adds/switches through the same
+   * browse→store→connect path.
    */
   it("with configs stored, Browse adds a different .ovpn and connects it", async () => {
     const OTHER_STORED = "/store/other.ovpn";
@@ -316,5 +317,98 @@ describe("the header can bring a tunnel up, with no project behind it", () => {
     const { container } = render(<VpnIndicator />);
     expect(container.firstChild).not.toBeNull();
     expect(screen.getByRole("button", { name: /openvpn/i })).toBeTruthy();
+  });
+});
+
+describe("a stored config can be removed, not only connected", () => {
+  // Removal takes the saved credentials with it (they are keyed by the config
+  // path and would otherwise be a stale half in the keychain), and *those* can't
+  // be brought back by re-browsing the file — so it is a two-click action.
+  const STORED = [{ path: CONFIG, name: "office.ovpn" }];
+
+  const removals = () =>
+    invokeMock.mock.calls.filter(([name]) => name === "openvpn_remove_config");
+
+  const withStored = () =>
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "openvpn_active") return Promise.resolve([]);
+      if (cmd === "openvpn_list_configs") return Promise.resolve(STORED);
+      return Promise.resolve();
+    });
+
+  it("asks once more, then removes the config and its row", async () => {
+    withStored();
+    render(<VpnIndicator />);
+
+    await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^remove$/i }));
+
+    // Armed, not done: nothing has been removed yet.
+    expect(removals()).toHaveLength(0);
+    expect(screen.getByText(/forgets its saved credentials/i)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /^remove config$/i }));
+    await waitFor(() =>
+      expect(removals()).toEqual([["openvpn_remove_config", { config: CONFIG }]]),
+    );
+    // The row is gone without a re-list round-trip.
+    await waitFor(() => expect(screen.queryByText("office.ovpn")).toBeNull());
+  });
+
+  it("Keep cancels the armed removal", async () => {
+    withStored();
+    render(<VpnIndicator />);
+
+    await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^remove$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^keep$/i }));
+
+    expect(removals()).toHaveLength(0);
+    expect(screen.getByText("office.ovpn")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^connect$/i })).toBeTruthy();
+  });
+
+  it("names the projects that use the config before removing it", async () => {
+    // Both fixture projects ride CONFIG — the warning must say so, since their
+    // next connect will have to ask for a config again.
+    withStored();
+    render(<VpnIndicator />);
+
+    await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^remove$/i }));
+    expect(screen.getByText(/alpha, beta/)).toBeTruthy();
+  });
+
+  it("disarms connect-on-launch when the armed config is removed", async () => {
+    // An armed path with no file behind it would silently fail at every startup.
+    withStored();
+    useSettingsStore.setState({ settings: { vpn_auto_connect: CONFIG } as never });
+    render(<VpnIndicator />);
+
+    await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^remove$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^remove config$/i }));
+
+    await waitFor(() =>
+      expect(useSettingsStore.getState().settings?.vpn_auto_connect).toBeNull(),
+    );
+  });
+
+  it("a refused removal keeps the row and shows the reason", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "openvpn_active") return Promise.resolve([]);
+      if (cmd === "openvpn_list_configs") return Promise.resolve(STORED);
+      if (cmd === "openvpn_remove_config")
+        return Promise.reject(new Error("this tunnel is up — disconnect it first"));
+      return Promise.resolve();
+    });
+    render(<VpnIndicator />);
+
+    await userEvent.hover(screen.getByRole("button", { name: /openvpn/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^remove$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^remove config$/i }));
+
+    await waitFor(() => expect(screen.getByText(/disconnect it first/i)).toBeTruthy());
+    expect(screen.getByText("office.ovpn")).toBeTruthy();
   });
 });

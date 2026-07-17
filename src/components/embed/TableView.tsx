@@ -15,6 +15,7 @@ import {
   bodyRefs,
   filterRefs,
   sortRefs,
+  sortRefsByIndex,
   replaceCell,
   insertRowAfter,
   deleteRow,
@@ -43,6 +44,28 @@ const OVERSCAN = 8;
 const GUTTER_W = 56;
 /** Horizontal padding of a body cell, in px — part of each column's box. */
 const CELL_PAD_X = 20;
+/** The sorted column's tint: the accent mixed into the panel, so it follows the
+ *  active theme and stays opaque (the sticky header must not let body cells
+ *  bleed through — and opaque mixes avoid the WebKitGTK translucent-color-mix
+ *  caveat). */
+const SORTED_COL_BG = "color-mix(in srgb, var(--accent) 10%, var(--bg-panel))";
+/** The zebra tint for odd body rows: the panel's own text mixed a hair into the
+ *  panel, so it darkens on a light theme and lightens on a dark one, and stays
+ *  opaque (the sticky gutter must not let body cells bleed through — and an opaque
+ *  mix sidesteps the WebKitGTK translucent-color-mix caveat). */
+const STRIPE_BG = "color-mix(in srgb, var(--text-primary) 5%, var(--bg-panel))";
+/** The row-number gutter's own tint — a heavier mix than the zebra stripe so the
+ *  sticky column reads as chrome, distinct from the body cells that scroll under
+ *  it. Opaque, for the same sticky-bleed reason `STRIPE_BG` is. Paired with a
+ *  2px right border (`GUTTER_BORDER`) that stays visible during a horizontal
+ *  scroll. */
+const GUTTER_BG = "color-mix(in srgb, var(--text-primary) 12%, var(--bg-panel))";
+/** The gutter's right edge and the header's bottom edge: a heavier rule than the
+ *  1px cell grid, so the sticky chrome stays legible against the scrolling body. */
+const GUTTER_BORDER = "2px solid var(--border-color)";
+/** Sentinel `SortSpec.col` for the row-number gutter: it sorts on each row's
+ *  source index, not a cell value, so it needs a column id no real column has. */
+const GUTTER_SORT_COL = -1;
 
 /** The separator names offered in the header, keyed by the character itself. */
 const DELIMITER_LABELS: Record<string, string> = {
@@ -267,14 +290,69 @@ export function TableView({
     [width, hidden],
   );
 
+  // ── Flash rows gained on a disk reload ──────────────────────────────────────
+  // `content` changes only on a (re)load from disk, never on an in-app keystroke
+  // (edits move `draft`, not `content`) — so a CSV appended to underneath the
+  // viewer re-reads here, and we briefly highlight whichever body rows weren't
+  // there before. The comparison keys on `content` alone: sorting, filtering and
+  // delimiter changes all leave it untouched, so none of them flash. The first
+  // load (and every path switch, when `content` resets to null) only seeds the
+  // baseline. Rows are matched by value as a multiset, so an unchanged row that
+  // merely slid down when an earlier row was inserted is not counted as new.
+  const [flashRows, setFlashRows] = useState<Set<number>>(new Set());
+  const prevSigsRef = useRef<Map<string, number> | null>(null);
+  const flashTimers = useRef<number[]>([]);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+
+  useEffect(() => {
+    if (isSheet) return;
+    if (content == null) {
+      prevSigsRef.current = null;
+      return;
+    }
+    const bodyRows = rowsRef.current.slice(1);
+    const counts = new Map<string, number>();
+    for (const cells of bodyRows) {
+      const sig = JSON.stringify(cells);
+      counts.set(sig, (counts.get(sig) ?? 0) + 1);
+    }
+    const prev = prevSigsRef.current;
+    prevSigsRef.current = counts;
+    if (prev == null) return; // first settled content: seed only, don't flash
+
+    const remaining = new Map(prev);
+    const added = new Set<number>();
+    bodyRows.forEach((cells, i) => {
+      const sig = JSON.stringify(cells);
+      const left = remaining.get(sig) ?? 0;
+      if (left > 0) remaining.set(sig, left - 1);
+      else added.add(i + 1); // +1: source index, past the header at 0
+    });
+    if (added.size === 0) return;
+
+    setFlashRows((cur) => new Set([...cur, ...added]));
+    const timer = window.setTimeout(() => {
+      setFlashRows((cur) => {
+        const next = new Set(cur);
+        for (const idx of added) next.delete(idx);
+        return next;
+      });
+    }, 3000);
+    flashTimers.current.push(timer);
+  }, [content, isSheet]);
+
+  useEffect(() => () => flashTimers.current.forEach((t) => clearTimeout(t)), []);
+
   const body = useMemo(() => bodyRefs(rows), [rows]);
   // Filtering follows the eye: a row matched on a hidden column would show up with
   // nothing on it to explain why.
   const filtered = useMemo(() => filterRefs(body, query, cols), [body, query, cols]);
-  const visible = useMemo(
-    () => (sort ? sortRefs(filtered, sort.col, sort.dir) : filtered),
-    [filtered, sort],
-  );
+  const visible = useMemo(() => {
+    if (!sort) return filtered;
+    if (sort.col === GUTTER_SORT_COL) return sortRefsByIndex(filtered, sort.dir);
+    return sortRefs(filtered, sort.col, sort.dir);
+  }, [filtered, sort]);
 
   // ── Windowing ─────────────────────────────────────────────────────────────
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -408,12 +486,19 @@ export function TableView({
   // sheet has no second meaning to disambiguate, so it sorts immediately.
   const sortClick = useRef<number | null>(null);
 
+  // asc → desc → default: the third click clears the sort, which is the only
+  // way back to the file's own row order once a column has been sorted.
   const toggleSort = (col: number) => {
     setSort((cur) => {
       if (!cur || cur.col !== col) return { col, dir: "asc" };
-      return { col, dir: cur.dir === "asc" ? "desc" : "asc" };
+      if (cur.dir === "asc") return { col, dir: "desc" };
+      return null;
     });
   };
+
+  // The gutter has no second meaning to disambiguate (no rename, no double-click),
+  // so it sorts immediately — asc restores the file's row order, desc reverses it.
+  const onGutterClick = () => toggleSort(GUTTER_SORT_COL);
 
   const onHeaderClick = (col: number) => {
     if (!editable) {
@@ -453,6 +538,8 @@ export function TableView({
       redo();
     }
   };
+
+  const gutterSorted = sort?.col === GUTTER_SORT_COL;
 
   const totalCh = cols.reduce((sum, c) => sum + widths[c], 0);
   const tableWidth = `calc(${totalCh}ch + ${cols.length * CELL_PAD_X + GUTTER_W}px)`;
@@ -531,6 +618,7 @@ export function TableView({
             hidden={hidden}
             onToggle={toggleColumn}
             onShowAll={() => setHidden(new Set())}
+            onHideAll={() => setHidden(new Set(Array.from({ length: width }, (_, i) => i)))}
           />
         )}
         {loaded && !error && (
@@ -626,19 +714,50 @@ export function TableView({
             </colgroup>
             <thead>
               <tr>
-                {/* The gutter's header: empty, but it holds the corner while both
-                    the header row and the gutter column are stuck to their edges. */}
+                {/* The gutter's header holds the corner while both the header row
+                    and the gutter column are stuck to their edges — and it sorts
+                    by row order: click to restore the file's order, again to
+                    reverse it. */}
                 <th
                   style={{
                     position: "sticky",
                     top: 0,
                     left: 0,
                     zIndex: 2,
-                    background: "var(--bg-panel)",
-                    borderBottom: "2px solid var(--border-color)",
-                    borderRight: "1px solid var(--border-color)",
+                    background: gutterSorted ? SORTED_COL_BG : GUTTER_BG,
+                    borderBottom: GUTTER_BORDER,
+                    borderRight: GUTTER_BORDER,
+                    padding: 0,
                   }}
-                />
+                >
+                  <button
+                    onClick={onGutterClick}
+                    title={
+                      gutterSorted
+                        ? "Row order — click to reverse, again to clear"
+                        : "Sort by row order (restore the file's order)"
+                    }
+                    aria-label="Sort by row order"
+                    style={{
+                      all: "unset",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 3,
+                      width: "100%",
+                      boxSizing: "border-box",
+                      padding: "6px 6px",
+                      cursor: "pointer",
+                      fontSize: 11,
+                      color: "var(--text-secondary, var(--text-primary))",
+                    }}
+                  >
+                    <span aria-hidden="true">#</span>
+                    <span style={{ opacity: gutterSorted ? 0.9 : 0.25 }}>
+                      {gutterSorted ? (sort!.dir === "asc" ? "↑" : "↓") : "↕"}
+                    </span>
+                  </button>
+                </th>
                 {cols.map((c) => {
                   const active = sort?.col === c;
                   const isEditing = editing?.row === 0 && editing.col === c;
@@ -649,7 +768,9 @@ export function TableView({
                         position: "sticky",
                         top: 0,
                         zIndex: 1,
-                        background: "var(--bg-panel)",
+                        // The sorted column wears a light theme tint down its
+                        // whole length, header included.
+                        background: active ? SORTED_COL_BG : "var(--bg-panel)",
                         borderBottom: "2px solid var(--border-color)",
                         borderRight: "1px solid var(--border-color)",
                         padding: 0,
@@ -717,10 +838,15 @@ export function TableView({
                   <td colSpan={cols.length + 1} style={{ padding: 0, border: "none" }} />
                 </tr>
               )}
-              {rendered.map((row, i) => (
+              {rendered.map((row, i) => {
+                // Zebra stripe by on-screen position (not source index), so rows
+                // stay alternating after a sort or filter reorders them.
+                const stripeBg = (firstRow + i) % 2 === 1 ? STRIPE_BG : undefined;
+                return (
                 <tr
                   key={row.index}
                   ref={i === 0 ? measureRow : undefined}
+                  className={flashRows.has(row.index) ? "csv-row-flash" : undefined}
                   style={{ height: rowH }}
                 >
                   <td
@@ -728,9 +854,11 @@ export function TableView({
                       position: "sticky",
                       left: 0,
                       zIndex: 1,
-                      background: "var(--bg-panel)",
+                      // Its own chrome tint, not the zebra stripe, so the sticky
+                      // column stays distinct from the body scrolling under it.
+                      background: GUTTER_BG,
                       borderBottom: "1px solid var(--border-color)",
-                      borderRight: "1px solid var(--border-color)",
+                      borderRight: GUTTER_BORDER,
                       padding: "4px 8px",
                       textAlign: "right",
                       whiteSpace: "nowrap",
@@ -766,6 +894,7 @@ export function TableView({
                   </td>
                   {cols.map((c) => {
                     const isEditing = editing?.row === row.index && editing.col === c;
+                    const sorted = sort?.col === c;
                     const value = row.cells[c] ?? "";
                     return (
                       <td
@@ -775,6 +904,7 @@ export function TableView({
                         // has to stay reachable somewhere.
                         title={isEditing ? undefined : value}
                         style={{
+                          background: sorted ? SORTED_COL_BG : stripeBg,
                           borderBottom: "1px solid var(--border-color)",
                           borderRight: "1px solid var(--border-color)",
                           padding: isEditing ? 0 : "4px 10px",
@@ -802,7 +932,8 @@ export function TableView({
                     );
                   })}
                 </tr>
-              ))}
+                );
+              })}
               {padBottom > 0 && (
                 <tr style={{ height: padBottom }} aria-hidden="true">
                   <td colSpan={cols.length + 1} style={{ padding: 0, border: "none" }} />
@@ -835,11 +966,13 @@ function ColumnsMenu({
   hidden,
   onToggle,
   onShowAll,
+  onHideAll,
 }: {
   names: string[];
   hidden: Set<number>;
   onToggle: (col: number) => void;
   onShowAll: () => void;
+  onHideAll: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -877,6 +1010,19 @@ function ColumnsMenu({
       </button>
       {open && (
         <div className="context-menu dropdown-menu" role="listbox" aria-multiselectable>
+          {/* Whole-set toggle: with all columns shown it deselects everything —
+              picking three of twenty is "deselect all, click three", not
+              seventeen hides — and once anything is hidden it selects all. */}
+          <button
+            type="button"
+            onClick={hidden.size > 0 ? onShowAll : onHideAll}
+            style={{ borderBottom: "1px solid var(--border-color)" }}
+          >
+            <span aria-hidden="true" style={{ display: "inline-block", width: 16, opacity: 0.9 }}>
+              {hidden.size > 0 ? "✓" : "–"}
+            </span>
+            {hidden.size > 0 ? "Select all" : "Deselect all"}
+          </button>
           {names.map((name, c) => {
             const isHidden = hidden.has(c);
             return (
@@ -909,15 +1055,6 @@ function ColumnsMenu({
               </button>
             );
           })}
-          {hidden.size > 0 && (
-            <button
-              type="button"
-              onClick={onShowAll}
-              style={{ borderTop: "1px solid var(--border-color)" }}
-            >
-              Show all
-            </button>
-          )}
         </div>
       )}
     </div>

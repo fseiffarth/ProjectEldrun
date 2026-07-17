@@ -683,6 +683,7 @@ pub fn run() {
             commands::openvpn::openvpn_active,
             commands::openvpn::openvpn_store_config,
             commands::openvpn::openvpn_list_configs,
+            commands::openvpn::openvpn_remove_config,
             // Git hosting (GitHub / GitLab) publishing
             commands::git_publish::publish_project,
             commands::git_publish::unpublish_project,
@@ -876,6 +877,38 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, event| {
+            // A detached popout can die WITHOUT going through `attach_subwindow`
+            // (seed-timeout self-destroy, last-tab close, the WM-close safety
+            // net in DetachedApp). Free its registry footprint — display number
+            // ("Eldrun win-N"), TrackedWindow, parkable override — here, the one
+            // choke point every destruction passes, so freed numbers get reused
+            // and a lone popout is always "win-1". The dock-back path fires this
+            // after `attach_subwindow` already freed; the release is idempotent.
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } = &event
+            {
+                if label.starts_with("detached-") {
+                    use tauri::Manager;
+                    // Guard against a same-label window already re-created
+                    // (rapid destroy → re-detach): only clean up when no live
+                    // window holds the label, else we'd free the NEW window's
+                    // number while it is still on screen.
+                    if _app.get_webview_window(label).is_none() {
+                        let reg = _app.state::<WindowRegistryState>();
+                        let wid = commands::subwindow::release_detached_entry(
+                            &mut reg.lock().unwrap(),
+                            label,
+                        );
+                        if let Some(wid) = wid {
+                            let ws = _app.state::<commands::workspace::WorkspaceStateArc>();
+                            ws.lock().unwrap().backend.unset_parkable(wid);
+                        }
+                    }
+                }
+            }
             if let tauri::RunEvent::Exit = event {
                 use tauri::Manager;
                 // Abort every terminal's process subtree so no inner process (a

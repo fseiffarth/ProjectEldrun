@@ -98,6 +98,7 @@ import { NotebookView } from "./NotebookView";
 import { DiffView } from "./DiffView";
 import { OdtView } from "./OdtView";
 import { MediaView } from "./MediaView";
+import { GifView } from "./GifView";
 import { SqliteView } from "./SqliteView";
 import { ImageAnnotator } from "./ImageAnnotator";
 import {
@@ -336,7 +337,11 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
   // scope so every nested viewer/hook confines its file commands to this project
   // (and its box siblings) regardless of which project is globally current.
   let view: React.ReactNode;
-  if (viewer === "image") {
+  if (viewer === "gif") {
+    // Animated GIFs get the frame-transport viewer (#gifviewer); the plain
+    // image viewer remains its opt-out fallback (VIEWER_FALLBACK).
+    view = <GifView path={path} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "image") {
     view = <ImageView path={path} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "pdf") {
     view = <PdfView path={path} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
@@ -4074,7 +4079,7 @@ function onCtrlWheelFont(
  *  `{ passive: false }` lets `preventDefault()` cancel the scroll, so Ctrl+wheel
  *  zooms immediately and never scrolls. The callback ref re-binds cleanly across
  *  mount/unmount (e.g. conditionally-rendered viewports). */
-function useNonPassiveWheel(handler: (e: WheelEvent) => void) {
+export function useNonPassiveWheel(handler: (e: WheelEvent) => void) {
   const cb = useRef(handler);
   cb.current = handler;
   const detach = useRef<(() => void) | null>(null);
@@ -4586,8 +4591,19 @@ function TextView({
   const blame = useBlame(path, showBlame);
   const [compareOpen, setCompareOpen] = useState(false);
   const viewPos = useViewerState(tabKey);
+  // Live scroll offsets for the two views this pane toggles between: the Source
+  // code editor (`scrollTop`) and the YAML Tree (`yamlScrollTop`). Held in refs,
+  // not only persisted, because the pane stays mounted across the Tree↔Source
+  // toggle but each inner view REMOUNTS — and would otherwise seed from
+  // `viewPos.initial` (the stale open-time snapshot) and jump there. The ref
+  // carries the live position so a switch back lands where the view was left.
+  const srcScroll = useRef(viewPos.initial?.scrollTop ?? 0);
+  const yamlScroll = useRef(viewPos.initial?.yamlScrollTop ?? 0);
   const persistScroll = useCallback(
-    (scrollTop: number) => viewPos.persist({ scrollTop }),
+    (scrollTop: number) => {
+      srcScroll.current = scrollTop;
+      viewPos.persist({ scrollTop });
+    },
     [viewPos],
   );
 
@@ -4708,6 +4724,48 @@ function TextView({
     onCtrlWheelFont(e, font.inc, font.dec);
   });
 
+  // The Tree (and preview) scrolls `.file-viewer-body` itself; the Source editor
+  // scrolls its own inner viewport instead (see CodeEditor). Keep a ref to the
+  // body alongside the wheel-font ref so the tree's scroll can be persisted and
+  // restored on the switch back from Source.
+  const bodyEl = useRef<HTMLDivElement | null>(null);
+  const bodyRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      bodyEl.current = el;
+      wheelRef(el);
+    },
+    [wheelRef],
+  );
+  const treeScrolls = isYaml && !showEditor;
+  const scrollRaf = useRef<number | null>(null);
+  const onBodyScroll = useCallback(() => {
+    if (!treeScrolls) return;
+    const el = bodyEl.current;
+    if (!el) return;
+    yamlScroll.current = el.scrollTop;
+    // Coalesce the store write to one per frame — a flick of the wheel must not
+    // churn the tabs array (and its debounced disk save) every scroll event.
+    if (scrollRaf.current == null) {
+      scrollRaf.current = requestAnimationFrame(() => {
+        scrollRaf.current = null;
+        viewPos.persist({ yamlScrollTop: yamlScroll.current });
+      });
+    }
+  }, [treeScrolls, viewPos]);
+  useEffect(
+    () => () => {
+      if (scrollRaf.current != null) cancelAnimationFrame(scrollRaf.current);
+    },
+    [],
+  );
+  // Restore the tree's scroll when it (re)mounts — on load, and on switching back
+  // from Source. Layout effect so it lands before paint, with no visible jump.
+  useLayoutEffect(() => {
+    if (treeScrolls && loaded && bodyEl.current) {
+      bodyEl.current.scrollTop = yamlScroll.current;
+    }
+  }, [treeScrolls, loaded]);
+
   // Print: HTML/SVG/CSS print their rendered preview document; plain text and
   // source print as a wrapped monospace block.
   const handlePrint = useCallback(() => {
@@ -4774,7 +4832,8 @@ function TextView({
       {(showEditor || isYaml) && <ValidationBanner issue={issue} onJump={jumpToLine} />}
       <div
         className={`file-viewer-body${showEditor ? " file-viewer-code-body" : ""}`}
-        ref={wheelRef}
+        ref={bodyRef}
+        onScroll={onBodyScroll}
       >
         {!showEditor && (previewKind || isYaml) ? (
           error != null ? (
@@ -4832,7 +4891,10 @@ function TextView({
             onToggleBreakpoint={pyDebug ? bp.toggle : undefined}
             onFollowLink={isPy ? followPython : undefined}
             linkRanges={isPy ? pythonLinkRanges : undefined}
-            initialScrollTop={viewPos.initial?.scrollTop}
+            // The LIVE offset (not `viewPos.initial`), so re-showing Source after
+            // a trip through Tree restores where the editor was, not the stale
+            // open-time snapshot.
+            initialScrollTop={srcScroll.current}
             onScrollPersist={persistScroll}
             groupId={groupId}
           />
@@ -5729,11 +5791,13 @@ function TexView({
   );
 }
 
-const MIN_SCALE = 0.05;
-const MAX_SCALE = 40;
-const ZOOM_STEP = 1.2;
+// Exported so GifView shares the exact zoom behavior (steps, bounds) with the
+// image viewer.
+export const MIN_SCALE = 0.05;
+export const MAX_SCALE = 40;
+export const ZOOM_STEP = 1.2;
 
-const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+export const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 
 /**
  * Zoomable/pannable image viewer. The image is drawn at its natural pixel size

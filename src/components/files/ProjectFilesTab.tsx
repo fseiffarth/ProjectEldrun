@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ProjectFilesView } from "./ProjectFilesView";
 import { useFileSource } from "./ProjectFilesPane";
 import { useProjectsStore } from "../../stores/projects";
@@ -46,12 +46,20 @@ interface Props {
   tabKey?: string;
   /** The folder the tab was opened on / last left at. */
   folder?: string;
+  /** Override where a folder change is persisted. The docked subwindow viewer
+   *  passes this to route the browsed folder onto its group NODE
+   *  (`GroupNode.filesFolder`) instead of a tab; when omitted, a folder change
+   *  persists onto `tabKey`'s `TabEntry.folder` as before. */
+  persistFolder?: (folder: string) => void;
   /** Whether this window owns the tab store (the main window does; a popout runs
    *  on a streamed copy). Gates the tree's "Open in a new tab" action. */
   canOpenTabs?: boolean;
   /** Whether this tab is the visible one in its group. Gates the git/windows
    *  probes so a background tab doesn't churn — its tree stays mounted regardless. */
   visible?: boolean;
+  /** Compact mode: strip the header + view-switcher toolbar + sync/sort rows so
+   *  the find-files search is topmost. Set by the docked subwindow viewer only. */
+  compact?: boolean;
 }
 
 export function ProjectFilesTab({
@@ -61,6 +69,8 @@ export function ProjectFilesTab({
   folder: initialFolder,
   canOpenTabs,
   visible,
+  compact,
+  persistFolder,
 }: Props) {
   const projects = useProjectsStore((s) => s.projects);
   const project = projects.find((p) => p.id === scope) ?? null;
@@ -69,11 +79,21 @@ export function ProjectFilesTab({
   const [folder, setFolder] = useState(initialFolder ?? "");
   const [source, setSource] = useFileSource(project?.id ?? null, !!project?.remote);
 
+  // Re-seed when the persisted folder changes out from under us — a restart
+  // restore or a popout's streamed `files` edit hands a new browsed folder that
+  // must win over local state. In steady state the persisted value tracks
+  // `folder`, so this is a no-op except on those external updates.
+  useEffect(() => {
+    setFolder(initialFolder ?? "");
+  }, [initialFolder]);
+
   const onFolderChange = (next: string) => {
     setFolder(next);
-    // Persist onto the tab so it reopens where it was left (debounced by the
-    // store's own saveLayout).
-    if (tabKey) useTabsStore.getState().setTabFolder(tabKey, next);
+    // Persist so it reopens where it was left (debounced by the store's own
+    // saveLayout): the docked viewer routes onto its group node (persistFolder),
+    // a tab onto its own TabEntry.folder.
+    if (persistFolder) persistFolder(next);
+    else if (tabKey) useTabsStore.getState().setTabFolder(tabKey, next);
   };
 
   if (!projectDir) {
@@ -96,6 +116,7 @@ export function ProjectFilesTab({
       mountTree
       onOpenFolderTab={canOpenTabs ? (rel) => openProjectFilesTab(projectDir, rel) : undefined}
       containerClassName="project-files-tab"
+      compact={compact}
     />
   );
 }

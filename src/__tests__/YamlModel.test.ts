@@ -13,6 +13,9 @@ import {
   commentOf,
   canComment,
   canAddChild,
+  canPasteAfter,
+  copyNode,
+  pasteAfter,
   isEmptyPlaceholder,
   isFlow,
   literalFor,
@@ -116,9 +119,11 @@ describe("parseYaml", () => {
     expect(first.kind).toBe("map");
     expect(first.children.map((c) => c.key)).toEqual(["name", "port"]);
     expect(first.children[0].value).toBe("api");
-    // The `name` key shares the dash's line, so the item is what gets deleted.
-    expect(first.children[0].deletable).toBe(false);
-    expect(first.children[1].deletable).toBe(true);
+    // The `name` key shares the dash's line — flagged, so every whole-line edit
+    // splices around the dash instead of taking the line.
+    expect(first.children[0].onDash).toBe(true);
+    expect(first.children[0].deletable).toBe(true);
+    expect(first.children[1].onDash).toBeUndefined();
   });
 
   it("reads a sequence nested inline on the dash line", () => {
@@ -128,9 +133,11 @@ describe("parseYaml", () => {
     const row = matrix.children[0];
     expect(row.kind).toBe("seq");
     expect(row.children.map((c) => c.value)).toEqual(["1", "2"]);
-    // The first entry shares the outer dash's line, so the row is what gets deleted.
-    expect(row.children[0].deletable).toBe(false);
-    expect(row.children[1].deletable).toBe(true);
+    // The first entry shares the outer dash's line — flagged, so every
+    // whole-line edit splices around the dash instead of taking the line.
+    expect(row.children[0].onDash).toBe(true);
+    expect(row.children[0].deletable).toBe(true);
+    expect(row.children[1].onDash).toBeUndefined();
 
     expect(at(MATRIX, ["matrix", 1]).children.map((c) => c.value)).toEqual(["3"]);
   });
@@ -298,16 +305,28 @@ describe("deleteNode", () => {
     expect(next).toContain("  tags:\n    - prod\n");
   });
 
-  it("refuses to delete a key that shares its list item's line", () => {
+  it("deletes a key that shares its list item's line, pulling the next key up", () => {
     const text = `services:\n  - name: api\n    port: 80\n`;
     const name = at(text, ["services", 0]).children[0];
-    expect(deleteNode(text, name)).toBe(text);
+    // The dash is the item's, not the entry's: `port` climbs onto it.
+    expect(deleteNode(text, name)).toBe("services:\n  - port: 80\n");
     // The item itself deletes fine, block and all.
     expect(deleteNode(text, at(text, ["services", 0]))).toBe("services:\n");
   });
 
-  it("refuses to delete the entry that shares its nested list's dash line", () => {
-    expect(deleteNode(MATRIX, at(MATRIX, ["matrix", 0, 0]))).toBe(MATRIX);
+  it("leaves a bare dash when the deleted dash-line entry has nothing to pull up", () => {
+    // The only entry: the item stays, empty.
+    expect(deleteNode("- name: a\n", at("- name: a\n", [0]).children[0])).toBe("-\n");
+    // A comment-led sibling keeps its lead run above its own line — pulling the
+    // line up would drag the comment onto the dash.
+    const led = `- name: a\n  # docs\n  port: 1\n`;
+    expect(deleteNode(led, at(led, [0]).children[0])).toBe("-\n  # docs\n  port: 1\n");
+  });
+
+  it("deletes the entry that shares its nested list's dash line", () => {
+    expect(deleteNode(MATRIX, at(MATRIX, ["matrix", 0, 0]))).toBe(
+      "matrix:\n  - - 2\n  - - 3\n",
+    );
     // Its sibling goes on its own, and the whole row goes with the dash line.
     expect(deleteNode(MATRIX, at(MATRIX, ["matrix", 0, 1]))).toBe(
       "matrix:\n  - - 1\n  - - 3\n",
@@ -467,19 +486,43 @@ describe("moveNode", () => {
     expect(moveNode(CONFIG, root.children, root.children[1], 1)).toBe(CONFIG);
   });
 
-  it("refuses to drop onto an entry that owns a shared dash line", () => {
-    // In `- name: a`, `name` shares the item's dash line and can't be displaced
-    // from first place — so a reorder targeting it is a no-op (the UI blends it
-    // out during a drag).
+  it("hands the dash over when first place changes hands", () => {
+    // In `- name: a`, `name` shares the item's dash line; a reorder into or out
+    // of first place moves the entry and re-homes the `- ` prefix.
     const text = `- name: a\n  port: 1\n  host: x\n`;
     const item = at(text, [0]);
-    expect(item.children[0].deletable).toBe(false);
-    // `host` (index 2) dropped onto `name` (index 0) does nothing.
-    expect(moveNodeTo(text, item.children, item.children[2], 0)).toBe(text);
-    // But dropping it onto `port` (index 1, which owns its line) works.
+    // `host` (index 2) dropped onto `name` (index 0): host takes the dash.
+    expect(moveNodeTo(text, item.children, item.children[2], 0)).toBe(
+      `- host: x\n  name: a\n  port: 1\n`,
+    );
+    // `name` moved off the dash line: `port` takes the dash.
+    expect(moveNodeTo(text, item.children, item.children[0], 1)).toBe(
+      `- port: 1\n  name: a\n  host: x\n`,
+    );
+    // Dropping onto `port` (index 1) leaves the dash line alone.
     expect(moveNodeTo(text, item.children, item.children[2], 1)).toBe(
       `- name: a\n  host: x\n  port: 1\n`,
     );
+  });
+
+  it("keeps a trailing comment with the dash-line entry it moves, and a lead above the dash", () => {
+    // The moved entry's own `#` travels with it off the dash line…
+    const noted = `- name: a  # who\n  port: 1\n`;
+    expect(moveNodeTo(noted, at(noted, [0]).children, at(noted, [0]).children[0], 1)).toBe(
+      `- port: 1\n  name: a  # who\n`,
+    );
+    // …and an entry moved ONTO the dash line keeps its lead run above it — the
+    // placement an item's prose already uses.
+    const led = `- name: a\n  # p docs\n  port: 1\n`;
+    expect(moveNodeTo(led, at(led, [0]).children, at(led, [0]).children[1], 0)).toBe(
+      `  # p docs\n- port: 1\n  name: a\n`,
+    );
+  });
+
+  it("hands the outer dash over inside a nested sequence", () => {
+    expect(
+      moveNodeTo(MATRIX, at(MATRIX, ["matrix", 0]).children, at(MATRIX, ["matrix", 0, 1]), 0),
+    ).toBe("matrix:\n  - - 2\n    - 1\n  - - 3\n");
   });
 });
 
@@ -498,11 +541,9 @@ describe("duplicateNode", () => {
     );
   });
 
-  it("won't duplicate an entry that doesn't own its line", () => {
-    const text = `- name: a\n  port: 1\n`;
-    const firstKey = at(text, [0, 0]);
-    expect(firstKey.deletable).toBe(false);
-    expect(duplicateNode(text, firstKey)).toBe(text);
+  it("duplicates a dash-line entry below it, without the dash", () => {
+    // The `- ` prefix is the item's, not the entry's — the copy gets spaces.
+    expect(duplicateNode("- - a\n", at("- - a\n", [0, 0]))).toBe("- - a\n  - a\n");
   });
 });
 
@@ -745,5 +786,100 @@ describe("JSON (strict) files", () => {
     expect(addRootEntry("", "key", "name", literalFor("text", "app", true), true)).toBe(
       '{"name": "app"}\n',
     );
+  });
+});
+
+describe("copy & paste (#yaml copy button + paste cursor)", () => {
+  it("captures a map entry dedented, with its trailing comment", () => {
+    const clip = copyNode(CONFIG, at(CONFIG, ["server", "host"]));
+    expect(clip).not.toBeNull();
+    expect(clip!.text).toBe("host: 0.0.0.0   # bind address");
+    expect(clip!.isMapEntry).toBe(true);
+    expect(clip!.inFlow).toBe(false);
+  });
+
+  it("captures a container with its whole block, dedented to column 0", () => {
+    const clip = copyNode(CONFIG, at(CONFIG, ["server", "tags"]));
+    expect(clip!.lines).toEqual(["tags:", "  - web", "  - prod"]);
+    expect(clip!.text).toBe("tags:\n  - web\n  - prod");
+  });
+
+  it("captures a list item as an item, not a mapping entry", () => {
+    const clip = copyNode(CONFIG, at(CONFIG, ["server", "tags", 0]));
+    expect(clip!.text).toBe("- web");
+    expect(clip!.isMapEntry).toBe(false);
+  });
+
+  it("captures the key that shares its item's dash line, without the dash", () => {
+    const LIST = "list:\n  - name: a\n    port: 1\n";
+    const clip = copyNode(LIST, at(LIST, ["list", 0, "name"]))!;
+    // The `- ` prefix is the item's, not the entry's — the clip starts at the key.
+    expect(clip.text).toBe("name: a");
+    expect(clip.isMapEntry).toBe(true);
+  });
+
+  it("gates the paste to containers the entry fits", () => {
+    const entry = copyNode(CONFIG, at(CONFIG, ["server", "port"]))!; // key: value
+    const item = copyNode(CONFIG, at(CONFIG, ["server", "tags", 0]))!; // - web
+
+    // A mapping entry goes after another mapping entry, never after a list item.
+    expect(canPasteAfter(entry, at(CONFIG, ["debug"]), "map")).toBe(true);
+    expect(canPasteAfter(entry, at(CONFIG, ["server", "tags", 1]), "seq")).toBe(false);
+    // A list item goes after another list item, never into a mapping.
+    expect(canPasteAfter(item, at(CONFIG, ["server", "tags", 1]), "seq")).toBe(true);
+    expect(canPasteAfter(item, at(CONFIG, ["debug"]), "map")).toBe(false);
+
+    // Block and flow never mix: a block entry has no place inside `{...}`.
+    const FLOW = "obj: {a: 1, b: 2}\n";
+    expect(canPasteAfter(entry, at(FLOW, ["obj", "b"]), "map")).toBe(false);
+    const flowEntry = copyNode(FLOW, at(FLOW, ["obj", "a"]))!;
+    expect(canPasteAfter(flowEntry, at(CONFIG, ["debug"]), "map")).toBe(false);
+  });
+
+  it("pastes a map entry after another key, re-indented to its column", () => {
+    // From indent 2 (inside server) to indent 0 (top level): the copy lands at
+    // the anchor's column, and every other line stays byte-identical.
+    const clip = copyNode(CONFIG, at(CONFIG, ["server", "port"]))!;
+    const next = pasteAfter(CONFIG, at(CONFIG, ["debug"]), clip);
+    expect(next).toBe(CONFIG.replace("debug: false\n", "debug: false\nport: 8080\n"));
+    expect(parseYaml(next).error).toBeNull();
+  });
+
+  it("pastes a whole container after a deeper key, indenting its block", () => {
+    const clip = copyNode(CONFIG, at(CONFIG, ["server", "tags"]))!;
+    const next = pasteAfter(CONFIG, at(CONFIG, ["server", "host"]), clip);
+    expect(next).toContain(
+      "  host: 0.0.0.0   # bind address\n  tags:\n    - web\n    - prod\n  port: 8080",
+    );
+    expect(parseYaml(next).error).toBeNull();
+  });
+
+  it("pastes a list item into another list, as the anchor's next sibling", () => {
+    const TWO = "a:\n  - one\nb:\n  - two\n";
+    const clip = copyNode(TWO, at(TWO, ["a", 0]))!;
+    const next = pasteAfter(TWO, at(TWO, ["b", 0]), clip);
+    expect(next).toBe("a:\n  - one\nb:\n  - two\n  - one\n");
+  });
+
+  it("pastes into an inline flow collection between commas", () => {
+    const FLOW = "list: [1, 2]\n";
+    const clip = copyNode(FLOW, at(FLOW, ["list", 0]))!;
+    expect(pasteAfter(FLOW, at(FLOW, ["list", 1]), clip)).toBe("list: [1, 2, 1]\n");
+  });
+
+  it("pastes onto its own line in a spread flow (JSON) collection", () => {
+    const PKG = '{\n  "a": 1,\n  "b": 2\n}\n';
+    const clip = copyNode(PKG, at(PKG, ["a"], true))!;
+    const next = pasteAfter(PKG, at(PKG, ["b"], true), clip);
+    expect(next).toBe('{\n  "a": 1,\n  "b": 2,\n  "a": 1\n}\n');
+    expect(parseYaml(next, { strict: true }).error).toBeNull();
+  });
+
+  it("refuses a cross-style paste outright", () => {
+    const FLOW = "obj: {a: 1}\n";
+    const blockClip = copyNode(CONFIG, at(CONFIG, ["server", "port"]))!;
+    expect(pasteAfter(FLOW, at(FLOW, ["obj", "a"]), blockClip)).toBe(FLOW);
+    const flowClip = copyNode(FLOW, at(FLOW, ["obj", "a"]))!;
+    expect(pasteAfter(CONFIG, at(CONFIG, ["debug"]), flowClip)).toBe(CONFIG);
   });
 });

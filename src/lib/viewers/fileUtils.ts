@@ -51,6 +51,7 @@ export type InternalViewer =
   | "syncdiff"
   | "odt"
   | "media"
+  | "gif"
   | "html"
   | "sqlite"
   | "yaml";
@@ -133,6 +134,10 @@ export function internalViewerFor(
  *  render honestly. */
 const VIEWER_FALLBACK: Partial<Record<InternalViewer, InternalViewer>> = {
   yaml: "text",
+  // Opting out the GIF transport UI is not a vote against viewing GIFs in-app:
+  // the plain image viewer still animates them honestly (the webview animates
+  // <img> GIFs natively) — it just offers no frame control.
+  gif: "image",
 };
 
 /** The viewer a file *type* maps to, ignoring any user opt-out. */
@@ -140,6 +145,10 @@ function naturalViewerFor(entry: FileEntry): InternalViewer | null {
   if (entry.is_dir) return null;
   const ext = (entry.extension ?? "").toLowerCase();
   if (ext === ".pdf") return "pdf";
+  // .gif gets the dedicated animated-GIF viewer (frame transport: pause, step,
+  // scrub — #gifviewer). It is also in IMAGE_EXTS, so this early return must
+  // win — exactly like .tex/.csv below.
+  if (ext === ".gif") return "gif";
   if (IMAGE_EXTS.has(ext)) return "image";
   if (MARKDOWN_EXTS.has(ext)) return "markdown";
   // .tex gets the dedicated LaTeX viewer (compile to a PDF tab when a TeX engine
@@ -265,7 +274,13 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
   {
     id: "image",
     label: "Images",
-    extensions: [".png", ".jpg", ".gif", ".webp", "…"],
+    extensions: [".png", ".jpg", ".bmp", ".webp", "…"],
+    autocomplete: false,
+  },
+  {
+    id: "gif",
+    label: "Animated GIF",
+    extensions: [".gif"],
     autocomplete: false,
   },
   { id: "pdf", label: "PDF", extensions: [".pdf"], autocomplete: false },
@@ -456,6 +471,7 @@ export function fileIcon(ext: string | null): string {
     case ".png":
     case ".jpg":
     case ".jpeg":
+    case ".gif":
     case ".svg": return "🖼";
     case ".sh": return "⚙";
     default: return "📄";

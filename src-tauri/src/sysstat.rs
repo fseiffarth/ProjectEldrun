@@ -216,13 +216,14 @@ pub fn system_snapshot() -> SystemSnapshot {
     snapshot
 }
 
-// ── Pure `/proc` parsers (Linux; compiled under test on any OS) ──────────────
+// ── Pure `/proc` parsers ─────────────────────────────────────────────────────
 // Factored out of the Linux backend so they can be unit-tested from string
-// fixtures without a live `/proc`.
+// fixtures without a live `/proc`. Compiled on *every* host OS (not just Linux)
+// because `parse_remote_snapshot` reuses them to parse a remote Linux host's
+// `/proc` fetched over SSH — the host is Linux even when this machine is not.
 
 /// Parse one `cpu`/`cpuN` line of `/proc/stat` into cumulative busy/total ticks.
 /// `total` is the sum of every column; `busy = total − idle − iowait`.
-#[cfg(any(target_os = "linux", test))]
 fn parse_cpu_line(line: &str) -> Option<CpuTimes> {
     let mut it = line.split_whitespace();
     it.next()?; // "cpu" / "cpuN" label
@@ -241,7 +242,6 @@ fn parse_cpu_line(line: &str) -> Option<CpuTimes> {
 
 /// Parse `/proc/stat` into (aggregate, per-core) cumulative CPU times. The
 /// aggregate is the `cpu ` line; each `cpuN` line is one core, in order.
-#[cfg(any(target_os = "linux", test))]
 fn parse_cpu_stat(content: &str) -> (CpuTimes, Vec<CpuTimes>) {
     let mut agg = CpuTimes::default();
     let mut per_core = Vec::new();
@@ -268,7 +268,6 @@ fn parse_cpu_stat(content: &str) -> (CpuTimes, Vec<CpuTimes>) {
 
 /// Extract (MemTotal, MemAvailable, SwapTotal, SwapFree) from `/proc/meminfo`,
 /// all in KiB. Missing keys default to 0.
-#[cfg(any(target_os = "linux", test))]
 fn parse_meminfo(content: &str) -> (u64, u64, u64, u64) {
     let get = |key: &str| -> u64 {
         content
@@ -287,7 +286,6 @@ fn parse_meminfo(content: &str) -> (u64, u64, u64, u64) {
 }
 
 /// First three floats of `/proc/loadavg` (1/5/15-minute load averages).
-#[cfg(any(target_os = "linux", test))]
 fn parse_loadavg(content: &str) -> [f64; 3] {
     let mut it = content.split_whitespace();
     let mut next = || it.next().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
@@ -299,7 +297,6 @@ fn parse_loadavg(content: &str) -> [f64; 3] {
 /// contain spaces/parens, so fields are indexed *after* the last `)`:
 /// index 0 = state (field 3), 1 = ppid (field 4), 11 = utime (14),
 /// 12 = stime (15), 17 = num_threads (20).
-#[cfg(any(target_os = "linux", test))]
 fn parse_pid_stat(content: &str) -> Option<(String, String, u32, u64, u32)> {
     let open = content.find('(')?;
     let close = content.rfind(')')?;
@@ -311,6 +308,196 @@ fn parse_pid_stat(content: &str) -> Option<(String, String, u32, u64, u32)> {
     let stime: u64 = fields.get(12)?.parse().ok()?;
     let threads: u32 = fields.get(17)?.parse().ok()?;
     Some((comm, state, ppid, utime + stime, threads))
+}
+
+// ── Remote (`ssh`) whole-system snapshot ────────────────────────────────────
+// A remote project's System Monitor reads the *host's* `/proc` over the shared
+// ControlMaster, exactly as the Disk Usage pane reads the host's `du`. The
+// snapshot shape is identical to the local one, so the frontend pane needs no
+// per-source branch — only the pure parsers above, fed the host's `/proc` bytes.
+
+/// POSIX-`sh` script run on the host (via `services::ssh_exec::run_remote_script`)
+/// to capture one whole-system sample from its `/proc`.
+///
+/// **Constant** — `run_remote_script` embeds it verbatim (no quoting), so nothing
+/// may be interpolated in; the only variable in that call is the `cd`-target
+/// `remote_path`, which it quotes and which this script ignores. Output is
+/// line-oriented and consumed by [`parse_remote_snapshot`]: a `CLK` line, then the
+/// four `@SECTION@` blocks carrying the raw kernel files verbatim, then — under
+/// `@PROCS@` — one `S`/`R`/`C` triple per process (the raw `/proc/<pid>/stat`
+/// line, its `VmRSS` in KiB, and its NUL-flattened cmdline). cmdline NULs become
+/// spaces so every field stays on one line, which is what lets the parser split on
+/// line prefixes alone.
+pub const REMOTE_SNAPSHOT_SCRIPT: &str = r#"
+printf 'CLK\t%s\n' "$(getconf CLK_TCK 2>/dev/null || echo 100)"
+printf '@STAT@\n'; cat /proc/stat 2>/dev/null
+printf '@MEM@\n'; cat /proc/meminfo 2>/dev/null
+printf '@LOAD@\n'; cat /proc/loadavg 2>/dev/null
+printf '@UP@\n'; cat /proc/uptime 2>/dev/null
+printf '@PROCS@\n'
+for d in /proc/[0-9]*; do
+  [ -r "$d/stat" ] || continue
+  s=$(cat "$d/stat" 2>/dev/null) || continue
+  [ -n "$s" ] || continue
+  r=$(awk '/^VmRSS:/{print $2; exit}' "$d/status" 2>/dev/null)
+  c=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)
+  printf 'S\t%s\n' "$s"
+  printf 'R\t%s\n' "${r:-0}"
+  printf 'C\t%s\n' "$c"
+done
+"#;
+
+/// Assemble a [`SystemSnapshot`] from the output of [`REMOTE_SNAPSHOT_SCRIPT`],
+/// reusing the same pure `/proc` parsers the local Linux backend uses. `supported`
+/// is always `true` (the host is assumed Linux; a host with no `/proc` simply
+/// yields zeroed CPU/memory and an empty process table). GPUs are not sampled
+/// remotely, so `gpus` is empty.
+pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
+    enum Sec {
+        None,
+        Stat,
+        Mem,
+        Load,
+        Up,
+        Procs,
+    }
+    let mut sec = Sec::None;
+    let mut clk: u64 = 100;
+    let mut stat_buf = String::new();
+    let mut mem_buf = String::new();
+    let mut load_buf = String::new();
+    let mut up_buf = String::new();
+    let mut processes: Vec<ProcSample> = Vec::new();
+
+    // A process is assembled from its consecutive S/R/C lines; `flush` finalizes
+    // the pending one when the next `S` arrives (or at end of input).
+    let mut p_stat: Option<String> = None;
+    let mut p_rss: u64 = 0;
+    let mut p_cmd: Option<String> = None;
+
+    fn flush(
+        processes: &mut Vec<ProcSample>,
+        p_stat: &mut Option<String>,
+        p_rss: &mut u64,
+        p_cmd: &mut Option<String>,
+    ) {
+        if let Some(line) = p_stat.take() {
+            if let Some((comm, state, ppid, cpu_jiffies, threads)) = parse_pid_stat(&line) {
+                // The pid is field 1 of the stat line, before `(comm)`.
+                let pid = line
+                    .trim_start()
+                    .split('(')
+                    .next()
+                    .and_then(|p| p.trim().parse::<u32>().ok())
+                    .unwrap_or(0);
+                let cmdline = p_cmd
+                    .take()
+                    .filter(|c| !c.trim().is_empty())
+                    .unwrap_or_else(|| format!("[{comm}]"));
+                processes.push(ProcSample {
+                    pid,
+                    ppid,
+                    comm,
+                    cmdline,
+                    state,
+                    rss_kib: *p_rss,
+                    cpu_jiffies,
+                    threads,
+                });
+            }
+        }
+        *p_rss = 0;
+        *p_cmd = None;
+    }
+
+    for line in raw.lines() {
+        match line {
+            "@STAT@" => {
+                sec = Sec::Stat;
+                continue;
+            }
+            "@MEM@" => {
+                sec = Sec::Mem;
+                continue;
+            }
+            "@LOAD@" => {
+                sec = Sec::Load;
+                continue;
+            }
+            "@UP@" => {
+                sec = Sec::Up;
+                continue;
+            }
+            "@PROCS@" => {
+                sec = Sec::Procs;
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(rest) = line.strip_prefix("CLK\t") {
+            if let Ok(v) = rest.trim().parse::<u64>() {
+                if v > 0 {
+                    clk = v;
+                }
+            }
+            continue;
+        }
+        match sec {
+            Sec::Stat => {
+                stat_buf.push_str(line);
+                stat_buf.push('\n');
+            }
+            Sec::Mem => {
+                mem_buf.push_str(line);
+                mem_buf.push('\n');
+            }
+            Sec::Load => {
+                load_buf.push_str(line);
+                load_buf.push('\n');
+            }
+            Sec::Up => {
+                up_buf.push_str(line);
+                up_buf.push('\n');
+            }
+            Sec::Procs => {
+                if let Some(rest) = line.strip_prefix("S\t") {
+                    flush(&mut processes, &mut p_stat, &mut p_rss, &mut p_cmd);
+                    p_stat = Some(rest.to_string());
+                } else if let Some(rest) = line.strip_prefix("R\t") {
+                    p_rss = rest.trim().parse().unwrap_or(0);
+                } else if let Some(rest) = line.strip_prefix("C\t") {
+                    p_cmd = Some(rest.to_string());
+                }
+            }
+            Sec::None => {}
+        }
+    }
+    flush(&mut processes, &mut p_stat, &mut p_rss, &mut p_cmd);
+
+    let (cpu, per_core) = parse_cpu_stat(&stat_buf);
+    let (mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib) = parse_meminfo(&mem_buf);
+    let load_avg = parse_loadavg(&load_buf);
+    let uptime_secs = up_buf
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    SystemSnapshot {
+        supported: true,
+        clk_tck: clk,
+        num_cores: per_core.len() as u32,
+        cpu,
+        per_core,
+        mem_total_kib,
+        mem_available_kib,
+        swap_total_kib,
+        swap_free_kib,
+        load_avg,
+        uptime_secs,
+        processes,
+        gpus: Vec::new(),
+    }
 }
 
 // ── Pure Windows decoders (compiled under test on any OS) ───────────────────
@@ -1431,5 +1618,65 @@ SwapFree:        2000000 kB
         assert_eq!(ppid, 1000);
         assert_eq!(cpu, 4200 + 1300); // utime + stime
         assert_eq!(threads, 27);
+    }
+
+    #[test]
+    fn parse_remote_snapshot_assembles_from_script_output() {
+        // A minimal but complete capture in the wire format REMOTE_SNAPSHOT_SCRIPT
+        // emits: a CLK line, four `@SECTION@` blocks of raw kernel files, then
+        // S/R/C triples per process. One core, 8 GiB RAM, two processes — one with
+        // a real cmdline, one kernel thread (empty cmdline → `[comm]` fallback).
+        let raw = "CLK\t100\n\
+@STAT@\n\
+cpu  100 0 50 800 0 0 0 0 0 0\n\
+cpu0 100 0 50 800 0 0 0 0 0 0\n\
+intr 12345\n\
+@MEM@\n\
+MemTotal:        8192000 kB\n\
+MemAvailable:    4096000 kB\n\
+SwapTotal:       2048000 kB\n\
+SwapFree:        2048000 kB\n\
+@LOAD@\n\
+0.50 0.40 0.30 1/234 5678\n\
+@UP@\n\
+123456.78 987654.32\n\
+@PROCS@\n\
+S\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
+R\t2048\n\
+C\t/usr/bin/bash -i\n\
+S\t7 (kworker/0:1) I 2 0 0 0 -1 69238880 0 0 0 0 5 2 0 0 20 0 1 0 50 0 0\n\
+R\t0\n\
+C\t\n";
+
+        let snap = parse_remote_snapshot(raw);
+        assert!(snap.supported);
+        assert_eq!(snap.clk_tck, 100);
+        assert_eq!(snap.num_cores, 1);
+        assert_eq!(snap.per_core.len(), 1);
+        // total = sum of all columns; busy = total − idle − iowait (800 idle here).
+        assert_eq!(snap.cpu.total, 100 + 50 + 800);
+        assert_eq!(snap.cpu.busy, 150);
+        assert_eq!(snap.mem_total_kib, 8_192_000);
+        assert_eq!(snap.mem_available_kib, 4_096_000);
+        assert_eq!(snap.swap_total_kib, 2_048_000);
+        assert_eq!(snap.load_avg, [0.50, 0.40, 0.30]);
+        assert_eq!(snap.uptime_secs as u64, 123_456);
+        assert!(snap.gpus.is_empty());
+
+        assert_eq!(snap.processes.len(), 2);
+        let bash = &snap.processes[0];
+        assert_eq!(bash.pid, 42);
+        assert_eq!(bash.ppid, 1);
+        assert_eq!(bash.comm, "bash");
+        assert_eq!(bash.state, "S");
+        assert_eq!(bash.rss_kib, 2048);
+        assert_eq!(bash.cpu_jiffies, 12 + 8);
+        assert_eq!(bash.threads, 3);
+        assert_eq!(bash.cmdline, "/usr/bin/bash -i");
+        // Kernel thread: empty cmdline falls back to `[comm]`.
+        let kworker = &snap.processes[1];
+        assert_eq!(kworker.pid, 7);
+        assert_eq!(kworker.rss_kib, 0);
+        assert_eq!(kworker.cmdline, "[kworker/0:1]");
     }
 }

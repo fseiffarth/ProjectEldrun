@@ -297,6 +297,29 @@ pub fn list_configs() -> Vec<StoredConfig> {
     items.into_iter().map(|(_, c)| c).collect()
 }
 
+/// Remove a stored `.ovpn` config from Eldrun's store. Deletes only Eldrun's
+/// copy — the path must be inside [`configs_dir`], so the user's original file
+/// is never touched. Refused while the config's tunnel is up: the row offering
+/// removal should be a dead tunnel's, and a live one must be disconnected
+/// first, not have its config pulled out from under it. Removing an
+/// already-gone file succeeds — the goal state is "not stored".
+pub fn remove_config(config: &str) -> Result<(), String> {
+    let config = config.trim();
+    validate_arg("OpenVPN config", config)?;
+    let path = Path::new(config);
+    if !path.starts_with(configs_dir()) {
+        return Err("not a stored OpenVPN config".to_string());
+    }
+    if is_connected(config) {
+        return Err("this tunnel is up — disconnect it before removing its config".to_string());
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove config: {e}")),
+    }
+}
+
 /// Recover an `.ovpn` config's display name from its stored file name. Stored
 /// as `{stem}__{original_name}`; `rsplit_once` keeps the last segment as the
 /// name (the stem can itself contain `__` since non-alnums collapse to `_`,
@@ -2441,6 +2464,25 @@ mod tests {
         ));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_config_refuses_paths_outside_the_store() {
+        // It deletes Eldrun's copy only — pointed at anything else (the user's
+        // original .ovpn, or worse), it must refuse before touching the fs.
+        let err = remove_config("/home/u/office.ovpn").unwrap_err();
+        assert!(err.contains("not a stored"), "{err}");
+        let err = remove_config("/etc/passwd").unwrap_err();
+        assert!(err.contains("not a stored"), "{err}");
+    }
+
+    #[test]
+    fn remove_config_of_missing_stored_file_is_ok() {
+        // The goal state is "not stored": a file already gone is success, not an
+        // error the UI has to explain.
+        let path = configs_dir().join("nope__gone.ovpn");
+        assert!(!path.exists());
+        assert_eq!(remove_config(path.to_str().unwrap()), Ok(()));
     }
 
     #[test]

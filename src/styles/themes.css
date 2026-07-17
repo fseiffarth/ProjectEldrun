@@ -1274,6 +1274,25 @@ select option {
   will-change: transform;
 }
 
+/* GIF viewer transport (#gifviewer). The frame scrubber rides inside the shared
+   .file-viewer-zoom pill; the speed dropdown inherits the shared Dropdown look
+   with only the toolbar's compact sizing (same bargain as the TeX engine
+   selector). */
+.gif-transport .gif-scrubber {
+  width: 110px;
+  accent-color: var(--accent, #4493f8);
+}
+
+.gif-transport .gif-scrubber:disabled {
+  opacity: 0.5;
+}
+
+.gif-speed .dropdown-trigger {
+  min-height: 0;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
 .file-viewer-body {
   flex: 1;
   overflow: auto;
@@ -1301,6 +1320,12 @@ select option {
   font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
   font-size: 12px;
   color: var(--text-primary);
+  /* The per-level indent-guide colors (`rowPad` in YamlTree.tsx draws one
+     vertical line per ancestor level, cycling these by depth). */
+  --yaml-guide-0: color-mix(in srgb, var(--accent, #4493f8) 38%, transparent);
+  --yaml-guide-1: color-mix(in srgb, #a887e8 38%, transparent);
+  --yaml-guide-2: color-mix(in srgb, #4fc1a6 38%, transparent);
+  --yaml-guide-3: color-mix(in srgb, #d9a05b 38%, transparent);
 }
 
 .yaml-doc + .yaml-doc {
@@ -1318,6 +1343,8 @@ select option {
 }
 
 .yaml-row {
+  /* Anchors the absolute action gutter (`.yaml-gutter`) on the row's left. */
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1360,6 +1387,9 @@ select option {
 
 .yaml-row-dragging {
   opacity: 0.45;
+  /* The dragged row keeps the action-hover accent for the whole gesture, so the
+     block being moved stays marked while the pointer travels the list. */
+  background: color-mix(in srgb, var(--accent, #4493f8) 14%, transparent);
 }
 
 .yaml-row-dragging .yaml-grip {
@@ -1381,12 +1411,46 @@ select option {
   opacity: 0.35;
 }
 
-/* Hovering a row's action (move up/down, delete, add) highlights that row, so it
-   is obvious which entry the button will act on — delete tinted with danger, the
-   rest with the accent. `:has()` scopes it to the row whose OWN actions are
-   hovered (a child row's actions live in a separate row element). */
+/* Hovering a container's row marks its whole substructure, not just its own
+   line — what the row names IS the block beneath it. The rows are DOM siblings,
+   so the mark is handed down in React (`yaml-row-marked`), matching the plain
+   hover tint; a hovered delete hands down the danger tint instead, so everything
+   tinted is exactly what the × will take. */
+.yaml-row-marked {
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+}
+
+.yaml-row-marked-del {
+  background: color-mix(in srgb, var(--danger, #f85149) 16%, transparent);
+}
+
+/* …and a hovered whole-entry action (copy, move, comment, grip) hands down the
+   accent tint, matching the row's own :has() highlight below — the entry the
+   button acts on is its block, not its one line. */
+.yaml-row-marked-act {
+  background: color-mix(in srgb, var(--accent, #4493f8) 14%, transparent);
+}
+
+/* The grip's own mark on top of the accent: the block "pulls out" a few px,
+   the affordance that this handle is what moves it. The hovered row itself
+   shifts via the :has() below; its marked children ride `yaml-row-pulled`. */
+.yaml-row {
+  transition: transform 90ms ease;
+}
+
+.yaml-row-pulled,
+.yaml-row-dragging,
+.yaml-row:has(> .yaml-actions .yaml-grip:hover) {
+  transform: translateX(3px);
+}
+
+/* Hovering a row's action (drag, move up/down, delete, add) highlights that row,
+   so it is obvious which entry the button will act on — delete tinted with
+   danger, the rest with the accent. `:has()` scopes it to the row whose OWN
+   actions are hovered (a child row's actions live in a separate row element). */
 .yaml-row:has(> .yaml-actions .yaml-act:hover),
-.yaml-row:has(> .yaml-actions .yaml-add:hover) {
+.yaml-row:has(> .yaml-actions .yaml-add:hover),
+.yaml-row:has(> .yaml-actions .yaml-grip:hover) {
   background: color-mix(in srgb, var(--accent, #4493f8) 14%, transparent);
 }
 
@@ -1403,6 +1467,69 @@ select option {
 /* "Copy last" — the alternative to building a new item — reads as the accent
    action it is, next to the plain new-entry builder. */
 .yaml-add-copy {
+  color: var(--accent, #4493f8);
+  border-color: color-mix(in srgb, var(--accent, #4493f8) 55%, transparent);
+}
+
+/* Copy → paste cursor. While an entry sits on the copy buffer the banner says
+   what is held (and is the mouse user's cancel), a row the paste fits after
+   advertises itself with the copy cursor, and the placed cursor row draws the
+   insertion line — the same accent line a reorder drag draws — plus the button
+   that lands the paste. */
+.yaml-clip-banner {
+  /* Pinned to the top of the scroller (`.file-viewer-body`) so it stays put
+     while you scroll a long file to the row you want to paste after — otherwise
+     it slides up among the entries and out of view before you get there. The
+     background must be OPAQUE (mixed over the panel, not transparent) so the
+     rows scrolling under it don't read through. */
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent, #4493f8) 45%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent, #4493f8) 12%, var(--bg-panel));
+  font-size: 11px;
+}
+
+.yaml-clip-banner .yaml-act {
+  margin-left: auto;
+}
+
+.yaml-row-pastable {
+  cursor: copy;
+}
+
+/* The hover PREVIEW of where a click would land the paste: a zero-height row
+   drawing the same accent line the placed cursor row does, right after the
+   hovered entry's whole block — the outcome is visible before the click, and
+   nothing below it shifts. */
+.yaml-paste-preview {
+  min-height: 0;
+  height: 0;
+  border: 0;
+  overflow: visible;
+}
+
+.yaml-paste-preview-line {
+  flex: 1;
+  height: 0;
+  border-top: 2px solid color-mix(in srgb, var(--accent, #4493f8) 65%, transparent);
+  margin-top: -1px;
+  pointer-events: none;
+}
+
+.yaml-cursor-row {
+  gap: 4px;
+  padding: 2px 0;
+  border-top-color: var(--accent, #4493f8);
+}
+
+.yaml-paste-here {
   color: var(--accent, #4493f8);
   border-color: color-mix(in srgb, var(--accent, #4493f8) 55%, transparent);
 }
@@ -1468,6 +1595,9 @@ select option {
   color: var(--accent, #4493f8);
   font: inherit;
   cursor: text;
+  /* Sibling keys are padded to one column (see keyWidth in YamlTree), so the
+     key must hug its left edge for the values to land on a shared one. */
+  text-align: left;
 }
 
 .yaml-key:hover {
@@ -1511,15 +1641,95 @@ select option {
   min-width: 0;
 }
 
+/* A value reads as a value, not as a form field: the input keeps its box (so
+   focus/hover can restore it without a layout shift) but wears no chrome until
+   pointed at. Click-to-edit stays — it IS the input, just undressed. */
 .yaml-value-input {
   flex: 1 1 auto;
-  max-width: 46ch;
+  /* No fixed cap: the value fills whatever room the row has to its right, so a
+     long value is never clipped inside a narrow box while the pane sits empty
+     beside it. It still shrinks (min-width: 0 above) when the pane is narrow. */
+  max-width: none;
+  background: transparent;
+  border-color: transparent;
+  cursor: text;
+}
+
+.yaml-value-input:hover:not(:focus) {
+  background: color-mix(in srgb, var(--accent, #4493f8) 10%, transparent);
+}
+
+/* A scalar-only list edited as one comma-separated line: it holds the whole
+   list, so it gets more room than a single value would. The wrap owns the width
+   and hosts the overflow chevrons; hovering one glides the content that way. */
+.yaml-list-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  /* No fixed cap: the comma-line list fills the room to its right rather than
+     stopping short and hiding entries behind the overflow chevrons while space
+     goes unused. The chevrons still appear if it genuinely overflows. */
+  max-width: none;
+}
+
+/* The input and its color mirror. The entries keep the value colors their own
+   rows would carry — an input cannot color parts of itself, so its text is
+   transparent (the caret is not) and the mirror on top repaints the same buffer
+   token by token, scroll-synced from the component. */
+.yaml-list-field {
+  position: relative;
+  display: inline-flex;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.yaml-list-field .yaml-list-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+  color: transparent;
+  caret-color: var(--text-primary);
+}
+
+.yaml-list-mirror {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  border: 1px solid transparent; /* the input's box, so the glyphs land on its */
+  padding: 0 4px; /* exact pixels */
+  overflow: hidden;
+  white-space: pre;
+  pointer-events: none;
+}
+
+.yaml-list-chevron {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--accent, #4493f8);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.yaml-list-chevron:disabled {
+  opacity: 0.25;
+  cursor: default;
 }
 
 .yaml-key-input:focus,
 .yaml-value-input:focus {
   outline: none;
   border-color: var(--accent, #4493f8);
+}
+
+/* Editing dresses the value back up as a field. */
+.yaml-value-input:focus {
+  background: var(--bg-panel);
 }
 
 /* Value colouring by YAML type, so a quoted "8080" reads differently from 8080.
@@ -1559,16 +1769,22 @@ select option {
   flex: 1 1 auto;
   max-width: 60ch;
   resize: vertical;
-  background: var(--bg-panel);
+  background: transparent;
   color: var(--text-primary);
-  border: 1px solid var(--border-color);
+  border: 1px solid transparent;
   border-radius: 3px;
   padding: 2px 4px;
   font: inherit;
+  cursor: text;
+}
+
+.yaml-block-input:hover:not(:focus) {
+  background: color-mix(in srgb, var(--accent, #4493f8) 10%, transparent);
 }
 
 .yaml-block-input:focus {
   outline: none;
+  background: var(--bg-panel);
   border-color: var(--accent, #4493f8);
 }
 
@@ -1588,8 +1804,44 @@ select option {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  margin-left: auto;
   opacity: 0;
+}
+
+/* The entry's own actions (# ⧉ ↑ ↓ ×) live in a FIXED gutter on the row's left —
+   one stable button column in front of the tree, whatever the row's depth. Every
+   row reserves its width via `rowPad` (YamlTree's GUTTER const, kept in step with
+   this one), so the buttons overlay reserved space, never the content. */
+.yaml-gutter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 130px;
+  /* The left padding keeps the drag grip off the panel border. */
+  padding: 0 10px 0 8px;
+}
+
+/* Six FIXED slots (⠿ # ⧉ ↑ ↓ ×): an action a row doesn't offer is rendered as
+   an empty slot of the same width, so every button keeps its column on every
+   row and the pointer never chases a shifting target. */
+.yaml-gutter .yaml-act,
+.yaml-gutter .yaml-slot {
+  flex: none;
+  width: 18px;
+  padding: 0;
+  text-align: center;
+}
+
+.yaml-gutter .yaml-grip,
+.yaml-gutter .yaml-slot-grip {
+  flex: none;
+  width: 12px;
+}
+
+/* The add controls a collapsed/empty container keeps IN the row, next to what
+   they grow (an open container grows through its persistent add row instead). */
+.yaml-actions-row {
+  margin-left: auto;
 }
 
 .yaml-row:hover .yaml-actions,
@@ -1643,10 +1895,18 @@ select option {
   opacity: 1;
 }
 
+/* "source only" keeps the old action cluster's spot and hover reveal — it is a
+   note about the row, not part of the gutter's buttons. */
 .yaml-locked {
   color: var(--text-muted);
   font-size: 10px;
   font-style: italic;
+  margin-left: auto;
+  opacity: 0;
+}
+
+.yaml-row:hover .yaml-locked {
+  opacity: 1;
 }
 
 .yaml-tree-notice {
@@ -3718,12 +3978,56 @@ select option {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  /* Row: the measured pane region + (optionally) the docked file-viewer
+     column on the right. With no sidebar the region simply fills the body. */
+  display: flex;
+}
+
+/* The pane region: what the pane layer measures/overlays (main window) or
+   directly holds (popout). Shrinks when the group's file-viewer column is
+   open, so panes never cover the sidebar. */
+.subwindow-pane-region {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 
 /* Empty measured slot the pane layer positions panes over. */
 .subwindow-pane-slot {
   position: absolute;
   inset: 0;
+}
+
+/* Per-subwindow right file viewer (◫): a docked column on the subwindow's
+   right edge hosting the shared ProjectFilesView (via ProjectFilesTab). Sits
+   BESIDE the measured pane region, so the main window's flat pane layer
+   (whose panes are sized to the region's rect) never paints over it. */
+.subwindow-files {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--border-color);
+  background: var(--bg-panel);
+}
+
+/* Left-edge resize handle of the file-viewer column. */
+.subwindow-files-resize {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 13;
+}
+.subwindow-files-resize:hover {
+  background: var(--accent);
+  opacity: 0.35;
 }
 
 /* Pane layer holds all PTYs (every scope), positioned over group bodies. The
@@ -4334,7 +4638,12 @@ select option {
   flex-direction: column;
   transform: translateX(calc(100% + 2px));
   transition: transform 0.2s ease;
-  z-index: 10;
+  /* Above all subwindow/tab-bar chrome (active tab 11, sticky ×/hide/files
+     toggle/scroll chevrons 12, docked-sidebar resize grip 13) — which all
+     resolve in this same stacking context — so the slid-out overlay fully
+     covers them. Stays below fixed editor tooltips/completion (20/60), the
+     header (80), and dialogs. */
+  z-index: 15;
 }
 
 .right-panel:not(.open) {
@@ -6202,6 +6511,19 @@ select option {
   opacity: 0.8;
 }
 
+/* Muted meta rows (activity / restart) — like .pill-popup-path but plain LTR
+   text, so it never gets the path row's RTL ellipsis treatment. */
+.tab-popup-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-popup-meta.working {
+  color: var(--success, #4caf50);
+}
+
 /* ── Project switcher action buttons ──────────────────────────────────────── */
 .project-switcher-action-btn {
   display: flex;
@@ -6718,6 +7040,38 @@ select option {
   color: var(--accent);
 }
 
+/* Per-subwindow file-viewer toggle (◫), left of the hide/close cluster. Same
+   sticky right-edge treatment as its companions; lit while the viewer is open. */
+.subwindow-files-toggle {
+  margin-left: auto;
+  align-self: center;
+  position: sticky;
+  right: 0;
+  flex-shrink: 0;
+  z-index: 12;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.subwindow-files-toggle + .subwindow-hide {
+  margin-left: 0;
+}
+.subwindow-files-toggle:hover {
+  background: var(--pill-hover-bg);
+  color: var(--accent);
+}
+.subwindow-files-toggle.open {
+  color: var(--accent);
+}
+
 /* #42: detached ("pop out") window title-bar controls — the native
    min/max/close cluster. Pinned to the right of the tab bar (sticky) so they
    never scroll out when tabs overflow; the panel-colored backing keeps
@@ -6925,6 +7279,34 @@ select option {
   gap: 1px;
 }
 
+/* The add menu's search box: auto-focused so "click + and type" filters the
+   entries immediately. Enter picks the highlighted first match. */
+.tab-new-menu-search {
+  margin: 2px 2px 4px;
+  padding: 5px 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-color);
+  border-radius: calc(var(--radius) / 2);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.tab-new-menu-search:focus {
+  border-color: var(--accent);
+}
+
+.tab-new-menu-search::placeholder {
+  color: var(--text-muted);
+}
+
+/* The entry Enter would pick while a query is live — shown in the hover style
+   so the shortcut is visible before it fires. */
+.tab-new-menu-item.enter-target {
+  background-color: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
 .tab-new-menu-item {
   display: flex;
   align-items: center;
@@ -7081,6 +7463,25 @@ select option {
   }
   50% {
     box-shadow: 0 0 13px 3px var(--accent);
+  }
+}
+
+/* A row the CSV table viewer just gained on a disk reload: flash an accent tint
+   for 3s, then let the cell's own inline background (stripe/sorted) reassert.
+   The animation targets the cells, not the row, because each <td> paints its own
+   background — and an animated property overrides that inline style while it runs.
+   The mix is opaque (over --bg-panel, not transparent) so the flash can't let the
+   scrolling body bleed through the sticky row-number gutter. */
+.csv-row-flash > td {
+  animation: csv-row-flash 3s ease-out;
+}
+
+@keyframes csv-row-flash {
+  from {
+    background-color: color-mix(in srgb, var(--accent) 28%, var(--bg-panel));
+  }
+  to {
+    background-color: var(--bg-panel);
   }
 }
 
@@ -7652,6 +8053,13 @@ select option {
    grows (a flex child won't shrink past its content without min-height:0). */
 .right-panel-scroll {
   min-height: 0;
+  /* Disable scroll anchoring. The tree's content height shifts after mount —
+     directory sizes stream in asynchronously and (in the narrow docked sidebar)
+     the size badges re-wrap long file names — so with anchoring on the browser
+     keeps re-adjusting scrollTop toward the sticky `.file-tree-head`, snapping
+     the view back up whenever you scroll near the bottom (can never reach the
+     end). Off, the wheel scroll stays put. */
+  overflow-anchor: none;
 }
 
 /* ── Downloads section (right panel, below the file tree) ─────────────────── */
@@ -7789,11 +8197,28 @@ select option {
   border-color: var(--success);
 }
 
+/* A running tab-backed or detached run pulses green — the app's shared "PTY
+   producing sustained output" vocabulary (cf. @keyframes tab-glow-working). The
+   detached `.sh` path also sets `disabled`, hence the default cursor. */
 .file-run-btn.running {
   cursor: default;
-  border-color: color-mix(in srgb, var(--success) 70%, transparent);
-  background: transparent;
+  color: var(--success);
+  animation: file-run-pulse 1.5s ease-in-out infinite;
 }
+@keyframes file-run-pulse {
+  0%, 100% { background: color-mix(in srgb, var(--success) 8%, transparent);
+             border-color: color-mix(in srgb, var(--success) 45%, transparent); }
+  50%      { background: color-mix(in srgb, var(--success) 30%, transparent);
+             border-color: var(--success); }
+}
+/* Motion opt-outs (match the tab-glow blocks at :6798 / :6882): collapse to a
+   steady green tint — the running state stays visible, the repaint stops. */
+@media (prefers-reduced-motion: reduce) {
+  .file-run-btn.running { animation: none;
+    background: color-mix(in srgb, var(--success) 18%, transparent); }
+}
+:root[data-energy-saver="on"] .file-run-btn.running { animation: none;
+  background: color-mix(in srgb, var(--success) 18%, transparent); }
 
 .file-run-spinner {
   width: 10px;
@@ -11912,6 +12337,31 @@ select option {
 }
 .vpn-indicator-connect:hover {
   background: color-mix(in srgb, var(--accent, var(--text-secondary)) 14%, transparent);
+}
+/* Connect + Remove share a stored config's row: side by side, not stacked. */
+.vpn-indicator-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.vpn-indicator-actions .vpn-indicator-connect,
+.vpn-indicator-actions .vpn-indicator-remove {
+  margin-top: 0;
+}
+/* Remove: same danger-ghost as Disconnect — both take something away. */
+.vpn-indicator-remove {
+  align-self: flex-start;
+  padding: 3px 9px;
+  border: 1px solid var(--border, var(--text-secondary));
+  border-radius: 5px;
+  background: transparent;
+  color: var(--danger, var(--text-primary));
+  font-size: 11px;
+  cursor: pointer;
+}
+.vpn-indicator-remove:hover {
+  background: color-mix(in srgb, var(--danger, var(--text-secondary)) 14%, transparent);
 }
 /* "Connect on launch", per config: the machine-level twin of a project's
    auto-connect. Sits under the row's action button because it is a property of the

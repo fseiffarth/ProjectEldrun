@@ -332,6 +332,11 @@ export function FileTree({
   const [moveTargetRel, setMoveTargetRel] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  // The focusable tree root. File rows preventDefault on pointerdown to arm the
+  // drag, which suppresses the browser's default focus-the-ancestor — so we move
+  // focus here explicitly on selection, or the tree's key handlers (Enter/Delete/
+  // Escape) would only fire after a manual Tab-in (notably in the docked sidebar).
+  const treeRootRef = useRef<HTMLDivElement | null>(null);
   useClampToViewport(contextMenuRef, contextMenu, setContextMenu);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null);
   const [autoConfirm, setAutoConfirm] = useState<AutoConfirm>(null);
@@ -390,6 +395,7 @@ export function FileTree({
   const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
   const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
   const runningScripts = useActivityStore((s) => s.runningScripts);
+  const runningRunFiles = useActivityStore((s) => s.runningRunFiles);
   const runScript = useActivityStore((s) => s.runScript);
   // Mount-free remote (Phase 2): a remote project lists over SFTP and has no
   // local inotify watcher, so we skip the fs-watch wiring and offer a manual
@@ -885,6 +891,9 @@ export function FileTree({
       return;
     }
     selectFromClick(entry, ev);
+    // Take keyboard focus so Delete/Enter/Escape act on this selection without a
+    // manual Tab-in (the row's pointerdown preventDefault suppresses auto-focus).
+    treeRootRef.current?.focus({ preventScroll: true });
   }
 
   // Open a file on double-click. If it belongs to a multi-selection, open EVERY
@@ -906,10 +915,16 @@ export function FileTree({
   }
 
   // Keyboard on the focused tree: Enter opens every selected file, Escape drops
-  // the selection. Only acts while something is selected so it never steals keys
-  // from the rest of the panel.
+  // the selection, Delete removes it (the right-click Delete's keyboard twin).
+  // Only acts while something is selected so it never steals keys from the rest
+  // of the panel.
   function handleTreeKeyDown(ev: React.KeyboardEvent) {
     if (selected.size === 0) return;
+    // Never hijack Delete/Enter from the in-tree search box or a rename field.
+    const target = ev.target as HTMLElement | null;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+      return;
+    }
     if (ev.key === "Escape") {
       ev.stopPropagation();
       clearSelection();
@@ -919,6 +934,10 @@ export function FileTree({
         if (t.extension === ".zip") void extractArchive(t);
         else openFile(t.path, undefined, projectId, "right_file_tree").catch(console.error);
       }
+    } else if (ev.key === "Delete") {
+      ev.preventDefault();
+      // Mirror the context menu's bulk target set (files and folders alike).
+      promptDelete(entries.filter((e) => selected.has(e.path)));
     }
   }
 
@@ -1914,6 +1933,7 @@ export function FileTree({
       cwd: projectDir,
       kind: "shell" as const,
       initialInput: shellRunCommand(interp, scriptRel),
+      runFile: entry.path,
     };
     // Same placement policy as the Python Run: stream into a detached popout when
     // we're in one, else the focused subwindow of this project.
@@ -2065,6 +2085,7 @@ export function FileTree({
 
   return (
     <div
+      ref={treeRootRef}
       className={`file-tree${isDragOver ? " drag-over" : ""}`}
       tabIndex={0}
       onDragOver={handleDragOver}
@@ -2294,7 +2315,15 @@ export function FileTree({
           const canShRun = !e.is_dir && shellRunnerFor(e.extension) !== null;
           const canPyRun = !e.is_dir && isPythonPath(e.path);
           const canRun = canShRun || canPyRun;
-          const isRunning = runningScripts.has(e.path);
+          // "Running" drives the green pulse + title/aria and unions both run
+          // paths: a detached `.sh` tracked by real process liveness
+          // (`runningScripts`), and a tab-backed run (Python / foreground shell)
+          // whose tab is producing output (`runningRunFiles`, busy-gated).
+          const isRunning = runningScripts.has(e.path) || runningRunFiles.has(e.path);
+          // But only the detached path LOCKS the button: it has no tab to watch
+          // and a second click would double-spawn. A tab-backed run stays
+          // clickable so a re-run can replace the tab mid-session.
+          const runLocked = runningScripts.has(e.path);
           const isCompiling = compiling.has(e.path);
           const dragTarget = draggableToTab(e);
           const isMoveTarget = e.is_dir && moveTargetRel === relForEntry(e);
@@ -2431,9 +2460,9 @@ export function FileTree({
                       });
                     }
                   }}
-                  disabled={isRunning}
+                  disabled={runLocked}
                 >
-                  {isRunning ? <span className="file-run-spinner" /> : "▶"}
+                  ▶
                 </button>
               )}
               {isCompiling && (

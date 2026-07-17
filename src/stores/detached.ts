@@ -158,9 +158,12 @@ export interface DetachedPanes {
 }
 
 /**
- * Detached → main: begin a drag-to-dock. Without `tabKey` it drags the WHOLE
- * popout (the tab-bar handle); with `tabKey` it drags that single tab, which the
- * host docks on its own via `attachDetachedTab`.
+ * Detached → main: begin a drag-to-dock. Without `tabKey`/`paneId` it drags the
+ * WHOLE popout (the titlebar, or the bar grip of a single-pane popout); with
+ * `tabKey` it drags that single tab, which the host docks on its own via
+ * `attachDetachedTab`; with `paneId` it drags ONE pane (an inner group) of a
+ * multi-pane popout, which the host docks via `attachDetachedPane` — never the
+ * whole popout, so the sibling panes stay floating.
  */
 export interface DetachedDragStart {
   scope: string;
@@ -169,6 +172,7 @@ export interface DetachedDragStart {
   cursorPhysX: number;
   cursorPhysY: number;
   tabKey?: string;
+  paneId?: string;
 }
 /** Detached → main: the OS cursor moved (physical desktop px — see lib/coords). */
 export interface DetachedDragMove {
@@ -248,7 +252,12 @@ export type DetachedEdit =
   // Multi-pane popouts: resize the divider between children i and i+1 of a split.
   | { kind: "resize"; splitId: string; dividerIndex: number; fraction: number }
   // Multi-pane popouts: merge `key` into `targetGroupId` (at `index`, else append).
-  | { kind: "move"; key: string; targetGroupId: string; index?: number };
+  | { kind: "move"; key: string; targetGroupId: string; index?: number }
+  // Toggle/resize a group's docked file-viewer column (the per-subwindow right
+  // file viewer), or record the folder it browsed to. Applied optimistically
+  // popout-side, mirrored by the main window into its detached record so the
+  // state persists + survives a dock.
+  | { kind: "files"; groupId: string; open?: boolean; width?: number; folder?: string };
 
 /** Envelope for a detached→main edit (identity + the edit itself). */
 export interface DetachedEditEnvelope {
@@ -325,6 +334,14 @@ export function applyEditToSubtree(
     case "move":
       // Optimistic local cross-group merge; null (invalid) leaves it unchanged.
       return moveKeyInTree(subtree, edit.key, edit.targetGroupId, edit.index) ?? subtree;
+    case "files":
+      // Optimistic local file-viewer toggle/resize on the target group.
+      return mapGroup(subtree, edit.groupId, (grp) => ({
+        ...grp,
+        ...(edit.open != null ? { filesOpen: edit.open } : {}),
+        ...(edit.width != null ? { filesWidth: edit.width } : {}),
+        ...(edit.folder != null ? { filesFolder: edit.folder } : {}),
+      }));
     case "add":
       // The detached window can't mint the tab key — it leaves the subtree as-is
       // and waits for the main window's re-seed (with the real, keyed tab).
@@ -412,6 +429,36 @@ export function decideDetachedGroupDrop(input: {
   }
   if (input.inMain) return { kind: "dockMain" };
   return { kind: "float" };
+}
+
+/**
+ * #42: the UNIFIED cross-window drop decision for ONE PANE (inner group) dragged
+ * out of a MULTI-pane popout by its bar grip. The pane is a subwindow in its own
+ * right, so it follows the single-tab ladder — dock JUST the pane into the main
+ * window, or pop it into its own window — never the whole-popout one, which is
+ * exactly the bug this exists to prevent: a pane drop docking every sibling pane
+ * into the main window. Docking a pane into a SIBLING popout is out of scope
+ * (same as whole groups) → stays put. Pure/testable.
+ */
+export type DetachedPaneDrop =
+  | { kind: "none" } // cancelled / released over the source popout — stay put
+  | { kind: "newWindow" } // Shift, or released in free space → own new popout
+  | { kind: "dockMain" }; // released over the main window (caller has the target)
+
+export function decideDetachedPaneDrop(input: {
+  cancelled: boolean;
+  shift: boolean;
+  inMain: boolean;
+  overPopoutId: string | null;
+  srcGroupId: string;
+}): DetachedPaneDrop {
+  if (input.cancelled) return { kind: "none" };
+  if (input.shift) return { kind: "newWindow" };
+  if (input.overPopoutId && input.overPopoutId !== input.srcGroupId) {
+    return { kind: "none" };
+  }
+  if (input.inMain) return { kind: "dockMain" };
+  return { kind: "newWindow" };
 }
 
 /**

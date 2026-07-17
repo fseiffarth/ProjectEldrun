@@ -160,6 +160,18 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
+      // Toggle the focused subwindow's docked file viewer (same flag the ◫
+      // button and the sidebar's resize-edge double-click write).
+      if (is("toggleSubwindowFiles")) {
+        const focused = tabs.focusedGroupId;
+        const group = focused ? findGroup(tabs.layout, focused) : null;
+        if (focused && group) {
+          e.preventDefault();
+          tabs.setGroupFiles(focused, !group.filesOpen);
+        }
+        return;
+      }
+
       // Close the active tab.
       if (is("closeTab")) {
         if (tabs.activeKey) {
