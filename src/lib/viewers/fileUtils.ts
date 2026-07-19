@@ -49,6 +49,11 @@ export type InternalViewer =
   // explicitly from a diverged (amber) file's diff button; routed to `DiffView`
   // in sync mode (backend `sync_diff`).
   | "syncdiff"
+  // SSH-sync three-way merge (PyCharm-style): local mirror ⇄ editable result ⇄
+  // remote host, with per-block take-left/right. Never auto-selected — only
+  // opened from a diverged (amber) file in the orange list; routed to
+  // `SyncMergeView`. Apply resolves the divergence (writes mirror + force-push).
+  | "syncmerge"
   | "odt"
   | "media"
   | "gif"

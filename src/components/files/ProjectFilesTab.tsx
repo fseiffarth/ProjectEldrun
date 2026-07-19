@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ProjectFilesView } from "./ProjectFilesView";
-import { useFileSource } from "./ProjectFilesPane";
+import { useIndependentFileSource } from "./ProjectFilesPane";
 import { useProjectsStore } from "../../stores/projects";
 import { PROJECT_FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
 import { resolveProjectDirectory } from "../../types";
@@ -77,7 +77,7 @@ export function ProjectFilesTab({
   const projectDir = project ? resolveProjectDirectory(project) : cwd;
 
   const [folder, setFolder] = useState(initialFolder ?? "");
-  const [source, setSource] = useFileSource(project?.id ?? null, !!project?.remote);
+  const [source, setSource] = useIndependentFileSource(project?.id ?? null, !!project?.remote);
 
   // Re-seed when the persisted folder changes out from under us — a restart
   // restore or a popout's streamed `files` edit hands a new browsed folder that

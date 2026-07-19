@@ -91,6 +91,59 @@ pub fn resolve_startup_geometry(
     })
 }
 
+/// Geometry to re-apply to a DETACHED popout on project switch-back (#42).
+///
+/// The switch path hides an inactive project's popouts and re-shows them on
+/// switch-back; `hide()`/`show()` lets the WM move the window — typically onto
+/// the primary monitor — so the geometry captured just before hiding must be
+/// re-applied, or a multi-monitor popout lands on the wrong screen. This
+/// validates that captured rect against the CURRENTLY connected monitors (the
+/// same monitor-fit the main window uses at startup) so a monitor unplugged
+/// while the project was inactive can't strand the popout off-screen.
+///
+/// Two things differ from [`resolve_startup_geometry`]:
+///   * An **empty** monitor list re-applies the captured rect unchanged rather
+///     than giving up — mid-session the rect is known-good (the popout was just
+///     visible there) and a transient empty read is no reason to leave it
+///     WM-misplaced.
+///   * It imposes **no minimum size**. A borderless popout has no configured
+///     `minWidth`/`minHeight` (the main window does), so growing it to 800×600
+///     would silently resize a deliberately small popout.
+///
+/// Returns `None` only when the captured rect is degenerate, or when it no
+/// longer meaningfully overlaps any connected monitor (the display it lived on
+/// was unplugged) — in which case the caller leaves the WM's placement rather
+/// than flinging the window off-screen.
+pub fn resolve_detached_geometry(
+    saved: WindowState,
+    monitors: &[MonitorRect],
+) -> Option<WindowState> {
+    if saved.w == 0 || saved.h == 0 {
+        return None;
+    }
+    if monitors.is_empty() {
+        return Some(saved);
+    }
+
+    let best = monitors
+        .iter()
+        .max_by_key(|m| overlap_area(&saved, m))
+        .copied()?;
+
+    let (ow, oh) = overlap_dims(&saved, &best);
+    if ow < MIN_VISIBLE_W || oh < MIN_VISIBLE_H {
+        return None;
+    }
+
+    // Fit to the monitor WITHOUT a minimum-size floor: never larger than the
+    // screen, then slid back inside if it hangs off an edge.
+    let w = saved.w.min(best.w);
+    let h = saved.h.min(best.h);
+    let x = saved.x.clamp(best.x, best.x + best.w as i32 - w as i32);
+    let y = saved.y.clamp(best.y, best.y + best.h as i32 - h as i32);
+    Some(WindowState { x, y, w, h, maximized: false })
+}
+
 /// Width/height of the intersection between a saved window rect and a monitor, in
 /// physical px. `i64` because `x + w` on two `i32`s can overflow in principle and
 /// these feed a comparison, not a coordinate.
@@ -228,5 +281,60 @@ mod tests {
         let got = resolve_startup_geometry(Some(saved), &two_monitors()).unwrap();
         assert_eq!(got.x, 1920, "slid right, flush with DP-7's left edge");
         assert_eq!(got.w, 1400, "not resized — it fits DP-7 fine");
+    }
+
+    // ── resolve_detached_geometry (#42 switch-back popout restore) ──────────
+
+    #[test]
+    fn detached_popout_on_the_secondary_monitor_is_restored_there() {
+        // THE bug: switching back must land the popout on DP-7, not DP-6.
+        let saved = ws(2200, 150, 900, 640);
+        assert_eq!(
+            resolve_detached_geometry(saved, &two_monitors()),
+            Some(saved),
+        );
+    }
+
+    #[test]
+    fn detached_empty_monitor_list_reapplies_the_captured_rect() {
+        // Mid-session the captured rect was valid moments ago; a transient empty
+        // monitor read is no reason to leave the popout WM-misplaced. Unlike the
+        // startup resolver, which returns None here.
+        let saved = ws(2200, 150, 900, 640);
+        assert_eq!(resolve_detached_geometry(saved, &[]), Some(saved));
+    }
+
+    #[test]
+    fn detached_small_popout_is_not_grown_to_a_minimum() {
+        // A borderless popout has no configured minimum size — a deliberately
+        // small one must come back the same size, not grown to 800×600 the way
+        // the main-window resolver would.
+        let saved = ws(300, 300, 420, 320);
+        let got = resolve_detached_geometry(saved, &only_primary()).unwrap();
+        assert_eq!((got.w, got.h), (420, 320), "kept its small size");
+        assert_eq!((got.x, got.y), (300, 300));
+    }
+
+    #[test]
+    fn detached_popout_on_an_unplugged_monitor_falls_back_to_wm_placement() {
+        // The display it lived on is gone → None, so the caller leaves the WM's
+        // placement rather than flinging it off-screen.
+        let saved = ws(2200, 150, 900, 640);
+        assert_eq!(resolve_detached_geometry(saved, &only_primary()), None);
+    }
+
+    #[test]
+    fn detached_popout_hanging_off_an_edge_is_slid_back_inside() {
+        let saved = ws(1600, 800, 900, 640);
+        let got = resolve_detached_geometry(saved, &only_primary()).unwrap();
+        assert_eq!(got.w, 900, "size fine, only origin was off");
+        assert_eq!(got.x, 1020, "flush against the monitor's right edge");
+        assert_eq!(got.y, 440, "flush against its bottom edge");
+    }
+
+    #[test]
+    fn detached_degenerate_rect_is_ignored() {
+        assert_eq!(resolve_detached_geometry(ws(0, 0, 0, 640), &only_primary()), None);
+        assert_eq!(resolve_detached_geometry(ws(0, 0, 900, 0), &only_primary()), None);
     }
 }

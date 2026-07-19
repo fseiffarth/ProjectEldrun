@@ -32,10 +32,10 @@ function resetStore() {
 }
 
 describe("agent-mode capability gate", () => {
-  it("is Claude-only: it alone has both an absolute mode flag and a working resume", () => {
+  it("admits Claude and Gemini — both have an absolute mode flag and a working resume", () => {
     expect(supportsAgentMode("claude")).toBe(true);
-    // Gemini has --approval-mode but no resume — a respawn would destroy the chat.
-    expect(supportsAgentMode("gemini")).toBe(false);
+    // Gemini has --approval-mode (absolute) AND resumes (continue-last).
+    expect(supportsAgentMode("gemini")).toBe(true);
     // Codex resumes, but has no plan mode (only a read-only sandbox).
     expect(supportsAgentMode("codex")).toBe(false);
     expect(supportsAgentMode("vibe")).toBe(false);
@@ -52,6 +52,20 @@ describe("withAgentMode", () => {
   it("maps plan → plan and auto → acceptEdits (NOT bypassPermissions)", () => {
     expect(withAgentMode("claude", [], "plan")).toEqual(["--permission-mode", "plan"]);
     expect(withAgentMode("claude", [], "auto")).toEqual(["--permission-mode", "acceptEdits"]);
+  });
+
+  it("maps Gemini plan → plan and auto → auto_edit (NOT yolo)", () => {
+    expect(withAgentMode("gemini", [], "plan")).toEqual(["--approval-mode", "plan"]);
+    expect(withAgentMode("gemini", [], "auto")).toEqual(["--approval-mode", "auto_edit"]);
+    // "auto" must never reach the auto-approve-ALL level.
+    expect(withAgentMode("gemini", [], "auto")).not.toContain("yolo");
+  });
+
+  it("is idempotent for Gemini too, and re-applies onto its continue-last resume args", () => {
+    let args = withAgentMode("gemini", ["--resume", "latest"], "plan");
+    args = withAgentMode("gemini", args, "auto");
+    expect(args).toEqual(["--resume", "latest", "--approval-mode", "auto_edit"]);
+    expect(args.filter((a) => a === "--approval-mode")).toHaveLength(1);
   });
 
   it("is idempotent: repeated toggling never stacks the flag", () => {

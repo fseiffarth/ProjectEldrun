@@ -314,6 +314,24 @@ pub async fn dir_size_breakdown(project_dir: String, rel_path: String) -> Result
 }
 
 fn dir_size_breakdown_local(project_dir: &str, rel_path: &str) -> Result<DirSizeBreakdown, String> {
+    // A remote project's `project_dir` is a local per-project STATE dir (holds
+    // project.json/sync.json/git_peer.json, never the tree itself) — canonicalizing
+    // it and walking `<state_dir>/<rel_path>` as done below always found nothing and
+    // silently reported 0 bytes for every folder, the "shows 0B" bug. Fixed the same
+    // way `dir_size` already handles it: `du` the real path on the host over SSH.
+    // Deliberately does NOT fall back to a local mirror even when one exists — a
+    // "Remote" view must reflect the host's actual tree (e.g. a folder covered
+    // entirely by `.gitignore`, which lockstep never pushes, must show as absent
+    // there, not silently stand in with the mirror's copy). That substitution
+    // already belongs to the frontend's own Local/Remote toggle: selecting "Local"
+    // routes `list_dir`/`dir_size`/`dir_size_breakdown` straight at the mirror path
+    // before this command is ever called with a remote `project_dir`.
+    if let Some(target) = crate::services::remote::remote_target_for_dir(project_dir) {
+        let remote_dir = join_remote_dir(&target.spec.remote_path, rel_path);
+        let total = crate::services::ssh_exec::remote_dir_size(&target.spec, &remote_dir)?;
+        return Ok(DirSizeBreakdown { total, ignored: 0 });
+    }
+
     let root = canonical(project_dir)?;
     let target = if rel_path.is_empty() {
         root.clone()
@@ -322,7 +340,7 @@ fn dir_size_breakdown_local(project_dir: &str, rel_path: &str) -> Result<DirSize
     };
     enforce_confinement(&root, &target)?;
 
-    if crate::services::remote::remote_target_for_dir(project_dir).is_some() || !root.join(".git").exists() {
+    if !root.join(".git").exists() {
         return Ok(DirSizeBreakdown { total: walk_dir_size(&target), ignored: 0 });
     }
 

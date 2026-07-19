@@ -605,7 +605,7 @@ export function TableView({
                   background: "var(--bg-input, var(--bg-panel))",
                   color: "var(--text-primary)",
                   border: "1px solid var(--border-color)",
-                  borderRadius: 4,
+                  borderRadius: "var(--radius-sm)",
                   fontFamily: "var(--font-mono, monospace)",
                 }}
               />
@@ -633,7 +633,7 @@ export function TableView({
               background: "var(--bg-input, var(--bg-panel))",
               color: "var(--text-primary)",
               border: "1px solid var(--border-color)",
-              borderRadius: 4,
+              borderRadius: "var(--radius-sm)",
             }}
           />
         )}
@@ -658,7 +658,7 @@ export function TableView({
               all: "unset",
               cursor: "pointer",
               padding: "2px 8px",
-              borderRadius: 4,
+              borderRadius: "var(--radius-sm)",
               fontSize: 12,
               color: "var(--text-primary)",
               border: "1px solid var(--border-color)",

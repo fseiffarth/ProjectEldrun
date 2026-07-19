@@ -15,9 +15,17 @@
  *     `--session-id <uuid>` → `--resume <live-id>` once a session log exists, so
  *     a Claude tab killed and respawned comes back on the same conversation.
  *
- * Claude qualifies. Deliberately absent:
- *   - Gemini — has `--approval-mode`, but no wired resume (see RESUMABLE_AGENTS,
- *     TODO 39d). A toggle would silently destroy the conversation.
+ * Claude and Gemini qualify:
+ *   - Claude — `--permission-mode` (absolute) + resume-by-id.
+ *   - Gemini — `--approval-mode` (default/auto_edit/yolo/plan — absolute) +
+ *     resume (see RESUMABLE_AGENTS). Its resume is *continue-last*, not
+ *     resume-by-id, which carries one accepted caveat: a respawn brings back the
+ *     project's most-recent Gemini session, so with two Gemini tabs in one
+ *     project a mid-session mode toggle can reattach to the sibling's
+ *     conversation — the very same ambiguity their ordinary restore already has,
+ *     not a new failure the toggle introduces.
+ *
+ * Deliberately absent:
  *   - Codex — resumes fine, but has no plan mode: only a read-only sandbox that
  *     approximates one, and it is unverified whether `--sandbox`/`--full-auto`
  *     are accepted on `codex resume`.
@@ -28,19 +36,23 @@ export type AgentMode = "plan" | "auto";
 /**
  * `cmd` → the launch args that put the agent in a mode.
  *
- * "auto" is `acceptEdits`, NOT `bypassPermissions`: it is the mode Claude's own
- * shift+tab reaches ("⏵⏵ auto-accept edits on"), where file edits apply without
- * asking but bash/network still prompt. Mapping "auto" to bypassPermissions
- * would hide a strictly more dangerous authority level behind a familiar word.
+ * "auto" is edits-only auto-approval, NOT full auto-approve: for Claude that is
+ * `acceptEdits` (the mode its own shift+tab reaches — "⏵⏵ auto-accept edits on",
+ * where file edits apply without asking but bash/network still prompt); for
+ * Gemini it is `auto_edit` (auto-approve edit tools), NOT `yolo` (auto-approve
+ * ALL tools). Mapping "auto" to the bypass-everything level would hide a strictly
+ * more dangerous authority behind a familiar word.
  */
 export const AGENT_MODE_ARGS: Record<string, (mode: AgentMode) => string[]> = {
   claude: (mode) => ["--permission-mode", mode === "plan" ? "plan" : "acceptEdits"],
+  gemini: (mode) => ["--approval-mode", mode === "plan" ? "plan" : "auto_edit"],
 };
 
 /** The flags whose `<flag> <value>` pair a mode owns, per agent. Stripped before
  *  a new mode is applied so repeated toggling can never stack them. */
 const MODE_FLAGS: Record<string, string[]> = {
   claude: ["--permission-mode"],
+  gemini: ["--approval-mode"],
 };
 
 /** Whether this agent can be mode-switched at all (see the note above). */

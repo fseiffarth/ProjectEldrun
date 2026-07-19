@@ -9,9 +9,10 @@ import {
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import {
-  AGENT_ITEMS,
+  EMPTY_CUSTOM_AGENTS,
   SHELL_ITEMS,
   TAB_ACCENT,
+  agentMenuEntries,
   buildStaticTabSpec,
   isFileTabKind,
   type StaticMenuItem,
@@ -35,6 +36,9 @@ interface Props {
    *  when the user picks an entry. The caller creates the tab. */
   onPick: (spec: Omit<TabEntry, "key">) => void;
   onClose: () => void;
+  /** Open the manage-custom-agents dialog. Hosted by the parent (this menu
+   *  unmounts on `onClose`, so it can't own the dialog itself). */
+  onManageAgents: () => void;
 }
 
 /**
@@ -44,18 +48,25 @@ interface Props {
  * `onPick`; the caller decides how to create the tab (the main window calls
  * `addTab`; the popout streams an "add" edit to the main window).
  */
-export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onClose }: Props) {
+export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onClose, onManageAgents }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState(anchor);
 
   const localModel = useSettingsStore(
     (s) => s.settings?.ollama_roles?.tabs ?? s.settings?.ollama_model,
   );
+  const customAgents = useSettingsStore(
+    (s) => s.settings?.custom_agents ?? EMPTY_CUSTOM_AGENTS,
+  );
 
   // Installed agent CLIs (id == cmd); only offer ones actually present. `null`
   // until the probe resolves, so the Agents list renders nothing (not a flash of
   // all agents) until we know.
   const [installedAgents, setInstalledAgents] = useState<Set<string> | null>(null);
+  // Installed *custom*-agent commands, probed separately (they aren't in the
+  // built-in registry). `null` until resolved — custom agents render enabled
+  // until a probe proves one missing.
+  const [installedCustom, setInstalledCustom] = useState<Set<string> | null>(null);
   const [localDrivers, setLocalDrivers] = useState<
     { id: string; label: string; available: boolean }[]
   >([]);
@@ -67,6 +78,17 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
       .then(setLocalDrivers)
       .catch(() => {});
   }, []);
+  // Re-probe custom commands whenever the set changes (adding one in the dialog).
+  useEffect(() => {
+    const cmds = customAgents.map((a) => a.cmd);
+    if (cmds.length === 0) {
+      setInstalledCustom(new Set());
+      return;
+    }
+    invoke<string[]>("probe_binaries", { bins: cmds })
+      .then((found) => setInstalledCustom(new Set(found)))
+      .catch(() => setInstalledCustom(new Set()));
+  }, [customAgents]);
 
   // Outside-click / Escape closes the menu.
   useEffect(() => {
@@ -170,14 +192,16 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
         groups={[
           {
             label: "Agents",
-            entries: AGENT_ITEMS.filter((item) => installedAgents?.has(item.cmd)).map(
-              (item) => ({
-                key: item.cmd,
-                label: item.label,
-                color: TAB_ACCENT[item.kind],
-                onPick: () => pickStatic(item),
-              }),
-            ),
+            entries: agentMenuEntries({
+              installedBuiltins: installedAgents,
+              installedCmds: installedCustom,
+              customAgents,
+              pick: pickStatic,
+              onAddCustom: () => {
+                onClose();
+                onManageAgents();
+              },
+            }),
           },
           {
             label: localModel ? `Local Model · ${localModel}` : "Local Model",

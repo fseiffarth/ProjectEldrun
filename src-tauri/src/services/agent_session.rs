@@ -631,6 +631,9 @@ mod tests {
             local_only: false,
             sandbox: false,
             project_id: None,
+            remote_host_id: None,
+            tmux_session: None,
+            tmux_attach: None,
         }
     }
 

@@ -1399,6 +1399,9 @@ mod tests {
             local_only: false,
             sandbox: false,
             project_id: None,
+            remote_host_id: None,
+            tmux_session: None,
+            tmux_attach: None,
         };
         wrap_pty_options_docker(&mut opts).unwrap();
         assert_eq!(opts.cmd, "claude");

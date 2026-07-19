@@ -43,6 +43,7 @@ const VIEWER_LABEL: Record<InternalViewer, string> = {
   notebook: "Notebook viewer",
   diff: "Diff viewer",
   syncdiff: "Sync diff",
+  syncmerge: "Sync merge",
   odt: "Document viewer",
   media: "Media player",
   html: "HTML viewer",

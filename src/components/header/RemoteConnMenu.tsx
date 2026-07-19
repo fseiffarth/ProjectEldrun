@@ -4,18 +4,15 @@ import { useConnectDialogStore } from "../../stores/connectDialog";
 import type { ProjectEntry } from "../../types";
 
 /**
- * A remote project's live SSH status, rendered on the project's pill.
+ * A remote project's live SSH status, rendered on the project's pill — one lamp for
+ * the primary host plus one per extra "worker" machine (multi-host remote,
+ * `docs/multi_host_remote_plan.md`).
  *
  * OpenVPN is machine-wide, not project-scoped, so its lamp lives only in the
- * header's `VpnIndicator` — this menu tracks SSH alone. Clicking opens the
- * centered Connect modal (`RemoteConnectDialog`) for this project — the single
- * place to (re)connect or disconnect its pooled SSH/SFTP connection.
- *
- * One-click logout deliberately does NOT live here — it sits beside the
- * Remote/Local switch in the right file panel (`RightPanel`), keeping the pill
- * to status + open-modal only (the modal keeps a Disconnect for the
- * connecting/error states, where an in-flight attempt still has to be
- * abandoned).
+ * header's `VpnIndicator` — this menu tracks SSH alone. Clicking a lamp opens the
+ * centered Connect modal (`RemoteConnectDialog`) for that host. The "Remote
+ * machines" manager is reached from the file viewer's remote (SSH) tag right-click
+ * menu (`ProjectFilesView`), not here — the pill stays status + open-modal only.
  *
  * Remote projects start DISCONNECTED — they are not auto-connected on launch or
  * switch (that raced the tab restore and hung). Local tabs still restore and
@@ -24,9 +21,11 @@ import type { ProjectEntry } from "../../types";
  */
 export function RemoteConnMenu({ project, compact }: { project: ProjectEntry; compact?: boolean }) {
   const status = useRemoteStatusStore((s) => s.byProject[project.id]);
+  const byHost = useRemoteStatusStore((s) => s.byHost[project.id]);
   const openDialog = useConnectDialogStore((s) => s.open);
   const ssh = status?.ssh ?? "off";
   const host = project.remote?.host ?? "";
+  const workers = project.compute_hosts ?? [];
 
   return (
     <div
@@ -40,11 +39,30 @@ export function RemoteConnMenu({ project, compact }: { project: ProjectEntry; co
         title={`SSH · ${host} — ${ssh}`}
         onClick={(e) => {
           e.stopPropagation();
-          openDialog(project.id);
+          openDialog(project.id, "primary");
         }}
       >
         <ConnLamp status={ssh} label={`SSH · ${host}`} />
       </button>
+      {workers.map((w) => {
+        const wLabel = w.label || w.host || w.id;
+        const wSsh = byHost?.[w.id]?.ssh ?? "off";
+        return (
+          <button
+            key={w.id}
+            type="button"
+            className="header-conn-lamps no-drag"
+            aria-label={`Worker ${wLabel} — click to manage`}
+            title={`${wLabel} — ${wSsh}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              openDialog(project.id, w.id);
+            }}
+          >
+            <ConnLamp status={wSsh} label={wLabel} />
+          </button>
+        );
+      })}
     </div>
   );
 }

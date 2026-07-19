@@ -3,6 +3,7 @@ import {
   findDef,
   findPythonDefs,
   isExecutableLine,
+  isPythonMainScript,
   isPythonPath,
   modulePathCandidates,
   parsePythonImports,
@@ -21,6 +22,29 @@ describe("isPythonPath", () => {
     expect(isPythonPath("/a/b/MAIN.PY")).toBe(true);
     expect(isPythonPath("/a/b/notes.md")).toBe(false);
     expect(isPythonPath("/a/pyproject.toml")).toBe(false);
+  });
+});
+
+describe("isPythonMainScript", () => {
+  it("accepts the standard module-level guard, either quote style", () => {
+    expect(isPythonMainScript('if __name__ == "__main__":\n    main()\n')).toBe(true);
+    expect(isPythonMainScript("if __name__ == '__main__':\n    main()\n")).toBe(true);
+  });
+
+  it("tolerates extra spacing around the guard", () => {
+    expect(isPythonMainScript('if __name__   ==   "__main__" :\n    main()\n')).toBe(true);
+  });
+
+  it("rejects a plain module with no entrypoint guard", () => {
+    expect(isPythonMainScript("def helper():\n    return 1\n")).toBe(false);
+  });
+
+  it("rejects an indented guard (inside a function/class, not module level)", () => {
+    expect(isPythonMainScript('def f():\n    if __name__ == "__main__":\n        pass\n')).toBe(false);
+  });
+
+  it("rejects mismatched quotes", () => {
+    expect(isPythonMainScript("if __name__ == \"__main__':\n    main()\n")).toBe(false);
   });
 });
 

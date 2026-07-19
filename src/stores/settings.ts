@@ -49,6 +49,10 @@ interface SettingsStore {
   setTheme: (theme: Theme) => Promise<void>;
   updateSettings: (patch: Partial<Settings>) => Promise<void>;
   saveWindowState: (ws: WindowState) => Promise<void>;
+  /** Set (or clear, with "") the Python Run/Debug args for one file, keyed by its
+   *  absolute path. Kept per file so every viewer of the same script shares them;
+   *  persisted in settings.json so they survive a restart (see Settings.python_run_args). */
+  setPythonRunArgs: (path: string, args: string) => Promise<void>;
 }
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
@@ -103,5 +107,20 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     } catch (err) {
       console.warn("failed to save window state", err);
     }
+  },
+
+  setPythonRunArgs: async (path, args) => {
+    const current = get().settings ?? {};
+    const map = { ...(current.python_run_args ?? {}) };
+    const trimmed = args.trim();
+    // "" clears the entry outright rather than storing an empty string, so the map
+    // holds only files that actually have args (and reading back a cleared file
+    // yields undefined → "", identical to never having set it).
+    if (trimmed) map[path] = trimmed;
+    else delete map[path];
+    // No-op if nothing changed, so re-committing identical args (e.g. the popover's
+    // outside-click after a run) doesn't rewrite the whole settings file.
+    if ((current.python_run_args ?? {})[path] === map[path]) return;
+    await get().updateSettings({ python_run_args: map });
   },
 }));

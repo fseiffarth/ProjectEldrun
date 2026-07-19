@@ -379,10 +379,11 @@ async function autoConnectRemote(projectId: string): Promise<void> {
   }
 }
 
-/** Tear down a remote project's pooled connection on deactivation. Best-effort. */
+/** Tear down a remote project's pooled connection on deactivation — the primary
+ *  AND every worker host (multi-host remote). Best-effort. */
 function dropRemotePool(projectId: string): void {
   useRemoteStatusStore.getState().clear(projectId);
-  void invoke("remote_disconnect", { projectId }).catch(() => {});
+  void invoke("remote_disconnect_all_hosts", { projectId }).catch(() => {});
 }
 
 /**
@@ -505,6 +506,9 @@ interface ProjectsStore {
    *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
    *  re-checks that, so a stale opt-in degrades to staying disconnected. */
   setProjectAutoConnect: (id: string, enabled: boolean) => Promise<void>;
+  /** Opt a remote project in/out of persistent (tmux) sessions (TODO #85). Default
+   *  ON, so this only records an opt-out; re-enabling clears the field. */
+  setProjectPersistSessions: (id: string, enabled: boolean) => Promise<void>;
   /** Attach (or clear) an OpenVPN config on a remote project's SSH spec, so a
    *  project created without a VPN can gain one later when reconnecting from a
    *  VPN-gated network. `config = null`/"" clears it. Mirrors the stored path
@@ -989,6 +993,27 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projects: state.projects.map((project) =>
         project.id === id && project.remote
           ? { ...project, remote: { ...project.remote, auto_connect: result || undefined } }
+          : project,
+      ),
+    }));
+  },
+
+  setProjectPersistSessions: async (id, enabled) => {
+    // TODO #85: persistent (tmux) sessions are DEFAULT ON for a remote project, so
+    // the backend stores only an explicit opt-out (`persist_sessions: false`) and
+    // clears the field when re-enabled. Mirror the resulting state into local state
+    // as `persist_sessions: enabled ? undefined : false` so the pill reflects it.
+    const result = await invoke<boolean>("set_project_persist_sessions", {
+      projectId: id,
+      enabled,
+    });
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === id && project.remote
+          ? {
+              ...project,
+              remote: { ...project.remote, persist_sessions: result ? undefined : false },
+            }
           : project,
       ),
     }));

@@ -776,6 +776,22 @@ export function SettingsDialog({
               }
             />
 
+            {!IS_WINDOWS && (
+              <ToggleCard
+                label="Persistent local sessions (tmux)"
+                checked={settings?.persist_local_sessions ?? true}
+                onChange={(e) => void updateSettings({ persist_local_sessions: e.target.checked })}
+                help={
+                  <>
+                    When on (default), a local project's shell and Python/script tabs run
+                    inside a tmux session on this machine, so a long run keeps going if
+                    Eldrun crashes and the tab reattaches on restart. Closing a tab still
+                    ends its session. Requires <code>tmux</code>; agent tabs are unaffected.
+                  </>
+                }
+              />
+            )}
+
             <div className="settings-row">
               <label>Energy saver</label>
               <Dropdown

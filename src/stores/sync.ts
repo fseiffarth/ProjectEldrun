@@ -103,6 +103,15 @@ interface SyncStore {
     relPath: string,
     force?: boolean,
   ) => Promise<{ pushed: number; conflicts: string[] }>;
+  /** Resolve a batch of diverged files by taking one side for every path at once:
+   *  "host" pulls each (host overwrites the mirror), "local" force-pushes each
+   *  (the mirror overwrites the host). Refreshes the status once at the end rather
+   *  than per file. Backs the orange view's "…for all" buttons. */
+  resolveAll: (
+    projectId: string,
+    relPaths: string[],
+    side: "host" | "local",
+  ) => Promise<void>;
   /** Toggle the selected flag for paths without transferring (deselect = stop). */
   markSelected: (
     projectId: string,
@@ -199,6 +208,25 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     });
     await get().refreshStatus(projectId);
     return result;
+  },
+
+  resolveAll: async (projectId, relPaths, side) => {
+    // Iterate per path (each side has its own single-file command) but refresh
+    // the cached status only once at the end — refreshing per file would re-stat
+    // the whole selection N times. A single failed file is logged and skipped so
+    // one bad path doesn't abort the rest of the batch.
+    for (const rel of relPaths) {
+      try {
+        if (side === "host") {
+          await invoke("sync_pull", { projectId, relPath: rel });
+        } else {
+          await invoke("sync_push", { projectId, relPath: rel, force: true });
+        }
+      } catch (e) {
+        console.error(`resolveAll: ${side} failed for ${rel}`, e);
+      }
+    }
+    await get().refreshStatus(projectId);
   },
 
   markSelected: async (projectId, relPaths, selected, isDir) => {

@@ -30,8 +30,26 @@ use openssh_sftp_client::Sftp;
 use tokio::process::Child;
 use tokio::sync::Mutex;
 
-use crate::schema::project::RemoteSpec;
+use crate::schema::project::{ComputeHost, RemoteSpec};
 use crate::schema::projects::{ProjectEntry, ProjectsList};
+
+/// The implicit host id of a project's **primary** remote (`Project.remote`).
+/// Extra "worker" hosts (`docs/multi_host_remote_plan.md`) carry their own stable
+/// ids; the primary's is this constant so file/git/sync callers — which *are* the
+/// primary subsystem — resolve it without threading an id.
+pub const PRIMARY_HOST: &str = "primary";
+
+/// Pool key for a `(project, host)` pair. Two hosts of one project → two entries,
+/// so a worker connects/disconnects independently of the primary. The `\u{1}`
+/// separator can't appear in a project or host id.
+fn conn_key(project_id: &str, host_id: &str) -> String {
+    format!("{project_id}\u{1}{host_id}")
+}
+
+/// The project id embedded in a [`conn_key`] (everything before the separator).
+fn project_of_key(key: &str) -> &str {
+    key.split('\u{1}').next().unwrap_or(key)
+}
 
 /// A resolved remote project: its [`RemoteSpec`] plus the owning project id.
 /// The explicit replacement for inferring remoteness from a mountpoint path.
@@ -114,6 +132,46 @@ fn spec_from_entry(entry: &ProjectEntry) -> Option<RemoteSpec> {
     serde_json::from_value(value.clone()).ok()
 }
 
+/// The extra "worker" hosts mirrored into a `projects.json` entry's flattened
+/// `extra["compute_hosts"]`, or `[]` when absent/unparseable. Pure, so the
+/// resolver is testable without the real state dir.
+fn compute_hosts_from_entry(entry: &ProjectEntry) -> Vec<ComputeHost> {
+    entry
+        .extra
+        .get("compute_hosts")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// The extra worker hosts declared for `project_id`, read from the always-local
+/// `projects.json` (mirrored there by `commands::projects`). `[]` for a local or
+/// single-host project.
+pub fn compute_hosts_for(project_id: &str) -> Vec<ComputeHost> {
+    read_projects_list()
+        .and_then(|list| {
+            list.iter()
+                .find(|e| e.id == project_id)
+                .map(compute_hosts_from_entry)
+        })
+        .unwrap_or_default()
+}
+
+/// Resolve `(project_id, host_id)` to a [`RemoteTarget`]: the primary spec
+/// ([`remote_target_for`]) for [`PRIMARY_HOST`], else the matching worker's spec.
+/// `None` for a local project, an unknown host id, or a read failure.
+pub fn remote_target_for_host(project_id: &str, host_id: &str) -> Option<RemoteTarget> {
+    if host_id == PRIMARY_HOST {
+        return remote_target_for(project_id);
+    }
+    compute_hosts_for(project_id)
+        .into_iter()
+        .find(|h| h.id == host_id)
+        .map(|h| RemoteTarget {
+            spec: h.spec,
+            project_id: project_id.to_string(),
+        })
+}
+
 // ── Pooled connection ──────────────────────────────────────────────────────
 
 /// One pooled remote connection: the live SFTP session (shared via `Arc` so file
@@ -126,7 +184,9 @@ struct PooledRemote {
     child: Child,
 }
 
-/// Tauri-managed pool of live remote connections, keyed by project id.
+/// Tauri-managed pool of live remote connections, keyed by [`conn_key`]
+/// (`project\u{1}host`) so a project's primary and its extra worker hosts each
+/// hold an independent connection.
 #[derive(Default)]
 pub struct RemotePool {
     conns: HashMap<String, PooledRemote>,
@@ -156,15 +216,31 @@ pub async fn connect(
     project_id: &str,
     password: Option<&str>,
 ) -> Result<(), String> {
-    let Some(target) = remote_target_for(project_id) else {
-        return Ok(()); // local project — nothing to pool
+    connect_host(pool, project_id, PRIMARY_HOST, password).await
+}
+
+/// Open (idempotently) the pooled connection for a specific `(project, host)`.
+/// [`PRIMARY_HOST`] is the project's primary remote (and mints the local mirror);
+/// any other id is an extra worker host resolved from `compute_hosts`. A no-op for
+/// a local project, an unknown host id, or one already connected. See [`connect`]
+/// for the password/auth contract.
+pub async fn connect_host(
+    pool: &RemotePoolState,
+    project_id: &str,
+    host_id: &str,
+    password: Option<&str>,
+) -> Result<(), String> {
+    let Some(target) = remote_target_for_host(project_id, host_id) else {
+        return Ok(()); // local project or unknown host — nothing to pool
     };
-    // SSH-sync Phase 1: ensure the local mirror twin exists for any connected
+    // SSH-sync Phase 1: ensure the local mirror twin exists for a connected
     // remote project (covers projects created before the mirror was minted at
-    // create time), so the "Local" source view and local-on-remote tabs have a
-    // real, empty directory to read/cwd into rather than erroring.
-    let _ = std::fs::create_dir_all(crate::services::remote_sync::mirror_dir(project_id));
-    if pool.lock().await.conns.contains_key(project_id) {
+    // create time). Only the PRIMARY owns the mirror — a worker never does.
+    if host_id == PRIMARY_HOST {
+        let _ = std::fs::create_dir_all(crate::services::remote_sync::mirror_dir(project_id));
+    }
+    let key = conn_key(project_id, host_id);
+    if pool.lock().await.conns.contains_key(&key) {
         return Ok(()); // already connected
     }
 
@@ -195,13 +271,13 @@ pub async fn connect(
     let mut guard = pool.lock().await;
     // A concurrent connect may have won the race while we were handshaking. If so
     // keep theirs and tear ours down rather than leaking a second ssh child.
-    if guard.conns.contains_key(project_id) {
+    if guard.conns.contains_key(&key) {
         drop(guard);
         teardown_session(sftp, child).await;
         return Ok(());
     }
     guard.conns.insert(
-        project_id.to_string(),
+        key,
         PooledRemote {
             sftp: Arc::new(sftp),
             child,
@@ -210,10 +286,33 @@ pub async fn connect(
     Ok(())
 }
 
-/// Close and remove the pooled connection for `project_id` (no-op if none).
+/// Close and remove the pooled PRIMARY connection for `project_id` (no-op if none).
 pub async fn disconnect(pool: &RemotePoolState, project_id: &str) {
-    let removed = pool.lock().await.conns.remove(project_id);
+    disconnect_host(pool, project_id, PRIMARY_HOST).await;
+}
+
+/// Close and remove the pooled connection for a specific `(project, host)`.
+pub async fn disconnect_host(pool: &RemotePoolState, project_id: &str, host_id: &str) {
+    let removed = pool.lock().await.conns.remove(&conn_key(project_id, host_id));
     if let Some(conn) = removed {
+        teardown_pooled(conn).await;
+    }
+}
+
+/// Close and remove **every** pooled connection for `project_id` — its primary and
+/// all worker hosts. Used on project deactivation so no host outlives the view.
+pub async fn disconnect_project(pool: &RemotePoolState, project_id: &str) {
+    let removed: Vec<PooledRemote> = {
+        let mut guard = pool.lock().await;
+        let keys: Vec<String> = guard
+            .conns
+            .keys()
+            .filter(|k| project_of_key(k) == project_id)
+            .cloned()
+            .collect();
+        keys.into_iter().filter_map(|k| guard.conns.remove(&k)).collect()
+    };
+    for conn in removed {
         teardown_pooled(conn).await;
     }
 }
@@ -237,8 +336,18 @@ pub async fn disconnect_all(pool: &RemotePoolState) {
 /// "disconnected" state rather than hanging.
 #[allow(dead_code)] // consumed by Phase 2/3 (remote file browse + I/O)
 pub async fn pooled_sftp(pool: &RemotePoolState, project_id: &str) -> Option<Arc<Sftp>> {
+    pooled_sftp_host(pool, project_id, PRIMARY_HOST).await
+}
+
+/// Clone the pooled SFTP session for a specific `(project, host)`, if connected.
+pub async fn pooled_sftp_host(
+    pool: &RemotePoolState,
+    project_id: &str,
+    host_id: &str,
+) -> Option<Arc<Sftp>> {
+    let key = conn_key(project_id, host_id);
     let mut guard = pool.lock().await;
-    let conn = guard.conns.get_mut(project_id)?;
+    let conn = guard.conns.get_mut(&key)?;
     // If the ssh child has already exited — the keepalive killed it after a
     // network drop (ServerAliveInterval/CountMax), or the remote closed the
     // connection — the pooled session is dead and every SFTP op on it would fail
@@ -246,45 +355,88 @@ pub async fn pooled_sftp(pool: &RemotePoolState, project_id: &str) -> Option<Arc
     // one-shot session (which can ride a still-live master, or surface a clean
     // disconnected state) instead of looping on the dead entry forever.
     if matches!(conn.child.try_wait(), Ok(Some(_))) {
-        guard.conns.remove(project_id);
+        guard.conns.remove(&key);
         return None;
     }
     Some(Arc::clone(&conn.sftp))
 }
 
-/// The ids of every project whose pooled SSH connection is currently live.
-/// Evicts any whose ssh child has already exited (same corpse-reaping as
-/// [`is_connected`]) so the background traffic sampler never samples a dead
-/// ControlMaster. Order is unspecified.
+/// The **distinct project ids** with any pooled SSH connection currently live
+/// (primary or any worker host). Evicts any whose ssh child has already exited
+/// (same corpse-reaping as [`is_connected`]) so the background traffic sampler
+/// never samples a dead ControlMaster. Order is unspecified. Traffic accounting
+/// sums a project's hosts under one project bucket (plan §3.4), so this collapses
+/// the composite keys back to project ids.
 pub async fn connected_ids(pool: &RemotePoolState) -> Vec<String> {
     let mut guard = pool.lock().await;
     let dead: Vec<String> = guard
         .conns
         .iter_mut()
-        .filter_map(|(id, conn)| match conn.child.try_wait() {
-            Ok(Some(_)) => Some(id.clone()),
+        .filter_map(|(key, conn)| match conn.child.try_wait() {
+            Ok(Some(_)) => Some(key.clone()),
             _ => None,
         })
         .collect();
-    for id in &dead {
-        guard.conns.remove(id);
+    for key in &dead {
+        guard.conns.remove(key);
     }
-    guard.conns.keys().cloned().collect()
+    let mut ids: Vec<String> = guard
+        .conns
+        .keys()
+        .map(|k| project_of_key(k).to_string())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
-/// Whether a project's pooled SSH connection is live. Like [`pooled_sftp`], this
-/// evicts a child that has already exited so read-only observers never launch a
-/// fallback connection merely to discover that the project is offline.
+/// Whether a project's PRIMARY pooled SSH connection is live.
 pub async fn is_connected(pool: &RemotePoolState, project_id: &str) -> bool {
+    is_connected_host(pool, project_id, PRIMARY_HOST).await
+}
+
+/// Whether a specific `(project, host)` pooled SSH connection is live. Like
+/// [`pooled_sftp`], this evicts a child that has already exited so read-only
+/// observers never launch a fallback connection merely to discover it is offline.
+pub async fn is_connected_host(pool: &RemotePoolState, project_id: &str, host_id: &str) -> bool {
+    let key = conn_key(project_id, host_id);
     let mut guard = pool.lock().await;
-    let Some(conn) = guard.conns.get_mut(project_id) else {
+    let Some(conn) = guard.conns.get_mut(&key) else {
         return false;
     };
     if matches!(conn.child.try_wait(), Ok(Some(_))) {
-        guard.conns.remove(project_id);
+        guard.conns.remove(&key);
         return false;
     }
     true
+}
+
+/// The `(project_id, host_id)` pairs whose pooled SSH connection is currently live.
+/// The per-host granular form of [`connected_ids`], for the frontend to reconcile
+/// each lamp against reality. Evicts dead children like the others.
+pub async fn connected_targets(pool: &RemotePoolState) -> Vec<(String, String)> {
+    let mut guard = pool.lock().await;
+    let dead: Vec<String> = guard
+        .conns
+        .iter_mut()
+        .filter_map(|(key, conn)| match conn.child.try_wait() {
+            Ok(Some(_)) => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+    for key in &dead {
+        guard.conns.remove(key);
+    }
+    guard
+        .conns
+        .keys()
+        .filter_map(|k| {
+            let mut parts = k.split('\u{1}');
+            let pid = parts.next()?;
+            let hid = parts.next().unwrap_or(PRIMARY_HOST);
+            Some((pid.to_string(), hid.to_string()))
+        })
+        .collect()
 }
 
 /// Tear down a pooled connection: gracefully close the SFTP session (sends
@@ -326,6 +478,7 @@ mod tests {
             openvpn: None,
             auto_connect: None,
             key_auth: None,
+            persist_sessions: None,
             extra: HashMap::new(),
         }
     }
@@ -373,6 +526,69 @@ mod tests {
         assert_eq!(entry_directory(&e), Some("/some/dir"));
         let e2 = entry("p2", None, None);
         assert_eq!(entry_directory(&e2), None);
+    }
+
+    fn compute_host(id: &str, host: &str) -> ComputeHost {
+        ComputeHost {
+            id: id.to_string(),
+            label: None,
+            sync_code: true,
+            pull_outputs: false,
+            shared_fs: false,
+            spec: RemoteSpec {
+                user: Some("alice".to_string()),
+                host: host.to_string(),
+                port: None,
+                remote_path: "/srv/worker".to_string(),
+                openvpn: None,
+                auto_connect: None,
+                key_auth: None,
+                persist_sessions: None,
+                extra: HashMap::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn conn_key_is_unique_per_host() {
+        let a = conn_key("p1", PRIMARY_HOST);
+        let b = conn_key("p1", "h1");
+        let c = conn_key("p2", "h1");
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+        // The project id is recoverable from the composite key.
+        assert_eq!(project_of_key(&a), "p1");
+        assert_eq!(project_of_key(&b), "p1");
+        assert_eq!(project_of_key(&c), "p2");
+    }
+
+    #[test]
+    fn compute_hosts_from_entry_parses_mirror() {
+        let mut e = entry("p1", Some("/state/p1"), Some(spec()));
+        e.extra.insert(
+            "compute_hosts".to_string(),
+            serde_json::to_value(vec![compute_host("h1", "gpu-2.example")]).unwrap(),
+        );
+        let hosts = compute_hosts_from_entry(&e);
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].id, "h1");
+        assert_eq!(hosts[0].spec.host, "gpu-2.example");
+        assert!(hosts[0].sync_code); // serde default_true survives a round trip
+    }
+
+    #[test]
+    fn compute_hosts_from_entry_empty_when_absent() {
+        let e = entry("p1", Some("/state/p1"), Some(spec()));
+        assert!(compute_hosts_from_entry(&e).is_empty());
+    }
+
+    #[test]
+    fn display_label_falls_back_to_host() {
+        let mut h = compute_host("h1", "gpu-2.example");
+        assert_eq!(h.display_label(), "gpu-2.example");
+        h.label = Some("trainer".to_string());
+        assert_eq!(h.display_label(), "trainer");
     }
 
     #[test]

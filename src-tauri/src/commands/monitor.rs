@@ -7,7 +7,7 @@
 //! shared sampler state to race between panes. Sampling itself lives in
 //! [`crate::sysstat`]; this is just the Tauri surface.
 
-use crate::gpustat::{self, GpuSample};
+use crate::gpustat::{self, GpuProc, GpuSample};
 use crate::sysstat::{self, SystemSnapshot};
 
 /// One whole-system sample. `supported` is `false` on non-Linux targets, where
@@ -52,4 +52,14 @@ pub async fn system_monitor_snapshot(
 #[tauri::command]
 pub async fn gpu_memory_snapshot() -> Result<Vec<GpuSample>, String> {
     Ok(gpustat::snapshot())
+}
+
+/// Per-process GPU memory for the monitor pane's process breakdown. A separate,
+/// heavier read (a `/proc` `fdinfo` walk for amdgpu, a `nvidia-smi` spawn for
+/// compute clients) than the whole-device snapshot, so only the pane calls it —
+/// the always-visible header readout never pays for it. Local-only and best-effort:
+/// an empty list means "no per-process data available", not "no GPU processes".
+#[tauri::command]
+pub async fn gpu_process_snapshot() -> Result<Vec<GpuProc>, String> {
+    Ok(gpustat::process_snapshot())
 }

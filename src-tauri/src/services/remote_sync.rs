@@ -254,6 +254,28 @@ pub fn divergence(
     (host_diverged, local_diverged)
 }
 
+/// Whether an amber verdict is worth confirming against the actual bytes rather
+/// than trusting the size+mtime heuristic. Size+mtime only *approximates*
+/// divergence: a re-save with identical bytes (or a bare `touch`) moves the mtime
+/// while the content is unchanged, so the file paints amber with nothing to
+/// resolve. We read to disprove that only when it could pay off: both sides exist
+/// (a present mtime), they are the SAME size (different sizes can't be identical —
+/// don't read), and they sit at or below `cutoff`. Large files keep the heuristic —
+/// reading them over SFTP on every status refresh is exactly its reason to exist.
+/// Pure, unit-tested; the byte read + compare itself lives in `commands::sync`.
+pub fn content_verify_worth_it(
+    host: (u64, Option<u64>),
+    local: (u64, Option<u64>),
+    cutoff: u64,
+) -> bool {
+    let (host_size, host_mtime) = host;
+    let (local_size, local_mtime) = local;
+    host_mtime.is_some()
+        && local_mtime.is_some()
+        && host_size == local_size
+        && host_size <= cutoff
+}
+
 /// Whether `rel` auto-syncs, by **nearest explicit marker wins**. A marker is an
 /// entry carrying `auto_sync` (on) or `auto_off` (excluded). We consult, closest
 /// first: the path's own entry, then each ancestor **directory** marker, ending at
@@ -997,6 +1019,24 @@ mod tests {
         );
         // Host not stat'd (cold) → host side never flagged.
         assert_eq!(divergence(&e, None, Some((10, Some(50)))), (false, false));
+    }
+
+    #[test]
+    fn content_verify_gate() {
+        let cutoff = 1024;
+        // Same size, both present, within cutoff → worth reading to disprove amber.
+        assert!(content_verify_worth_it((10, Some(100)), (10, Some(50)), cutoff));
+        // Different sizes can't be byte-identical → never read.
+        assert!(!content_verify_worth_it((10, Some(100)), (12, Some(50)), cutoff));
+        // A missing side (no mtime) is a real divergence → don't downgrade, don't read.
+        assert!(!content_verify_worth_it((10, None), (10, Some(50)), cutoff));
+        assert!(!content_verify_worth_it((10, Some(100)), (10, None), cutoff));
+        // Above the cutoff → large files keep the pure metadata heuristic.
+        assert!(!content_verify_worth_it((2048, Some(100)), (2048, Some(50)), cutoff));
+        // Exactly at the cutoff is still verified (boundary is inclusive).
+        assert!(content_verify_worth_it((1024, Some(100)), (1024, Some(50)), cutoff));
+        // Two empty files (size 0, both present) → trivially worth it (and equal).
+        assert!(content_verify_worth_it((0, Some(100)), (0, Some(50)), cutoff));
     }
 
     #[test]

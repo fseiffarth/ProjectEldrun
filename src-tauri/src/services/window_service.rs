@@ -9,6 +9,24 @@ use crate::schema::session::WindowSession;
 use crate::services::terminal_service::eldrun_sessions_dir;
 use crate::storage;
 
+/// Physical monitor rects as reported by a live window (#42), for validating a
+/// detached popout's restore geometry on switch-back. Mirrors the mapping
+/// `lib.rs` uses at startup for the main window.
+pub fn monitor_rects(
+    win: &tauri::WebviewWindow,
+) -> Vec<crate::services::window_state::MonitorRect> {
+    win.available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| crate::services::window_state::MonitorRect {
+            x: m.position().x,
+            y: m.position().y,
+            w: m.size().width,
+            h: m.size().height,
+        })
+        .collect()
+}
+
 pub fn hide_windows(backend: &dyn WorkspaceBackend, window_ids: &[u64]) {
     for &wid in window_ids {
         if let Err(e) = backend.hide_window(wid) {

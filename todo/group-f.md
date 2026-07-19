@@ -58,7 +58,7 @@
       live-id store), `terminal/mod.rs` (`resolve_claude_session`), `lib.rs`
       (install at startup). Hook script: `~/.local/share/eldrun/hooks/`; live ids:
       `~/.local/share/eldrun/live_sessions/`.*
-    - [~] **39d — Generalize to other agents.** Codex done; Gemini/Vibe open.
+    - [x] **39d — Generalize to other agents.** Codex, Gemini and Mistral/vibe done.
       - [x] **Codex.** ✅ Done. Codex mints its own session id (no launch-time
         `--session-id`), but it has a Claude-style `SessionStart` hook and resumes
         by uuid (`codex resume <id>`). Eldrun sets `ELDRUN_TAB_UID` (a per-tab key)
@@ -87,12 +87,21 @@
         Remaining: **remote (ssh) Codex tabs are out of scope** — their rollouts
         live on the far host, so the binder skips them; making them work means
         running the rollout scan over `ssh_exec`.
-      - [ ] **Gemini.** `--session-id <uuid>` sets the launch id (already passed),
-        but `--resume` takes an index/`latest`, not a uuid; resume-by-uuid likely
-        needs `--session-file ~/.gemini/tmp/<project>/<uuid>`. No `SessionStart`
-        hook → would drift on `/clear` like pre-fix Claude. Needs runtime verification.
-      - [ ] **Vibe.** `--resume <id>` works but Vibe mints its own id with no
-        launch-id control and no hook mechanism found, so per-tab tracking would
-        need the rejected newest-session-file heuristic. Deferred.
+      - [x] **Gemini.** ✅ Done via **continue-last**. `--session-id <uuid>` sets
+        the launch id (already passed), but `--resume` takes an index/`latest`,
+        not a uuid — so precise resume-by-uuid isn't available. Instead Eldrun
+        restores with `gemini --resume latest`, continuing the project's most-
+        recent session, exactly like Grok/Qwen. Same caveat: two Gemini tabs in
+        one project share that one latest session. *Files: `stores/tabs.ts`
+        (`RESUMABLE_AGENTS.gemini`).* Verified against `gemini --help` (`-r,
+        --resume … "latest"`). Not wired into the plan/auto mode table because
+        continue-last can't guarantee THIS tab's session on respawn (see
+        `components/tabs/agentModes.ts`).
+      - [x] **Mistral/vibe.** ✅ Done via **continue-last**. Vibe mints its own id
+        with no launch-id control, and `--resume` with no id opens an interactive
+        picker (hangs a restore) — but `-c/--continue` "Continue from the most
+        recent saved session" is the non-interactive path, so Eldrun restores with
+        `vibe --continue`. Same shared-latest caveat. *Files: `stores/tabs.ts`
+        (`RESUMABLE_AGENTS.vibe`).* Verified against `vibe --help`.
 
 ---

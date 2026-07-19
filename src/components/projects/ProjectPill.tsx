@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Toggle } from "../common/Toggle";
+import { UntestedTag } from "../common/UntestedTag";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import {
@@ -23,6 +24,7 @@ import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./Pro
 import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
+import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
@@ -1085,6 +1087,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const [showContainerSettings, setShowContainerSettings] = useState(false);
+  const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
   const [showPythonSettings, setShowPythonSettings] = useState(false);
   // Whether this project actually contains Python files — the interpreter/venv
   // setting is only worth offering then. Probed lazily when the context menu
@@ -1142,6 +1145,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   }, [project.id, project.sandbox?.enabled, setProjectSandbox]);
 
   const setProjectAutoConnect = useProjectsStore((s) => s.setProjectAutoConnect);
+  const setProjectPersistSessions = useProjectsStore((s) => s.setProjectPersistSessions);
   // Auto-connect is only offered when the connect can complete with no prompt: a
   // key/agent-auth host (recorded by the backend on its last successful connect) or
   // a password in the keychain (looked up when the menu opens).
@@ -1338,6 +1342,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
             </button>
             {project.remote && (
               <button
+                className="untested"
                 onClick={() => {
                   setContextMenu(null);
                   void moveMirror();
@@ -1345,6 +1350,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 title="Move this project's local mirror (the connected working copy) to a new folder"
               >
                 Move project…
+                <UntestedTag />
               </button>
             )}
             <button
@@ -1356,6 +1362,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
               Edit description
             </button>
             <button
+              className="untested"
               onClick={() => {
                 setContextMenu(null);
                 setEditCategories(true);
@@ -1363,8 +1370,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
               title="Tag this project to color and group it in the cloud and the pill bar"
             >
               Categories…
+              <UntestedTag />
             </button>
             <button
+              className="untested"
               onClick={() => {
                 setContextMenu(null);
                 void repairProjectScaffold(project.id);
@@ -1372,6 +1381,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
               title="Fill in any missing scaffold file, default .gitignore pattern, or .claude/settings.json — never overwrites existing content"
             >
               Repair scaffold files
+              <UntestedTag />
             </button>
             {!project.remote && (
               <button
@@ -1392,6 +1402,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
             {project.git_type === "none" ? (
               !project.remote && (
                 <button
+                  className="untested"
                   onClick={() => {
                     setContextMenu(null);
                     void setProjectGitDisabled(project.id, false);
@@ -1399,12 +1410,14 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   title="Run git init to start version-controlling this project"
                 >
                   Enable git (git init)
+                  <UntestedTag />
                 </button>
               )
             ) : typeof project.git_type === "string" && project.git_type.startsWith("remote") ? (
               // Already published — offer in-place management, not another publish.
               <>
                 <button
+                  className="untested"
                   onClick={() => {
                     setContextMenu(null);
                     setShowVisibility(true);
@@ -1412,8 +1425,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   title="Flip the repository between public and private in place (gh/glab repo edit)"
                 >
                   {project.git_type === "remote-public" ? "Make private…" : "Make public…"}
+                  <UntestedTag />
                 </button>
                 <button
+                  className="untested"
                   onClick={() => {
                     setContextMenu(null);
                     setShowMigrate(true);
@@ -1421,8 +1436,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   title="Publish to the other provider and re-point origin; the old repo is left intact"
                 >
                   Move to {project.git_provider === "gitlab" ? "GitHub" : "GitLab"}…
+                  <UntestedTag />
                 </button>
                 <button
+                  className="untested"
                   onClick={() => {
                     setContextMenu(null);
                     setShowUnpublish(true);
@@ -1430,8 +1447,10 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   title="Remove the origin remote and go back to a local repo; the hosted repo and history are kept"
                 >
                   Unpublish (keep repo)…
+                  <UntestedTag />
                 </button>
                 <button
+                  className="untested"
                   onClick={() => {
                     setContextMenu(null);
                     setShowGitHosting(true);
@@ -1439,17 +1458,20 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                   title="Override the global git hosting (profile URL + token) for this project only"
                 >
                   Git hosting…
+                  <UntestedTag />
                 </button>
               </>
             ) : (
               // Local git repo, not yet pushed anywhere.
               <button
+                className="untested"
                 onClick={() => {
                   setContextMenu(null);
                   setShowPublish(true);
                 }}
               >
                 Publish to GitHub / GitLab…
+                <UntestedTag />
               </button>
             )}
           </div>
@@ -1507,6 +1529,40 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
                 }
               >
                 {project.remote.auto_connect ? "✓ " : ""}Auto-connect on launch
+              </button>
+            )}
+            {/* Persistent remote sessions (TODO #85): shell/script tabs run inside a
+                tmux session on the host, so a long run survives an SSH drop, a
+                laptop sleep, or Eldrun quitting. Default ON — this opts out. */}
+            {project.remote && (
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  void setProjectPersistSessions(
+                    project.id,
+                    project.remote?.persist_sessions === false,
+                  );
+                }}
+                title="Run this project's remote shell and Python/script tabs inside a tmux session on the host, so a long run keeps going through an SSH drop, a laptop sleep, or Eldrun quitting — the tab reattaches when you reconnect. Closing a tab still ends its session (with a confirm). Agent tabs are unaffected."
+              >
+                {project.remote.persist_sessions !== false ? "✓ " : ""}Persistent sessions (tmux)
+              </button>
+            )}
+            {/* Multi-host remote (docs/multi_host_remote_plan.md): manage the extra
+                "worker" machines this project runs experiments on. Remote only. */}
+            {project.remote && (
+              <button
+                className="untested"
+                onClick={() => {
+                  setContextMenu(null);
+                  openRemoteMachines(project.id);
+                }}
+                title="Add and manage extra machines this project runs on. They run the same code (kept in one-way sync) as read-only experiment workers; their outputs stay on each machine."
+              >
+                {project.compute_hosts?.length
+                  ? `Remote machines… (${project.compute_hosts.length})`
+                  : "Remote machines…"}
+                <UntestedTag />
               </button>
             )}
             <button
@@ -1633,6 +1689,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           onClose={() => setShowContainerSettings(false)}
         />
       )}
+
 
       {/* Which Python the viewer's Run/Debug buttons use (#87) */}
       {showPythonSettings && (

@@ -1096,28 +1096,119 @@ pub fn disconnect(config: &str) -> Result<(), String> {
     let Some(mut proc) = proc else {
         return Ok(());
     };
-    kill_pidfile(&proc.pidfile);
+    let _ = kill_pidfile(&proc.pidfile);
     let _ = proc.child.kill();
     let _ = proc.child.wait();
     let _ = std::fs::remove_file(&proc.pidfile);
     Ok(())
 }
 
-/// `pkexec kill` the pid recorded in `pidfile` (the root OpenVPN process).
+/// Interactive-tunnel teardown that reports whether the tunnel is down afterwards.
+/// Mirrors [`disconnect_interactive`] but keeps the registry claim when the elevated
+/// kill is refused, so a cancelled polkit prompt leaves the tunnel visible and
+/// killable rather than forgotten-but-alive.
 #[cfg(target_os = "linux")]
-fn kill_pidfile(pidfile: &Path) {
+fn disconnect_interactive_checked(config: &str) -> bool {
+    match interactive_state(config) {
+        Interactive::Alive(pid) => {
+            if !kill_root_pid_checked(pid) {
+                return false;
+            }
+            if let Some(pidfile) = interactive_registry().lock().unwrap().remove(config) {
+                let _ = std::fs::remove_file(&pidfile);
+            }
+            true
+        }
+        // Never authenticated — nothing root-owned to kill; drop the stale claim.
+        Interactive::Pending => {
+            interactive_registry().lock().unwrap().remove(config);
+            true
+        }
+        Interactive::None => true,
+    }
+}
+
+/// `pkexec kill -TERM` a root-owned pid, reporting whether it was delivered (vs. a
+/// refused polkit prompt). The checked twin of [`kill_root_pid`].
+#[cfg(target_os = "linux")]
+fn kill_root_pid_checked(pid: i32) -> bool {
+    Command::new("pkexec")
+        .arg("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Like [`disconnect`], but reports whether the tunnel actually went down.
+///
+/// The app-close path needs this. `disconnect` is best-effort — it drops the
+/// registry entry and ignores whether the elevated `pkexec kill` succeeded — which
+/// is right for exit-time cleanup but wrong for a quit that must be *cancelled* when
+/// the user dismisses the polkit prompt: the tunnel (and the machine-wide routing it
+/// installed) is still up, and silently forgetting it would strand that routing with
+/// nothing left to undo it. On failure the registry entry is preserved so the tunnel
+/// stays visible (`active_configs`) and killable.
+#[cfg(target_os = "linux")]
+pub fn disconnect_checked(config: &str) -> Result<(), String> {
+    // Interactive tunnel (terminal-started) first — its own elevated kill.
+    if !disconnect_interactive_checked(config) {
+        return Err("openvpn teardown was not authorized".into());
+    }
+    // Headless tunnel: peek the pidfile without removing, so a refused kill leaves
+    // the entry in place.
+    let pidfile = registry()
+        .lock()
+        .unwrap()
+        .get(config)
+        .map(|p| p.pidfile.clone());
+    let Some(pidfile) = pidfile else {
+        return Ok(());
+    };
+    if !kill_pidfile(&pidfile) {
+        return Err("openvpn teardown was not authorized".into());
+    }
+    // TERM delivered — now reap our child and forget it.
+    if let Some(mut proc) = registry().lock().unwrap().remove(config) {
+        let _ = proc.child.kill();
+        let _ = proc.child.wait();
+        let _ = std::fs::remove_file(&proc.pidfile);
+    }
+    Ok(())
+}
+
+/// Non-Linux: no polkit prompt to cancel (Windows brings tunnels up through the
+/// unelevated interactive service; macOS raises an `osascript` admin prompt whose
+/// cancellation is a smaller, separate gap), so the app-close path falls back to the
+/// best-effort teardown.
+#[cfg(not(target_os = "linux"))]
+pub fn disconnect_checked(config: &str) -> Result<(), String> {
+    disconnect(config)
+}
+
+/// `pkexec kill` the pid recorded in `pidfile` (the root OpenVPN process). Returns
+/// whether the tunnel can be considered down afterwards: `true` if the TERM was
+/// delivered (or there was no pid to kill), `false` if the elevated kill was refused
+/// — a cancelled polkit prompt, which leaves the tunnel (and the machine's routing)
+/// up. Best-effort callers ignore the bool; the app-close path (`disconnect_checked`)
+/// reads it to decide whether the quit can proceed.
+#[cfg(target_os = "linux")]
+fn kill_pidfile(pidfile: &Path) -> bool {
     let Ok(contents) = std::fs::read_to_string(pidfile) else {
-        return;
+        return true;
     };
     let pid = contents.trim();
     if pid.is_empty() || !pid.chars().all(|c| c.is_ascii_digit()) {
-        return;
+        return true;
     }
-    let _ = Command::new("pkexec")
+    Command::new("pkexec")
         .arg("kill")
         .arg("-TERM")
         .arg(pid)
-        .status();
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Tear down every live tunnel. Used at app exit; errors are swallowed so
@@ -1140,6 +1231,34 @@ pub fn disconnect_all() {
     for k in keys {
         let _ = disconnect(&k);
     }
+}
+
+/// The **checked twin of [`disconnect_all`]** used on the app-close path. It tears
+/// down the *same* set of registered tunnels — every key `disconnect_all` would touch,
+/// unfiltered by liveness — so that after it succeeds there is nothing left for the
+/// exit-time `disconnect_all` to kill (and therefore no polkit prompt raised after the
+/// window is already gone). But it stops at the first refused teardown and reports it,
+/// so a dismissed prompt aborts the quit instead of quitting with the machine's routing
+/// still rewritten. Enumerating the registries directly — rather than the frontend
+/// filtering `active_configs` — is the point: `active_configs` hides a tunnel whose
+/// liveness probe reads false, which is exactly a tunnel `disconnect_all` would still
+/// prompt to kill.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub fn disconnect_all_checked() -> Result<(), String> {
+    let keys: Vec<String> = {
+        let reg = registry().lock().unwrap();
+        let interactive = interactive_registry().lock().unwrap();
+        #[cfg(target_os = "windows")]
+        let svc = svc_registry().lock().unwrap();
+        let keys = reg.keys().chain(interactive.keys());
+        #[cfg(target_os = "windows")]
+        let keys = keys.chain(svc.keys());
+        keys.cloned().collect()
+    };
+    for k in keys {
+        disconnect_checked(&k)?;
+    }
+    Ok(())
 }
 
 // --- Windows: interactive-service-first tunnel management --------------------
@@ -1986,6 +2105,20 @@ pub fn disconnect_all() {
     for k in keys {
         let _ = disconnect(&k);
     }
+}
+
+/// macOS twin of [`disconnect_all_checked`] (its tunnels live in [`mac_registry`]).
+#[cfg(target_os = "macos")]
+pub fn disconnect_all_checked() -> Result<(), String> {
+    let keys: Vec<String> = {
+        let reg = mac_registry().lock().unwrap();
+        let interactive = interactive_registry().lock().unwrap();
+        reg.keys().chain(interactive.keys()).cloned().collect()
+    };
+    for k in keys {
+        disconnect_checked(&k)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,8 +1,9 @@
 /**
  * Save-side tab persistence filtering. Shell/files tabs always survive a
- * restart. Resumable agent tabs (Claude or Codex with a sessionId) now survive
- * too and carry their sessionId; an agent tab without a sessionId, or a
- * not-yet-wired agent (Gemini/Vibe), is still dropped. These tests lock in
+ * restart. Resumable agent tabs (Claude, Codex, Gemini, Mistral/vibe and the
+ * other continue-last agents, each with a sessionId) now survive too and carry
+ * their sessionId; an agent tab without a sessionId, or an agent with no wired
+ * resume (Aider), is still dropped. These tests lock in
  * saveLayout's keep-filter and the shared pruneSavedTree / isRestorableKind /
  * isResumableAgentTab / isRestorableTab helpers.
  */
@@ -34,8 +35,8 @@ describe("isRestorableKind", () => {
 });
 
 describe("isResumableAgentTab / isRestorableTab", () => {
-  it("treats a Claude or Codex agent tab with a sessionId as resumable", () => {
-    for (const cmd of ["claude", "codex"]) {
+  it("treats a resumable agent tab (Claude, Codex, Gemini, vibe) with a sessionId as resumable", () => {
+    for (const cmd of ["claude", "codex", "gemini", "vibe"]) {
       const tab = { kind: "agent" as const, cmd, sessionId: "abc-123" };
       expect(isResumableAgentTab(tab)).toBe(true);
       expect(isRestorableTab(tab)).toBe(true);
@@ -43,19 +44,36 @@ describe("isResumableAgentTab / isRestorableTab", () => {
   });
 
   it("drops a resumable-agent tab without a sessionId", () => {
-    for (const cmd of ["claude", "codex"]) {
+    for (const cmd of ["claude", "codex", "gemini", "vibe"]) {
       const tab = { kind: "agent" as const, cmd };
       expect(isResumableAgentTab(tab)).toBe(false);
       expect(isRestorableTab(tab)).toBe(false);
     }
   });
 
-  it("drops a not-yet-wired agent even with a sessionId", () => {
-    for (const cmd of ["gemini", "vibe"]) {
+  it("drops an agent with no wired resume even with a sessionId", () => {
+    for (const cmd of ["aider"]) {
       const tab = { kind: "agent" as const, cmd, sessionId: "abc-123" };
       expect(isResumableAgentTab(tab)).toBe(false);
       expect(isRestorableTab(tab)).toBe(false);
     }
+  });
+
+  it("treats a custom agent with resumeArgs + a sessionId as resumable", () => {
+    const tab = {
+      kind: "agent" as const,
+      cmd: "my-agent",
+      sessionId: "abc-123",
+      resumeArgs: ["--continue"],
+    };
+    expect(isResumableAgentTab(tab)).toBe(true);
+    expect(isRestorableTab(tab)).toBe(true);
+  });
+
+  it("drops a launch-only custom agent (unknown cmd, no resumeArgs)", () => {
+    const tab = { kind: "agent" as const, cmd: "my-agent", sessionId: "abc-123" };
+    expect(isResumableAgentTab(tab)).toBe(false);
+    expect(isRestorableTab(tab)).toBe(false);
   });
 
   it("keeps shell/files tabs via kind regardless of sessionId", () => {
@@ -163,12 +181,34 @@ describe("saveLayout — persists restorable tabs (incl. resumable agents)", () 
     expect(codex?.sessionId).toBe("codex-key-1");
   });
 
-  it("drops a not-yet-wired agent even with a sessionId", async () => {
+  it("persists a continue-last agent (gemini) with its sessionId", async () => {
     const store = useTabsStore.getState();
     store.setScope("p");
     store.addTab({
       label: "gemini",
       cmd: "gemini",
+      cwd: "/p",
+      kind: "agent",
+      sessionId: "abc-123",
+    });
+    store.addTab({ label: "bash", cmd: "bash", cwd: "/p", kind: "shell" });
+
+    await useTabsStore.getState().saveLayout("/p/project.json");
+
+    const call = invokeMock.mock.calls.find((c) => c[0] === "save_tab_layout");
+    const arg = call![1] as {
+      tabs: { kind: string; cmd: string; sessionId?: string }[];
+    };
+    const gemini = arg.tabs.find((t) => t.cmd === "gemini");
+    expect(gemini?.sessionId).toBe("abc-123");
+  });
+
+  it("drops an agent with no wired resume (aider) even with a sessionId", async () => {
+    const store = useTabsStore.getState();
+    store.setScope("p");
+    store.addTab({
+      label: "aider",
+      cmd: "aider",
       cwd: "/p",
       kind: "agent",
       sessionId: "abc-123",

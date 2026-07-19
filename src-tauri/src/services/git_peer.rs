@@ -58,6 +58,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::MissedTickBehavior;
 
+use crate::schema::net_usage;
 use crate::schema::project::RemoteSpec;
 use crate::services::local_loss;
 use crate::services::remote::{remote_target_for, RemotePoolState};
@@ -409,6 +410,36 @@ pub fn changed_tracked_paths(name_status: &str) -> Vec<TrackedChange> {
             })
         })
         .collect()
+}
+
+/// The distinct tracked files a set of applied branch moves changed on `dest`,
+/// unioned across moves. Each move is `(old_tip, new_tip)`; a `None` old tip is
+/// a fresh branch create, whose *whole* tree (`ls-tree -r`) is new. This feeds
+/// the "files synced" metric (`net_usage`) so a lockstep transfer is counted
+/// like a byte-sync one — without it the metric only ever reflected byte-sync
+/// and read 0 after a lockstep seed (e.g. extend-to-remote). Tags are excluded
+/// by the caller: their file content is already counted via the branch that
+/// carries the commit. Best-effort — a git failure for one move contributes
+/// nothing rather than aborting the count.
+fn files_changed_by_moves(dest: &Peer, moves: &[(Option<String>, String)]) -> usize {
+    let mut paths: HashSet<String> = HashSet::new();
+    for (old, new) in moves {
+        let out = match old {
+            Some(old) => dest.run(&["diff", "--name-only", old, new]),
+            None => dest.run(&["ls-tree", "-r", "--name-only", new]),
+        };
+        if let Ok(o) = out {
+            if o.status.success() {
+                for line in String::from_utf8_lossy(&o.stdout).lines() {
+                    let p = line.trim();
+                    if !p.is_empty() {
+                        paths.insert(p.to_string());
+                    }
+                }
+            }
+        }
+    }
+    paths.len()
 }
 
 /// A timestamped safety-ref name for a to-be-overwritten branch (Phase 2 uses it to
@@ -1247,8 +1278,13 @@ async fn transfer_and_apply(
         .zip(flags)
         .collect();
 
+    // Every branch tip that actually moved on the dest this pass, as
+    // `(old_tip, new_tip)` — unioned into a "files synced" count at the end so a
+    // lockstep transfer registers in `net_usage` like a byte-sync one.
+    let mut applied_moves: Vec<(Option<String>, String)> = Vec::new();
     for src_ref in &source.branches {
         let dst_sha = sha_of(dest, RefKind::Head, &src_ref.name);
+        let applied_before = result.applied;
         let (fwd, back) = ancestry
             .get(src_ref.name.as_str())
             .copied()
@@ -1377,6 +1413,13 @@ async fn transfer_and_apply(
                 }
             }
         }
+        // If any arm above moved this branch's tip on the dest (`result.applied`
+        // rose), record the move so its file delta is counted below. `dst_sha`
+        // is `None` for a fresh create — its whole tree is the delta.
+        if result.applied > applied_before {
+            applied_moves.push((dst_sha.map(str::to_string), src_ref.sha.clone()));
+        }
+
         // Park (or clear) the peer's tip so a divergence can be resolved with plain git
         // in a terminal rather than only by picking a winner (#28p D8).
         let peer_ref = peer_ref_name(&src_ref.name);
@@ -1438,6 +1481,23 @@ async fn transfer_and_apply(
     // 6. Cleanup: drop the incoming namespace + bundle files on both ends.
     cleanup_incoming(&dst_peer);
     cleanup_bundles(pool, project_id, spec, &src_peer, &dst_peer, to_remote).await;
+
+    // 7. Count the tracked files these applied moves carried into the "files
+    //    synced" metric. Lockstep moves the whole tracked tree as one bundle, so
+    //    without this the metric only reflected byte-sync and read 0 after a
+    //    lockstep seed (e.g. extend-to-remote). Direction follows the transfer:
+    //    `to_remote` is an upload, a pull is a download. Runs on the dest (the
+    //    side whose refs just moved), after apply, so the diffs resolve.
+    if !applied_moves.is_empty() {
+        let files = files_changed_by_moves(&dst_peer, &applied_moves) as u64;
+        if files > 0 {
+            if to_remote {
+                net_usage::record_files(project_id, 0, files);
+            } else {
+                net_usage::record_files(project_id, files, 0);
+            }
+        }
+    }
 
     Ok(result)
 }
@@ -2940,6 +3000,7 @@ pub async fn start(
     manifest: SyncManifestState,
     auto: AutoSyncState,
     reg: &GitPeerRegistry,
+    worker_sync: crate::services::worker_sync::WorkerSyncState,
     project_id: &str,
 ) {
     let Some(target) = remote_target_for(project_id) else {
@@ -2979,6 +3040,7 @@ pub async fn start(
         pool,
         manifest,
         auto,
+        worker_sync,
         target.spec,
         project_id.to_string(),
         rx,
@@ -3018,6 +3080,7 @@ async fn poll_loop(
     pool: RemotePoolState,
     manifest: SyncManifestState,
     auto: AutoSyncState,
+    worker_sync: crate::services::worker_sync::WorkerSyncState,
     spec: RemoteSpec,
     project_id: String,
     mut rx: mpsc::UnboundedReceiver<()>,
@@ -3036,6 +3099,10 @@ async fn poll_loop(
     )
     .await;
     emit_status(&app, &project_id, &s);
+    // The primary now holds the current committed code; push it to any already-
+    // connected workers (multi-host, `docs/multi_host_remote_plan.md` §2). Cheap
+    // when they are already at HEAD (a mirror-head read, no network).
+    crate::services::worker_sync::fan_out(&app, &pool, &worker_sync, &project_id, false).await;
 
     let mut interval = tokio::time::interval(GIT_POLL_INTERVAL);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -3063,6 +3130,12 @@ async fn poll_loop(
                 )
                 .await;
                 emit_status(&app, &project_id, &s);
+                // A `.git` change on the mirror = a new commit/ref move; fan the
+                // committed code out to every connected worker (plan §2 trigger).
+                crate::services::worker_sync::fan_out(
+                    &app, &pool, &worker_sync, &project_id, false,
+                )
+                .await;
             }
         }
     }

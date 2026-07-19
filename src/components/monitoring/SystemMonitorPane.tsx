@@ -2,10 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   formatBytes,
+  formatFan,
+  formatMhz,
+  formatTempC,
+  formatWatts,
   gpuAdapterTooltip,
-  gpuBusy,
+  gpuLinkLabel,
   gpuPercent,
   gpuTotals,
+  type GpuProc,
   type GpuSample,
 } from "../../lib/gpu";
 import { useProjectsStore } from "../../stores/projects";
@@ -44,6 +49,15 @@ export interface SystemSnapshot {
   processes: ProcSample[];
   /** Every GPU whose memory the machine reports; empty when none (see `lib/gpu`). */
   gpus: GpuSample[];
+  /** Per-process GPU memory — populated only on the remote path (sampled on the
+   *  host); locally the pane fetches `gpu_process_snapshot` instead. */
+  gpu_procs?: GpuProc[];
+  /** Whole-package CPU temperature in °C, or null/undefined when no CPU hwmon
+   *  sensor is present (or on Windows/macOS, which don't read one). */
+  cpu_temp_c?: number | null;
+  /** Hottest DIMM temperature in °C, or null/undefined when the board exposes no
+   *  on-module sensor (`jc42`/`spd5118`) — most desktops don't wire one. */
+  mem_temp_c?: number | null;
 }
 
 interface Props {
@@ -193,14 +207,100 @@ function Meter({
   );
 }
 
+/** One GPU's detail card: identity, memory + utilization meters, live sensors. */
+function GpuSection({ gpu }: { gpu: GpuSample }) {
+  const { used, total } = gpuTotals([gpu]);
+  const link = gpuLinkLabel(gpu);
+  const tip = gpuAdapterTooltip(gpu);
+
+  // A fixed set of sensor slots in a fixed order, always rendered from the first
+  // frame on. A driver that momentarily (or never) answers a sensor shows `n/a`
+  // in its slot rather than dropping the chip — a disappearing chip reflows every
+  // chip to its right, which is the flicker (an idle NVIDIA card blanks
+  // `power.draw` as `[N/A]`). Keeping the slots stable trades a permanent `n/a`
+  // for a sensor a card lacks against a strip that never jumps.
+  const sensors = [
+    { label: "temp", value: formatTempC(gpu.temp_c) },
+    { label: "power", value: formatWatts(gpu.power_w, gpu.power_cap_w) },
+    { label: "core", value: formatMhz(gpu.sclk_mhz) },
+    { label: "mem", value: formatMhz(gpu.mclk_mhz) },
+    { label: "fan", value: formatFan(gpu.fan_percent) },
+  ].map((s) => ({ label: s.label, value: s.value ?? "n/a", present: s.value != null }));
+
+  return (
+    <div className="sysmon-gpu">
+      <div className="sysmon-gpu-head">
+        <span className="sysmon-gpu-name" title={tip}>
+          {gpu.name}
+        </span>
+        <span className="sysmon-gpu-meta">
+          {gpu.driver}
+          {gpu.driver_version ? ` ${gpu.driver_version}` : ""}
+          {link ? ` · ${link}` : ""}
+        </span>
+      </div>
+      <div className="sysmon-gpu-meters">
+        {/* Both memory pools summed — on an APU the dedicated carve-out alone is
+            just the framebuffer (see lib/gpu). */}
+        <Meter
+          label="VRAM"
+          pct={gpuPercent(used, total)}
+          caption={`${formatBytes(used)} / ${formatBytes(total)}`}
+          title={tip}
+        />
+        {/* `busy_percent` is null when the driver won't report it — omit the meter
+            rather than show a misleading 0%. */}
+        {gpu.busy_percent != null && <Meter label="Util" pct={gpu.busy_percent} />}
+      </div>
+      {sensors.length > 0 && (
+        <div className="sysmon-stats sysmon-gpu-sensors">
+          {sensors.map((s) => (
+            <span key={s.label}>
+              {s.label}{" "}
+              <b className={s.present ? undefined : "sysmon-sensor-na"}>{s.value}</b>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Top processes by GPU memory. Empty (renders nothing) when the driver reports
+ *  no per-process data — best-effort, so its absence is silent, not an error. */
+function GpuProcList({ procs }: { procs: GpuProc[] }) {
+  const top = procs.filter((p) => p.mem_bytes > 0).slice(0, 8);
+  if (top.length === 0) return null;
+  return (
+    <div className="sysmon-gpu-procs">
+      <div className="sysmon-gpu-procs-head">GPU memory by process</div>
+      {top.map((p) => (
+        <div className="sysmon-gpu-proc" key={p.pid}>
+          <span className="sysmon-gpu-proc-mem">{formatBytes(p.mem_bytes)}</span>
+          <span className="sysmon-gpu-proc-pid">{p.pid}</span>
+          <span className="sysmon-gpu-proc-name" title={p.name}>
+            {p.name || "?"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function SystemMonitorPane({ projectId, visible }: Props) {
   const [pair, setPair] = useState<{ snap: SystemSnapshot; prev: SystemSnapshot | null } | null>(
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  // Per-process GPU memory, local machine only (the remote /proc script doesn't
+  // sample it). Its own command, so the always-visible header never pays for it.
+  const [gpuProcs, setGpuProcs] = useState<GpuProc[]>([]);
   const [sortKey, setSortKey] = useState<SortKey>("cpu");
   const [asc, setAsc] = useState(false);
   const [filter, setFilter] = useState("");
+  // The detailed process table is collapsible so the CPU/GPU vitals can own the
+  // pane; expanded by default (the monitor's main content).
+  const [procOpen, setProcOpen] = useState(true);
   const prevRef = useRef<SystemSnapshot | null>(null);
 
   // A remote (SSH) project can sample its host — the same store reads the Disk
@@ -239,6 +339,7 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
     prevRef.current = null;
     setPair(null);
     setError(null);
+    setGpuProcs([]);
     if (!sampling) return;
     let cancelled = false;
     async function poll() {
@@ -251,6 +352,20 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
         prevRef.current = next;
         setPair({ snap: next, prev });
         setError(null);
+        // The host samples its own per-process GPU memory into the snapshot; the
+        // local machine has a dedicated command for it (kept off the shared,
+        // always-polled snapshot). Best-effort either way — an empty list means
+        // "no per-process data", not an error.
+        if (onHost) {
+          if (!cancelled) setGpuProcs(next.gpu_procs ?? []);
+        } else {
+          try {
+            const procs = await invoke<GpuProc[]>("gpu_process_snapshot");
+            if (!cancelled) setGpuProcs(procs);
+          } catch {
+            if (!cancelled) setGpuProcs([]);
+          }
+        }
       } catch (e) {
         if (!cancelled) setError(String(e));
       }
@@ -342,71 +457,142 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
       ) : !snap ? (
         <div className="sysmon-placeholder">{error ?? "Sampling…"}</div>
       ) : (
-        <>
-          <div className="sysmon-header">
-            <div className="sysmon-cores">
-              {coreUsages.length > 0 ? (
-                coreUsages.map((pct, i) => <Meter key={i} label={`${i}`} pct={pct} />)
-              ) : (
-                <Meter label="CPU" pct={aggregateUsage} />
-              )}
-            </div>
-            <div className="sysmon-gauges">
-              <Meter
-                label="Mem"
-                pct={memPercent(snap.mem_total_kib - snap.mem_available_kib, snap.mem_total_kib)}
-                caption={`${formatKib(snap.mem_total_kib - snap.mem_available_kib)} / ${formatKib(
-                  snap.mem_total_kib,
-                )}`}
-              />
-              <Meter
-                label="Swp"
-                pct={
-                  snap.swap_total_kib > 0
-                    ? memPercent(snap.swap_total_kib - snap.swap_free_kib, snap.swap_total_kib)
-                    : 0
-                }
-                caption={
-                  snap.swap_total_kib > 0
-                    ? `${formatKib(snap.swap_total_kib - snap.swap_free_kib)} / ${formatKib(
-                        snap.swap_total_kib,
-                      )}`
-                    : "none"
-                }
-              />
-              {/* One meter per adapter, and both its pools summed — on an APU the
-                  dedicated carve-out alone is just the framebuffer (see lib/gpu). */}
-              {(snap.gpus ?? []).map((gpu, i) => {
-                const { used, total } = gpuTotals([gpu]);
-                return (
-                  <Meter
-                    key={`${gpu.name}-${i}`}
-                    label="GPU"
-                    pct={gpuPercent(used, total)}
-                    caption={`${formatBytes(used)} / ${formatBytes(total)}`}
-                    title={gpuAdapterTooltip(gpu)}
-                  />
-                );
-              })}
-              <div className="sysmon-stats">
-                {gpuBusy(snap.gpus ?? []) != null && (
+        // One scroll region for the whole body (a single scrollbar): the vitals and
+        // the process table scroll together, the table's sticky thead pinning to this
+        // scroller.
+        <div className="sysmon-scroll">
+          {/* Hardware vitals as two columns: CPU over Memory on the left, the GPU
+              cards on the right (when the machine has one) — separated by a divider —
+              so the GPU's VRAM + Util meters and sensor strip sit beside the CPU. */}
+          <div className="sysmon-vitals">
+            <div className="sysmon-vitals-left">
+              <div className="sysmon-cpu-group">
+                <div className="sysmon-group-title">
+                  CPU
+                  <span className="sysmon-group-sub">{snap.num_cores} cores</span>
+                </div>
+                <div className="sysmon-cores">
+                  {coreUsages.length > 0 ? (
+                    coreUsages.map((pct, i) => <Meter key={i} label={`${i}`} pct={pct} />)
+                  ) : (
+                    <Meter label="all" pct={aggregateUsage} />
+                  )}
+                </div>
+                {/* System-load stats belong with the CPU: load average, task count,
+                    uptime, and CPU package temperature (when a hwmon sensor exposes
+                    one — omitted rather than shown as a fake zero). */}
+                <div className="sysmon-stats">
                   <span>
-                    gpu <b>{Math.round(gpuBusy(snap.gpus)!)}%</b>
+                    load <b>{snap.load_avg.map((n) => n.toFixed(2)).join(" ")}</b>
                   </span>
-                )}
-                <span>
-                  load <b>{snap.load_avg.map((n) => n.toFixed(2)).join(" ")}</b>
-                </span>
-                <span>
-                  tasks <b>{snap.processes.length}</b>
-                </span>
-                <span>
-                  up <b>{formatUptime(snap.uptime_secs)}</b>
-                </span>
+                  <span>
+                    tasks <b>{snap.processes.length}</b>
+                  </span>
+                  <span>
+                    up <b>{formatUptime(snap.uptime_secs)}</b>
+                  </span>
+                  {snap.cpu_temp_c != null && (
+                    <span>
+                      cpu temp <b>{formatTempC(snap.cpu_temp_c)}</b>
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="sysmon-mem-group">
+                <div className="sysmon-group-title">Memory</div>
+                <Meter
+                  label="Mem"
+                  pct={memPercent(snap.mem_total_kib - snap.mem_available_kib, snap.mem_total_kib)}
+                  caption={`${formatKib(snap.mem_total_kib - snap.mem_available_kib)} / ${formatKib(
+                    snap.mem_total_kib,
+                  )}`}
+                />
+                <Meter
+                  label="Swp"
+                  pct={
+                    snap.swap_total_kib > 0
+                      ? memPercent(snap.swap_total_kib - snap.swap_free_kib, snap.swap_total_kib)
+                      : 0
+                  }
+                  caption={
+                    snap.swap_total_kib > 0
+                      ? `${formatKib(snap.swap_total_kib - snap.swap_free_kib)} / ${formatKib(
+                          snap.swap_total_kib,
+                        )}`
+                      : "none"
+                  }
+                />
+                <div className="sysmon-stats">
+                  <span>
+                    avail <b>{formatKib(snap.mem_available_kib)}</b>
+                  </span>
+                  <span>
+                    used{" "}
+                    <b>
+                      {memPercent(
+                        snap.mem_total_kib - snap.mem_available_kib,
+                        snap.mem_total_kib,
+                      ).toFixed(0)}
+                      %
+                    </b>
+                  </span>
+                  {snap.swap_total_kib > 0 && (
+                    <span>
+                      swap free <b>{formatKib(snap.swap_free_kib)}</b>
+                    </span>
+                  )}
+                  {/* Hottest DIMM temperature, when the board wires an on-module
+                      sensor (jc42/spd5118); omitted otherwise — most desktops have none. */}
+                  {snap.mem_temp_c != null && (
+                    <span>
+                      mem temp <b>{formatTempC(snap.mem_temp_c)}</b>
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
+
+            {/* The GPU detail column: one card per adapter — VRAM + utilization
+                meters and its live sensors — then (local only) the processes using
+                GPU memory, listed once since the sources don't attribute them per
+                card. Rendered only when the machine reports a GPU. */}
+            {(snap.gpus ?? []).length > 0 && (
+              <div className="sysmon-vitals-right">
+                <div className="sysmon-group-title">
+                  GPU
+                  <span className="sysmon-group-sub">
+                    {(snap.gpus ?? []).length}{" "}
+                    {(snap.gpus ?? []).length === 1 ? "adapter" : "adapters"}
+                  </span>
+                </div>
+                {(snap.gpus ?? []).map((gpu, i) => (
+                  <GpuSection key={`${gpu.name}-${i}`} gpu={gpu} />
+                ))}
+                <GpuProcList procs={gpuProcs} />
+              </div>
+            )}
           </div>
 
+          {/* The Processes group: its own titled header, collapsible via the caret
+              so the vitals above can own the pane when the table isn't needed. */}
+          <div className="sysmon-proc-head">
+            <button
+              type="button"
+              className="sysmon-proc-toggle"
+              onClick={() => setProcOpen((v) => !v)}
+              aria-expanded={procOpen}
+              title={procOpen ? "Collapse process list" : "Expand process list"}
+            >
+              <span className="sysmon-proc-caret">{procOpen ? "▾" : "▸"}</span>
+              <span className="sysmon-group-title">Processes</span>
+            </button>
+            <span className="sysmon-count">
+              {rows.length} {rows.length === 1 ? "process" : "processes"}
+            </span>
+          </div>
+
+          {procOpen && (
+            <>
           <div className="sysmon-toolbar">
             <input
               className="sysmon-filter"
@@ -415,9 +601,6 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
               onChange={(e) => setFilter(e.target.value)}
               spellCheck={false}
             />
-            <span className="sysmon-count">
-              {rows.length} {rows.length === 1 ? "process" : "processes"}
-            </span>
           </div>
 
           <div className="sysmon-table-wrap">
@@ -466,7 +649,9 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
               </tbody>
             </table>
           </div>
-        </>
+            </>
+          )}
+        </div>
       )}
     </div>
   );
@@ -524,26 +709,73 @@ const SYSMON_CSS = `
   color: var(--accent-contrast, #fff);
   opacity: 0.8;
 }
-.sysmon-header {
+/* The single scroll region: the vitals and the process table scroll together under
+   ONE scrollbar. The table's sticky thead pins to this scroller. */
+.sysmon-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+/* The vitals region: a left column (CPU over Memory) and a right column (GPU),
+   sitting above the process table. */
+.sysmon-vitals {
   display: flex;
   gap: 18px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border-color);
   flex-wrap: wrap;
+  align-items: flex-start;
+}
+.sysmon-vitals-left {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1 1 340px;
+  min-width: 240px;
+}
+/* The GPU column, divided from the CPU/Memory column. The border reads as a
+   horizontal rule between them when the pane is narrow enough to wrap the GPU
+   below, and as a leading edge beside them when they sit side by side. */
+.sysmon-vitals-right {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 300px;
+  min-width: 260px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 10px;
+}
+/* CPU, Memory, and GPU each read as a titled block so the domains are never
+   mistaken for one undifferentiated wall of meters. */
+.sysmon-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.sysmon-group-sub {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-muted);
+}
+/* CPU + Memory stack vertically inside the left column, so neither carries a
+   horizontal flex basis — they take the column's full width. */
+.sysmon-cpu-group,
+.sysmon-mem-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 .sysmon-cores {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   gap: 2px 12px;
-  flex: 1 1 320px;
-  min-width: 220px;
-}
-.sysmon-gauges {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 220px;
-  flex: 1 1 220px;
 }
 .sysmon-meter {
   display: flex;
@@ -585,12 +817,115 @@ const SYSMON_CSS = `
   color: var(--text-primary);
   font-weight: 600;
 }
+/* One card per adapter, stacked full-width down the right column. */
+.sysmon-gpu {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius, 4px);
+  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+}
+.sysmon-gpu-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.sysmon-gpu-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sysmon-gpu-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.sysmon-gpu-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sysmon-gpu-sensors {
+  margin-top: 0;
+  gap: 12px;
+}
+.sysmon-sensor-na {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+.sysmon-gpu-procs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
+}
+.sysmon-gpu-procs-head {
+  color: var(--text-secondary);
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.sysmon-gpu-proc {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.sysmon-gpu-proc-mem {
+  min-width: 62px;
+  text-align: right;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.sysmon-gpu-proc-pid {
+  min-width: 52px;
+  text-align: right;
+  color: var(--text-muted);
+}
+.sysmon-gpu-proc-name {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The Processes group header: caret toggle + title on the left, count on the right. */
+.sysmon-proc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+}
+.sysmon-proc-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+}
+.sysmon-proc-caret {
+  color: var(--text-muted);
+  font-size: 10px;
+  width: 12px;
+  text-align: center;
+}
+.sysmon-proc-toggle:hover .sysmon-group-title,
+.sysmon-proc-toggle:hover .sysmon-proc-caret {
+  color: var(--text-primary);
+}
 .sysmon-toolbar {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border-color);
+  padding: 0 12px 6px;
+  flex: 0 0 auto;
 }
 .sysmon-filter {
   flex: 1;
@@ -611,8 +946,8 @@ const SYSMON_CSS = `
   font-variant-numeric: tabular-nums;
 }
 .sysmon-table-wrap {
-  flex: 1;
-  overflow: auto;
+  /* Natural height — the whole body scrolls in the shared .sysmon-scroll region,
+     and the table's sticky thead pins to that scroller. */
 }
 .sysmon-table {
   width: 100%;

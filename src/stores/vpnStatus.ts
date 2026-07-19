@@ -211,3 +211,26 @@ export function disconnectVpnTunnel(config: string): void {
   useVpnStatusStore.getState().releaseAll(config);
   void invoke("openvpn_disconnect", { config }).catch(() => {});
 }
+
+/**
+ * Tear down every live tunnel on the **app-close path, before the window (and the
+ * popouts) go away** — awaited, so the UI stays on screen until it is done. Returns
+ * `true` when every tunnel is down and the quit may proceed, `false` when the user
+ * dismissed the teardown prompt: a tunnel (and the machine-wide routing it installed)
+ * is still up, so the caller must **abort the quit** and tell the user to close it
+ * first, rather than quit with the OS routing left rewritten.
+ *
+ * The backend also disconnects all tunnels in its `RunEvent::Exit` handler, but that
+ * fires only *after* the webview window has been destroyed, so the elevated
+ * `pkexec kill` raised its polkit password prompt against a screen where Eldrun had
+ * already vanished — password *after* close, the wrong order. `openvpn_disconnect_all_on_quit`
+ * tears down the **same registered set** that exit-time handler would (not the liveness-
+ * filtered `openvpn_active` subset, which could skip a tunnel that then prompts at exit),
+ * surfaces a refused prompt as an error, and keeps the tunnel registered — so this runs
+ * to completion, prompt and all, while Eldrun is still visible.
+ */
+export async function disconnectAllTunnelsOnQuit(): Promise<boolean> {
+  return invoke("openvpn_disconnect_all_on_quit")
+    .then(() => true)
+    .catch(() => false);
+}

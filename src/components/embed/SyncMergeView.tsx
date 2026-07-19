@@ -1,0 +1,196 @@
+import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { CompareView } from "./CompareView";
+import { useProjectsStore } from "../../stores/projects";
+import { useSyncStore } from "../../stores/sync";
+import { useTabsStore } from "../../stores/tabs";
+import { resolveProjectDirectory, resolveLocalMirror } from "../../types";
+import { relFromAbs } from "../../lib/viewers/fileUtils";
+
+/** Join a remote directory and a project-relative path with a single `/`
+ *  (POSIX — the host is always Unix here), tolerating a trailing slash on the
+ *  root and a leading one on the rel. */
+function joinRemote(root: string, rel: string): string {
+  return `${root.replace(/\/+$/, "")}/${rel.replace(/^\/+/, "")}`;
+}
+
+/**
+ * Three-way merge for a diverged (amber) file of a remote project — the PyCharm-
+ * style resolve view opened from the orange list. The left column is the local
+ * mirror copy, the right column is the current host copy, and the editable
+ * middle is the merged result with per-block take-left/right. "Resolve" writes
+ * the merged text to the mirror and force-pushes it to the host, so both sides
+ * converge and the file clears amber → green.
+ *
+ * `path` is the mirror-side absolute path (`mirrorRoot/rel`), exactly as the
+ * orange list builds it; the host path is derived from the project's
+ * `remote_path` and the same rel.
+ */
+export function SyncMergeView({
+  path,
+  projectId,
+  tabKey,
+}: {
+  path: string;
+  projectId: string | null;
+  tabKey?: string;
+}) {
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+
+  // Resolve the mirror root the same way FileViewerPane does, so `rel` keys the
+  // sync backend exactly like the orange list's own pull/push calls.
+  const { rel, hostPath } = useMemo(() => {
+    const projectDir = resolveProjectDirectory(project);
+    const mirrorRoot = resolveLocalMirror(project) ?? (projectDir ? `${projectDir}/mirror` : null);
+    const r = mirrorRoot ? relFromAbs(mirrorRoot, path) : null;
+    const remotePath = project?.remote?.remote_path;
+    return {
+      rel: r,
+      hostPath: r && remotePath ? joinRemote(remotePath, r) : null,
+    };
+  }, [project, path]);
+
+  const [localText, setLocalText] = useState<string | null>(null);
+  const [hostText, setHostText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [applying, setApplying] = useState(false);
+  // Set when the on-open byte-for-byte test proved the two sides identical and
+  // self-resolved the divergence (re-recorded the base, cleared amber → green).
+  // The merge UI has nothing to merge in that case — we say so instead.
+  const [autoResolved, setAutoResolved] = useState(false);
+
+  // On open, run a byte-for-byte test on the backend (where the bytes live): an
+  // amber verdict is size+mtime-based, so a re-save with the same content or a
+  // bare `touch` flags a file whose bytes never diverged. `sync_resolve_if_identical`
+  // reads both sides, and if they match it re-records the base (no transfer) and
+  // returns true — the file clears amber → green with no user action. Only when it
+  // returns false (a genuine divergence) do we fall through to the three-way merge.
+  useEffect(() => {
+    if (!projectId || !rel) return;
+    let cancelled = false;
+    invoke<boolean>("sync_resolve_if_identical", { projectId, relPath: rel })
+      .then((resolved) => {
+        if (cancelled || !resolved) return;
+        setAutoResolved(true);
+        void useSyncStore.getState().refreshStatus(projectId);
+      })
+      .catch(() => {
+        // Best-effort: a cold pool / read error just leaves the merge viewer to
+        // handle the divergence the ordinary way.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, rel]);
+
+  // Load both sides: the mirror over the local fs, the host over SFTP (both via
+  // `read_file_text`, which routes by whether the path is under the mirror).
+  useEffect(() => {
+    if (!hostPath) {
+      setError("This file is not part of a remote project's mirror.");
+      return;
+    }
+    let cancelled = false;
+    setError(null);
+    setLocalText(null);
+    setHostText(null);
+    Promise.all([
+      invoke<string>("read_file_text", { path, projectId }).catch(() => ""),
+      invoke<string>("read_file_text", { path: hostPath, projectId }),
+    ])
+      .then(([local, host]) => {
+        if (cancelled) return;
+        setLocalText(local);
+        setHostText(host);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, hostPath, projectId]);
+
+  const closeTab = () => {
+    if (tabKey) useTabsStore.getState().removeTab(tabKey);
+  };
+
+  const apply = (merged: string) => {
+    if (!projectId || !rel || applying) return;
+    setApplying(true);
+    setError(null);
+    // Write the merged result to the mirror, then force-push it to the host so
+    // both sides converge (the file clears amber). `push` refreshes sync status.
+    (async () => {
+      await invoke("write_file_text", { path, content: merged, projectId });
+      await useSyncStore.getState().push(projectId, rel, true);
+    })()
+      .then(() => closeTab())
+      .catch((e) => {
+        setError(String(e));
+        setApplying(false);
+      });
+  };
+
+  const loaded = localText != null && hostText != null;
+  // Divergence is judged on size+mtime vs the recorded base, never content, so an
+  // amber file can hold byte-identical sides (re-saved same content, touched, or a
+  // stale base). The authoritative signal is `autoResolved` — the backend's
+  // byte-for-byte test, which already cleared the amber marker. `identical` (a text
+  // compare) is the fallback for display before that test returns or if the pool is
+  // cold; either way, say so explicitly, else the empty diff reads as a broken viewer.
+  const identical = autoResolved || (loaded && localText === hostText);
+
+  if (error != null && !loaded) {
+    return (
+      <div style={{ position: "absolute", inset: 0 }}>
+        <div className="file-viewer-error" style={{ padding: "1rem" }}>{error}</div>
+      </div>
+    );
+  }
+  if (!loaded) {
+    return (
+      <div style={{ position: "absolute", inset: 0 }}>
+        <div className="file-viewer-loading" style={{ padding: "1rem" }}>Loading both sides…</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column" }}>
+      {error != null && (
+        <div className="file-viewer-error" style={{ padding: "4px 8px", flex: "0 0 auto" }}>{error}</div>
+      )}
+      {identical && (
+        <div
+          className="file-viewer-loading"
+          style={{
+            flex: "0 0 auto",
+            padding: "6px 10px",
+            fontSize: "11px",
+            borderBottom: "1px solid var(--border-color)",
+            background: "var(--bg-elevated, rgba(255,255,255,0.04))",
+          }}
+        >
+          The mirror and host bytes are <strong>identical</strong> — this file was
+          flagged diverged only because its size/modified-time drifted from the
+          recorded sync base, not its content.{" "}
+          {autoResolved
+            ? "The divergence has been resolved automatically (the base was re-recorded and the amber marker cleared)."
+            : "“Resolve” just re-records the base and clears the amber marker."}
+        </div>
+      )}
+      <div style={{ flex: "1 1 auto", minHeight: 0, position: "relative" }}>
+        <CompareView
+          path={path}
+          left={{ text: localText, title: "Local (mirror)" }}
+          rightText={hostText}
+          rightTitle="Remote (host)"
+          applyLabel={applying ? "Resolving…" : "Resolve"}
+          onApply={apply}
+          onClose={closeTab}
+        />
+      </div>
+    </div>
+  );
+}
