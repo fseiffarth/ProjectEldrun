@@ -1,6 +1,10 @@
 import { useWindowFocused } from "../../hooks/useWindowFocused";
 import { allGroups, useGroup, useTabsStore } from "../../stores/tabs";
-import { SubwindowFilesSidebar } from "../files/SubwindowFilesSidebar";
+import {
+  clampFilesWidth,
+  DEFAULT_GROUP_FILES_WIDTH,
+  SubwindowFilesSidebar,
+} from "../files/SubwindowFilesSidebar";
 import { TabBar } from "./TabBar";
 
 interface Props {
@@ -20,7 +24,10 @@ interface Props {
  * When the group's `filesOpen` flag is set, a docked file-viewer column
  * (`SubwindowFilesSidebar`) renders on the body's right edge, NEXT TO the
  * measured pane slot — the slot shrinks, so CenterPanel's flat pane layer
- * (positioned over the slot's measured rect) never covers the sidebar.
+ * (positioned over the slot's measured rect) never covers the sidebar. The tab
+ * bar reserves the same width on its right (see `filesWidth` on TabBar) so the
+ * scrolling tab strip stops at the pane's edge instead of running over the
+ * viewer, while the subwindow's close/hide/◫ controls stay pinned far-right.
  */
 export function Subwindow({ groupId, projectCwd, children }: Props) {
   const focusGroup = useTabsStore((s) => s.focusGroup);
@@ -47,7 +54,16 @@ export function Subwindow({ groupId, projectCwd, children }: Props) {
         if (!isFocused) focusGroup(groupId);
       }}
     >
-      <TabBar groupId={groupId} projectCwd={projectCwd} showGroupClose={showClose} />
+      <TabBar
+        groupId={groupId}
+        projectCwd={projectCwd}
+        showGroupClose={showClose}
+        filesReserveWidth={
+          group?.filesOpen
+            ? clampFilesWidth(group.filesWidth ?? DEFAULT_GROUP_FILES_WIDTH)
+            : undefined
+        }
+      />
       <div className="subwindow-body">
         <div className="subwindow-pane-region">{children}</div>
         {group?.filesOpen && (

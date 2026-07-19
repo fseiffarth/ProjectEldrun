@@ -58,6 +58,24 @@ pub struct TrackedWindow {
     pub origin: String,
 }
 
+/// A detached popout's last on-screen geometry in PHYSICAL desktop px (#42).
+///
+/// Captured by the project-switch path just BEFORE it hides an inactive
+/// project's popout, and re-applied right after it re-shows it on switch-back —
+/// `hide()`/`show()` lets the WM re-place the window (typically onto the primary
+/// monitor), so switch-back must put it back explicitly or a multi-monitor
+/// popout jumps to the wrong screen. Physical px are scale-invariant for
+/// placement, so no per-monitor scale conversion is needed on re-apply.
+/// Transient (not persisted): the *restart* path restores popouts from the
+/// frontend's saved bounds instead.
+#[derive(Debug, Clone, Copy)]
+pub struct DetachedBounds {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
 #[derive(Default)]
 pub struct WindowRegistry {
     pub windows: HashMap<String, TrackedWindow>,
@@ -68,6 +86,10 @@ pub struct WindowRegistry {
     /// `WindowEvent::Destroyed` hook in `lib.rs`) so numbers stay small and
     /// reuse freed slots — a lone popout is always "win-1".
     pub detached_seqs: HashMap<String, u32>,
+    /// Last on-screen geometry of each detached popout, keyed by its stable label
+    /// (see [`DetachedBounds`]). Written just before a switch-away hides the
+    /// popout; read just after switch-back re-shows it, to restore its monitor.
+    pub detached_bounds: HashMap<String, DetachedBounds>,
 }
 
 pub type WindowRegistryState = Arc<Mutex<WindowRegistry>>;

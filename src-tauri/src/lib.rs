@@ -439,6 +439,10 @@ pub fn run() {
     // on remote_connect when enabled, stopped on disconnect / exit). See
     // `services::git_peer` (TODO #28n).
     let git_peer = services::git_peer::new_registry();
+    // Registry of per-(project,worker) code-sync fan-outs (multi-host remote,
+    // `docs/multi_host_remote_plan.md`). Kicked on a worker connect / commit /
+    // manual "Push code to machines". See `services::worker_sync`.
+    let worker_sync = services::worker_sync::new_state();
     // Cancel flags for in-flight disk-usage scans, one per scanning pane. See
     // `commands::disk_usage`.
     let disk_scans = commands::disk_usage::new_state();
@@ -458,6 +462,7 @@ pub fn run() {
         .manage(sync_manifest)
         .manage(auto_sync)
         .manage(git_peer)
+        .manage(worker_sync)
         .manage(disk_scans)
         .manage(usage_watch.clone())
         .setup(|_app| {
@@ -577,6 +582,10 @@ pub fn run() {
             commands::python::set_project_python,
             commands::projects::set_project_openvpn,
             commands::projects::set_project_auto_connect,
+            commands::projects::set_project_persist_sessions,
+            commands::projects::add_compute_host,
+            commands::projects::remove_compute_host,
+            commands::projects::patch_compute_host,
             commands::projects::set_project_categories,
             commands::projects::set_project_git_disabled,
             commands::projects::save_tab_layout,
@@ -638,6 +647,16 @@ pub fn run() {
             // Pooled SSH/SFTP connection lifecycle (mount-free remote, Phase 0)
             commands::remote::remote_connect,
             commands::remote::remote_disconnect,
+            commands::remote::remote_disconnect_all_hosts,
+            commands::remote::remote_connected_ids,
+            commands::remote::remote_connected_targets,
+            commands::remote::worker_sync_now,
+            commands::remote::worker_outputs_preview,
+            commands::remote::worker_pull_outputs,
+            commands::remote::remote_usage_check,
+            commands::remote::remote_tmux_list,
+            commands::remote::remote_tmux_kill,
+            commands::remote::remote_tmux_rename,
             // Read-only local/remote host + SSH transport monitoring.
             commands::network::network_host_snapshot,
             commands::network::network_ssh_link_snapshot,
@@ -649,6 +668,7 @@ pub fn run() {
             commands::usage_stats::usage_git_stats,
             commands::monitor::system_monitor_snapshot,
             commands::monitor::gpu_memory_snapshot,
+            commands::monitor::gpu_process_snapshot,
             // AC-vs-battery detection for Energy Saver mode.
             commands::power::get_power_state,
             // SSH-sync (Phase 1): selective local↔remote mirror sync.
@@ -661,6 +681,7 @@ pub fn run() {
             commands::sync::sync_auto_preview,
             commands::sync::sync_status,
             commands::sync::sync_file_meta,
+            commands::sync::sync_resolve_if_identical,
             commands::sync::sync_diff,
             commands::ssh::ssh_tooling_status,
             commands::ssh::ssh_list_addresses,
@@ -679,6 +700,7 @@ pub fn run() {
             commands::openvpn::vpn_forget_password,
             commands::openvpn::openvpn_login_command,
             commands::openvpn::openvpn_disconnect,
+            commands::openvpn::openvpn_disconnect_all_on_quit,
             commands::openvpn::openvpn_status,
             commands::openvpn::openvpn_active,
             commands::openvpn::openvpn_store_config,
@@ -749,6 +771,9 @@ pub fn run() {
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
             commands::terminal::pty_kill,
+            commands::terminal::local_tmux_list,
+            commands::terminal::local_tmux_kill,
+            commands::terminal::local_tmux_rename,
             commands::terminal::project_cpu_percent,
             // External apps / window tracking
             commands::apps::launch_app,
@@ -847,6 +872,7 @@ pub fn run() {
             commands::ollama::vibe_install_strategy,
             commands::agents::agent_is_installed,
             commands::agents::npm_is_installed,
+            commands::agents::probe_binaries,
             commands::agents::list_agents,
             commands::agents::codex_hook_status,
             commands::agents::install_agent,

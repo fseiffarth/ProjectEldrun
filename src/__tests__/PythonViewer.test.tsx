@@ -77,7 +77,10 @@ vi.mock("../stores/tabs", () => {
   };
 });
 
-const MAIN = "from .util import helper\n\nhelper()\n";
+// Run/Debug only show for a "main" script (a module-level `__main__` guard),
+// so the fixture needs one — kept on line 3 so the blank-line-2-snaps-to-3
+// breakpoint tests below still land where they expect.
+const MAIN = 'from .util import helper\n\nif __name__ == "__main__":\n    helper()\n';
 const UTIL = "import os\n\n\ndef helper(x):\n    return x\n";
 
 /** What the backend's interpreter resolver hands back (#87): the project's pinned
@@ -174,7 +177,7 @@ describe("python run/debug (#py)", () => {
 
   it("a gutter click sets a breakpoint, and Debug hands it to pdb", async () => {
     await renderViewer();
-    // Line 3 is `helper()`.
+    // Line 3 is the `if __name__ == "__main__":` guard.
     const line3 = screen.getByLabelText("Break on line 3");
     expect(line3.getAttribute("aria-pressed")).toBe("false");
     await act(async () => {
@@ -275,6 +278,19 @@ describe("python go-to-definition (#py)", () => {
       fireEvent.click(textarea, { ctrlKey: true });
     });
     expect(addTab).not.toHaveBeenCalled();
+  });
+});
+
+describe("a plain module (no __main__ guard) keeps no Run/Debug", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setup();
+  });
+
+  it("hides Run/Debug on a Python file with nothing to execute", async () => {
+    await renderViewer("/p/util.py");
+    expect(screen.queryByLabelText("Run file")).toBeNull();
+    expect(screen.queryByLabelText("Debug file")).toBeNull();
   });
 });
 

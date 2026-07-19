@@ -8,6 +8,18 @@ import { forgetPty } from "../lib/promptCount";
 import { METRIC, agentMetricLeaf, sub } from "../lib/usageMetrics";
 import { useLinkRoutingStore } from "./linkRouting";
 import { bumpUsage } from "./usage";
+import { newTmuxSessionName } from "../lib/tmuxSession";
+
+/** A shell tab gets a stable persisted tmux session name at creation (TODO #85),
+ *  so a persistent remote run reattaches after a relaunch instead of forking a
+ *  second session. Non-shell tabs, and shell tabs that already carry one (or an
+ *  explicit attach), are left untouched. */
+function withTmuxSession(tab: Omit<TabEntry, "key">): Omit<TabEntry, "key"> {
+  if (tab.kind === "shell" && !tab.tmuxSession && !tab.tmuxAttach) {
+    return { ...tab, tmuxSession: newTmuxSessionName() };
+  }
+  return tab;
+}
 
 export type TabKind =
   | "agent"
@@ -30,7 +42,22 @@ export type TabKind =
  * is inert (everything is local — the backend gates the ssh-wrap on remoteness).
  * Plan: docs/ssh_sync_plan.md.
  */
-export type TabLocation = "local" | "remote";
+export type TabLocation = "local" | "remote" | `host:${string}`;
+
+/** The backend host id a tab location runs on: `"primary"` for the primary remote
+ *  (`"remote"`), the worker id for a `host:<id>` location, or `null` for `"local"`
+ *  (`docs/multi_host_remote_plan.md` §4.1). Pass to PTY spawn / lamp reads. */
+export function remoteHostIdOf(loc: TabLocation | undefined): string | null {
+  if (loc === "remote") return "primary";
+  if (loc && loc.startsWith("host:")) return loc.slice("host:".length);
+  return null; // "local" or unset
+}
+
+/** Whether a tab location runs on a remote host (primary or a worker) rather than
+ *  the local mirror. */
+export function isRemoteLocation(loc: TabLocation | undefined): boolean {
+  return remoteHostIdOf(loc) !== null;
+}
 
 export const FILES_TAB_CMD = "__eldrun_files__";
 
@@ -185,6 +212,12 @@ export interface TabEntry {
   // `--session-id <uuid>`), the UUID Eldrun minted and launched the agent with.
   // Surfaced on tab hover and intended to later drive session resume.
   sessionId?: string;
+  // For a custom agent (see CustomAgent) whose spec carries a "continue last
+  // session" flag: the resume args this tab respawns with after a restart. Its
+  // presence is what makes such a tab restart-resumable without the cmd being in
+  // the static RESUMABLE_AGENTS map (see isResumableAgentTab / loadFromLayout).
+  // Persisted, since args are rebuilt from scratch on restore.
+  resumeArgs?: string[];
   // Absolute path of the script this terminal tab was launched to run (Python
   // Run/Debug, or a foreground shell-script run). Lets the activity store pulse
   // the file's run button while the tab is producing output. Busy-gated on read,
@@ -213,17 +246,31 @@ export interface TabEntry {
   location?: TabLocation;
   // The tab's agent authority mode — the planner/doer split ("plan" proposes,
   // "auto" auto-accepts edits). Only meaningful for agents in the capability
-  // table (currently Claude; see components/tabs/agentModes.ts) and only
+  // table (Claude and Gemini; see components/tabs/agentModes.ts) and only
   // surfaced when the experimental `agent_mode_toggle` setting is on. Absent →
   // no mode flag is passed and the agent runs in its own default (ask each
   // time), which is the behaviour of every tab predating this feature. The mode
-  // rides in `args` as `--permission-mode <x>`; this field is the durable record
-  // of it, since `args` are rebuilt from scratch on restore (loadFromLayout).
+  // rides in `args` as the agent's mode flag (`--permission-mode`/`--approval-mode
+  // <x>`); this field is the durable record of it, since `args` are rebuilt from
+  // scratch on restore (loadFromLayout).
   agentMode?: AgentMode;
   // For "projectfiles" tabs: the project-relative folder the tree is browsed
   // into. Persisted, so "Open in new tab" on a folder (and the tab's own
   // navigation) survive a restart instead of coming back at the project root.
   folder?: string;
+  // Persistent remote sessions (TODO #85): the STABLE tmux session name this shell
+  // tab spawns-or-attaches on the host. Minted once at creation and persisted,
+  // because the tab's PTY id (scope:key) is regenerated on restore — so the name
+  // must live on the tab to survive a relaunch and let the tab REATTACH rather than
+  // start a second session. Passed to the backend as `tmux_session` when the tab
+  // actually runs persistently (a remote shell tab of a persist-enabled project);
+  // inert otherwise. See `lib/tmuxSession.ts`, `shouldPersistTab`.
+  tmuxSession?: string;
+  // When set, this shell tab **attaches** to an existing named tmux session on the
+  // host (opened from the Sessions view onto a running, possibly hand-started
+  // session) instead of spawning a fresh one. Persisted so it reattaches across a
+  // restart. Passed as `tmux_attach`, which takes precedence over `tmuxSession`.
+  tmuxAttach?: string;
 }
 
 export type SplitDir = "row" | "column";
@@ -364,6 +411,13 @@ export interface SavedTabEntry {
   agentMode?: AgentMode;
   // Persisted browsed folder of a "projectfiles" tab (see TabEntry.folder).
   folder?: string;
+  // Persisted resume args of a restart-resumable custom agent (see
+  // TabEntry.resumeArgs). Re-applied as the launch args on restore.
+  resumeArgs?: string[];
+  // Persisted stable tmux session name for a shell tab (see TabEntry.tmuxSession).
+  tmuxSession?: string;
+  // Persisted tmux session this shell tab attaches to (see TabEntry.tmuxAttach).
+  tmuxAttach?: string;
 }
 
 /** Serialized layout tree as persisted in project.json's `tab_groups`. */
@@ -513,6 +567,12 @@ interface TabsStore {
   // explicitly at the call site if the scope isn't the active project.
   closeAllTabs: (scope?: string) => void;
   updateTabEnv: (key: string, env: Record<string, string>) => void;
+  // Persistent sessions (TODO #85): rename a tab's tmux session name after the
+  // Sessions view renamed the host session, so the persisted name still matches
+  // and the tab reattaches to the renamed session on restart. Updates whichever
+  // field the tab uses (`tmuxAttach` for an attach tab, else `tmuxSession`).
+  // Scope-explicit (the Sessions view may act on a non-active project).
+  setTabTmuxName: (scope: string, key: string, name: string) => void;
   // SSH-sync Phase 0: set a tab's local/remote locality (agent/shell tabs on a
   // remote project). No-op when unchanged. The CenterPanel's localOnly/cwd
   // computation reads the result so the next mount spawns on the chosen side.
@@ -1544,7 +1604,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   addTab: (tab, opts) => {
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one.
-    const entry: TabEntry = { ...tab, key };
+    const entry: TabEntry = { ...withTmuxSession(tab), key };
     if (!opts?.seeded) countTabOpen(get().scope, entry);
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
@@ -1577,7 +1637,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 
   addTabToScope: (scope, tab) => {
     const key = nextKey(tab.kind);
-    const entry: TabEntry = { ...tab, key, scope };
+    const entry: TabEntry = { ...withTmuxSession(tab), key, scope };
     countTabOpen(scope, entry);
     set((s) => {
       const tabs = s.tabsByScope[scope] ?? [];
@@ -1764,6 +1824,24 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const nextTabs = tabs.map((t) => (t.key === key ? { ...t, env } : t));
       return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  setTabTmuxName: (scope, key, name) => {
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      const nextTabs = tabs.map((t) =>
+        t.key === key
+          ? t.tmuxAttach
+            ? { ...t, tmuxAttach: name }
+            : { ...t, tmuxSession: name }
+          : t,
+      );
+      const patch: Partial<TabsStore> = {
+        tabsByScope: { ...s.tabsByScope, [scope]: nextTabs },
+      };
+      if (s.scope === scope) patch.tabs = nextTabs;
+      return patch;
     });
   },
 
@@ -3087,10 +3165,19 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // Resumable agent tabs (Claude with a sessionId) respawn with their
       // resume flag so the prior conversation comes back; everyone else starts
       // fresh with no args.
-      const tabShape = { kind, cmd: t.cmd, sessionId: t.sessionId };
+      const tabShape = {
+        kind,
+        cmd: t.cmd,
+        sessionId: t.sessionId,
+        resumeArgs: t.resumeArgs,
+      };
+      // A custom agent carries its own resume flag on the tab; a built-in looks
+      // its cmd up in the static table (which needs the captured session id).
       const base =
         isResumableAgentTab(tabShape) && t.sessionId
-          ? RESUMABLE_AGENTS[t.cmd](t.sessionId)
+          ? t.resumeArgs?.length
+            ? t.resumeArgs
+            : RESUMABLE_AGENTS[t.cmd](t.sessionId)
           : [];
       // Args are rebuilt from scratch here, so a persisted planner/doer mode has
       // to be re-applied onto them or the tab would silently come back in the
@@ -3106,6 +3193,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         cwd: isAgent && defaultCwd ? defaultCwd : t.cwd || defaultCwd,
         kind,
         sessionId: t.sessionId,
+        // A restart-resumable custom agent keeps its resume flag (already folded
+        // into `base`/`args` above) so a *second* restart resumes it again.
+        resumeArgs: t.resumeArgs,
         // Restored file embed tabs (kind === "embed") carry their durable path
         // and how to open it so the pane rebuilds exactly.
         embedPath: t.embedPath,
@@ -3118,6 +3208,15 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         agentMode: t.agentMode,
         // A "projectfiles" tab reopens on the folder it was browsed into.
         folder: t.folder,
+        // Persistent sessions (TODO #85): keep the stable session name so the
+        // reattach targets the SAME host session after a relaunch. Mint one for a
+        // shell tab persisted before this feature existed (it then reattaches on
+        // every subsequent restart).
+        tmuxSession:
+          t.tmuxSession ??
+          (kind === "shell" && !t.tmuxAttach ? newTmuxSessionName() : undefined),
+        // A Sessions-view attach tab reattaches to its tmux session on restart.
+        tmuxAttach: t.tmuxAttach,
       };
     });
 
@@ -3278,6 +3377,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         agentMode: t.agentMode,
         // Persist a "projectfiles" tab's browsed folder.
         folder: t.folder,
+        // Persist a restart-resumable custom agent's resume flag (the args that
+        // carry it are rebuilt in loadFromLayout, like agentMode).
+        resumeArgs: t.resumeArgs,
+        // Persist the stable tmux session name + any attach target, so a persistent
+        // remote shell tab REATTACHES to the same host session after a relaunch.
+        tmuxSession: t.tmuxSession,
+        tmuxAttach: t.tmuxAttach,
       }));
       // #42: re-dock detached groups into the persisted tree so disk reflects a
       // restart-as-docked layout (their tabs are already in the flat list above
@@ -3399,15 +3505,15 @@ export function isPtyTabKind(kind: TabKind): boolean {
  *
  *  - id-based: Claude (`--resume <id>`) and Codex (`codex resume`, args injected
  *    by the backend) resume a *specific* captured session.
- *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor and Grok have no
- *    caller-supplied launch id, so Eldrun re-launches with their "continue the
- *    most recent session" flag. Because each agent tab launches in the project
- *    directory, that most-recent session IS the tab's prior conversation. These
- *    ignore the minted id (it only satisfies the persistence gate below and is
- *    set as ELDRUN_TAB_UID). Caveat: two tabs of the same agent in one project
- *    both resume that project's single latest session, so they can't be told
- *    apart on restore. Gemini/Vibe stay excluded until their path is confirmed
- *    (39d); Aider has no per-session resume (only `--restore-chat-history`).
+ *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Grok, Gemini and
+ *    Mistral/vibe have no caller-supplied launch id, so Eldrun re-launches with
+ *    their "continue the most recent session" flag. Because each agent tab
+ *    launches in the project directory, that most-recent session IS the tab's
+ *    prior conversation. These ignore the minted id (it only satisfies the
+ *    persistence gate below and is set as ELDRUN_TAB_UID). Caveat: two tabs of
+ *    the same agent in one project both resume that project's single latest
+ *    session, so they can't be told apart on restore. Aider stays excluded — it
+ *    has no per-session resume (only `--restore-chat-history`).
  */
 export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   // Claude: `--resume <launch-id>`; the backend upgrades the id to the live one
@@ -3424,6 +3530,14 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   copilot: () => ["--continue"],
   "cursor-agent": () => ["--continue"],
   grok: () => ["--session", "latest"],
+  // Gemini's `--resume` takes "latest" (or an index), not a uuid, so it can only
+  // continue the project's most-recent session — not the specific one its launch
+  // `--session-id <uuid>` minted. That makes it continue-last like the others.
+  gemini: () => ["--resume", "latest"],
+  // Mistral/vibe: `-c/--continue` resumes the most recent saved session. (Its
+  // `--resume [id]` with no id would open an interactive picker, which hangs a
+  // restore — so `--continue` is the non-interactive path.)
+  vibe: () => ["--continue"],
 };
 
 /**
@@ -3432,12 +3546,14 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
  * restart (their conversation is resumed); other agent tabs are still dropped.
  */
 export function isResumableAgentTab(
-  tab: { kind: TabKind; cmd: string; sessionId?: string },
+  tab: { kind: TabKind; cmd: string; sessionId?: string; resumeArgs?: string[] },
 ): boolean {
   return (
     (tab.kind === "agent" || tab.kind === "local_agent") &&
     !!tab.sessionId &&
-    tab.cmd in RESUMABLE_AGENTS
+    // Built-in resumable (cmd in the static table) OR a custom agent whose spec
+    // supplied a "continue last session" flag (carried on the tab as resumeArgs).
+    (tab.cmd in RESUMABLE_AGENTS || !!tab.resumeArgs?.length)
   );
 }
 

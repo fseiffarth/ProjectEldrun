@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { TerminalView } from "../terminal/TerminalView";
 import { FileBrowser } from "../files/FileBrowser";
 import { ProjectFilesTab } from "../files/ProjectFilesTab";
@@ -9,7 +10,7 @@ import { SystemMonitorPane } from "../monitoring/SystemMonitorPane";
 import { DiskUsagePane } from "../monitoring/DiskUsagePane";
 import { CalendarPane } from "../calendar/CalendarPane";
 import { RemotePaneHold } from "../projects/RemotePaneHold";
-import { effectiveTabLocation, type TabEntry } from "../../stores/tabs";
+import { effectiveTabLocation, remoteHostIdOf, type TabEntry } from "../../stores/tabs";
 
 /**
  * The single per-tab `kind → pane` render switch, shared by the main window
@@ -59,9 +60,12 @@ export interface TabPaneProps {
   terminalCwd: string;
   /** Run this (agent/shell) tab inside the project's session container. */
   sandbox?: boolean;
+  /** The stable tmux session name to spawn-or-attach this remote shell/script tab
+   *  into (TODO #85), or undefined when the tab doesn't run persistently. */
+  tmuxSession?: string;
 }
 
-export function TabPane({
+function TabPaneImpl({
   tab,
   scope,
   visible,
@@ -74,6 +78,7 @@ export function TabPane({
   filesProjectDir,
   terminalCwd,
   sandbox = false,
+  tmuxSession,
 }: TabPaneProps) {
   // Identical in both windows: null for the root scope, else the scope id.
   const projectId = scope === "root" ? null : scope;
@@ -151,7 +156,14 @@ export function TabPane({
           cwd={terminalCwd}
           localOnly={effectiveTabLocation(tab) === "local"}
           projectId={projectId}
+          // Multi-host: the worker id (or "primary") this tab runs on, so the
+          // backend resolves the right host's RemoteSpec (null for a local tab).
+          remoteHostId={remoteHostIdOf(effectiveTabLocation(tab))}
           sandbox={sandbox}
+          // Persistent remote session (TODO #85). An explicit attach (opened from
+          // the Sessions view) wins over the tab's own persistent session.
+          tmuxSession={tmuxSession ?? null}
+          tmuxAttach={tab.tmuxAttach ?? null}
           zoomable={zoomable}
           visible={visible}
           focused={visible}
@@ -160,3 +172,12 @@ export function TabPane({
       );
   }
 }
+
+/**
+ * Memoized so a `CenterPanel` re-render (e.g. a pane-rect update every frame of a
+ * divider drag) skips every pane whose props are unchanged, instead of
+ * reconciling every terminal/viewer across every scope. Relies on all props being
+ * referentially stable across such re-renders — notably `onConnect`, which the
+ * host passes as a per-scope stable callback (never an inline arrow).
+ */
+export const TabPane = memo(TabPaneImpl);

@@ -109,8 +109,69 @@ pub struct RemoteSpec {
     /// keychain to check). Written by `remote_connect`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_auth: Option<bool>,
+    /// Run this project's remote shell/script tabs inside a **tmux** session on
+    /// the host (TODO #85), so a long run survives an SSH drop, a laptop sleep, or
+    /// Eldrun quitting — the session keeps running and the tab reattaches on
+    /// reconnect/relaunch. **Default ON** for a remote project: `None` and
+    /// `Some(true)` both mean enabled; only an explicit `Some(false)` opts out (the
+    /// pill's toggle). Agent tabs are excluded regardless — they resume via their
+    /// own session. The frontend reads this to set each spawn's `tmux_session`
+    /// name; the backend wraps in `ssh_exec::wrap_pty_options`. Mirrored into the
+    /// `projects.json` entry's `extra["remote"]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persist_sessions: Option<bool>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// An additional SSH machine a project runs experiments on (`docs/multi_host_remote_plan.md`).
+/// Its code is kept in one-way sync from the canonical source (the local mirror);
+/// its files are read-only (edits forbidden). It never owns git/sync/mirror state
+/// of its own — the primary [`RemoteSpec`] (`Project.remote`) does. `id` is stable
+/// (referenced by tab locations + the pool key + the fan-out state); `label` is the
+/// pill/tab display name. Reusing `RemoteSpec` verbatim (flattened) means every
+/// existing execution helper (`ssh_exec`, `sftp`, monitor/disk/gpu/python) works
+/// unchanged — they already take `&RemoteSpec`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputeHost {
+    /// Stable id, e.g. "h1"; the primary is the implicit "primary".
+    pub id: String,
+    /// Display name, e.g. "gpu-2"; falls back to `spec.host`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Keep this worker's tracked tree synced to the source HEAD (default true).
+    /// Ignored when [`shared_fs`](Self::shared_fs) is set (there is no copy to sync).
+    #[serde(default = "default_true")]
+    pub sync_code: bool,
+    /// Pull this worker's experiment OUTPUTS back on demand only, never
+    /// automatically (default false — outputs stay on the worker).
+    #[serde(default)]
+    pub pull_outputs: bool,
+    /// This machine reaches the project over a **shared filesystem**: it already
+    /// sees the primary's project folder at `spec.remote_path`, so Eldrun copies
+    /// **no** code to it and **never runs git on it** — shells just `cd` into the
+    /// shared tree and run there (`docs/multi_host_remote_plan.md`, shared-fs mode).
+    /// Mutually exclusive with the whole one-way sync path: when set, connect does
+    /// no bootstrap, commits do no fan-out, and "Sync code"/"Pull outputs" are
+    /// meaningless (the folder *is* the primary's, kept in step by the primary's
+    /// own sync). Default false — a machine is a synced-copy worker unless it opts
+    /// into sharing.
+    #[serde(default)]
+    pub shared_fs: bool,
+    /// user/host/port/remote_path/openvpn/auto_connect/key_auth.
+    #[serde(flatten)]
+    pub spec: RemoteSpec,
+}
+
+impl ComputeHost {
+    /// The display label for this worker (its `label`, or the bare host).
+    pub fn display_label(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.spec.host)
+    }
 }
 
 /// Optional OpenVPN tunnel for reaching a remote project's host. The client
@@ -243,6 +304,12 @@ pub struct Project {
     pub open_tab_sessions: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteSpec>,
+    /// Extra SSH machines this project runs experiments on (`docs/multi_host_remote_plan.md`).
+    /// The primary is still `remote`; these are one-way, read-only "workers". Mirrored
+    /// into the `projects.json` entry's `extra["compute_hosts"]`. Migration-free
+    /// (`#[serde(default)]` → `[]` for existing projects).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compute_hosts: Vec<ComputeHost>,
     /// For a remote (SSH) project, the local mirror root — the paired local
     /// working copy synced from the host. Chosen at import (defaults to a
     /// `<name>` subfolder of the top-level `eldrun/projects-ssh/` root) and relocatable via the

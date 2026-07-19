@@ -62,6 +62,30 @@ pub struct PtyOptions {
     /// still applies. Harmless for local projects — they resolve to no remote.
     #[serde(default)]
     pub project_id: Option<String>,
+    /// Which of the project's remote hosts this tab runs on
+    /// (`docs/multi_host_remote_plan.md`): `None`/`"primary"` = the primary remote
+    /// (`Project.remote`), any other id = an extra "worker" host from
+    /// `compute_hosts`. Set by the frontend from the tab's `host:<id>` location.
+    /// Ignored for a local project (resolves to no remote).
+    #[serde(default)]
+    pub remote_host_id: Option<String>,
+    /// Persistent remote session (TODO #85): the **stable tmux session name** to
+    /// spawn-or-attach on the host, wrapping the spawn in `tmux new-session -A` so
+    /// the run survives an SSH drop / laptop sleep / Eldrun relaunch. The frontend
+    /// mints it once per shell tab and **persists it** (`TabEntry.tmuxSession`), so
+    /// it is stable across a relaunch even though the tab's PTY id (`scope:key`) is
+    /// regenerated on restore — that stability is what makes reattach work. Set
+    /// only for remote shell/script tabs of a persist-enabled project (agent tabs
+    /// are excluded — they resume via their own session). `None`/local → no wrap.
+    #[serde(default)]
+    pub tmux_session: Option<String>,
+    /// Attach this tab to an **existing named** tmux session on the host instead
+    /// of spawning a fresh one (TODO #85): set when a tab is opened from the
+    /// Sessions view onto a running (possibly hand-started) session, and persisted
+    /// so the tab reattaches to that same session across a restart. Takes
+    /// precedence over `tmux_session` when set. No-op for a local project.
+    #[serde(default)]
+    pub tmux_attach: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

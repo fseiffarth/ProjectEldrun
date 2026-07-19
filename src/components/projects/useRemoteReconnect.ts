@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   needsSeparateKeyPassphrase,
+  type ComputeHost,
   type ProjectEntry,
   type StoredVpnConfig,
   type VpnAuthNeeds,
@@ -97,9 +98,15 @@ const adoptTerm = (term: LoginTerm | undefined): LoginTerm | null =>
  * Status is published to `useRemoteStatusStore` (keyed by project id) so the
  * header lamps and the restore gate observe the same state this panel drives.
  */
-export function useRemoteReconnect(project: ProjectEntry) {
+export function useRemoteReconnect(project: ProjectEntry, host?: ComputeHost) {
   const projectId = project.id;
-  const remote = project.remote;
+  // Multi-host remote (`docs/multi_host_remote_plan.md`): the dialog can target the
+  // primary remote or an extra "worker" host. `hostId` keys the pool + lamp state;
+  // `remote` is the spec to connect (the worker's own, or the primary's). A worker
+  // connect kicks its one-way code fan-out (backend `remote_connect`), never the
+  // primary's git-lockstep / byte-sync.
+  const hostId = host?.id ?? "primary";
+  const remote = host ?? project.remote;
   // The project's OpenVPN config path. Stateful (not just `remote.openvpn.config`)
   // because a project may have been created/extended on a no-VPN network with no
   // config, then need one attached here when reconnecting from a VPN-gated network
@@ -134,7 +141,9 @@ export function useRemoteReconnect(project: ProjectEntry) {
     };
   }, [vpnConfig]);
 
-  const status = useRemoteStatusStore((s) => s.byProject[projectId]);
+  const status = useRemoteStatusStore((s) =>
+    hostId === "primary" ? s.byProject[projectId] : s.byHost[projectId]?.[hostId],
+  );
   const sshStatus: ConnState = status?.ssh ?? "off";
   const vpnStatus: ConnState = status?.vpn ?? "off";
   const setSsh = useRemoteStatusStore((s) => s.setSsh);
@@ -204,6 +213,14 @@ export function useRemoteReconnect(project: ProjectEntry) {
   const autoConnect = remote?.auto_connect ?? false;
   const autoConnectEligible = sshSaved || remote?.key_auth === true;
   const setAutoConnect = (enabled: boolean) => {
+    if (host) {
+      // A worker's auto-connect lives on its `compute_hosts` entry, not the
+      // project's primary remote.
+      void invoke("patch_compute_host", { projectId, hostId, autoConnect: enabled }).catch((e) =>
+        setSshError(String(e)),
+      );
+      return;
+    }
     void useProjectsStore
       .getState()
       .setProjectAutoConnect(projectId, enabled)
@@ -372,7 +389,7 @@ export function useRemoteReconnect(project: ProjectEntry) {
       dropTerm(projectId, "vpn");
     }
     releaseVpn(projectId, vpnConfig);
-    setVpn(projectId, "off");
+    setVpn(projectId, "off", hostId);
     force();
   };
 
@@ -397,19 +414,19 @@ export function useRemoteReconnect(project: ProjectEntry) {
         clearSshPoll();
         // Master is up; bring the pool up so every later channel rides it.
         try {
-          await invoke("remote_connect", { projectId, password: null });
+          await invoke("remote_connect", { projectId, hostId, password: null });
           if (gen !== sshGen.current) return;
-          setSsh(projectId, "connected");
+          setSsh(projectId, "connected", hostId);
         } catch {
           if (gen !== sshGen.current) return;
-          setSsh(projectId, "error");
+          setSsh(projectId, "error", hostId);
         }
       })
       .catch(() => {
         if (gen !== sshGen.current) return; // stopped while the probe ran
         if (attempt + 1 >= maxAttempts) {
           clearSshPoll();
-          setSsh(projectId, "error");
+          setSsh(projectId, "error", hostId);
           return;
         }
         sshPollTimer.current = setTimeout(() => pollSshReady(attempt + 1, gen), 3000);
@@ -435,11 +452,11 @@ export function useRemoteReconnect(project: ProjectEntry) {
       sshTermRef.current = term;
       rememberTerm(projectId, "ssh", term);
       const gen = ++sshGen.current;
-      setSsh(projectId, "connecting");
+      setSsh(projectId, "connecting", hostId);
       force();
       pollSshReady(0, gen);
     } catch {
-      setSsh(projectId, "error");
+      setSsh(projectId, "error", hostId);
     }
   };
 
@@ -449,7 +466,7 @@ export function useRemoteReconnect(project: ProjectEntry) {
     if (!sshTermRef.current) return;
     clearSshPoll();
     const gen = ++sshGen.current;
-    setSsh(projectId, "connecting");
+    setSsh(projectId, "connecting", hostId);
     pollSshReady(0, gen);
   };
 
@@ -530,7 +547,7 @@ export function useRemoteReconnect(project: ProjectEntry) {
   const connectSshHeadless = async (password: string, remember?: boolean) => {
     if (!remote) return;
     const gen = ++sshGen.current;
-    setSsh(projectId, "connecting");
+    setSsh(projectId, "connecting", hostId);
     setSshError("");
     // A blank field means "use what's saved" (the secret itself never comes back to
     // the UI, so a saved password can't be pre-filled — the user just leaves it
@@ -556,14 +573,14 @@ export function useRemoteReconnect(project: ProjectEntry) {
       // master-owning pooled session, and with a null password it drops to
       // key/agent auth — which a password-auth host rejects. It falls back to a
       // *saved* password, so this only ever worked with "Save password" ticked.
-      await invoke("remote_connect", { projectId, password: secret });
+      await invoke("remote_connect", { projectId, hostId, password: secret });
       if (gen !== sshGen.current) return;
       // Only a checkbox-driven connect changed what's in the keychain.
       if (remember !== undefined) setSshSaved(remember);
-      setSsh(projectId, "connected");
+      setSsh(projectId, "connected", hostId);
     } catch (e) {
       if (gen !== sshGen.current) return; // stopped — ignore the stale failure
-      setSsh(projectId, "error");
+      setSsh(projectId, "error", hostId);
       setSshError(String(e));
     }
   };
@@ -625,8 +642,8 @@ export function useRemoteReconnect(project: ProjectEntry) {
       sshTermRef.current = null;
       dropTerm(projectId, "ssh");
     }
-    void invoke("remote_disconnect", { projectId }).catch(() => {});
-    setSsh(projectId, "off");
+    void invoke("remote_disconnect", { projectId, hostId }).catch(() => {});
+    setSsh(projectId, "off", hostId);
     force();
   };
 

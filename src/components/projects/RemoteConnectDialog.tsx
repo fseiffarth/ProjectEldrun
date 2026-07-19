@@ -32,14 +32,29 @@ import { formatRemoteTarget, resolveLocalMirror, type ProjectEntry } from "../..
  */
 export function RemoteConnectDialog() {
   const projectId = useConnectDialogStore((s) => s.projectId);
+  const hostId = useConnectDialogStore((s) => s.hostId);
   const project = useProjectsStore((s) =>
     projectId ? s.projects.find((p) => p.id === projectId) : undefined,
   );
   if (!projectId || !project?.remote) return null;
-  return <RemoteConnectDialogInner key={project.id} project={project} />;
+  // Multi-host remote: the modal targets the primary or a worker host. Resolve the
+  // selected worker (if any) so its own spec drives the connect + lamp.
+  const worker =
+    hostId && hostId !== "primary"
+      ? project.compute_hosts?.find((h) => h.id === hostId)
+      : undefined;
+  return (
+    <RemoteConnectDialogInner key={`${project.id}:${hostId ?? "primary"}`} project={project} host={worker} />
+  );
 }
 
-function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
+function RemoteConnectDialogInner({
+  project,
+  host,
+}: {
+  project: ProjectEntry;
+  host?: import("../../types").ComputeHost;
+}) {
   const close = useConnectDialogStore((s) => s.close);
   const headless = useSettingsStore((s) => s.settings?.connections_headless ?? true);
   const {
@@ -74,7 +89,7 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
     forgetPasswords,
     forgetSshPassword,
     forgetVpnPassword,
-  } = useRemoteReconnect(project);
+  } = useRemoteReconnect(project, host);
 
   const [sshPassword, setSshPassword] = useState("");
   const [vpnPassword, setVpnPassword] = useState("");
@@ -146,18 +161,27 @@ function RemoteConnectDialogInner({ project }: { project: ProjectEntry }) {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
-          <h2>Connect remote project</h2>
+          <h2>
+            {host
+              ? `Connect worker · ${host.label || host.host}`
+              : "Connect remote project"}
+          </h2>
           <button type="button" className="dialog-close-btn" onClick={close}>×</button>
         </div>
 
         <div className="remote-connect-target">
           <div className="remote-connect-location">
             <span className="remote-connect-location-label">Remote</span>
-            <span className="remote-connect-location-path" title={project.remote ? formatRemoteTarget(project.remote) : undefined}>
-              {project.remote && formatRemoteTarget(project.remote)}
+            <span
+              className="remote-connect-location-path"
+              title={host ? formatRemoteTarget(host) : project.remote ? formatRemoteTarget(project.remote) : undefined}
+            >
+              {host ? formatRemoteTarget(host) : project.remote && formatRemoteTarget(project.remote)}
             </span>
           </div>
-          {localMirror && (
+          {/* A worker is code-read-only (one-way sync, outputs stay on it) — it
+              has no local mirror to show; only the primary does. */}
+          {!host && localMirror && (
             <div className="remote-connect-location">
               <span className="remote-connect-location-label">Local</span>
               <span className="remote-connect-location-path" title={localMirror}>{localMirror}</span>

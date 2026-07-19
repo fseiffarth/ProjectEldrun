@@ -236,6 +236,23 @@ pub async fn npm_is_installed() -> bool {
     crate::paths::binary_on_path("npm")
 }
 
+/// Probe arbitrary commands (user-defined custom agents, which aren't in the
+/// built-in `AGENTS` registry) for install status, returning the subset present.
+/// A bare name is looked up on `PATH`; a value containing a path separator is
+/// checked as a file path so a custom agent pointed at a full path resolves too.
+#[tauri::command]
+pub async fn probe_binaries(bins: Vec<String>) -> Vec<String> {
+    bins.into_iter()
+        .filter(|b| {
+            if b.contains('/') || b.contains('\\') {
+                std::path::Path::new(b).exists()
+            } else {
+                crate::paths::binary_on_path(b)
+            }
+        })
+        .collect()
+}
+
 /// Sync install probe for callers outside the agent registry (e.g. the local-
 /// model drivers in `commands::ollama`). Looks `bin` up in the registry first so
 /// it reuses the known user install locations; falls back to a bare PATH lookup

@@ -636,7 +636,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 title={lockstep.detail ?? undefined}
                 style={{
                   padding: "1px 6px",
-                  borderRadius: 8,
+                  borderRadius: "var(--radius)",
                   color: "#fff",
                   background:
                     lockstep.status === "synchronized"

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { GitHistory } from "./GitHistory";
 import { GitChangeTree, type ChangeScope } from "./GitChangeTree";
@@ -21,6 +22,42 @@ import type { SortKey } from "../../lib/viewers/fileUtils";
 import { basename, dirname } from "../../lib/paths";
 import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
+import { useConnectDialogStore } from "../../stores/connectDialog";
+import { useRemoteMachinesStore } from "../../stores/remoteMachines";
+import { UntestedTag } from "../common/UntestedTag";
+import { useTabsStore, type TabEntry } from "../../stores/tabs";
+import { persistentSessionOf } from "../../lib/closeRemoteTab";
+import { useRemoteStatusStore, sshOf } from "../../stores/remoteStatus";
+
+/** One host tmux session (TODO #85), mirroring the backend `TmuxSession`. */
+interface TmuxSession {
+  name: string;
+  windows: number;
+  /** Creation time, seconds since the Unix epoch (host clock). */
+  created: number;
+  attached: boolean;
+}
+
+/** A session row in the (multi-host) Sessions view: the session plus which host
+ *  it runs on (the primary or a worker). */
+interface SessionRow {
+  hostId: string;
+  hostLabel: string;
+  session: TmuxSession;
+}
+
+/** Coarse "created N ago" for a Unix-epoch-seconds timestamp. The host clock may
+ *  differ slightly from the local one; a near-now or future value reads "just now"
+ *  rather than a negative age. */
+function relativeAge(epochSecs: number): string {
+  const secs = Math.max(0, Math.floor(Date.now() / 1000) - epochSecs);
+  if (secs < 60) return "just now";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
 
 interface GitStatus {
   staged: number;
@@ -30,7 +67,12 @@ interface GitStatus {
   is_repo: boolean;
 }
 
-type View = "files" | "windows" | "git" | "search" | "orange";
+type View = "files" | "windows" | "git" | "search" | "orange" | "sessions";
+
+// A single shared empty array for scopes with no registered tabs. Must be a
+// stable reference — a Zustand selector that returned a fresh `[]` here would
+// make `useSyncExternalStore` see a new snapshot every render and loop forever.
+const EMPTY_SCOPE_TABS: TabEntry[] = [];
 
 /**
  * The shared file view rendered by BOTH the right panel (`RightPanel`) and the
@@ -269,6 +311,139 @@ export function ProjectFilesView({
   // The local mirror root, to open an amber file's mirror copy for inspection.
   const mirrorRoot = resolveLocalMirror(project) ?? (projectDir ? `${projectDir}/mirror` : null);
 
+  // Persistent (tmux) sessions on the project's hosts (TODO #85): a session
+  // outlives the tab that started it, so a host can hold runs no open tab points at
+  // (a crashed/relaunched Eldrun, another machine, a hand-started `tmux`). This list
+  // makes them discoverable and reattachable — the primary UI surface for the
+  // feature. **Multi-host**: aggregated across the primary AND every connected
+  // worker, each row tagged with its host; polled while this view is active (rides
+  // each host's pooled ControlMaster). An absent tmux / no server yields nothing.
+  const sessionHosts = useMemo(() => {
+    if (!project?.remote) return [] as { id: string; label: string }[];
+    const list = [{ id: "primary", label: project.remote.host }];
+    for (const w of project.compute_hosts ?? [])
+      list.push({ id: w.id, label: w.label || w.host || w.id });
+    return list;
+  }, [project?.remote, project?.compute_hosts]);
+  // A connectivity signature so the poll re-runs the moment a host connects.
+  const connSig = useRemoteStatusStore((s) =>
+    sessionHosts.map((h) => `${h.id}:${sshOf(s, projectId ?? "", h.id)}`).join("|"),
+  );
+  const [sessionRows, setSessionRows] = useState<SessionRow[]>([]);
+  useEffect(() => {
+    if (!active || !projectId || !project?.remote) {
+      setSessionRows([]);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      const st = useRemoteStatusStore.getState();
+      const connected = sessionHosts.filter((h) => sshOf(st, projectId, h.id) === "connected");
+      if (connected.length === 0) {
+        if (!cancelled) setSessionRows([]);
+        return;
+      }
+      const lists = await Promise.all(
+        connected.map((h) =>
+          invoke<TmuxSession[]>("remote_tmux_list", { projectId, hostId: h.id })
+            .then((ss) => ss.map((session) => ({ hostId: h.id, hostLabel: h.label, session })))
+            .catch(() => [] as SessionRow[]),
+        ),
+      );
+      if (!cancelled) setSessionRows(lists.flat());
+    };
+    void poll();
+    const iv = setInterval(() => void poll(), 7000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [active, projectId, project?.remote, connSig, sessionHosts]);
+
+  // The (host, session) each open shell tab of this scope owns, so a Sessions row
+  // can reveal the tab that runs it instead of opening a second attach.
+  // Coalesce to the shared empty array OUTSIDE the selector: a selector that
+  // returns a fresh `[]` when this scope has no tabs yields a new snapshot on
+  // every render, which makes `useSyncExternalStore` loop forever ("getSnapshot
+  // should be cached" → Maximum update depth). Returning the stored array (stable)
+  // or `undefined` (stable) from the selector, then defaulting here, is loop-safe.
+  const scopeTabs = useTabsStore((s) => s.tabsByScope[scope]) ?? EMPTY_SCOPE_TABS;
+  const sessionOwners = useMemo(() => {
+    const m = new Map<string, string>(); // `${hostId}\0${name}` → owning tab key
+    for (const t of scopeTabs) {
+      const info = persistentSessionOf(scope, t);
+      if (info) m.set(`${info.hostId} ${info.session}`, t.key);
+    }
+    return m;
+  }, [scopeTabs, scope]);
+
+  // Open a host session in a tab: reveal the owning tab if one exists, else add a
+  // shell tab on THAT host that ATTACHES to the named session (idempotent; `-D`
+  // detaches any other client). The tab carries the name so it reattaches across a
+  // restart, and its locality is the row's host.
+  const openSession = (hostId: string, name: string) => {
+    if (!projectId) return;
+    const ownerKey = sessionOwners.get(`${hostId} ${name}`);
+    if (ownerKey) {
+      useTabsStore.getState().setActive(ownerKey);
+      return;
+    }
+    useTabsStore.getState().addTabToScope(projectId, {
+      label: name.startsWith("eldrun-") ? "session" : name,
+      cmd: "",
+      args: [],
+      cwd: projectDir,
+      kind: "shell",
+      location: hostId === "primary" ? "remote" : `host:${hostId}`,
+      tmuxAttach: name,
+    });
+  };
+
+  // Kill a host session (per-row, confirmed). Drops the row optimistically; the
+  // poll reconciles.
+  const killSession = (hostId: string, name: string) => {
+    if (!projectId) return;
+    if (
+      !window.confirm(
+        `Kill the session “${name}” and any process running in it (e.g. a training run)?`,
+      )
+    )
+      return;
+    invoke("remote_tmux_kill", { projectId, hostId, session: name })
+      .then(() =>
+        setSessionRows((rs) => rs.filter((r) => !(r.hostId === hostId && r.session.name === name))),
+      )
+      .catch(() => {});
+  };
+
+  // Rename a host session (per-row). The name must be tmux-safe; on success the
+  // owning tab's persisted name is updated too, so it reattaches to the renamed
+  // session after a restart (the live client stays attached — rename never drops it).
+  const renameSession = (hostId: string, oldName: string) => {
+    if (!projectId) return;
+    const proposed = window.prompt("Rename session to:", oldName);
+    if (proposed === null) return;
+    const next = proposed.trim();
+    if (!next || next === oldName) return;
+    if (!/^[A-Za-z0-9_-]+$/.test(next)) {
+      window.alert("A session name may only contain letters, digits, '-' and '_'.");
+      return;
+    }
+    invoke("remote_tmux_rename", { projectId, hostId, session: oldName, newName: next })
+      .then(() => {
+        const ownerKey = sessionOwners.get(`${hostId} ${oldName}`);
+        if (ownerKey) useTabsStore.getState().setTabTmuxName(scope, ownerKey, next);
+        setSessionRows((rs) =>
+          rs.map((r) =>
+            r.hostId === hostId && r.session.name === oldName
+              ? { ...r, session: { ...r.session, name: next } }
+              : r,
+          ),
+        );
+      })
+      .catch((e) => window.alert(`Rename failed: ${e}`));
+  };
+
   // Resolve the scaffold-missing flag whenever the project changes. Failures
   // fall back to "present" so a probe error doesn't flash the tag.
   useEffect(() => {
@@ -284,6 +459,12 @@ export function ProjectFilesView({
   }, [projectId]);
 
   const typeTags = project ? projectTypeTags(project, scaffoldMissing) : [];
+
+  // Right-click menu on the SSH (remote) tag: connect/manage the host, or open the
+  // multi-host "Remote machines" manager (docs/multi_host_remote_plan.md).
+  const openConnectDialog = useConnectDialogStore((s) => s.open);
+  const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
+  const [sshTagMenu, setSshTagMenu] = useState<{ x: number; y: number } | null>(null);
 
   // Same hover card as the project pill, shown when hovering the project name
   // here — minus the type tags, which already sit beside the name below.
@@ -439,17 +620,76 @@ export function ProjectFilesView({
             like the source switch below. */}
         {!activeBox && typeTags.length > 0 && (
           <span className="right-panel-type-tags">
-            {typeTags.map((t) => (
-              <span
-                key={t.key}
-                className="pill-popup-tag"
-                title={t.title}
-                style={{ color: t.color, borderColor: t.color, background: `${t.color}22` }}
-              >
-                {t.label}
-              </span>
-            ))}
+            {typeTags.map((t) => {
+              // The SSH tag carries a right-click menu (connect / manage · remote
+              // machines); the rest stay pure labels.
+              const isSsh = t.key === "ssh" && !!project?.remote && !!projectId;
+              return (
+                <span
+                  key={t.key}
+                  className="pill-popup-tag"
+                  title={isSsh ? `${t.title}\nRight-click for connection / machines` : t.title}
+                  style={{
+                    color: t.color,
+                    borderColor: t.color,
+                    background: `${t.color}22`,
+                    cursor: isSsh ? "context-menu" : undefined,
+                  }}
+                  onContextMenu={
+                    isSsh
+                      ? (e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setSshTagMenu({ x: e.clientX, y: e.clientY });
+                        }
+                      : undefined
+                  }
+                >
+                  {t.label}
+                </span>
+              );
+            })}
           </span>
+        )}
+        {sshTagMenu && projectId && createPortal(
+          <>
+            <div
+              style={{ position: "fixed", inset: 0, zIndex: 200 }}
+              onPointerDown={() => setSshTagMenu(null)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setSshTagMenu(null);
+              }}
+            />
+            <div
+              className="context-menu"
+              style={{ left: sshTagMenu.x, top: sshTagMenu.y, zIndex: 201 }}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <div className="context-menu-group">
+                <div className="context-menu-group-label">{project?.remote?.host ?? "Remote"}</div>
+                <button
+                  onClick={() => {
+                    openConnectDialog(projectId, "primary");
+                    setSshTagMenu(null);
+                  }}
+                >
+                  Connect / manage…
+                </button>
+                <button
+                  className="untested"
+                  onClick={() => {
+                    openRemoteMachines(projectId);
+                    setSshTagMenu(null);
+                  }}
+                >
+                  Remote machines…
+                  <UntestedTag />
+                </button>
+              </div>
+            </div>
+          </>,
+          document.body,
         )}
         {/* Remote/Local file-source switch (remote SSH projects only). A live
             segmented control — NOT a tag — that flips the files view between the
@@ -486,7 +726,7 @@ export function ProjectFilesView({
           (commitMsg !== null ||
             gitStatus.unstaged + gitStatus.untracked > 0 ||
             gitStatus.staged > 0 ||
-            (gitStatus.has_remote && unpushedCommits.length > 0)) && (
+            unpushedCommits.length > 0) && (
           <>
             <span style={{ flexBasis: "100%", width: 0, height: 0 }} />
             <div ref={actionBarRef} className="git-action-bar git-action-bar--inline" style={{ position: "relative" }}>
@@ -568,7 +808,7 @@ export function ProjectFilesView({
                     </button>
                   </div>
                 )}
-                {gitStatus.has_remote && unpushedCommits.length > 0 && (
+                {unpushedCommits.length > 0 && (
                   <div className="git-action git-action--push">
                     <button
                       className="git-action-btn git-action-btn--push"
@@ -628,6 +868,20 @@ export function ProjectFilesView({
             title={`Diverged (orange) files: ${orangeFiles.length}`}
           >
             ± {orangeFiles.length > 0 && <span className="right-panel-orange-count">{orangeFiles.length}</span>}
+          </button>
+        )}
+        {/* Persistent (tmux) sessions on the host (TODO #85): remote-only, badged
+            with the live session count, so a run left alive on the host is one
+            click from being reattached. */}
+        {!activeBox && project?.remote && projectId && (
+          <button
+            className={`tab-add-btn right-panel-orange-btn${view === "sessions" ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            aria-pressed={view === "sessions"}
+            onClick={() => setView((v) => (v === "sessions" ? "files" : "sessions"))}
+            title={`Persistent host sessions (tmux): ${sessionRows.length}`}
+          >
+            ☰ {sessionRows.length > 0 && <span className="right-panel-orange-count">{sessionRows.length}</span>}
           </button>
         )}
         {importDrop.canImport && (
@@ -692,7 +946,7 @@ export function ProjectFilesView({
                   background: "var(--bg-panel)",
                   color: "var(--text-primary)",
                   border: "1px solid var(--border-color)",
-                  borderRadius: 3,
+                  borderRadius: "var(--radius-sm)",
                   padding: "3px 5px",
                   resize: "vertical",
                   boxSizing: "border-box",
@@ -751,7 +1005,58 @@ export function ProjectFilesView({
           {orangeFiles.length === 0 ? (
             <div className="right-panel-orange-empty">No diverged files</div>
           ) : (
-            orangeFiles.map((rel) => (
+            <>
+              {/* Bulk "…for all" resolution: take one side for every diverged
+                  file at once. Both are destructive to the losing side, so each
+                  confirms first (with the file count). */}
+              <div className="orange-bulk-bar">
+                <span className="orange-bulk-count">
+                  {orangeFiles.length} diverged
+                </span>
+                <div className="orange-file-actions">
+                  <button
+                    type="button"
+                    className="orange-file-act"
+                    title="Take the host copy for every diverged file (overwrite the local mirror)"
+                    disabled={remoteBlocked}
+                    onClick={() => {
+                      if (!projectId) return;
+                      if (
+                        !window.confirm(
+                          `Take the host copy for all ${orangeFiles.length} diverged files? This overwrites your local mirror edits.`,
+                        )
+                      )
+                        return;
+                      void useSyncStore
+                        .getState()
+                        .resolveAll(projectId, orangeFiles, "host");
+                    }}
+                  >
+                    Take host for all
+                  </button>
+                  <button
+                    type="button"
+                    className="orange-file-act"
+                    title="Keep the local copy for every diverged file (force-push over the host)"
+                    disabled={remoteBlocked}
+                    onClick={() => {
+                      if (!projectId) return;
+                      if (
+                        !window.confirm(
+                          `Keep the local copy for all ${orangeFiles.length} diverged files? This overwrites the host copies.`,
+                        )
+                      )
+                        return;
+                      void useSyncStore
+                        .getState()
+                        .resolveAll(projectId, orangeFiles, "local");
+                    }}
+                  >
+                    Keep local for all
+                  </button>
+                </div>
+              </div>
+              {orangeFiles.map((rel) => (
               <div key={rel} className="orange-file-row" title={rel}>
                 <button
                   type="button"
@@ -761,11 +1066,13 @@ export function ProjectFilesView({
                   onClick={() => {
                     if (!mirrorRoot) return;
                     const abs = `${mirrorRoot}/${rel}`;
-                    // Open the diverged file as a host-vs-mirror sync diff so the
-                    // user sees exactly what differs before picking a side.
+                    // Open the diverged file in the three-way merge viewer
+                    // (local mirror ⇄ merged ⇄ remote host, PyCharm-style), so
+                    // the user can take changes from either side per block and
+                    // resolve the divergence in one place.
                     openLinkedFile(undefined, dirname(abs), {
                       path: abs,
-                      viewer: "syncdiff",
+                      viewer: "syncmerge",
                       label: basename(abs),
                     });
                   }}
@@ -794,11 +1101,76 @@ export function ProjectFilesView({
                   </button>
                 </div>
               </div>
-            ))
+              ))}
+            </>
           )}
         </div>
       )}
 
+      {view === "sessions" && (
+        <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
+          {sessionRows.length === 0 ? (
+            <div className="right-panel-orange-empty">
+              {remoteBlocked ? "Connect to list host sessions" : "No persistent sessions on the host(s)"}
+            </div>
+          ) : (
+            sessionRows.map(({ hostId, hostLabel, session: s }) => {
+              const owned = sessionOwners.has(`${hostId} ${s.name}`);
+              // Show the host tag only when the project spans more than one host.
+              const showHost = sessionHosts.length > 1;
+              return (
+                <div key={`${hostId} ${s.name}`} className="orange-file-row" title={s.name}>
+                  <button
+                    type="button"
+                    className="orange-file-name"
+                    title={owned ? `Reveal the tab running “${s.name}”` : `Attach to “${s.name}”`}
+                    onClick={() => openSession(hostId, s.name)}
+                  >
+                    <span className="orange-file-dot" aria-hidden="true">
+                      {s.attached ? "●" : "○"}
+                    </span>
+                    {s.name}
+                    <span className="tmux-session-meta">
+                      {showHost ? `${hostLabel} · ` : ""}
+                      {s.windows} win · {relativeAge(s.created)}
+                      {owned ? " · open" : ""}
+                    </span>
+                  </button>
+                  <div className="orange-file-actions">
+                    <button
+                      type="button"
+                      className="orange-file-act"
+                      title="Rename this session"
+                      onClick={() => renameSession(hostId, s.name)}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      type="button"
+                      className="orange-file-act"
+                      title="Kill this session and everything running in it"
+                      onClick={() => killSession(hostId, s.name)}
+                    >
+                      Kill
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* Compact (docked subwindow) viewer strips the whole header above, which
+          is where the Remote/Local source switch normally lives — but a remote
+          project still needs it here to flip the tree between host and mirror.
+          Give it its own row directly above the tree's find-files search box,
+          so it's the topmost element the compact viewer shows. */}
+      {compact && view === "files" && !activeBox && project?.remote && projectId && (
+        <div className="right-panel-source right-panel-source--compact">
+          <FileSourceSwitch source={source} onChange={setSource} />
+        </div>
+      )}
       {view === "files" && (
         <ProjectFilesPane
           scope={scope}

@@ -69,6 +69,9 @@ pub fn reserve_detached_seq(reg: &mut WindowRegistry, label: &str) -> u32 {
 /// dock-back path fires it twice.
 pub fn release_detached_entry(reg: &mut WindowRegistry, label: &str) -> Option<u64> {
     reg.detached_seqs.remove(label);
+    // Drop any captured switch-back geometry too, so a docked/closed label never
+    // leaves a stale bounds entry a reused label could later pick up (#42).
+    reg.detached_bounds.remove(label);
     reg.windows.remove(label).and_then(|w| w.window_id)
 }
 

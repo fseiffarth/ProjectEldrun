@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 export interface FileChange {
@@ -143,6 +143,13 @@ export function GitChangeTree({ projectDir, scope }: Props) {
   const [changes, setChanges] = useState<FileChange[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // The flyout is CSS-anchored to the action bar's right edge and grows left, so
+  // when the file viewer is docked on the LEFT of the window it runs off the left
+  // screen border. Measure the rendered box and shift it back on-screen (either
+  // edge). Measured natural position = rect − current shift, so it converges in
+  // one pass instead of chasing its own transform.
+  const treeRef = useRef<HTMLDivElement>(null);
+  const [shiftX, setShiftX] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -158,6 +165,20 @@ export function GitChangeTree({ projectDir, scope }: Props) {
 
   const tree = useMemo(() => (changes ? buildTree(changes) : null), [changes]);
 
+  useLayoutEffect(() => {
+    const el = treeRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
+    const naturalLeft = rect.left - shiftX;
+    const naturalRight = rect.right - shiftX;
+    let dx = 0;
+    if (naturalLeft < margin) dx = margin - naturalLeft; // clips left → push right
+    else if (naturalRight > window.innerWidth - margin)
+      dx = window.innerWidth - margin - naturalRight; // clips right → push left
+    if (dx !== shiftX) setShiftX(dx);
+  }, [tree, error, shiftX]);
+
   const toggle = (path: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -166,7 +187,13 @@ export function GitChangeTree({ projectDir, scope }: Props) {
     });
 
   return (
-    <div className="git-change-tree" data-testid="git-change-tree" onClick={(e) => e.stopPropagation()}>
+    <div
+      ref={treeRef}
+      className="git-change-tree"
+      data-testid="git-change-tree"
+      style={shiftX ? { transform: `translateX(${shiftX}px)` } : undefined}
+      onClick={(e) => e.stopPropagation()}
+    >
       {error && <div className="git-change-empty">{error}</div>}
       {!error && !tree && <div className="git-change-empty">Loading…</div>}
       {tree && tree.children.length === 0 && <div className="git-change-empty">No changes</div>}

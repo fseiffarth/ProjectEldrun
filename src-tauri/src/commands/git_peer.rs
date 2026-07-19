@@ -31,6 +31,7 @@ pub async fn git_peer_set_enabled(
     manifest: State<'_, SyncManifestState>,
     auto: State<'_, AutoSyncState>,
     reg: State<'_, GitPeerRegistry>,
+    worker_sync: State<'_, crate::services::worker_sync::WorkerSyncState>,
     project_id: String,
     enabled: bool,
 ) -> Result<GitPeerState, String> {
@@ -50,6 +51,7 @@ pub async fn git_peer_set_enabled(
             manifest.inner().clone(),
             auto.inner().clone(),
             reg.inner(),
+            worker_sync.inner().clone(),
             &project_id,
         )
         .await;

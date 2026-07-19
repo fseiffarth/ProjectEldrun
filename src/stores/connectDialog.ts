@@ -9,12 +9,18 @@ import { create } from "zustand";
  */
 interface ConnectDialogStore {
   projectId: string | null;
-  open: (projectId: string) => void;
+  /** Which host of the project the modal targets (multi-host remote,
+   *  `docs/multi_host_remote_plan.md`): `"primary"` (the default) or a worker id.
+   *  `null` when no modal is open. */
+  hostId: string | null;
+  /** Open the Connect modal for a project host. `hostId` defaults to the primary. */
+  open: (projectId: string, hostId?: string) => void;
   close: () => void;
 }
 
 export const useConnectDialogStore = create<ConnectDialogStore>((set) => ({
   projectId: null,
-  open: (projectId) => set({ projectId }),
-  close: () => set({ projectId: null }),
+  hostId: null,
+  open: (projectId, hostId = "primary") => set({ projectId, hostId }),
+  close: () => set({ projectId: null, hostId: null }),
 }));

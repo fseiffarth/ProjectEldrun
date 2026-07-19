@@ -204,6 +204,25 @@ pub async fn openvpn_disconnect(config: String) -> Result<(), String> {
     openvpn::disconnect(&config)
 }
 
+/// Tear down **every** registered tunnel on the **app-close path**, reporting whether
+/// they all went down. This is the checked twin of the exit-time `disconnect_all`: it
+/// touches the same set of tunnels, so that once it succeeds nothing is left for
+/// `RunEvent::Exit` to kill — which is what used to raise the polkit prompt *after* the
+/// window had already vanished. A refused prompt is an error here and leaves the tunnel
+/// registered, so the frontend can keep the window open and tell the user to close the
+/// tunnel first, instead of quitting with the machine's routing still rewritten.
+///
+/// It enumerates the backend registries directly rather than taking a config from the
+/// frontend's `openvpn_active`: `active_configs` filters by a liveness probe, so a
+/// tunnel whose probe reads false would be skipped here yet still killed (and prompted
+/// for) by the exit-time `disconnect_all`. On Linux this raises the `pkexec` password
+/// prompt while the window is still on screen (the whole point); elsewhere it is the
+/// ordinary best-effort teardown.
+#[tauri::command]
+pub async fn openvpn_disconnect_all_on_quit() -> Result<(), String> {
+    openvpn::disconnect_all_checked()
+}
+
 /// Whether the OpenVPN tunnel for `config` is currently up.
 #[tauri::command]
 pub async fn openvpn_status(config: String) -> Result<bool, String> {

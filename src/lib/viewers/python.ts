@@ -29,6 +29,15 @@ export function isPythonPath(path: string): boolean {
   return PY_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
+const MAIN_GUARD_RE = /^if[ \t]+__name__[ \t]*==[ \t]*(['"])__main__\1[ \t]*:/m;
+
+/** Whether `source` is written to be *run*, not just imported — the standard,
+ *  unambiguous signal being a module-level `if __name__ == "__main__":` guard.
+ *  Gates the Run button: a plain library file has nothing useful to execute. */
+export function isPythonMainScript(source: string): boolean {
+  return MAIN_GUARD_RE.test(source);
+}
+
 // ── Breakpoints ──────────────────────────────────────────────────────────────
 
 /**

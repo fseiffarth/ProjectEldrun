@@ -82,3 +82,36 @@ export function fileMtime(path: string, projectId: string | null): Promise<numbe
 export function detectMime(path: string, projectId: string | null): Promise<string> {
   return invoke<string>("detect_mime", { path, projectId });
 }
+
+/**
+ * Turn a raw file-read/stat failure into a sentence a user can act on.
+ *
+ * The backend surfaces low-level text — `sftp metadata failed: …`,
+ * `sftp read failed: …`, an OS `No such file or directory` — which means nothing
+ * to someone who just clicked a file. The single most common cause on a remote
+ * project is opening a file that only exists in the local mirror while the viewer
+ * is reading the host over SFTP (never synced): say that, and point at the fix.
+ * Falls back to a plain "couldn't open" rather than dumping the raw string.
+ */
+export function describeFileError(e: unknown): string {
+  const raw = String(e);
+  const remote = /sftp/i.test(raw);
+  if (/permission|denied|eacces/i.test(raw)) {
+    return "Permission denied — you don't have access to this file.";
+  }
+  // A remote stat/metadata failure means the host doesn't have this path — on a
+  // remote project that's overwhelmingly a local-only file (never synced), which
+  // is the actionable thing to say. An explicit "no such file" says the same.
+  if (
+    /no such file|not found|does not exist|enoent/i.test(raw) ||
+    (remote && /metadata|stat/i.test(raw))
+  ) {
+    return remote
+      ? "This file isn't on the remote host — it may be local-only (never synced). Switch the viewer to Local to open it."
+      : "This file no longer exists.";
+  }
+  if (remote) {
+    return "Couldn't read this file from the remote host. Check the connection and try again.";
+  }
+  return "Couldn't open this file.";
+}

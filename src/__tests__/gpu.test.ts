@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   formatBytes,
+  formatFan,
+  formatMhz,
+  formatTempC,
+  formatWatts,
+  gpuAdapterTooltip,
   gpuBusy,
+  gpuLinkLabel,
   gpuPercent,
   gpuTone,
   gpuTooltip,
@@ -95,5 +101,62 @@ describe("formatBytes", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(536_870_912)).toBe("512 MB");
     expect(formatBytes(18_052_190_208)).toBe("16.8 GB");
+  });
+});
+
+describe("sensor formatters", () => {
+  it("returns null for an unknown reading rather than a fake zero", () => {
+    expect(formatTempC(null)).toBeNull();
+    expect(formatTempC(undefined)).toBeNull();
+    expect(formatWatts(null)).toBeNull();
+    expect(formatMhz(null)).toBeNull();
+    expect(formatFan(undefined)).toBeNull();
+    // A real zero is a value, not "unknown".
+    expect(formatFan(0)).toBe("0%");
+    expect(formatTempC(0)).toBe("0 °C");
+  });
+
+  it("formats each unit, and power against its cap when known", () => {
+    expect(formatTempC(58.4)).toBe("58 °C");
+    expect(formatWatts(210.5)).toBe("211 W");
+    expect(formatWatts(210.5, 450)).toBe("211 / 450 W");
+    expect(formatMhz(2520)).toBe("2.52 GHz");
+    expect(formatMhz(96)).toBe("96 MHz");
+    expect(formatFan(41)).toBe("41%");
+  });
+});
+
+describe("gpuLinkLabel", () => {
+  it("joins gen and width, and drops whichever half is unknown", () => {
+    expect(gpuLinkLabel({ ...dgpu, pcie_gen: 4, pcie_width: 16 })).toBe("PCIe 4.0 ×16");
+    expect(gpuLinkLabel({ ...dgpu, pcie_gen: 3, pcie_width: null })).toBe("PCIe 3.0");
+    expect(gpuLinkLabel({ ...dgpu, pcie_gen: null, pcie_width: 8 })).toBe("×8");
+    expect(gpuLinkLabel(dgpu)).toBeNull();
+  });
+});
+
+describe("gpuAdapterTooltip sensors", () => {
+  it("appends only the sensors the driver reported", () => {
+    const tip = gpuAdapterTooltip({
+      ...dgpu,
+      temp_c: 61,
+      power_w: 210,
+      power_cap_w: 450,
+      sclk_mhz: 2520,
+      mclk_mhz: 10501,
+      pcie_gen: 4,
+      pcie_width: 16,
+    });
+    expect(tip).toContain("Temp    61 °C");
+    expect(tip).toContain("Power   210 / 450 W");
+    expect(tip).toContain("Clocks  2.52 GHz / 10.50 GHz");
+    expect(tip).toContain("Link    PCIe 4.0 ×16");
+  });
+
+  it("reads exactly as before for a card that exposes no sensors", () => {
+    // The APU/dGPU fixtures carry no sensor fields — the tooltip must not sprout
+    // empty sensor rows.
+    expect(gpuAdapterTooltip(dgpu)).not.toContain("Temp");
+    expect(gpuAdapterTooltip(dgpu)).not.toContain("Link");
   });
 });

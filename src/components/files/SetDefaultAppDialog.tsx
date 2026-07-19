@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -20,6 +20,21 @@ interface Props {
   /** Path to the project's project.json; null disables the project scope. */
   localFile: string | null;
   onClose: () => void;
+}
+
+/**
+ * Whether an installed-app row corresponds to the current exec: true when the
+ * exec is exactly the app's command, or that command followed by extra args — a
+ * multi-word invocation such as a sharun AppImage's binary selector
+ * (`/opt/…AppImage kicad <file>`) or a Flatpak launcher line. Keeps such a
+ * working exec highlighted, and lets a re-select preserve its trailing args
+ * instead of stripping them back to the bare `.desktop` value.
+ */
+export function execMatchesApp(exec: string, appExec: string): boolean {
+  const e = exec.trim().split(/\s+/).filter(Boolean);
+  const a = appExec.trim().split(/\s+/).filter(Boolean);
+  if (a.length === 0 || a.length > e.length) return false;
+  return a.every((token, i) => token === e[i]);
 }
 
 function readDefaultApps(project: ProjectJson | null): Record<string, string> {
@@ -50,6 +65,8 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
   const [projectJson, setProjectJson] = useState<ProjectJson | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Once the user picks a scope radio themselves, stop auto-selecting it.
+  const userPickedScope = useRef(false);
 
   useEffect(() => {
     invoke<InstalledApp[]>("list_installed_apps")
@@ -70,6 +87,17 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
         });
     }
   }, [localFile]);
+
+  // Open in whichever scope already maps this extension, so reopening the dialog
+  // surfaces the saved value instead of an empty project-scope field (a mapping
+  // saved Global would otherwise be invisible while the default scope is
+  // "project"). Project wins over global, matching the resolution precedence.
+  // Deferred to the maps loading, and disabled once the user picks a scope.
+  useEffect(() => {
+    if (userPickedScope.current) return;
+    if (localFile && projectApps[ext]) setScope("project");
+    else if (globalApps[ext]) setScope("global");
+  }, [ext, localFile, projectApps, globalApps]);
 
   // Seed the exec field with whatever the chosen scope currently maps this
   // extension to, so the dialog opens showing the present value.
@@ -119,6 +147,13 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
     if (typeof picked === "string") setExec(picked);
   };
 
+  // Select an installed app. Preserve a working multi-word exec when the user
+  // re-selects the same app it already resolves to — clicking KiCad must not
+  // strip the `kicad` binary selector its sharun AppImage needs to open a file.
+  const pickApp = (appExec: string) => {
+    setExec((prev) => (execMatchesApp(prev, appExec) ? prev : appExec));
+  };
+
   const save = async (nextExec: string | null) => {
     setBusy(true);
     setError(null);
@@ -164,7 +199,10 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
               name="default-app-scope"
               checked={scope === "project"}
               disabled={!localFile}
-              onChange={() => setScope("project")}
+              onChange={() => {
+                userPickedScope.current = true;
+                setScope("project");
+              }}
             />
             This project only
           </label>
@@ -173,7 +211,10 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
               type="radio"
               name="default-app-scope"
               checked={scope === "global"}
-              onChange={() => setScope("global")}
+              onChange={() => {
+                userPickedScope.current = true;
+                setScope("global");
+              }}
             />
             Global (all projects)
           </label>
@@ -199,8 +240,8 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
               <button
                 type="button"
                 key={`${a.exec}:${a.name}`}
-                className={`set-default-app-row${exec === a.exec ? " selected" : ""}`}
-                onClick={() => setExec(a.exec)}
+                className={`set-default-app-row${execMatchesApp(exec, a.exec) ? " selected" : ""}`}
+                onClick={() => pickApp(a.exec)}
                 title={a.exec}
               >
                 {iconDataUrls[a.exec] ? (

@@ -70,6 +70,23 @@ pub struct SystemSnapshot {
     /// Every GPU the machine will report memory for; empty when none can be read
     /// (macOS, an Intel-only box, no `nvidia-smi`). See [`crate::gpustat`].
     pub gpus: Vec<crate::gpustat::GpuSample>,
+    /// Per-process GPU memory. Populated only on the **remote** path (sampled on
+    /// the host alongside the snapshot); the local pane fills it from the dedicated
+    /// `gpu_process_snapshot` command instead, so this stays empty locally.
+    #[serde(default)]
+    pub gpu_procs: Vec<crate::gpustat::GpuProc>,
+    /// Whole-package CPU temperature in °C, when a CPU hwmon sensor exposes one
+    /// (`coretemp` on Intel, `k10temp`/`zenpower` on AMD Zen). `None` when no such
+    /// sensor is present, or on a backend that can't read one (Windows/macOS/other)
+    /// — never a fake zero, matching the GPU sensors.
+    #[serde(default)]
+    pub cpu_temp_c: Option<f64>,
+    /// Hottest DIMM temperature in °C, when the board exposes an on-module thermal
+    /// sensor (`jc42` on DDR3/DDR4, `spd5118` on DDR5). The *max* across modules, so
+    /// it reads as "how hot is memory". `None` when no such sensor is present (most
+    /// desktops don't wire one) or the backend can't read one — never a fake zero.
+    #[serde(default)]
+    pub mem_temp_c: Option<f64>,
 }
 
 /// Generation counter bumped whenever a PTY is spawned or dies (see
@@ -310,6 +327,42 @@ fn parse_pid_stat(content: &str) -> Option<(String, String, u32, u64, u32)> {
     Some((comm, state, ppid, utime + stime, threads))
 }
 
+/// hwmon `name` values that identify a CPU **package** temperature sensor: Intel
+/// exposes `coretemp`, AMD Zen `k10temp` (or the out-of-tree `zenpower`), some
+/// ARM/embedded boards `cpu_thermal`. Anything else (a GPU's `amdgpu`, a
+/// mainboard SuperIO chip, an NVMe drive) is deliberately excluded — a wrong
+/// sensor reported as "CPU" is worse than reporting none.
+fn is_cpu_hwmon(name: &str) -> bool {
+    matches!(name.trim(), "coretemp" | "k10temp" | "zenpower" | "cpu_thermal")
+}
+
+/// hwmon `name` values that identify an on-DIMM **memory** temperature sensor:
+/// `jc42` (the JEDEC JC42.4 sensor on DDR3/DDR4 modules) and `spd5118` (the DDR5
+/// SPD-hub temperature sensor). One hwmon appears per populated module that has
+/// one, so the reader takes the *hottest*. Anything else is excluded — a
+/// mainboard/SuperIO channel mislabelled as memory would be worse than none.
+fn is_mem_hwmon(name: &str) -> bool {
+    matches!(name.trim(), "jc42" | "spd5118")
+}
+
+/// Choose the reading that best represents the whole CPU package from one hwmon's
+/// temperature channels, each a `(label, milli_celsius)` pair. Prefers an explicit
+/// package/control label — `Package id 0` (Intel `coretemp`), `Tctl`/`Tdie` (AMD
+/// `k10temp`) — over a per-core channel; failing that, the first channel
+/// (`temp1_input`), which is the package on a single-channel sensor. Returns °C
+/// (millidegrees ÷ 1000), or `None` when there are no channels.
+fn pick_cpu_temp(channels: &[(Option<String>, f64)]) -> Option<f64> {
+    let preferred = channels.iter().find(|(label, _)| {
+        label.as_deref().is_some_and(|l| {
+            let l = l.trim();
+            l.starts_with("Package") || l == "Tctl" || l == "Tdie"
+        })
+    });
+    preferred
+        .or_else(|| channels.first())
+        .map(|(_, milli)| milli / 1000.0)
+}
+
 // ── Remote (`ssh`) whole-system snapshot ────────────────────────────────────
 // A remote project's System Monitor reads the *host's* `/proc` over the shared
 // ControlMaster, exactly as the Disk Usage pane reads the host's `du`. The
@@ -323,8 +376,11 @@ fn parse_pid_stat(content: &str) -> Option<(String, String, u32, u64, u32)> {
 /// may be interpolated in; the only variable in that call is the `cd`-target
 /// `remote_path`, which it quotes and which this script ignores. Output is
 /// line-oriented and consumed by [`parse_remote_snapshot`]: a `CLK` line, then the
-/// four `@SECTION@` blocks carrying the raw kernel files verbatim, then — under
-/// `@PROCS@` — one `S`/`R`/`C` triple per process (the raw `/proc/<pid>/stat`
+/// `@SECTION@` blocks carrying the raw kernel files verbatim. `@GPU@` carries the
+/// host's GPUs — `NVSMI`/`NVPROC` lines are the `nvidia-smi` CSV verbatim (reusing
+/// the same parsers as the local read), and `AMD\t<card>\t<key>\t<value>` lines
+/// ship one DRM sysfs file each so `parse_drm_card` runs unchanged on them. Under
+/// `@PROCS@` comes one `S`/`R`/`C` triple per process (the raw `/proc/<pid>/stat`
 /// line, its `VmRSS` in KiB, and its NUL-flattened cmdline). cmdline NULs become
 /// spaces so every field stays on one line, which is what lets the parser split on
 /// line prefixes alone.
@@ -334,6 +390,49 @@ printf '@STAT@\n'; cat /proc/stat 2>/dev/null
 printf '@MEM@\n'; cat /proc/meminfo 2>/dev/null
 printf '@LOAD@\n'; cat /proc/loadavg 2>/dev/null
 printf '@UP@\n'; cat /proc/uptime 2>/dev/null
+printf '@GPU@\n'
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit,clocks.sm,clocks.mem,fan.speed,driver_version,pcie.link.gen.current,pcie.link.width.current --format=csv,noheader,nounits 2>/dev/null | sed 's/^/NVSMI\t/'
+  nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null | sed 's/^/NVPROC\t/'
+fi
+for c in /sys/class/drm/card[0-9]*; do
+  d="$c/device"
+  [ -r "$d/mem_info_vram_total" ] || continue
+  i=${c##*/}; i=${i#card}
+  h=$(ls -d "$d"/hwmon/hwmon* 2>/dev/null | head -n1)
+  printf 'AMD\t%s\tdriver\t%s\n' "$i" "$(sed -n 's/^DRIVER=//p' "$d/uevent" 2>/dev/null)"
+  printf 'AMD\t%s\tvendor\t%s\n' "$i" "$(cat "$d/vendor" 2>/dev/null)"
+  printf 'AMD\t%s\tdevice\t%s\n' "$i" "$(cat "$d/device" 2>/dev/null)"
+  printf 'AMD\t%s\tvram_used\t%s\n' "$i" "$(cat "$d/mem_info_vram_used" 2>/dev/null)"
+  printf 'AMD\t%s\tvram_total\t%s\n' "$i" "$(cat "$d/mem_info_vram_total" 2>/dev/null)"
+  printf 'AMD\t%s\tgtt_used\t%s\n' "$i" "$(cat "$d/mem_info_gtt_used" 2>/dev/null)"
+  printf 'AMD\t%s\tgtt_total\t%s\n' "$i" "$(cat "$d/mem_info_gtt_total" 2>/dev/null)"
+  printf 'AMD\t%s\tbusy\t%s\n' "$i" "$(cat "$d/gpu_busy_percent" 2>/dev/null)"
+  printf 'AMD\t%s\tsclk\t%s\n' "$i" "$(grep '\*' "$d/pp_dpm_sclk" 2>/dev/null | head -n1)"
+  printf 'AMD\t%s\tmclk\t%s\n' "$i" "$(grep '\*' "$d/pp_dpm_mclk" 2>/dev/null | head -n1)"
+  printf 'AMD\t%s\tlink_speed\t%s\n' "$i" "$(cat "$d/current_link_speed" 2>/dev/null)"
+  printf 'AMD\t%s\tlink_width\t%s\n' "$i" "$(cat "$d/current_link_width" 2>/dev/null)"
+  printf 'AMD\t%s\ttemp\t%s\n' "$i" "$(cat "$h/temp1_input" 2>/dev/null)"
+  printf 'AMD\t%s\tpower\t%s\n' "$i" "$(cat "$h/power1_average" 2>/dev/null || cat "$h/power1_input" 2>/dev/null)"
+  printf 'AMD\t%s\tpower_cap\t%s\n' "$i" "$(cat "$h/power1_cap" 2>/dev/null)"
+  printf 'AMD\t%s\tpwm\t%s\n' "$i" "$(cat "$h/pwm1" 2>/dev/null)"
+  printf 'AMD\t%s\tpwm_max\t%s\n' "$i" "$(cat "$h/pwm1_max" 2>/dev/null)"
+done
+printf '@CPUTEMP@\n'
+for h in /sys/class/hwmon/hwmon*; do
+  n=$(cat "$h/name" 2>/dev/null)
+  case "$n" in coretemp|k10temp|zenpower|cpu_thermal) ;; *) continue ;; esac
+  for t in "$h"/temp*_input; do
+    [ -r "$t" ] || continue
+    printf 'T\t%s\t%s\n' "$(cat "${t%_input}_label" 2>/dev/null)" "$(cat "$t" 2>/dev/null)"
+  done
+done
+printf '@MEMTEMP@\n'
+for h in /sys/class/hwmon/hwmon*; do
+  n=$(cat "$h/name" 2>/dev/null)
+  case "$n" in jc42|spd5118) ;; *) continue ;; esac
+  printf 'M\t%s\n' "$(cat "$h/temp1_input" 2>/dev/null)"
+done
 printf '@PROCS@\n'
 for d in /proc/[0-9]*; do
   [ -r "$d/stat" ] || continue
@@ -350,15 +449,22 @@ done
 /// Assemble a [`SystemSnapshot`] from the output of [`REMOTE_SNAPSHOT_SCRIPT`],
 /// reusing the same pure `/proc` parsers the local Linux backend uses. `supported`
 /// is always `true` (the host is assumed Linux; a host with no `/proc` simply
-/// yields zeroed CPU/memory and an empty process table). GPUs are not sampled
-/// remotely, so `gpus` is empty.
+/// yields zeroed CPU/memory and an empty process table). The `@GPU@` block is fed
+/// through the very same `gpustat` parsers as the local read, so a host GPU shows
+/// with the same memory/sensor detail; `gpu_procs` carries the host's per-process
+/// GPU memory (NVIDIA only — the AMD `fdinfo` walk is local-only, too heavy to run
+/// per remote poll).
 pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
+    use std::collections::BTreeMap;
     enum Sec {
         None,
         Stat,
         Mem,
         Load,
         Up,
+        Gpu,
+        CpuTemp,
+        MemTemp,
         Procs,
     }
     let mut sec = Sec::None;
@@ -368,6 +474,15 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
     let mut load_buf = String::new();
     let mut up_buf = String::new();
     let mut processes: Vec<ProcSample> = Vec::new();
+    // GPU accumulators: the `nvidia-smi` CSV rebuilt line-by-line for its parsers,
+    // and one `DrmFiles` per AMD card index assembled from its shipped sysfs files.
+    let mut nvsmi = String::new();
+    let mut nvproc = String::new();
+    let mut amd_cards: BTreeMap<u32, crate::gpustat::DrmFiles> = BTreeMap::new();
+    // CPU hwmon channels shipped as `T\t<label>\t<milli_celsius>` under @CPUTEMP@.
+    let mut cpu_temp_channels: Vec<(Option<String>, f64)> = Vec::new();
+    // Hottest DIMM temp in °C, from `M\t<milli>` lines under @MEMTEMP@ (one per module).
+    let mut mem_temp_c: Option<f64> = None;
 
     // A process is assembled from its consecutive S/R/C lines; `flush` finalizes
     // the pending one when the next `S` arrives (or at end of input).
@@ -428,6 +543,18 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
                 sec = Sec::Up;
                 continue;
             }
+            "@GPU@" => {
+                sec = Sec::Gpu;
+                continue;
+            }
+            "@CPUTEMP@" => {
+                sec = Sec::CpuTemp;
+                continue;
+            }
+            "@MEMTEMP@" => {
+                sec = Sec::MemTemp;
+                continue;
+            }
             "@PROCS@" => {
                 sec = Sec::Procs;
                 continue;
@@ -459,6 +586,51 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
                 up_buf.push_str(line);
                 up_buf.push('\n');
             }
+            Sec::Gpu => {
+                if let Some(rest) = line.strip_prefix("NVSMI\t") {
+                    nvsmi.push_str(rest);
+                    nvsmi.push('\n');
+                } else if let Some(rest) = line.strip_prefix("NVPROC\t") {
+                    nvproc.push_str(rest);
+                    nvproc.push('\n');
+                } else if let Some(rest) = line.strip_prefix("AMD\t") {
+                    // `<index>\t<key>\t<value>`; an empty value = a file the host
+                    // didn't expose, so skip it rather than store a blank.
+                    let mut it = rest.splitn(3, '\t');
+                    if let (Some(idx), Some(key), Some(val)) = (it.next(), it.next(), it.next()) {
+                        if !val.is_empty() {
+                            if let Ok(idx) = idx.parse::<u32>() {
+                                crate::gpustat::set_drm_field(
+                                    amd_cards.entry(idx).or_default(),
+                                    key,
+                                    val,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Sec::CpuTemp => {
+                // `T\t<label>\t<milli>`; an empty label ⇒ no `tempN_label` file,
+                // an empty/garbage value ⇒ a channel the host couldn't read (skip).
+                if let Some(rest) = line.strip_prefix("T\t") {
+                    let mut it = rest.splitn(2, '\t');
+                    let label = it.next().unwrap_or("").trim();
+                    if let Some(milli) = it.next().and_then(|v| v.trim().parse::<f64>().ok()) {
+                        let label = (!label.is_empty()).then(|| label.to_string());
+                        cpu_temp_channels.push((label, milli));
+                    }
+                }
+            }
+            Sec::MemTemp => {
+                // `M\t<milli>`; keep the hottest module, skipping blanks/garbage.
+                if let Some(rest) = line.strip_prefix("M\t") {
+                    if let Ok(milli) = rest.trim().parse::<f64>() {
+                        let c = milli / 1000.0;
+                        mem_temp_c = Some(mem_temp_c.map_or(c, |h| h.max(c)));
+                    }
+                }
+            }
             Sec::Procs => {
                 if let Some(rest) = line.strip_prefix("S\t") {
                     flush(&mut processes, &mut p_stat, &mut p_rss, &mut p_cmd);
@@ -483,6 +655,16 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(0.0);
 
+    // AMD cards (via the shared `parse_drm_card`) then NVIDIA (via the shared
+    // `parse_nvidia_smi`), so the host reading matches the local one field-for-field.
+    let mut gpus: Vec<crate::gpustat::GpuSample> = amd_cards
+        .into_iter()
+        .filter_map(|(idx, files)| crate::gpustat::parse_drm_card(idx, &files))
+        .collect();
+    gpus.extend(crate::gpustat::parse_nvidia_smi(&nvsmi));
+    let gpu_procs = crate::gpustat::parse_nvidia_apps(&nvproc);
+    let cpu_temp_c = pick_cpu_temp(&cpu_temp_channels);
+
     SystemSnapshot {
         supported: true,
         clk_tck: clk,
@@ -496,7 +678,10 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
         load_avg,
         uptime_secs,
         processes,
-        gpus: Vec::new(),
+        gpus,
+        gpu_procs,
+        cpu_temp_c,
+        mem_temp_c,
     }
 }
 
@@ -677,6 +862,62 @@ mod platform {
         }
     }
 
+    /// Whole-package CPU temperature in °C from the first CPU hwmon that exposes
+    /// one, or `None`. Scans `/sys/class/hwmon/hwmon*`, matches the sensor by its
+    /// `name` ([`super::is_cpu_hwmon`]), reads every `tempN_input` with its optional
+    /// `tempN_label`, and lets [`super::pick_cpu_temp`] choose the package channel.
+    /// No tool spawn and no root — the same cheap sysfs read the GPU sensors use.
+    pub fn cpu_temp_c() -> Option<f64> {
+        for entry in fs::read_dir("/sys/class/hwmon").ok()?.flatten() {
+            let base = entry.path();
+            let name = fs::read_to_string(base.join("name")).unwrap_or_default();
+            if !super::is_cpu_hwmon(&name) {
+                continue;
+            }
+            let mut channels: Vec<(Option<String>, f64)> = Vec::new();
+            for i in 1..=32u32 {
+                let Ok(raw) = fs::read_to_string(base.join(format!("temp{i}_input"))) else {
+                    continue;
+                };
+                let Ok(milli) = raw.trim().parse::<f64>() else {
+                    continue;
+                };
+                let label = fs::read_to_string(base.join(format!("temp{i}_label")))
+                    .ok()
+                    .map(|s| s.trim().to_string());
+                channels.push((label, milli));
+            }
+            if let Some(t) = super::pick_cpu_temp(&channels) {
+                return Some(t);
+            }
+        }
+        None
+    }
+
+    /// Hottest DIMM temperature in °C across every on-module memory sensor
+    /// (`jc42`/`spd5118`, one hwmon per populated module), or `None` when the board
+    /// exposes none. `temp1_input` is the module's only channel. Same cheap sysfs
+    /// read the CPU/GPU sensors use — no tool spawn, no root.
+    pub fn mem_temp_c() -> Option<f64> {
+        let mut hottest: Option<f64> = None;
+        for entry in fs::read_dir("/sys/class/hwmon").ok()?.flatten() {
+            let base = entry.path();
+            let name = fs::read_to_string(base.join("name")).unwrap_or_default();
+            if !super::is_mem_hwmon(&name) {
+                continue;
+            }
+            let Ok(raw) = fs::read_to_string(base.join("temp1_input")) else {
+                continue;
+            };
+            let Ok(milli) = raw.trim().parse::<f64>() else {
+                continue;
+            };
+            let c = milli / 1000.0;
+            hottest = Some(hottest.map_or(c, |h| h.max(c)));
+        }
+        hottest
+    }
+
     /// Whole-system sample from `/proc`: aggregate + per-core CPU, memory/swap,
     /// load, uptime, and every process (one `/proc/<pid>/{stat,status,cmdline}`
     /// read each). Kernel threads (empty `cmdline`) fall back to `[comm]`.
@@ -736,6 +977,9 @@ mod platform {
             uptime_secs,
             processes,
             gpus: Vec::new(), // filled by `system_snapshot()`, not by this backend
+            gpu_procs: Vec::new(),
+            cpu_temp_c: cpu_temp_c(),
+            mem_temp_c: mem_temp_c(),
         }
     }
 }
@@ -996,6 +1240,9 @@ mod platform {
             uptime_secs,
             processes,
             gpus: Vec::new(), // filled by `system_snapshot()`, not by this backend
+            gpu_procs: Vec::new(),
+            cpu_temp_c: None, // no cheap CPU thermal read on this backend
+            mem_temp_c: None, // nor a memory thermal read
         }
     }
 }
@@ -1329,6 +1576,9 @@ mod platform {
             uptime_secs,
             processes,
             gpus: Vec::new(), // filled by `system_snapshot()`, not by this backend
+            gpu_procs: Vec::new(),
+            cpu_temp_c: None, // no cheap CPU thermal read on this backend
+            mem_temp_c: None, // nor a memory thermal read
         }
     }
 }
@@ -1385,6 +1635,88 @@ mod tests {
     #[test]
     fn clk_tck_is_positive() {
         assert!(clk_tck() > 0, "ticks-per-second must be positive");
+    }
+
+    #[test]
+    fn is_cpu_hwmon_matches_only_cpu_sensors() {
+        assert!(is_cpu_hwmon("coretemp"));
+        assert!(is_cpu_hwmon("k10temp"));
+        assert!(is_cpu_hwmon("zenpower"));
+        assert!(is_cpu_hwmon("cpu_thermal\n"), "trailing newline is trimmed");
+        assert!(!is_cpu_hwmon("amdgpu"), "a GPU sensor is not the CPU");
+        assert!(!is_cpu_hwmon("nvme"));
+        assert!(!is_cpu_hwmon(""));
+    }
+
+    #[test]
+    fn pick_cpu_temp_prefers_package_channel() {
+        // Intel coretemp: `Package id 0` wins over the per-core channels.
+        let intel = vec![
+            (Some("Core 0".to_string()), 45000.0),
+            (Some("Package id 0".to_string()), 52000.0),
+            (Some("Core 1".to_string()), 47000.0),
+        ];
+        assert_eq!(pick_cpu_temp(&intel), Some(52.0));
+
+        // AMD k10temp: `Tctl` wins over `Tccd1`.
+        let amd = vec![
+            (Some("Tccd1".to_string()), 58000.0),
+            (Some("Tctl".to_string()), 61000.0),
+        ];
+        assert_eq!(pick_cpu_temp(&amd), Some(61.0));
+
+        // No labels at all: fall back to the first channel (temp1_input).
+        let bare = vec![(None, 40000.0), (None, 99000.0)];
+        assert_eq!(pick_cpu_temp(&bare), Some(40.0));
+
+        // No channels: unknown, never a fake zero.
+        assert_eq!(pick_cpu_temp(&[]), None);
+    }
+
+    #[test]
+    fn remote_snapshot_reads_cpu_temp() {
+        let raw = "\
+CLK\t100
+@STAT@
+cpu  1 2 3 4 5 6 7 8
+@CPUTEMP@
+T\tCore 0\t45000
+T\tPackage id 0\t53000
+@PROCS@
+";
+        let snap = parse_remote_snapshot(raw);
+        assert_eq!(snap.cpu_temp_c, Some(53.0), "host package temp is surfaced");
+    }
+
+    #[test]
+    fn is_mem_hwmon_matches_only_dimm_sensors() {
+        assert!(is_mem_hwmon("jc42"), "DDR3/DDR4 on-module sensor");
+        assert!(is_mem_hwmon("spd5118\n"), "DDR5 SPD hub, newline trimmed");
+        assert!(!is_mem_hwmon("coretemp"), "a CPU sensor is not memory");
+        assert!(!is_mem_hwmon("amdgpu"));
+        assert!(!is_mem_hwmon(""));
+    }
+
+    #[test]
+    fn remote_snapshot_reads_hottest_dimm_temp() {
+        let raw = "\
+CLK\t100
+@STAT@
+cpu  1 2 3 4 5 6 7 8
+@MEMTEMP@
+M\t41000
+M\t46500
+M\t44000
+@PROCS@
+";
+        let snap = parse_remote_snapshot(raw);
+        assert_eq!(snap.mem_temp_c, Some(46.5), "hottest module wins");
+    }
+
+    #[test]
+    fn remote_snapshot_has_no_mem_temp_when_section_empty() {
+        let raw = "CLK\t100\n@STAT@\ncpu  1 2 3 4 5 6 7 8\n@MEMTEMP@\n@PROCS@\n";
+        assert_eq!(parse_remote_snapshot(raw).mem_temp_c, None);
     }
 
     #[test]
@@ -1678,5 +2010,51 @@ C\t\n";
         assert_eq!(kworker.pid, 7);
         assert_eq!(kworker.rss_kib, 0);
         assert_eq!(kworker.cmdline, "[kworker/0:1]");
+    }
+
+    #[test]
+    fn parse_remote_snapshot_reads_the_gpu_section() {
+        // The `@GPU@` wire format: an AMD card shipped file-by-file, an NVIDIA card
+        // as raw nvidia-smi CSV, and one NVIDIA compute process. A blank AMD value
+        // (a file the host didn't expose) must be skipped, not stored.
+        let raw = "CLK\t100\n\
+@GPU@\n\
+NVSMI\tNVIDIA RTX A4000, 2048, 16376, 55, 63, 90.0, 140, 1800, 7000, 44, 550.90.07, 4, 16\n\
+NVPROC\t4321, python, 1536\n\
+AMD\t1\tdriver\tamdgpu\n\
+AMD\t1\tvendor\t0x1002\n\
+AMD\t1\tvram_used\t440770560\n\
+AMD\t1\tvram_total\t536870912\n\
+AMD\t1\tgtt_used\t18052190208\n\
+AMD\t1\tgtt_total\t65855619072\n\
+AMD\t1\tbusy\t72\n\
+AMD\t1\ttemp\t58000\n\
+AMD\t1\tsclk\t2: 2900Mhz *\n\
+AMD\t1\tlink_speed\t\n\
+@PROCS@\n";
+
+        let snap = parse_remote_snapshot(raw);
+        assert_eq!(snap.gpus.len(), 2, "one AMD card + one NVIDIA card");
+
+        // AMD card comes first (built from the shipped sysfs files).
+        let amd = &snap.gpus[0];
+        assert_eq!(amd.driver, "amdgpu");
+        assert_eq!(amd.vram_total, 536_870_912);
+        assert_eq!(amd.shared_total, 65_855_619_072);
+        assert_eq!(amd.busy_percent, Some(72.0));
+        assert_eq!(amd.temp_c, Some(58.0));
+        assert_eq!(amd.sclk_mhz, Some(2900));
+        assert_eq!(amd.pcie_gen, None, "a blank link_speed line was skipped");
+
+        // NVIDIA card, parsed by the same CSV reader as the local path.
+        let nv = &snap.gpus[1];
+        assert_eq!(nv.driver, "nvidia");
+        assert_eq!(nv.temp_c, Some(63.0));
+        assert_eq!(nv.power_w, Some(90.0));
+        assert_eq!(nv.driver_version.as_deref(), Some("550.90.07"));
+
+        assert_eq!(snap.gpu_procs.len(), 1);
+        assert_eq!(snap.gpu_procs[0].pid, 4321);
+        assert_eq!(snap.gpu_procs[0].mem_bytes, 1536 * 1024 * 1024);
     }
 }

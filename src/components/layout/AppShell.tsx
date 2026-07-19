@@ -7,6 +7,7 @@ import {
   type MutableRefObject,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { message } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PLATFORM } from "../../lib/dragPlatform";
@@ -19,7 +20,9 @@ import { RightPanel } from "./RightPanel";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
+import { RemoteMachinesDialogHost } from "../projects/RemoteMachinesWindow";
 import { LocalLossDialog } from "../common/LocalLossDialog";
+import { RemoteUsageWarningDialog } from "../common/RemoteUsageWarningDialog";
 import { QuickOpen } from "../files/QuickOpen";
 import { HintHost } from "./HintHost";
 import { TourHost } from "./TourHost";
@@ -28,6 +31,8 @@ import { HowToStart } from "./HowToStart";
 import { LessonsMenu } from "./LessonsMenu";
 import { useHintsStore } from "../../stores/hints";
 import { useProjectsStore, listenProjectRuntimeSwitched } from "../../stores/projects";
+import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { disconnectAllTunnelsOnQuit } from "../../stores/vpnStatus";
 import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenSyncProgress } from "../../stores/sync";
@@ -95,6 +100,7 @@ export function AppShell() {
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const pinnedSetting = useSettingsStore((s) => s.settings?.right_panel_pinned ?? false);
   const widthSetting = useSettingsStore((s) => s.settings?.right_panel_width ?? RIGHT_PANEL_DEFAULT);
+  const panelSide = useSettingsStore((s) => s.settings?.right_panel_side ?? "right");
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const loadProjects = useProjectsStore((s) => s.load);
   const projectsLoaded = useProjectsStore((s) => s.loaded);
@@ -284,6 +290,13 @@ export function AppShell() {
     });
   };
 
+  // Flip the panel to the opposite edge. Persisted only — the layout (docked
+  // inset, slide direction, resize math, reveal edge) reads `panelSide`, so no
+  // local mirror state is needed.
+  const toggleSide = () => {
+    void updateSettings({ right_panel_side: panelSide === "left" ? "right" : "left" });
+  };
+
   // Drag the panel's left border to resize. The panel is absolutely positioned
   // at right:0, so its width is just `innerWidth - cursorX`. We update local
   // state live (driving both the panel width and the docked body inset) and
@@ -301,7 +314,10 @@ export function AppShell() {
 
   const onResizeMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!resizingRight) return;
-    const w = clampRightWidth(window.innerWidth - e.clientX);
+    // The grip straddles the panel's inner edge — on the right that's the left
+    // border (width = innerWidth - cursorX); flipped to the left it's the right
+    // border (width = cursorX).
+    const w = clampRightWidth(panelSide === "left" ? e.clientX : window.innerWidth - e.clientX);
     latestRightWidth.current = w;
     setRightWidth(w);
   };
@@ -400,6 +416,22 @@ export function AppShell() {
     const win = getCurrentWindow();
     win.onCloseRequested(async (event) => {
       event.preventDefault();
+      // Tear down any live OpenVPN tunnel *before* anything else and before the window
+      // goes away. The backend also does this in RunEvent::Exit, but that runs only
+      // after destroy(), so its elevated pkexec kill raised the polkit password prompt
+      // against an already-gone window. Awaiting it here keeps Eldrun on screen until
+      // the prompt is answered. If the user dismisses the prompt the tunnel is still up
+      // (it reroutes the whole machine), so abort the quit and say so — running the
+      // save/detached-shutdown steps first would have needlessly torn state down.
+      const tunnelsDown = await disconnectAllTunnelsOnQuit().catch(() => true);
+      if (!tunnelsDown) {
+        await message(
+          "The OpenVPN tunnel is still up and reroutes this whole machine. " +
+            "Close the tunnel first (VPN control in the header), then quit Eldrun.",
+          { title: "VPN tunnel still active", kind: "warning" },
+        ).catch(() => {});
+        return;
+      }
       await flushTimer().catch(() => {});
       // Counters accrued since the last interval flush would otherwise be lost on
       // quit — including everything done in the final minutes of a session.
@@ -453,6 +485,50 @@ export function AppShell() {
   // keeps a burst of typing from becoming a burst of disk writes.
   useEffect(() => {
     const id = setInterval(() => void flushUsage(), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Reconcile the SSH lamp/Connect-dialog status against the backend's actual
+  // pool, which is the only side that ever notices a pooled connection dying on
+  // its own (network drop, keepalive eviction, a VPN tunnel getting replaced
+  // out from under it) — and only lazily, the next time some command happens to
+  // touch that project's pool entry. `useRemoteStatusStore` otherwise only ever
+  // moves on an explicit connect/disconnect result, so without this a project
+  // whose pooled session died keeps showing "connected" (green lamp, the
+  // Connect dialog claiming it's already up) indefinitely, while anything that
+  // actually asks the pool — e.g. the network-traffic pane's own poll —
+  // correctly reports disconnected. A project the store still marks
+  // "connected" that the backend no longer lists gets corrected to "error" so
+  // the lamp goes red and the Connect dialog offers a real reconnect.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const { byProject, byHost, setSsh } = useRemoteStatusStore.getState();
+      // Every (project, host) the store believes is connected — the primary
+      // (byProject) plus every worker host (byHost, multi-host remote).
+      const stillConnected: Array<[string, string]> = [];
+      for (const [projectId, s] of Object.entries(byProject)) {
+        if (s.ssh === "connected") stillConnected.push([projectId, "primary"]);
+      }
+      for (const [projectId, hosts] of Object.entries(byHost)) {
+        for (const [hostId, s] of Object.entries(hosts)) {
+          if (s.ssh === "connected") stillConnected.push([projectId, hostId]);
+        }
+      }
+      if (stillConnected.length === 0) return;
+      // Per-host truth from the pool (`remote_connected_targets`); anything the
+      // store marks connected that the backend no longer lists is corrected to
+      // "error" so its lamp goes red and the Connect dialog offers a reconnect.
+      void invoke<Array<[string, string]>>("remote_connected_targets")
+        .then((targets) => {
+          const live = new Set(targets.map(([p, h]) => `${p}${h}`));
+          for (const [projectId, hostId] of stillConnected) {
+            if (!live.has(`${projectId}${hostId}`)) {
+              setSsh(projectId, "error", hostId);
+            }
+          }
+        })
+        .catch(() => {});
+    }, 15_000);
     return () => clearInterval(id);
   }, []);
 
@@ -559,7 +635,11 @@ export function AppShell() {
 
   const handleBodyMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (!panelTarget || panelsHidden || rightOpen) return;
-    if (window.innerWidth - event.clientX <= REVEAL_EDGE_PX) {
+    const nearEdge =
+      panelSide === "left"
+        ? event.clientX <= REVEAL_EDGE_PX
+        : window.innerWidth - event.clientX <= REVEAL_EDGE_PX;
+    if (nearEdge) {
       useHintsStore.getState().markSeen("file-tree");
       reveal(rightCloseTimer, setRightOpen);
     }
@@ -578,8 +658,14 @@ export function AppShell() {
         <div key={connToast} className="project-switch-toast conn-toast">{connToast}</div>
       )}
       <div
-        className={`app-body${revealRight && rightPinned ? " right-docked" : ""}${resizingRight ? " resizing" : ""}`}
-        style={revealRight && rightPinned ? { paddingRight: rightWidth } : undefined}
+        className={`app-body${revealRight && rightPinned ? (panelSide === "left" ? " left-docked" : " right-docked") : ""}${resizingRight ? " resizing" : ""}`}
+        style={
+          revealRight && rightPinned
+            ? panelSide === "left"
+              ? { paddingLeft: rightWidth }
+              : { paddingRight: rightWidth }
+            : undefined
+        }
         onMouseMove={handleBodyMouseMove}
       >
         <CenterPanel />
@@ -587,20 +673,27 @@ export function AppShell() {
           <RightPanel
             open={revealRight}
             pinned={rightPinned}
+            side={panelSide}
             width={rightWidth}
             resizing={resizingRight}
             onResizeStart={onResizeStart}
             onResizeMove={onResizeMove}
             onResizeEnd={onResizeEnd}
             onTogglePin={togglePin}
+            onToggleSide={toggleSide}
             onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
             onMouseLeave={() => !rightPinned && scheduleClose(rightCloseTimer, setRightOpen)}
           />
         )}
-        {/* Invisible marker at the right-edge reveal band so the guided tour has
-            a stable element to spotlight for the "find your files" step. */}
+        {/* Invisible marker at the reveal band so the guided tour has a stable
+            element to spotlight for the "find your files" step. Follows the panel
+            to whichever edge it docks against. */}
         {panelTarget && !panelsHidden && (
-          <div className="tour-edge-marker" data-hint-anchor="file-tree-edge" aria-hidden />
+          <div
+            className={`tour-edge-marker${panelSide === "left" ? " left" : ""}`}
+            data-hint-anchor="file-tree-edge"
+            aria-hidden
+          />
         )}
         {/* Always-visible CLICK affordance to open the (closed, unpinned) file
             panel. The hover-only right-edge reveal (handleBodyMouseMove) depends
@@ -613,22 +706,28 @@ export function AppShell() {
         {panelTarget && !panelsHidden && !revealRight && (
           <button
             type="button"
-            className="right-panel-reveal-handle"
+            className={`right-panel-reveal-handle${panelSide === "left" ? " left" : ""}`}
             aria-label="Show files panel"
             title="Show files panel"
             onClick={() => reveal(rightCloseTimer, setRightOpen)}
             onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
           >
-            <span aria-hidden="true">‹</span>
+            <span aria-hidden="true">{panelSide === "left" ? "›" : "‹"}</span>
           </button>
         )}
       </div>
       <VpnPasswordPrompt />
       <RemoteConnectDialog />
+      {/* Multi-host remote: the "Remote machines" manager, opened from a pill's
+          Runtime menu or a right-click on its remote lamp. */}
+      <RemoteMachinesDialogHost />
       {/* Same reason as the alarm below: lockstep/sync can delete a file from the local
           mirror during a background pass, and the user must hear about it wherever they
           are — including when the file panel it happened in is closed (#28q). */}
       <LocalLossDialog />
+      {/* Fires once per connect (manual or silent auto-connect): warns that the
+          host's load/memory/logged-in sessions suggest it's already in use. */}
+      <RemoteUsageWarningDialog />
       {/* Calendar reminders live at the shell, not in the calendar pane: an alarm
           must reach the user whatever tab they are on — and even if they have
           never opened a calendar tab this session. */}

@@ -76,7 +76,7 @@ describe("headless SSH connect", () => {
     // …but the pooled session is what actually opens the master, so it needs the
     // password too. Passing `null` here is the bug: it silently downgrades to
     // key/agent auth and only worked when a password happened to be saved.
-    expect(argsOf("remote_connect")).toEqual({ projectId: "p1", password: "s3cret" });
+    expect(argsOf("remote_connect")).toEqual({ projectId: "p1", hostId: "primary", password: "s3cret" });
 
     await waitFor(() => expect(result.current.sshStatus).toBe("connected"));
   });
@@ -98,7 +98,7 @@ describe("headless SSH connect", () => {
     });
 
     expect(argsOf("ssh_connect")).toMatchObject({ password: null });
-    expect(argsOf("remote_connect")).toEqual({ projectId: "p1", password: null });
+    expect(argsOf("remote_connect")).toEqual({ projectId: "p1", hostId: "primary", password: null });
   });
 
   it("surfaces a failed pooled connect as an error, not a green lamp", async () => {

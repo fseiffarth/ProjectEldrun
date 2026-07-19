@@ -5,6 +5,8 @@ import {
   TabEntry,
   TabKind,
 } from "../../stores/tabs";
+import type { CustomAgent } from "../../types";
+import type { AddMenuEntry } from "./AddTabMenuList";
 
 /**
  * A static entry in the "new tab" add menu. Shared by the main-window `TabBar`
@@ -14,7 +16,14 @@ export interface StaticMenuItem {
   label: string;
   cmd: string;
   kind: TabKind;
+  // Launch args, prepended before any session/resume args. Only custom agents
+  // set this today; the built-in AGENT_ITEMS take no leading args.
+  args?: string[];
   env?: Record<string, string>;
+  // For a custom agent whose spec supplied a "continue last session" flag: the
+  // args that make the tab restart-resumable (cwd-continue tier). Threaded onto
+  // the tab as `resumeArgs`; see buildStaticTabSpec / isResumableAgentTab.
+  resumeArgs?: string[];
   // Optional template for a command typed into the agent on launch to name its
   // own session after the project. Only set for agents with a known
   // session-rename command; others are skipped to avoid typing junk into them.
@@ -90,12 +99,19 @@ export function buildStaticTabSpec(
 ): Omit<TabEntry, "key"> {
   const initialInput =
     item.sessionRename && projectName ? item.sessionRename(projectName) : undefined;
-  const tracked = item.cmd in RESUMABLE_AGENTS;
-  const sessionId = tracked || item.sessionIdArgs ? crypto.randomUUID() : undefined;
-  const args = sessionId && item.sessionIdArgs ? item.sessionIdArgs(sessionId) : [];
+  // "Resumable" now spans a built-in in the static table AND a custom agent that
+  // brought its own resume flag — both mint a session UUID so they satisfy the
+  // tab-persistence gate (isResumableAgentTab requires a sessionId).
+  const resumable = item.cmd in RESUMABLE_AGENTS || !!item.resumeArgs?.length;
+  const sessionId =
+    resumable || item.sessionIdArgs ? crypto.randomUUID() : undefined;
+  const args = [
+    ...(item.args ?? []),
+    ...(sessionId && item.sessionIdArgs ? item.sessionIdArgs(sessionId) : []),
+  ];
   const env = {
     ...(item.env ?? {}),
-    ...(tracked && sessionId ? { ELDRUN_TAB_UID: sessionId } : {}),
+    ...(resumable && sessionId ? { ELDRUN_TAB_UID: sessionId } : {}),
   };
   return {
     label: item.label,
@@ -106,5 +122,75 @@ export function buildStaticTabSpec(
     kind: item.kind,
     initialInput,
     sessionId,
+    ...(item.resumeArgs?.length ? { resumeArgs: item.resumeArgs } : {}),
   };
+}
+
+/** Stable empty custom-agent array, so a settings selector's `?? …` fallback
+ *  keeps a constant reference (a fresh `[]` each render would loop the probe
+ *  effect that depends on it). */
+export const EMPTY_CUSTOM_AGENTS: CustomAgent[] = [];
+
+/** Adapt a persisted {@link CustomAgent} into a menu item so it launches through
+ *  the same `buildStaticTabSpec` path as the built-in agents. */
+export function customAgentToItem(ca: CustomAgent): StaticMenuItem {
+  return {
+    label: ca.label,
+    cmd: ca.cmd,
+    kind: "agent",
+    args: ca.args,
+    env: ca.env,
+    resumeArgs: ca.resumeArgs,
+  };
+}
+
+/**
+ * Build the "Agents" group's rows for the add-tab menu, shared by the main-window
+ * `TabBar` and the popout's `NewTabMenu` so both list agents identically:
+ *   1. built-in agents whose binary is installed (`installedBuiltins`),
+ *   2. every custom agent — greyed with a "(not found)" suffix when its command
+ *      is known-missing (`installedCmds` resolved and lacking it), since the user
+ *      added it deliberately and silently dropping it would be baffling,
+ *   3. the "＋ Add agent…" row that opens the manage-agents dialog.
+ *
+ * `installedBuiltins`/`installedCmds` are `null` until their probes resolve, so
+ * built-ins render nothing (no flash of all agents) while custom agents — which
+ * the user typed themselves — render enabled until a probe proves one missing.
+ */
+export function agentMenuEntries(opts: {
+  installedBuiltins: Set<string> | null;
+  installedCmds: Set<string> | null;
+  customAgents: CustomAgent[];
+  pick: (item: StaticMenuItem) => void;
+  onAddCustom: () => void;
+}): AddMenuEntry[] {
+  const builtins = AGENT_ITEMS.filter((item) =>
+    opts.installedBuiltins?.has(item.cmd),
+  ).map((item) => ({
+    key: item.cmd,
+    label: item.label,
+    color: TAB_ACCENT[item.kind],
+    onPick: () => opts.pick(item),
+  }));
+  const custom = opts.customAgents.map((ca) => {
+    const missing = opts.installedCmds != null && !opts.installedCmds.has(ca.cmd);
+    return {
+      key: `custom:${ca.id}`,
+      label: missing ? `${ca.label} (not found)` : ca.label,
+      color: TAB_ACCENT.agent,
+      disabled: missing,
+      onPick: () => opts.pick(customAgentToItem(ca)),
+    };
+  });
+  return [
+    ...builtins,
+    ...custom,
+    {
+      key: "__add_custom_agent__",
+      label: "Add agent…",
+      dot: "＋",
+      color: "var(--text-muted)",
+      onPick: opts.onAddCustom,
+    },
+  ];
 }

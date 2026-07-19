@@ -9,11 +9,13 @@ import {
   MONITOR_TAB_CMD,
   EMPTY_GROUP_ID,
   effectiveTabLocation,
+  remoteHostIdOf,
   isLocatableKind,
   isPtyTabKind,
   useTabsStore,
   useGroup,
   useGroupTabs,
+  type TabLocation,
 } from "../../stores/tabs";
 import { useDragStore } from "../../stores/drag";
 import { useTabLandStore } from "../../stores/tabLand";
@@ -21,14 +23,16 @@ import { useDetachAnimStore, flyVector } from "../../stores/detachAnim";
 import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
 import {
-  AGENT_ITEMS,
+  EMPTY_CUSTOM_AGENTS,
   SHELL_ITEMS,
   TAB_ACCENT,
+  agentMenuEntries,
   buildStaticTabSpec,
   isFileTabKind,
   type StaticMenuItem,
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
+import { CustomAgentDialog } from "./CustomAgentDialog";
 import { type AgentMode, supportsAgentMode } from "./agentModes";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
@@ -38,6 +42,7 @@ import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
+import { closeTabWithConfirm } from "../../lib/closeRemoteTab";
 import { useActivityStore } from "../../stores/activity";
 import { useFileSourcesStore } from "../../stores/fileSources";
 
@@ -74,9 +79,17 @@ interface Props {
   projectCwd: string;
   /** Show the per-subwindow close (×) button. Only when >1 subwindow exists. */
   showGroupClose: boolean;
+  /**
+   * Width (px) the docked file viewer occupies below this bar, when open. The
+   * bar reserves the same width on its right so the scrolling tab strip stops
+   * at the pane's edge (tabs never run over the viewer, and overflow-scroll
+   * engages there) while the ◫/hide/close controls stay pinned at the far
+   * right, above the viewer. Undefined when no viewer is docked.
+   */
+  filesReserveWidth?: number;
 }
 
-export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
+export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth }: Props) {
   // Fine-grained subscriptions (Eff #3/#4): this bar tracks ONLY its own group
   // node + that group's resolved tab payloads, so a tab change in another
   // subwindow no longer re-renders every bar, and the per-render Map-of-all-tabs
@@ -113,6 +126,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // remote (SSH) project's agent/shell tabs. Subscribe to a single boolean so a
   // project edit elsewhere doesn't re-render every bar.
   const isRemoteScope = useProjectsStore((s) => !!s.projects.find((p) => p.id === scope)?.remote);
+  // The scope project's primary host + extra worker hosts (multi-host remote),
+  // for the tab locality menu (Local / Primary / each worker). Change rarely, so
+  // subscribing to the references is fine.
+  const primaryHost = useProjectsStore((s) => s.projects.find((p) => p.id === scope)?.remote?.host);
+  const computeHosts = useProjectsStore((s) => s.projects.find((p) => p.id === scope)?.compute_hosts);
   // Per-tab file source (remote-native vs local mirror), published by the file
   // viewers. Lets the Remote/Local badge ride on the viewer tab itself rather
   // than costing a whole viewer header row. Only meaningful on remote projects.
@@ -165,6 +183,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
   // the left / Close to the right / Rename). Shift+right-click bypasses it and
   // goes straight to inline rename (#56). Keyed to the clicked tab + its index so
   // the left/right-of splits resolve against this group's ordered `tabs`.
+  // Multi-host: the open tab-locality menu (Local / Primary / each worker), keyed
+  // by tab. Positioned like the tab context menu below.
+  const [localityMenu, setLocalityMenu] = useState<{ key: string; x: number; y: number } | null>(
+    null,
+  );
   const [tabMenu, setTabMenu] = useState<
     { x: number; y: number; key: string; index: number } | null
   >(null);
@@ -202,6 +225,24 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
       )
       .catch(() => setInstalledAgents(new Set()));
   }, []);
+  // User-defined custom agents (Settings.custom_agents) + the manage-dialog it
+  // opens. Their commands aren't in the built-in registry, so they're probed
+  // separately (`probe_binaries`); `null` until resolved. See agentMenuEntries.
+  const customAgents = useSettingsStore(
+    (s) => s.settings?.custom_agents ?? EMPTY_CUSTOM_AGENTS,
+  );
+  const [installedCustom, setInstalledCustom] = useState<Set<string> | null>(null);
+  const [agentDialogOpen, setAgentDialogOpen] = useState(false);
+  useEffect(() => {
+    const cmds = customAgents.map((a) => a.cmd);
+    if (cmds.length === 0) {
+      setInstalledCustom(new Set());
+      return;
+    }
+    invoke<string[]>("probe_binaries", { bins: cmds })
+      .then((found) => setInstalledCustom(new Set(found)))
+      .catch(() => setInstalledCustom(new Set()));
+  }, [customAgents]);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
   // The tabs live in their own horizontally-scrolling strip; chevrons flank it
@@ -703,8 +744,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
     const onCommit = async (shiftKey: boolean) => {
       cleanup();
       if (!dragging) {
-        // Never dragged → this was a click: activate the tab.
-        setGroupActive(groupId, tab.key);
+        // Never dragged → this was a click. Clicking an inactive tab activates
+        // it; clicking the already-active tab enters inline rename (#56 flow).
+        if (tab.key === activeKey) {
+          focusGroup(groupId);
+          setEditingKey(tab.key);
+        } else {
+          setGroupActive(groupId, tab.key);
+        }
         return;
       }
       // Idempotency: if another committer already finished this drag (CenterPanel's
@@ -1127,32 +1174,41 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
                 </button>
               );
             })()}
-            {/* SSH-sync Phase 0: local/remote locality badge — click to toggle
-                whether this agent/shell tab runs in the local mirror or on the
-                host. Only shown for a remote project's locatable tabs. */}
+            {/* Locality badge — click to choose where this agent/shell tab runs:
+                the local mirror, the primary host, or (multi-host remote,
+                docs/multi_host_remote_plan.md) any worker machine. Only shown for
+                a remote project's locatable tabs. With no workers it is still a
+                menu (Local / Primary). */}
             {isRemoteScope && isLocatableKind(tab.kind) && (() => {
               const loc = effectiveTabLocation(tab);
+              const hostId = remoteHostIdOf(loc);
+              const label =
+                hostId === null
+                  ? "Local (mirror)"
+                  : hostId === "primary"
+                    ? `Primary${primaryHost ? ` (${primaryHost})` : ""}`
+                    : (() => {
+                        const w = computeHosts?.find((h) => h.id === hostId);
+                        return w?.label || w?.host || hostId;
+                      })();
               return (
                 <button
-                  className={`tab-locality ${loc}`}
-                  title={
-                    loc === "local"
-                      ? "Runs locally in the project mirror — click to run on the host"
-                      : "Runs on the host over SSH — click to run locally in the mirror"
-                  }
+                  className={`tab-locality ${hostId === null ? "local" : "remote"}`}
+                  title={`Runs on: ${label} — click to change where this tab runs`}
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
-                    setTabLocation(tab.key, loc === "local" ? "remote" : "local");
+                    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setLocalityMenu({ key: tab.key, x: r.left, y: r.bottom + 2 });
                   }}
                 >
-                  {loc === "local" ? "⌂" : "☁"}
+                  {hostId === null ? "⌂" : "☁"}
                 </button>
               );
             })()}
             <button
               className="tab-close"
-              onClick={(e) => { e.stopPropagation(); removeTab(tab.key); }}
+              onClick={(e) => { e.stopPropagation(); closeTabWithConfirm(tab.key); }}
               title="Close tab"
             >
               ×
@@ -1191,44 +1247,53 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           ›
         </button>
       )}
-      {groupId !== EMPTY_GROUP_ID && (
-        <button
-          className={`subwindow-files-toggle${filesOpen ? " open" : ""}`}
-          title={filesOpen ? "Close this subwindow's file viewer" : "Open a file viewer in this subwindow"}
-          // Same self-contained interaction discipline as the hide/close buttons:
-          // stop the bar's focusGroup mousedown and don't let the click bubble.
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); setGroupFiles(groupId, !filesOpen); }}
-        >
-          ◫
-        </button>
-      )}
-      {groupId !== EMPTY_GROUP_ID && (
-        <button
-          className="subwindow-hide"
-          title="Hide subwindow (bring it back from the right panel)"
-          // Same self-contained interaction discipline as the close button below:
-          // stop the bar's focusGroup mousedown and don't let the click bubble.
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); hideGroup(groupId); }}
-        >
-          –
-        </button>
-      )}
-      {showGroupClose && (
-        <button
-          className="subwindow-close"
-          title="Close subwindow"
-          // Stop the bar's onMouseDown focusGroup from running first (it isn't
-          // harmful, but keeping the close interaction self-contained avoids any
-          // focus/state churn racing the click) and ensure the click itself
-          // isn't bubbled into a tab/pointer handler.
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); closeGroup(groupId); }}
-        >
-          ×
-        </button>
-      )}
+      {/* The subwindow controls stay pinned at the far right of the bar. When a
+          file viewer is docked below, this cluster reserves the viewer's width
+          (`filesReserveWidth`) and right-aligns within it, so it sits directly
+          above the viewer while the scrolling tab strip stops at the pane edge. */}
+      <div
+        className="tab-controls"
+        style={filesReserveWidth != null ? { width: filesReserveWidth } : undefined}
+      >
+        {groupId !== EMPTY_GROUP_ID && (
+          <button
+            className={`subwindow-files-toggle${filesOpen ? " open" : ""}`}
+            title={filesOpen ? "Close this subwindow's file viewer" : "Open a file viewer in this subwindow"}
+            // Same self-contained interaction discipline as the hide/close buttons:
+            // stop the bar's focusGroup mousedown and don't let the click bubble.
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); setGroupFiles(groupId, !filesOpen); }}
+          >
+            ◫
+          </button>
+        )}
+        {groupId !== EMPTY_GROUP_ID && (
+          <button
+            className="subwindow-hide"
+            title="Hide subwindow (bring it back from the right panel)"
+            // Same self-contained interaction discipline as the close button below:
+            // stop the bar's focusGroup mousedown and don't let the click bubble.
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); hideGroup(groupId); }}
+          >
+            –
+          </button>
+        )}
+        {showGroupClose && (
+          <button
+            className="subwindow-close"
+            title="Close subwindow"
+            // Stop the bar's onMouseDown focusGroup from running first (it isn't
+            // harmful, but keeping the close interaction self-contained avoids any
+            // focus/state churn racing the click) and ensure the click itself
+            // isn't bubbled into a tab/pointer handler.
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); closeGroup(groupId); }}
+          >
+            ×
+          </button>
+        )}
+      </div>
       {menuOpen && menuPos && createPortal(
         <div
           className="tab-new-menu"
@@ -1239,14 +1304,16 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
             groups={[
               {
                 label: "Agents",
-                entries: AGENT_ITEMS.filter((item) => installedAgents?.has(item.cmd)).map(
-                  (item) => ({
-                    key: item.cmd,
-                    label: item.label,
-                    color: TAB_ACCENT[item.kind],
-                    onPick: () => handleAdd(item),
-                  }),
-                ),
+                entries: agentMenuEntries({
+                  installedBuiltins: installedAgents,
+                  installedCmds: installedCustom,
+                  customAgents,
+                  pick: handleAdd,
+                  onAddCustom: () => {
+                    setMenuPos(null);
+                    setAgentDialogOpen(true);
+                  },
+                }),
               },
               // Only offer agents whose binary is actually installed: Mistral/vibe
               // (checked against `installedAgents`) and the drivers the backend
@@ -1366,6 +1433,52 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
         </div>,
         document.body,
       )}
+      {agentDialogOpen && (
+        <CustomAgentDialog onClose={() => setAgentDialogOpen(false)} />
+      )}
+      {localityMenu && createPortal(
+        <>
+          {/* Click-away backdrop closing the locality menu. */}
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 40 }}
+            onPointerDown={() => setLocalityMenu(null)}
+          />
+          <div
+            className="tab-new-menu"
+            style={{ position: "fixed", left: localityMenu.x, top: localityMenu.y, zIndex: 41 }}
+          >
+            {(() => {
+              const menuTab = tabs.find((t) => t.key === localityMenu.key);
+              const cur = menuTab ? effectiveTabLocation(menuTab) : "local";
+              const item = (loc: TabLocation, glyph: string, text: string) => (
+                <button
+                  key={loc}
+                  className="tab-new-menu-item"
+                  onClick={() => {
+                    setTabLocation(localityMenu.key, loc);
+                    setLocalityMenu(null);
+                  }}
+                >
+                  <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>
+                    {cur === loc ? "●" : glyph}
+                  </span>
+                  {text}
+                </button>
+              );
+              return (
+                <>
+                  {item("local", "⌂", "Local (mirror)")}
+                  {item("remote", "☁", `Primary${primaryHost ? ` (${primaryHost})` : ""}`)}
+                  {(computeHosts ?? []).map((h) =>
+                    item(`host:${h.id}`, "☁", h.label || h.host || h.id),
+                  )}
+                </>
+              );
+            })()}
+          </div>
+        </>,
+        document.body,
+      )}
       {tabMenu && createPortal(
         <div
           className="tab-new-menu"
@@ -1385,7 +1498,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose }: Props) {
           <button
             className="tab-new-menu-item"
             onClick={() => {
-              removeTab(tabMenu.key);
+              closeTabWithConfirm(tabMenu.key);
               setTabMenu(null);
             }}
           >

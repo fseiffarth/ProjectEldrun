@@ -3,7 +3,6 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, Event } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settings";
 import { cmdToKind, isDetachedPtyId, type TabKind } from "../../stores/tabs";
 import { notePtySpawn, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
@@ -11,6 +10,8 @@ import { useAgentTaskStore } from "../../stores/agentTask";
 import { noteInput } from "../../lib/promptCount";
 import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { ROOT_SCOPE, bumpUsage, markAgentActive } from "../../stores/usage";
+import { onTerminalExit, onTerminalOutput, onTerminalReady } from "../../lib/terminalBus";
+import { claimInitialInput, initialInputForPty, isTerminalIdentityResponse } from "../../lib/terminalControl";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -18,16 +19,6 @@ import "@xterm/xterm/css/xterm.css";
 // resulting `Uint8Array` is passed straight to `pty_write` (Tauri v2 ships typed
 // arrays to a `Vec<u8>` command directly), avoiding the per-key `Array.from`.
 const PTY_ENCODER = new TextEncoder();
-
-interface TerminalOutput {
-  id: string;
-  data: string;
-}
-
-interface TerminalExit {
-  id: string;
-  code: number | null;
-}
 
 interface Props {
   id: string;
@@ -47,6 +38,18 @@ interface Props {
   // detect remoteness explicitly (resolve the project's RemoteSpec) instead of
   // sniffing the cwd. Harmless for local projects — they resolve to no remote.
   projectId?: string | null;
+  // Which of the project's remote hosts this tab runs on (multi-host remote,
+  // `docs/multi_host_remote_plan.md`): "primary" / undefined for the primary
+  // remote, a worker id for a `host:<id>` locality. Forwarded to the backend so
+  // it resolves the right worker's RemoteSpec. Ignored for local projects/tabs.
+  remoteHostId?: string | null;
+  // Persistent remote sessions (TODO #85): the stable tmux session name to spawn-
+  // or-attach this remote spawn into, so the run survives an SSH drop / relaunch.
+  // Set only for remote shell/script tabs of a persist-enabled project. No-op locally.
+  tmuxSession?: string | null;
+  // Attach this tab to an existing named tmux session instead of spawning one
+  // (TODO #85 Sessions view). Takes precedence over `tmuxSession`. No-op locally.
+  tmuxAttach?: string | null;
   // Whether this pane is laid out on screen (single-mode active tab, or any
   // pane in grid mode). Drives display + xterm fit.
   visible: boolean;
@@ -187,7 +190,7 @@ function readAgentFontSize(): number {
   return DEFAULT_FONT_SIZE;
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false }: Props) {
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -196,6 +199,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const unlistenReady = useRef<(() => void) | null>(null);
   const unlistenExit = useRef<(() => void) | null>(null);
   const initialInputSent = useRef(false);
+  const initialInputPending = useRef(false);
   const initialEnterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openWatchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firstOutputAt = useRef<number | null>(null);
@@ -218,17 +222,21 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   useEffect(() => {
     if (!containerRef.current) return;
     let cancelled = false;
+    initialInputSent.current = false;
+    initialInputPending.current = !!initialInput;
 
     const term = new Terminal({
       scrollback: 5000,
       allowProposedApi: false,
       cursorBlink: true,
       fontSize: zoomable ? readAgentFontSize() : DEFAULT_FONT_SIZE,
-      // Consolas/Cascadia Mono are the guaranteed Windows monospace fonts; keep
-      // them ahead of the generic fallback so the terminal isn't a bitmap font on
-      // Windows when the preferred coding fonts aren't installed.
+      // 'JetBrains Mono Variable' is bundled (fontsource, imported in main.tsx)
+      // so it's always available; the rest of the stack is the fallback for a
+      // renderer that can't load it — Consolas/Cascadia Mono are the guaranteed
+      // Windows monospace fonts, kept ahead of the generic fallback so the
+      // terminal isn't a bitmap font there.
       fontFamily:
-        "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Cascadia Mono', Consolas, Menlo, monospace",
+        "'JetBrains Mono Variable', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Cascadia Mono', Consolas, Menlo, monospace",
       theme: terminalTheme(colorScheme),
     });
 
@@ -317,6 +325,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // so the usage recap's "you asked them N things" is counted here (see
     // lib/promptCount): Enter with content pending = one submit.
     term.onData((data) => {
+      if (initialInputPending.current && isTerminalIdentityResponse(data)) {
+        return;
+      }
       noteUserInput(id);
       if (noteInput(id, data) > 0) countSubmit();
       invoke("pty_write", { id, data: PTY_ENCODER.encode(data) }).catch(console.error);
@@ -402,80 +413,74 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       return true;
     });
 
-    const setupAndSpawn = async () => {
-      const outputListener = await listen<TerminalOutput>(
-        "terminal-output",
-        (ev: Event<TerminalOutput>) => {
-          if (ev.payload.id === id) {
-            // Record when the spawned program first produces output — used to
-            // tell when an agent TUI has actually started so we don't type the
-            // initialInput before it can accept keystrokes (see below).
-            if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
-            writeTerm(ev.payload.data);
-          }
-        },
-      );
+    // Subscribed by id through the shared bus (lib/terminalBus) rather than each
+    // pane calling `listen()` itself — the backend emits these window-wide, not
+    // scoped per PTY, so one `listen()` per mounted terminal meant every output
+    // chunk from every running PTY was dispatched to and filtered by every
+    // mounted terminal (CenterPanel keeps ALL tabs, ALL scopes, mounted forever).
+    // The bus does that dispatch once, in O(1) per id, no matter how many panes
+    // are mounted. Subscribing is synchronous, so these are wired up before
+    // `setupAndSpawn` below ever awaits `pty_spawn` — no output can arrive first.
+    unlistenOutput.current = onTerminalOutput(id, (data) => {
+      // Record when the spawned program first produces output — used to tell
+      // when an agent TUI has actually started so we don't type the
+      // initialInput before it can accept keystrokes (see below).
+      if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
+      writeTerm(data);
+    });
 
-      const readyListener = await listen("terminal-ready", (ev: Event<{ id: string }>) => {
-        if (ev.payload.id === id) {
-          writeTerm("\r\n");
-          if (initialInput && !initialInputSent.current) {
-            initialInputSent.current = true;
-            // `terminal-ready` fires as soon as the PTY is spawned, but an agent
-            // TUI (Claude, etc.) needs a beat to boot before it reads stdin.
-            // Typing the command immediately means the keystrokes/Enter land
-            // before the input box is live, so the text appears but never
-            // submits. Wait until the program has produced output for a short
-            // cushion (boot done) — capped by a hard timeout — then type the
-            // text and submit it with a single Enter (CR) a beat later, as a
-            // separate write so a trailing newline isn't swallowed by the TUI's
-            // bracketed-paste/buffered input handling.
-            const READY_CUSHION_MS = 1200;
-            const MAX_WAIT_MS = 5000;
-            const scheduledAt = Date.now();
-            const typeWhenReady = () => {
-              if (cancelled) return;
-              const elapsed = Date.now() - scheduledAt;
-              const firstOut = firstOutputAt.current;
-              const ready =
-                firstOut !== null && Date.now() - firstOut >= READY_CUSHION_MS;
-              if (!ready && elapsed < MAX_WAIT_MS) {
-                initialEnterTimer.current = setTimeout(typeWhenReady, 100);
-                return;
-              }
-              // Typed on the user's behalf — they triggered the flow that
-              // opened this tab with a command, so its work counts as asked-for.
-              noteUserInput(id);
-              invoke("pty_write", { id, data: PTY_ENCODER.encode(initialInput) }).catch(console.error);
-              initialEnterTimer.current = setTimeout(() => {
-                invoke("pty_write", { id, data: new Uint8Array([0x0d]) }).catch(console.error);
-              }, 200);
-            };
-            typeWhenReady();
-          }
+    unlistenReady.current = onTerminalReady(id, () => {
+      writeTerm("\r\n");
+      if (initialInput && !initialInputSent.current) {
+        if (!claimInitialInput(id, initialInput)) {
+          initialInputSent.current = true;
+          initialInputPending.current = false;
+          return;
         }
-      });
-
-      const exitListener = await listen<TerminalExit>(
-        "terminal-exit",
-        (ev: Event<TerminalExit>) => {
-          if (ev.payload.id === id) {
-            writeTerm("\r\n\x1b[33m[process exited]\x1b[0m\r\n");
+        initialInputSent.current = true;
+        // `terminal-ready` fires as soon as the PTY is spawned, but an agent
+        // TUI (Claude, etc.) needs a beat to boot before it reads stdin.
+        // Typing the command immediately means the keystrokes/Enter land
+        // before the input box is live, so the text appears but never
+        // submits. Wait until the program has produced output for a short
+        // cushion (boot done) — capped by a hard timeout — then type the
+        // text and submit it with a single Enter (CR) a beat later, as a
+        // separate write so a trailing newline isn't swallowed by the TUI's
+        // bracketed-paste/buffered input handling.
+        const READY_CUSHION_MS = 1200;
+        const MAX_WAIT_MS = 5000;
+        const scheduledAt = Date.now();
+        const typeWhenReady = () => {
+          if (cancelled) return;
+          const elapsed = Date.now() - scheduledAt;
+          const firstOut = firstOutputAt.current;
+          const ready =
+            firstOut !== null && Date.now() - firstOut >= READY_CUSHION_MS;
+          if (!ready && elapsed < MAX_WAIT_MS) {
+            initialEnterTimer.current = setTimeout(typeWhenReady, 100);
+            return;
           }
-        },
-      );
-
-      if (cancelled) {
-        outputListener();
-        readyListener();
-        exitListener();
-        return;
+          // Typed on the user's behalf — they triggered the flow that
+          // opened this tab with a command, so its work counts as asked-for.
+          noteUserInput(id);
+          invoke("pty_write", {
+            id,
+            data: PTY_ENCODER.encode(initialInputForPty(initialInput, kind)),
+          }).catch(console.error);
+          initialEnterTimer.current = setTimeout(() => {
+            initialInputPending.current = false;
+            invoke("pty_write", { id, data: new Uint8Array([0x0d]) }).catch(console.error);
+          }, 200);
+        };
+        typeWhenReady();
       }
+    });
 
-      unlistenOutput.current = outputListener;
-      unlistenReady.current = readyListener;
-      unlistenExit.current = exitListener;
+    unlistenExit.current = onTerminalExit(id, () => {
+      writeTerm("\r\n\x1b[33m[process exited]\x1b[0m\r\n");
+    });
 
+    const setupAndSpawn = async () => {
       // #42: an attach-only terminal (detached window) must NEVER spawn the PTY.
       // The PTY already exists, spawned by the main window's pane; pty_spawn with
       // a duplicate id would kill+respawn it, destroying scrollback / the agent
@@ -488,7 +493,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       notePtySpawn(id);
       try {
         await invoke("pty_spawn", {
-          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, project_id: projectId ?? null },
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, project_id: projectId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null },
         });
       } catch (e) {
         if (!cancelled) {
@@ -602,7 +607,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
       term.dispose();
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, attachOnly, zoomable, persistOnUnmount]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, attachOnly, zoomable, persistOnUnmount]);
 
   useEffect(() => {
     if (termRef.current) {
@@ -633,6 +638,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         position: "relative",
         display: "flex",
         flexDirection: "column",
+        // Agent panes get a touch more breathing room on the left and a bit less
+        // on the right (the viewport scrollbar already insets the right edge), so
+        // the text margins read as balanced. FitAddon accounts for this padding.
+        ...(zoomable ? { paddingLeft: 10, paddingRight: 4 } : null),
         background:
           colorScheme === "light_lavender"
             ? "#faf9fe"

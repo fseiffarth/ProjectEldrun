@@ -33,6 +33,58 @@ use crate::services::sftp;
 /// so a large selection can't flood it.
 const STAT_CONCURRENCY: usize = 16;
 
+/// Size cutoff for content-verifying an amber verdict during a `sync_status`
+/// refresh. Size+mtime is only a *heuristic* for divergence — a re-save with the
+/// same bytes, or a bare `touch`, moves the mtime while the content is unchanged,
+/// so the file paints amber with nothing actually to resolve. For files at or
+/// below this size we confirm the amber against the actual bytes and downgrade a
+/// byte-identical pair to green (re-recording the base so it *stays* green). Files
+/// ABOVE this keep the pure metadata heuristic — reading them over SFTP on every
+/// refresh is exactly the cost the heuristic exists to avoid.
+const CONTENT_VERIFY_MAX_BYTES: u64 = 1024 * 1024; // 1 MiB
+
+/// A rebase captured when an amber file proves byte-identical: the host + local
+/// `(size, mtime)` to stamp as the new sync base so the file goes (and stays)
+/// green instead of re-reading its bytes on every refresh.
+struct ContentRebase {
+    rel: String,
+    host_size: u64,
+    host_mtime: Option<u64>,
+    local_size: u64,
+    local_mtime: Option<u64>,
+}
+
+/// Confirm an amber verdict against the actual bytes, for a file small enough to
+/// be worth reading. Returns `Some(rebase)` only when both sides exist, are the
+/// same size, sit within [`CONTENT_VERIFY_MAX_BYTES`], and hold identical bytes —
+/// i.e. the divergence was metadata-only. Returns `None` (stay amber) otherwise,
+/// including on any read error: an unreadable side keeps the conservative amber.
+async fn verify_amber_identical(
+    sftp: &Sftp,
+    host_abs: &str,
+    mirror_path: &std::path::Path,
+    rel: &str,
+    host: (u64, Option<u64>),
+    local: (u64, Option<u64>),
+) -> Option<ContentRebase> {
+    let (host_size, host_mtime) = host;
+    let (local_size, local_mtime) = local;
+    // Gate the read on the pure heuristic-vs-content policy (both sides present,
+    // same size, within the cutoff — large files keep the metadata heuristic).
+    if !remote_sync::content_verify_worth_it(host, local, CONTENT_VERIFY_MAX_BYTES) {
+        return None;
+    }
+    let host_bytes = sftp::read_file_on(sftp, host_abs).await.ok()?;
+    let local_bytes = std::fs::read(mirror_path).ok()?;
+    (host_bytes == local_bytes).then_some(ContentRebase {
+        rel: rel.to_string(),
+        host_size,
+        host_mtime,
+        local_size,
+        local_mtime,
+    })
+}
+
 /// One row of sync status for the file-tree overlay.
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncStatusEntry {
@@ -333,23 +385,61 @@ pub async fn sync_status(
                 let (size, mtime) = remote_sync::stat_or_zero(&sftp, &host_abs).await;
                 // Also re-stat the local mirror so a local-only edit flips to amber
                 // (symmetric divergence — the host may be unchanged).
-                let local = std::fs::metadata(mirror_local_path(&project_id, &rel))
-                    .ok()
-                    .map(|m| local_meta(&m));
-                let state = remote_sync::compute_state(&entry, Some((size, mtime)), local);
-                SyncStatusEntry {
-                    rel_path: rel,
-                    is_dir: false,
-                    selected: true,
-                    state,
-                    auto_sync: auto,
+                let mirror_path = mirror_local_path(&project_id, &rel);
+                let local = std::fs::metadata(&mirror_path).ok().map(|m| local_meta(&m));
+                let mut state = remote_sync::compute_state(&entry, Some((size, mtime)), local);
+                // A metadata-only amber (same bytes, drifted mtime/size-vs-base) is a
+                // false positive: for a small file, confirm against the actual bytes
+                // and downgrade an identical pair to green, capturing the rebase so it
+                // is re-recorded and stays green. Large files keep the heuristic.
+                let mut rebase = None;
+                if state == SyncState::Amber {
+                    if let Some(local_vals) = local {
+                        if let Some(rb) = verify_amber_identical(
+                            &sftp, &host_abs, &mirror_path, &rel, (size, mtime), local_vals,
+                        )
+                        .await
+                        {
+                            state = SyncState::Green;
+                            rebase = Some(rb);
+                        }
+                    }
                 }
+                (
+                    SyncStatusEntry {
+                        rel_path: rel,
+                        is_dir: false,
+                        selected: true,
+                        state,
+                        auto_sync: auto,
+                    },
+                    rebase,
+                )
             }
         }))
         .buffer_unordered(STAT_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
-        out.extend(statted);
+        // Split the rows from the content-verified rebases: the rows go straight to
+        // the response, the rebases are stamped into the manifest under the single-
+        // writer lock and persisted once (only when at least one file self-healed).
+        let mut rebases = Vec::new();
+        for (row, rb) in statted {
+            if let Some(rb) = rb {
+                rebases.push(rb);
+            }
+            out.push(row);
+        }
+        if !rebases.is_empty() {
+            let mut guard = manifest.lock().await;
+            let m = ensure_loaded(&mut guard, &project_id);
+            for rb in &rebases {
+                remote_sync::record_pull(
+                    m, &rb.rel, rb.host_size, rb.host_mtime, rb.local_size, rb.local_mtime,
+                );
+            }
+            let _ = remote_sync::save_manifest(&project_id, m);
+        }
     }
     Ok(out)
 }
@@ -410,6 +500,55 @@ pub async fn sync_file_meta(
         m.get(&rel_path).map(|e| (e.host_size, e.host_mtime)).unwrap_or((0, None))
     };
     Ok(SyncFileMeta { rel_path, local, host, base_size, base_mtime })
+}
+
+/// Byte-for-byte check for one diverged (amber) file, run when the three-way
+/// merge viewer opens it. If the local mirror and the current host copy hold
+/// **identical bytes**, the divergence was metadata-only (a re-save with the same
+/// content, a bare `touch`, or a stale base): re-record the sync base from both
+/// sides' fresh `(size, mtime)` so the file clears amber → green — no transfer,
+/// since the bytes already match — and return `true`. Returns `false` when the
+/// sides genuinely differ, or when either side is missing/unreadable (a real
+/// divergence the viewer must resolve). Requires a live pooled connection to read
+/// the host over SFTP; a cold pool errors via `resolve`.
+///
+/// This is the same "amber is size+mtime, not content" self-heal that
+/// [`verify_amber_identical`] applies during a `sync_status` refresh, but WITHOUT
+/// that path's size cutoff: the user explicitly opened the viewer for this one
+/// file, so reading it once — however large — is a decision, not the per-refresh
+/// cost the heuristic exists to avoid.
+#[tauri::command]
+pub async fn sync_resolve_if_identical(
+    project_id: String,
+    rel_path: String,
+    pool: State<'_, RemotePoolState>,
+    manifest: State<'_, SyncManifestState>,
+) -> Result<bool, String> {
+    let (target, sftp) = resolve(&project_id, pool.inner()).await?;
+    let host_abs = join_remote(&target.spec.remote_path, &rel_path);
+    // Read both sides fully. A side that can't be read (deleted on the host, never
+    // pulled locally) is not "identical" — leave it amber for the merge viewer.
+    let Ok(host_bytes) = sftp::read_file_on(&sftp, &host_abs).await else {
+        return Ok(false);
+    };
+    let mirror_path = mirror_local_path(&project_id, &rel_path);
+    let Ok(local_bytes) = std::fs::read(&mirror_path) else {
+        return Ok(false);
+    };
+    if host_bytes != local_bytes {
+        return Ok(false);
+    }
+    // Identical: stamp a fresh base from each side's current metadata so the file
+    // goes (and stays) green without any byte transfer.
+    let (host_size, host_mtime) = sftp::metadata_on(&sftp, &host_abs)
+        .await
+        .unwrap_or((host_bytes.len() as u64, None));
+    let (ls, lm) = local_size_mtime(std::fs::metadata(&mirror_path).ok());
+    let mut guard = manifest.lock().await;
+    let m = ensure_loaded(&mut guard, &project_id);
+    remote_sync::record_pull(m, &rel_path, host_size, host_mtime, ls, lm);
+    remote_sync::save_manifest(&project_id, m)?;
+    Ok(true)
 }
 
 /// Result of a local→remote push: how many files were written, and which

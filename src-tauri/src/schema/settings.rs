@@ -105,6 +105,13 @@ pub struct Settings {
     /// ordinary terminal tab, which reaches `pty_spawn` like any other.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python_run_debug: Option<bool>,
+    /// Persistent LOCAL (tmux) sessions (TODO #85): when true (the default on Unix),
+    /// a local project's shell/script tabs run inside a tmux session on the machine,
+    /// so a long run survives an Eldrun crash and the tab reattaches on restart.
+    /// `None`/`Some(true)` = on; `Some(false)` = off. No effect on Windows (no tmux):
+    /// `services::tmux_local` no-ops there. Read via `persist_local_sessions()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persist_local_sessions: Option<bool>,
     /// When true (the default), remote SSH/OpenVPN connections are made headlessly
     /// in the background, with Eldrun handling the password transiently (sshpass /
     /// askpass). When false, those connections are launched as interactive
@@ -298,6 +305,14 @@ impl Settings {
     /// is opt-in.
     pub fn python_run_debug(&self) -> bool {
         self.experimental(self.python_run_debug)
+    }
+
+    /// Whether LOCAL shell/script tabs are wrapped in a persistent tmux session
+    /// (TODO #85). Default ON when unset; only an explicit `Some(false)` opts out.
+    /// The caller still gates on `tmux_local::tmux_available()` (no tmux / Windows →
+    /// no wrap regardless), so this is a preference, not a guarantee.
+    pub fn persist_local_sessions(&self) -> bool {
+        self.persist_local_sessions.unwrap_or(true)
     }
 
     /// Whether remote SSH/OpenVPN connections are made headlessly (Eldrun handles

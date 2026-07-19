@@ -131,7 +131,7 @@ export function SearchPanel({
             background: "var(--bg-panel)",
             color: "var(--text-primary)",
             border: "1px solid var(--border-color)",
-            borderRadius: 3,
+            borderRadius: "var(--radius-sm)",
             padding: "4px 6px",
             boxSizing: "border-box",
           }}

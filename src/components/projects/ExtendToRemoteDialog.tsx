@@ -104,14 +104,29 @@ export function ExtendToRemoteDialog({
       // but the backend reads a password-less connect with nothing in the keychain as
       // *key* auth and records `key_auth: true` — on a password host that is a lie the
       // project keeps, and auto-connect later believes.
+      // A single attempt right after `remote_mkdir_p` can lose to a host session
+      // that hasn't finished settling yet — mirrors `ensureRemotePool`'s retry
+      // cadence (used on ordinary project activation) instead of parking the lamp
+      // on "error" forever after one transient hiccup, with the live ControlMaster
+      // underneath never actually going away.
       const status = useRemoteStatusStore.getState();
       status.setSsh(project.id, "connecting");
-      void invoke("remote_connect", { projectId: project.id, password: remotePassword || null })
-        .then(() => useRemoteStatusStore.getState().setSsh(project.id, "connected"))
-        .catch((err) => {
-          console.warn("remote_connect after extend failed", err);
-          useRemoteStatusStore.getState().setSsh(project.id, "error");
-        });
+      const connectPassword = remotePassword || null;
+      let connectAttempts = 0;
+      const maxConnectAttempts = 6;
+      const tryConnect = () => {
+        void invoke("remote_connect", { projectId: project.id, password: connectPassword })
+          .then(() => useRemoteStatusStore.getState().setSsh(project.id, "connected"))
+          .catch((err) => {
+            if (++connectAttempts >= maxConnectAttempts) {
+              console.warn("remote_connect after extend failed", err);
+              useRemoteStatusStore.getState().setSsh(project.id, "error");
+              return;
+            }
+            setTimeout(tryConnect, 4000);
+          });
+      };
+      tryConnect();
       onClose();
     } catch (e) {
       setError(String(e));

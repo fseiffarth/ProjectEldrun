@@ -1,15 +1,15 @@
-import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
-import { useWindowsStore } from "../../stores/windows";
 import { useTabsStore } from "../../stores/tabs";
 import { useDragStore, type EmbedCap, type FileDragItem } from "../../stores/drag";
 import { commitFileDrop, fileDropGoesToNewWindow } from "../tabs/commitFileDrop";
 import { startDetachedDropSession } from "../tabs/detachedDropTargets";
 import { FileDropContext } from "./fileDropContext";
+import { openFileEntry } from "./openFileEntry";
 import { closeTabsForDeletedPath, retargetTabsForRenamedPath } from "./fileTabSync";
 import {
   startCursorPoll,
@@ -23,14 +23,21 @@ import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform"
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useSyncStore, type SyncFileMeta } from "../../stores/sync";
+import { useSyncStore, type SyncFileState } from "../../stores/sync";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
-import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, relFromAbs, visibleEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
+import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
-import { basename } from "../../lib/paths";
-import { isPythonPath } from "../../lib/viewers/python";
+import { basename, dirname, relativePathWithin, resolvePath } from "../../lib/paths";
+import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
+import { isPythonPath, isPythonMainScript } from "../../lib/viewers/python";
 import { runPythonFile, runCwd, placeForFocused } from "../../lib/pythonRun";
+import {
+  shellRunnerFor,
+  shellScriptRunPlan,
+  type ScriptShell,
+} from "../../lib/shellScriptRun";
+import { readFileText } from "../embed/fileAccess";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
@@ -39,6 +46,12 @@ import { useClampToViewport } from "../../hooks/useClampToViewport";
 // choice survives right-panel hide/show and remounts (FileTree remounts each
 // time the panel reopens). Mirrors GitHistory's localStorage view pref.
 const GITIGNORED_EXPANDED_KEY = "eldrun.fileTree.gitignoredExpanded";
+
+// A stable empty-object fallback for the `python_run_args` selector below — a
+// fresh `{}` literal on every render would change the snapshot's reference
+// identity each time, which `useSyncExternalStore` (what the store hook is
+// built on) reads as "changed" and re-renders forever.
+const EMPTY_PY_ARGS: Record<string, string> = {};
 
 function sizeCategory(bytes: number): string {
   if (bytes < 10 * 1024) return "size-small";
@@ -75,6 +88,12 @@ interface Props {
    *  = the local mirror (browsed/watched as a plain local tree). Absent = a normal
    *  local/remote project tree (no sync UI). */
   syncSource?: "remote" | "local";
+  /** For a remote project's LOCAL-mirror view: the project's remote state dir
+   *  (the one `list_dir` resolves to the host over SFTP — i.e. the pane's own
+   *  `projectDir`, the parent of `mirror/`). Lets the mirror tree cheaply readdir
+   *  the host for the browsed folder and flag which local-only child folders don't
+   *  exist on the remote yet. Absent for a local project / the remote-source view. */
+  remoteProbeDir?: string | null;
 }
 
 type GitStatusMap = Record<string, string>;
@@ -164,46 +183,6 @@ function warmDragIcon(): Promise<string> {
   return dragIconPromise;
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-/** Which interpreter runs a script of this extension, keyed by lowercased ending.
- *  The cross-platform shells run everywhere; `.ps1`/`.bat`/`.cmd` are Windows-only
- *  here (`pwsh` on Linux is too rarely installed to advertise the action). Returns
- *  null for an ending we don't know how to run — no Run button is offered. */
-function shellRunnerFor(extension: string | null): string | null {
-  const ext = (extension ?? "").toLowerCase();
-  const win = PLATFORM === "windows";
-  switch (ext) {
-    case ".sh":
-    case ".bash":
-      return "bash";
-    case ".zsh":
-      return "zsh";
-    case ".fish":
-      return "fish";
-    case ".ksh":
-      return "ksh";
-    case ".ps1":
-      return win ? "powershell" : null;
-    case ".bat":
-    case ".cmd":
-      return win ? "cmd" : null;
-    default:
-      return null;
-  }
-}
-
-/** The command line that runs `scriptRel` under `interp`. PowerShell and cmd take
- *  a flag before the path; the POSIX shells take it as a bare argument. */
-function shellRunCommand(interp: string, scriptRel: string): string {
-  const quoted = shellQuote(scriptRel);
-  if (interp === "powershell") return `powershell -File ${quoted}`;
-  if (interp === "cmd") return `cmd /c ${quoted}`;
-  return `${interp} ${quoted}`;
-}
-
 // TEMPORARY (Windows drag QA — remove together with every dragDbg call): mirror
 // the drag/selection gesture lifecycle into crash.log via report_frontend_error
 // so a failing gesture can be read back without devtools open.
@@ -213,6 +192,25 @@ function dragDbg(message: string) {
   } catch {
     /* diagnostics must never affect the gesture */
   }
+}
+
+/** Turn a raw `list_dir` failure into a sentence a user can act on. The common
+ *  case, by far, is switching a remote project's file view to "Remote" while
+ *  sitting in a folder that only exists in the local mirror (never synced to the
+ *  host): the backend's SFTP `open_dir` fails deep in ssh2 with text like
+ *  "sftp open_dir failed: …", which means nothing to a user. Say what actually
+ *  happened and what to do about it instead. */
+function describeListError(e: unknown, remoteSource: boolean): string {
+  const raw = String(e);
+  if (remoteSource) {
+    // A missing/denied directory on the host. ssh2/libssh surface this as
+    // "no such file", "No such file", "failure", or a bare open_dir error.
+    if (/open_dir|read_dir|no such file|not found|failure|permission/i.test(raw)) {
+      return "This folder isn't on the remote host — it may be local-only (never synced). Switch to Local to view it.";
+    }
+    return "Couldn't list this folder on the remote host. Check the connection and try again.";
+  }
+  return "Couldn't open this folder.";
 }
 
 export function FileTree({
@@ -228,6 +226,7 @@ export function FileTree({
   onRelPathChange,
   onOpenFolderTab,
   syncSource,
+  remoteProbeDir,
 }: Props) {
   // Non-null inside a detached popout: replaces the main window's CenterPanel
   // drop authority (which this window can't reach) for a file dragged onto a
@@ -258,6 +257,9 @@ export function FileTree({
   // from being re-dispatched. Small folders resolved inside the gap and showed
   // a size; a big one (the whole point of the feature) never did.
   const sizeGeneration = useRef(0);
+  // The rel path of the most recent `load` call — lets the async remote-boundary
+  // probe bail if navigation has moved on since the listing it was probing failed.
+  const loadTargetRef = useRef<string>("");
   // Bytes of a folder's recursive size that are git-ignored, for folders that
   // are NOT themselves ignored (they sit in the regular/standard section) but
   // contain ignored content — e.g. a source folder with a build output dir
@@ -288,6 +290,12 @@ export function FileTree({
   const anchorRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // When a remote listing fails because the folder isn't on the host, this holds
+  // the crumb index (into the path segments) of the FIRST segment that doesn't
+  // exist on the host — everything from here on is local-only. null when the
+  // whole path exists (the normal case) or the source is local. The breadcrumb
+  // tints the on-host prefix and strikes through the local-only tail from it.
+  const [missingCrumbDepth, setMissingCrumbDepth] = useState<number | null>(null);
   const [gitStatuses, setGitStatuses] = useState<GitStatusMap>({});
   const [isDragOver, setIsDragOver] = useState(false);
   const [separateScaffold, setSeparateScaffold] = useState(true);
@@ -313,6 +321,11 @@ export function FileTree({
   // search; `searchCase` only applies to content search (name search is fuzzy).
   // Both backends walk the canonical LOCAL path, so the search box is only shown
   // for a non-remote-source tree (see `remoteListing` below).
+  // Right-click on the breadcrumb turns the path into an editable field (holding
+  // the current folder's absolute path) so a path can be typed/pasted to jump —
+  // and copies that absolute path to the clipboard. `null` = not editing.
+  const [pathEdit, setPathEdit] = useState<string | null>(null);
+  const pathEditRef = useRef<HTMLInputElement | null>(null);
   const [search, setSearch] = useState("");
   const [searchMode, setSearchMode] = useState<"name" | "content">("name");
   const [searchCase, setSearchCase] = useState(false);
@@ -348,18 +361,6 @@ export function FileTree({
   // first is shown in the conflict modal; resolving advances the queue.
   const [pushConflicts, setPushConflicts] = useState<string[]>([]);
   const [pushBusy, setPushBusy] = useState(false);
-  // SSH-sync: the amber "resolve" popup for a diverged file — its local+host
-  // metadata, the git diff when one is available (null until loaded, "" = none),
-  // and the take-local/take-remote busy flag.
-  const [syncResolve, setSyncResolve] = useState<{
-    entry: FileEntry;
-    rel: string;
-    meta: SyncFileMeta | null;
-    diff: string | null;
-    loading: boolean;
-    busy: boolean;
-    error: string | null;
-  } | null>(null);
   // Whether the system clipboard holds an image when the context menu opened
   // (probed async on right-click), gating the "Paste screenshot" option.
   const [clipboardImage, setClipboardImage] = useState(false);
@@ -375,7 +376,14 @@ export function FileTree({
   const [compiling, setCompiling] = useState<Set<string>>(new Set());
   // Per-file arguments for the ▶ Run button, remembered so a re-run reuses them.
   // Set via the right-click popover (`argsPopover`, positioned at the cursor).
-  const [pyArgsByPath, setPyArgsByPath] = useState<Record<string, string>>({});
+  // Same shared, persisted map the open-editor's Run/Debug toolbar reads/writes
+  // (`FileViewerPane.tsx`'s `pyArgs`/`setPyArgs`) — keyed by absolute path in
+  // global settings, not local component state, so it survives this tree
+  // unmounting (right-panel hide/close) and an Eldrun restart.
+  const pyArgsByPath = useSettingsStore((s) => s.settings?.python_run_args ?? EMPTY_PY_ARGS);
+  const setPyArgs = useCallback((path: string, v: string) => {
+    void useSettingsStore.getState().setPythonRunArgs(path, v);
+  }, []);
   const [argsPopover, setArgsPopover] = useState<{
     entry: FileEntry;
     x: number;
@@ -390,7 +398,6 @@ export function FileTree({
     argsInputRef.current?.focus();
     argsInputRef.current?.select();
   }, [argsPopover?.entry.path]);
-  const { openFile } = useWindowsStore();
   const runInBackground = useSettingsStore((s) => s.settings?.run_scripts_in_background ?? true);
   const viewerPrefs = useSettingsStore((s) => s.settings?.viewer_prefs);
   const disabledViewerSet = useMemo(() => disabledViewers(viewerPrefs), [viewerPrefs]);
@@ -403,6 +410,19 @@ export function FileTree({
   const isRemote = useProjectsStore(
     (s) => !!s.projects.find((p) => p.id === projectId)?.remote,
   );
+  // The local mirror root for a remote project, resolved the same way
+  // `ProjectFilesPane`/`ProjectFilesView` do (persisted override, else the default
+  // `<state_dir>/mirror`). Used to build the mirror-side absolute path the
+  // three-way merge viewer (`SyncMergeView`) opens a diverged file at — the ± diff
+  // button below routes through it. Null for a local (non-remote) project.
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const mirrorRoot = useMemo(() => {
+    if (!project?.remote) return null;
+    return (
+      resolveLocalMirror(project) ??
+      `${resolveProjectDirectory(project).replace(/[/\\]+$/, "")}/mirror`
+    );
+  }, [project]);
   // SSH-sync Phase 1: the local mirror source (`syncSource === "local"`) is a
   // plain LOCAL tree even though its project is remote — it lists/​watches the
   // local mirror dir and is never gated on the SSH pool. Only a remote-SOURCE
@@ -413,11 +433,36 @@ export function FileTree({
   // SSH-sync overlay state for the remote source: per-path green/amber/none + the
   // in-flight transfer progress. Only consulted in the remote-source view.
   const syncStatus = useSyncStore((s) => (projectId ? s.byProject[projectId] : undefined));
+  // Aggregated sync state for FOLDERS that have no manifest entry of their own.
+  // The manifest tracks files (a directory only gets an entry when it is
+  // explicitly folder-selected / folder-auto-synced); files pulled individually
+  // leave every ancestor folder absent, so a folder row's own-path lookup
+  // defaults to "none" and paints a red "push to host" button even when every
+  // file inside it is green/in-sync. This rolls each tracked file's state up onto
+  // all of its ancestor directories: `any` = the folder contains a tracked file,
+  // `allGreen` = they are all green. A folder with its own entry still uses that
+  // (handled at the lookup site); this only rescues the entry-less ones. Keyed by
+  // project-relative directory path.
+  const dirSyncAgg = useMemo(() => {
+    const agg: Record<string, { any: boolean; allGreen: boolean }> = {};
+    if (!syncStatus) return agg;
+    for (const [p, s] of Object.entries(syncStatus)) {
+      if (s.isDir) continue; // dir entries are authoritative on their own row
+      const parts = p.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        const dir = parts.slice(0, i).join("/");
+        const cur = agg[dir] ?? { any: false, allGreen: true };
+        cur.any = true;
+        if (s.state !== "green") cur.allGreen = false;
+        agg[dir] = cur;
+      }
+    }
+    return agg;
+  }, [syncStatus]);
   const syncProgress = useSyncStore((s) => (projectId ? s.progressByProject[projectId] : undefined));
   const refreshSyncStatus = useSyncStore((s) => s.refreshStatus);
   const syncPull = useSyncStore((s) => s.pull);
   const syncPush = useSyncStore((s) => s.push);
-  const syncFileMeta = useSyncStore((s) => s.fileMeta);
   const syncMarkSelected = useSyncStore((s) => s.markSelected);
   const syncSetAuto = useSyncStore((s) => s.setAuto);
   const syncAutoPreview = useSyncStore((s) => s.autoPreview);
@@ -432,6 +477,15 @@ export function FileTree({
     projectId ? s.byProject[projectId]?.ssh : undefined,
   );
   const remoteBlocked = remoteListing && remoteSshState !== "connected";
+  // Local-mirror view of a remote project: the NAMES of the browsed folder's
+  // immediate children that exist on the host, from one SFTP readdir per
+  // navigation (only while the pool is live — a host readdir is a main-thread
+  // command that would freeze on a dead session, like every other remote call).
+  // A local child folder absent from this set is local-only — it has never
+  // reached the host — and the tree flags it so "Local" mode doesn't quietly
+  // imply the whole mirror is on the remote. `null` = unknown (not this view, or
+  // disconnected): flag nothing rather than guess.
+  const [hostChildNames, setHostChildNames] = useState<Set<string> | null>(null);
 
   // Dotfiles always render inline here — there's no separate "hidden" section;
   // any that are actually gitignored get pulled into the gitignored section
@@ -449,6 +503,39 @@ export function FileTree({
     }),
     [rawEntries, sortKey, descending, hiddenEndings, relPath, hiddenPaths, shownPaths],
   );
+
+  // Whether a visible Python file is a "main" script (has a module-level
+  // `if __name__ == "__main__":` guard) — the Run ▶ button only shows for
+  // those, not for every importable module. Resolved lazily per file since it
+  // needs the file's content, which the tree listing doesn't carry. Keyed by
+  // path + size + mtime so an on-disk edit (picked up by the fs watcher's
+  // `entries` change) gets rechecked instead of trusting a stale verdict.
+  const [pyMainByPath, setPyMainByPath] = useState<Record<string, boolean>>({});
+  const pyMainChecked = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    // A remote-source listing's `readFileText` is an SFTP round trip — doing
+    // one per visible .py file just to place the Run button would visibly
+    // stall the tree. Remote falls back to the old any-.py-file behavior
+    // instead (see `canPyRun` below).
+    if (remoteListing) return;
+    const pending = entries.filter(
+      (e) => !e.is_dir && isPythonPath(e.path)
+        && !pyMainChecked.current.has(`${e.path}#${e.size}#${e.modified_secs ?? 0}`),
+    );
+    if (pending.length === 0) return;
+    pending.forEach((e) => pyMainChecked.current.add(`${e.path}#${e.size}#${e.modified_secs ?? 0}`));
+    let cancelled = false;
+    (async () => {
+      for (const e of pending) {
+        const text = await readFileText(e.path, projectId).catch(() => null);
+        if (cancelled) return;
+        setPyMainByPath((m) => ({ ...m, [e.path]: text != null && isPythonMainScript(text) }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [entries, remoteListing, projectId]);
 
   // The three on-screen sections in render order (regular, then the collapsible
   // scaffold + gitignored groups). Shared by the renderer and the selection
@@ -724,6 +811,31 @@ export function FileTree({
     };
   }, [isRemote, projectId, remoteSshState, refreshSyncStatus]);
 
+  // Local-mirror view: readdir the HOST for the browsed folder so folders that
+  // live only in the local mirror can be flagged (see `hostChildNames`). One
+  // cheap SFTP readdir per navigation, gated on a live pool. If the folder ITSELF
+  // isn't on the host (readdir fails), every local child here is off-host too, so
+  // an empty set is the right answer — it flags them all.
+  useEffect(() => {
+    if (!treatLocal || !isRemote || !remoteProbeDir || remoteSshState !== "connected") {
+      setHostChildNames(null);
+      return;
+    }
+    let cancelled = false;
+    const target = relPath;
+    invoke<FileEntry[]>("list_dir", { projectDir: remoteProbeDir, relPath: target })
+      .then((entries) => {
+        if (!cancelled) setHostChildNames(new Set(entries.map((x) => x.name)));
+      })
+      .catch(() => {
+        if (!cancelled) setHostChildNames(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [treatLocal, isRemote, remoteProbeDir, remoteSshState, relPath]);
+
   // Live updates: watch the currently-displayed directory on the backend and
   // re-fetch when it changes, so files created/removed by terminals, agents, or
   // other processes appear without manual navigation. Re-points to the new
@@ -761,8 +873,10 @@ export function FileTree({
     // Never issue the (synchronous, main-thread) remote listing commands while the
     // pool is down — they would freeze the window. See `remoteBlocked`.
     if (remoteBlocked) return;
+    loadTargetRef.current = rel;
     setLoading(true);
     setError(null);
+    setMissingCrumbDepth(null);
     // Navigating into a different folder abandons the current selection (its
     // paths aren't on screen anymore). The quiet fs-watch `refresh()` deliberately
     // does NOT clear — a background re-list must not wipe an in-progress selection.
@@ -790,11 +904,75 @@ export function FileTree({
       }).catch(() => ({}));
       setGitStatuses(statuses);
     } catch (e) {
-      setError(String(e));
+      // The listing failed — most often because "Remote" was selected in a
+      // folder that only exists in the local mirror. Drop the previous listing
+      // (which would otherwise leave the LOCAL files on screen under a Remote
+      // header, falsely implying they're on the host) and show a readable
+      // reason. Keep `relPath` so the breadcrumb / Local switch still work.
+      setRawEntries([]);
+      setGitStatuses({});
+      setRelPath(rel);
+      onRelPathChange?.(rel);
+      setError(describeListError(e, remoteListing));
+      // Remote source: find where the path stops existing on the host so the
+      // breadcrumb can show the boundary (on-host prefix vs local-only tail).
+      // Only on a remote failure, walking up from the deepest ancestor — a
+      // handful of cheap SFTP stats over the already-live pool.
+      if (remoteListing) void probeRemoteBoundary(rel);
     } finally {
       setLoading(false);
     }
   }
+
+  // Walk up the failed path to the deepest ancestor that DOES list on the host,
+  // and mark the first segment past it as the start of the local-only tail. Root
+  // ("") is assumed present, so a path whose very first segment is absent marks
+  // depth 0. Best-effort and self-cancelling: a newer `load` clears the state.
+  async function probeRemoteBoundary(rel: string) {
+    const parts = rel.split("/").filter(Boolean);
+    if (parts.length === 0) return;
+    let depth = 0; // default: first segment already missing
+    for (let k = parts.length - 1; k >= 1; k--) {
+      const prefix = parts.slice(0, k).join("/");
+      try {
+        await invoke<FileEntry[]>("list_dir", { projectDir, relPath: prefix });
+        depth = k;
+        break;
+      } catch {
+        // keep walking up
+      }
+    }
+    // Guard against a race: only apply if we're still on the same failed path.
+    if (loadTargetRef.current === rel) setMissingCrumbDepth(depth);
+  }
+
+  // Right-click the breadcrumb: copy the current folder's absolute path to the
+  // clipboard and open the inline path editor pre-filled with it.
+  function startPathEdit() {
+    const abs = resolvePath(projectDir, relPath);
+    navigator.clipboard?.writeText(abs).catch(() => {});
+    setPathEdit(abs);
+  }
+
+  // Commit the edited path: accept either an absolute path or a project-relative
+  // one, resolve it against the project root, and navigate there when it stays
+  // inside the project. A path outside the project is rejected (the tree is
+  // project-scoped) — the field just closes without navigating.
+  function commitPathEdit() {
+    const raw = pathEdit?.trim() ?? "";
+    setPathEdit(null);
+    if (!raw) return;
+    const abs = resolvePath(projectDir, raw);
+    const rel = relativePathWithin(projectDir, abs);
+    if (rel === null) return;
+    if (rel !== relPath) void load(rel);
+  }
+
+  // Focus + select the path field when it opens so the copied path can be
+  // replaced or edited immediately.
+  useEffect(() => {
+    if (pathEdit !== null) pathEditRef.current?.select();
+  }, [pathEdit !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Quiet reload for the fs watcher: re-fetch the current directory without the
   // loading flash, and only swap state in when the result actually changed.
@@ -874,8 +1052,26 @@ export function FileTree({
       // navigating into it — rather than handing the archive to an external app.
       void extractArchive(entry);
     } else {
-      openFile(entry.path, undefined, projectId, "right_file_tree").catch(console.error);
+      openEntry(entry, false);
     }
+  }
+
+  // Open one file entry: a native-viewer type lands as an embed tab in the
+  // project's focused subwindow (or streams into a popout via `fileDrop`); a
+  // type with no native viewer, or an explicit external open (Shift), opens in
+  // the OS default app. The single open-a-file policy — see `openFileEntry`.
+  function openEntry(entry: FileEntry, external: boolean) {
+    openFileEntry({
+      entry,
+      projectDir,
+      projectId,
+      origin: "right_file_tree",
+      external,
+      disabled: disabledViewerSet,
+      // In a detached popout, stream the viewer tab into that window rather than
+      // writing the popout's non-authoritative local tab store.
+      placeTab: fileDrop ? fileDrop.openTab : undefined,
+    });
   }
 
   // Single-click routing. A plain click on a folder navigates into it (and
@@ -896,21 +1092,24 @@ export function FileTree({
     treeRootRef.current?.focus({ preventScroll: true });
   }
 
-  // Open a file on double-click. If it belongs to a multi-selection, open EVERY
-  // selected file (each in its own tab); otherwise just this one. Folders keep
-  // navigating via handleClick.
-  function handleOpen(entry: FileEntry) {
+  // Open a file on double-click. A native-viewer type opens in the focused
+  // subwindow; a type with no native viewer — or a Shift+double-click — opens in
+  // the OS default app (see `openEntry`). If the entry belongs to a
+  // multi-selection, open EVERY selected file this way; otherwise just this one.
+  // Folders keep navigating via handleClick.
+  function handleOpen(entry: FileEntry, ev?: React.MouseEvent) {
     if (entry.is_dir) {
       handleClick(entry);
       return;
     }
+    const external = ev?.shiftKey ?? false;
     const targets =
       selected.has(entry.path) && selected.size > 1
         ? entries.filter((e) => !e.is_dir && selected.has(e.path))
         : [entry];
     for (const t of targets) {
       if (t.extension === ".zip") void extractArchive(t);
-      else openFile(t.path, undefined, projectId, "right_file_tree").catch(console.error);
+      else openEntry(t, external);
     }
   }
 
@@ -930,9 +1129,10 @@ export function FileTree({
       clearSelection();
     } else if (ev.key === "Enter") {
       ev.preventDefault();
+      // Enter mirrors a double-click; Shift+Enter forces the external app.
       for (const t of entries.filter((e) => !e.is_dir && selected.has(e.path))) {
         if (t.extension === ".zip") void extractArchive(t);
-        else openFile(t.path, undefined, projectId, "right_file_tree").catch(console.error);
+        else openEntry(t, ev.shiftKey);
       }
     } else if (ev.key === "Delete") {
       ev.preventDefault();
@@ -1517,53 +1717,41 @@ export function FileTree({
     });
   }
 
-  /** SSH-sync: open the amber "resolve" popup for a diverged file. Shows the
-   *  local vs host metadata (size/mtime) and, when the host copy yields a text
-   *  diff, the git diff itself; otherwise (binary / one side missing / no diff)
-   *  it just offers take-local / take-remote. Uses `relForEntry` for the correct
-   *  project-relative key — the old diff *tab* recomputed the rel from an
-   *  absolute path via the DiffView, which came out empty on the remote view
-   *  (the host path isn't under the local project dir) and made `sync_diff`
-   *  point at the mirror ROOT ("git could not access …/.tmpXXX"). */
-  function openSyncResolve(entry: FileEntry) {
+  /** SSH-sync: open a diverged (amber) file in the three-way merge viewer — the
+   *  same PyCharm-style resolve view the orange list opens (local mirror ⇄ merged
+   *  ⇄ remote host, per-block take-left/right) — instead of the old
+   *  take-local/take-host popup. On open the viewer runs a byte-for-byte test and
+   *  self-resolves a metadata-only divergence (identical bytes).
+   *
+   *  `SyncMergeView` keys off the mirror-side absolute path (`mirrorRoot/rel`), so
+   *  build that here from `relForEntry` regardless of which side the tree is
+   *  currently listing (the host path is not under the mirror). */
+  function openSyncMerge(entry: FileEntry) {
     setContextMenu(null);
-    if (!projectId) return;
+    if (!projectId || !mirrorRoot) return;
     const rel = relForEntry(entry);
-    setSyncResolve({ entry, rel, meta: null, diff: null, loading: true, busy: false, error: null });
-    // Fetch metadata and the git diff together; either may fail independently
-    // (a cold pool fails both; a binary/identical file just yields no diff).
-    void Promise.allSettled([
-      syncFileMeta(projectId, rel),
-      invoke<string>("sync_diff", { projectId, relPath: rel }),
-    ]).then(([metaR, diffR]) => {
-      setSyncResolve((s) => {
-        if (!s || s.rel !== rel) return s; // superseded by another open
-        return {
-          ...s,
-          loading: false,
-          meta: metaR.status === "fulfilled" ? metaR.value : null,
-          diff: diffR.status === "fulfilled" ? diffR.value : "",
-          error: metaR.status === "rejected" ? String(metaR.reason) : null,
-        };
-      });
-    });
-  }
-
-  /** Resolve the amber divergence: "remote" pulls the host copy over the mirror,
-   *  "local" force-pushes the mirror over the host. Both clear amber → green. */
-  async function resolveSyncDivergence(action: "local" | "remote") {
-    if (!syncResolve || !projectId) return;
-    const rel = syncResolve.rel;
-    setSyncResolve((s) => (s ? { ...s, busy: true, error: null } : s));
-    try {
-      if (action === "remote") await syncPull(projectId, rel);
-      else await syncPush(projectId, rel, true);
-      await refreshSyncStatus(projectId);
-      await load(relPath);
-      setSyncResolve(null);
-    } catch (err) {
-      setSyncResolve((s) => (s ? { ...s, busy: false, error: String(err) } : s));
+    const abs = `${mirrorRoot.replace(/[/\\]+$/, "")}/${rel}`;
+    const tab = {
+      label: basename(abs) || entry.name,
+      cmd: "",
+      cwd: dirname(abs),
+      kind: "embed" as const,
+      embedPath: abs,
+      viewer: "syncmerge" as const,
+    };
+    // In a detached popout, stream the tab into that window (its store is
+    // authoritative); otherwise reuse an already-open merge tab for this exact
+    // file, else add a fresh one to the focused subwindow.
+    if (fileDrop) {
+      fileDrop.openTab(tab);
+      return;
     }
+    const store = useTabsStore.getState();
+    const prior = store.tabs.find(
+      (t) => t.kind === "embed" && t.viewer === "syncmerge" && t.embedPath === abs,
+    );
+    if (prior) store.setActive(prior.key);
+    else store.setActive(store.addTab(tab).key);
   }
 
   // SSH-sync Phase 1: pull this file/folder into the local mirror (and mark it
@@ -1917,23 +2105,35 @@ export function FileTree({
   function runShellScript(event: React.MouseEvent<HTMLButtonElement>, entry: FileEntry) {
     event.preventDefault();
     event.stopPropagation();
-    if (runInBackground) {
+    const remoteForegroundOnly = remoteListing;
+    if (runInBackground && !remoteForegroundOnly) {
       // Detached spawn: no tab, no captured output. The activity store tracks
       // the run (and the app-lifetime `script-finished` listener clears it) so
       // the spinner survives right-panel hide/show — see TODO group R #34.
       runScript(entry.path, projectDir);
       return;
     }
-    const interp = shellRunnerFor(entry.extension);
+    const interp = shellRunnerFor(entry.extension, PLATFORM) as ScriptShell | null;
     if (!interp) return; // not a shell type we know how to run
-    const scriptRel = relFromAbs(projectDir, entry.path);
+    const plan = shellScriptRunPlan({
+      project,
+      treeRoot: projectDir,
+      syncSource,
+      scriptPath: entry.path,
+      interp,
+    });
+    if (!plan) {
+      setError(`Run failed: ${entry.path} is outside the current project tree`);
+      return;
+    }
     const tab = {
       label: `▶ ${entry.name}`,
       cmd: interp,
-      cwd: projectDir,
+      cwd: plan.cwd,
       kind: "shell" as const,
-      initialInput: shellRunCommand(interp, scriptRel),
+      initialInput: plan.initialInput,
       runFile: entry.path,
+      location: plan.location,
     };
     // Same placement policy as the Python Run: stream into a detached popout when
     // we're in one, else the focused subwindow of this project.
@@ -2216,13 +2416,41 @@ export function FileTree({
           </div>
         </div>
       )}
-      {!searching && relPath && (() => {
+      {!searching && pathEdit !== null && (
+        <div className="file-tree-breadcrumb file-tree-path-edit">
+          <input
+            ref={pathEditRef}
+            className="file-tree-path-input"
+            value={pathEdit}
+            spellCheck={false}
+            onChange={(e) => setPathEdit(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitPathEdit();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setPathEdit(null);
+              }
+            }}
+            onBlur={() => setPathEdit(null)}
+          />
+        </div>
+      )}
+      {!searching && pathEdit === null && relPath && (() => {
         // Parent of the current folder — the up button doubles as a drag-to-move
         // target ("move into the parent dir"). The breadcrumb crumbs cover the
         // other ancestors (and ⌂ the project root).
         const parentRel = relPath.split("/").filter(Boolean).slice(0, -1).join("/");
         return (
-        <div className="file-tree-breadcrumb">
+        <div
+          className="file-tree-breadcrumb"
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            startPathEdit();
+          }}
+        >
           <button
             className={`file-tree-up${moveTargetRel === parentRel ? " move-drop-target" : ""}`}
             data-move-rel={parentRel}
@@ -2242,14 +2470,21 @@ export function FileTree({
           {relPath.split("/").filter(Boolean).map((seg, i, arr) => {
             const target = arr.slice(0, i + 1).join("/");
             const isLast = i === arr.length - 1;
+            // When a remote listing failed, `missingCrumbDepth` marks where the
+            // path leaves the host tree: segments before it exist on the host
+            // (on-host), segments from it on are local-only (missing). The cue is
+            // shape first — strike-through + a ⊘ badge for missing — with a colour
+            // tint only as reinforcement, so it reads without relying on colour.
+            const missing = missingCrumbDepth !== null && i >= missingCrumbDepth;
+            const onHost = missingCrumbDepth !== null && i < missingCrumbDepth;
             return (
               <React.Fragment key={target}>
                 <span className="file-tree-crumb-sep">/</span>
                 <button
-                  className={`file-tree-crumb${isLast ? " current" : ""}${moveTargetRel === target ? " move-drop-target" : ""}`}
+                  className={`file-tree-crumb${isLast ? " current" : ""}${moveTargetRel === target ? " move-drop-target" : ""}${missing ? " crumb-missing" : ""}${onHost ? " crumb-on-host" : ""}`}
                   data-move-rel={target}
                   onClick={() => { if (!isLast) load(target); }}
-                  title={target}
+                  title={missing ? `${target}\nNot on the remote host — local-only` : onHost ? `${target}\nOn the remote host` : target}
                 >
                   {seg}
                 </button>
@@ -2268,8 +2503,15 @@ export function FileTree({
       </div>
       {loading && <div className="file-tree-loading">Loading…</div>}
       {error && <div className="file-tree-error">{error}</div>}
-      {!searching && !relPath && (
-        <label className="file-tree-scaffold-toggle">
+      {!searching && pathEdit === null && !relPath && (
+        <label
+          className="file-tree-scaffold-toggle"
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            startPathEdit();
+          }}
+        >
           <Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
           Separate scaffold
           <span
@@ -2312,8 +2554,12 @@ export function FileTree({
           const dirTotal = e.is_dir ? dirSizes[e.path] : undefined;
           const dirIgnored = e.is_dir && !isGitignored ? dirIgnoredBytes[e.path] : undefined;
           const dirShown = dirTotal !== undefined ? dirTotal - (dirIgnored ?? 0) : undefined;
-          const canShRun = !e.is_dir && shellRunnerFor(e.extension) !== null;
-          const canPyRun = !e.is_dir && isPythonPath(e.path);
+          const canShRun = !e.is_dir && shellRunnerFor(e.extension, PLATFORM) !== null;
+          // Run only for a Python "main" script (see the `pyMainByPath` effect
+          // above) — a remote-source listing can't cheaply check content, so it
+          // keeps the old any-.py-file behavior instead of hiding Run entirely.
+          const canPyRun = !e.is_dir && isPythonPath(e.path)
+            && (remoteListing || (pyMainByPath[e.path] ?? false));
           const canRun = canShRun || canPyRun;
           // "Running" drives the green pulse + title/aria and unions both run
           // paths: a detached `.sh` tracked by real process liveness
@@ -2335,16 +2581,37 @@ export function FileTree({
           // nothing.
           const syncTracked = remoteListing || treatLocal;
           const rel = syncTracked ? relForEntry(e) : "";
-          const syncState = syncTracked ? syncStatus?.[rel]?.state ?? "none" : "none";
+          // A folder with no manifest entry of its own falls back to the rolled-up
+          // state of its tracked descendants (`dirSyncAgg`): green when it contains
+          // tracked files and they are all green (so no misleading red push button),
+          // else `none`. Files, and folders that DO have an own entry, keep the
+          // direct lookup. `none` remains the default when nothing is known.
+          const syncState: SyncFileState = !syncTracked
+            ? "none"
+            : syncStatus?.[rel]?.state ??
+              (e.is_dir && dirSyncAgg[rel]?.any
+                ? dirSyncAgg[rel].allGreen
+                  ? "green"
+                  : "none"
+                : "none");
           // Auto-sync glyph: shown on both the remote and local trees when this
           // path (or an ancestor auto folder) is set to auto-sync. Coexists with
           // the amber ± button — an auto path that went orange is exactly what the
           // user must resolve manually.
           const autoSync = syncTracked ? !!syncStatus?.[rel]?.auto : false;
+          // Local-mirror view only: a folder that exists in the mirror but not on
+          // the host (its name is absent from the host readdir, `hostChildNames`).
+          // Dimmed + tagged so "Local" mode never implies the whole tree is on the
+          // remote. `hostChildNames === null` (unknown / disconnected) flags nothing.
+          const notOnRemote =
+            e.is_dir &&
+            treatLocal &&
+            hostChildNames !== null &&
+            !hostChildNames.has(e.name);
           return (
             <div
               key={e.path}
-              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold || isGitignored ? " scaffold" : ""}${isMoveTarget ? " move-drop-target" : ""}${selected.has(e.path) ? " selected" : ""}`}
+              className={`file-entry ${e.is_dir ? "dir" : "file"}${dragTarget ? " embeddable" : ""}${isScaffold || isGitignored ? " scaffold" : ""}${isMoveTarget ? " move-drop-target" : ""}${selected.has(e.path) ? " selected" : ""}${notOnRemote ? " not-on-remote" : ""}`}
               // Row key for jump-to-path reveal scroll (search results).
               data-entry-path={e.path}
               // Folders are drag-to-move destinations: dropping a dragged file
@@ -2359,7 +2626,7 @@ export function FileTree({
               // out into an embedded browser / external target like Signal (the
               // pointer drag-to-tab bails on Ctrl, see onEntryPointerDown).
               onClick={(ev) => handleRowClick(ev, e)}
-              onDoubleClick={e.is_dir ? undefined : () => handleOpen(e)}
+              onDoubleClick={e.is_dir ? undefined : (ev) => handleOpen(e, ev)}
               onContextMenu={(ev) => showEntryContextMenu(ev, e)}
               draggable={e.is_dir || ctrlHeld}
               onDragStart={
@@ -2410,7 +2677,7 @@ export function FileTree({
                       onClick={(ev) => {
                         ev.preventDefault();
                         ev.stopPropagation();
-                        openSyncResolve(e);
+                        openSyncMerge(e);
                       }}
                     >
                       ±
@@ -2434,15 +2701,12 @@ export function FileTree({
                 <button
                   type="button"
                   className={`file-run-btn${isRunning ? " running" : ""}`}
-                  title={
-                    isRunning
-                      ? `Running ${e.name}…`
-                      : canPyRun
-                        ? `Run ${e.name}${
-                            pyArgsByPath[e.path] ? ` (args: ${pyArgsByPath[e.path]})` : ""
-                          }\nRight-click to set arguments`
-                        : `Run ${e.name}`
-                  }
+                  // No native `title` here on purpose: hovering this button sits
+                  // inside the row, which already has the row's own portaled
+                  // tooltip open (below) — a browser title tooltip on top of it
+                  // would be a second, uncontrolled hover. Everything it would
+                  // have said (run/args/right-click hint) lives in that tooltip
+                  // instead.
                   aria-label={isRunning ? `Running ${e.name}` : `Run ${e.name}`}
                   onClick={(ev) => (canPyRun ? runPythonScript(ev, e) : runShellScript(ev, e))}
                   // Right-click a Python Run button → set arguments (sys.argv). For a
@@ -2476,6 +2740,15 @@ export function FileTree({
               )}
               <span className="file-icon">{e.is_dir ? folderIcon() : fileIcon(e.extension)}</span>
               <span className="file-name">{e.name}</span>
+              {notOnRemote && (
+                <span
+                  className="file-offhost-tag"
+                  title="This folder exists only in the local mirror — it isn't on the remote host yet."
+                  aria-label="Local only — not on the remote host"
+                >
+                  local only
+                </span>
+              )}
               {e.is_dir
                 ? dirShown !== undefined && (
                     <span className={`file-size ${sizeCategory(dirShown)}`}>
@@ -2576,7 +2849,7 @@ export function FileTree({
                   if (ev.key === "Enter") {
                     ev.preventDefault();
                     const a = argsPopover.draft.trim();
-                    setPyArgsByPath((m) => ({ ...m, [argsPopover.entry.path]: a }));
+                    setPyArgs(argsPopover.entry.path, a);
                     launchPython(argsPopover.entry, a);
                     setArgsPopover(null);
                   } else if (ev.key === "Escape") {
@@ -2591,7 +2864,7 @@ export function FileTree({
                   className="file-run-args-btn"
                   onClick={() => {
                     const a = argsPopover.draft.trim();
-                    setPyArgsByPath((m) => ({ ...m, [argsPopover.entry.path]: a }));
+                    setPyArgs(argsPopover.entry.path, a);
                     launchPython(argsPopover.entry, a);
                     setArgsPopover(null);
                   }}
@@ -2603,7 +2876,7 @@ export function FileTree({
                   className="file-run-args-btn"
                   onClick={() => {
                     const a = argsPopover.draft.trim();
-                    setPyArgsByPath((m) => ({ ...m, [argsPopover.entry.path]: a }));
+                    setPyArgs(argsPopover.entry.path, a);
                     setArgsPopover(null);
                   }}
                   title="Remember these arguments without running now"
@@ -2907,111 +3180,6 @@ export function FileTree({
         </div>,
         document.body,
       )}
-      {syncResolve && createPortal(
-        <div className="modal-backdrop" onMouseDown={() => !syncResolve.busy && setSyncResolve(null)}>
-          <div
-            className="file-delete-dialog"
-            style={{ maxWidth: 560, width: "min(560px, 92vw)" }}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <h2>Local and host differ</h2>
-            <div className="file-delete-path">{syncResolve.rel}</div>
-            {syncResolve.loading ? (
-              <p style={{ color: "var(--text-muted)" }}>Comparing local mirror and host…</p>
-            ) : syncResolve.meta ? (
-              (() => {
-                const { local, host } = syncResolve.meta!;
-                const sizeDiff = local.size !== host.size;
-                const timeDiff = (local.mtime ?? null) !== (host.mtime ?? null);
-                const cell = (present: boolean, text: string, diff: boolean) => (
-                  <td style={{ padding: "3px 10px", color: !present ? "var(--text-muted)" : diff ? "var(--warning, #d29922)" : "var(--text-primary)" }}>
-                    {present ? text : "—"}
-                  </td>
-                );
-                return (
-                  <table style={{ borderCollapse: "collapse", margin: "6px 0", fontSize: 12 }}>
-                    <thead>
-                      <tr style={{ color: "var(--text-muted)" }}>
-                        <th style={{ textAlign: "left", padding: "3px 10px", fontWeight: 500 }} />
-                        <th style={{ textAlign: "left", padding: "3px 10px", fontWeight: 600 }}>Local</th>
-                        <th style={{ textAlign: "left", padding: "3px 10px", fontWeight: 600 }}>Host (remote)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td style={{ padding: "3px 10px", color: "var(--text-muted)" }}>Present</td>
-                        {cell(true, local.exists ? "yes" : "no", local.exists !== host.exists)}
-                        {cell(true, host.exists ? "yes" : "no", local.exists !== host.exists)}
-                      </tr>
-                      <tr>
-                        <td style={{ padding: "3px 10px", color: "var(--text-muted)" }}>Size</td>
-                        {cell(local.exists, fmtSize(local.size), sizeDiff)}
-                        {cell(host.exists, fmtSize(host.size), sizeDiff)}
-                      </tr>
-                      <tr>
-                        <td style={{ padding: "3px 10px", color: "var(--text-muted)" }}>Modified</td>
-                        {cell(local.exists, fmtModified(local.mtime) || "—", timeDiff)}
-                        {cell(host.exists, fmtModified(host.mtime) || "—", timeDiff)}
-                      </tr>
-                    </tbody>
-                  </table>
-                );
-              })()
-            ) : (
-              <p style={{ color: "var(--danger, #f85149)" }}>
-                {syncResolve.error ?? "Could not read file metadata."}
-              </p>
-            )}
-            {/* Git diff when one is available; otherwise a note pointing at the
-                take-local / take-remote choice below. */}
-            {!syncResolve.loading && (syncResolve.diff ? (
-              <pre
-                style={{
-                  maxHeight: 240, overflow: "auto", margin: "4px 0 0",
-                  padding: 8, fontSize: 11, lineHeight: 1.4,
-                  background: "var(--bg-inset, rgba(0,0,0,0.25))", borderRadius: 4,
-                  whiteSpace: "pre", fontFamily: "var(--font-mono, monospace)",
-                }}
-              >
-                {syncResolve.diff}
-              </pre>
-            ) : syncResolve.meta ? (
-              <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "4px 0 0" }}>
-                No line diff available (binary, identical text, or one side missing).
-                Choose which copy to keep.
-              </p>
-            ) : null)}
-            {syncResolve.meta && syncResolve.error && (
-              <p style={{ fontSize: 11, color: "var(--danger, #f85149)", margin: "4px 0 0" }}>
-                {syncResolve.error}
-              </p>
-            )}
-            <div className="file-delete-actions">
-              <button type="button" disabled={syncResolve.busy} onClick={() => setSyncResolve(null)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={syncResolve.busy || syncResolve.loading}
-                title="Pull the host copy over your local mirror"
-                onClick={() => void resolveSyncDivergence("remote")}
-              >
-                Take remote
-              </button>
-              <button
-                type="button"
-                className="danger"
-                disabled={syncResolve.busy || syncResolve.loading}
-                title="Force-push your local copy over the host"
-                onClick={() => void resolveSyncDivergence("local")}
-              >
-                Take local
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )}
       {pastePrompt && createPortal(
         <div className="modal-backdrop" onMouseDown={() => !pasteBusy && setPastePrompt(null)}>
           <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
@@ -3048,7 +3216,7 @@ export function FileTree({
                 background: "var(--bg-panel)",
                 color: "var(--text-primary)",
                 border: "1px solid var(--border-color)",
-                borderRadius: 3,
+                borderRadius: "var(--radius-sm)",
                 padding: "4px 6px",
                 fontFamily: "inherit",
               }}
@@ -3079,7 +3247,15 @@ export function FileTree({
       {tooltip && createPortal(
         <div
           className="file-tooltip"
-          style={{ right: window.innerWidth - tooltip.rect.left + 8, top: tooltip.rect.top }}
+          // Anchor on whichever side of the row has more room, so the tooltip pops
+          // *away* from the panel edge: docked right → opens left (the default),
+          // docked left → the row sits near x:0 and it opens right instead. Keyed
+          // off the row's own rect, so it does the right thing in a centred tab too.
+          style={
+            window.innerWidth - tooltip.rect.right > tooltip.rect.left
+              ? { left: tooltip.rect.right + 8, top: tooltip.rect.top }
+              : { right: window.innerWidth - tooltip.rect.left + 8, top: tooltip.rect.top }
+          }
         >
           <div className="file-tooltip-name">{tooltip.entry.name}</div>
           {tooltip.entry.created_secs && (
@@ -3098,6 +3274,27 @@ export function FileTree({
               {fmtSize(dirIgnoredBytes[tooltip.entry.path])}
               {dirSizes[tooltip.entry.path] !== undefined && ` of ${fmtSize(dirSizes[tooltip.entry.path])} total`}
             </div>
+          )}
+          {!tooltip.entry.is_dir && isPythonPath(tooltip.entry.path) && (
+            (remoteListing || pyMainByPath[tooltip.entry.path] || pyArgsByPath[tooltip.entry.path])
+          ) && (
+            <>
+              {(remoteListing || pyMainByPath[tooltip.entry.path]) && (
+                <div>
+                  <span className="file-tooltip-label">Run </span>
+                  Right-click ▶ to set arguments
+                </div>
+              )}
+              {/* Nested under Run, not a top-level "Run args" row — and shown
+                  even when the file above lost its Run button (no `__main__`
+                  guard), so args set earlier don't just look lost. */}
+              {pyArgsByPath[tooltip.entry.path] && (
+                <div className="file-tooltip-sub">
+                  <span className="file-tooltip-label">args </span>
+                  {pyArgsByPath[tooltip.entry.path]}
+                </div>
+              )}
+            </>
           )}
         </div>,
         document.body

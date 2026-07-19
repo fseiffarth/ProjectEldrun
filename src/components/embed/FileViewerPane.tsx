@@ -56,6 +56,7 @@ import {
 import { internalViewerFor, disabledViewers, relFromAbs, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
 import {
   isPythonPath,
+  isPythonMainScript,
   pythonLinkRanges,
   remapBreakpoints,
   resolvePythonDefinition,
@@ -63,6 +64,7 @@ import {
 } from "../../lib/viewers/python";
 import { debugPythonFile, runCwd, runPythonFile, placeForFocused } from "../../lib/pythonRun";
 import { FileDropContext } from "../files/fileDropContext";
+import { FileSourceSwitch } from "../files/ProjectFilesPane";
 import {
   basename,
   dirname,
@@ -92,10 +94,12 @@ import {
   readFileBytes,
   writeFileText,
   fileMtime,
+  describeFileError,
 } from "./fileAccess";
 import { TableView } from "./TableView";
 import { NotebookView } from "./NotebookView";
 import { DiffView } from "./DiffView";
+import { SyncMergeView } from "./SyncMergeView";
 import { OdtView } from "./OdtView";
 import { MediaView } from "./MediaView";
 import { GifView } from "./GifView";
@@ -294,18 +298,52 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
       .then((s) => {
         if (cancelled) return;
         setSource(s);
-        if (tabKey) useFileSourcesStore.getState().setSource(tabKey, s);
       })
       .catch(() => {
         if (cancelled) return;
         setSource("none");
-        if (tabKey) useFileSourcesStore.getState().setSource(tabKey, "none");
       });
     return () => {
       cancelled = true;
+    };
+  }, [path, projectId]);
+
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+
+  // A viewer tab is opened against one fixed absolute path (mirror OR host). For
+  // a remote project this manual override lets the SAME tab show the other side
+  // instead — same rel path, root swapped — without touching the tab's
+  // persisted path. Session-only: resets to "no override" when the tab is
+  // retargeted to a different file, so `effectiveSource` falls back to the file's
+  // OWN resolved side (`source`, from `fileSource(path)`) — i.e. the side the
+  // path already points at. That is the load-bearing default: `openFileEntry`
+  // hands the viewer a *host* path when the tree that opened it was on Remote and
+  // a *mirror* path when it was on Local, so trusting the path is what makes
+  // "opened from a Remote listing ⇒ shown over SFTP" hold. Seeding instead from a
+  // shared per-project pref (the old behaviour) let a stale/other-surface value
+  // silently rewrite a host path back to the mirror — the Files-tab / subwindow
+  // sidebar use an *independent* source that never writes that pref, so a file
+  // opened there on Remote was read locally. `null` = follow the path.
+  const [sideOverride, setSideOverride] = useState<"local" | "remote" | null>(null);
+  useEffect(() => {
+    setSideOverride(null);
+  }, [path, projectId]);
+  const rel = useMemo(() => autoSyncRel(project, path), [project, path]);
+  const mirrorRoot = useMemo(() => localMirrorRootFor(project), [project]);
+  const effectiveSource: FileSource = sideOverride ?? source ?? "none";
+  const effectivePath = useMemo(() => {
+    if (!project?.remote || !rel) return path;
+    if (effectiveSource === "remote") return resolvePath(project.remote.remote_path, rel);
+    if (effectiveSource === "local" && mirrorRoot) return resolvePath(mirrorRoot, rel);
+    return path;
+  }, [project, rel, effectiveSource, mirrorRoot, path]);
+
+  useEffect(() => {
+    if (tabKey) useFileSourcesStore.getState().setSource(tabKey, effectiveSource);
+    return () => {
       if (tabKey) useFileSourcesStore.getState().clearSource(tabKey);
     };
-  }, [path, projectId, tabKey]);
+  }, [tabKey, effectiveSource]);
 
   // Disconnected remote project: reading a remote-native (SFTP) file would block
   // on the dead pool and each nested viewer would flash its own red read error.
@@ -313,11 +351,31 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
   // the message is unified across terminal and file tabs. Local-mirror files
   // (source "local") and local projects ("none") work offline and render as
   // usual; while the source is still unknown on a disconnected remote we hold.
-  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  // Gated on the EFFECTIVE side, not the tab's opened side, so flipping the
+  // switch to Remote while offline surfaces the same Connect prompt a
+  // remote-native tab would — the toggle itself stays put (matches
+  // ProjectFilesPane's `useFileSource`).
   const sshState = useRemoteStatusStore((s) => (projectId ? s.byProject[projectId]?.ssh : undefined));
   const openConnectDialog = useConnectDialogStore((s) => s.open);
   const remoteDisconnected = !!project?.remote && sshState !== "connected";
-  if (remoteDisconnected && source !== "local" && source !== "none") {
+
+  // Does this file exist on the host? A local-only file (never synced) has no
+  // host counterpart, so flipping the Local/Remote switch to Remote would only
+  // strand the viewer on an SFTP read error — disable that segment instead. Only
+  // knowable on a live pool; disconnected / not-yet-probed leaves it enabled (the
+  // disconnected gate above owns that case). One cheap SFTP stat per remote tab.
+  const [remoteMissing, setRemoteMissing] = useState(false);
+  const remoteRoot = project?.remote?.remote_path;
+  useEffect(() => {
+    setRemoteMissing(false);
+    if (!remoteRoot || !rel || sshState !== "connected") return;
+    let cancelled = false;
+    fileMtime(resolvePath(remoteRoot, rel), projectId)
+      .then(() => { if (!cancelled) setRemoteMissing(false); })
+      .catch(() => { if (!cancelled) setRemoteMissing(true); });
+    return () => { cancelled = true; };
+  }, [remoteRoot, rel, sshState, projectId]);
+  if (remoteDisconnected && effectiveSource !== "local" && effectiveSource !== "none") {
     return (
       <RemotePaneHold
         host={project?.remote?.host ?? ""}
@@ -329,54 +387,68 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
   const openExternally = () => {
     useWindowsStore
       .getState()
-      .openFile(path, undefined, projectId, "right_file_tree")
+      .openFile(effectivePath, undefined, projectId, "right_file_tree")
       .catch((e) => console.error(e));
   };
 
   // Pick the concrete viewer, then publish this pane's owning project as the file
   // scope so every nested viewer/hook confines its file commands to this project
   // (and its box siblings) regardless of which project is globally current.
+  // Every viewer below reads `effectivePath` — the tab's own opened path unless
+  // the Local/Remote switch has retargeted it to the same rel path's other root
+  // — EXCEPT "diff"/"syncdiff", which already compare both sides directly and
+  // whose single `path` prop means something else in that mode.
   let view: React.ReactNode;
   if (viewer === "gif") {
     // Animated GIFs get the frame-transport viewer (#gifviewer); the plain
     // image viewer remains its opt-out fallback (VIEWER_FALLBACK).
-    view = <GifView path={path} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <GifView path={effectivePath} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "image") {
-    view = <ImageView path={path} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <ImageView path={effectivePath} fileName={fileName} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "pdf") {
-    view = <PdfView path={path} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
+    view = <PdfView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   } else if (viewer === "markdown") {
-    view = <MarkdownView path={path} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
+    view = <MarkdownView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   } else if (viewer === "tex") {
-    view = <TexView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <TexView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "table") {
-    view = <TableView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <TableView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "notebook") {
-    view = <NotebookView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <NotebookView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "diff") {
     view = <DiffView path={path} projectId={projectId} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "syncdiff") {
     view = <DiffView path={path} projectId={projectId} mode="sync" onOpenExternally={openExternally} tabKey={tabKey} />;
+  } else if (viewer === "syncmerge") {
+    view = <SyncMergeView path={path} projectId={projectId} tabKey={tabKey} />;
   } else if (viewer === "odt") {
-    view = <OdtView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <OdtView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "media") {
-    view = <MediaView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <MediaView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "html") {
     // HTML is now the editable base editor with a sandboxed live preview, keyed
     // to its own per-type prefs.
-    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} type="html" groupId={groupId} />;
+    view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} type="html" groupId={groupId} />;
   } else if (viewer === "sqlite") {
-    view = <SqliteView path={path} onOpenExternally={openExternally} tabKey={tabKey} />;
+    view = <SqliteView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} />;
   } else if (viewer === "yaml") {
     // YAML is the same base editor, with the structure tree as its "preview" half
     // (#yaml) and its own per-type prefs.
-    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} type="yaml" groupId={groupId} />;
+    view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} type="yaml" groupId={groupId} />;
   } else {
-    view = <TextView path={path} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
+    view = <TextView path={effectivePath} onOpenExternally={openExternally} tabKey={tabKey} groupId={groupId} />;
   }
+  const sourceSwitch =
+    project?.remote && rel
+      ? {
+          current: (effectiveSource === "remote" ? "remote" : "local") as "local" | "remote",
+          onChange: setSideOverride,
+          remoteDisabled: remoteMissing,
+        }
+      : null;
   return (
     <FileScopeContext.Provider value={projectId}>
-      <ViewerHeaderInfoContext.Provider value={{ path, projectId }}>
+      <ViewerHeaderInfoContext.Provider value={{ path: effectivePath, projectId, sourceSwitch }}>
         {view}
       </ViewerHeaderInfoContext.Provider>
     </FileScopeContext.Provider>
@@ -384,11 +456,31 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
 }
 
 /** The file identity a `ViewerHeader` needs to offer file-scoped actions (the
- *  auto-sync toggle) without every sub-viewer threading these props through. Set
- *  by `FileViewerPane`; `null` outside a viewer pane. */
-const ViewerHeaderInfoContext = createContext<{ path: string; projectId: string | null } | null>(
-  null,
-);
+ *  auto-sync toggle, the Local/Remote source switch) without every sub-viewer
+ *  threading these props through. Set by `FileViewerPane`; `null` outside a
+ *  viewer pane. `sourceSwitch` is `null` unless the open file resolves to a rel
+ *  path under a remote project's mirror or host root (i.e. the other side could
+ *  exist too). */
+const ViewerHeaderInfoContext = createContext<{
+  path: string;
+  projectId: string | null;
+  sourceSwitch?: {
+    current: "local" | "remote";
+    onChange: (s: "local" | "remote") => void;
+    remoteDisabled?: boolean;
+  } | null;
+} | null>(null);
+
+/** A remote project's local-mirror root, or `null` for a local project / one
+ *  with no resolvable mirror. Shared by `autoSyncRel` and the Local/Remote
+ *  switch's path-building — both need the exact same root. */
+function localMirrorRootFor(
+  project: ReturnType<typeof useProjectsStore.getState>["projects"][number] | undefined,
+): string | null {
+  if (!project?.remote) return null;
+  const projectDir = resolveProjectDirectory(project);
+  return resolveLocalMirror(project) ?? (projectDir ? `${projectDir}/mirror` : null);
+}
 
 /**
  * Resolve `absPath` to the project-relative path the sync backend keys on, for a
@@ -402,8 +494,7 @@ function autoSyncRel(
   absPath: string,
 ): string | null {
   if (!project?.remote) return null;
-  const projectDir = resolveProjectDirectory(project);
-  const mirrorRoot = resolveLocalMirror(project) ?? (projectDir ? `${projectDir}/mirror` : null);
+  const mirrorRoot = localMirrorRootFor(project);
   if (mirrorRoot) {
     const r = relFromAbs(mirrorRoot, absPath);
     if (r) return r;
@@ -445,6 +536,44 @@ function AutoSyncHeaderToggle({ path, projectId }: { path: string; projectId: st
       onClick={() => void setAuto(projectId, [rel], !auto, false)}
     >
       ⟳
+    </button>
+  );
+}
+
+/**
+ * "Resolve divergence" button for the viewer header, shown only when the open
+ * file is currently **diverged (amber)** for a remote project. Opens the exact
+ * same three-way merge resolver (`syncmerge` → `SyncMergeView`/`CompareView`) the
+ * orange list opens, so the user can reconcile local mirror ⇄ host from the file
+ * they are already looking at instead of hunting it down in the Orange view.
+ *
+ * The resolver keys on the **mirror-side** path (`mirrorRoot/rel`), exactly as the
+ * orange list builds it, regardless of which side this viewer is currently showing.
+ */
+function SyncResolveHeaderButton({ path, projectId }: { path: string; projectId: string | null }) {
+  const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
+  const rel = useMemo(() => autoSyncRel(project, path), [project, path]);
+  const mirrorRoot = useMemo(() => localMirrorRootFor(project), [project]);
+  const amber = useSyncStore((s) =>
+    projectId && rel ? s.byProject[projectId]?.[rel]?.state === "amber" : false,
+  );
+  if (!project?.remote || !rel || !projectId || !mirrorRoot || !amber) return null;
+  const mirrorPath = resolvePath(mirrorRoot, rel);
+  return (
+    <button
+      type="button"
+      className="file-viewer-resolve"
+      title="This file diverged (local ⇄ host) — open the three-way resolver"
+      aria-label="Resolve divergence"
+      onClick={() =>
+        openLinkedFile(undefined, dirname(mirrorPath), {
+          path: mirrorPath,
+          viewer: "syncmerge",
+          label: basename(mirrorPath),
+        })
+      }
+    >
+      ±
     </button>
   );
 }
@@ -658,12 +787,21 @@ export function ViewerHeader({
   // and the open-externally icon pushed to the trailing edge. The remote/local
   // source badge no longer lives here — it rides on the tab itself (see
   // TabBar's tab-source badge), so it costs no header row. The auto-sync toggle
-  // (remote projects only) rides in from context so no sub-viewer has to pass it.
+  // and the Local/Remote source switch (both remote projects only) ride in from
+  // context so no sub-viewer has to pass them.
   const info = useContext(ViewerHeaderInfoContext);
   return (
     <div className="file-viewer-header">
       <div className="file-viewer-header-spacer" aria-hidden="true" />
       {children}
+      {info?.sourceSwitch && (
+        <FileSourceSwitch
+          source={info.sourceSwitch.current}
+          onChange={info.sourceSwitch.onChange}
+          remoteDisabled={info.sourceSwitch.remoteDisabled}
+        />
+      )}
+      {info && <SyncResolveHeaderButton path={info.path} projectId={info.projectId} />}
       {info && <AutoSyncHeaderToggle path={info.path} projectId={info.projectId} />}
       <button
         className="file-viewer-open-external"
@@ -879,7 +1017,7 @@ export function useEditableFile(path: string) {
         if (cancelled) return;
         seedFromDisk(text);
       })
-      .catch((e) => { if (!cancelled) setError(String(e)); });
+      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
     fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
@@ -1068,7 +1206,7 @@ export function useReadonlyFile(path: string) {
     lastMtime.current = null;
     readFileText(path, scope)
       .then((text) => { if (!cancelled) setContent(text); })
-      .catch((e) => { if (!cancelled) setError(String(e)); });
+      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
     fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
@@ -4410,6 +4548,10 @@ function RunDebugButtons({
   onDebug: () => void;
 }) {
   const [argsOpen, setArgsOpen] = useState(false);
+  // Hovering the Run/Debug buttons shows the saved args in an in-DOM popover — the
+  // native `title` tooltip is unreliable under WebKitGTK, so it can't be the only
+  // place the args are shown.
+  const [hovering, setHovering] = useState(false);
   // Local draft so typing doesn't rebuild the run command on every keystroke; it
   // is committed to the shared `args` on Run or when the popover closes.
   const [draft, setDraft] = useState(args);
@@ -4437,9 +4579,13 @@ function RunDebugButtons({
     return () => document.removeEventListener("mousedown", onDown, true);
   }, [argsOpen, commit]);
 
-  const argsHint = args ? ` (args: ${args})` : "";
   return (
-    <div className="file-viewer-run-controls" ref={wrapRef}>
+    <div
+      className="file-viewer-run-controls"
+      ref={wrapRef}
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
+    >
       <button
         className="file-viewer-format-btn"
         // Right-click opens the args popover. We act on mousedown, not the
@@ -4453,7 +4599,7 @@ function RunDebugButtons({
         onClick={onRun}
         onContextMenu={(e) => e.preventDefault()}
         disabled={busy}
-        title={`Run this file in a terminal tab${argsHint}\nRight-click to set arguments`}
+        title="Run this file in a terminal tab\nRight-click to set arguments"
         aria-label="Run file"
       >
         ▶ Run{args ? " *" : ""}
@@ -4474,12 +4620,20 @@ function RunDebugButtons({
                 breakpointCount === 1 ? "" : "s"
               } (click the gutter to set more)`
             : "Debug under pdb — stops at the first line. Click a line number to set a breakpoint.") +
-          `${argsHint}\nRight-click to set arguments`
+          "\nRight-click to set arguments"
         }
         aria-label="Debug file"
       >
         🐞 Debug
       </button>
+      )}
+      {/* Saved-args hover hint. Shown only while hovering, only when args are set,
+          and never over the editor popover (which shows them already). */}
+      {hovering && args && !argsOpen && (
+        <div className="file-viewer-run-argshint" role="tooltip">
+          <span className="file-viewer-run-argshint-label">args:</span>
+          <span className="file-viewer-run-argshint-val">{args}</span>
+        </div>
       )}
       {argsOpen && (
         <div className="file-viewer-run-args" role="dialog" aria-label="Run arguments">
@@ -4608,23 +4762,38 @@ function TextView({
   );
 
   // ── Python (#py): run/debug + breakpoints + go-to-definition ──────────────
-  // Run is available for any Python file. Debug (pdb) and the breakpoint gutter
+  // Run is available only for a "main" script — one with a module-level
+  // `if __name__ == "__main__":` guard — not for every importable .py module,
+  // which has nothing useful to execute. Debug (pdb) and the breakpoint gutter
   // that only exists to feed it sit behind the experimental `python_run_debug`
   // flag — off by default, on in debug mode (`lib/experimental.ts`).
   // Go-to-definition is deliberately NOT gated: it reads, it never runs anything.
   const isPy = useMemo(() => isPythonPath(path), [path]);
   const pyDebugEnabled = useExperimental("python_run_debug");
-  const pyRun = isPy;
-  const pyDebug = isPy && pyDebugEnabled;
+  const isMainScript = useMemo(
+    () => isPy && loaded && isPythonMainScript(draft),
+    [isPy, loaded, draft],
+  );
+  const pyRun = isMainScript;
+  const pyDebug = isMainScript && pyDebugEnabled;
   const projectId = useFileScope();
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
   const projectDir = project ? resolveProjectDirectory(project) : "";
   const bp = useBreakpoints(pyDebug, draft, loaded, viewPos);
   const [launching, setLaunching] = useState(false);
   // Arguments typed into the Run button's right-click popover, appended to the
-  // command line (see pythonRun.buildRunCommand). Kept on the tab so a re-run — and
-  // a Debug launch — reuse them, and shown back in the button's tooltip.
-  const [pyArgs, setPyArgs] = useState("");
+  // command line (see pythonRun.buildRunCommand). Kept PER FILE (keyed by absolute
+  // path in global settings), not per tab, so every viewer of the same script
+  // shares one set of args — edit them in one tab and the others follow live,
+  // because both read this same store selector — and so they survive closing the
+  // viewer and an Eldrun restart, and show in the Run button's hover tooltip.
+  const pyArgs = useSettingsStore((s) => s.settings?.python_run_args?.[path] ?? "");
+  const setPyArgs = useCallback(
+    (v: string) => {
+      void useSettingsStore.getState().setPythonRunArgs(path, v);
+    },
+    [path],
+  );
   // Non-null inside a detached popout → the run terminal must stream into THIS
   // window, not the main tab store (see placeForFocused).
   const fileDrop = useContext(FileDropContext);
@@ -5186,7 +5355,7 @@ function useBlobUrl(path: string, type: string) {
         setUrl(objectUrl);
         if (prev) URL.revokeObjectURL(prev);
       })
-      .catch((e) => { if (!cancelled) setError(String(e)); });
+      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
     return () => { cancelled = true; };
   }, [path, type, diskVersion, scope]);
 

@@ -5,6 +5,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore } from "../../stores/sync";
 import { useConnectDialogStore } from "../../stores/connectDialog";
+import { useFileSourcePrefStore } from "../../stores/fileSourcePref";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import type { ProjectBox, ProjectEntry } from "../../types";
@@ -39,16 +40,57 @@ export function useRemoteBlocked(projectId: string | null, isRemote: boolean) {
  * prompt). Only resets on a project switch — it never fights a mid-session
  * manual toggle (flip to Remote, then lose the connection: the Connect
  * placeholder takes over, but the toggle stays put).
+ *
+ * Backed by `useFileSourcePrefStore` (keyed by project id), not local state, so
+ * a freshly opened subwindow file viewer (`FileViewerPane`) can default to
+ * whichever side this tree is CURRENTLY showing for the project.
  */
 export function useFileSource(projectId: string | null, isRemote: boolean) {
-  const [source, setSource] = useState<"remote" | "local">("remote");
+  const stored = useFileSourcePrefStore((s) => (projectId ? s.byProject[projectId] : undefined));
   const { remoteSshState } = useRemoteBlocked(projectId, isRemote);
+  // `isRemote` (not just `projectId`) in the deps: a project can flip local → remote
+  // ("Extend to remote") while this view is already mounted on the same id, and
+  // without re-seeding here it keeps whatever the store already held — typically
+  // nothing for a project that was never remote, which falls through to the
+  // "remote" default below and points every file op at an SFTP host that may not
+  // have finished its first lockstep sync yet. `isRemote` itself only moves on an
+  // extend/detach, never on a mere connect/disconnect, so this can't fight a
+  // mid-session manual toggle the way resetting on `remoteSshState` would.
   useEffect(() => {
     if (projectId && isRemote) {
-      setSource(remoteSshState === "connected" ? "remote" : "local");
+      useFileSourcePrefStore.getState().set(projectId, remoteSshState === "connected" ? "remote" : "local");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [projectId, isRemote]);
+  const setSource = (s: "remote" | "local") => {
+    if (projectId) useFileSourcePrefStore.getState().set(projectId, s);
+  };
+  return [stored ?? "remote", setSource] as const;
+}
+
+/**
+ * Like `useFileSource`, but for a viewer that must NOT keep mirroring the
+ * shared per-project preference forever — only take it as a starting point.
+ * Every `ProjectFilesTab` instance (the standalone Files (Project) tab, and
+ * every per-subwindow ◫ sidebar) used to share `useFileSourcePrefStore`
+ * with the right panel, so flipping Local/Remote *anywhere* flipped it
+ * *everywhere* for that project — one shared toggle wearing many faces
+ * instead of each viewer owning its own. This seeds from the right panel's
+ * current value on mount (and again if the underlying project's identity or
+ * remote-ness changes, matching `useFileSource`'s own reseed), then keeps the
+ * choice in plain component state: this viewer's later toggles never write
+ * back to the shared store, and the shared store's later changes never read
+ * back into this viewer.
+ */
+export function useIndependentFileSource(projectId: string | null, isRemote: boolean) {
+  const { remoteSshState } = useRemoteBlocked(projectId, isRemote);
+  const [source, setSource] = useState<"remote" | "local">("remote");
+  useEffect(() => {
+    if (!projectId || !isRemote) return;
+    const shared = useFileSourcePrefStore.getState().byProject[projectId];
+    setSource(shared ?? (remoteSshState === "connected" ? "remote" : "local"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, isRemote]);
   return [source, setSource] as const;
 }
 
@@ -58,10 +100,21 @@ export function useFileSource(projectId: string | null, isRemote: boolean) {
 export function FileSourceSwitch({
   source,
   onChange,
+  remoteDisabled = false,
+  remoteDisabledTitle,
 }: {
   source: "remote" | "local";
   onChange: (s: "remote" | "local") => void;
+  /** Disable the Remote segment — used when the open file has no counterpart on
+   *  the host (a local-only file), so the switch can't strand the viewer on a
+   *  read error. Ignored while the Remote side is the active one. */
+  remoteDisabled?: boolean;
+  remoteDisabledTitle?: string;
 }) {
+  // Never disable the segment that's currently active — that would leave the
+  // switch with no lit button. (A remote-native tab whose file is missing shows
+  // its own read error; the escape hatch there is switching TO Local.)
+  const disableRemote = remoteDisabled && source !== "remote";
   return (
     <span className="right-panel-source-switch" role="group" aria-label="File source">
       <button
@@ -77,8 +130,13 @@ export function FileSourceSwitch({
         type="button"
         className={`source-seg${source === "remote" ? " active" : ""}`}
         aria-pressed={source === "remote"}
+        disabled={disableRemote}
         onClick={() => onChange("remote")}
-        title="Show the host tree over SFTP (remote)."
+        title={
+          disableRemote
+            ? remoteDisabledTitle ?? "This file isn't on the remote host (local-only)."
+            : "Show the host tree over SFTP (remote)."
+        }
       >
         Remote
       </button>
@@ -384,6 +442,7 @@ export function ProjectFilesPane({
                 onRelPathChange={onFolderChange}
                 onOpenFolderTab={onOpenFolderTab}
                 syncSource={isRemoteProject ? source : undefined}
+                remoteProbeDir={isRemoteProject ? projectDir : undefined}
               />
             );
           })()

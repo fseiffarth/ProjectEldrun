@@ -25,6 +25,34 @@ export interface GpuSample {
   shared_total: number;
   /** `null` when the driver won't report utilization — not the same as idle. */
   busy_percent: number | null;
+  // Sensor readings. Each is `undefined`/`null` when the driver won't report it
+  // (the backend omits absent ones), which is distinct from a real zero — an
+  // unread temperature is unknown, not 0 °C. All optional so existing fixtures and
+  // the memory-only `gpu_memory_snapshot` callers keep type-checking.
+  /** GPU temperature, °C. */
+  temp_c?: number | null;
+  /** Board power draw, watts. */
+  power_w?: number | null;
+  /** Board power limit/cap, watts. */
+  power_cap_w?: number | null;
+  /** Core (shader) clock, MHz. */
+  sclk_mhz?: number | null;
+  /** Memory clock, MHz. */
+  mclk_mhz?: number | null;
+  /** Fan speed, 0–100% of range (not RPM). */
+  fan_percent?: number | null;
+  /** Driver version string (NVIDIA only). */
+  driver_version?: string | null;
+  /** Current PCIe link generation (1–5) and lane width. */
+  pcie_gen?: number | null;
+  pcie_width?: number | null;
+}
+
+/** One process's GPU memory, from the backend `gpustat::GpuProc`. */
+export interface GpuProc {
+  pid: number;
+  name: string;
+  mem_bytes: number;
 }
 
 /** Both pools of every adapter, summed: the machine's GPU memory. */
@@ -69,7 +97,43 @@ export function formatBytes(bytes: number): string {
   return `${(mib / 1024).toFixed(1)} GB`;
 }
 
-/** One adapter, named and split back into its two pools. */
+/** Temperature as `NN °C`, or `null` when unknown. */
+export function formatTempC(c: number | null | undefined): string | null {
+  return c == null ? null : `${Math.round(c)} °C`;
+}
+
+/**
+ * Power as `NN W`, or `NN / MM W` when a cap is known — the draw against its
+ * ceiling. `null` when the draw itself is unknown.
+ */
+export function formatWatts(
+  draw: number | null | undefined,
+  cap?: number | null,
+): string | null {
+  if (draw == null) return null;
+  return cap != null ? `${Math.round(draw)} / ${Math.round(cap)} W` : `${Math.round(draw)} W`;
+}
+
+/** A clock as `N.NN GHz` (or `NNN MHz` below a GHz), or `null` when unknown. */
+export function formatMhz(mhz: number | null | undefined): string | null {
+  if (mhz == null) return null;
+  return mhz >= 1000 ? `${(mhz / 1000).toFixed(2)} GHz` : `${mhz} MHz`;
+}
+
+/** Fan speed as `NN%`, or `null` when unknown. */
+export function formatFan(pct: number | null | undefined): string | null {
+  return pct == null ? null : `${Math.round(pct)}%`;
+}
+
+/** PCIe link as `PCIe 4.0 ×16`, dropping whichever half is unknown; `null` for none. */
+export function gpuLinkLabel(gpu: GpuSample): string | null {
+  const gen = gpu.pcie_gen != null ? `PCIe ${gpu.pcie_gen}.0` : null;
+  const width = gpu.pcie_width != null ? `×${gpu.pcie_width}` : null;
+  const parts = [gen, width].filter((p): p is string => p != null);
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
+/** One adapter, named and split back into its two pools, then its live sensors. */
 export function gpuAdapterTooltip(gpu: GpuSample): string {
   const head =
     gpu.busy_percent != null ? `${gpu.name} — ${Math.round(gpu.busy_percent)}% busy` : gpu.name;
@@ -78,7 +142,19 @@ export function gpuAdapterTooltip(gpu: GpuSample): string {
     gpu.shared_total > 0
       ? `\n  Shared  ${formatBytes(gpu.shared_used)} / ${formatBytes(gpu.shared_total)}`
       : "";
-  return `${head}\n${vram}${shared}`;
+  // Append only the sensors the driver actually reported, so a card that exposes
+  // none reads exactly as it did before these fields existed.
+  const sensors: string[] = [];
+  const temp = formatTempC(gpu.temp_c);
+  const power = formatWatts(gpu.power_w, gpu.power_cap_w);
+  const clocks = [formatMhz(gpu.sclk_mhz), formatMhz(gpu.mclk_mhz)].filter(Boolean).join(" / ");
+  const link = gpuLinkLabel(gpu);
+  if (temp) sensors.push(`  Temp    ${temp}`);
+  if (power) sensors.push(`  Power   ${power}`);
+  if (clocks) sensors.push(`  Clocks  ${clocks}`);
+  if (link) sensors.push(`  Link    ${link}`);
+  const tail = sensors.length > 0 ? `\n${sensors.join("\n")}` : "";
+  return `${head}\n${vram}${shared}${tail}`;
 }
 
 /**

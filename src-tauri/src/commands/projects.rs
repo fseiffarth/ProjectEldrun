@@ -8,7 +8,7 @@ use serde_json::Value;
 use tauri::State;
 
 use crate::paths;
-use crate::schema::project::{OpenVpnSpec, Project, RemoteSpec, SandboxSpec};
+use crate::schema::project::{ComputeHost, OpenVpnSpec, Project, RemoteSpec, SandboxSpec};
 use crate::schema::projects::{ProjectEntry, ProjectsList};
 use crate::services::remote_sync::SyncManifestState;
 use crate::storage;
@@ -896,6 +896,20 @@ pub fn set_project_auto_connect(project_id: String, enabled: bool) -> Result<boo
     Ok(enabled)
 }
 
+/// Opt a **remote** project in/out of persistent (tmux) sessions (TODO #85). The
+/// feature is **default ON** for a remote project, so the field is only written
+/// when the user opts *out* (`Some(false)`); turning it back on clears the field
+/// (`None`) to restore the default. Returns the resulting enabled state. Applies
+/// to shell/script tabs spawned after the change (each spawn reads it via the
+/// frontend's per-tab `tmux_session` name).
+#[tauri::command]
+pub fn set_project_persist_sessions(project_id: String, enabled: bool) -> Result<bool, String> {
+    patch_remote_spec(&project_id, |remote| {
+        remote.persist_sessions = if enabled { None } else { Some(false) };
+    })?;
+    Ok(enabled)
+}
+
 /// Record how a remote project's host authenticated on its last successful connect
 /// (`key_auth` = no password was used at all — key/agent auth). Called by
 /// `remote_connect`; this is the only way the UI can know a passwordless host is
@@ -908,6 +922,120 @@ pub fn record_remote_key_auth(project_id: &str, key_auth: bool) -> Result<(), St
         return Ok(());
     }
     patch_remote_spec(project_id, |remote| remote.key_auth = Some(key_auth))
+}
+
+/// Apply `patch` to a **remote** project's extra worker hosts (`compute_hosts`,
+/// `docs/multi_host_remote_plan.md`) in both places they are stored: the
+/// `projects.json` entry's flattened `extra["compute_hosts"]` (the always-local
+/// source of truth `services::remote::compute_hosts_for` reads) and the project's
+/// own `project.json` (best effort — a remote project's copy may be unreachable).
+/// Errors if the project is unknown. The list is created when absent, so this works
+/// on a project that has no workers yet.
+fn patch_compute_hosts(
+    project_id: &str,
+    patch: impl Fn(&mut Vec<ComputeHost>),
+) -> Result<Vec<ComputeHost>, String> {
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    let mut hosts: Vec<ComputeHost> = entry
+        .extra
+        .get("compute_hosts")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    patch(&mut hosts);
+    let value = serde_json::to_value(&hosts).map_err(|e| e.to_string())?;
+    if hosts.is_empty() {
+        entry.extra.remove("compute_hosts");
+    } else {
+        entry.extra.insert("compute_hosts".to_string(), value);
+    }
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            patch(&mut project.compute_hosts);
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(hosts)
+}
+
+/// Add an extra "worker" host to a remote project (the pill's "Add machine").
+/// Mints a stable `id` when the incoming spec has none, then appends it. Returns
+/// the full updated host list. The primary (`Project.remote`) is untouched.
+#[tauri::command]
+pub fn add_compute_host(
+    project_id: String,
+    mut host: ComputeHost,
+) -> Result<Vec<ComputeHost>, String> {
+    if host.id.trim().is_empty() {
+        host.id = uuid_v4();
+    }
+    patch_compute_hosts(&project_id, |hosts| {
+        // Replace in place when the id already exists (idempotent re-add), else push.
+        if let Some(existing) = hosts.iter_mut().find(|h| h.id == host.id) {
+            *existing = host.clone();
+        } else {
+            hosts.push(host.clone());
+        }
+    })
+}
+
+/// Remove a worker host from a remote project. The caller disconnects it and stops
+/// its fan-out first (frontend); this only drops the persisted entry. Returns the
+/// remaining host list.
+#[tauri::command]
+pub fn remove_compute_host(
+    project_id: String,
+    host_id: String,
+) -> Result<Vec<ComputeHost>, String> {
+    patch_compute_hosts(&project_id, |hosts| hosts.retain(|h| h.id != host_id))
+}
+
+/// Patch a worker host's toggles (`sync_code` / `pull_outputs` / `auto_connect` /
+/// `shared_fs` / `label`). Each argument is applied only when `Some`, so a caller
+/// can flip one flag without restating the others. Unknown `host_id` is a silent
+/// no-op (returns the unchanged list).
+#[tauri::command]
+pub fn patch_compute_host(
+    project_id: String,
+    host_id: String,
+    sync_code: Option<bool>,
+    pull_outputs: Option<bool>,
+    auto_connect: Option<bool>,
+    shared_fs: Option<bool>,
+    label: Option<String>,
+) -> Result<Vec<ComputeHost>, String> {
+    patch_compute_hosts(&project_id, |hosts| {
+        if let Some(h) = hosts.iter_mut().find(|h| h.id == host_id) {
+            if let Some(v) = shared_fs {
+                h.shared_fs = v;
+            }
+            if let Some(v) = sync_code {
+                h.sync_code = v;
+            }
+            if let Some(v) = pull_outputs {
+                h.pull_outputs = v;
+            }
+            if let Some(v) = auto_connect {
+                h.spec.auto_connect = v.then_some(true);
+            }
+            if let Some(v) = &label {
+                let t = v.trim();
+                h.label = if t.is_empty() { None } else { Some(t.to_string()) };
+            }
+        }
+    })
 }
 
 /// Normalize a list of category tags: trim each, drop blanks, and de-duplicate

@@ -10,6 +10,9 @@ import { resolveProjectDirectory } from "../../types";
 interface Props {
   open: boolean;
   pinned?: boolean;
+  /** Which edge the panel docks against; drives the mirrored slide/border/resize
+   *  layout via the `.left` class. Defaults to "right". */
+  side?: "left" | "right";
   /** Current panel width in px (driven by the left-border resize drag). */
   width?: number;
   /** True while a resize drag is in progress — suppresses width/transform
@@ -19,6 +22,7 @@ interface Props {
   onResizeMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onResizeEnd?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onTogglePin?: () => void;
+  onToggleSide?: () => void;
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
 }
@@ -69,12 +73,14 @@ function rollUpStatus(
 export function RightPanel({
   open,
   pinned,
+  side = "right",
   width,
   resizing,
   onResizeStart,
   onResizeMove,
   onResizeEnd,
   onTogglePin,
+  onToggleSide,
   onMouseEnter,
   onMouseLeave,
 }: Props) {
@@ -138,16 +144,34 @@ export function RightPanel({
     />
   ) : null;
 
-  const pin = onTogglePin ? (
-    <button
-      className={`right-panel-pin${pinned ? " pinned" : ""}`}
-      aria-pressed={pinned}
-      onClick={onTogglePin}
-      title={pinned ? "Unpin panel (allow auto-hide)" : "Pin panel open"}
-    >
-      📌
-    </button>
-  ) : null;
+  // The panel header's left-edge chrome: a side-flip toggle and the pin. Both ride
+  // the single `pin` slot ProjectFilesView exposes (a tab passes neither), so no
+  // extra slot is threaded through the shared viewer.
+  const chrome =
+    onTogglePin || onToggleSide ? (
+      <>
+        {onToggleSide && (
+          <button
+            className="right-panel-pin right-panel-flip"
+            onClick={onToggleSide}
+            title={side === "left" ? "Move panel to the right edge" : "Move panel to the left edge"}
+            aria-label={side === "left" ? "Move panel to the right edge" : "Move panel to the left edge"}
+          >
+            ⇄
+          </button>
+        )}
+        {onTogglePin && (
+          <button
+            className={`right-panel-pin${pinned ? " pinned" : ""}`}
+            aria-pressed={pinned}
+            onClick={onTogglePin}
+            title={pinned ? "Unpin panel (allow auto-hide)" : "Pin panel open"}
+          >
+            📌
+          </button>
+        )}
+      </>
+    ) : null;
 
   const hidden =
     hiddenGroups && hiddenGroups.length > 0 ? (
@@ -241,11 +265,11 @@ export function RightPanel({
       // Right-click → "Open in a new tab": the same file view, on that folder,
       // as a Files (Project) tab in this project's scope.
       onOpenFolderTab={(rel) => openProjectFilesTab(projectDir, rel)}
-      containerClassName={`right-panel ${open ? "open" : ""}${resizing ? " resizing" : ""}`}
+      containerClassName={`right-panel${side === "left" ? " left" : ""} ${open ? "open" : ""}${resizing ? " resizing" : ""}`}
       containerStyle={width ? { width } : undefined}
       containerProps={{ onMouseEnter, onMouseLeave }}
       resizeHandle={resizeHandle}
-      pin={pin}
+      pin={chrome}
       hidden={hidden}
     />
   );
