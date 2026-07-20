@@ -602,7 +602,13 @@ mod tests {
             .map(|i| i.path.as_str())
             .collect();
         let root_py = PathBuf::from(".venv").join(venv_python_rel());
-        let nested_py = PathBuf::from("services/api/.venv").join(venv_python_rel());
+        // Build from components, not a "services/api/.venv" literal: discovery emits
+        // the relative path with the OS separator (backslash on Windows), so a
+        // forward-slash literal would fail the string compare there.
+        let nested_py = PathBuf::from("services")
+            .join("api")
+            .join(".venv")
+            .join(venv_python_rel());
         assert!(venvs.contains(&root_py.to_string_lossy().as_ref()), "root venv missing: {venvs:?}");
         assert!(
             venvs.contains(&nested_py.to_string_lossy().as_ref()),

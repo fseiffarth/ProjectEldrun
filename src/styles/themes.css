@@ -304,9 +304,10 @@ html, body, #root {
      recolor just the outer chrome surfaces (header, side panel, tab bars,
      dialogs, menus, pills) for a frosted-glass look. */
   --glass-blur: 18px;
+  --glass-blur-strong: 34px;
   --glass-saturate: 150%;
   --glass-panel: rgba(20, 30, 52, 0.6);
-  --glass-elevated: rgba(26, 39, 66, 0.72);
+  --glass-elevated: rgba(22, 32, 56, 0.94);
   --glass-header: linear-gradient(90deg, rgba(16, 22, 36, 0.55) 0%, rgba(22, 33, 58, 0.55) 48%, rgba(36, 23, 53, 0.55) 100%);
   --glass-border: rgba(255, 255, 255, 0.14);
 }
@@ -480,9 +481,10 @@ html, body, #root {
   /* Glass chrome tokens — see the matching comment in fancy_dark above; same
      idea, tuned for a light, lavender-tinted frosted glass. */
   --glass-blur: 16px;
+  --glass-blur-strong: 30px;
   --glass-saturate: 130%;
   --glass-panel: rgba(242, 239, 250, 0.58);
-  --glass-elevated: rgba(255, 255, 255, 0.66);
+  --glass-elevated: rgba(248, 246, 253, 0.95);
   --glass-header: rgba(242, 239, 250, 0.5);
   --glass-border: rgba(255, 255, 255, 0.75);
 }
@@ -503,7 +505,15 @@ html, body, #root {
 [data-theme="fancy_dark"] .subwindow-files,
 [data-theme="light_lavender"] .subwindow-files,
 [data-theme="fancy_dark"] .project-pill,
-[data-theme="light_lavender"] .project-pill,
+[data-theme="light_lavender"] .project-pill {
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+/* Dialogs and popover menus float directly over readable content (terminal
+   text, code, file trees) — they need to fully obscure it, not just tint it,
+   so these get a much stronger blur plus a near-opaque fill (--glass-elevated)
+   rather than the lighter chrome-panel treatment above. */
 [data-theme="fancy_dark"] .project-dialog,
 [data-theme="light_lavender"] .project-dialog,
 [data-theme="fancy_dark"] .settings-dialog,
@@ -516,8 +526,8 @@ html, body, #root {
 [data-theme="light_lavender"] .tab-new-menu,
 [data-theme="fancy_dark"] .project-switcher-add-menu,
 [data-theme="light_lavender"] .project-switcher-add-menu {
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate));
 }
 
 [data-theme="fancy_dark"] .app-header,
@@ -6103,10 +6113,15 @@ select option {
 }
 
 /* The label is always shown now (not hover-only) so each action reads clearly
-   without pointing at it; the leading glyph stays as a quick visual marker. */
+   without pointing at it; the leading glyph stays as a quick visual marker.
+   Typography matches the app's other small colored tags/chips (type tags,
+   the Local/Remote switch): uppercase, bold, letter-spaced. */
 .git-btn-label {
   display: inline;
-  font-size: 11px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   line-height: 1;
 }
 
@@ -8546,7 +8561,11 @@ select option {
   cursor: not-allowed;
 }
 .right-panel-source-switch .source-seg.active {
-  color: #fff;
+  /* Not a fixed white: the active fill is --success/--warning, which in
+     fancy_dark are light pastel green/amber — white text on those is nearly
+     unreadable. --bg-main tracks light/dark per theme instead (same fix as
+     .btn-primary/.btn-danger above). */
+  color: var(--bg-main);
 }
 .right-panel-source-switch .source-seg:first-child.active {
   background: var(--success);
