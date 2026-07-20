@@ -146,8 +146,8 @@ export function GitChangeTree({ projectDir, scope }: Props) {
   // The flyout is CSS-anchored to the action bar's right edge and grows left, so
   // when the file viewer is docked on the LEFT of the window it runs off the left
   // screen border. Measure the rendered box and shift it back on-screen (either
-  // edge). Measured natural position = rect − current shift, so it converges in
-  // one pass instead of chasing its own transform.
+  // edge). We measure the box with its own shift cleared, so the correction is a
+  // fixed reference and converges in one pass instead of chasing its transform.
   const treeRef = useRef<HTMLDivElement>(null);
   const [shiftX, setShiftX] = useState(0);
 
@@ -168,14 +168,22 @@ export function GitChangeTree({ projectDir, scope }: Props) {
   useLayoutEffect(() => {
     const el = treeRef.current;
     if (!el) return;
+    // Measure the NATURAL box with any prior shift removed, so the correction is
+    // computed from a fixed reference and can't chase its own transform. (A real
+    // browser folds the applied translateX into rect.left, so `rect − shiftX`
+    // would also converge — but an env that does NOT reflect the transform into
+    // layout, e.g. jsdom under test, makes that subtraction drift by `margin`
+    // every render into an infinite loop. Clearing the transform first is stable
+    // in both.)
+    const prev = el.style.transform;
+    el.style.transform = "none";
     const rect = el.getBoundingClientRect();
+    el.style.transform = prev;
     const margin = 8;
-    const naturalLeft = rect.left - shiftX;
-    const naturalRight = rect.right - shiftX;
     let dx = 0;
-    if (naturalLeft < margin) dx = margin - naturalLeft; // clips left → push right
-    else if (naturalRight > window.innerWidth - margin)
-      dx = window.innerWidth - margin - naturalRight; // clips right → push left
+    if (rect.left < margin) dx = margin - rect.left; // clips left → push right
+    else if (rect.right > window.innerWidth - margin)
+      dx = window.innerWidth - margin - rect.right; // clips right → push left
     if (dx !== shiftX) setShiftX(dx);
   }, [tree, error, shiftX]);
 

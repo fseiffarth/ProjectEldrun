@@ -1149,9 +1149,10 @@ export function ProjectFilesView({
                       type="button"
                       className="orange-file-act"
                       title="Kill this session and everything running in it"
+                      aria-label={`Kill session ${s.name}`}
                       onClick={() => killSession(hostId, s.name)}
                     >
-                      Kill
+                      ×
                     </button>
                   </div>
                 </div>
