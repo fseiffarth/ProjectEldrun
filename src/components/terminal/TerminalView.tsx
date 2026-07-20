@@ -304,6 +304,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     const localModel = env.ELDRUN_LOCAL_MODEL || env.VIBE_ACTIVE_MODEL;
     const kind: TabKind = localModel ? "local_agent" : cmdToKind(cmd);
     const agentLeaf = agentPromptLeaf({ kind, cmd, env });
+    // A shell tab can be RESUMED with no initialInput to type — a tmux reattach on
+    // reconnect/relaunch. tmux probes the outer terminal on attach (secondary DA,
+    // `ESC[>c`); xterm's reply arrives after tmux has handed the pane to the shell,
+    // so it lands in readline as `^[[>0;276;0c`. Open the same startup-suppression
+    // window (line 226 only opens it for an auto-run tab) for ANY shell tab, closed
+    // on the first real keystroke in onData below — so the reattach junk is eaten
+    // but a program the user later launches still gets its own identity replies.
+    if (kind === "shell") initialInputPending.current = true;
     const scope = splitPtyId(id)?.scope ?? ROOT_SCOPE;
 
     /** One thing asked: a prompt to an agent, or a command in a shell. */
@@ -326,7 +334,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // lib/promptCount): Enter with content pending = one submit.
     term.onData((data) => {
       if (initialInputPending.current && isTerminalIdentityResponse(data)) {
-        return;
+        return; // swallow the startup / tmux-reattach identity reply (see above)
+      }
+      // A genuine user keystroke — a printable char or Enter, i.e. NOT an
+      // ESC-prefixed control — closes the identity-suppression window. Terminal
+      // auto-reports (cursor-position `\x1b[…R`, other DA replies) are ALSO delivered
+      // through onData and are ESC-prefixed; they must NOT lift the gate, or a late
+      // DA2 reply arriving on the tmux-attach probe burst right after one of them
+      // would leak to the shell prompt as `^[[>0;276;0c` (the resume bug). A program
+      // that needs DA detection is launched by keystrokes, which close the window
+      // first, so its own replies still flow through.
+      if (initialInputPending.current && data && !data.startsWith("\x1b")) {
+        initialInputPending.current = false;
       }
       noteUserInput(id);
       if (noteInput(id, data) > 0) countSubmit();

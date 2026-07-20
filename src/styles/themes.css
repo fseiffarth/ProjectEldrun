@@ -297,6 +297,18 @@ html, body, #root {
   --activity-2: #006d32;
   --activity-3: #26a641;
   --activity-4: #39d353;
+  /* Glass chrome tokens — read only by the "Glass chrome" section below, never
+     by the plain --bg-panel/--bg-elevated/--bg-header vars (100+ nested-content
+     rules read those; making those translucent app-wide would stack
+     translucency-on-translucency and wreck contrast everywhere). These instead
+     recolor just the outer chrome surfaces (header, side panel, tab bars,
+     dialogs, menus, pills) for a frosted-glass look. */
+  --glass-blur: 18px;
+  --glass-saturate: 150%;
+  --glass-panel: rgba(20, 30, 52, 0.6);
+  --glass-elevated: rgba(26, 39, 66, 0.72);
+  --glass-header: linear-gradient(90deg, rgba(16, 22, 36, 0.55) 0%, rgba(22, 33, 58, 0.55) 48%, rgba(36, 23, 53, 0.55) 100%);
+  --glass-border: rgba(255, 255, 255, 0.14);
 }
 
 /* ── Theme: dark (plain dark) ────────────────────────────────────────── */
@@ -465,6 +477,120 @@ html, body, #root {
   --activity-2: #a98fe0;
   --activity-3: #8968cf;
   --activity-4: #6344ab;
+  /* Glass chrome tokens — see the matching comment in fancy_dark above; same
+     idea, tuned for a light, lavender-tinted frosted glass. */
+  --glass-blur: 16px;
+  --glass-saturate: 130%;
+  --glass-panel: rgba(242, 239, 250, 0.58);
+  --glass-elevated: rgba(255, 255, 255, 0.66);
+  --glass-header: rgba(242, 239, 250, 0.5);
+  --glass-border: rgba(255, 255, 255, 0.75);
+}
+
+/* ── Glass chrome (fancy_dark / light_lavender) ───────────────────────────
+   Frosted-glass treatment for the app's outer chrome ONLY — header, right
+   file panel, tab bars, docked file sidebar, project pills, dialogs, and
+   popover menus. Reads the --glass-* tokens defined on each theme above, not
+   the shared --bg-panel/--bg-elevated (see the comment on those tokens for
+   why). Both themes share one rule set since they read the same variable
+   names with theme-appropriate values. */
+[data-theme="fancy_dark"] .app-header,
+[data-theme="light_lavender"] .app-header,
+[data-theme="fancy_dark"] .right-panel,
+[data-theme="light_lavender"] .right-panel,
+[data-theme="fancy_dark"] .tab-bar,
+[data-theme="light_lavender"] .tab-bar,
+[data-theme="fancy_dark"] .subwindow-files,
+[data-theme="light_lavender"] .subwindow-files,
+[data-theme="fancy_dark"] .project-pill,
+[data-theme="light_lavender"] .project-pill,
+[data-theme="fancy_dark"] .project-dialog,
+[data-theme="light_lavender"] .project-dialog,
+[data-theme="fancy_dark"] .settings-dialog,
+[data-theme="light_lavender"] .settings-dialog,
+[data-theme="fancy_dark"] .stats-dialog,
+[data-theme="light_lavender"] .stats-dialog,
+[data-theme="fancy_dark"] .context-menu,
+[data-theme="light_lavender"] .context-menu,
+[data-theme="fancy_dark"] .tab-new-menu,
+[data-theme="light_lavender"] .tab-new-menu,
+[data-theme="fancy_dark"] .project-switcher-add-menu,
+[data-theme="light_lavender"] .project-switcher-add-menu {
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+[data-theme="fancy_dark"] .app-header,
+[data-theme="light_lavender"] .app-header {
+  background: var(--glass-header);
+  box-shadow: inset 0 -1px 0 var(--glass-border), 0 8px 24px -16px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="fancy_dark"] .right-panel,
+[data-theme="light_lavender"] .right-panel {
+  background-color: var(--glass-panel);
+}
+
+[data-theme="fancy_dark"] .tab-bar,
+[data-theme="light_lavender"] .tab-bar {
+  background-color: var(--glass-panel);
+  box-shadow: inset 0 1px 0 var(--glass-border);
+}
+
+[data-theme="fancy_dark"] .subwindow-files,
+[data-theme="light_lavender"] .subwindow-files {
+  background: var(--glass-panel);
+}
+
+[data-theme="fancy_dark"] .project-pill,
+[data-theme="light_lavender"] .project-pill {
+  background-color: var(--glass-panel);
+  box-shadow: inset 0 1px 0 var(--glass-border), 0 3px 6px -2px rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="fancy_dark"] .project-dialog,
+[data-theme="light_lavender"] .project-dialog,
+[data-theme="fancy_dark"] .settings-dialog,
+[data-theme="light_lavender"] .settings-dialog,
+[data-theme="fancy_dark"] .stats-dialog,
+[data-theme="light_lavender"] .stats-dialog {
+  background: var(--glass-elevated);
+  border-color: var(--glass-border);
+  box-shadow: var(--shadow-3), inset 0 1px 0 var(--glass-border);
+}
+
+[data-theme="fancy_dark"] .context-menu,
+[data-theme="light_lavender"] .context-menu,
+[data-theme="fancy_dark"] .tab-new-menu,
+[data-theme="light_lavender"] .tab-new-menu,
+[data-theme="fancy_dark"] .project-switcher-add-menu,
+[data-theme="light_lavender"] .project-switcher-add-menu {
+  background: var(--glass-elevated);
+  border-color: var(--glass-border);
+  box-shadow: var(--shadow-3), inset 0 1px 0 var(--glass-border);
+}
+
+/* Blur the whole app behind an open dialog too, so a modal reads as one
+   continuous glass surface rather than just a frosted frame. */
+[data-theme="fancy_dark"] .modal-backdrop,
+[data-theme="light_lavender"] .modal-backdrop {
+  backdrop-filter: blur(8px) saturate(120%);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+}
+
+/* Ambient color wash behind the glass chrome — flat single-color bg-main
+   gives blurred edges nothing to reveal; a faint tinted glow makes the
+   frosted panels read as glass over a scene instead of glass over a void. */
+[data-theme="fancy_dark"] .app-shell {
+  background-image:
+    radial-gradient(1200px 600px at 12% -10%, rgba(54, 197, 240, 0.09), transparent 60%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(179, 136, 255, 0.08), transparent 55%);
+}
+
+[data-theme="light_lavender"] .app-shell {
+  background-image:
+    radial-gradient(1200px 600px at 12% -10%, rgba(124, 92, 219, 0.08), transparent 60%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(157, 110, 203, 0.07), transparent 55%);
 }
 
 /* ── App layout shell ─────────────────────────────────────────────────── */

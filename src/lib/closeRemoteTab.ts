@@ -1,21 +1,21 @@
 /**
- * Explicit close of a persistent remote tab (TODO #85).
+ * Close (detach) of a persistent tab (TODO #85), plus the helpers that classify
+ * which tmux session a tab owns.
  *
- * A remote shell/script tab can run inside a **tmux** session on the host, so the
- * run survives an SSH drop / laptop sleep / Eldrun quit. That makes *closing the
- * tab* the one genuinely destructive intent: unlike a quit or a disconnect (which
- * leave the session alive to reattach), an explicit close means "I'm done — end
- * the run." So closing such a tab confirms, then kills the host session before the
- * tab (and its ssh client) go away. The kill rides the pooled ControlMaster
- * (`remote_tmux_kill`), independent of the tab's own ssh channel, so it does not
- * race the pane-unmount `pty_kill`.
+ * A shell/script tab can run inside a **tmux** session — remote (on the SSH host)
+ * or local (on this machine) — so the run survives an SSH drop / laptop sleep /
+ * Eldrun quit / crash. Closing a tab is therefore **non-destructive**: it detaches
+ * (unmounts the pane, killing only the ssh/PTY client) and leaves the session alive
+ * under its tmux daemon, reattachable from the Sessions view. The *only* way to
+ * terminate a session is its × (kill) in the Sessions view (`remote_tmux_kill` /
+ * `local_tmux_kill`); no tab close, quit, disconnect, or crash ends a run.
  *
- * Lives outside the stores because it reads BOTH the tabs and projects stores, and
- * `stores/projects` already imports `stores/tabs` — a store-level import back would
- * be a cycle.
+ * `persistentSessionOf` / `localPersistentSessionOf` classify the tab (used by the
+ * Sessions view to mark which rows an open tab owns). They live outside the stores
+ * because they read BOTH the tabs and projects stores, and `stores/projects`
+ * already imports `stores/tabs` — a store-level import back would be a cycle.
  */
 
-import { invoke } from "@tauri-apps/api/core";
 import {
   useTabsStore,
   effectiveTabLocation,
@@ -72,37 +72,16 @@ export function localPersistentSessionOf(scope: string, tab: TabEntry): string |
 
 /**
  * Close a tab from an explicit user action (the × button, the tab context menu).
- * If it owns a persistent tmux session — remote (on an SSH host) or local (on this
- * machine) — confirm and kill that session first; otherwise it is an ordinary
- * `removeTab`. Bulk closes deliberately do NOT route through here — they detach
- * (leave the session alive, discoverable in the Sessions view) rather than
- * terminate a run the user did not single out.
+ *
+ * Closing a tab **detaches** — it never terminates the underlying tmux session.
+ * `removeTab` unmounts the pane (killing only the ssh/PTY *client*), so a persistent
+ * session — remote (on an SSH host) or local (on this machine) — keeps running under
+ * its tmux daemon and stays discoverable + reattachable in the Sessions view. The one
+ * way to actually terminate a session is its × (kill) in the Sessions view; a tab
+ * close, a quit, a disconnect, and a crash all leave it alive. (This function stays a
+ * seam — rather than inlining `removeTab` at the call sites — so a future confirm/hook
+ * has one home, and so `persistentSessionOf` keeps a co-located reader.)
  */
 export function closeTabWithConfirm(key: string): void {
-  const tabsStore = useTabsStore.getState();
-  const scope = tabsStore.scope;
-  const tab = (tabsStore.tabsByScope[scope] ?? []).find((t) => t.key === key);
-  const remote = tab ? persistentSessionOf(scope, tab) : null;
-  const local = !remote && tab ? localPersistentSessionOf(scope, tab) : null;
-  const session = remote?.session ?? local;
-  if (session) {
-    const where = remote ? "remote" : "local";
-    const ok = window.confirm(
-      `Close this tab and terminate the ${where} session “${session}”?\n\n` +
-        `Any process running in it (e.g. a training run) will be stopped. To keep it ` +
-        `running, leave the tab open — the session survives an Eldrun ${remote ? "quit, a disconnect, or a network drop" : "crash"}, ` +
-        `and reattaches on restart.`,
-    );
-    if (!ok) return;
-    if (remote) {
-      invoke("remote_tmux_kill", {
-        projectId: scope,
-        hostId: remote.hostId,
-        session: remote.session,
-      }).catch(() => {});
-    } else {
-      invoke("local_tmux_kill", { session: local }).catch(() => {});
-    }
-  }
-  tabsStore.removeTab(key);
+  useTabsStore.getState().removeTab(key);
 }

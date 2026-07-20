@@ -161,6 +161,12 @@ export interface ViewerState {
   // cuts the row into different columns — so the viewer drops them when the
   // delimiter changes rather than hiding whatever now sits at those indices.
   hiddenColumns?: number[];
+  // The table viewer's drag-resized column widths (#40), keyed by parsed-column
+  // index → total pixel width (padding included). Absent for a column means it
+  // keeps its measured `ch` width. Like `hiddenColumns` the indices only mean
+  // anything under the separator that produced them, so a delimiter change drops
+  // the overrides rather than re-applying them to whatever the new cut lands on.
+  columnWidths?: Record<number, number>;
 }
 
 // Detached windows render their tabs from a Tauri-event SEED into local React
@@ -2076,7 +2082,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   splitWithNewTab: (tab, targetGroupId, edge) => {
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one.
-    const entry: TabEntry = { ...tab, key };
+    // Mint a persistent tmux session name like addTab/addTabToScope, so a shell
+    // tab created by a split-drag (or a Python run placed via one) is persistence-
+    // eligible — otherwise it silently skips the tmux wrap (idempotent: no-op for a
+    // tab that already carries a session or is a non-shell kind).
+    const entry: TabEntry = { ...withTmuxSession(tab), key };
     let created = false;
     set((s) => {
       const { tabs, layout } = currentScopeState(s);
@@ -2281,8 +2291,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const label = `detached-${scope}-${groupId}`;
     // Spread first so a stray `key` on the payload can't shadow the minted one;
     // stamp the owning scope (writeScope isn't on this path since the layout is
-    // untouched, so do its scope-stamp here).
-    const entry: TabEntry = { ...tab, key, scope };
+    // untouched, so do its scope-stamp here). Mint the tmux session name too, so a
+    // shell tab detached straight into its own popout stays persistence-eligible.
+    const entry: TabEntry = { ...withTmuxSession(tab), key, scope };
     const subtree: GroupNode = {
       type: "group",
       id: groupId,
@@ -2917,8 +2928,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one;
     // stamp the owning scope (this path never touches the in-window layout, so it
-    // does writeScope's scope-stamp itself).
-    const entry: TabEntry = { ...tab, key, scope };
+    // does writeScope's scope-stamp itself). Mint the tmux session name like the
+    // in-window adds, so a Python/shell run STREAMED into a detached popout (its
+    // Run button places the tab here, not via addTabToScope) is persistence-
+    // eligible instead of silently skipping the tmux wrap.
+    const entry: TabEntry = { ...withTmuxSession(tab), key, scope };
     let created: string | null = null;
     set((s) => {
       const entries = s.detachedGroupsByScope[scope] ?? [];
@@ -2958,7 +2972,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` can't shadow the minted one; stamp the scope
     // (this path never touches the in-window layout, so no writeScope to do it).
-    const entry: TabEntry = { ...tab, key, scope };
+    // Mint the tmux session name too (see addDetachedTab) so a shell tab streamed
+    // into a popout via a split-drop is persistence-eligible.
+    const entry: TabEntry = { ...withTmuxSession(tab), key, scope };
     let created: string | null = null;
     set((s) => {
       const entries = s.detachedGroupsByScope[scope] ?? [];

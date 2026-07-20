@@ -109,6 +109,10 @@ windows = { version = "0.61", features = [
     # readout (the Windows analogue of Linux's `/proc` parsing in `sysstat.rs`).
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_ProcessStatus",
+    # Named-pipe IPC with the OpenVPN Interactive Service (`PeekNamedPipe`,
+    # `SetNamedPipeHandleState`) so headless VPN connects stay unelevated
+    # (`services/openvpn.rs`).
+    "Win32_System_Pipes",
     # Whole-system monitor sample (`GetSystemTimes`, `GlobalMemoryStatusEx`,
     # `GetSystemInfo`, `GetTickCount64`) in `sysstat.rs`.
     "Win32_System_SystemInformation",

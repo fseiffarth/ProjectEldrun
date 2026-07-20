@@ -224,15 +224,18 @@ Both list only the load-bearing files; the tree is the source of truth.
   persists** (`TabEntry.tmuxSession`) — *not* derived from the PTY id, which
   `loadFromLayout` regenerates on restore (a derived name would fork a second
   session on relaunch instead of reattaching); `tmux_attach` overrides it for a
-  Sessions-view attach. **Kill vs. detach**: an *explicit* tab close
-  (`lib/closeRemoteTab.ts`) confirms and fires `remote_tmux_kill`/`local_tmux_kill`;
-  an app-exit, disconnect, crash, or respawn deliberately **leaves the session
-  alive**. Because a session outlives its tab, a host can hold runs no tab points at;
-  the **Sessions view** (`☰` toggle in `ProjectFilesView`, mirrors the Orange view)
-  makes them discoverable — **multi-host** (aggregated across the primary and every
-  connected worker via `remote_tmux_list`, each row host-tagged), click a row to
-  attach, per-row **Kill** and **Rename** (`remote_tmux_rename`, updates the owning
-  tab's persisted name). tmux-absent falls back to today's plain `exec` + a notice.
+  Sessions-view attach. **Kill vs. detach**: closing a tab **always detaches** —
+  `lib/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
+  ssh/PTY client, so the session lives on under its tmux daemon; an app-exit,
+  disconnect, crash, or respawn likewise **leave the session alive**. The *only* way
+  to terminate a session is its **×** (kill) in the Sessions view
+  (`remote_tmux_kill`/`local_tmux_kill`). Because a session outlives its tab, a host
+  can hold runs no tab points at; the **Sessions view** (`☰` toggle in
+  `ProjectFilesView`, mirrors the Orange view) makes them discoverable —
+  **multi-host** (aggregated across the primary and every connected worker via
+  `remote_tmux_list`, each row host-tagged), click a row to attach, per-row **×**
+  (kill) and **Rename** (`remote_tmux_rename`, updates the owning tab's persisted
+  name). tmux-absent falls back to today's plain `exec` + a notice.
 - **A project can run in a container** (#38, `services::sandbox`,
   `docs/docker_projects_plan.md`): with the pill's "Run this project in a
   container" toggle on, every shell/agent tab `docker exec`s into ONE

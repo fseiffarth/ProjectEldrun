@@ -44,6 +44,9 @@ const OVERSCAN = 8;
 const GUTTER_W = 56;
 /** Horizontal padding of a body cell, in px — part of each column's box. */
 const CELL_PAD_X = 20;
+/** Smallest a column can be dragged to, in px — narrow enough to tuck a column
+ *  away, wide enough to keep its resize handle grabbable. */
+const MIN_COL_W = 32;
 /** The sorted column's tint: the accent mixed into the panel, so it follows the
  *  active theme and stays opaque (the sticky header must not let body cells
  *  bleed through — and opaque mixes avoid the WebKitGTK translucent-color-mix
@@ -272,6 +275,7 @@ export function TableView({
     if (settledDelimiter.current === delimiter) return;
     settledDelimiter.current = delimiter;
     setHidden(new Set());
+    setColWidths({});
   }, [loaded, delimiter]);
 
   const toggleColumn = (col: number) => {
@@ -279,6 +283,63 @@ export function TableView({
       const next = new Set(cur);
       if (next.has(col)) next.delete(col);
       else next.add(col);
+      return next;
+    });
+  };
+
+  // ── Drag-resized column widths ──────────────────────────────────────────────
+  // A per-column pixel override, keyed by parsed-column index. Absent ⇒ the
+  // column keeps its measured `ch` width. Persisted per tab (like the hidden set)
+  // and, for the same reason, dropped when the delimiter changes below: the index
+  // means a different column once the row is cut with a different separator.
+  const [colWidths, setColWidths] = useState<Record<number, number>>(
+    () => viewPos.initial?.columnWidths ?? {},
+  );
+
+  useEffect(() => {
+    const has = Object.keys(colWidths).length > 0;
+    viewPos.persist({ columnWidths: has ? colWidths : undefined });
+  }, [colWidths, viewPos]);
+
+  // The live drag: which column, where the pointer started, and the width the
+  // column had then — measured off the real `<th>` so a first drag of an
+  // un-overridden (ch-sized) column starts from its rendered pixel width.
+  const resizing = useRef<{ col: number; startX: number; startW: number } | null>(null);
+
+  const startResize = (e: React.PointerEvent, col: number) => {
+    e.preventDefault();
+    e.stopPropagation(); // don't let the header read this as a sort click
+    const handle = e.currentTarget as HTMLElement;
+    const th = handle.parentElement as HTMLElement | null;
+    const startW = th?.offsetWidth ?? colWidths[col] ?? MIN_COL_W;
+    resizing.current = { col, startX: e.clientX, startW };
+    handle.setPointerCapture(e.pointerId);
+  };
+
+  const onResizeMove = (e: React.PointerEvent) => {
+    const r = resizing.current;
+    if (!r) return;
+    const next = Math.max(MIN_COL_W, Math.round(r.startW + (e.clientX - r.startX)));
+    setColWidths((cur) => (cur[r.col] === next ? cur : { ...cur, [r.col]: next }));
+  };
+
+  const endResize = (e: React.PointerEvent) => {
+    if (!resizing.current) return;
+    resizing.current = null;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer already released */
+    }
+  };
+
+  // Double-click the handle to drop the override and return the column to its
+  // measured (auto-fit) width.
+  const resetWidth = (col: number) => {
+    setColWidths((cur) => {
+      if (cur[col] == null) return cur;
+      const next = { ...cur };
+      delete next[col];
       return next;
     });
   };
@@ -541,8 +602,19 @@ export function TableView({
 
   const gutterSorted = sort?.col === GUTTER_SORT_COL;
 
-  const totalCh = cols.reduce((sum, c) => sum + widths[c], 0);
-  const tableWidth = `calc(${totalCh}ch + ${cols.length * CELL_PAD_X + GUTTER_W}px)`;
+  // A column's CSS width: its drag override in px when it has one, else its
+  // measured `ch` count plus the cell padding.
+  const colWidthStyle = (c: number) =>
+    colWidths[c] != null ? `${colWidths[c]}px` : `calc(${widths[c]}ch + ${CELL_PAD_X}px)`;
+
+  // The table's total width mixes the two unit systems: sum the overridden
+  // columns' px straight, and the rest as `ch` + their padding.
+  const naturalCh = cols.reduce((sum, c) => (colWidths[c] != null ? sum : sum + widths[c]), 0);
+  const overridePx = cols.reduce(
+    (sum, c) => sum + (colWidths[c] != null ? colWidths[c] : CELL_PAD_X),
+    GUTTER_W,
+  );
+  const tableWidth = `calc(${naturalCh}ch + ${overridePx}px)`;
 
   /** The names shown in the columns menu — a column with a blank header still
    *  needs something to click on. */
@@ -709,7 +781,7 @@ export function TableView({
             <colgroup>
               <col style={{ width: GUTTER_W }} />
               {cols.map((c) => (
-                <col key={c} style={{ width: `calc(${widths[c]}ch + ${CELL_PAD_X}px)` }} />
+                <col key={c} style={{ width: colWidthStyle(c) }} />
               ))}
             </colgroup>
             <thead>
@@ -827,6 +899,33 @@ export function TableView({
                           </span>
                         </button>
                       )}
+                      {/* The drag-to-resize grip on the column's right edge. It sits
+                          over the sort button (which is why its pointer handlers
+                          stop propagation), captures the pointer so the drag keeps
+                          tracking past the thin grip, and double-clicks back to the
+                          measured width. */}
+                      <div
+                        onPointerDown={(e) => startResize(e, c)}
+                        onPointerMove={onResizeMove}
+                        onPointerUp={endResize}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          resetWidth(c);
+                        }}
+                        title="Drag to resize · double-click to auto-fit"
+                        aria-hidden="true"
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          right: 0,
+                          width: 7,
+                          height: "100%",
+                          cursor: "col-resize",
+                          zIndex: 3,
+                          touchAction: "none",
+                          userSelect: "none",
+                        }}
+                      />
                     </th>
                   );
                 })}
