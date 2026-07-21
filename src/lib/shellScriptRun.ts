@@ -1,5 +1,5 @@
 import { relativePathWithin } from "./paths";
-import type { TabLocation } from "../stores/tabs";
+import { isRemoteLocation, type TabLocation } from "../stores/tabs";
 import type { ProjectEntry } from "../types";
 
 export type ScriptShell = "bash" | "zsh" | "fish" | "ksh" | "powershell" | "cmd";
@@ -63,24 +63,45 @@ export function scriptRelFromRoot(root: string, absPath: string): string | null 
  *  user is browsing. Mount-free remote listings return host paths, while the
  *  tree's `projectDir` is the local state dir; using that dir to relativize a
  *  host path produced `bash ''`. Use the host `remote_path` for remote-source
- *  rows, and explicitly pin the tab locality to match the selected side. */
+ *  rows to compute the script's project-relative path.
+ *
+ *  WHERE the script runs is the project's run-host preference (`runHostPref`, the
+ *  machine chosen in the `RunHostPicker`) when set — so "pick machine X ⇒ shells
+ *  run on X" holds for a script Run exactly as for a Python Run — falling back to
+ *  the browsed side. `scriptRel` is project-relative, so it resolves against the
+ *  chosen host's own project root (the backend re-cds into the target host's
+ *  `remote_path`) or the local mirror, whichever the run location names — the two
+ *  sides mirror the same tree. */
 export function shellScriptRunPlan(opts: {
   project: ProjectEntry | null | undefined;
   treeRoot: string;
   syncSource?: "remote" | "local";
   scriptPath: string;
   interp: ScriptShell;
+  /** The project's run-host preference (`useRunHostPrefStore`), if any. */
+  runHostPref?: TabLocation;
 }): ShellScriptRunPlan | null {
   const remote = opts.project?.remote;
   const isRemoteProject = !!remote;
-  const runsRemote = isRemoteProject && opts.syncSource !== "local";
-  const root = runsRemote ? remote.remote_path : opts.treeRoot;
-  const scriptRel = scriptRelFromRoot(root, opts.scriptPath);
+  const browsedRemote = isRemoteProject && opts.syncSource !== "local";
+  // The script's project-relative path, computed from the side it was browsed on
+  // (that is the side `scriptPath` belongs to).
+  const browsedRoot = browsedRemote ? remote.remote_path : opts.treeRoot;
+  const scriptRel = scriptRelFromRoot(browsedRoot, opts.scriptPath);
   if (!scriptRel) return null;
+  // The run location: the chosen machine wins; unset ⇒ the browsed side.
+  const location: TabLocation | undefined = isRemoteProject
+    ? (opts.runHostPref ?? (browsedRemote ? "remote" : "local"))
+    : undefined;
+  // The tab cwd must match the run side so `scriptRel` resolves: the host project
+  // root for a remote run (the backend re-cds into the *target* host's remote_path
+  // anyway), the local mirror for a local run.
+  const runsRemote = location ? isRemoteLocation(location) : false;
+  const cwd = runsRemote && remote ? remote.remote_path : opts.treeRoot;
   return {
-    cwd: root,
+    cwd,
     scriptRel,
     initialInput: shellRunCommand(opts.interp, scriptRel),
-    location: isRemoteProject ? (runsRemote ? "remote" : "local") : undefined,
+    location,
   };
 }

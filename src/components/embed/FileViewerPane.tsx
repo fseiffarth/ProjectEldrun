@@ -30,6 +30,7 @@ import { PresentationOverlay } from "./PresentationOverlay";
 import { renderMarkdown } from "../../lib/viewers/markdown";
 import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
 import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
+import { useOllamaStatus } from "../../lib/ollamaStatus";
 import {
   printDocument,
   printHtmlBody,
@@ -64,6 +65,7 @@ import {
   snapBreakpointLine,
 } from "../../lib/viewers/python";
 import { debugPythonFile, runCwd, runPythonFile, placeForFocused } from "../../lib/pythonRun";
+import { RunHostPicker } from "../tabs/TabLocalityBadges";
 import {
   isSlurmScript,
   parseSbatchDirectives,
@@ -4143,30 +4145,16 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
  * Both AI-assist features the controls expose (autocomplete + grammar) run only
  * against a resident model, so the controls hide themselves entirely when none
  * is loaded. Mirrors the lamp logic in `LocalModelMenu`: `ollama_status` is
- * `"loaded"` iff `/api/ps` reports a resident model. Polled on the same 5s
- * cadence as the 🧠 menu so the controls appear/disappear within a few seconds
- * of a model being warmed or unloaded out of band.
+ * `"loaded"` iff `/api/ps` reports a resident model.
+ *
+ * Rides the app-wide shared poller (`lib/ollamaStatus`) rather than owning a
+ * timer. This hook runs **per editable viewer tab**, so a private 5s interval
+ * made the `/api/ps` request rate a function of how many tabs happened to be
+ * open — asking the same machine-wide question N times over. One timer now
+ * serves every surface, and they all flip on the same observation.
  */
 function useLocalModelLoaded(): boolean {
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    const check = () =>
-      invoke<"stopped" | "idle" | "loaded">("ollama_status")
-        .then((s) => {
-          if (!cancelled) setLoaded(s === "loaded");
-        })
-        .catch(() => {
-          if (!cancelled) setLoaded(false);
-        });
-    void check();
-    const id = window.setInterval(check, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, []);
-  return loaded;
+  return useOllamaStatus() === "loaded";
 }
 
 /**
@@ -5253,6 +5241,21 @@ function TextView({
           />
         )}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
+        {/* Which machine a Run/Debug lands on — shown right next to the Run button
+            so the choice is co-located with running, and keyed by THIS viewer's
+            `projectId`, the exact scope `onRun` reads the preference back under (a
+            picker in the file panel is keyed by the *active* project, which can
+            differ from the viewed file's project → the choice would be dropped and
+            the run would fall back to the primary). Only for a remote project with
+            extra worker machines; a lone-primary project has no machine to pick. */}
+        {showEditor && pyRun && isRemoteProject && projectId &&
+          (project?.compute_hosts?.length ?? 0) > 0 && (
+            <RunHostPicker
+              projectId={projectId}
+              primaryHost={project?.remote?.label || project?.remote?.host}
+              computeHosts={project?.compute_hosts}
+            />
+          )}
         {showEditor && pyRun && (
           <RunDebugButtons
             breakpointCount={bp.lines.length}

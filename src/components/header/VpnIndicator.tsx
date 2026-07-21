@@ -54,11 +54,26 @@ export function VpnIndicator() {
   // Seat from the backend on mount, and re-seat when the window regains focus: a
   // tunnel can outlive the renderer (a reload, a crash, a previous run of the app),
   // and the routing it owns doesn't care that the UI forgot about it.
+  //
+  // Also re-seat on a timer, because the traffic goes the other way too: a tunnel
+  // can **die** while the window sits focused and untouched, and mount+focus alone
+  // never look again — the indicator stayed green over a tunnel that had been dead
+  // for minutes. That is not just a stale lamp: `refresh` is what detects the drop
+  // and gates the SSH/SFTP probes belonging to the projects riding it (see
+  // `stores/vpnStatus`'s `onTunnelDropped`), so until something reconciles, every
+  // one of those probes blocks ~45 s against a peer that will never answer. This
+  // indicator is always mounted in the header, so it is the one place that poll is
+  // guaranteed to run. It is a local IPC call against an in-memory registry, so a
+  // 10 s cadence is cheap.
   useEffect(() => {
     void refresh();
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    const id = window.setInterval(() => void refresh(), 10_000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.clearInterval(id);
+    };
   }, [refresh]);
 
   // The stored `.ovpn` list is only needed once the menu is open — and with it, which

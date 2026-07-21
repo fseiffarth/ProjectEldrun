@@ -30,6 +30,7 @@ import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { basename, dirname, relativePathWithin, resolvePath } from "../../lib/paths";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
+import { DirSizeUnavailable, guardedDirSize, isHostTimeout } from "../../lib/dirSizeGuard";
 import { isPythonPath, isPythonMainScript } from "../../lib/viewers/python";
 import { runPythonFile, runCwd, placeForFocused } from "../../lib/pythonRun";
 import {
@@ -37,6 +38,7 @@ import {
   shellScriptRunPlan,
   type ScriptShell,
 } from "../../lib/shellScriptRun";
+import { useRunHostPrefStore } from "../../stores/runHostPref";
 import { readFileText } from "../embed/fileAccess";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 import { normalizeScanPath } from "./ProjectFilesSettings";
@@ -559,6 +561,21 @@ export function FileTree({
     };
   }, [entries, remoteListing, projectId]);
 
+  // Per-entry git status resolving the "whole directory is ignored" sentinel the
+  // backend emits under the reserved key "." (git's porcelain never lists an empty
+  // ignored subdir, so those children arrive absent from `gitStatuses`; without
+  // this they'd fall out of the gitignored section — see git.rs `git_file_statuses`).
+  // When the current folder is wholly ignored, every listed child defaults to
+  // "ignored" unless it already carries an explicit status (a force-added tracked
+  // file). Every consumer reads this, never the raw `gitStatuses`, so the tree, the
+  // section split, and the hover card stay consistent.
+  const displayStatuses = useMemo(() => {
+    if (gitStatuses["."] !== "ignored") return gitStatuses;
+    const m: GitStatusMap = {};
+    for (const e of entries) m[e.name] = gitStatuses[e.name] ?? "ignored";
+    return m;
+  }, [gitStatuses, entries]);
+
   // The three on-screen sections in render order (regular, then the collapsible
   // scaffold + gitignored groups). Shared by the renderer and the selection
   // click handler so a shift-range spans exactly what the user sees. Mirrors the
@@ -567,10 +584,10 @@ export function FileTree({
     const isRoot = !relPath && separateScaffold;
     const nonStandard = isRoot ? entries.filter((e) => !STANDARD_PROJECT_FILES.has(e.name)) : entries;
     const standard = isRoot ? entries.filter((e) => STANDARD_PROJECT_FILES.has(e.name)) : [];
-    const regular = nonStandard.filter((e) => gitStatuses[e.name] !== "ignored");
-    const gitignored = nonStandard.filter((e) => gitStatuses[e.name] === "ignored");
+    const regular = nonStandard.filter((e) => displayStatuses[e.name] !== "ignored");
+    const gitignored = nonStandard.filter((e) => displayStatuses[e.name] === "ignored");
     return { regular, standard, gitignored };
-  }, [entries, relPath, separateScaffold, gitStatuses]);
+  }, [entries, relPath, separateScaffold, displayStatuses]);
 
   // Flat list of visible row paths in on-screen order — the axis a shift-range
   // spans. Collapsed sections contribute no rows (they aren't rendered).
@@ -664,7 +681,13 @@ export function FileTree({
     pending.forEach((e) => requestedSizes.current.add(e.path));
     const gen = sizeGeneration.current;
     for (const e of pending) {
-      invoke<number>("dir_size", { projectDir, relPath: relForEntry(e), excluded: scanExcludedList })
+      guardedDirSize(projectDir, () =>
+        invoke<number>("dir_size", {
+          projectDir,
+          relPath: relForEntry(e),
+          excluded: scanExcludedList,
+        }),
+      )
         .then((bytes) => {
           if (sizeGeneration.current === gen) setDirSizes((m) => ({ ...m, [e.path]: bytes }));
         })
@@ -693,22 +716,34 @@ export function FileTree({
     pending.forEach((e) => requestedSizes.current.add(e.path));
     const gen = sizeGeneration.current;
     for (const e of pending) {
-      invoke<{ total: number; ignored: number }>("dir_size_breakdown", {
-        projectDir,
-        relPath: relForEntry(e),
-        excluded: scanExcludedList,
-      })
+      guardedDirSize(projectDir, () =>
+        invoke<{ total: number; ignored: number }>("dir_size_breakdown", {
+          projectDir,
+          relPath: relForEntry(e),
+          excluded: scanExcludedList,
+        }),
+      )
         .then(({ total, ignored }) => {
           if (sizeGeneration.current !== gen) return;
           setDirSizes((m) => ({ ...m, [e.path]: total }));
           if (ignored > 0) setDirIgnoredBytes((m) => ({ ...m, [e.path]: ignored }));
         })
-        .catch(() => {
-          // Fall back to the plain total rather than showing no size at all —
-          // `dir_size_breakdown` can fail for reasons `dir_size` wouldn't (a
-          // backend that hasn't picked up this new command yet, no `git` on
-          // PATH), and a folder's size is more important than its ignored split.
-          invoke<number>("dir_size", { projectDir, relPath: relForEntry(e), excluded: scanExcludedList })
+        .catch((err) => {
+          // The fallback is for a `dir_size_breakdown` that failed for a reason
+          // `dir_size` wouldn't (a backend that hasn't picked up this newer
+          // command, no `git` on PATH) — there, a folder's size matters more than
+          // its ignored split. It is NOT for a host that stopped answering: a
+          // timed-out or breaker-refused call says nothing about the *command*,
+          // so retrying with the other one would just queue a second doomed call
+          // per folder — twice the pile-up the guard exists to prevent.
+          if (err instanceof DirSizeUnavailable || isHostTimeout(err)) return;
+          guardedDirSize(projectDir, () =>
+            invoke<number>("dir_size", {
+              projectDir,
+              relPath: relForEntry(e),
+              excluded: scanExcludedList,
+            }),
+          )
             .then((bytes) => {
               if (sizeGeneration.current === gen) setDirSizes((m) => ({ ...m, [e.path]: bytes }));
             })
@@ -2151,6 +2186,11 @@ export function FileTree({
       syncSource,
       scriptPath: entry.path,
       interp,
+      // Run on the machine chosen in the RunHostPicker (the same preference the
+      // Python Run honours), so "pick machine X ⇒ all shells run on X".
+      runHostPref: projectId
+        ? useRunHostPrefStore.getState().byProject[projectId]
+        : undefined,
     });
     if (!plan) {
       setError(`Run failed: ${entry.path} is outside the current project tree`);
@@ -2570,7 +2610,7 @@ export function FileTree({
         const { regular, standard, gitignored } = sections;
 
         function renderEntry(e: FileEntry, isScaffold = false, isGitignored = false) {
-          const status = isGitignored ? undefined : gitStatuses[e.name];
+          const status = isGitignored ? undefined : displayStatuses[e.name];
           const sizeClass = !e.is_dir ? sizeCategory(e.size) : "";
           // A folder's headline number is its non-ignored weight — the part
           // that's actually "yours" — with the full total + ignored split
@@ -2997,7 +3037,7 @@ export function FileTree({
                 </>
               );
             }
-            const status = gitStatuses[entry.name];
+            const status = displayStatuses[entry.name];
             const isTex = !entry.is_dir && entry.extension === ".tex";
             const isZip = !entry.is_dir && entry.extension === ".zip";
             const entryRel = relForEntry(entry);
@@ -3344,7 +3384,7 @@ export function FileTree({
           {/* Same rule as the row: no ignored/total split for a folder that is
               itself ignored — "412 MB of 412 MB ignored" says nothing. */}
           {tooltip.entry.is_dir
-            && gitStatuses[tooltip.entry.name] !== "ignored"
+            && displayStatuses[tooltip.entry.name] !== "ignored"
             && dirIgnoredBytes[tooltip.entry.path] !== undefined && (
             <div>
               <span className="file-tooltip-label">Ignored </span>

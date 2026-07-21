@@ -9,6 +9,7 @@ import { METRIC, agentMetricLeaf, sub } from "../lib/usageMetrics";
 import { useLinkRoutingStore } from "./linkRouting";
 import { bumpUsage } from "./usage";
 import { newTmuxSessionName } from "../lib/tmuxSession";
+import { useRunHostPrefStore } from "./runHostPref";
 
 /** A shell tab gets a stable persisted tmux session name at creation (TODO #85),
  *  so a persistent remote run reattaches after a relaunch instead of forking a
@@ -19,6 +20,24 @@ function withTmuxSession(tab: Omit<TabEntry, "key">): Omit<TabEntry, "key"> {
     return { ...tab, tmuxSession: newTmuxSessionName() };
   }
   return tab;
+}
+
+/** A new SHELL tab launched from a project inherits that project's run-host
+ *  preference (the machine chosen in the `RunHostPicker`) as its `location`, so
+ *  "pick machine X ⇒ ALL shells run on X" — the "+" → Shell tab, not just a
+ *  Python/script Run. Scoped tightly: only a `shell` tab, only when it did NOT
+ *  already pin a `location` (a script/tmux/SLURM/git-resolve tab sets its own and
+ *  must keep it), and only when the owning scope has a stored preference (a local
+ *  project, the root scope, and a box scope have none → unchanged). Baked in at
+ *  creation because `effectiveTabLocation`'s per-kind default has no project
+ *  context to consult the preference. */
+function withRunHostDefault(
+  scope: string,
+  tab: Omit<TabEntry, "key">,
+): Omit<TabEntry, "key"> {
+  if (tab.kind !== "shell" || tab.location !== undefined) return tab;
+  const pref = useRunHostPrefStore.getState().byProject[scope];
+  return pref ? { ...tab, location: pref } : tab;
 }
 
 export type TabKind =
@@ -1689,7 +1708,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   addTab: (tab, opts) => {
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one.
-    const entry: TabEntry = { ...withTmuxSession(tab), key };
+    const entry: TabEntry = {
+      ...withTmuxSession(withRunHostDefault(get().scope, tab)),
+      key,
+    };
     if (!opts?.seeded) countTabOpen(get().scope, entry);
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
@@ -1722,7 +1744,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 
   addTabToScope: (scope, tab) => {
     const key = nextKey(tab.kind);
-    const entry: TabEntry = { ...withTmuxSession(tab), key, scope };
+    const entry: TabEntry = {
+      ...withTmuxSession(withRunHostDefault(scope, tab)),
+      key,
+      scope,
+    };
     countTabOpen(scope, entry);
     set((s) => {
       const tabs = s.tabsByScope[scope] ?? [];
