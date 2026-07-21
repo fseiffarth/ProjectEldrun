@@ -115,4 +115,41 @@ describe("file tree folder sizes", () => {
     const row = screen.getByText("results").closest(".file-entry");
     expect(row?.querySelector(".file-size")?.textContent).toBe("2.0 GB");
   });
+
+  it("never walks a folder excluded from scans", async () => {
+    // The point of the feature is the *absence* of the call: a 50 GB virtualenv
+    // is not made cheap by discarding its result, only by never descending it.
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "list_dir") return Promise.resolve([dirEntry("venv"), dirEntry("src")]);
+      if (cmd === "git_file_statuses") return Promise.resolve({});
+      if (cmd === "dir_size_breakdown") return Promise.resolve({ total: 10, ignored: 0 });
+      if (cmd === "dir_size") return Promise.resolve(10);
+      if (cmd === "git_status")
+        return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
+      if (cmd === "git_unpushed_commits") return Promise.resolve([]);
+      // The project's saved exclusion list — `venv` is out, `src` is not.
+      if (cmd === "load_project") return Promise.resolve({ scan_excluded_paths: ["venv"] });
+      if (cmd === "list_project_endings") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+
+    await act(async () => {
+      render(<RightPanel open={true} />);
+    });
+    expect(await screen.findByText("venv")).toBeTruthy();
+
+    const walked = (relPath: string) =>
+      mockInvoke.mock.calls.some(
+        ([cmd, args]) =>
+          (cmd === "dir_size" || cmd === "dir_size_breakdown") &&
+          (args as { relPath?: string } | undefined)?.relPath === relPath,
+      );
+    expect(walked("venv")).toBe(false);
+    expect(walked("src")).toBe(true);
+
+    // The row still lists — the exclusion has to stay reversible from the row it
+    // applies to — but says so instead of showing a stale or absent size.
+    const row = screen.getByText("venv").closest(".file-entry");
+    expect(row?.querySelector(".file-size")?.textContent).toBe("not scanned");
+  });
 });

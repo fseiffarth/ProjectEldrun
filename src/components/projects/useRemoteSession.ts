@@ -748,6 +748,10 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   return {
     isRemoteProject,
     isRemote,
+    // The live-connected host, frozen at connect time (`{ user, host, port }`),
+    // so a caller can register it elsewhere — e.g. the HPC wizard surfacing the
+    // cluster in the header's global-machines list once the login goes live.
+    remoteConn,
     headless,
     winManual,
     remoteReady,

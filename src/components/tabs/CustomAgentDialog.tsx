@@ -124,6 +124,7 @@ export function CustomAgentDialog({ onClose }: Props) {
           <h2>Custom agents</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
+        <div className="dialog-scroll">
         <p className="settings-help">
           Add any command-line agent so it appears in the <strong>Agents</strong>{" "}
           section of the new-tab menu. Eldrun launches the command in the project
@@ -248,6 +249,7 @@ export function CustomAgentDialog({ onClose }: Props) {
           >
             Add agent
           </button>
+        </div>
         </div>
       </div>
     </div>,

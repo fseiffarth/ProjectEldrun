@@ -1,37 +1,49 @@
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteUsageStore, type RemoteUsageReport } from "../../stores/remoteUsage";
+import { useGlobalMachinesStore } from "../../stores/globalMachines";
+import {
+  machineKey,
+  projectHostKey,
+  useRemoteUsageStore,
+  type RemoteUsageReport,
+  type UsageTarget,
+} from "../../stores/remoteUsage";
 import { hostsForProject } from "../../lib/remoteHosts";
+import { sameTarget } from "../../lib/machineSync";
+import { PRIMARY_HOST } from "../../stores/remoteStatus";
 
 /**
- * Reports a remote project's host usage right after connecting — CPU/load,
- * memory, GPU, logged-in sessions and top processes (see `services::remote_usage`
- * for the probe). It is **not** a verdict: the dialog is shown on *every*
- * connect regardless of whether the backend's `busy` heuristic tripped, so the
- * user reads the current usage and decides for themselves whether to proceed.
+ * Host usage — CPU/load, memory, GPU, logged-in sessions and top processes (see
+ * `services::remote_usage` for the probe). It is **not** a verdict:
  * `report.busy`/`report.reasons` are surfaced as extra context (a "may be in
- * use" hint) but never gate the popup. Note the one known false positive the
- * hint carries: an Eldrun terminal tab already open to the same host shows up in
+ * use" hint) but never gate anything. Note the one known false positive the hint
+ * carries: an Eldrun terminal tab already open to the same host shows up in
  * `who` exactly like a human login.
  *
- * **Multi-host**: the probe fires for every host that connects — the primary
- * AND any `compute_hosts` worker — so this renders ONE combined dialog per
- * project with a section per connected host, rather than only ever the
- * primary's. A worker connecting after the dialog was dismissed un-dismisses
- * it (same rule the primary always had), so a freshly added machine's usage
- * still gets seen.
+ * **On demand only.** It used to pop up by itself after every connect, which
+ * put a modal in front of a user who had just asked for something else. Now the
+ * *only* thing that opens it is the header Machines menu's "Remote host usage…"
+ * button (`useRemoteUsageStore.open`), and opening it rechecks every host so
+ * what's on screen is current rather than however stale the last connect's
+ * report had become.
  *
- * Mounted once at the shell, like `LocalLossDialog`. Unlike that one this is
- * advisory, not a record of something already destroyed, so a backdrop click
- * dismisses it same as any ordinary modal.
+ * **Its subject is the machine list, not a project.** It opens from the Machines
+ * menu, so it shows a section for **every global machine, in that menu's exact
+ * order** (`stores/globalMachines`), then the active project's own hosts — the
+ * primary and any `compute_hosts` worker — that aren't already in the list. The
+ * two are matched by SSH target (`lib/machineSync`'s `sameTarget`), never by id:
+ * dropping a machine onto a project copies it by value, so `user@host:port` is
+ * the only bridge, and without that dedupe one machine would appear twice.
  *
- * Pushed: the backend runs the probe fire-and-forget right after
- * `remote_connect` resolves (manual dialog and silent auto-connect alike) and
- * emits it as a `remote-usage-report` event, since a probe that could hang or
- * fail must never delay activation. This listens globally (not gated on the
- * active project) so a report for a background project is not lost, and only
- * renders for whichever project is on screen.
+ * Mounted once at the shell, like `LocalLossDialog`. Advisory, not a record of
+ * something already destroyed, so a backdrop click closes it same as any
+ * ordinary modal.
+ *
+ * The connect-time probe still runs (the backend emits a `remote-usage-report`
+ * event per project host after `remote_connect`) and this still listens for it
+ * globally, so a just-connected project's report is already cached when the
+ * button is pressed — but receiving one no longer shows anything.
  */
 
 interface UsageReportEvent {
@@ -165,14 +177,19 @@ function HostUsageSection({ label, report }: { label: string; report: RemoteUsag
           </div>
         ))}
       </div>
-      {report.users.length > 0 && (
-        <div className="remote-usage-section">
-          <div className="remote-usage-section-title">
-            Logged in{" "}
-            <span className="remote-usage-stat-sub">
-              ({report.users.length} session{report.users.length === 1 ? "" : "s"})
-            </span>
-          </div>
+      {/* Shown for **every** host, even with no sessions: `who` on a host reached
+          only over the pooled (non-PTY) master has no utmp entry of its own, so a
+          compute node with no interactive login is legitimately empty. The empty
+          note makes that explicit rather than dropping the section, which read as
+          "only the primary host reports logins". */}
+      <div className="remote-usage-section">
+        <div className="remote-usage-section-title">
+          Logged in{" "}
+          <span className="remote-usage-stat-sub">
+            ({report.users.length} session{report.users.length === 1 ? "" : "s"})
+          </span>
+        </div>
+        {report.users.length > 0 ? (
           <ul className="remote-usage-users">
             <li className="remote-usage-users-head" aria-hidden="true">
               <span>User</span>
@@ -192,8 +209,10 @@ function HostUsageSection({ label, report }: { label: string; report: RemoteUsag
               </li>
             ))}
           </ul>
-        </div>
-      )}
+        ) : (
+          <div className="remote-usage-empty">No interactive logins on this host.</div>
+        )}
+      </div>
       {report.topProcs.length > 0 && (
         <div className="remote-usage-section">
           <div className="remote-usage-section-title">Top processes</div>
@@ -216,22 +235,22 @@ function HostUsageSection({ label, report }: { label: string; report: RemoteUsag
 export function RemoteUsageWarningDialog() {
   const activeId = useProjectsStore((s) => s.activeId);
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === activeId));
+  const machines = useGlobalMachinesStore((s) => s.machines);
   const setReport = useRemoteUsageStore((s) => s.setReport);
-  const dismiss = useRemoteUsageStore((s) => s.dismiss);
+  const close = useRemoteUsageStore((s) => s.close);
   const recheck = useRemoteUsageStore((s) => s.recheck);
-  const reportsByHost = useRemoteUsageStore((s) =>
-    activeId ? s.reports[activeId] : undefined,
-  );
-  const dismissed = useRemoteUsageStore((s) =>
-    activeId ? (s.dismissed[activeId] ?? false) : true,
-  );
+  const reports = useRemoteUsageStore((s) => s.reports);
+  const isOpen = useRemoteUsageStore((s) => s.isOpen);
   const [rechecking, setRechecking] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     void listen<UsageReportEvent>("remote-usage-report", (event) => {
-      setReport(event.payload.projectId, event.payload.hostId, event.payload.report);
+      setReport(
+        projectHostKey(event.payload.projectId, event.payload.hostId),
+        event.payload.report,
+      );
     }).then((u) => (cancelled ? u() : (unlisten = u)));
     return () => {
       cancelled = true;
@@ -239,53 +258,101 @@ export function RemoteUsageWarningDialog() {
     };
   }, [setReport]);
 
-  // Section order mirrors the System Monitor's host picker (primary, then
-  // `compute_hosts` in project order). A report for a host that's since
-  // dropped out of that list (removed mid-session) still shows — appended at
-  // the end rather than silently vanishing.
-  const knownHosts = useMemo(() => hostsForProject(project), [project]);
-  const hostIds = useMemo(() => {
-    if (!reportsByHost) return [];
-    const known = knownHosts.map((h) => h.id).filter((id) => id in reportsByHost);
-    const extra = Object.keys(reportsByHost).filter((id) => !known.includes(id));
-    return [...known, ...extra];
-  }, [reportsByHost, knownHosts]);
+  // Every global machine first, in the Machines menu's own order — this dialog
+  // opens from that menu, so its list must be that list. Then the active
+  // project's own hosts (primary, then `compute_hosts` in project order, the
+  // same order the System Monitor's host picker uses), minus any whose SSH
+  // target is already a machine above: the two lists are related by
+  // `user@host:port` and nothing else, since attaching a machine to a project
+  // copies it by value rather than linking ids.
+  const targets = useMemo<UsageTarget[]>(() => {
+    const list: UsageTarget[] = machines.map((m) => ({
+      kind: "machine",
+      key: machineKey(m.id),
+      label: m.label || m.host,
+      user: m.user,
+      host: m.host,
+      port: m.port,
+    }));
+    if (project?.remote) {
+      const hostLabels = hostsForProject(project);
+      const specs = [
+        { id: PRIMARY_HOST, spec: project.remote },
+        ...(project.compute_hosts ?? []).map((w) => ({ id: w.id, spec: w })),
+      ];
+      for (const { id, spec } of specs) {
+        if (machines.some((m) => sameTarget(m, spec))) continue;
+        const label = hostLabels.find((h) => h.id === id)?.label ?? spec.host;
+        list.push({
+          kind: "projectHost",
+          key: projectHostKey(project.id, id),
+          label: `${label} — ${project.name}`,
+          projectId: project.id,
+          hostId: id,
+        });
+      }
+    }
+    return list;
+  }, [machines, project]);
 
-  if (!activeId || hostIds.length === 0 || dismissed) return null;
-  const reports = reportsByHost!;
+  // Opening is itself the request for a reading: whatever the last connect left
+  // cached is however old the session is, so every host is rechecked as the
+  // dialog appears (its sections fill in as the probes land).
+  const targetKey = targets.map((t) => t.key).join("|");
+  const runRecheck = useMemo(
+    () => () => {
+      if (targets.length === 0) return;
+      setRechecking(true);
+      void Promise.all(targets.map((t) => recheck(t))).finally(() => setRechecking(false));
+    },
+    // `targetKey` stands in for `targets` (a fresh array each render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [targetKey, recheck],
+  );
+  useEffect(() => {
+    if (isOpen) runRecheck();
+  }, [isOpen, runRecheck]);
 
-  const close = () => dismiss(activeId);
-  const onRecheck = () => {
-    setRechecking(true);
-    void Promise.all(hostIds.map((id) => recheck(activeId, id))).finally(() =>
-      setRechecking(false),
-    );
-  };
-  const labelFor = (hostId: string) => knownHosts.find((h) => h.id === hostId)?.label ?? hostId;
+  if (!isOpen) return null;
 
   return (
     <div className="modal-backdrop" onMouseDown={close}>
       <div
-        className="project-dialog remote-usage-dialog"
+        className="project-dialog dialog-framed remote-usage-dialog"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <h2 className="remote-usage-title">Current remote host usage</h2>
-        <p className="remote-usage-lede">
-          Eldrun just connected and checked{" "}
-          {hostIds.length === 1 ? "the host's" : `${hostIds.length} hosts'`} load,
-          memory and logged-in sessions. Here's what's running right now — decide
-          whether to proceed.
-        </p>
-        {hostIds.map((id) => (
-          <HostUsageSection key={id} label={labelFor(id)} report={reports[id]} />
-        ))}
-        <div className="project-dialog-actions">
-          <button type="button" onClick={onRecheck} disabled={rechecking}>
-            {rechecking ? "Rechecking…" : "Recheck"}
-          </button>
-          <button type="button" onClick={close}>
-            Got it
-          </button>
+        <div className="settings-title-row">
+          <h2>Current remote host usage</h2>
+          <button type="button" className="dialog-close-btn" onClick={close}>×</button>
+        </div>
+        <div className="dialog-scroll">
+          <p className="remote-usage-lede">
+            {targets.length === 0
+              ? "No machines to check — add one in the Machines menu, or open a remote project."
+              : `Load, memory and logged-in sessions on ${
+                  targets.length === 1 ? "1 host" : `${targets.length} hosts`
+                }, ${rechecking ? "being read now" : "as last read"} — here's what's running right now.`}
+          </p>
+          {targets.map((t) =>
+            reports[t.key] ? (
+              <HostUsageSection key={t.key} label={t.label} report={reports[t.key]} />
+            ) : (
+              <div className="remote-usage-host" key={t.key}>
+                <div className="remote-usage-host-title">{t.label}</div>
+                <div className="remote-usage-empty">
+                  {rechecking ? "Checking…" : "No reading — the host may be unreachable."}
+                </div>
+              </div>
+            ),
+          )}
+          <div className="project-dialog-actions">
+            <button type="button" onClick={runRecheck} disabled={rechecking}>
+              {rechecking ? "Rechecking…" : "Recheck"}
+            </button>
+            <button type="button" onClick={close}>
+              Got it
+            </button>
+          </div>
         </div>
       </div>
     </div>

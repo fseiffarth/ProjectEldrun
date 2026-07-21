@@ -76,6 +76,14 @@ export const DETACHED_DOCK = "detached-dock";
  * and do not restore on next launch.
  */
 export const DETACHED_CLOSE = "detached-close";
+/**
+ * Detached → main: hide this popout into the main window's right-panel "Hidden
+ * subwindows" list instead of docking it live (DETACHED_DOCK) or discarding it
+ * (DETACHED_CLOSE). The group's tabs stay mounted (PTYs alive); the main window
+ * parks its subtree in `hiddenGroupsByScope`, from which it is restored or closed
+ * exactly like a hidden main-window subwindow. Same envelope shape as the dock.
+ */
+export const DETACHED_HIDE = "detached-hide";
 /** Detached → main: the popout's OS geometry changed (persisted for respawn). */
 export const DETACHED_BOUNDS = "detached-bounds";
 /**
@@ -636,6 +644,23 @@ export async function listenDetachedHost(): Promise<() => void> {
     if (localFile) void store.persistScope(scope, localFile);
   });
 
+  const unHide = await listen<DetachedDockEnvelope>(DETACHED_HIDE, (ev) => {
+    const { scope, groupId } = ev.payload;
+    const store = useTabsStore.getState();
+    // Park the popout in the scope's Hidden list (tabs stay mounted). Works for
+    // the active scope (shows in the right panel now) and an inactive one (shows
+    // when that project is next activated) — `hiddenGroupsByScope` is per-scope.
+    store.hideDetachedGroup(scope, groupId);
+    // Persist so the group is saved as HIDDEN (not detached) and restores into the
+    // Hidden list on next launch. The active scope's CenterPanel also debounce-
+    // saves, but a parked (inactive) scope has nothing else to write its
+    // project.json. Root has no project.json, so there's nothing to persist.
+    const localFile = useProjectsStore
+      .getState()
+      .projects.find((p) => p.id === scope)?.local_file;
+    if (localFile) void store.persistScope(scope, localFile);
+  });
+
   return () => {
     unSeed();
     unEdit();
@@ -643,6 +668,7 @@ export async function listenDetachedHost(): Promise<() => void> {
     unZoom();
     unDock();
     unClose();
+    unHide();
   };
 }
 

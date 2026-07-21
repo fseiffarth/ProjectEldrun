@@ -251,6 +251,11 @@ interface Props {
   hiddenEndings: string[];
   hiddenPaths: string[];
   shownPaths: string[];
+  /** Folders excluded from recursive scans, and the toggle that maintains the
+   *  list. Omitted by hosts with no project.json to write to (a box's multi-root
+   *  view), which simply don't offer the action. */
+  scanExcluded?: string[];
+  onToggleScanExcluded?: (relPath: string, excluded: boolean) => void;
   /** Sort is the host's, not the pane's: the right panel unmounts this pane when
    *  it shows Git/Search, and a sort order that reset itself on the way back
    *  would be a worse view than the one the user chose. */
@@ -280,6 +285,8 @@ export function ProjectFilesPane({
   hiddenEndings,
   hiddenPaths,
   shownPaths,
+  scanExcluded,
+  onToggleScanExcluded,
   sortKey,
   descending,
   onSortChange,
@@ -438,6 +445,8 @@ export function ProjectFilesPane({
                 hiddenEndings={hiddenEndings}
                 hiddenPaths={hiddenPaths}
                 shownPaths={shownPaths}
+                scanExcluded={scanExcluded}
+                onToggleScanExcluded={onToggleScanExcluded}
                 initialRelPath={folder}
                 onRelPathChange={onFolderChange}
                 onOpenFolderTab={onOpenFolderTab}

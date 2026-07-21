@@ -482,8 +482,12 @@ export function ProjectDialog({
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <h2>{kind === "new" ? "New Project" : "Import Project"}</h2>
+      <div className="project-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>{kind === "new" ? "New Project" : "Import Project"}</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="dialog-scroll">
 
         <label className={`toggle-card${isRemoteProject ? " is-on" : ""}`}>
           <span className="toggle-card-body">
@@ -805,6 +809,7 @@ export function ProjectDialog({
                       : "Import"}
             </button>
           )}
+        </div>
         </div>
       </div>
     </div>

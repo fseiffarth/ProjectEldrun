@@ -227,9 +227,17 @@ Both list only the load-bearing files; the tree is the source of truth.
   Sessions-view attach. **Kill vs. detach**: closing a tab **always detaches** —
   `lib/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
   ssh/PTY client, so the session lives on under its tmux daemon; an app-exit,
-  disconnect, crash, or respawn likewise **leave the session alive**. The *only* way
-  to terminate a session is its **×** (kill) in the Sessions view
-  (`remote_tmux_kill`/`local_tmux_kill`). Because a session outlives its tab, a host
+  disconnect, crash, or respawn likewise **leave the session alive**. Two explicit
+  actions terminate a session — a session's **×** (kill) in the Sessions view
+  (`remote_tmux_kill`/`local_tmux_kill`), and an **active disconnect** of the whole
+  host, which ends *every* session on it at once (`remote_kill_all_jobs`: `tmux
+  kill-server` over the host, best-effort). The active disconnect is the "Disconnect"
+  on a **global machine** (`MachinesIndicator`, + `ssh_close_master` to drop any
+  shared master) and the "Disconnect & end jobs" beside a project host's plain
+  Disconnect (`RemoteConnectDialog`, then the ordinary `remote_disconnect` teardown).
+  Both are **explicit-click only** — `remote_kill_all_jobs` must never run on
+  deactivation or relaunch, or persistent sessions would stop surviving a restart.
+  Because a session outlives its tab, a host
   can hold runs no tab points at; the **Sessions view** (`☰` toggle in
   `ProjectFilesView`, mirrors the Orange view) makes them discoverable —
   **multi-host** (aggregated across the primary and every connected worker via

@@ -220,7 +220,13 @@ pub async fn openvpn_disconnect(config: String) -> Result<(), String> {
 /// ordinary best-effort teardown.
 #[tauri::command]
 pub async fn openvpn_disconnect_all_on_quit() -> Result<(), String> {
-    openvpn::disconnect_all_checked()
+    // Offload for the same reason `openvpn_connect` does: the teardown is fully
+    // synchronous and blocks for as long as `pkexec` sits on the polkit prompt —
+    // i.e. until the user types a password. Awaiting that directly on the async
+    // runtime starves a worker while the window is still on screen and waiting.
+    tokio::task::spawn_blocking(openvpn::disconnect_all_checked)
+        .await
+        .map_err(|e| format!("openvpn teardown task failed: {e}"))?
 }
 
 /// Whether the OpenVPN tunnel for `config` is currently up.

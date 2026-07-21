@@ -28,6 +28,7 @@ import { RemoteProjectSection } from "./RemoteProjectSection";
 import { useRemoteSession } from "./useRemoteSession";
 import { useHpcPipelineStore } from "../../stores/hpcPipeline";
 import { useProjectsStore, stashRemotePassword } from "../../stores/projects";
+import { useGlobalMachinesStore } from "../../stores/globalMachines";
 import { resolveProjectDirectory, type ProjectEntry } from "../../types";
 import { basename } from "../../lib/paths";
 import { writeFileText } from "../embed/fileAccess";
@@ -59,6 +60,7 @@ const SBATCH_LABELS: Record<string, string> = {
  *  cluster's partitions/limits and your job's needs. */
 const STARTER_SLURM = `#!/bin/bash
 #SBATCH --job-name=myjob
+#SBATCH --account=<account>
 #SBATCH --partition=<partition>
 #SBATCH --time=01:00:00
 #SBATCH --nodes=1
@@ -68,7 +70,9 @@ const STARTER_SLURM = `#!/bin/bash
 #SBATCH --output=slurm-%j.out
 
 # Runs on a compute node via SLURM — never the login node.
-# Check your cluster's usage policy (e.g. any acknowledgement it asks for).
+# Set --account to your working group's allocation: many clusters reject a job
+# with no account. Match --partition and the module name below to
+# your cluster; check its usage policy (e.g. any acknowledgement it asks for).
 
 module load Python
 python --version
@@ -87,9 +91,12 @@ export function HpcPipelineWizardHost() {
 
 function HpcPipelineWizard({ onClose }: { onClose: () => void }) {
   const addProject = useProjectsStore((s) => s.addProject);
+  const registerGlobalMachine = useGlobalMachinesStore((s) => s.register);
   const remote = useRemoteSession({ kind: "new" });
   const {
     isRemoteProject,
+    isRemote,
+    remoteConn,
     toggleRemoteProject,
     remoteBrowsePath,
     remoteChosenPath,
@@ -98,6 +105,20 @@ function HpcPipelineWizard({ onClose }: { onClose: () => void }) {
     remotePassword,
     buildRemoteSpec,
   } = remote;
+
+  // Once the cluster login goes live, surface that host in the header's global
+  // machines list too — it's now a project-free, already-authenticated
+  // connection the user can reuse across projects (or drag onto one as a
+  // compute host). Registration is idempotent by target and best-effort, so it
+  // never blocks the wizard.
+  useEffect(() => {
+    if (!isRemote || !remoteConn) return;
+    void registerGlobalMachine({
+      user: remoteConn.user ?? undefined,
+      host: remoteConn.host,
+      port: remoteConn.port ?? undefined,
+    });
+  }, [isRemote, remoteConn, registerGlobalMachine]);
 
   const [step, setStep] = useState<Step>("login");
   const [projectsRoot, setProjectsRoot] = useState("");
@@ -175,10 +196,14 @@ function HpcPipelineWizard({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="project-dialog hpc-wizard" onMouseDown={(e) => e.stopPropagation()}>
-        <h2>
-          HPC pipeline <UntestedTag />
-        </h2>
+      <div className="project-dialog dialog-framed hpc-wizard" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>
+            HPC pipeline <UntestedTag />
+          </h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="dialog-scroll">
         <StepTrail step={step} />
         {error && <div className="project-dialog-error">{error}</div>}
 
@@ -257,6 +282,7 @@ function HpcPipelineWizard({ onClose }: { onClose: () => void }) {
             </div>
           </>
         )}
+        </div>
       </div>
     </div>
   );

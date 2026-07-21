@@ -176,15 +176,59 @@ fn disconnect_interactive(config: &str) {
     }
 }
 
+/// Root pids we have already delivered a TERM to. **This is what keeps the app-close
+/// path to a single password prompt.** Killing an OpenVPN daemon is elevated
+/// (`pkexec kill`), and polkit authenticates *per invocation* — so a second elevated
+/// kill aimed at the same daemon costs the user a second password, even though the
+/// first one already did the job. Two things make that second kill happen: the quit
+/// path tears tunnels down twice by design (the checked teardown while the window is
+/// still on screen, then `RunEvent::Exit`'s best-effort `disconnect_all`), and TERM is
+/// asynchronous — the daemon is still alive for a moment after the first kill returns,
+/// so a liveness probe alone cannot tell "already handled" from "still needs killing".
+///
+/// Remembering the pid does. A pid in here has been asked to die and needs no second
+/// elevated ask; anything *not* in here is still killed exactly as before, so no tunnel
+/// can be silently left up. Pids are unique for the app's lifetime in practice (the set
+/// only ever holds the handful of tunnels one run brought up).
+#[cfg(any(unix, target_os = "windows"))]
+fn signalled_pids() -> &'static Mutex<std::collections::HashSet<i32>> {
+    static PIDS: OnceLock<Mutex<std::collections::HashSet<i32>>> = OnceLock::new();
+    PIDS.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Whether an elevated kill of `pid` can be skipped as already-done: we have signalled
+/// it before, or it is simply gone. Skipping reports *success* to the caller — the
+/// tunnel is down or on its way down either way, and the whole point is to not spend a
+/// password prompt re-confirming it.
+#[cfg(any(unix, target_os = "windows"))]
+fn kill_already_handled(pid: i32) -> bool {
+    if signalled_pids().lock().unwrap().contains(&pid) {
+        return true;
+    }
+    !pid_alive(pid)
+}
+
+/// Record that `pid` has been sent a TERM, so no later teardown pass re-elevates for it.
+#[cfg(any(unix, target_os = "windows"))]
+fn mark_signalled(pid: i32) {
+    signalled_pids().lock().unwrap().insert(pid);
+}
+
 /// `kill -TERM` a **root-owned** pid, escalating the same way the platform's
 /// connect does (a plain kill would get EPERM).
 #[cfg(target_os = "linux")]
 fn kill_root_pid(pid: i32) {
-    let _ = Command::new("pkexec")
+    if kill_already_handled(pid) {
+        return;
+    }
+    let status = Command::new("pkexec")
         .arg("kill")
         .arg("-TERM")
         .arg(pid.to_string())
         .status();
+    if matches!(status, Ok(s) if s.success()) {
+        mark_signalled(pid);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -895,6 +939,79 @@ pub fn active_configs() -> Vec<String> {
     keys.into_iter().filter(|c| is_connected(c)).collect()
 }
 
+/// Re-adopt tunnels a **previous run of Eldrun** (or a crash) left running, so the
+/// VPN lamp reflects the machine's *actual* routing at launch instead of a blank
+/// slate.
+///
+/// Every live-tunnel registry — [`registry`] (headless), [`interactive_registry`],
+/// and macOS's `mac_registry` — is **in-memory only**. Nothing rebuilds them from
+/// disk. So after a full restart Eldrun has no record of a tunnel it started before,
+/// yet the OpenVPN daemon runs as **root** and survives the app dying (a renderer
+/// SIGBUS that takes the process down, an OOM kill, a refused polkit prompt at quit,
+/// a plain crash): it is reparented to init and keeps rerouting the whole machine.
+/// The machines then still connect over SSH — exactly the "lamp is grey but the
+/// machines are up" symptom — because the routing the tunnel installed is genuinely
+/// still there; only Eldrun's memory of it is gone.
+///
+/// This closes that gap. For every **stored** config it looks for the pidfiles
+/// Eldrun writes to [`runtime_dir`] — `{stem}.pid` (headless) and
+/// `{stem}.interactive.pid` (interactive) — and, when the recorded pid is still
+/// alive, re-registers the tunnel; a pidfile whose pid is dead is a stale leftover
+/// and is removed. Recovered tunnels are seated in [`interactive_registry`]
+/// regardless of which flavour wrote the pidfile: after a restart there is no
+/// [`Child`] handle to reconstruct, so a bare pid + [`pid_alive`] + [`kill_root_pid`]
+/// is the only liveness/teardown model available — which is precisely the interactive
+/// one, and it makes the recovered tunnel visible ([`is_connected`]/[`active_configs`])
+/// and killable ([`disconnect`]/[`disconnect_all`]) just like any other.
+///
+/// Only tunnels for configs Eldrun *stored* are recoverable: a tunnel brought up
+/// entirely outside Eldrun (NetworkManager, systemd, a manual `sudo openvpn`) has no
+/// Eldrun-owned pidfile to map back to a config, so it is out of scope here.
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+pub fn adopt_orphans() {
+    for cfg in list_configs() {
+        adopt_config(&cfg.path);
+    }
+}
+
+/// Re-adopt one config's orphaned tunnel if its pidfile records a live root daemon.
+/// Returns `true` when a tunnel was (re-)seated. The per-config core of
+/// [`adopt_orphans`], split out so the recovery logic is unit-testable against a
+/// throwaway config path without touching the real config store.
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+fn adopt_config(config: &str) -> bool {
+    // Already tracked by a live registry entry (this can run after another path
+    // seated the tunnel) — leave it be.
+    if is_connected(config) {
+        return false;
+    }
+    let stem = safe_stem(config);
+    // Prefer the headless pidfile, then the interactive one; either records the
+    // root daemon's pid, which is all a post-restart adopt can act on.
+    let candidates = [
+        runtime_dir().join(format!("{stem}.pid")),
+        interactive_pidfile(config),
+    ];
+    for pidfile in candidates {
+        match pidfile_pid(&pidfile) {
+            Some(pid) if pid_alive(pid) => {
+                interactive_registry()
+                    .lock()
+                    .unwrap()
+                    .insert(config.to_string(), pidfile);
+                return true;
+            }
+            // Pid recorded but gone: a stale file from a tunnel that has since
+            // died. Drop it so a later connect can't mistake it for a live one.
+            Some(_) => {
+                let _ = std::fs::remove_file(&pidfile);
+            }
+            None => {}
+        }
+    }
+    false
+}
+
 /// Bring up the OpenVPN tunnel for `config`, authenticating with `password` (and
 /// `key_passphrase` for a config that *also* has an encrypted private key — see
 /// [`write_credfiles`]). No-op (returns `Ok`) if already connected. Blocks until
@@ -1132,13 +1249,22 @@ fn disconnect_interactive_checked(config: &str) -> bool {
 /// refused polkit prompt). The checked twin of [`kill_root_pid`].
 #[cfg(target_os = "linux")]
 fn kill_root_pid_checked(pid: i32) -> bool {
-    Command::new("pkexec")
+    // Already TERMed (or already gone) — the tunnel is down or going down, and a
+    // second `pkexec` would only cost the user a second password. See `signalled_pids`.
+    if kill_already_handled(pid) {
+        return true;
+    }
+    let ok = Command::new("pkexec")
         .arg("kill")
         .arg("-TERM")
         .arg(pid.to_string())
         .status()
         .map(|s| s.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if ok {
+        mark_signalled(pid);
+    }
+    ok
 }
 
 /// Like [`disconnect`], but reports whether the tunnel actually went down.
@@ -1195,20 +1321,28 @@ pub fn disconnect_checked(config: &str) -> Result<(), String> {
 /// reads it to decide whether the quit can proceed.
 #[cfg(target_os = "linux")]
 fn kill_pidfile(pidfile: &Path) -> bool {
-    let Ok(contents) = std::fs::read_to_string(pidfile) else {
+    // No pid on disk (or an unusable one) — nothing to kill, and nothing that may
+    // reach `kill` unvalidated. `pidfile_pid` is the one place that parse lives.
+    let Some(pid) = pidfile_pid(pidfile) else {
         return true;
     };
-    let pid = contents.trim();
-    if pid.is_empty() || !pid.chars().all(|c| c.is_ascii_digit()) {
+    // Already TERMed (or already gone): report success without re-elevating, so the
+    // exit-time `disconnect_all` never re-prompts for a tunnel the on-quit teardown
+    // already took down. See `signalled_pids`.
+    if kill_already_handled(pid) {
         return true;
     }
-    Command::new("pkexec")
+    let ok = Command::new("pkexec")
         .arg("kill")
         .arg("-TERM")
-        .arg(pid)
+        .arg(pid.to_string())
         .status()
         .map(|s| s.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if ok {
+        mark_signalled(pid);
+    }
+    ok
 }
 
 /// Tear down every live tunnel. Used at app exit; errors are swallowed so
@@ -2242,6 +2376,67 @@ mod tests {
         forget_interactive(cfg);
     }
 
+    /// The bug this fixes: a tunnel a *previous* run started is up (its root daemon
+    /// survived, pidfile on disk) but every registry is empty at launch, so the lamp
+    /// reads grey while the machine is still routed through it. `adopt_config` recovers
+    /// it from the headless `{stem}.pid`, making it visible again.
+    #[cfg(unix)]
+    #[test]
+    fn adopt_recovers_a_surviving_headless_tunnel() {
+        let cfg = "/store/test-adopt-headless.ovpn";
+        forget_interactive(cfg);
+        let pidfile = runtime_dir().join(format!("{}.pid", safe_stem(cfg)));
+        let _ = std::fs::create_dir_all(runtime_dir());
+        // Our own pid stands in for the still-alive root daemon.
+        std::fs::write(&pidfile, format!("{}\n", std::process::id())).unwrap();
+        assert!(!is_connected(cfg)); // nothing tracks it yet
+
+        assert!(adopt_config(cfg));
+        assert!(is_connected(cfg));
+        assert!(active_configs().contains(&cfg.to_string()));
+
+        forget_interactive(cfg);
+        let _ = std::fs::remove_file(&pidfile);
+    }
+
+    /// The interactive flavour's pidfile is recovered too.
+    #[cfg(unix)]
+    #[test]
+    fn adopt_recovers_a_surviving_interactive_tunnel() {
+        let cfg = "/store/test-adopt-interactive.ovpn";
+        forget_interactive(cfg);
+        let pidfile = interactive_pidfile(cfg);
+        let _ = std::fs::create_dir_all(runtime_dir());
+        std::fs::write(&pidfile, format!("{}\n", std::process::id())).unwrap();
+
+        assert!(adopt_config(cfg));
+        assert!(is_connected(cfg));
+
+        forget_interactive(cfg);
+        let _ = std::fs::remove_file(&pidfile);
+    }
+
+    /// A pidfile whose recorded process is gone is not a live tunnel: adopt reports
+    /// nothing recovered and cleans the stale file, so a later connect can't mistake
+    /// it for one that is up.
+    #[cfg(unix)]
+    #[test]
+    fn adopt_reaps_a_stale_pidfile_and_recovers_nothing() {
+        let cfg = "/store/test-adopt-stale.ovpn";
+        forget_interactive(cfg);
+        let pidfile = runtime_dir().join(format!("{}.pid", safe_stem(cfg)));
+        let _ = std::fs::create_dir_all(runtime_dir());
+        // A pid that is certainly dead: spawn a process and reap it.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead = child.id();
+        child.wait().unwrap();
+        std::fs::write(&pidfile, format!("{dead}\n")).unwrap();
+
+        assert!(!adopt_config(cfg));
+        assert!(!is_connected(cfg));
+        assert!(!pidfile.exists()); // stale file cleaned up
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn interactive_connect_command_linux_shape() {
@@ -2670,6 +2865,32 @@ mod tests {
         assert!(cmd.contains("with administrator privileges"));
         // The embedded double quote survived AppleScript-escaped.
         assert!(cmd.contains(r#"a\"b.ovpn"#));
+    }
+
+    /// The app-close path tears tunnels down twice by design (the checked teardown
+    /// while the window is up, then `RunEvent::Exit`). The second pass must not
+    /// re-elevate for a daemon the first one already TERMed, or the user pays a
+    /// second polkit password prompt for one tunnel.
+    #[test]
+    #[cfg(any(unix, target_os = "windows"))]
+    fn a_signalled_pid_is_never_killed_a_second_time() {
+        // A pid this run has never signalled and that is alive (our own process)
+        // still needs its elevated kill.
+        let live = std::process::id() as i32;
+        assert!(!kill_already_handled(live));
+        // Once TERMed, a second teardown pass skips it — no second prompt.
+        mark_signalled(live);
+        assert!(kill_already_handled(live));
+        // A pid that is simply gone needs no kill either. Spawn-and-reap gives a pid
+        // that is definitively dead (pid 0 would NOT: `kill(0, 0)` signals the
+        // caller's own process group and so reads as alive).
+        let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" })
+            .args(if cfg!(windows) { vec!["/C", "exit"] } else { vec![] })
+            .spawn()
+            .expect("spawn a trivial child");
+        let dead = child.id() as i32;
+        child.wait().expect("reap it");
+        assert!(kill_already_handled(dead));
     }
 
     #[test]

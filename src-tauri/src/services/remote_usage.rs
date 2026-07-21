@@ -126,7 +126,11 @@ const MARK_GPU: &str = "GPU";
 /// `ssh_exec::run_remote_shell`'s contract). Each section is bounded by a
 /// `##NAME##` marker line so the output can be split back apart without
 /// depending on any tool's exact formatting beyond what's parsed below.
-fn probe_script() -> String {
+///
+/// `pub(crate)`: also used by `services::remote_usage::check_usage` for a
+/// project's connect-time usage warning, the only other caller of
+/// [`parse_report`] below.
+pub(crate) fn probe_script() -> String {
     format!(
         "echo '##{MARK_WHO}##'\n\
          who 2>/dev/null\n\
@@ -364,7 +368,7 @@ fn parse_procs(lines: &[&str]) -> Vec<ProcInfo> {
         .collect()
 }
 
-fn parse_report(output: &str) -> RemoteUsageReport {
+pub(crate) fn parse_report(output: &str) -> RemoteUsageReport {
     let sections = split_sections(output);
     let empty: Vec<&str> = Vec::new();
     let users = parse_who(sections.get(MARK_WHO).unwrap_or(&empty));

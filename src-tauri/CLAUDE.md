@@ -27,7 +27,7 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 | `apps.rs` | App launching, `run_script_detached`, `open_file`, external window tracking. |
 | `default_apps.rs` | Per-file-type default-app mapping. |
 | `downloads.rs` | Per-project download routing. |
-| `ssh.rs` | SSH commands for remote projects (`ssh_connect`, `ssh_default_dir`, `ssh_list_dir`, `ssh_tooling_status`). |
+| `ssh.rs` | SSH commands for remote projects (`ssh_connect`, `ssh_default_dir`, `ssh_list_dir`, `ssh_tooling_status`). Also the **active-disconnect** pair (explicit-click only, never on relaunch): `remote_kill_all_jobs` (`tmux kill-server` on a host — ends *every* running session/job, best-effort, rides a live master or authenticates ad-hoc like `global_machine_monitor_snapshot`) and `ssh_close_master` (`ssh -O exit` on the shared `cm-%C` socket, for a project-free global machine that pools nothing; a project host tears its pool down via `remote_disconnect` instead). |
 | `remote.rs` | Pooled SSH/SFTP connection lifecycle (`remote_connect`/`remote_disconnect`) for the active remote project. Also `remote_upload_file` (HPC wizard "Load data" step, `docs/quirky-knitting-umbrella`): streams a local file to `<remote_path>/<dest_rel>` over the pooled SFTP (`upload_file_streaming_on`), primary host, dest_rel sanitized to stay inside the root. Also the tmux-session commands (TODO #85): `remote_tmux_list` (Sessions view, `tmux ls` → `Vec<TmuxSession>`; called per-host so the view aggregates every connected worker), `remote_tmux_kill` (explicit-close / per-row kill), and `remote_tmux_rename` (per-row rename), all over the pooled ControlMaster. |
 | `openvpn.rs` | OpenVPN tunnel connect/store-config commands. |
 | `ollama.rs` | Ollama model list/pull/delete + local autocomplete. |

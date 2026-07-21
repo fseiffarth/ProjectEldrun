@@ -63,6 +63,24 @@ const IGNORED_DIRS: &[&str] = &[
 /// Suffixes of editor scratch/lock files — churn that represents no real edit.
 const IGNORED_SUFFIXES: &[&str] = &[".swp", ".swx", ".tmp", ".lock", "~"];
 
+/// Whether a single directory NAME names an ignored subtree.
+///
+/// Exact matching against [`IGNORED_DIRS`] is not enough for virtualenvs, which
+/// are named by their owner rather than by convention: `venv` and `.venv` are in
+/// the list, but a second environment beside them is routinely `venv-rocm`,
+/// `venv313`, `.venv-cuda`… Those are thousands of directories each, and missing
+/// one does not merely cost watch churn — every write inside it is counted as
+/// work the user did, so the recap's file-churn figure reports a `pip install`
+/// as a day's editing. Hence the venv rule is a *shape* (a `venv`/`.venv` stem,
+/// or a `-venv`/`_venv` suffix), not a fixed list.
+pub fn is_ignored_dir_name(name: &str) -> bool {
+    if IGNORED_DIRS.contains(&name) {
+        return true;
+    }
+    let stem = name.strip_prefix('.').unwrap_or(name);
+    stem.starts_with("venv") || name.ends_with("-venv") || name.ends_with("_venv")
+}
+
 /// Whether a path should never contribute to file-churn counts.
 ///
 /// Pure, so every rule below is unit-tested without touching a filesystem.
@@ -71,7 +89,7 @@ pub fn is_ignored(path: &Path) -> bool {
         let Some(name) = component.as_os_str().to_str() else {
             continue;
         };
-        if IGNORED_DIRS.contains(&name) {
+        if is_ignored_dir_name(name) {
             return true;
         }
     }
@@ -205,6 +223,88 @@ pub fn watch_root_for(project_id: &str) -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
+/// Attach the watch to `root`'s tree, descending it ourselves so that an ignored
+/// subtree is never watched in the first place.
+///
+/// `RecursiveMode::Recursive` on the root would be one line, and was — but it asks
+/// the kernel for one inotify watch per directory *including* the ones
+/// [`is_ignored`] exists to throw away. On a real project that is not a rounding
+/// error: a tree with two virtualenvs measured 8017 watches, of which ~85% were
+/// venv internals whose every event was queued, delivered, woken a thread for, and
+/// then discarded. Pruning here makes the kernel stop reporting what we were only
+/// going to drop.
+///
+/// The trade-off is deliberate: a directory created *after* this pass is not
+/// watched (its own creation is still seen, since its parent is). Re-watching
+/// happens on the next project switch, and the payload is a usage counter — a
+/// newly-created folder's churn going uncounted until then is worth the ~98%
+/// reduction in watch load.
+/// `excluded` additionally drops the subtrees the user excluded by hand (the file
+/// tree's "Exclude from scans"), so one list governs every scan rather than the
+/// size walk and the churn watcher each having their own notion of "skip this".
+fn watch_pruned(
+    watcher: &mut notify::RecommendedWatcher,
+    root: &Path,
+    excluded: &std::collections::HashSet<String>,
+) {
+    // (dir, project-relative path) — the rel is what the exclusion list speaks.
+    let mut stack = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        // NonRecursive: every directory gets its own watch, so files anywhere in
+        // the surviving tree are still reported — only the ignored subtrees are
+        // absent, which a recursive watch could not express.
+        if watcher.watch(&dir, RecursiveMode::NonRecursive).is_err() {
+            continue; // vanished mid-walk, or the watch limit is exhausted
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            // Never follow a symlink: a link pointing up the tree would loop, and
+            // one pointing out of the project would watch someone else's files.
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if is_ignored_dir_name(name) {
+                continue;
+            }
+            let child_rel = if rel.is_empty() { name.to_string() } else { format!("{rel}/{name}") };
+            if excluded.contains(&child_rel) {
+                continue;
+            }
+            stack.push((entry.path(), child_rel));
+        }
+    }
+}
+
+/// The user's own scan-exclusion list for `project_id` — `scan_excluded_paths` in
+/// the project's `project.json`, the same list the file tree writes and the size
+/// walk reads (`commands::fs::excluded_rel_set`).
+///
+/// Read from the project's *state* directory, which is where `project.json` lives
+/// for a local and a remote project alike — the remote one's watch root is its
+/// mirror, a different path entirely, so resolving the list from the watch root
+/// would find nothing.
+fn user_excluded_dirs(project_id: &str) -> std::collections::HashSet<String> {
+    let Some(dir) = crate::services::remote::project_directory(project_id) else {
+        return Default::default();
+    };
+    let Ok(raw) = std::fs::read_to_string(PathBuf::from(dir).join("project.json")) else {
+        return Default::default();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Default::default();
+    };
+    let list: Vec<String> = json
+        .get("scan_excluded_paths")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    crate::commands::fs::excluded_rel_set(&list)
+}
+
 /// Watch `project_id`'s tree (recursively), replacing any previous watch. An
 /// empty id — or a project with nothing watchable — just stops watching.
 ///
@@ -247,9 +347,7 @@ pub fn watch_project(state: &UsageWatchState, project_id: &str) -> Result<(), St
     })
     .map_err(|e| e.to_string())?;
 
-    watcher
-        .watch(&canonical, RecursiveMode::Recursive)
-        .map_err(|e| e.to_string())?;
+    watch_pruned(&mut watcher, &canonical, &user_excluded_dirs(project_id));
 
     // Replacing the stored watcher drops the previous one, unwatching it.
     *guard = Some(Active {
@@ -317,6 +415,25 @@ mod tests {
     fn ignored_dir_matches_at_any_depth() {
         assert!(is_ignored(&p("/a/b/c/node_modules/d/e/f.js")));
         assert!(is_ignored(&p("/a/node_modules/b/node_modules/c.js")));
+    }
+
+    #[test]
+    fn virtualenvs_are_ignored_by_shape_not_by_exact_name() {
+        // A venv is named by its owner, so an exact-name list only ever catches the
+        // first one. A measured project carried `venv` AND `venv-rocm` side by side:
+        // the second slipped through, and every `pip install` inside it was counted
+        // as the user's own file churn.
+        assert!(is_ignored(&p("/home/me/proj/venv/lib/python3.12/site.py")));
+        assert!(is_ignored(&p("/home/me/proj/venv-rocm/lib/python3.12/site.py")));
+        assert!(is_ignored(&p("/home/me/proj/.venv-cuda/bin/python")));
+        assert!(is_ignored(&p("/home/me/proj/venv313/bin/python")));
+        assert!(is_ignored(&p("/home/me/proj/project_venv/bin/python")));
+        assert!(is_ignored(&p("/home/me/proj/api-venv/bin/python")));
+        // …but the shape must not swallow ordinary source directories that merely
+        // start with the same letters.
+        assert!(!is_ignored(&p("/home/me/proj/vendored_ui/main.ts")));
+        assert!(!is_ignored(&p("/home/me/proj/environments/prod.yaml")));
+        assert!(!is_ignored(&p("/home/me/proj/ven/notes.md")));
     }
 
     #[test]

@@ -91,8 +91,8 @@ function setup() {
   });
 }
 
-/** YAML now opens in the CARD view by default; these tests exercise the tree, so
- *  switch to it after rendering. */
+/** YAML opens in the Tree view by default; clicking Tree is a harmless no-op that
+ *  also guards these tests against a future default change. */
 async function toTree() {
   await act(async () => {
     fireEvent.click(await screen.findByRole("button", { name: "Tree" }));
@@ -629,18 +629,37 @@ describe("card view (#yaml-grid)", () => {
     await act(async () => {
       render(<FileViewerPane viewer="yaml" path="/p/config.yaml" projectId="proj" />);
     });
-    // The grid is a drill navigation, not a recursive nest: the overview shows
-    // only the root "document" card. Open it to reach `server`'s own level,
-    // which renders `server`'s scalar fields (host, port) inline.
+    // YAML opens in Tree now — switch to Cards first. The grid is a drill
+    // navigation, not a recursive nest: the overview shows only the root
+    // "document" card. Open it to reach `server`'s own level, which renders
+    // `server`'s scalar fields (host, port) inline.
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Cards" }));
+    });
     await act(async () => {
       fireEvent.click(await screen.findByRole("button", { name: "Open document" }));
     });
     await screen.findByLabelText("Value of port");
   }
 
-  it("opens a structured .yaml file in the card view by default", async () => {
+  it("opens a structured .yaml file in the tree view by default", async () => {
+    vi.resetModules();
+    const { FileViewerPane } = await import("../components/embed/FileViewerPane");
+    await act(async () => {
+      render(<FileViewerPane viewer="yaml" path="/p/config.yaml" projectId="proj" />);
+    });
+    // Tree is the default: tree rows render, no cards, and the Cards toggle is
+    // present (the file nests something to card) but not active.
+    await screen.findByRole("button", { name: "Collapse server" });
+    expect((screen.getByRole("button", { name: "Tree" }) as HTMLButtonElement).getAttribute("aria-pressed")).toBe("true");
+    expect((screen.getByRole("button", { name: "Cards" }) as HTMLButtonElement).getAttribute("aria-pressed")).toBe("false");
+    expect(document.querySelector(".yaml-row")).not.toBeNull();
+    expect(document.querySelector(".yaml-card")).toBeNull();
+  });
+
+  it("switches to the card view, drilling into records", async () => {
     await renderCards();
-    // The Cards toggle is present and active, and cards (not tree rows) render.
+    // The Cards toggle is now active, and cards (not tree rows) render.
     expect((screen.getByRole("button", { name: "Cards" }) as HTMLButtonElement).getAttribute("aria-pressed")).toBe("true");
     expect(document.querySelector(".yaml-card")).not.toBeNull();
     expect(document.querySelector(".yaml-row")).toBeNull();
@@ -689,6 +708,10 @@ describe("card view (#yaml-grid)", () => {
     const { FileViewerPane } = await import("../components/embed/FileViewerPane");
     await act(async () => {
       render(<FileViewerPane viewer="yaml" path="/p/svc.yaml" projectId="proj" />);
+    });
+    // YAML opens in Tree — switch to Cards first.
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Cards" }));
     });
     await act(async () => {
       fireEvent.click(await screen.findByRole("button", { name: "Open document" }));

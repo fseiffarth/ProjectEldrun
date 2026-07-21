@@ -45,6 +45,11 @@ describe("parseSbatchDirectives", () => {
   it("returns empty for an absent key", () => {
     expect(directiveValue(parseSbatchDirectives(SCRIPT), "mem")).toBe("");
   });
+
+  it("folds the `-A` short flag into `account`", () => {
+    const fields = parseSbatchDirectives("#!/bin/bash\n#SBATCH -A ag-foo\n");
+    expect(directiveValue(fields, "account")).toBe("ag-foo");
+  });
 });
 
 describe("spliceDirective", () => {
@@ -101,8 +106,16 @@ describe("command builders", () => {
   it("builds an srun --pty command from the set resources only", () => {
     expect(
       buildInteractiveCommand({ time: "01:00:00", cpus: "4", mem: "8G", gpus: "1" }),
-    ).toBe("srun --pty --time=01:00:00 --cpus-per-task=4 --mem=8G --gres=gpu:1 bash -l");
+    ).toBe("srun --pty --time=01:00:00 --cpus-per-task=4 --mem=8G --gpus=1 bash -l");
     // Empty fields are omitted; a bare session still lands on bash -l.
     expect(buildInteractiveCommand({})).toBe("srun --pty bash -l");
+  });
+
+  it("emits --account first, before the other resources", () => {
+    // --account is mandatory on group-allocated clusters; an interactive srun
+    // without it is rejected.
+    expect(
+      buildInteractiveCommand({ account: "ag-foo", partition: "mlgpu", gpus: "2" }),
+    ).toBe("srun --pty --account=ag-foo --partition=mlgpu --gpus=2 bash -l");
   });
 });

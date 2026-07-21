@@ -245,7 +245,7 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
 
   return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="stats-dialog" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="stats-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>Your work in Eldrun</h2>
           <div className="stats-period-switch" role="group" aria-label="Period">
@@ -263,6 +263,7 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
 
+        <div className="dialog-scroll">
         <p className="settings-help stats-window-label">{label}</p>
 
         {empty ? (
@@ -364,6 +365,7 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
             />
           </label>
         )}
+        </div>
       </div>
     </div>,
     document.body,

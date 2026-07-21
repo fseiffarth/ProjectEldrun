@@ -896,6 +896,15 @@ interface TabsStore {
   // gone — persist the scope afterwards (persistScope) so disk agrees and they
   // don't restore on next launch. Closes the OS window via `attach_subwindow`.
   closeDetachedGroup: (scope: string, groupId: string) => void;
+  // #42: hide a popout into the right-panel "Hidden subwindows" list instead of
+  // docking it live or closing it — the detached twin of `hideGroup`. Moves the
+  // popout's subtree from `detachedGroupsByScope` into `hiddenGroupsByScope[scope]`
+  // (its tab payloads never left `tabsByScope`, so the flat pane layer keeps their
+  // PTYs mounted through the move) and closes the OS window via `attach_subwindow`.
+  // Restored/closed from the Hidden list exactly like a hidden main-window
+  // subwindow (`unhideGroup`/`closeHiddenGroup`), which docks it back into the
+  // tiled layout. No-op if the detached entry is gone.
+  hideDetachedGroup: (scope: string, groupId: string) => void;
   // #42: record a popout's latest OS geometry (streamed back from the window) so
   // it persists and the popout reopens where the user left it after a restart.
   setDetachedBounds: (scope: string, groupId: string, bounds: WindowBounds) => void;
@@ -3143,6 +3152,39 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
 
     // Close the detached OS window + drop the parkable override / registry entry.
+    invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
+  },
+
+  hideDetachedGroup: (scope, groupId) => {
+    const entries = get().detachedGroupsByScope[scope] ?? [];
+    const entry = entries.find((d) => d.id === groupId);
+    if (!entry) return;
+
+    set((s) => {
+      const remaining = (s.detachedGroupsByScope[scope] ?? []).filter(
+        (d) => d.id !== groupId,
+      );
+      const existing = s.hiddenGroupsByScope[scope] ?? [];
+      // The popout's tab payloads never left `tabsByScope`, so the flat pane
+      // layer keeps their PTYs mounted through the move — only the subtree
+      // changes home, from the detached record to the hidden one. Ids are kept
+      // as-is (like `hideGroup`); `unhideGroup` regenerates them on restore to
+      // avoid colliding with a live node. Mirror the flat tab list is untouched
+      // (no tab payload changes here).
+      return {
+        detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: remaining },
+        hiddenGroupsByScope: {
+          ...s.hiddenGroupsByScope,
+          [scope]: [
+            ...existing,
+            { id: entry.id, subtree: entry.subtree, label: entry.label },
+          ],
+        },
+      };
+    });
+
+    // Close the detached OS window + drop the backend registry entry (best-effort;
+    // the popout also destroys its own window). Mirrors dropDetachedGroup.
     invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
   },
 

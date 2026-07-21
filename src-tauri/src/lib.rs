@@ -537,6 +537,15 @@ pub fn run() {
             // skips the exit teardown) and the staged config copies. Off-thread:
             // docker may be slow or absent, and neither may block startup.
             std::thread::spawn(services::sandbox::sweep_orphans);
+            // Re-adopt OpenVPN tunnels a previous run left running (a crash, an OOM
+            // kill, a refused quit-time prompt): the daemon runs as root and outlives
+            // the app, still rerouting the machine, but the live-tunnel registries are
+            // in-memory and start empty — so without this the VPN lamp reads grey while
+            // the machines are in fact reachable through the still-up tunnel. Off-thread
+            // (a few pidfile stats); additive and idempotent, so racing the frontend's
+            // first `openvpn_active` refresh is benign.
+            #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+            std::thread::spawn(services::openvpn::adopt_orphans);
             // Start the background per-project SSH-link traffic sampler so each
             // remote project's daily/monthly/overall usage accrues even when its
             // Network Traffic tab is closed (see services::net_usage). No-op on
@@ -646,6 +655,8 @@ pub fn run() {
             commands::ssh::ssh_probe,
             commands::ssh::remote_has_saved_password,
             commands::ssh::remote_forget_password,
+            commands::ssh::remote_kill_all_jobs,
+            commands::ssh::ssh_close_master,
             commands::ssh::remote_login_command,
             commands::ssh::ssh_default_dir,
             commands::ssh::ssh_list_dir,
@@ -664,7 +675,15 @@ pub fn run() {
             // Global machines (cross-project compute host registry)
             commands::global_machines::global_machines_list,
             commands::global_machines::global_machine_add,
+            commands::global_machines::global_machine_update,
+            commands::global_machines::global_machine_set_auto_connect,
             commands::global_machines::global_machine_remove,
+            commands::global_machines::global_machine_reorder,
+            commands::global_machines::global_machine_monitor_snapshot,
+            commands::global_machines::global_machine_usage_check,
+            commands::global_machines::global_machine_tmux_list,
+            commands::global_machines::global_machines_export,
+            commands::global_machines::global_machines_import_read,
             commands::remote::remote_tmux_list,
             commands::remote::remote_tmux_kill,
             commands::remote::remote_tmux_rename,

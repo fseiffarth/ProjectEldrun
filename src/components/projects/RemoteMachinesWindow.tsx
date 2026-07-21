@@ -6,9 +6,9 @@ import { parseSshAddress, type ParsedSshAddress } from "./scaffold";
 import { RemoteFolderBrowser } from "./RemoteFolderBrowser";
 import { useRemoteBrowse } from "./useRemoteBrowse";
 import { useConnectDialogStore } from "../../stores/connectDialog";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteStatusStore, PRIMARY_HOST } from "../../stores/remoteStatus";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
-import { GLOBAL_MACHINE_DRAG_TYPE } from "../header/MachinesIndicator";
+import { useHostBusyStore, busyReading, busyLabel } from "../../stores/hostBusy";
 import { ConnLamp } from "../common/ConnLamp";
 import { Toggle } from "../common/Toggle";
 import { PasswordInput } from "../common/PasswordInput";
@@ -65,6 +65,32 @@ export function RemoteMachinesWindow({
   // The primary host's live SSH state (multi-host remote keeps the primary in
   // `byProject`, workers in `byHost`) — drives the primary entry's lamp/action.
   const primary = useRemoteStatusStore((s) => s.byProject[project.id]);
+  const readings = useHostBusyStore((s) => s.readings);
+
+  // Sweep every CONNECTED host for live tmux sessions when this hub opens, so
+  // each card's lamp says whether that machine is merely reachable or actually
+  // working (`stores/hostBusy`). On-open only, never polled — one SSH round trip
+  // per connected host, riding the pool that is already up. A disconnected host
+  // is skipped: it has nothing to ask, and asking would dial it just to fail.
+  const primarySsh = primary?.ssh ?? "off";
+  const connectedKey = [
+    primarySsh === "connected" ? "primary" : "",
+    ...workers.filter((w) => (byHost?.[w.id]?.ssh ?? "off") === "connected").map((w) => w.id),
+  ]
+    .filter(Boolean)
+    .join("|");
+  useEffect(() => {
+    const probe = useHostBusyStore.getState().probeProjectHost;
+    if (primarySsh === "connected" && project.remote) {
+      void probe(project.id, PRIMARY_HOST, project.remote);
+    }
+    for (const w of workers) {
+      if ((byHost?.[w.id]?.ssh ?? "off") === "connected") void probe(project.id, w.id, w);
+    }
+    // Re-sweeps when the set of connected hosts changes (one just connected), not
+    // on every unrelated re-render of this dialog.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id, connectedKey]);
 
   // Patch the project's `compute_hosts` in the store from a CRUD command's return
   // value — cheaper and side-effect-free vs a full project reload.
@@ -76,10 +102,10 @@ export function RemoteMachinesWindow({
     }));
   };
 
-  // ── Global machine dropped here (drag-and-drop from MachinesIndicator) ────
-  // Either dropped straight onto the worker-list area below, or the pill
-  // already opened this window pre-seeded with the drop. Only the shared path
-  // is asked — everything else came with the machine — and the result is
+  // ── Global machine handed to this project (from MachinesIndicator) ────────
+  // The header's Machines menu picked this project in its "add to a project"
+  // list, which opened this window pre-seeded with the machine. Only the shared
+  // path is asked — everything else came with the machine — and the result is
   // always a shared-filesystem worker (no copy, no git), added and connected
   // exactly like the manual "Add a machine" flow.
   const pendingDrop = useRemoteMachinesStore((s) => s.pendingDrop);
@@ -87,7 +113,6 @@ export function RemoteMachinesWindow({
   const [dropPath, setDropPath] = useState(project.remote?.remote_path ?? "");
   const [dropBusy, setDropBusy] = useState(false);
   const [dropError, setDropError] = useState("");
-  const [workerDragOver, setWorkerDragOver] = useState(false);
 
   const addDroppedMachine = async () => {
     if (!pendingDrop) return;
@@ -406,12 +431,13 @@ export function RemoteMachinesWindow({
 
   return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="project-dialog remote-machines-dialog" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="project-dialog dialog-framed remote-machines-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>{project.name} — Remote machines</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
 
+        <div className="dialog-scroll">
         <p className="settings-help">
           Every machine this project reaches, in one place — the <strong>primary</strong>{" "}
           that owns its files and git, plus any extra worker machines that run its{" "}
@@ -431,10 +457,15 @@ export function RemoteMachinesWindow({
           const ssh = primary?.ssh ?? "off";
           const pLabel = project.remote?.label || project.remote?.host || project.name;
           const mirror = resolveLocalMirror(project);
+          const busy = ssh === "connected" ? busyReading({ readings }, project.remote) : null;
           return (
             <div className="remote-machine-card">
               <div className="remote-machine-head">
-                <ConnLamp status={ssh} label={pLabel} />
+                <ConnLamp
+                  status={ssh}
+                  busy={busy !== null}
+                  label={busy ? `${pLabel} — ${busyLabel(busy)}` : pLabel}
+                />
                 <span className="remote-machine-name">{pLabel}</span>
                 <span
                   className="remote-machine-tag"
@@ -460,8 +491,9 @@ export function RemoteMachinesWindow({
           );
         })()}
 
-        {/* Dropped a global machine here (or via the pill) — confirm just the
-            shared path, then add + connect it like any other worker. */}
+        {/* A global machine picked for this project in the header's Machines
+            menu — confirm just the shared path, then add + connect it like any
+            other worker. */}
         {pendingDrop && (
           <div className="remote-machine-card remote-machine-drop-panel">
             <div className="remote-machine-head">
@@ -477,7 +509,7 @@ export function RemoteMachinesWindow({
               </span>
             </div>
             <p className="settings-help">
-              Dropped from your global machines. Give the shared path it sees this
+              From your global machines. Give the shared path it sees this
               project's folder at — everything else is already known.
             </p>
             <label>
@@ -506,28 +538,7 @@ export function RemoteMachinesWindow({
         )}
 
         {/* Existing workers */}
-        <div
-          className={`remote-machine-worker-list${workerDragOver ? " drag-over" : ""}`}
-          onDragOver={(e) => {
-            if (!e.dataTransfer.types.includes(GLOBAL_MACHINE_DRAG_TYPE)) return;
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "copy";
-            if (!workerDragOver) setWorkerDragOver(true);
-          }}
-          onDragLeave={() => setWorkerDragOver(false)}
-          onDrop={(e) => {
-            if (!e.dataTransfer.types.includes(GLOBAL_MACHINE_DRAG_TYPE)) return;
-            e.preventDefault();
-            setWorkerDragOver(false);
-            const raw = e.dataTransfer.getData(GLOBAL_MACHINE_DRAG_TYPE);
-            if (!raw) return;
-            try {
-              setPendingDrop(JSON.parse(raw));
-            } catch {
-              // Malformed payload — ignore the drop.
-            }
-          }}
-        >
+        <div className="remote-machine-worker-list">
         {workers.length === 0 && (
           <p className="settings-help">No worker machines yet.</p>
         )}
@@ -535,6 +546,7 @@ export function RemoteMachinesWindow({
           const ssh = byHost?.[w.id]?.ssh ?? "off";
           const rep = reports[w.id];
           const wLabel = w.label || w.host;
+          const wBusy = ssh === "connected" ? busyReading({ readings }, w) : null;
           const shared = w.shared_fs === true;
           const statusText = shared
             ? "Runs in the primary's shared folder — no copy, no sync."
@@ -548,7 +560,11 @@ export function RemoteMachinesWindow({
           return (
             <div key={w.id} className="remote-machine-card">
               <div className="remote-machine-head">
-                <ConnLamp status={ssh} label={wLabel} />
+                <ConnLamp
+                  status={ssh}
+                  busy={wBusy !== null}
+                  label={wBusy ? `${wLabel} — ${busyLabel(wBusy)}` : wLabel}
+                />
                 <span className="remote-machine-name">{wLabel}</span>
                 <span
                   className="remote-machine-tag"
@@ -789,6 +805,7 @@ export function RemoteMachinesWindow({
               </div>
             </>
           )}
+        </div>
         </div>
       </div>
     </div>,

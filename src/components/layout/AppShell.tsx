@@ -21,6 +21,7 @@ import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { RemoteMachinesDialogHost } from "../projects/RemoteMachinesWindow";
+import { GlobalMachineMonitorDialogHost } from "../monitoring/GlobalMachineMonitorDialog";
 import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { RemoteUsageWarningDialog } from "../common/RemoteUsageWarningDialog";
@@ -38,6 +39,8 @@ import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detach
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenSyncProgress } from "../../stores/sync";
 import { autoConnectVpnOnLaunch } from "../../lib/vpnAutoConnect";
+import { initRemoteAutoReconnect } from "../../lib/remoteAutoReconnect";
+import { initMachineSync } from "../../lib/machineSync";
 import { listenEditorJump } from "../../stores/editorJump";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
@@ -282,6 +285,14 @@ export function AppShell() {
   useEffect(() => {
     if (settingsLoaded && projectsLoaded) void autoConnectVpnOnLaunch();
   }, [settingsLoaded, projectsLoaded]);
+
+  // Install the tunnel-up → reconnect subscription (and the launch-time global-
+  // machine sweep) once, on first mount — before the VPN launch effect above can
+  // bring a tunnel up, so its `→ connected` transition is already being watched.
+  useEffect(() => {
+    initRemoteAutoReconnect();
+    initMachineSync();
+  }, []);
 
   const togglePin = () => {
     setRightPinned((v) => {
@@ -722,6 +733,8 @@ export function AppShell() {
       {/* Multi-host remote: the "Remote machines" manager, opened from a pill's
           Runtime menu or a right-click on its remote lamp. */}
       <RemoteMachinesDialogHost />
+      {/* The header Machines menu's "System monitor…" button, per global machine. */}
+      <GlobalMachineMonitorDialogHost />
       {/* The guided HPC/SLURM pipeline wizard (login → create → load → run → watch),
           launched from the project-switcher + menu (docs/quirky-knitting-umbrella). */}
       <HpcPipelineWizardHost />

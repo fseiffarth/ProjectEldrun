@@ -216,6 +216,13 @@ html, body, #root {
   --bg-panel: #16213a;
   --bg-elevated: #1b2946;
   --bg-header: linear-gradient(90deg, #101624 0%, #16213a 48%, #241735 100%);
+  /* The header tone as a SOLID, opaque color. --bg-header is a gradient in the
+     "fancy" themes, which makes it unusable wherever a color is required: a
+     `color-mix(… var(--bg-header))` is then an invalid value and the whole
+     declaration drops, leaving the surface TRANSPARENT (a sticky table header
+     the body then bleeds through). Any table header / sticky chrome reads this
+     instead; every theme declares it as a plain color. */
+  --bg-header-solid: #16213a;
   --border-color: rgba(94, 220, 255, 0.2);
   --border-subtle: #22304a;
   --text-primary: #f4f8ff;
@@ -318,6 +325,7 @@ html, body, #root {
   --bg-panel: #161b22;
   --bg-elevated: #1c2128;
   --bg-header: #161b22;
+  --bg-header-solid: #161b22;
   --border-color: #30363d;
   --border-subtle: #21262d;
   --text-primary: #e6edf3;
@@ -357,6 +365,7 @@ html, body, #root {
   --bg-panel: #f6f8fa;
   --bg-elevated: #ffffff;
   --bg-header: #f6f8fa;
+  --bg-header-solid: #f6f8fa;
   --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.1);
   --shadow-2: 0 4px 16px rgba(16, 24, 40, 0.12), 0 2px 6px rgba(16, 24, 40, 0.08);
   --shadow-3: 0 16px 48px rgba(16, 24, 40, 0.18), 0 4px 12px rgba(16, 24, 40, 0.1);
@@ -400,6 +409,7 @@ html, body, #root {
   --bg-panel: #e8f7ff;
   --bg-elevated: #ffffff;
   --bg-header: linear-gradient(90deg, #f7fbff 0%, #e8f7ff 48%, #f5ecff 100%);
+  --bg-header-solid: #e8f7ff;
   --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.1);
   --shadow-2: 0 4px 16px rgba(16, 24, 40, 0.12), 0 2px 6px rgba(16, 24, 40, 0.08);
   --shadow-3: 0 16px 48px rgba(16, 24, 40, 0.18), 0 4px 12px rgba(16, 24, 40, 0.1);
@@ -443,6 +453,7 @@ html, body, #root {
   --bg-panel: #f2effa;
   --bg-elevated: #ffffff;
   --bg-header: #f2effa;
+  --bg-header-solid: #f2effa;
   --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.1);
   --shadow-2: 0 4px 16px rgba(16, 24, 40, 0.12), 0 2px 6px rgba(16, 24, 40, 0.08);
   --shadow-3: 0 16px 48px rgba(16, 24, 40, 0.18), 0 4px 12px rgba(16, 24, 40, 0.1);
@@ -8708,6 +8719,33 @@ select option {
   gap: 1px;
 }
 
+/* ── Unified scrolling-menu shape ───────────────────────────────────────────
+   A menu that can overflow must NOT scroll on its own element: that element
+   carries the rounded corners, the 2px accent top rail and the ::before accent
+   wash, and a native scrollbar on it runs straight over the corners/rail (looks
+   broken) while the absolutely-positioned wash only covers the visible box —
+   scrolling away and leaving the bottom untinted. Instead the menu keeps its
+   accent title (`.tab-new-menu-group-label`) PINNED as a direct child, and puts
+   everything else in a `.menu-scroll-region` that scrolls. The scrollbar then
+   starts BELOW the header and clears both rounded corners, and the wash (on the
+   non-scrolling menu) paints the full height behind it. This is the same split
+   the settings dialog makes with `.dialog-scroll`, generalised to every menu. */
+.menu-scroll-region {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* Keep the pinned title from shrinking when the menu hits its max-height — only
+   the scroll region below it should give. Direct-child + first, so a group
+   label INSIDE the scroll region (e.g. the machines menu's "Add a machine")
+   still scrolls with its section. */
+.tab-new-menu > .tab-new-menu-group-label:first-child {
+  flex-shrink: 0;
+}
+
 /* The add menu's search box: auto-focused so "click + and type" filters the
    entries immediately. Enter picks the highlighted first match. */
 .tab-new-menu-search {
@@ -9347,6 +9385,20 @@ select option {
    the tree content below it. */
 .right-panel-source--compact {
   padding: 4px 6px;
+  /* A docked subwindow viewer is narrow: the switch + the run-host picker do not
+     fit on one line at every width, and both were `flex-shrink: 0`, so the picker
+     ran out past the window's right border. Let the row wrap and let the picker
+     shrink (its label ellipsizes) rather than overflow. */
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.right-panel-source--compact .right-panel-run-host {
+  margin-left: 0;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Remote/Local file-source switch in the panel header (remote SSH projects
@@ -9428,7 +9480,16 @@ select option {
   cursor: pointer;
 }
 .right-panel-run-host:hover { color: var(--text-primary); }
-.right-panel-run-host .run-host-label { text-transform: none; letter-spacing: normal; }
+.right-panel-run-host .run-host-label {
+  text-transform: none;
+  letter-spacing: normal;
+  /* The label carries a machine NAME, which can be long (a fqdn). Truncate it
+     inside the button instead of pushing the button past its container. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* One-click SSH logout beside the Remote/Local switch, shown only while SSH is
    connected (moved here from the project pill). Same quiet chrome as the
@@ -10114,6 +10175,10 @@ select option {
 .file-size.size-medium { color: #e3b341; }
 .file-size.size-large  { color: #f0883e; }
 .file-size.size-huge   { color: #f85149; }
+/* A folder excluded from scans. Italic and dimmer than `size-small` so it reads
+   as "no measurement" rather than as a very small one — the whole point is that
+   nothing was walked, and a number-shaped grey would suggest otherwise. */
+.file-size-excluded { font-style: italic; opacity: 0.65; }
 
 .file-tooltip {
   position: fixed;
@@ -10997,9 +11062,14 @@ select option {
   box-shadow: var(--shadow-3);
 }
 
-/* Same accent wash as the header bar and the popover menus — every dialog
-   surface reads as the same tinted color. Its containing block is the dialog
-   itself (position: relative above), so it stays put under scroll. */
+/* Accent wash as a `::before` overlay, NOT folded into `background` — the glass
+   themes replace `background` with a translucent `--glass-elevated`, and only an
+   overlay tints whatever shows through the glass without making it opaque. The
+   wash spanning the full scroll is handled by the frame, not by this rule: a
+   scrolling dialog uses `.dialog-framed` (its surface is overflow:hidden and
+   never scrolls, so this inset:0 overlay covers the whole fixed frame while the
+   inner `.dialog-scroll` scrolls beneath it). A non-framed dialog is short
+   enough never to scroll, so the overlay covers it too. */
 .project-dialog::before,
 .settings-dialog::before,
 .stats-dialog::before {
@@ -11013,36 +11083,46 @@ select option {
   border-radius: inherit;
 }
 
-/* The scrollbar track on every accent-washed menu/dialog surface: the
-   generic --scrollbar-track (a flat --bg-panel) would sit as a visibly
-   different, un-tinted patch against these now-tinted backgrounds — so each
-   gets a track color-mixed the same way its own wash is (32% accent). The
-   thumb stays the global --scrollbar-thumb (already var(--accent)) so only
-   the track needed a per-surface override. */
+/* The scrollbar track on every accent-washed menu/dialog surface. The generic
+   --scrollbar-track (a flat --bg-panel) sits as a visibly different, un-tinted
+   patch against these tinted backgrounds — but a solid color-mix (32% accent
+   over --bg-elevated) can't match either: the real surface is a background PLUS
+   the ::before accent-wash overlay, and in the glass themes it is a translucent
+   --glass-elevated over a backdrop blur that no solid colour equals. So the
+   track is `transparent` — the gutter shows the true washed surface behind it,
+   an exact match in every theme. The thumb stays the global --scrollbar-thumb,
+   and its inset border goes transparent too (else it rings the thumb in the old
+   mismatched tint). */
 .context-menu,
 .tab-new-menu,
+.menu-scroll-region,
 .project-switcher-add-menu,
 .project-dialog,
 .settings-dialog .dialog-scroll,
+.dialog-framed .dialog-scroll,
 .stats-dialog {
-  scrollbar-color: var(--scrollbar-thumb) color-mix(in srgb, var(--accent) 32%, var(--bg-elevated));
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 .context-menu::-webkit-scrollbar-track,
 .tab-new-menu::-webkit-scrollbar-track,
+.menu-scroll-region::-webkit-scrollbar-track,
 .project-switcher-add-menu::-webkit-scrollbar-track,
 .project-dialog::-webkit-scrollbar-track,
 .settings-dialog .dialog-scroll::-webkit-scrollbar-track,
+.dialog-framed .dialog-scroll::-webkit-scrollbar-track,
 .stats-dialog::-webkit-scrollbar-track {
-  background: color-mix(in srgb, var(--accent) 32%, var(--bg-elevated));
+  background: transparent;
 }
 .context-menu::-webkit-scrollbar-thumb,
 .tab-new-menu::-webkit-scrollbar-thumb,
+.menu-scroll-region::-webkit-scrollbar-thumb,
 .project-switcher-add-menu::-webkit-scrollbar-thumb,
 .project-dialog::-webkit-scrollbar-thumb,
 .settings-dialog .dialog-scroll::-webkit-scrollbar-thumb,
+.dialog-framed .dialog-scroll::-webkit-scrollbar-thumb,
 .stats-dialog::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb);
-  border-color: color-mix(in srgb, var(--accent) 32%, var(--bg-elevated));
+  border-color: transparent;
 }
 
 .project-dialog {
@@ -11077,9 +11157,43 @@ select option {
   padding: 18px;
 }
 
-/* Remote machines manager: reuses the .project-dialog chrome/sizing/scroll and
-   the canonical accent header — no bespoke top rail or title hue, so it reads
-   identically to Settings and every other dialog. */
+/* Split-scroll frame, generalized — the one Settings uses, made reusable so any
+   dialog whose content can overflow reads and scrolls identically. A dialog opts
+   in by adding `dialog-framed` beside `project-dialog` and wrapping its scrolling
+   body in a `.dialog-scroll` child (its header/footer, if any, stay outside).
+
+   Why a frame and not just self-scrolling the .project-dialog surface: a native
+   scrollbar on the same box that carries border-radius runs into the rounded
+   corners (the notch). The frame clips with plain overflow:hidden (it never
+   scrolls, so no scrollbar ever meets its rounded edge — and the accent surface
+   wash covers the whole fixed frame), while .dialog-scroll does the scrolling
+   comfortably inside the curve. Same construction as .settings-dialog below. */
+/* Compound selectors (0,2,0) so the frame's overflow/padding/gap beat each
+   surface's own single-class sizing rule wherever it sits in the sheet. */
+.project-dialog.dialog-framed,
+.stats-dialog.dialog-framed {
+  overflow: hidden;
+  gap: 0;
+  padding: 0;
+}
+.dialog-framed > .settings-title-row {
+  margin: 0;
+  padding: 18px 24px 10px;
+}
+.dialog-framed > .dialog-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 24px 22px;
+}
+/* No fixed header above it (the dialog's own title scrolls inside the frame, e.g.
+   a bare <h2>): restore the full top inset the un-framed surface used to give. */
+.dialog-framed > .dialog-scroll:first-child {
+  padding-top: 20px;
+}
 
 .settings-title-row {
   display: flex;
@@ -11096,6 +11210,56 @@ select option {
   /* Top-level panel header: accent so it clearly outranks the section titles
      (accent-secondary) and the body text below it. */
   color: var(--accent);
+}
+
+/* The dialog header reads as its OWN band — the same accent-washed --bg-header
+   the app's top bar carries (.app-header + its ::before at 0.32 accent), so a
+   dialog's title strip belongs to the same themed chrome as the window's top
+   bar and stands apart from the accent-washed body below it. The single-element
+   background reproduces that composite (a flat 32%-accent layer over
+   --bg-header) with no per-theme branching, since --bg-header is a plain color
+   in some themes and a gradient in others. The band bleeds to the dialog's
+   edges; the padding/margins that achieve that differ per context (the dialog's
+   own padding is 0 for a framed surface, 22px for a plain .project-dialog, and
+   18px inside a .settings-dialog's scroll frame) and are set below. */
+.project-dialog.dialog-framed > .settings-title-row,
+.stats-dialog.dialog-framed > .settings-title-row,
+.settings-dialog > .settings-title-row,
+.settings-dialog > .dialog-scroll > .settings-title-row,
+.project-dialog:not(.dialog-framed) > .settings-title-row {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--accent) 32%, transparent),
+      color-mix(in srgb, var(--accent) 32%, transparent)
+    ),
+    var(--bg-header);
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* Fixed header of a plain .settings-dialog (EventDialog, CustomAgentDialog):
+   the surface's padding is 0, so the band is full-width — it only needs its own
+   inset. */
+.settings-dialog > .settings-title-row {
+  margin: 0;
+  padding: 16px 18px 10px;
+}
+
+/* Header that scrolls inside a .settings-dialog's frame (SettingsPanel and its
+   sub-panels): pull the band out to the scroll's top and side edges (negative
+   margins == the .dialog-scroll's 18px padding) so it still reads as a full-
+   width top bar, with a gap before the body. */
+.settings-dialog > .dialog-scroll > .settings-title-row {
+  /* margin-bottom 0: the scroll frame is a flex column with its own 12px gap. */
+  margin: -18px -18px 0;
+  padding: 16px 18px 10px;
+}
+
+/* Header of a plain (self-scrolling) .project-dialog — ProjectPill's little
+   dialogs: bleed past the surface's own 22px/24px padding to the edges. */
+.project-dialog:not(.dialog-framed) > .settings-title-row {
+  /* margin-bottom 0: .project-dialog is a flex column with its own 12px gap. */
+  margin: -22px -24px 0;
+  padding: 16px 24px 10px;
 }
 
 .dialog-close-btn,
@@ -11118,6 +11282,23 @@ select option {
 .filetype-settings-row button:hover {
   background: var(--control-hover-bg);
   border-color: var(--accent);
+}
+
+/* GlobalMachineMonitorDialog: the full htop-like System Monitor pane opened
+   from the header's Machines menu for one ad-hoc global machine. `.sysmon-root`
+   (SystemMonitorPane's own CSS) is `position: absolute; inset: 0` — it needs a
+   sized, positioned ancestor, which `.sysmon-dialog-body` provides; the pane
+   scrolls itself (`.sysmon-scroll`), so the body clips rather than scrolls. */
+.sysmon-dialog {
+  width: min(1200px, calc(100vw - 48px));
+  height: min(85vh, calc(100vh - 48px));
+  max-height: min(85vh, calc(100vh - 48px));
+}
+.sysmon-dialog-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* Print preview overlay (src/lib/viewers/print.ts). Reuses .modal-backdrop +
@@ -11682,7 +11863,13 @@ select option {
 .project-dialog textarea:hover,
 .project-dialog textarea:focus,
 .project-dialog select:hover,
-.project-dialog select:focus {
+.project-dialog select:focus,
+.menu-form input:hover,
+.menu-form input:focus,
+.menu-form textarea:hover,
+.menu-form textarea:focus,
+.menu-form select:hover,
+.menu-form select:focus {
   border-color: var(--accent);
   outline: none;
 }
@@ -12060,7 +12247,15 @@ select option {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.project-dialog label {
+/* `.menu-form` is the ONE canonical form context reused wherever fields appear
+   OUTSIDE a `.project-dialog` — chiefly forms embedded in header popover menus
+   (`.tab-new-menu`, e.g. the global-machines "Add a machine" form), which get no
+   field styling from the popover surface on their own. It carries the exact same
+   label/input/select/textarea look as `.project-dialog`, so a form reads
+   identically in a dialog or a menu. New menus with a form: add `menu-form` to
+   the form container. */
+.project-dialog label,
+.menu-form label {
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -12079,7 +12274,10 @@ select option {
 
 .project-dialog input,
 .project-dialog select,
-.project-dialog textarea {
+.project-dialog textarea,
+.menu-form input,
+.menu-form select,
+.menu-form textarea {
   height: 34px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
@@ -12088,7 +12286,19 @@ select option {
   padding: 0 8px;
 }
 
-.project-dialog textarea {
+/* Menu-form fields stretch to the popover width (their labels are flex columns,
+   and a menu is narrow — a default-width input would sit oddly short). Scoped to
+   `.menu-form` so it can't disturb a `.project-dialog` input that shares a flex
+   row with a button (e.g. `.folder-picker-row`). */
+.menu-form input,
+.menu-form select,
+.menu-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.project-dialog textarea,
+.menu-form textarea {
   min-height: 72px;
   padding: 8px;
   resize: vertical;
@@ -12364,16 +12574,15 @@ select option {
   font-size: 12px;
 }
 
-/* Wraps the worker cards so the group can be one drop target for a dragged
-   global machine (see .remote-machine-worker-list.drag-over above) without
-   losing the dialog's own card-to-card spacing. */
+/* Wraps the worker cards so the group keeps the dialog's own card-to-card
+   spacing. */
 .remote-machine-worker-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-/* The confirm-shared-path panel a dropped global machine seeds — an accent
+/* The confirm-shared-path panel an incoming global machine seeds — an accent
    border marks it as the thing that just landed, distinct from an ordinary
    worker card. */
 .remote-machine-drop-panel {
@@ -12606,16 +12815,11 @@ select option {
    (high load/memory, or another logged-in session). Same dialog surface as
    local-loss, same warning-coloured title — but advisory, not a record of
    something destroyed, so unlike local-loss it dismisses on backdrop click. */
+/* Canonical framed dialog (.settings-title-row header + .dialog-scroll body);
+   only the width is this dialog's own — chrome, header tint and scroll frame all
+   come from the shared .project-dialog.dialog-framed rules. */
 .remote-usage-dialog {
   width: min(560px, calc(100vw - 32px));
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.remote-usage-title {
-  color: var(--warning);
-  margin: 0;
 }
 
 .remote-usage-lede {
@@ -12729,6 +12933,12 @@ select option {
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.02em;
+}
+
+.remote-usage-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 12px;
 }
 
 .remote-usage-procs {
@@ -13998,6 +14208,127 @@ select option {
     opacity: 0.35;
   }
 }
+/* A CONNECTED host with live work on it (≥1 tmux session, `stores/hostBusy`).
+   Deliberately not the `connecting` pulse: that one fades the dot most of the
+   way out, which reads as "pending / not there yet". This one keeps the dot at
+   full opacity and breathes its halo instead, so it reads as a heartbeat — the
+   machine is up AND something is running on it. Same green, so the connection
+   state it carries is never in doubt, and it never adds a lamp: a busy fleet
+   pulses the green lamp it already had.
+
+   Two intensities on purpose. In the **top bar** the lamp is an ambient badge
+   sitting in permanent peripheral vision, so it only breathes its halo — a dot
+   that visibly grew and shrank up there all day would be a nag. In a **menu or
+   dialog** (below) the lamp is something you opened to read, and it has to be
+   unmistakable at a glance across sixteen rows, so it also scales. */
+/* The halo lives on a pseudo-element whose box-shadow is STATIC, and the pulse
+   animates that element's `opacity` (+ `transform` for the strong variant). This
+   is not a style preference — it is the difference between a composited animation
+   and a repainting one. `box-shadow` is a paint property: animating it re-rasterises
+   a blurred shadow every frame, and with the DMABUF renderer disabled (see
+   `lib.rs`) that rasterisation is pure CPU. Sixteen rows of it saturated a core for
+   as long as the Machines menu was open. `opacity`/`transform` animate on the
+   already-rasterised layer instead, so the same visual costs ~nothing. */
+.conn-lamp-busy {
+  position: relative;
+}
+.conn-lamp-busy::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow:
+    0 0 9px color-mix(in srgb, var(--success) 95%, transparent),
+    0 0 14px color-mix(in srgb, var(--success) 45%, transparent);
+  will-change: opacity;
+  animation: conn-lamp-busy-pulse 1.8s ease-in-out infinite;
+}
+@keyframes conn-lamp-busy-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* The louder pulse, scoped to the surfaces you deliberately open: the header
+   Machines/VPN menus' rows and the Remote-machines hub's host cards. The dot
+   swells and its halo doubles, so "which of these machines is actually working"
+   is answerable without reading a single label. `transform` + `box-shadow` only,
+   so nothing reflows and a 16-row list stays cheap to animate. */
+.machines-indicator-menu .conn-lamp-busy,
+.vpn-indicator-menu .conn-lamp-busy,
+.remote-machine-card .conn-lamp-busy {
+  animation: conn-lamp-busy-pulse-strong 1.5s ease-in-out infinite;
+  will-change: transform;
+}
+/* The dot scales; its halo (the ::after above) swells and brightens with it. Both
+   keyframe tracks are transform/opacity only — see the note on `.conn-lamp-busy`. */
+.machines-indicator-menu .conn-lamp-busy::after,
+.vpn-indicator-menu .conn-lamp-busy::after,
+.remote-machine-card .conn-lamp-busy::after {
+  box-shadow:
+    0 0 10px var(--success),
+    0 0 18px color-mix(in srgb, var(--success) 55%, transparent);
+  animation: conn-lamp-busy-halo-strong 1.5s ease-in-out infinite;
+}
+@keyframes conn-lamp-busy-halo-strong {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* The trough goes well BELOW the resting dot size, not down to it: swinging
+   0.45→1.45 makes the beat read across a long row list from the corner of the
+   eye, where a 1.0→1.45 swell just looks like a slightly bigger dot. The lamp
+   never disappears at the trough — a lamp that blinks out reads as a connection
+   dropping, which is the one thing this must not say. */
+@keyframes conn-lamp-busy-pulse-strong {
+  0%,
+  100% {
+    transform: scale(0.45);
+  }
+  50% {
+    transform: scale(1.45);
+  }
+}
+/* Respect a reduced-motion preference: keep the stronger halo (the busy state is
+   still distinguishable at a glance) but stop the animation. */
+@media (prefers-reduced-motion: reduce) {
+  .conn-lamp-busy,
+  .machines-indicator-menu .conn-lamp-busy,
+  .vpn-indicator-menu .conn-lamp-busy,
+  .remote-machine-card .conn-lamp-busy {
+    animation: none;
+    transform: none;
+  }
+  .conn-lamp-busy::after,
+  .machines-indicator-menu .conn-lamp-busy::after,
+  .vpn-indicator-menu .conn-lamp-busy::after,
+  .remote-machine-card .conn-lamp-busy::after {
+    animation: none;
+    opacity: 1;
+  }
+}
+/* A status lamp aggregated over several hosts: the dot plus a small count of how
+   many hosts share that state (shown only when more than one). */
+.conn-lamp-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.conn-lamp-count-num {
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
 .local-model-default-tag {
   font-size: 9px;
   line-height: 1;
@@ -14602,7 +14933,8 @@ select option {
    no matter which project is active, because the tunnel reroutes the whole OS.
    Rides the shared .global-apps-menu / .tab-new-menu chrome so it reads as one
    of the header menus rather than a bespoke widget. */
-.vpn-indicator-btn {
+.vpn-indicator-btn,
+.machines-indicator-btn {
   /* Unlike the other .global-apps-menu-btn siblings, this one reads as a
      quiet status readout (lamp + label), not a button — so its inherited
      button box (background/border) is stripped back to plain text/icon. */
@@ -14617,12 +14949,16 @@ select option {
   background: transparent;
 }
 .vpn-indicator-btn:hover,
-.vpn-indicator-btn[aria-expanded="true"] {
+.vpn-indicator-btn[aria-expanded="true"],
+.machines-indicator-btn:hover,
+.machines-indicator-btn[aria-expanded="true"] {
   background: transparent;
   border-color: transparent;
 }
 .vpn-indicator-btn:hover .vpn-indicator-label,
-.vpn-indicator-btn[aria-expanded="true"] .vpn-indicator-label {
+.vpn-indicator-btn[aria-expanded="true"] .vpn-indicator-label,
+.machines-indicator-btn:hover .vpn-indicator-label,
+.machines-indicator-btn[aria-expanded="true"] .vpn-indicator-label {
   color: var(--text-primary);
 }
 .vpn-indicator-label {
@@ -14636,6 +14972,14 @@ select option {
 .vpn-indicator-menu {
   width: 268px;
   color: var(--text-primary);
+  /* Anchored under the 44px header bar (top: calc(100% + 4px)) — with enough
+     rows (many global machines, or many stored .ovpn configs) the menu would
+     otherwise grow past the bottom of the window. It is capped here, but the
+     menu ELEMENT does not scroll: its `.menu-scroll-region` child does, so the
+     accent title stays pinned and the scrollbar starts below the header (the
+     unified scrolling-menu shape — see `.menu-scroll-region`). */
+  max-height: calc(100vh - 72px);
+  overflow: visible;
 }
 .vpn-indicator-note {
   padding: 6px 10px 8px;
@@ -14746,6 +15090,20 @@ select option {
   cursor: default;
   opacity: 0.6;
 }
+/* The Save-password toggle row sits inside a `.menu-form` (the add-machine form),
+   whose `label` rule would otherwise stack it into a column — keep it a row with
+   the switch beside its text, matching every other toggle row. */
+.menu-form .vpn-indicator-auto {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+/* The inline retry-password field shares its row with Retry/Cancel buttons — let
+   the password wrap take the remaining width so the field isn't shrunk to nothing. */
+.vpn-indicator-actions .password-input-wrap {
+  flex: 1;
+}
 .vpn-indicator-hint {
   font-size: 10px;
   line-height: 1.4;
@@ -14777,14 +15135,308 @@ select option {
 .machines-indicator-row:active {
   cursor: grabbing;
 }
-
-/* Drop zones for a dragged global-machine row: the worker-list area of an open
-   Remote machines window, and a project pill. Both light up the same way. */
-.remote-machine-worker-list.drag-over,
-.project-pill.machine-drag-over {
-  outline: 2px dashed var(--accent, var(--text-secondary));
-  outline-offset: 2px;
+/* Per-row expand toggle: keeps a row to one line (lamp + label + actions) by
+   default, with address/system-monitor/auto-connect behind it — a long machine
+   list stays scannable instead of every row's full detail always being open. */
+.machines-row-expand-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
   border-radius: var(--radius-sm);
+}
+.machines-row-expand-btn:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+}
+
+/* A row's steady-state actions are ICONS on the SAME line as the lamp, the label
+   and the ▸ expand toggle: four worded buttons ("Reconnect", "Disconnect",
+   "Edit…", "Remove") wrapped onto two lines in a 280px menu and cost every row a
+   second row of height. The words survive as title/aria-label, so nothing is lost
+   to a hover or a screen reader — and the *armed* confirm states (Remove /
+   Disconnect / Retry / Edit) still replace them with worded buttons below, because
+   a destructive confirm must never be a glyph.
+   The label flexes so a long machine name ellipsizes into the icons rather than
+   pushing them off the row; `margin-left: auto` on the group is what puts the icon
+   cluster + expand toggle hard right (the expand button drops its own auto margin,
+   or the two autos would split the slack and strand it mid-row). */
+.vpn-indicator-head .vpn-indicator-config {
+  flex: 1;
+  min-width: 0;
+}
+.machines-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+/* The expand toggle keeps a slightly wider gap than the icons keep between
+   themselves — it is a different kind of control (it opens the row, it doesn't
+   act on the machine), so it reads as its own thing rather than a fifth action. */
+.machines-row-actions + .machines-row-expand-btn {
+  margin-left: 2px;
+}
+
+.machines-row-action {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border, var(--text-secondary));
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.machines-row-action:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+}
+.machines-row-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.machines-row-action.is-accent {
+  border-color: var(--accent, var(--text-secondary));
+  color: var(--accent, var(--text-primary));
+}
+.machines-row-action.is-accent:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, var(--text-secondary)) 14%, transparent);
+}
+.machines-row-action.is-danger {
+  color: var(--danger, var(--text-primary));
+}
+.machines-row-action.is-danger:hover:not(:disabled) {
+  color: var(--danger, var(--text-primary));
+  background: color-mix(in srgb, var(--danger, var(--text-secondary)) 14%, transparent);
+}
+
+/* Reorder grip: the ONLY part of a machine row that starts a drag, so every
+   button beside it stays clickable. Pointer-driven (see MachinesIndicator) —
+   `touch-action: none` is what stops the menu from scrolling instead of
+   dragging, and `cursor: grab` is the whole affordance. */
+.machines-row-grip {
+  flex-shrink: 0;
+  width: 14px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin-right: 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.5;
+  cursor: grab;
+  touch-action: none;
+}
+.machines-row-grip:hover,
+.machines-row-grip:focus-visible {
+  opacity: 1;
+  color: var(--text-primary);
+}
+.machines-row-grip:active {
+  cursor: grabbing;
+}
+
+/* The row being dragged: it follows the cursor (an inline translateY set by
+   MachinesIndicator) as a dimmed copy, while the list under it holds still and
+   only the insertion marker below moves — so the rects measured at pointerdown
+   stay valid for the whole gesture. */
+.machines-indicator-row.reorder-dragging {
+  opacity: 0.55;
+  position: relative;
+  z-index: 2;
+  background: color-mix(in srgb, var(--accent, var(--text-secondary)) 12%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+/* The rows the dragged one is NOT: they slide aside to open its landing slot
+   (the translate is set inline by MachinesIndicator). Only the transition lives
+   here — it is what makes the list *part* rather than jump, and it is scoped to
+   the drag so an ordinary row never animates. */
+.machines-indicator-row.reorder-parting {
+  transition: transform 140ms ease;
+}
+
+/* The row's "add this machine to a project" picker: one button per open
+   project, each naming which of the two ways the machine would join it. It
+   replaced the drag-onto-a-pill gesture, so it deliberately spells out the
+   outcome the drop could only imply. */
+.machines-attach-form .machines-attach-project {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.machines-attach-kind {
+  color: var(--text-secondary);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+/* The expanded row's "System monitor…" button (opens
+   `GlobalMachineMonitorDialog`) — a full-width action, same button chrome as
+   the row's Connect/Disconnect/Remove actions, just left-aligned rather than
+   in the actions row. */
+.machines-monitor-btn {
+  margin-top: 2px;
+  align-self: flex-start;
+}
+
+/* ── Machines import / export panels (MachinesIndicator) ─────────────────────
+   Both reuse the .menu-form / .vpn-indicator-* chrome; these only add the bits
+   the flows need — a scrollable pick/preview list and a muted address line. */
+.machines-io-buttons {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+/* The row's buttons already carry `align-self: flex-start` for the column
+   layout — reset it so they sit centered on this one shared row. */
+.machines-io-buttons .vpn-indicator-connect {
+  align-self: auto;
+  margin-top: 0;
+}
+/* Fleet-wide actions (Retry all / Disconnect all): one shared row above the
+   machine list, separated from the note by a hairline so it reads as an action
+   bar, not part of the prose. The button row itself is `.vpn-indicator-actions`
+   (row flex) — the confirm variant stacks a hint above it, so this wrapper keeps
+   its own default direction and only owns the separator. */
+.machines-fleet-actions {
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.25));
+}
+.machines-fleet-actions .vpn-indicator-connect,
+.machines-fleet-actions .vpn-indicator-remove {
+  align-self: auto;
+  margin-top: 0;
+}
+/* The icon bar is a ROW. It has to say so itself: `.vpn-indicator-row` sets
+   `flex-direction: column` and `.vpn-indicator-actions` only ever set
+   display/gap, never a direction — so the column wins on every element carrying
+   both, and the icons would stack. The confirm variant keeps the column (its
+   hint sits above its buttons), which is why this is its own class rather than
+   a rule on `.machines-fleet-actions`. */
+.machines-fleet-icons {
+  flex-direction: row;
+  align-items: center;
+  /* Centred, because this bar is not a cluster hanging off a machine's name —
+     it acts on the whole list, so it belongs to the menu's width rather than to
+     either edge. */
+  justify-content: center;
+  position: relative;
+}
+/* The untested tag is taken OUT of the centring flow: as an ordinary flex item
+   it would count toward the centred group's width and shove the icons left of
+   the true centre by half the tag. Absolute + `position: relative` above pins it
+   to the right edge and leaves the three icons centred on the menu. */
+.machines-fleet-icons .untested-tag {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+/* The fleet bar's own controls are icons in the row vocabulary (↻ / ⏻ / ▥), so
+   they reuse `.machines-row-action` — only slightly larger, since here they are
+   the row rather than a cluster hanging off the end of one. */
+.machines-fleet-actions .machines-row-action {
+  width: 24px;
+  height: 24px;
+  font-size: 13px;
+}
+/* Deliberately NOT its own scroll container. It used to be (`max-height: 320px;
+   overflow-y: auto`) and that cost twice: a second scrollbar nested inside the
+   menu's own — and one the tinted-track rule above doesn't reach, since that
+   targets `.tab-new-menu` itself, not its descendants, so it fell back to the
+   flat `--bg-panel` track and read as a mismatched stripe — plus, being a
+   `flex-shrink: 1` child of a height-capped column, it squeezed the imported-
+   machine list (`.machines-io-preview`) down to almost nothing. The menu
+   (`.vpn-indicator-menu`, capped at the viewport) already scrolls, so letting
+   this grow gives the panel ONE correctly-themed scrollbar. */
+.machines-io-panel {
+  min-height: 0;
+}
+/* One selectable machine in the export list: the toggle + label, with the host
+   address as a muted mono sub-line under the display name. */
+.machines-io-pick {
+  align-items: center;
+}
+/* The select-all/none row sits above the list and is separated from it — it
+   picks the rows rather than being one of them. */
+.machines-io-pick-all {
+  border-bottom: 1px solid var(--border, var(--bg-panel));
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+  font-weight: 600;
+}
+.machines-io-addr {
+  display: block;
+  font-family: var(--mono-font, monospace);
+  font-size: 10px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+/* The read-back list of machines an import found / added. `flex-shrink: 0` is
+   load-bearing: as a flex child of the column panel it would otherwise be
+   squeezed to a sliver whenever the panel ran short of room, which is exactly
+   what hid the imported machines. Its own scrollbar gets the inset track it
+   actually sits on, so it matches the menu's rather than falling back to the
+   flat `--bg-panel` one. */
+.machines-io-preview,
+.machines-io-results {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex-shrink: 0;
+  min-height: 60px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--bg-inset, var(--border, rgba(128, 128, 128, 0.15)));
+  scrollbar-color: var(--scrollbar-thumb)
+    var(--bg-inset, var(--border, rgba(128, 128, 128, 0.15)));
+}
+.machines-io-preview::-webkit-scrollbar-track,
+.machines-io-results::-webkit-scrollbar-track {
+  background: var(--bg-inset, var(--border, rgba(128, 128, 128, 0.15)));
+}
+.machines-io-preview::-webkit-scrollbar-thumb,
+.machines-io-results::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-color: var(--bg-inset, var(--border, rgba(128, 128, 128, 0.15)));
+}
+.machines-io-result-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
 }
 
 /* Compact variant: the lamp embedded on a project pill instead of the header,
@@ -15422,15 +16074,21 @@ select option {
   transform: translateY(1px);
 }
 
-/* The VPN indicator opts back out of the fancy gradient-button treatment
-   above (it's a status readout, not a button — see the plain-theme rule on
-   .vpn-indicator-btn for why). */
+/* The VPN and Machines indicators opt back out of the fancy gradient-button
+   treatment above (they're status readouts, not buttons — see the
+   plain-theme rule on .vpn-indicator-btn/.machines-indicator-btn for why). */
 [data-theme="fancy_dark"] .vpn-indicator-btn,
 [data-theme="fancy_light"] .vpn-indicator-btn,
 [data-theme="fancy_dark"] .vpn-indicator-btn:hover,
 [data-theme="fancy_light"] .vpn-indicator-btn:hover,
 [data-theme="fancy_dark"] .vpn-indicator-btn[aria-expanded="true"],
-[data-theme="fancy_light"] .vpn-indicator-btn[aria-expanded="true"] {
+[data-theme="fancy_light"] .vpn-indicator-btn[aria-expanded="true"],
+[data-theme="fancy_dark"] .machines-indicator-btn,
+[data-theme="fancy_light"] .machines-indicator-btn,
+[data-theme="fancy_dark"] .machines-indicator-btn:hover,
+[data-theme="fancy_light"] .machines-indicator-btn:hover,
+[data-theme="fancy_dark"] .machines-indicator-btn[aria-expanded="true"],
+[data-theme="fancy_light"] .machines-indicator-btn[aria-expanded="true"] {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
@@ -17268,7 +17926,8 @@ select option {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  overflow-y: auto;
+  /* Scrolling is the dialog's `.dialog-scroll` frame now (one scroll region, and
+     the scrollbar clears the rounded corners); the form no longer scrolls itself. */
 }
 
 .cal-field {

@@ -4737,6 +4737,7 @@ function RunDebugButtons({
 /** Human labels for the `#SBATCH` keys the directive form surfaces. */
 const SBATCH_FIELD_LABELS: Record<string, string> = {
   "job-name": "Job name",
+  account: "Account",
   partition: "Partition",
   time: "Time",
   nodes: "Nodes",
@@ -4750,6 +4751,7 @@ const SBATCH_FIELD_LABELS: Record<string, string> = {
 /** Placeholder hints per key, so an empty field still teaches the format. */
 const SBATCH_FIELD_HINTS: Record<string, string> = {
   "job-name": "myjob",
+  account: "your-group",
   partition: "gpu",
   time: "01:00:00",
   nodes: "1",
@@ -4792,6 +4794,7 @@ function SlurmBar({
     mem: "8G",
     gpus: "",
     partition: "",
+    account: "",
   });
 
   const valueFor = (key: string) =>
@@ -4866,11 +4869,12 @@ function SlurmBar({
           <label className="file-viewer-run-args-label">Interactive session (srun --pty)</label>
           <div className="slurm-directive-grid">
             {([
+              ["account", "Account", "your-group"],
+              ["partition", "Partition", "gpu"],
               ["time", "Time", "01:00:00"],
               ["cpus", "CPUs/task", "4"],
               ["mem", "Memory", "8G"],
               ["gpus", "GPUs", "1"],
-              ["partition", "Partition", "gpu"],
             ] as const).map(([k, label, hint]) => (
               <label key={k} className="slurm-directive-field">
                 <span className="slurm-directive-key">{label}</span>
@@ -5146,12 +5150,11 @@ function TextView({
     () => (isYaml && loaded ? hasCards(draft, jsonStrict) : false),
     [isYaml, loaded, draft, jsonStrict],
   );
-  // YAML/JSON opens in the CARD view by default ("grid"); HTML/SVG in preview; CSS in
-  // the editor. A flat YAML file (no cards) is caught by the fallback effect below and
-  // drops to the tree, so `grid` here is optimistic — right for the common structured
-  // file, corrected for the rare flat one.
+  // YAML/JSON opens in the TREE view by default ("preview"); HTML/SVG in preview; CSS
+  // in the editor. The card view stays available (via the toggle, when the file nests
+  // something to card) but is no longer the default — it still needs work.
   const [mode, setMode] = useState<"preview" | "grid" | "edit">(
-    isYaml ? "grid" : previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
+    isYaml ? "preview" : previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
   );
   // A flat file (or a card edit that removes all nesting) has no card view — retire
   // the mode rather than strand it on a toggle with no button, dropping to the tree.
@@ -5237,10 +5240,11 @@ function TextView({
             value={mode}
             onChange={setMode}
             options={[
-              // The card view is YAML's default, so it leads the toggle — but only
-              // for a file with nesting to card (the tree's honesty rule).
-              ...(gridAvailable ? [{ value: "grid" as const, label: "Cards" }] : []),
               { value: "preview", label: isYaml ? "Tree" : "Preview" },
+              // The card view leads no longer — Tree is the default. It is still
+              // offered, but only for a file with nesting to card (the tree's
+              // honesty rule).
+              ...(gridAvailable ? [{ value: "grid" as const, label: "Cards" }] : []),
               {
                 value: "edit",
                 label: isYaml || previewKind === "svg" ? "Source" : "Edit",

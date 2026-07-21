@@ -25,7 +25,6 @@ import { ActivityCalendar } from "./ActivityCalendar";
 import { CategoryEditor } from "./CategoryEditor";
 import { ExtendToRemoteDialog } from "./ExtendToRemoteDialog";
 import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remoteMachines";
-import { GLOBAL_MACHINE_DRAG_TYPE } from "../header/MachinesIndicator";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
@@ -1058,6 +1057,13 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const [showArchive, setShowArchive] = useState(false);
   const [editCategories, setEditCategories] = useState(false);
   const [extendRemote, setExtendRemote] = useState(false);
+  // Set instead of `extendRemote` alone when a global machine was handed to this
+  // (local-only) project from the header's Machines menu — seeds the "Extend to
+  // remote" dialog's SSH address with that machine, so the pick becomes "make
+  // this the project's primary".
+  const [extendRemoteMachine, setExtendRemoteMachine] = useState<DroppedGlobalMachine | null>(
+    null,
+  );
   // When set, the in-app "Move project…" folder browser is open, seeded at this
   // parent directory. `null` = closed.
   const [movePickerInitial, setMovePickerInitial] = useState<string | null>(null);
@@ -1066,9 +1072,6 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   // projects together rather than reorder. Drives the distinct hover affordance.
   const [groupHint, setGroupHint] = useState(false);
   const [dragging, setDragging] = useState(false);
-  // True while a global machine (MachinesIndicator) is dragged over this pill —
-  // distinct from `dragOver` (pill reorder), which never fires for this MIME type.
-  const [machineDragOver, setMachineDragOver] = useState(false);
   const pillRef = useRef<HTMLDivElement>(null);
   const dir = resolveProjectDirectory(project);
   const categories = projectCategories(project);
@@ -1092,6 +1095,17 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const [showContainerSettings, setShowContainerSettings] = useState(false);
   const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
+  // A global machine picked for THIS (local) project in the header's Machines
+  // menu: that menu can't own the extend dialog, so it parks the request here
+  // and the target's pill opens it. Cleared on pickup so it fires once.
+  const extendTarget = useRemoteMachinesStore((s) => s.extendTarget);
+  const clearExtend = useRemoteMachinesStore((s) => s.clearExtend);
+  useEffect(() => {
+    if (extendTarget?.projectId !== project.id) return;
+    setExtendRemoteMachine(extendTarget.machine);
+    setExtendRemote(true);
+    clearExtend();
+  }, [extendTarget, project.id, clearExtend]);
   const [showPythonSettings, setShowPythonSettings] = useState(false);
   // Whether this project actually contains Python files — the interpreter/venv
   // setting is only worth offering then. Probed lazily when the context menu
@@ -1391,6 +1405,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
               <button
                 onClick={() => {
                   setContextMenu(null);
+                  setExtendRemoteMachine(null);
                   setExtendRemote(true);
                 }}
                 title="Attach a remote SSH host to this local project — files stay put; push them up manually"
@@ -1703,9 +1718,17 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
         />
       )}
 
-      {/* Extend a local project to remote (attach an SSH host) */}
+      {/* Extend a local project to remote (attach an SSH host) — either from
+          the context menu, or a global machine dropped onto this pill. */}
       {extendRemote && (
-        <ExtendToRemoteDialog project={project} onClose={() => setExtendRemote(false)} />
+        <ExtendToRemoteDialog
+          project={project}
+          initialMachine={extendRemoteMachine ?? undefined}
+          onClose={() => {
+            setExtendRemote(false);
+            setExtendRemoteMachine(null);
+          }}
+        />
       )}
 
       {/* Detach a remote project back to local */}
@@ -1777,7 +1800,7 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
 
       <div
         ref={pillRef}
-        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${dragOver ? " drag-over" : ""}${groupHint ? " drag-group" : ""}${dragging ? " dragging" : ""}${catColor ? " has-category" : ""}${machineDragOver ? " machine-drag-over" : ""}`}
+        className={`project-pill${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${dragOver ? " drag-over" : ""}${groupHint ? " drag-group" : ""}${dragging ? " dragging" : ""}${catColor ? " has-category" : ""}`}
         style={catColor ? ({ "--cat-color": catColor } as React.CSSProperties) : undefined}
         draggable
         onMouseEnter={handleMouseEnter}
@@ -1791,15 +1814,6 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           e.dataTransfer.effectAllowed = "move";
         }}
         onDragOver={(e) => {
-          if (e.dataTransfer.types.includes(GLOBAL_MACHINE_DRAG_TYPE)) {
-            // Only a remote project can host a worker; a local one simply
-            // doesn't accept the drop (no preventDefault → rejecting cursor).
-            if (!project.remote) return;
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "copy";
-            if (!machineDragOver) setMachineDragOver(true);
-            return;
-          }
           if (!e.dataTransfer.types.includes(PILL_DRAG_TYPE)) return;
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
@@ -1808,24 +1822,8 @@ export function ProjectPill({ project, active, onClick, onClose, onReorder, onGr
           const wantGroup = e.altKey && !!onGroup;
           if (wantGroup !== groupHint) setGroupHint(wantGroup);
         }}
-        onDragLeave={() => { setDragOver(false); setGroupHint(false); setMachineDragOver(false); }}
+        onDragLeave={() => { setDragOver(false); setGroupHint(false); }}
         onDrop={(e) => {
-          if (e.dataTransfer.types.includes(GLOBAL_MACHINE_DRAG_TYPE)) {
-            setMachineDragOver(false);
-            if (!project.remote) return;
-            const raw = e.dataTransfer.getData(GLOBAL_MACHINE_DRAG_TYPE);
-            if (!raw) return;
-            e.preventDefault();
-            // Don't also bubble into an enclosing BoxChip/pills-strip handler.
-            e.stopPropagation();
-            try {
-              const machine = JSON.parse(raw) as DroppedGlobalMachine;
-              openRemoteMachines(project.id, machine);
-            } catch {
-              // Malformed payload — ignore the drop.
-            }
-            return;
-          }
           setDragOver(false);
           setGroupHint(false);
           const fromId = e.dataTransfer.getData(PILL_DRAG_TYPE);

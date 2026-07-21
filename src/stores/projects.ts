@@ -445,6 +445,33 @@ async function autoConnectWorker(projectId: string, host: ComputeHost): Promise<
   }
 }
 
+/**
+ * Re-attempt auto-connect for the **active** remote project after a VPN tunnel has
+ * just come up (the machine-wide event `lib/remoteAutoReconnect` subscribes to).
+ *
+ * A first auto-connect at launch may have run *before* the armed tunnel was up: the
+ * probe found the host unreachable and left the lamp red (`autoConnectPrimary` step
+ * 4 — no retry loop of its own). Now the routing exists, so we reset that red lamp
+ * (primary and each opted-in worker) back to "off" and fire `autoConnectRemote`
+ * again — the guard there only re-attempts from "off", so without this reset the
+ * fresh tunnel would go unused until the user connected by hand. Only ever clears an
+ * `error` lamp: a `connecting`/`connected` lamp is a live or winning attempt and is
+ * left strictly alone. No-op unless the active project is a remote that opted in.
+ */
+export function retryAutoConnectAfterVpn(): void {
+  const { activeId, projects } = useProjectsStore.getState();
+  if (!activeId) return;
+  const project = projects.find((p) => p.id === activeId);
+  if (!project?.remote?.auto_connect) return;
+  const status = useRemoteStatusStore.getState();
+  if ((status.byProject[activeId]?.ssh ?? "off") === "error") status.setSsh(activeId, "off");
+  for (const host of project.compute_hosts ?? []) {
+    if (host.auto_connect && (status.byHost[activeId]?.[host.id]?.ssh ?? "off") === "error")
+      status.setSsh(activeId, "off", host.id);
+  }
+  void autoConnectRemote(activeId);
+}
+
 /** Tear down a remote project's pooled connection on deactivation — the primary
  *  AND every worker host (multi-host remote). Best-effort. */
 function dropRemotePool(projectId: string): void {

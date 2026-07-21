@@ -3,6 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { emit } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import type { Settings, Theme, WindowState } from "../types";
+import { applyLanguage, type Language } from "../lib/i18n";
 
 /** Each Tauri window is its own JS runtime with its own copy of this store, so
  *  a theme change made in one (normally the main window's Settings dialog)
@@ -11,6 +12,11 @@ import type { Settings, Theme, WindowState } from "../types";
  *  Broadcast the new scheme so every live window can re-apply it; see the
  *  listener in `DetachedApp`. */
 export const THEME_CHANGED_EVENT = "eldrun:theme-changed";
+
+/** Like THEME_CHANGED_EVENT, but for the UI language: broadcast so every live
+ *  window (including detached popouts, which each hold their own i18n store)
+ *  re-applies the new language. See the listener in `DetachedApp`. */
+export const LANGUAGE_CHANGED_EVENT = "eldrun:language-changed";
 
 export function applyTheme(scheme: string) {
   document.documentElement.setAttribute("data-theme", scheme);
@@ -82,6 +88,7 @@ interface SettingsStore {
    *  its OWN zoom (restored from its seed) rather than the main window's. */
   load: (opts?: { skipZoom?: boolean }) => Promise<void>;
   setTheme: (theme: Theme) => Promise<void>;
+  setLanguage: (lang: Language) => Promise<void>;
   updateSettings: (patch: Partial<Settings>) => Promise<void>;
   saveWindowState: (ws: WindowState) => Promise<void>;
   /** Set (or clear, with "") the Python Run/Debug args for one file, keyed by its
@@ -96,7 +103,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   load: async (opts) => {
     const settings = await invoke<Settings>("get_settings");
-    applyTheme(settings.color_scheme ?? "light_lavender");
+    applyTheme(settings.color_scheme ?? "fancy_dark");
+    applyLanguage(settings.language);
     // `ui_zoom` is the MAIN window's own zoom. A popout skips it and applies its
     // own persisted zoom from its seed instead (zoom is per window, not global).
     if (!opts?.skipZoom) applyZoom(settings.ui_zoom);
@@ -109,6 +117,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     await invoke<void>("save_settings", { settings: updated });
     applyTheme(theme);
     void emit(THEME_CHANGED_EVENT, theme);
+    set({ settings: updated as Settings });
+  },
+
+  setLanguage: async (lang) => {
+    const current = get().settings ?? {};
+    const updated = { ...current, language: lang };
+    await invoke<void>("save_settings", { settings: updated });
+    applyLanguage(lang);
+    void emit(LANGUAGE_CHANGED_EVENT, lang);
     set({ settings: updated as Settings });
   },
 
