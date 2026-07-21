@@ -6,6 +6,8 @@ import { BoxPill } from "../projects/BoxPill";
 import { ProjectSearch } from "../projects/ProjectSearch";
 import { ProjectDialog } from "../projects/ProjectDialog";
 import { SettingsDialog, type SettingsPanelKind } from "./SettingsPanel";
+import { UntestedTag } from "../common/UntestedTag";
+import { useHpcPipelineStore } from "../../stores/hpcPipeline";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
 import { useTabsStore } from "../../stores/tabs";
@@ -31,6 +33,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const deleteBox = useBoxesStore((s) => s.deleteBox);
   const assignToBox = useBoxesStore((s) => s.assignToBox);
   const openBox = useBoxesStore((s) => s.openBox);
+  const openHpcWizard = useHpcPipelineStore((s) => s.openWizard);
   // The currently-displayed scope is the single source of truth for which pill
   // is highlighted (BoxPill keys off it too). Opening a box moves the scope but
   // not `activeId`, so highlighting on `activeId` would leave the previously
@@ -529,6 +532,12 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               </button>
               <button onClick={() => { setShowAddMenu(false); setDialog("clone"); }}>
                 Import from GitHub/GitLab
+              </button>
+              <button
+                className="untested"
+                onClick={() => { setShowAddMenu(false); openHpcWizard(); }}
+              >
+                HPC pipeline… <UntestedTag />
               </button>
               <button
                 onClick={() => {

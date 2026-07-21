@@ -12,7 +12,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useConnectDialogStore } from "../../stores/connectDialog";
+import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
 import {
@@ -26,6 +26,7 @@ import { useScrollSync } from "../../stores/scrollSync";
 import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
 import { CompareView } from "./CompareView";
+import { PresentationOverlay } from "./PresentationOverlay";
 import { renderMarkdown } from "../../lib/viewers/markdown";
 import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
 import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
@@ -63,7 +64,20 @@ import {
   snapBreakpointLine,
 } from "../../lib/viewers/python";
 import { debugPythonFile, runCwd, runPythonFile, placeForFocused } from "../../lib/pythonRun";
+import {
+  isSlurmScript,
+  parseSbatchDirectives,
+  directiveValue,
+  spliceDirective,
+  slurmAvailable,
+  submitSlurmJob,
+  openInteractiveJob,
+  COMMON_SBATCH_KEYS,
+  type SlurmInfo,
+  type InteractiveResources,
+} from "../../lib/slurm";
 import { FileDropContext } from "../files/fileDropContext";
+import { UntestedTag } from "../common/UntestedTag";
 import { FileSourceSwitch } from "../files/ProjectFilesPane";
 import {
   basename,
@@ -131,7 +145,9 @@ import {
 } from "../../lib/viewers/tex";
 import { PdfView } from "./pdf/PdfViewer";
 import { YamlTree } from "./YamlTree";
+import { YamlGrid } from "./YamlGrid";
 import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
+import { hasCards } from "../../lib/viewers/yamlGrid";
 
 /**
  * Persisted reader-position plumbing for an in-app viewer. Snapshots the tab's
@@ -356,7 +372,7 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
   // remote-native tab would — the toggle itself stays put (matches
   // ProjectFilesPane's `useFileSource`).
   const sshState = useRemoteStatusStore((s) => (projectId ? s.byProject[projectId]?.ssh : undefined));
-  const openConnectDialog = useConnectDialogStore((s) => s.open);
+  const openRemoteMachines = useRemoteMachinesStore((s) => s.open);
   const remoteDisconnected = !!project?.remote && sshState !== "connected";
 
   // Does this file exist on the host? A local-only file (never synced) has no
@@ -375,11 +391,32 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
       .catch(() => { if (!cancelled) setRemoteMissing(true); });
     return () => { cancelled = true; };
   }, [remoteRoot, rel, sshState, projectId]);
+  // Mirror the Local/Remote switch out to the tab strip so its file-source badge
+  // is a clickable toggle (not just a glyph): switching applies only when this
+  // remote project's file has a counterpart on the other side (`rel`). Cleared
+  // when it doesn't, and on unmount. Owns no state — `setSideOverride` stays here.
+  useEffect(() => {
+    if (!tabKey) return;
+    const store = useFileSourcesStore.getState();
+    if (project?.remote && rel) {
+      store.setControls(tabKey, {
+        current: effectiveSource === "remote" ? "remote" : "local",
+        set: setSideOverride,
+        remoteDisabled: remoteMissing,
+      });
+    } else {
+      store.clearControls(tabKey);
+    }
+    return () => {
+      if (tabKey) useFileSourcesStore.getState().clearControls(tabKey);
+    };
+  }, [tabKey, project?.remote, rel, effectiveSource, remoteMissing]);
+
   if (remoteDisconnected && effectiveSource !== "local" && effectiveSource !== "none") {
     return (
       <RemotePaneHold
         host={project?.remote?.host ?? ""}
-        onConnect={() => { if (projectId) openConnectDialog(projectId); }}
+        onConnect={() => { if (projectId) openRemoteMachines(projectId); }}
       />
     );
   }
@@ -449,7 +486,14 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, groupId }: Pro
   return (
     <FileScopeContext.Provider value={projectId}>
       <ViewerHeaderInfoContext.Provider value={{ path: effectivePath, projectId, sourceSwitch }}>
-        {view}
+        {/* A single relative host so the marker/laser presentation overlay can
+            sit over ANY viewer without each one wiring it in (see
+            PresentationOverlay). `.presentation-host` is height:100% so the
+            existing `.file-viewer` (also 100%) fills it unchanged. */}
+        <div className="presentation-host">
+          {view}
+          <PresentationOverlay />
+        </div>
       </ViewerHeaderInfoContext.Provider>
     </FileScopeContext.Provider>
   );
@@ -4690,6 +4734,172 @@ function RunDebugButtons({
   );
 }
 
+/** Human labels for the `#SBATCH` keys the directive form surfaces. */
+const SBATCH_FIELD_LABELS: Record<string, string> = {
+  "job-name": "Job name",
+  partition: "Partition",
+  time: "Time",
+  nodes: "Nodes",
+  ntasks: "Tasks",
+  "cpus-per-task": "CPUs/task",
+  mem: "Memory",
+  gres: "GRES",
+  output: "Output",
+};
+
+/** Placeholder hints per key, so an empty field still teaches the format. */
+const SBATCH_FIELD_HINTS: Record<string, string> = {
+  "job-name": "myjob",
+  partition: "gpu",
+  time: "01:00:00",
+  nodes: "1",
+  ntasks: "1",
+  "cpus-per-task": "4",
+  mem: "8G",
+  gres: "gpu:1",
+  output: "slurm-%j.out",
+};
+
+/**
+ * The SLURM control bar (HPC), shown beside the Python Run bar for a `#SBATCH`
+ * script on a host that has SLURM. **Submit job** submits it and opens a log tab;
+ * **Variables** toggles the `#SBATCH` directive form (render rows, edit text — each
+ * edit splices the draft, an ordinary undoable change); **Interactive session…**
+ * opens a resource mini-form that launches an `srun --pty` shell on a compute node.
+ * Carries an `UntestedTag` until QA'd on a real cluster.
+ */
+function SlurmBar({
+  busy,
+  fields,
+  onField,
+  onSubmit,
+  onInteractive,
+}: {
+  busy: boolean;
+  fields: { key: string; value: string }[];
+  onField: (key: string, value: string) => void;
+  onSubmit: () => void;
+  onInteractive: (res: InteractiveResources) => void;
+}) {
+  const [varsOpen, setVarsOpen] = useState(false);
+  const [interOpen, setInterOpen] = useState(false);
+  // Per-field typed drafts, so a splice (and its undo step) happens on commit
+  // (blur/Enter), not on every keystroke.
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [inter, setInter] = useState<InteractiveResources>({
+    time: "01:00:00",
+    cpus: "4",
+    mem: "8G",
+    gpus: "",
+    partition: "",
+  });
+
+  const valueFor = (key: string) =>
+    edits[key] ?? directiveValue(fields, key);
+  const commit = (key: string) => {
+    const v = edits[key];
+    if (v === undefined) return;
+    onField(key, v);
+  };
+
+  return (
+    <div className="file-viewer-run-controls">
+      <button
+        className="file-viewer-format-btn"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onSubmit}
+        disabled={busy}
+        title="Submit this job to SLURM (sbatch) and open a log tab"
+        aria-label="Submit SLURM job"
+      >
+        ⏫ Submit job
+      </button>
+      <button
+        className={`file-viewer-format-btn${varsOpen ? " active" : ""}`}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => { setVarsOpen((v) => !v); setInterOpen(false); }}
+        title="Edit #SBATCH directives (resources)"
+        aria-pressed={varsOpen}
+      >
+        Variables
+      </button>
+      <button
+        className={`file-viewer-format-btn${interOpen ? " active" : ""}`}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => { setInterOpen((v) => !v); setVarsOpen(false); }}
+        title="Open an interactive shell on a compute node (srun --pty)"
+        aria-pressed={interOpen}
+      >
+        ⚡ Interactive session…
+      </button>
+      <UntestedTag />
+
+      {varsOpen && (
+        <div className="file-viewer-run-args" role="dialog" aria-label="SBATCH variables">
+          <label className="file-viewer-run-args-label">#SBATCH directives</label>
+          <div className="slurm-directive-grid">
+            {COMMON_SBATCH_KEYS.map((key) => (
+              <label key={key} className="slurm-directive-field">
+                <span className="slurm-directive-key">{SBATCH_FIELD_LABELS[key] ?? key}</span>
+                <input
+                  className="file-viewer-run-args-input"
+                  value={valueFor(key)}
+                  spellCheck={false}
+                  placeholder={SBATCH_FIELD_HINTS[key] ?? ""}
+                  onChange={(e) => setEdits((m) => ({ ...m, [key]: e.target.value }))}
+                  onBlur={() => commit(key)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commit(key);
+                    }
+                  }}
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {interOpen && (
+        <div className="file-viewer-run-args" role="dialog" aria-label="Interactive session">
+          <label className="file-viewer-run-args-label">Interactive session (srun --pty)</label>
+          <div className="slurm-directive-grid">
+            {([
+              ["time", "Time", "01:00:00"],
+              ["cpus", "CPUs/task", "4"],
+              ["mem", "Memory", "8G"],
+              ["gpus", "GPUs", "1"],
+              ["partition", "Partition", "gpu"],
+            ] as const).map(([k, label, hint]) => (
+              <label key={k} className="slurm-directive-field">
+                <span className="slurm-directive-key">{label}</span>
+                <input
+                  className="file-viewer-run-args-input"
+                  value={inter[k] ?? ""}
+                  spellCheck={false}
+                  placeholder={hint}
+                  onChange={(e) => setInter((s) => ({ ...s, [k]: e.target.value }))}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="file-viewer-run-args-row">
+            <button
+              type="button"
+              className="file-viewer-format-btn"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { setInterOpen(false); onInteractive(inter); }}
+            >
+              ⚡ Start
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** "Compare" toolbar toggle. When active the editor body is replaced by the
  *  three-column compare/merge view (old commit ⇄ live content ⇄ editable result). */
 function CompareButton({ active, toggle }: { active: boolean; toggle: () => void }) {
@@ -4848,6 +5058,57 @@ function TextView({
     [launch, path, cwd, scope, projectId, bp.lines, pyArgs, fileDrop],
   );
 
+  // ── SLURM (HPC): submit / interactive on a batch script ───────────────────
+  // A `.slurm`-style file (one carrying a `#SBATCH` directive) gets a submit bar
+  // beside the Python one — but only when the project's host actually has SLURM
+  // (`slurm_available`), so the affordance never appears off-HPC. Everything here
+  // rides the same terminal-tab machinery Run uses (`lib/slurm.ts`).
+  const isSlurm = useMemo(() => loaded && isSlurmScript(draft), [loaded, draft]);
+  const [slurmInfo, setSlurmInfo] = useState<SlurmInfo | null>(null);
+  useEffect(() => {
+    if (!isSlurm || !projectDir) {
+      setSlurmInfo(null);
+      return;
+    }
+    let cancelled = false;
+    slurmAvailable(projectDir)
+      .then((info) => { if (!cancelled) setSlurmInfo(info); })
+      .catch(() => { if (!cancelled) setSlurmInfo(null); });
+    return () => { cancelled = true; };
+  }, [isSlurm, projectDir]);
+  const showSlurm = isSlurm && !!slurmInfo?.available;
+  const isRemoteProject = !!project?.remote;
+
+  const onSlurmSubmit = useCallback(
+    () =>
+      void launch(async () => {
+        if (!projectId) return;
+        await submitSlurmJob({
+          file: path,
+          projectDir,
+          cwd,
+          projectId,
+          scope,
+          isRemote: isRemoteProject,
+          place: placeForFocused(fileDrop),
+        });
+      }),
+    [launch, path, projectDir, cwd, projectId, scope, isRemoteProject, fileDrop],
+  );
+  const onSlurmInteractive = useCallback(
+    (res: InteractiveResources) => {
+      openInteractiveJob({
+        scope,
+        cwd,
+        res,
+        hostId: "primary",
+        isRemote: isRemoteProject,
+        place: placeForFocused(fileDrop),
+      });
+    },
+    [scope, cwd, isRemoteProject, fileDrop],
+  );
+
   // Ctrl/Cmd+Click a name to open its `def`/`class` — in this file or in the
   // module it was imported from. `jumpToSource` handles both: it re-uses an open
   // editor when there is one (including the same file, and across a detached
@@ -4877,10 +5138,26 @@ function TextView({
   // back in the stricter dialect (`strict`).
   const isYaml = useMemo(() => isTreePath(path), [path]);
   const jsonStrict = useMemo(() => isJsonPath(path), [path]);
-  // HTML/SVG/YAML open in preview; CSS opens in the editor (its preview is a sample).
-  const [mode, setMode] = useState<"preview" | "edit">(
-    previewKind === "html" || previewKind === "svg" || isYaml ? "preview" : "edit",
+  // #yaml-grid: the CARD view for structured YAML/JSON — a recursive grid of nested
+  // cards, editing the same draft by splice (see YamlGrid). Offered only when the
+  // file actually nests a collection worth carding, so the Cards toggle appears
+  // exactly where it does something (the tree's honesty rule).
+  const gridAvailable = useMemo(
+    () => (isYaml && loaded ? hasCards(draft, jsonStrict) : false),
+    [isYaml, loaded, draft, jsonStrict],
   );
+  // YAML/JSON opens in the CARD view by default ("grid"); HTML/SVG in preview; CSS in
+  // the editor. A flat YAML file (no cards) is caught by the fallback effect below and
+  // drops to the tree, so `grid` here is optimistic — right for the common structured
+  // file, corrected for the rare flat one.
+  const [mode, setMode] = useState<"preview" | "grid" | "edit">(
+    isYaml ? "grid" : previewKind === "html" || previewKind === "svg" ? "preview" : "edit",
+  );
+  // A flat file (or a card edit that removes all nesting) has no card view — retire
+  // the mode rather than strand it on a toggle with no button, dropping to the tree.
+  useEffect(() => {
+    if (mode === "grid" && !gridAvailable && loaded) setMode("preview");
+  }, [mode, gridAvailable, loaded]);
   const fileName = basename(path);
   const jumpToLine = useCallback(
     (line: number, column: number) =>
@@ -4905,7 +5182,10 @@ function TextView({
     },
     [wheelRef],
   );
-  const treeScrolls = isYaml && !showEditor;
+  // Only the TREE persists/restores the body's scroll (the grid scrolls its own
+  // inner table container, the editor its own viewport).
+  const treeScrolls = isYaml && mode === "preview";
+  const showGrid = isYaml && mode === "grid" && gridAvailable;
   const scrollRaf = useRef<number | null>(null);
   const onBodyScroll = useCallback(() => {
     if (!treeScrolls) return;
@@ -4957,6 +5237,9 @@ function TextView({
             value={mode}
             onChange={setMode}
             options={[
+              // The card view is YAML's default, so it leads the toggle — but only
+              // for a file with nesting to card (the tree's honesty rule).
+              ...(gridAvailable ? [{ value: "grid" as const, label: "Cards" }] : []),
               { value: "preview", label: isYaml ? "Tree" : "Preview" },
               {
                 value: "edit",
@@ -4975,6 +5258,15 @@ function TextView({
             setArgs={setPyArgs}
             onRun={onRun}
             onDebug={onDebug}
+          />
+        )}
+        {showEditor && showSlurm && (
+          <SlurmBar
+            busy={launching}
+            fields={parseSbatchDirectives(draft)}
+            onField={(key, value) => setDraft(spliceDirective(draft, key, value))}
+            onSubmit={onSlurmSubmit}
+            onInteractive={onSlurmInteractive}
           />
         )}
         {showEditor && <EditorAiControls ai={ai} />}
@@ -5009,6 +5301,16 @@ function TextView({
             <div className="file-viewer-error">{error}</div>
           ) : !loaded ? (
             <div className="file-viewer-loading">Loading…</div>
+          ) : showGrid ? (
+            // The grid edits the same draft by splice, just like the tree — a cell
+            // edit is dirty, undoable and saveable exactly like a typed one.
+            <YamlGrid
+              text={draft}
+              onChange={setDraft}
+              tabKey={tabKey}
+              fontSize={font.isCustom ? font.fontSize : undefined}
+              strict={jsonStrict}
+            />
           ) : isYaml ? (
             // The tree edits the draft in place — the same draft Source shows and
             // Ctrl+S writes, so an edit made here is dirty, undoable and saveable

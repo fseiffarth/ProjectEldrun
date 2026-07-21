@@ -4,15 +4,19 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   needsSeparateKeyPassphrase,
-  type RemoteEntry,
   type SshTooling,
   type StoredVpnConfig,
   type VpnAuthNeeds,
 } from "../../types";
 import { joinRemotePath, parseSshAddress, type ParsedSshAddress } from "./scaffold";
+import { useRemoteBrowse } from "./useRemoteBrowse";
 import { useVpnStatusStore } from "../../stores/vpnStatus";
 import { IS_WINDOWS } from "../../lib/platform";
-import { forgetConnection, markConnectionOpened } from "../../lib/remoteConnect";
+import {
+  forgetConnection,
+  markConnectionOpened,
+  resolveRemoteStartDir,
+} from "../../lib/remoteConnect";
 import { useSettingsStore } from "../../stores/settings";
 import type { LogLine } from "../common/ConnectionLog";
 
@@ -39,23 +43,6 @@ export type RemoteStep = "connect" | "browse" | "details";
 // detached-PTY check. (Module scope so the counter survives re-renders.)
 let dialogTermSeq = 0;
 
-/** The directory a fresh connect/browse should open in for `host`: the
- *  standard path set in Settings' "Remote Connections" panel if there is one,
- *  else the SSH-reported home directory. Best-effort — either lookup failing
- *  just falls through to the next, never blocks the connect that already
- *  succeeded by the time this runs. */
-const resolveStartDir = async (
-  user: string | null | undefined,
-  host: string,
-  port: number | null | undefined,
-  password: string | null,
-): Promise<string> => {
-  const configured = await invoke<string | null>("remote_get_default_path", { host }).catch(
-    () => null,
-  );
-  if (configured) return configured;
-  return invoke<string>("ssh_default_dir", { user, host, port, password }).catch(() => "");
-};
 const nextDialogTermId = (kind: string) => `dialog-${kind}-${++dialogTermSeq}`;
 
 /**
@@ -98,16 +85,22 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
   // as a secret. Pre-checks the toggle, so connecting can't silently *clear* a
   // credential the user saved elsewhere (`remember: false` is an explicit untick).
   const [sshSaved, setSshSaved] = useState(false);
+  // The connect-and-browse mechanism (frozen (host, password) session + live SFTP
+  // listing + navigation) is the SHARED one every remote-login dialog uses — see
+  // `useRemoteBrowse`. This flow keeps its own fields/steps/VPN around it; the
+  // browser state below is just re-exposed under the names the rest of this hook
+  // and `RemoteProjectSection` already read.
+  const browse = useRemoteBrowse();
   // The SSH address that was successfully connected (frozen at connect time so
   // edits to the input don't silently change which host we browse/submit to).
-  const [remoteConn, setRemoteConn] = useState<ParsedSshAddress | null>(null);
+  const remoteConn = browse.conn;
   // The password that was used for the successful connect, frozen so the remote
   // listing always reuses the same credential the connection was made with.
-  const [remotePassword, setRemotePassword] = useState("");
-  const [remoteBrowsePath, setRemoteBrowsePath] = useState("");
-  const [remoteEntries, setRemoteEntries] = useState<RemoteEntry[]>([]);
-  const [remoteListBusy, setRemoteListBusy] = useState(false);
-  const [remoteListError, setRemoteListError] = useState("");
+  const remotePassword = browse.password;
+  const remoteBrowsePath = browse.path;
+  const remoteEntries = browse.entries;
+  const remoteListBusy = browse.busy;
+  const remoteListError = browse.error;
   // The remote folder the user committed to via "Use this folder".
   const [remoteChosenPath, setRemoteChosenPath] = useState("");
   // Previously-used remote paths for the current host (newest first), offered
@@ -212,12 +205,8 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     clearSshPoll();
     setSshStatus("idle");
     setSshError("");
-    setRemoteConn(null);
-    setRemotePassword("");
-    setRemoteEntries([]);
-    setRemoteBrowsePath("");
+    browse.reset();
     setRemoteChosenPath("");
-    setRemoteListError("");
     setStep("connect");
   };
 
@@ -576,11 +565,11 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     })
       .then(async () => {
         clearSshPoll();
-        const startDir = await resolveStartDir(parsed.user, parsed.host, parsed.port, null);
-        setRemoteConn(parsed);
-        setRemotePassword(""); // empty → null → rides the master in the listing effect
+        const startDir = await resolveRemoteStartDir(parsed.user, parsed.host, parsed.port, null);
+        // Freeze the session the login terminal already authenticated — empty
+        // password → null → rides its ControlMaster in the listing effect.
+        browse.openSession(parsed, "", startDir);
         setSshStatus("connected");
-        setRemoteBrowsePath(startDir || "");
       })
       .catch(() => {
         if (attempt + 1 >= maxAttempts) {
@@ -649,7 +638,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     // readiness poll and return to the disconnected state.
     clearSshPoll();
     setSshStatus("idle");
-    setRemoteConn(null);
+    browse.reset();
     setStep("connect");
   };
 
@@ -684,115 +673,27 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     setSshError("");
     setRemoteChosenPath("");
     try {
-      await invoke<void>("ssh_connect", {
-        user: parsed.user,
-        host: parsed.host,
-        port: parsed.port,
-        password,
-        // The checkbox, and only the checkbox: save the working password, or clear a
-        // previously-saved one on an explicit untick. Written only now that auth has
-        // succeeded, so a rejected credential is never stored.
-        remember: sshRemember,
-      });
-      const startDir = await resolveStartDir(parsed.user, parsed.host, parsed.port, password);
-      setRemoteConn(parsed);
-      setRemotePassword(sshPassword);
+      // The shared connect: ssh_connect (remembering the working password only on
+      // success, so a rejected credential is never stored) → freeze the session →
+      // open its start dir. The listing then refreshes itself.
+      await browse.connect({ target: parsed, password, remember: sshRemember });
       setSshStatus("connected");
       setSshSaved(sshRemember);
-      setRemoteBrowsePath(startDir || "");
       // Connection succeeded — remember the address for the recents dropdown.
       rememberSshAddress(sshAddress);
     } catch (err) {
       setSshStatus("error");
       setSshError(String(err));
-      setRemoteConn(null);
+      browse.reset();
     }
   };
 
-  // Refresh the remote folder listing whenever the browse path changes.
-  useEffect(() => {
-    if (sshStatus !== "connected" || !remoteConn) {
-      setRemoteEntries([]);
-      return;
-    }
-    let cancelled = false;
-    setRemoteListBusy(true);
-    setRemoteListError("");
-    invoke<RemoteEntry[]>("ssh_list_dir", {
-      user: remoteConn.user,
-      host: remoteConn.host,
-      port: remoteConn.port,
-      password: remotePassword ? remotePassword : null,
-      path: remoteBrowsePath,
-    })
-      .then((entries) => {
-        if (cancelled) return;
-        setRemoteEntries(entries);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setRemoteEntries([]);
-        setRemoteListError(String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setRemoteListBusy(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sshStatus, remoteConn, remotePassword, remoteBrowsePath]);
-
-  const enterRemoteFolder = (entry: RemoteEntry) => {
-    if (!entry.is_dir) return;
-    setRemoteBrowsePath(joinRemotePath(remoteBrowsePath, entry.name));
-  };
-
-  // Jump the browser straight to a previously-used remote path (picked from the
-  // recents dropdown) instead of navigating there entry by entry.
-  const jumpToRemotePath = (path: string) => {
-    setRemoteBrowsePath(path);
-  };
-
-  const remoteGoUp = () => {
-    const path = remoteBrowsePath.replace(/\/+$/, "");
-    if (!path || path === "/") {
-      setRemoteBrowsePath("/");
-      return;
-    }
-    const idx = path.lastIndexOf("/");
-    setRemoteBrowsePath(idx <= 0 ? "/" : path.slice(0, idx));
-  };
-
-  // Create a new folder under the current browse path, then descend into it so
-  // it becomes the selectable target. Reuses the frozen connect credential, like
-  // the listing. No-op without a live session (the SFTP browser only renders then).
-  const createRemoteFolder = async (rawName: string) => {
-    const name = rawName.trim();
-    if (!name || !remoteConn) return;
-    // Reject path separators — this creates a single child of the current dir,
-    // not an arbitrary deep path. The backend's mkdir -p still joins safely.
-    if (name.includes("/")) {
-      setRemoteListError("Folder name can't contain '/'.");
-      return;
-    }
-    const target = joinRemotePath(remoteBrowsePath || "/", name);
-    setRemoteListBusy(true);
-    setRemoteListError("");
-    try {
-      await invoke("ssh_mkdir", {
-        user: remoteConn.user,
-        host: remoteConn.host,
-        port: remoteConn.port,
-        password: remotePassword ? remotePassword : null,
-        path: target,
-      });
-      // Descend into the new folder; the listing effect refreshes off the path.
-      setRemoteBrowsePath(target);
-    } catch (err) {
-      setRemoteListError(String(err));
-      setRemoteListBusy(false);
-    }
-  };
+  // The live SFTP listing + folder navigation all come from the shared browser;
+  // re-exposed here under the names `RemoteProjectSection` already reads.
+  const enterRemoteFolder = browse.enter;
+  const jumpToRemotePath = browse.jump;
+  const remoteGoUp = browse.goUp;
+  const createRemoteFolder = browse.mkdir;
 
   // Build the `remote` spec for the create/import request, or undefined when this
   // isn't a usable remote project. NEW: name becomes a subdir under the chosen

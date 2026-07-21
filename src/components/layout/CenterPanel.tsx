@@ -60,7 +60,7 @@ import { dragPlatform } from "../../lib/dragPlatform";
 import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/tmuxSession";
 import { IS_WINDOWS } from "../../lib/platform";
 import { useProjectsStore } from "../../stores/projects";
-import { useConnectDialogStore } from "../../stores/connectDialog";
+import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 
@@ -156,14 +156,15 @@ export function CenterPanel() {
   );
   // Stable per-scope connect handler. TabPane is memoized, so the pane layer only
   // stays cheap to re-render (e.g. every frame of a divider drag) if its props are
-  // referentially stable — a fresh `() => openConnectDialog(scopeKey)` arrow every
+  // referentially stable — a fresh `() => openRemoteMachines(scopeKey)` arrow every
   // render would break the memo for every pane. Cached by scope; reads the store
-  // action lazily so the cache never needs invalidating.
+  // action lazily so the cache never needs invalidating. Opens the unified "Remote
+  // machines" hub (scopeKey is the project id), matching the pill and file view.
   const connectHandlers = useRef<Map<string, () => void>>(new Map());
   const getConnect = useCallback((scopeKey: string) => {
     let h = connectHandlers.current.get(scopeKey);
     if (!h) {
-      h = () => useConnectDialogStore.getState().open(scopeKey);
+      h = () => useRemoteMachinesStore.getState().open(scopeKey);
       connectHandlers.current.set(scopeKey, h);
     }
     return h;
@@ -291,7 +292,7 @@ export function CenterPanel() {
       // allowLastGroup: a restored popout may be the scope's only group (its
       // in-window siblings held only non-restorable tabs and were dropped); it
       // must still re-detach into its own window rather than stay docked.
-      detachGroup(t.id, { bounds: t.bounds, allowLastGroup: true });
+      detachGroup(t.id, { bounds: t.bounds, zoom: t.zoom, allowLastGroup: true });
     }
   }, [scope, pendingRespawn, consumePendingRespawn, detachGroup]);
 

@@ -6,6 +6,7 @@ import { ConnLamp } from "../common/ConnLamp";
 import { ConnectionLog } from "../common/ConnectionLog";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
+import { UntestedTag } from "../common/UntestedTag";
 import { useRemoteReconnect } from "./useRemoteReconnect";
 import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useProjectsStore, disconnectRemote } from "../../stores/projects";
@@ -84,12 +85,49 @@ function RemoteConnectDialogInner({
     autoConnect,
     autoConnectEligible,
     setAutoConnect,
+    setWorkerLabel,
     connectVpnHeadless,
     connectSshHeadless,
     forgetPasswords,
     forgetSshPassword,
     forgetVpnPassword,
   } = useRemoteReconnect(project, host);
+
+  // Editable name: for a worker its `label`, for the primary the project name.
+  // Seeded from the current value and re-synced when the store's copy changes (a
+  // rename commits into the store); committed on blur / Enter so a write fires once,
+  // not per keystroke. The two differ on blank: a worker label may be cleared (it
+  // then falls back to the host), but a project name may not — the backend rejects
+  // it, so we restore the field instead.
+  const currentName = host ? host.label ?? "" : project.name;
+  const [nameDraft, setNameDraft] = useState(currentName);
+  useEffect(() => setNameDraft(currentName), [currentName]);
+  const commitName = () => {
+    const next = nameDraft.trim();
+    if (next === currentName) return;
+    if (host) {
+      setWorkerLabel(next);
+    } else if (next) {
+      void useProjectsStore.getState().renameProject(project.id, next).catch(() => {});
+    } else {
+      setNameDraft(currentName); // project name can't be blank — undo the edit
+    }
+  };
+
+  // The primary's own machine name (`remote.label`) — distinct from the project
+  // name above: a project can be renamed without touching which name identifies
+  // its primary host across the multi-host surfaces (System Monitor's source
+  // picker, the pill's connection lamps). Worker-only equivalent is `host.label`,
+  // already covered by the "Name" field above since a worker has no project name
+  // of its own to conflict with it.
+  const currentMachineLabel = host ? "" : project.remote?.label ?? "";
+  const [machineDraft, setMachineDraft] = useState(currentMachineLabel);
+  useEffect(() => setMachineDraft(currentMachineLabel), [currentMachineLabel]);
+  const commitMachineLabel = () => {
+    const next = machineDraft.trim();
+    if (next === currentMachineLabel) return;
+    setWorkerLabel(next);
+  };
 
   const [sshPassword, setSshPassword] = useState("");
   const [vpnPassword, setVpnPassword] = useState("");
@@ -155,7 +193,7 @@ function RemoteConnectDialogInner({
   const submitVpn = () => void connectVpnHeadless(vpnPassword, vpnKeyPassphrase, vpnRemember);
 
   return createPortal(
-    <div className="modal-backdrop" onMouseDown={close}>
+    <div className="modal-backdrop modal-backdrop-elevated" onMouseDown={close}>
       <div
         className="project-dialog remote-connect-dialog"
         onMouseDown={(e) => e.stopPropagation()}
@@ -188,6 +226,64 @@ function RemoteConnectDialogInner({
             </div>
           )}
         </div>
+
+        {/* Rename here — a worker's name was only settable once (at add time), and the
+            primary's project name was only editable elsewhere. Blank clears a worker
+            label (it falls back to the host); a project name can't be blank. */}
+        <label className="remote-connect-field remote-worker-name">
+          <span className="remote-machine-add-label">
+            Name
+            <UntestedTag />
+          </span>
+          <input
+            type="text"
+            value={nameDraft}
+            placeholder={host ? host.host : "Project name"}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+          />
+          <span className="ssh-optional-hint">
+            {host
+              ? "Shown on the pill and in “Remote machines”. Leave blank to use the host name."
+              : "The project name, shown on its pill and across Eldrun."}
+          </span>
+        </label>
+
+        {/* The primary's own machine name — worker rows already get this via the
+            "Name" field above (a worker has no project name to conflict with it);
+            the primary needs a second field since its "Name" above is the project
+            name. Optional: blank falls back to the bare host everywhere hosts are
+            listed side by side (System Monitor, pill lamps, "Remote machines"). */}
+        {!host && (
+          <label className="remote-connect-field remote-worker-name">
+            <span className="remote-machine-add-label">
+              Machine name
+              <UntestedTag />
+            </span>
+            <input
+              type="text"
+              value={machineDraft}
+              placeholder={project.remote?.host ?? ""}
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(e) => setMachineDraft(e.target.value)}
+              onBlur={commitMachineLabel}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+            />
+            <span className="ssh-optional-hint">
+              Identifies this machine in the System Monitor and connection lamps
+              when the project has more than one host. Leave blank to use the host
+              name.
+            </span>
+          </label>
+        )}
 
         {/* ── OpenVPN (always offered; opt-in, default off) ─────────────────────
             Shown for every remote project, not only ones that stored a config at

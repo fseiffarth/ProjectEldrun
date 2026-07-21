@@ -962,4 +962,44 @@ container) — as opposed to the git **push** axis (#21/#22).*
       hand-start a session on the host → it appears in the `☰` Sessions view →
       click → tab attaches to the live process → per-row Kill drops it.
 
+86. **HPC / SLURM pipeline (guided login → run → watch).** *(Phases A + B implemented —
+    `docs/quirky-knitting-umbrella` plan.)* On a SLURM cluster, computation must go
+    through the scheduler (`sbatch`/`srun`), never the login node. Eldrun already
+    connects to such a host as a remote project; this adds a guided run/watch layer
+    so a newcomer never memorizes a SLURM command.
+    **Phase A — run/watch core (done, untested on a cluster):** backend
+    `commands::slurm` (`slurm_available`/`slurm_submit`/`slurm_queue`/`slurm_job_out`/
+    `slurm_cancel`) mirrors `commands::python`'s local-or-remote dispatch over the
+    pooled ControlMaster — a `.slurm` file (any script with a `#SBATCH` line) opened
+    in the code viewer gets a **SLURM bar** beside the Python Run bar (Submit job /
+    Variables / Interactive session…), shown only when the host has SLURM. Submit →
+    `sbatch --parsable` + `scontrol` (one round trip) → a **log tab** tailing the
+    resolved out-file (`tail -F`, waits out the queue); **Variables** is a `#SBATCH`
+    directive form editing the draft by splice (render-rows/edit-text, like the YAML
+    viewer); **Interactive session…** opens an `srun --pty … bash -l` shell on a
+    compute node. A **Jobs view** in `ProjectFilesView` (alongside Sessions/Orange)
+    polls `squeue`, per-row Watch/Cancel. Frontend `lib/slurm.ts` + `stores/hpcJobs`.
+    - [x] 🤖 Automated test — Rust parsers (`parse_submit_jobid` incl. `;cluster`
+      suffix + numeric-guard, `parse_scontrol_paths`, `parse_squeue` incl.
+      multi-word reason, `split_script_rel` incl. absolute paths, `default_out_file`);
+      frontend `Slurm.test.ts` (`isSlurmScript`, `parseSbatchDirectives`
+      short-flag folding, `spliceDirective` in-place/insert/clear + byte-preservation,
+      `buildInteractiveCommand`/`buildTailCommand`).
+    - [ ] 🖐️ Manual test (cluster) — open a `.slurm` → SLURM bar appears; edit
+      `--time`/`--mem` in Variables → file dirties/saves; Submit → toast + log tab
+      tails output; Jobs view lists it, Cancel removes it, Watch re-opens its log;
+      Interactive session… lands a shell on a compute node.
+    - **Phase B — guided pipeline wizard (implemented, untested).** A 5-step stepper
+      (`HpcPipelineWizard.tsx` + `stores/hpcPipeline`, launched from the project-switcher
+      **+** menu) that composes the existing flows rather than reimplementing them:
+      **Login** (`RemoteProjectSection`/`useRemoteSession`) → **Project**
+      (name + local-mirror location → `create_project`) → **Load data** (skippable; local
+      files → `remote_upload_file`, a new streaming SFTP-upload command) → **Run job**
+      (edit a starter `.slurm`'s `#SBATCH` via the Phase-A splice helpers → write to host →
+      Phase-A `submitSlurmJob`) → **Watch** (log tab + Jobs view). Mounted as
+      `HpcPipelineWizardHost` in `AppShell`.
+    - [ ] 🖐️ Manual test (cluster, Phase B) — **+ → HPC pipeline…** walks
+      login→create→load→run→watch end-to-end; the created project connects; an
+      uploaded file lands on the host; Submit opens a tailing log tab.
+
 ---

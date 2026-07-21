@@ -37,6 +37,34 @@ pub async fn remote_connect(
     let host_id = host_id.unwrap_or_else(|| remote::PRIMARY_HOST.to_string());
     remote::connect_host(pool.inner(), &project_id, &host_id, password.as_deref()).await?;
 
+    // Best-effort "is this host already busy?" check, off the connect critical
+    // path: it runs one extra SSH round trip (riding the same ControlMaster this
+    // connect just opened), so it is spawned rather than awaited — a slow or
+    // failing probe must never delay activation. Fires for ANY host (primary or a
+    // multi-host `compute_hosts` worker) that just connected — the frontend's
+    // warning dialog groups every connected host's report by `host_id` into one
+    // combined view instead of only ever showing the primary's.
+    if let Some(target) = remote::remote_target_for_host(&project_id, &host_id) {
+        let app_for_usage = app.clone();
+        let usage_spec = target.spec.clone();
+        let usage_project_id = project_id.clone();
+        let usage_host_id = host_id.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                crate::services::remote_usage::check_usage(&usage_spec)
+            })
+            .await;
+            if let Ok(Ok(report)) = result {
+                crate::services::remote_usage::emit_usage_report(
+                    &app_for_usage,
+                    &usage_project_id,
+                    &usage_host_id,
+                    &report,
+                );
+            }
+        });
+    }
+
     // A WORKER connect skips the bidirectional primary machinery (git lockstep +
     // byte-sync own the primary only) and instead kicks the push-only code fan-out
     // that brings the worker's tracked tree up to the source HEAD (plan §2/§3.3).
@@ -44,9 +72,31 @@ pub async fn remote_connect(
     // straight into the primary's shared folder — so there is nothing to sync and
     // git must never run against that tree. Just leave the pool open.
     if host_id != remote::PRIMARY_HOST {
-        let shared = remote::compute_hosts_for(&project_id)
-            .into_iter()
-            .any(|h| h.id == host_id && h.shared_fs);
+        let hosts = remote::compute_hosts_for(&project_id);
+        let worker = hosts.iter().find(|h| h.id == host_id);
+        let shared = worker.map(|h| h.shared_fs).unwrap_or(false);
+        // Record whether this worker authenticated with no password at all
+        // (key/agent auth) — the worker twin of the primary's key_auth recording
+        // below. It is the only way the Connect dialog can mark a passwordless
+        // worker auto-connect-eligible (it has nothing in the keychain to check),
+        // so without it a shared-fs HPC worker's Auto-connect toggle never enables.
+        if let Some(w) = worker {
+            let saved = crate::services::remote_credentials::has(
+                &crate::services::remote_credentials::ssh_account(
+                    &w.spec.user,
+                    &w.spec.host,
+                    w.spec.port,
+                ),
+            );
+            let key_auth = password.is_none() && !saved;
+            if let Err(e) = crate::commands::projects::record_worker_key_auth(
+                &project_id,
+                &host_id,
+                key_auth,
+            ) {
+                eprintln!("record worker auth mode for '{project_id}/{host_id}' failed: {e}");
+            }
+        }
         if !shared {
             crate::services::worker_sync::on_worker_connect(
                 app.clone(),
@@ -73,27 +123,6 @@ pub async fn remote_connect(
         if let Err(e) = crate::commands::projects::record_remote_key_auth(&project_id, key_auth) {
             eprintln!("record auth mode for '{project_id}' failed: {e}");
         }
-        // Best-effort "is this host already busy?" check, off the connect critical
-        // path: it runs one extra SSH round trip (riding the same ControlMaster this
-        // connect just opened), so it is spawned rather than awaited — a slow or
-        // failing probe must never delay activation. The frontend's warning dialog
-        // picks the result up as a `remote-usage-report` event.
-        let app_for_usage = app.clone();
-        let usage_spec = spec.clone();
-        let usage_project_id = project_id.clone();
-        tauri::async_runtime::spawn(async move {
-            let result = tauri::async_runtime::spawn_blocking(move || {
-                crate::services::remote_usage::check_usage(&usage_spec)
-            })
-            .await;
-            if let Ok(Ok(report)) = result {
-                crate::services::remote_usage::emit_usage_report(
-                    &app_for_usage,
-                    &usage_project_id,
-                    &report,
-                );
-            }
-        });
     }
     sync_auto::start(
         app.clone(),
@@ -217,6 +246,41 @@ pub async fn worker_pull_outputs(
     crate::services::worker_sync::pull_outputs(pool.inner(), &project_id, &host_id).await
 }
 
+/// Upload a LOCAL file to a remote project's tree over the pooled SFTP, streaming
+/// it in bounded chunks (so a large dataset never buffers whole). `dest_rel` is a
+/// project-relative destination path (its parent dirs are created); the file lands
+/// at `<remote_path>/<dest_rel>`. Used by the HPC pipeline wizard's "Load data"
+/// step (`docs/quirky-knitting-umbrella` plan). Primary host only; the project must
+/// already be connected (a cold pool errors rather than opening a second master).
+///
+/// `dest_rel` is sanitized to stay inside the project root: a leading `/` is
+/// dropped and a `..` component is refused, so an upload can never escape the tree.
+#[tauri::command]
+pub async fn remote_upload_file(
+    pool: State<'_, RemotePoolState>,
+    project_id: String,
+    local_path: String,
+    dest_rel: String,
+) -> Result<String, String> {
+    let target = remote::remote_target_for(&project_id)
+        .ok_or_else(|| "not a remote project".to_string())?;
+    let rel = dest_rel.trim().trim_start_matches('/');
+    if rel.is_empty() {
+        return Err("no destination given".to_string());
+    }
+    if rel.split('/').any(|c| c == ".." || c == ".") {
+        return Err(format!("invalid destination path '{dest_rel}'"));
+    }
+    let root = target.spec.remote_path.trim_end_matches('/');
+    let dest = format!("{root}/{rel}");
+    let sftp = remote::pooled_sftp(pool.inner(), &project_id)
+        .await
+        .ok_or_else(|| "remote project is not connected".to_string())?;
+    crate::services::sftp::upload_file_streaming_on(&sftp, std::path::Path::new(&local_path), &dest)
+        .await?;
+    Ok(dest)
+}
+
 /// List the tmux sessions running on a remote project host (TODO #85), for the
 /// Sessions view. Runs `tmux ls` over the pooled ControlMaster; an absent tmux or
 /// a not-running server yields an **empty** list, never an error (see
@@ -300,13 +364,16 @@ pub async fn remote_tmux_rename(
 /// On-demand resource check for an already-connected remote project (the
 /// warning dialog's "Recheck" action). Unlike the fire-and-forget check
 /// `remote_connect` runs on connect, this one is awaited and its result
-/// returned directly rather than pushed as an event.
+/// returned directly rather than pushed as an event. `host_id` defaults to the
+/// primary; the combined usage dialog rechecks each host it currently shows.
 #[tauri::command]
 pub async fn remote_usage_check(
     project_id: String,
+    host_id: Option<String>,
 ) -> Result<crate::services::remote_usage::RemoteUsageReport, String> {
-    let target = remote::remote_target_for(&project_id)
-        .ok_or_else(|| "not a remote project".to_string())?;
+    let host_id = host_id.unwrap_or_else(|| remote::PRIMARY_HOST.to_string());
+    let target = remote::remote_target_for_host(&project_id, &host_id)
+        .ok_or_else(|| "not a remote project host".to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         crate::services::remote_usage::check_usage(&target.spec)
     })

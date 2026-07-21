@@ -21,6 +21,7 @@ import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { RemoteMachinesDialogHost } from "../projects/RemoteMachinesWindow";
+import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { RemoteUsageWarningDialog } from "../common/RemoteUsageWarningDialog";
 import { QuickOpen } from "../files/QuickOpen";
@@ -721,6 +722,9 @@ export function AppShell() {
       {/* Multi-host remote: the "Remote machines" manager, opened from a pill's
           Runtime menu or a right-click on its remote lamp. */}
       <RemoteMachinesDialogHost />
+      {/* The guided HPC/SLURM pipeline wizard (login → create → load → run → watch),
+          launched from the project-switcher + menu (docs/quirky-knitting-umbrella). */}
+      <HpcPipelineWizardHost />
       {/* Same reason as the alarm below: lockstep/sync can delete a file from the local
           mirror during a background pass, and the user must hear about it wherever they
           are — including when the file panel it happened in is closed (#28q). */}

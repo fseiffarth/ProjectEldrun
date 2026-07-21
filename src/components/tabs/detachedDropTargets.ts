@@ -191,6 +191,7 @@ export function reseedDetached(scope: string, groupId: string, landedKey?: strin
     groupId,
     useTabsStore.getState().tabsByScope[scope] ?? [],
     entry.subtree,
+    entry.zoom,
   );
   void emit(detachedSeedEvent(entry.label), landedKey ? { ...seed, landedKey } : seed);
 }

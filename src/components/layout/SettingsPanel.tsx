@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState, type ChangeEventHandler, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { useSettingsStore, clampZoom, MIN_UI_ZOOM, MAX_UI_ZOOM } from "../../stores/settings";
+import {
+  useSettingsStore,
+  clampZoom,
+  MIN_UI_ZOOM,
+  MAX_UI_ZOOM,
+  ZOOM_STEPS,
+} from "../../stores/settings";
+import { UntestedTag } from "../common/UntestedTag";
 import { experimentalEnabled } from "../../lib/experimental";
 import { usePowerStore, useEnergySaver } from "../../stores/power";
 import { useProjectsStore } from "../../stores/projects";
@@ -726,6 +733,7 @@ export function SettingsDialog({
   return (
     <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
       <div className="settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
+       <div className="dialog-scroll">
         {panel === "main" && (
           <>
             <div className="settings-title-row">
@@ -1001,11 +1009,14 @@ export function SettingsDialog({
 
             <div className="settings-section-title">Layout</div>
             <p className="settings-help">
-              Global zoom scales the entire Eldrun interface — handy on 4K /
-              high-DPI monitors. 100% is the default.
+              Window zoom scales the entire Eldrun interface — handy on 4K /
+              high-DPI monitors. 100% is the default. Zoom is <strong>per
+              window</strong>: this sets the main window, and each popped-out
+              subwindow keeps its own. Ctrl&nbsp;+ / Ctrl&nbsp;− zoom the focused
+              window and Ctrl&nbsp;0 resets it. <UntestedTag />
             </p>
             <div className="settings-row">
-              <label>Global zoom</label>
+              <label>Window zoom</label>
               <Dropdown
                 value={String(clampZoom(settings?.ui_zoom))}
                 onChange={(v) => {
@@ -1014,12 +1025,12 @@ export function SettingsDialog({
                     ui_zoom: z === 1 ? undefined : clampZoom(z),
                   });
                 }}
-                options={[0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
-                  .filter((z) => z >= MIN_UI_ZOOM && z <= MAX_UI_ZOOM)
-                  .map((z) => ({
-                    value: String(z),
-                    label: `${Math.round(z * 100)}%${z === 1 ? " (default)" : ""}`,
-                  }))}
+                options={ZOOM_STEPS.filter(
+                  (z) => z >= MIN_UI_ZOOM && z <= MAX_UI_ZOOM,
+                ).map((z) => ({
+                  value: String(z),
+                  label: `${Math.round(z * 100)}%${z === 1 ? " (default)" : ""}`,
+                }))}
               />
             </div>
             <p className="settings-help">
@@ -1176,6 +1187,7 @@ export function SettingsDialog({
         {panel === "archive" && <ArchivedProjectsPanel onBack={() => setPanel("main")} />}
         {panel === "scaffoldRepair" && <ScaffoldRepairPanel onBack={() => setPanel("main")} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} />}
+       </div>
       </div>
     </div>
   );

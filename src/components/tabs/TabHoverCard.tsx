@@ -5,6 +5,9 @@ import {
   isLocatableKind,
   isPtyTabKind,
   isResumableAgentTab,
+  localityHostLabel,
+  remoteHostIdOf,
+  type LocalityHost,
   type TabEntry,
   type TabKind,
 } from "../../stores/tabs";
@@ -104,12 +107,19 @@ export function TabHoverCard({
   /** Whether the owning project is a remote (SSH) one — gates the locality
    *  line. The detached window is inert to the projects store and omits it. */
   isRemote = false,
+  /** Primary host name + worker machines, so the locality line can name the
+   *  concrete machine ("Primary (gpu-1)", "gpu-2") not just "on host". Omitted by
+   *  the detached window (inert to the projects store) → falls back to "on host". */
+  primaryHost,
+  computeHosts,
   anchorX,
   anchorY,
 }: {
   tab: TabEntry;
   scope: string;
   isRemote?: boolean;
+  primaryHost?: string;
+  computeHosts?: LocalityHost[];
   anchorX: number;
   anchorY: number;
 }) {
@@ -148,9 +158,15 @@ export function TabHoverCard({
     kindBits.push(tab.agentMode === "plan" ? "Plan mode" : "Auto mode");
   }
   if (isRemote && isLocatableKind(tab.kind)) {
-    kindBits.push(
-      effectiveTabLocation(tab) === "remote" ? "on host (SSH)" : "local mirror",
-    );
+    const loc = effectiveTabLocation(tab);
+    if (remoteHostIdOf(loc) === null) {
+      kindBits.push("local mirror");
+    } else {
+      // Name the concrete machine when known ("Primary (gpu-1)" / "gpu-2"); the
+      // detached window has no host list, so it degrades to a generic label.
+      const named = primaryHost || computeHosts ? localityHostLabel(loc, { primaryHost, computeHosts }) : null;
+      kindBits.push(named ? `on ${named}` : "on host (SSH)");
+    }
   }
   if (tab.kind === "embed" && fileSource === "remote") {
     kindBits.push("remote-native (SFTP)");

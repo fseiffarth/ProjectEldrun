@@ -120,6 +120,16 @@ pub struct RemoteSpec {
     /// `projects.json` entry's `extra["remote"]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub persist_sessions: Option<bool>,
+    /// Display name for this machine, e.g. "gpu-2"; falls back to `host`. Shown
+    /// wherever a project's hosts are listed side by side (the System Monitor's
+    /// source picker, the pill's connection lamps, `hostsForProject`) so a host is
+    /// identifiable by more than its raw address. Distinct from the *project*
+    /// name: this labels the machine `host` reaches, not the project itself — the
+    /// primary (`Project.remote.label`) and every `ComputeHost` (flattened into
+    /// its `spec`, so the JSON key stays the same one worker labels already used)
+    /// share this one field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -140,9 +150,6 @@ fn default_true() -> bool {
 pub struct ComputeHost {
     /// Stable id, e.g. "h1"; the primary is the implicit "primary".
     pub id: String,
-    /// Display name, e.g. "gpu-2"; falls back to `spec.host`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
     /// Keep this worker's tracked tree synced to the source HEAD (default true).
     /// Ignored when [`shared_fs`](Self::shared_fs) is set (there is no copy to sync).
     #[serde(default = "default_true")]
@@ -168,9 +175,9 @@ pub struct ComputeHost {
 }
 
 impl ComputeHost {
-    /// The display label for this worker (its `label`, or the bare host).
+    /// The display label for this worker (its `spec.label`, or the bare host).
     pub fn display_label(&self) -> &str {
-        self.label.as_deref().unwrap_or(&self.spec.host)
+        self.spec.label.as_deref().unwrap_or(&self.spec.host)
     }
 }
 

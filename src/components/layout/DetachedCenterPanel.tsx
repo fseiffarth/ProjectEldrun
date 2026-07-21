@@ -61,7 +61,16 @@ import {
   type LayoutNode,
   type SplitNode,
   type TabEntry,
+  type TabLocation,
 } from "../../stores/tabs";
+import type { DetachedRemoteInfo } from "../../stores/detached";
+import {
+  TabSourceBadge,
+  TabLocalityBadge,
+  LocalityMenu,
+  tabLocation,
+  type LocalityMenuState,
+} from "../tabs/TabLocalityBadges";
 
 /** Pixel coordinates of a group body, relative to the detached center panel. */
 interface Rect {
@@ -217,8 +226,15 @@ interface Props {
   tree: LayoutNode;
   /** All of the popout's tab payloads (across every group in the tree). */
   tabs: TabEntry[];
+  /** The owning project's remoteness (machines + primary host name), streamed in
+   *  the seed. Drives the per-tab locality badge/menu; undefined = local project
+   *  (no locality axis, no badge — parity with a local main-window strip). */
+  remoteInfo?: DetachedRemoteInfo;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
+  /** Multi-host: change where a locatable tab runs (streamed to the main window,
+   *  which owns the PTY and respawns the pane on the chosen host). */
+  onSetLocation: (key: string, location: TabLocation) => void;
   /** Reorder a bar's tabs (a tab dragged + dropped back onto its own bar). The
    *  main store resolves WHICH group from the key set. */
   onReorder: (tabKeys: string[]) => void;
@@ -256,8 +272,10 @@ export function DetachedCenterPanel({
   popoutId,
   tree,
   tabs,
+  remoteInfo,
   onActivate,
   onClose,
+  onSetLocation,
   onReorder,
   onSplit,
   onResize,
@@ -271,6 +289,12 @@ export function DetachedCenterPanel({
   // Tab hover card anchor (the hovered tab's bottom-centre), mirroring the main
   // window's TabBar — the popout has its own tab strip, so it renders its own.
   const [hoverTab, setHoverTab] = useState<{ key: string; x: number; y: number } | null>(null);
+  // Multi-host locality menu (shared with TabBar). Machine names + the primary
+  // host come from the streamed `remoteInfo`; undefined ⇒ local project, no badge.
+  const [localityMenu, setLocalityMenu] = useState<LocalityMenuState | null>(null);
+  const isRemote = !!remoteInfo;
+  const primaryHost = remoteInfo?.primaryHost;
+  const computeHosts = remoteInfo?.computeHosts;
   // One bar element per group, so a per-tab drag can hit-test the bar it's over.
   const barRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   // One body element per group, for resolving an edge-split drop target.
@@ -1270,6 +1294,26 @@ export function DetachedCenterPanel({
                   }
                 >
                   <span className="tab-label">{tab.label}</span>
+                  {/* Local/remote badges — parity with the main-window TabBar,
+                      via the shared TabLocalityBadges. The source badge reads THIS
+                      window's fileSources store; the locality badge/menu use the
+                      streamed host list and route changes through onSetLocation. */}
+                  <TabSourceBadge tabKey={tab.key} />
+                  {isRemote && (
+                    <TabLocalityBadge
+                      tab={tab}
+                      primaryHost={primaryHost}
+                      computeHosts={computeHosts}
+                      onOpen={(r, startOnMachines) =>
+                        setLocalityMenu({
+                          key: tab.key,
+                          x: r.left,
+                          y: r.bottom + 2,
+                          view: startOnMachines ? "machines" : "root",
+                        })
+                      }
+                    />
+                  )}
                   <button
                     className="tab-close"
                     onClick={(e) => {
@@ -1541,11 +1585,24 @@ export function DetachedCenterPanel({
       {agentDialogOpen && (
         <CustomAgentDialog onClose={() => setAgentDialogOpen(false)} />
       )}
+      {/* Multi-host locality menu — parity with the main-window TabBar, routed
+          through onSetLocation (the main window owns the PTY + respawns it). */}
+      {localityMenu && (
+        <LocalityMenu
+          menu={localityMenu}
+          current={tabLocation(byKey.get(localityMenu.key))}
+          primaryHost={primaryHost}
+          computeHosts={computeHosts}
+          onClose={() => setLocalityMenu(null)}
+          onChangeView={(view) => setLocalityMenu((m) => (m ? { ...m, view } : m))}
+          onChoose={(key, loc) => onSetLocation(key, loc)}
+        />
+      )}
       {/* Styled tab hover card — parity with the main window's TabBar.
           Suppressed mid-drag (local or streamed-in: both set the drag store)
           and while the "+" menu is open so it never overlaps them. The card
-          reads THIS window's stores, so it shows what this window knows; the
-          locality line needs the projects store (absent here) and is omitted. */}
+          reads THIS window's stores; the machine names come from the streamed
+          `remoteInfo` (the projects store is absent here). */}
       {hoverTab && dragKey === null && !addMenu && (() => {
         const tab = byKey.get(hoverTab.key);
         if (!tab) return null;
@@ -1553,6 +1610,9 @@ export function DetachedCenterPanel({
           <TabHoverCard
             tab={tab}
             scope={scope}
+            isRemote={isRemote}
+            primaryHost={primaryHost}
+            computeHosts={computeHosts}
             anchorX={hoverTab.x}
             anchorY={hoverTab.y}
           />

@@ -70,8 +70,10 @@ pub(crate) fn control_dir() -> PathBuf {
 
 /// Single-quote `s` for a POSIX shell, escaping embedded single quotes as
 /// `'\''`. The result parses back to exactly `s` regardless of spaces, `$`,
-/// quotes, or other metacharacters.
-fn shell_quote(s: &str) -> String {
+/// quotes, or other metacharacters. `pub(crate)` so command modules that build
+/// their own host scripts (e.g. `commands::slurm`) share this one implementation
+/// rather than reinventing shell quoting.
+pub(crate) fn shell_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for ch in s.chars() {
@@ -693,6 +695,7 @@ mod tests {
             auto_connect: None,
             key_auth: None,
             persist_sessions: None,
+            label: None,
             extra: HashMap::new(),
         }
     }

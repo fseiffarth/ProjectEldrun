@@ -59,6 +59,42 @@ export function isRemoteLocation(loc: TabLocation | undefined): boolean {
   return remoteHostIdOf(loc) !== null;
 }
 
+/** The minimal shape of a worker machine (`ComputeHost`) the locality UI reads —
+ *  structural so `tabs.ts` need not import the full project types. */
+export interface LocalityHost {
+  id: string;
+  label?: string;
+  host: string;
+  sync_code?: boolean;
+  shared_fs?: boolean;
+}
+
+/** Human-readable name of the machine a tab location runs on — the ONE place the
+ *  tab badge, its locality menu, and the hover card agree on wording
+ *  (`docs/multi_host_remote_plan.md`). `"local"` → the mirror; `"remote"` → the
+ *  primary host (named when known); `host:<id>` → the worker's label/host/id. */
+export function localityHostLabel(
+  loc: TabLocation | undefined,
+  opts: { primaryHost?: string; computeHosts?: LocalityHost[] } = {},
+): string {
+  const hostId = remoteHostIdOf(loc);
+  if (hostId === null) return "Local (mirror)";
+  if (hostId === "primary") {
+    return opts.primaryHost ? `Primary (${opts.primaryHost})` : "Primary";
+  }
+  const w = opts.computeHosts?.find((h) => h.id === hostId);
+  return w?.label || w?.host || hostId;
+}
+
+/** Whether a worker machine can actually RUN a shell/agent tab: it must hold the
+ *  code — either it shares the primary's filesystem (`shared_fs`) or it keeps a
+ *  synced copy (`sync_code`, default on). A worker with neither has no tree to run
+ *  in; sync always stays with the primary, so such a worker is offered disabled.
+ *  The primary (`"primary"`/`undefined`) and the local mirror are always runnable. */
+export function workerRunnable(h: LocalityHost): boolean {
+  return !!h.shared_fs || h.sync_code !== false;
+}
+
 export const FILES_TAB_CMD = "__eldrun_files__";
 
 /**
@@ -151,6 +187,16 @@ export interface ViewerState {
   // unrelated pixel heights — one scroll offset can't serve both — so switching
   // Tree↔Source restores each side where it was.
   yamlScrollTop?: number;
+  // Collapsed cards of the YAML card grid (#yaml-grid), as node ids — the card
+  // view's twin of `yamlCollapsed`, kept apart so folding a card and folding a tree
+  // row don't clobber each other. Ids are re-derived on every parse, so a stale one
+  // is inert.
+  gridCollapsed?: string[];
+  // The focused ("main") card of the YAML card grid (#yaml-grid), as its node id,
+  // for the drill navigation: the grid shows that card's level (its siblings, it
+  // highlighted) and its children below. Absent/unmatched = the top overview.
+  // Re-derived on every parse, so a stale id is inert (falls back to overview).
+  gridFocus?: string;
   // The table viewer's column separator (#40), as the literal character. Absent
   // means "auto" — sniffed from the content on every open. It is persisted only
   // when the reader *overrides* the guess, because that is the case the sniffer
@@ -346,6 +392,10 @@ export interface DetachedGroup {
   // Last-known OS geometry of the popout, streamed back by the window. Persisted
   // (via the saved tree) so the popout reopens at the same place/size on restart.
   bounds?: WindowBounds;
+  // The popout's OWN UI zoom (per-window, not the global/main-window `ui_zoom`),
+  // streamed back over DETACHED_ZOOM. Persisted (via the saved tree) and shipped
+  // in the popout's seed so it reopens at the zoom it was left at. Undefined = 100%.
+  zoom?: number;
 }
 
 /**
@@ -375,6 +425,9 @@ export type DropEdge = "left" | "right" | "top" | "bottom" | "center";
 export type DetachedEditPayload =
   | { kind: "activate"; key: string }
   | { kind: "rename"; key: string; label: string }
+  // Multi-host: change where a locatable tab runs; applied to the payload here so
+  // the main window's flat pane layer (which owns the popout's PTY) respawns it.
+  | { kind: "setLocation"; key: string; location: TabLocation }
   | { kind: "close"; key: string }
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-pane popouts: split `key` out into a new pane at `edge` of
@@ -438,6 +491,8 @@ export type SavedLayoutTree =
       // floating popout (see withDetachedDocked / deserializeTree / detachGroup).
       detached?: boolean;
       bounds?: WindowBounds;
+      // A detached popout's own per-window zoom (see DetachedGroup.zoom).
+      zoom?: number;
       // When true, this split subtree was HIDDEN (parked out of the tiled layout).
       // Persisted as a docked node so its tabs survive, but tagged so restore
       // routes it back into `hiddenGroupsByScope` instead of the live tree.
@@ -454,6 +509,8 @@ export type SavedLayoutTree =
       // at `bounds` instead of docking it. See withDetachedDocked / loadFromLayout.
       detached?: boolean;
       bounds?: WindowBounds;
+      // A detached popout's own per-window zoom (see DetachedGroup.zoom).
+      zoom?: number;
       // When true, this group was HIDDEN (see the split variant's note). Restore
       // moves it into `hiddenGroupsByScope` rather than docking it live.
       hidden?: boolean;
@@ -639,7 +696,14 @@ interface TabsStore {
   // group's label, or null if refused / not found.
   detachGroup: (
     groupId: string,
-    opts?: { skipBackend?: boolean; bounds?: WindowBounds; allowLastGroup?: boolean },
+    opts?: {
+      skipBackend?: boolean;
+      bounds?: WindowBounds;
+      allowLastGroup?: boolean;
+      // Restart respawn only: the popout's persisted per-window zoom, recorded on
+      // the fresh detached entry so its seed restores it (see RespawnTarget.zoom).
+      zoom?: number;
+    },
   ) => string | null;
   // Drag-a-tab-to-another-monitor: pop a SINGLE existing tab out of the in-window
   // layout into its own fresh detached OS window at `bounds` (screen px). Unlike
@@ -835,6 +899,9 @@ interface TabsStore {
   // #42: record a popout's latest OS geometry (streamed back from the window) so
   // it persists and the popout reopens where the user left it after a restart.
   setDetachedBounds: (scope: string, groupId: string, bounds: WindowBounds) => void;
+  // Record a popout's latest per-window zoom (streamed back over DETACHED_ZOOM)
+  // so it persists and the popout reopens at that zoom after a restart.
+  setDetachedZoom: (scope: string, groupId: string, zoom: number) => void;
   // #42: return and clear the scope's pending respawn targets (groups that were
   // detached at save time). Caller re-opens each via detachGroup once its pane
   // has mounted. Returns [] when there is nothing to respawn.
@@ -1447,6 +1514,9 @@ export function serializeTree(node: LayoutNode | null): SavedLayoutTree | null {
 export interface RespawnTarget {
   id: string; // the FRESH group id minted during deserialize
   bounds?: WindowBounds;
+  // The popout's persisted per-window zoom (see DetachedGroup.zoom), carried so
+  // the respawn re-detaches it at the zoom it was left at. Undefined = 100%.
+  zoom?: number;
 }
 
 /**
@@ -1479,7 +1549,7 @@ function deserializeTree(
       null;
     const id = nextGroupId();
     if (saved.detached && detachedOut) {
-      detachedOut.push({ id, bounds: saved.bounds });
+      detachedOut.push({ id, bounds: saved.bounds, zoom: saved.zoom });
     }
     if (saved.hidden && hiddenOut) {
       hiddenOut.push(id);
@@ -1502,7 +1572,7 @@ function deserializeTree(
     // Collapsed to a single child. If this split was a detached (multi-pane)
     // popout, the survivor inherits the respawn so the popout still re-opens.
     if (saved.detached && detachedOut) {
-      detachedOut.push({ id: children[0].id, bounds: saved.bounds });
+      detachedOut.push({ id: children[0].id, bounds: saved.bounds, zoom: saved.zoom });
     }
     // Likewise inherit a hidden tag so the survivor is parked, not docked live.
     if (saved.hidden && hiddenOut) {
@@ -1523,7 +1593,7 @@ function deserializeTree(
   // the whole subtree (its children aren't individually tagged) so the respawn
   // path re-detaches the entire split as a single floating window.
   if (saved.detached && detachedOut) {
-    detachedOut.push({ id, bounds: saved.bounds });
+    detachedOut.push({ id, bounds: saved.bounds, zoom: saved.zoom });
   }
   // A hidden split is parked whole by its root id (same one-target logic).
   if (saved.hidden && hiddenOut) {
@@ -1918,7 +1988,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         cur.fontSize === merged.fontSize &&
         cur.autocomplete === merged.autocomplete &&
         cur.autocompleteMode === merged.autocompleteMode &&
-        cur.grammarCheck === merged.grammarCheck
+        cur.grammarCheck === merged.grammarCheck &&
+        // New array ref on every change, so this term is false exactly when a card
+        // was folded/unfolded — which is what lets a collapse-only patch through the
+        // guard (it touches none of the scalar fields above).
+        cur.gridCollapsed === merged.gridCollapsed
       ) {
         return {};
       }
@@ -2206,7 +2280,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         ...base,
         detachedGroupsByScope: {
           ...s.detachedGroupsByScope,
-          [scope]: [...existing, { id: groupId, subtree, label, bounds: opts?.bounds }],
+          [scope]: [
+            ...existing,
+            { id: groupId, subtree, label, bounds: opts?.bounds, zoom: opts?.zoom },
+          ],
         },
       };
     });
@@ -2860,6 +2937,19 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           }
           break;
         }
+        case "setLocation": {
+          // Locality lives on the payload; the popout's pane is owned by THIS
+          // (main) window's flat pane layer, so updating it here respawns that
+          // pane on the chosen host (same path as the main-window locality badge).
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && t.location !== edit.location
+                ? { ...t, location: edit.location }
+                : t,
+            );
+          }
+          break;
+        }
         case "close": {
           nextSub = removeKeyFromTree(sub, edit.key);
           // Drop the closed tab's payload (its pane in the detached window
@@ -3114,6 +3204,21 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         }
         changed = true;
         return { ...d, bounds };
+      });
+      if (!changed) return {};
+      return { detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: next } };
+    });
+  },
+
+  setDetachedZoom: (scope, groupId, zoom) => {
+    set((s) => {
+      const entries = s.detachedGroupsByScope[scope];
+      if (!entries) return {};
+      let changed = false;
+      const next = entries.map((d) => {
+        if (d.id !== groupId || d.zoom === zoom) return d;
+        changed = true;
+        return { ...d, zoom };
       });
       if (!changed) return {};
       return { detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: next } };
@@ -3759,7 +3864,7 @@ export function withDetachedDocked(
     // popout) so restore respawns the WHOLE subtree as one floating window rather
     // than docking it into the main panel. `detachGroup` re-detaches either shape
     // by the tagged node's id (see deserializeTree → pendingRespawn).
-    docked.push({ ...t, detached: true, bounds: d.bounds });
+    docked.push({ ...t, detached: true, bounds: d.bounds, zoom: d.zoom });
   }
   if (docked.length === 0) return inWindow;
   const all = inWindow ? [inWindow, ...docked] : docked;

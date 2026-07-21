@@ -18,16 +18,21 @@ use crate::sysstat::{self, SystemSnapshot};
 /// read over the shared ControlMaster (`REMOTE_SNAPSHOT_SCRIPT`) and assembled by
 /// the same pure parsers — inside `spawn_blocking` so the SSH round-trip never
 /// runs on the UI thread. Any other value (a local project, `None`, or a project
-/// with no remote) samples this machine. The pane passes the id only while its
-/// source toggle is on "remote"; a disconnected host is gated out on the frontend,
-/// so a dead pool is never dialed here.
+/// with no remote) samples this machine. `host_id` picks which of the project's
+/// hosts to sample (primary or a `compute_hosts` worker); defaults to the primary
+/// (`remote::PRIMARY_HOST`), mirroring every other multi-host command. The pane
+/// passes `project_id` only while its source toggle points at a host; a
+/// disconnected host is gated out on the frontend, so a dead pool is never dialed
+/// here.
 #[tauri::command]
 pub async fn system_monitor_snapshot(
     project_id: Option<String>,
+    host_id: Option<String>,
 ) -> Result<SystemSnapshot, String> {
+    let host_id = host_id.unwrap_or_else(|| crate::services::remote::PRIMARY_HOST.to_string());
     if let Some(target) = project_id
         .as_deref()
-        .and_then(crate::services::remote::remote_target_for)
+        .and_then(|pid| crate::services::remote::remote_target_for_host(pid, &host_id))
     {
         let spec = target.spec.clone();
         return tokio::task::spawn_blocking(move || {

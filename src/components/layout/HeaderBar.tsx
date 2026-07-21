@@ -11,6 +11,7 @@ import { Clock } from "../header/Clock";
 import { useEnergySaver, saverInterval } from "../../stores/power";
 import { ConnTypeIcon } from "../header/ConnTypeIcon";
 import { VpnIndicator } from "../header/VpnIndicator";
+import { MachinesIndicator } from "../header/MachinesIndicator";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
@@ -138,6 +139,7 @@ export function HeaderBar() {
       </div>
       <div className="header-right no-drag">
         <VpnIndicator />
+        <MachinesIndicator />
         <AppResourceDisplay />
         <AppTimerDisplay />
         <Clock />

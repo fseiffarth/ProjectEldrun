@@ -910,6 +910,26 @@ pub fn set_project_persist_sessions(project_id: String, enabled: bool) -> Result
     Ok(enabled)
 }
 
+/// Set (or clear) the display name for a **remote** project's primary machine —
+/// the counterpart of `patch_compute_host`'s `label` for a worker. Distinct from
+/// the project name: this labels the host `Project.remote.host` reaches, shown
+/// wherever a project's hosts are listed side by side (System Monitor's source
+/// picker, the pill's connection lamps). A blank/whitespace-only string clears it,
+/// falling back to the bare host. Returns the resulting label (`None` when cleared).
+#[tauri::command]
+pub fn set_project_remote_label(
+    project_id: String,
+    label: Option<String>,
+) -> Result<Option<String>, String> {
+    let normalized = label
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    patch_remote_spec(&project_id, |remote| remote.label = normalized.clone())?;
+    Ok(normalized)
+}
+
 /// Record how a remote project's host authenticated on its last successful connect
 /// (`key_auth` = no password was used at all — key/agent auth). Called by
 /// `remote_connect`; this is the only way the UI can know a passwordless host is
@@ -922,6 +942,33 @@ pub fn record_remote_key_auth(project_id: &str, key_auth: bool) -> Result<(), St
         return Ok(());
     }
     patch_remote_spec(project_id, |remote| remote.key_auth = Some(key_auth))
+}
+
+/// The worker twin of `record_remote_key_auth`: record how an extra "worker" host
+/// authenticated on its last successful connect (`key_auth` = no password at all —
+/// key/agent auth). Called by `remote_connect` on a worker connect. Without it a
+/// passwordless worker could never be marked auto-connect-eligible — it has nothing
+/// in the keychain to check — so the Connect dialog's Auto-connect toggle would
+/// stay permanently disabled for it. A no-op when unchanged, so an ordinary connect
+/// costs no write.
+pub fn record_worker_key_auth(
+    project_id: &str,
+    host_id: &str,
+    key_auth: bool,
+) -> Result<(), String> {
+    let current = crate::services::remote::compute_hosts_for(project_id)
+        .into_iter()
+        .find(|h| h.id == host_id)
+        .and_then(|h| h.spec.key_auth);
+    if current == Some(key_auth) {
+        return Ok(());
+    }
+    patch_compute_hosts(project_id, |hosts| {
+        if let Some(h) = hosts.iter_mut().find(|h| h.id == host_id) {
+            h.spec.key_auth = Some(key_auth);
+        }
+    })?;
+    Ok(())
 }
 
 /// Apply `patch` to a **remote** project's extra worker hosts (`compute_hosts`,
@@ -1032,7 +1079,7 @@ pub fn patch_compute_host(
             }
             if let Some(v) = &label {
                 let t = v.trim();
-                h.label = if t.is_empty() { None } else { Some(t.to_string()) };
+                h.spec.label = if t.is_empty() { None } else { Some(t.to_string()) };
             }
         }
     })
