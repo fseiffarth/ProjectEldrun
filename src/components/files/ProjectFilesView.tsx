@@ -11,7 +11,6 @@ import {
   useRemoteBlocked,
 } from "./ProjectFilesPane";
 import { RunHostPicker } from "../tabs/TabLocalityBadges";
-import { runHostPickerApplies } from "../../stores/runHostPref";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { useImportDrop } from "./importDrop";
 import { logoutRemote } from "../../stores/projects";
@@ -789,10 +788,11 @@ export function ProjectFilesView({
           <FileSourceSwitch source={source} onChange={setSource} />
           {/* Run-host picker — which machine scripts/shells launched from this
               project run on (primary or a worker), distinct from the source
-              switch's read side. Shown only while the switch is on Remote (no
-              machine axis on Local), and hidden once a worker keeps its own synced
-              code copy — then the run target is the tab's picked locality. */}
-          {source === "remote" && runHostPickerApplies(project.compute_hosts) && (
+              switch's read side. Shown whenever the switch is on Remote (no machine
+              axis on Local), including a multi-machine project with a synced-code
+              worker: a Python Run opens a fresh tab, so this project-wide picker is
+              the only control that can send that run to a worker. */}
+          {source === "remote" && (
             <RunHostPicker
               projectId={projectId}
               primaryHost={project.remote.label || project.remote.host}
@@ -1370,7 +1370,7 @@ export function ProjectFilesView({
       {compact && view === "files" && !activeBox && project?.remote && projectId && (
         <div className="right-panel-source right-panel-source--compact">
           <FileSourceSwitch source={source} onChange={setSource} />
-          {source === "remote" && runHostPickerApplies(project.compute_hosts) && (
+          {source === "remote" && (
             <RunHostPicker
               projectId={projectId}
               primaryHost={project.remote.label || project.remote.host}

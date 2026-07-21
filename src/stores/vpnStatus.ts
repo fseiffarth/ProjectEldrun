@@ -108,6 +108,7 @@ export const useVpnStatusStore = create<VpnStatusStore>((set) => ({
   refresh: async () => {
     const active = await invoke<string[]>("openvpn_active").catch(() => null);
     if (!active) return;
+    let dropped: string[] = [];
     set((s) => {
       const byConfig: Record<string, ConnState> = {};
       // What the backend says is up...
@@ -117,10 +118,51 @@ export const useVpnStatusStore = create<VpnStatusStore>((set) => ({
       for (const [config, state] of Object.entries(s.byConfig)) {
         if (state === "connecting" && !(config in byConfig)) byConfig[config] = state;
       }
+      // A tunnel we believed was UP that the backend no longer reports has
+      // **died on its own** — it was not disconnected from the UI, because every
+      // deliberate teardown (`disconnectVpnTunnel`, `releaseAll`, `setState off`)
+      // forgets the config here first, so it is already absent by the time the
+      // next reconcile runs. Only an unplanned death reaches this branch.
+      dropped = Object.keys(s.byConfig).filter(
+        (config) => s.byConfig[config] === "connected" && !(config in byConfig),
+      );
       return { byConfig };
     });
+    for (const config of dropped) {
+      onTunnelDropped(config);
+      // Drop the claims too: the tunnel they were holding no longer exists, so
+      // leaving them behind would make a later reconnect look already-held.
+      useVpnStatusStore.getState().releaseAll(config);
+    }
   },
 }));
+
+/**
+ * React to a tunnel that died without being asked to (see `refresh`).
+ *
+ * The point is not the lamp — it is that **every SSH/SFTP call belonging to a
+ * project that was riding this tunnel is now aimed at a peer that will never
+ * answer**. Those calls are synchronous Tauri commands over a pooled
+ * ControlMaster: nothing about a black-holed socket produces an error, so each
+ * one blocks until ssh's own keepalive gives up (~45 s), and the file tree
+ * issues one per visible folder. That is the freeze this exists to prevent —
+ * clearing the project's status flips `useRemoteBlocked`, so the probes are
+ * never dispatched in the first place rather than each paying the timeout.
+ *
+ * Scoped to the tunnel's **holders**: a project that never claimed this config
+ * reaches its host by some other route and is none of this tunnel's business.
+ *
+ * The backend's pooled session is deliberately NOT torn down here. Reaping it is
+ * already the pooled reader's job (`services::remote::pooled_sftp_host` evicts a
+ * child whose ssh keepalive killed it), and a teardown issued from this path
+ * would itself be a call over the dead connection — the exact thing being
+ * avoided.
+ */
+function onTunnelDropped(config: string): void {
+  const holders = useVpnStatusStore.getState().holders[config] ?? [];
+  const remote = useRemoteStatusStore.getState();
+  for (const projectId of holders) remote.clear(projectId);
+}
 
 /** True when at least one tunnel is up or coming up — i.e. the machine's routing
  *  is (or is about to be) Eldrun's doing. */

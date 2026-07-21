@@ -1017,6 +1017,56 @@ fn patch_compute_hosts(
     Ok(hosts)
 }
 
+/// Persist which machine shells launched from this project run on — the choice
+/// made in the `RunHostPicker`. Mirrors `set_project_python`: it writes BOTH the
+/// `projects.json` entry's `extra["run_host"]` (what the frontend seeds its live
+/// preference store from on load) and the `project.json` `run_host` field (keeps
+/// it with the project). `location` is a `TabLocation` string (`"local"` /
+/// `"remote"` / `"host:<id>"`); `None` or empty clears it (back to the primary
+/// default). Returns the stored value.
+#[tauri::command]
+pub fn set_project_run_host(
+    project_id: String,
+    location: Option<String>,
+) -> Result<Option<String>, String> {
+    let value = location
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let list_path = storage::state_dir().join("projects.json");
+    let mut list: ProjectsList = if list_path.exists() {
+        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let entry = list
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+
+    match &value {
+        Some(v) => {
+            entry
+                .extra
+                .insert("run_host".into(), serde_json::Value::String(v.clone()));
+        }
+        None => {
+            entry.extra.remove("run_host");
+        }
+    }
+    let local_file = entry.local_file.clone();
+    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+            project.run_host = value.clone();
+            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(value)
+}
+
 /// Add an extra "worker" host to a remote project (the pill's "Add machine").
 /// Mints a stable `id` when the incoming spec has none, then appends it. Returns
 /// the full updated host list. The primary (`Project.remote`) is untouched.

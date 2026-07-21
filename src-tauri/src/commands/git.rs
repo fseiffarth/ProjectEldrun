@@ -396,6 +396,20 @@ fn git_file_statuses_blocking(
         }
     }
 
+    // When `rel_path` is itself wholly ignored, EVERY entry under it is ignored —
+    // but git's porcelain only ever emits *file* lines, so a child that is an
+    // empty directory (or a tree of only empty directories, e.g. freshly scaffolded
+    // experiment-output folders) produces no line at all and would silently drop
+    // its "ignored" marker, landing in the regular section. git also can't be
+    // coaxed into listing such dirs: it collapses a wholly-ignored subtree to its
+    // topmost ignored ancestor and never enumerates empty descendants. Emit a
+    // sentinel under the reserved key "." (never a real listing entry) so the
+    // frontend can default every child of this directory to ignored, letting any
+    // explicit per-child status above (a force-added tracked file) still win.
+    if wholly_ignored {
+        map.insert(".".to_string(), "ignored".to_string());
+    }
+
     Ok(map)
 }
 

@@ -339,6 +339,15 @@ pub struct Project {
     /// entry's `extra["python_interpreter"]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python_interpreter: Option<String>,
+    /// Which machine shells launched from this project run on — the choice made in
+    /// the `RunHostPicker`, persisted so it survives a relaunch (a Run/Debug or a
+    /// new shell tab lands on it instead of the primary). A `TabLocation` string:
+    /// `"local"` (the mirror), `"remote"` (the primary host), or `"host:<id>"` (a
+    /// worker). Absent = the shell default (the primary). Mirrored into the
+    /// `projects.json` entry's `extra["run_host"]`, which is what the frontend
+    /// seeds its live preference store from on load.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_host: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

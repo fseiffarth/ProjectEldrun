@@ -19,8 +19,10 @@ import {
   useTabsStore,
   type SavedLayoutTree,
   type TabKind,
+  type TabLocation,
   type ViewerState,
 } from "./tabs";
+import { useRunHostPrefStore } from "./runHostPref";
 import { type AgentMode } from "../components/tabs/agentModes";
 import { useTimerStore } from "./timer";
 import { useVpnPromptStore } from "./vpnPrompt";
@@ -690,6 +692,16 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       activeId,
       rightPanelFolderByProject,
     });
+    // Re-hydrate the run-host preference (which machine shells run on) from each
+    // project's persisted `run_host`, so a choice made in a previous session still
+    // sends this session's Run/Debug and "+" shells to that machine. Merge-only, so
+    // a change made this session before a reload is never clobbered.
+    useRunHostPrefStore.getState().seed(
+      projects.map((p) => ({
+        projectId: p.id,
+        location: p.run_host as TabLocation | undefined,
+      })),
+    );
     // Fire-and-forget: sniff each local repo's `origin` host so pills can badge
     // a hosting provider (GitHub/GitLab) and the hover can show the git address,
     // even when the repo was pushed outside Eldrun's Publish flow. Host-only, no
