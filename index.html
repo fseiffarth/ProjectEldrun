@@ -9,14 +9,14 @@
       // Tauri invoke, so without this the page renders ~1s with the CSS
       // :root default (fancy_dark) and then snaps to the real theme.
       // stores/settings.ts keeps this cache in sync on every theme change;
-      // light_lavender mirrors the backend default (schema::settings).
+      // fancy_dark mirrors the backend default (schema::settings).
       try {
         document.documentElement.setAttribute(
           "data-theme",
-          localStorage.getItem("eldrun-theme") || "light_lavender",
+          localStorage.getItem("eldrun-theme") || "fancy_dark",
         );
       } catch (_) {
-        document.documentElement.setAttribute("data-theme", "light_lavender");
+        document.documentElement.setAttribute("data-theme", "fancy_dark");
       }
     </script>
   </head>

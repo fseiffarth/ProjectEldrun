@@ -238,6 +238,7 @@ async fn list_dir_remote(
 pub async fn dir_size(
     project_dir: String,
     rel_path: String,
+    excluded: Option<Vec<String>>,
     pool: tauri::State<'_, crate::services::remote::RemotePoolState>,
 ) -> Result<u64, String> {
     let _ = &pool; // remote path uses SSH exec, not the SFTP pool; keep the arg for symmetry
@@ -250,14 +251,15 @@ pub async fn dir_size(
         .await
         .map_err(|e| e.to_string())?;
     }
-    tokio::task::spawn_blocking(move || dir_size_local(&project_dir, &rel_path))
+    let excluded = excluded.unwrap_or_default();
+    tokio::task::spawn_blocking(move || dir_size_local(&project_dir, &rel_path, &excluded))
         .await
         .map_err(|e| e.to_string())?
 }
 
 /// Local-fs recursive directory size (bytes). Confinement-checked like the local
 /// lister, then a symlink-skipping walk (so a symlink cycle can't loop forever).
-pub fn dir_size_local(project_dir: &str, rel_path: &str) -> Result<u64, String> {
+pub fn dir_size_local(project_dir: &str, rel_path: &str, excluded: &[String]) -> Result<u64, String> {
     let root = canonical(project_dir)?;
     let target = if rel_path.is_empty() {
         root.clone()
@@ -265,13 +267,36 @@ pub fn dir_size_local(project_dir: &str, rel_path: &str) -> Result<u64, String> 
         canonical(&root.join(rel_path).to_string_lossy().to_string())?
     };
     enforce_confinement(&root, &target)?;
-    Ok(walk_dir_size(&target))
+    // The walk builds rel paths from `rel_path` down, so the exclusion list —
+    // which is project-root-relative — matches at any depth under the folder.
+    Ok(walk_dir_size(&target, rel_path.trim_matches('/'), &excluded_rel_set(excluded)))
+}
+
+/// Normalise the caller's scan-exclusion list into the same project-relative,
+/// forward-slash spelling the walks build as they descend.
+///
+/// The list is the user's own (`scan_excluded_paths` in `project.json`, set from
+/// the file tree's "Exclude from scans"), so it is whatever they clicked plus
+/// whatever survived a hand edit: tolerate `./x`, `/x`, `x/`, and Windows
+/// separators rather than silently failing to match one of them.
+pub fn excluded_rel_set(excluded: &[String]) -> HashSet<String> {
+    excluded
+        .iter()
+        .map(|raw| raw.replace('\\', "/"))
+        .map(|rel| rel.trim().trim_matches('/').trim_start_matches("./").to_string())
+        .filter(|rel| !rel.is_empty())
+        .collect()
 }
 
 /// Sum file sizes under `dir`, recursing into subdirectories. Symlinks are never
 /// followed (avoids cycles and double-counting); unreadable dirs/entries are
 /// skipped, so the result is a best-effort total.
-fn walk_dir_size(dir: &Path) -> u64 {
+///
+/// `excluded` prunes whole subtrees the user has excluded from scans. It is a
+/// *prune*, not a filter: the point is not to leave those bytes out of the total
+/// but to never descend into them at all — this walk is what made opening a
+/// project with a 50 GB virtualenv peg a core for minutes.
+fn walk_dir_size(dir: &Path, rel_prefix: &str, excluded: &HashSet<String>) -> u64 {
     let mut total = 0u64;
     let Ok(rd) = fs::read_dir(dir) else {
         return 0;
@@ -281,8 +306,13 @@ fn walk_dir_size(dir: &Path) -> u64 {
         if ft.is_symlink() {
             continue;
         }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let child_rel = if rel_prefix.is_empty() { name } else { format!("{rel_prefix}/{name}") };
+        if excluded.contains(&child_rel) {
+            continue;
+        }
         if ft.is_dir() {
-            total = total.saturating_add(walk_dir_size(&entry.path()));
+            total = total.saturating_add(walk_dir_size(&entry.path(), &child_rel, excluded));
         } else if ft.is_file() {
             if let Ok(m) = entry.metadata() {
                 total = total.saturating_add(m.len());
@@ -307,13 +337,22 @@ pub struct DirSizeBreakdown {
 /// folder (or one with no `.git`) just gets `ignored: 0`, same best-effort
 /// fallback as [`dir_size`] on failure.
 #[tauri::command]
-pub async fn dir_size_breakdown(project_dir: String, rel_path: String) -> Result<DirSizeBreakdown, String> {
-    tokio::task::spawn_blocking(move || dir_size_breakdown_local(&project_dir, &rel_path))
+pub async fn dir_size_breakdown(
+    project_dir: String,
+    rel_path: String,
+    excluded: Option<Vec<String>>,
+) -> Result<DirSizeBreakdown, String> {
+    let excluded = excluded.unwrap_or_default();
+    tokio::task::spawn_blocking(move || dir_size_breakdown_local(&project_dir, &rel_path, &excluded))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn dir_size_breakdown_local(project_dir: &str, rel_path: &str) -> Result<DirSizeBreakdown, String> {
+fn dir_size_breakdown_local(
+    project_dir: &str,
+    rel_path: &str,
+    excluded: &[String],
+) -> Result<DirSizeBreakdown, String> {
     // A remote project's `project_dir` is a local per-project STATE dir (holds
     // project.json/sync.json/git_peer.json, never the tree itself) — canonicalizing
     // it and walking `<state_dir>/<rel_path>` as done below always found nothing and
@@ -340,12 +379,14 @@ fn dir_size_breakdown_local(project_dir: &str, rel_path: &str) -> Result<DirSize
     };
     enforce_confinement(&root, &target)?;
 
+    let prefix = rel_path.trim_matches('/');
+    let excluded = excluded_rel_set(excluded);
     if !root.join(".git").exists() {
-        return Ok(DirSizeBreakdown { total: walk_dir_size(&target), ignored: 0 });
+        return Ok(DirSizeBreakdown { total: walk_dir_size(&target, prefix, &excluded), ignored: 0 });
     }
 
     let ignored = ignored_paths_under(&root, rel_path);
-    let (total, ignored_bytes) = walk_dir_size_breakdown(&target, rel_path, &ignored);
+    let (total, ignored_bytes) = walk_dir_size_breakdown(&target, prefix, &ignored, &excluded);
     Ok(DirSizeBreakdown { total, ignored: ignored_bytes })
 }
 
@@ -385,7 +426,12 @@ fn ignored_paths_under(root: &Path, rel_path: &str) -> HashSet<String> {
 /// `ignored` (git only reports leaf files under `--untracked-files=all`), so
 /// this always recurses rather than short-circuiting on a directory match —
 /// the leaf files inside eventually match individually regardless of depth.
-fn walk_dir_size_breakdown(dir: &Path, rel_prefix: &str, ignored: &HashSet<String>) -> (u64, u64) {
+fn walk_dir_size_breakdown(
+    dir: &Path,
+    rel_prefix: &str,
+    ignored: &HashSet<String>,
+    excluded: &HashSet<String>,
+) -> (u64, u64) {
     let mut total = 0u64;
     let mut ignored_total = 0u64;
     let Ok(rd) = fs::read_dir(dir) else {
@@ -398,8 +444,11 @@ fn walk_dir_size_breakdown(dir: &Path, rel_prefix: &str, ignored: &HashSet<Strin
         }
         let name = entry.file_name().to_string_lossy().into_owned();
         let child_rel = if rel_prefix.is_empty() { name } else { format!("{rel_prefix}/{name}") };
+        if excluded.contains(&child_rel) {
+            continue;
+        }
         if ft.is_dir() {
-            let (t, i) = walk_dir_size_breakdown(&entry.path(), &child_rel, ignored);
+            let (t, i) = walk_dir_size_breakdown(&entry.path(), &child_rel, ignored, excluded);
             total = total.saturating_add(t);
             ignored_total = ignored_total.saturating_add(i);
         } else if ft.is_file() {
@@ -1966,7 +2015,7 @@ mod tests {
         std::fs::write(dir.join("src/whole/a.txt"), "1234567890").unwrap(); // 10 bytes, ignored
         std::fs::write(dir.join("src/whole/sub/b.txt"), "12345678901234567890").unwrap(); // 20 bytes, ignored
 
-        let breakdown = dir_size_breakdown_local(&dir.to_string_lossy(), "src").expect("breakdown");
+        let breakdown = dir_size_breakdown_local(&dir.to_string_lossy(), "src", &[]).expect("breakdown");
         assert_eq!(breakdown.total, 35);
         assert_eq!(breakdown.ignored, 30);
     }
@@ -1977,7 +2026,7 @@ mod tests {
         let dir = tmp.path();
         std::fs::write(dir.join("a.txt"), "hello").unwrap();
 
-        let breakdown = dir_size_breakdown_local(&dir.to_string_lossy(), "").expect("breakdown");
+        let breakdown = dir_size_breakdown_local(&dir.to_string_lossy(), "", &[]).expect("breakdown");
         assert_eq!(breakdown.total, 5);
         assert_eq!(breakdown.ignored, 0);
     }
@@ -2504,6 +2553,51 @@ mod tests {
             "/home/u/proj/file.txt"
         };
         assert_eq!(display_path(Path::new(p)), p);
+    }
+
+    #[test]
+    fn excluded_rel_set_normalises_every_spelling_to_one() {
+        let set = excluded_rel_set(&[
+            "venv".into(),
+            "./data/raw".into(),
+            "/results/".into(),
+            "a\\b".into(),
+            "  spaced  ".into(),
+            String::new(),
+            "/".into(),
+        ]);
+        assert!(set.contains("venv"));
+        assert!(set.contains("data/raw"));
+        assert!(set.contains("results"));
+        assert!(set.contains("a/b"));
+        assert!(set.contains("spaced"));
+        // Empty and separator-only entries are dropped rather than becoming an
+        // empty-string key, which would match the project root and prune the lot.
+        assert_eq!(set.len(), 5);
+    }
+
+    #[test]
+    fn dir_size_skips_an_excluded_subtree() {
+        let tmp = std::env::temp_dir().join(format!("eldrun-excl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("keep")).unwrap();
+        fs::create_dir_all(tmp.join("venv/lib")).unwrap();
+        fs::write(tmp.join("keep/a.txt"), vec![b'x'; 100]).unwrap();
+        fs::write(tmp.join("venv/lib/big.bin"), vec![b'x'; 5000]).unwrap();
+        let root = tmp.to_string_lossy().to_string();
+
+        let all = dir_size_local(&root, "", &[]).unwrap();
+        assert_eq!(all, 5100, "baseline walks everything");
+
+        let pruned = dir_size_local(&root, "", &["venv".into()]).unwrap();
+        assert_eq!(pruned, 100, "the excluded subtree contributes nothing");
+
+        // Exclusions are project-root-relative, so they still bite when the walk
+        // starts deeper — here the walk root IS the excluded folder's parent.
+        let nested = dir_size_local(&root, "venv", &["venv/lib".into()]).unwrap();
+        assert_eq!(nested, 0);
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]

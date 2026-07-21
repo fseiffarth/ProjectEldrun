@@ -46,3 +46,6 @@ src-tauri/WixTools/
 *.swp
 *.swo
 .idea/
+
+# Machine-list exports (contain real hostnames)
+eldrun-machines.json

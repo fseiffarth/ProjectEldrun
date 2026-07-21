@@ -265,7 +265,7 @@ export function EventDialog({
           <h2>{creating ? "New event" : "Edit event"}</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
-
+        <div className="dialog-scroll">
         {scopeAsk ? (
           /* The this-one-or-all question. It replaces the form rather than
              stacking a second modal on top of it — one decision, in place. */
@@ -581,6 +581,7 @@ export function EventDialog({
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>,
     document.body,

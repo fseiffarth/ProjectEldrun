@@ -261,7 +261,9 @@ export function RunHostPicker({
       <button
         type="button"
         className="right-panel-run-host"
-        title="Where Run/Debug and shells launched from this project run — the machine, not which side files are read from."
+        // The label ellipsizes in a narrow (docked subwindow) row, so the full
+        // machine name has to survive somewhere — the tooltip names it.
+        title={`Runs on: ${label}\nWhere Run/Debug and shells launched from this project run — the machine, not which side files are read from.`}
         onClick={(e) => {
           const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
           setMenu({

@@ -242,7 +242,12 @@ fn capture(mut cmd: Command, what: &str) -> Result<String, String> {
 ///     supports `SSH_ASKPASS_REQUIRE`, with `sshpass -e` as the legacy fallback.
 ///   - otherwise → key/agent auth in `BatchMode=yes` (the original v1 flow).
 /// Returns ssh stdout on success or the trimmed stderr on failure.
-fn run_ssh_auth(
+///
+/// `pub(crate)`: also called by
+/// `commands::global_machines::global_machine_monitor_snapshot`, which needs
+/// this exact password-vs-key branching for a project-free host (no pooled
+/// ControlMaster to ride, unlike `remote_usage::check_usage`).
+pub(crate) fn run_ssh_auth(
     user: &Option<String>,
     host: &str,
     port: Option<u16>,
@@ -456,6 +461,81 @@ pub fn remote_forget_password(
     let account = crate::services::remote_credentials::ssh_account(&user, &host, port);
     crate::services::remote_credentials::set(&account, None)
 }
+
+/// Kill every tmux session on a remote host — the "end all my running jobs" half
+/// of an **active** disconnect. Rides a live multiplexing master if one exists (a
+/// project/HPC host with a pooled connection), otherwise authenticates ad-hoc
+/// with the saved credential (a global machine, which pools nothing) — the same
+/// `run_ssh_auth` branching `global_machine_monitor_snapshot` uses.
+///
+/// EXPLICIT-ACTION ONLY. Persistent tmux sessions are meant to outlive a tab
+/// close, an app quit and a relaunch (the whole point of #85); this is the one
+/// deliberate path that ends them, and it must never fire on deactivation or
+/// restart. `tmux kill-server` reporting "no server running" is success (there
+/// was nothing to kill), so the whole command is best-effort past reachability.
+#[tauri::command]
+pub async fn remote_kill_all_jobs(
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        use crate::services::remote_credentials as creds;
+        let password = creds::get(&creds::ssh_account(&user, &host, port));
+        run_ssh_auth(
+            &user,
+            &host,
+            port,
+            password.as_deref(),
+            &["tmux kill-server 2>/dev/null; true"],
+        )
+        .map(|_| ())
+    })
+    .await
+    .map_err(|e| format!("kill-jobs task failed: {e}"))?
+}
+
+/// Close the shared multiplexing master for a host (`ssh -O exit`) so an active
+/// disconnect really severs the SSH connection, not just the lamp. Best-effort:
+/// a host with no live master — a pure global machine never opens one
+/// (`ControlMaster=no`, see `ssh_common::control_reuse_opts`) — yields a harmless
+/// no-op. A **project** host tears its pool down through `remote_disconnect`
+/// instead (which also stops its lockstep/auto-sync); this is for the project-
+/// free **global machines**, which pool nothing of their own.
+#[tauri::command]
+pub async fn ssh_close_master(
+    user: Option<String>,
+    host: String,
+    port: Option<u16>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        close_control_master(&user, &host, port);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("close-master task failed: {e}"))?
+}
+
+/// Ask a live ControlMaster for this host to exit, over the shared `cm-%C`
+/// socket. Unix-only — Windows OpenSSH has no control socket (see `ssh_pty_args`).
+#[cfg(not(target_os = "windows"))]
+fn close_control_master(user: &Option<String>, host: &str, port: Option<u16>) {
+    let Ok(target) = crate::services::ssh_common::ssh_target(user, host) else {
+        return;
+    };
+    let control_path = crate::services::ssh_exec::control_dir().join("cm-%C");
+    let mut cmd = crate::paths::command_no_window("ssh");
+    cmd.arg("-o")
+        .arg(format!("ControlPath={}", control_path.to_string_lossy()));
+    if let Some(port) = port {
+        cmd.arg("-p").arg(port.to_string());
+    }
+    cmd.arg("-O").arg("exit").arg(&target);
+    let _ = cmd.output();
+}
+
+#[cfg(target_os = "windows")]
+fn close_control_master(_user: &Option<String>, _host: &str, _port: Option<u16>) {}
 
 /// Return the remote default (home) directory as the browser's start location.
 /// Resolved over SFTP (REALPATH of `.`), so no remote shell runs.

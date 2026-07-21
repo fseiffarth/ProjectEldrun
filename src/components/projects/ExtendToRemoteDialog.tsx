@@ -6,6 +6,8 @@ import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { joinRemotePath, sanitizeName } from "./scaffold";
 import { useRemoteSession, type RemoteStep } from "./useRemoteSession";
 import { RemoteProjectSection } from "./RemoteProjectSection";
+import { targetLabel } from "../header/MachinesIndicator";
+import type { DroppedGlobalMachine } from "../../stores/remoteMachines";
 
 /**
  * "Extend to remote…" modal for an existing **local** project. It attaches a
@@ -18,12 +20,22 @@ import { RemoteProjectSection } from "./RemoteProjectSection";
  * uses — `useRemoteSession` (state/effects) + `RemoteProjectSection` (the SSH /
  * OpenVPN / folder-browser UI) — so there's no duplicated remote logic here. The
  * project name is fixed, so the "details" step is just a confirm summary.
+ *
+ * `initialMachine` seeds the SSH address from a global machine
+ * (`MachinesIndicator`) dropped onto this (local-only) project's pill — this
+ * dialog becomes the "make this machine the project's primary" flow. It only
+ * prefills the address field; the user still authenticates here (the global
+ * machine's own connection is a separate pooled session keyed by its own id,
+ * not by this project), though a saved password for that host target is
+ * picked up automatically since the keychain is keyed by host, not project.
  */
 export function ExtendToRemoteDialog({
   project,
+  initialMachine,
   onClose,
 }: {
   project: ProjectEntry;
+  initialMachine?: DroppedGlobalMachine;
   onClose: () => void;
 }) {
   // The remote path leaf and local-mirror-relative name both use the project's
@@ -44,6 +56,7 @@ export function ExtendToRemoteDialog({
     remoteChosenPath,
     remoteReady,
     remotePassword,
+    onSshAddressChange,
     buildRemoteSpec,
   } = remote;
 
@@ -71,8 +84,11 @@ export function ExtendToRemoteDialog({
 
   // This dialog is always remote — enable remote mode on mount so the tooling
   // probe + recent addresses/configs load and RemoteProjectSection renders.
+  // Dropped from a global machine: also seed the address field so the user
+  // only has to authenticate, not re-type the host.
   useEffect(() => {
     if (!isRemoteProject) toggleRemoteProject(true);
+    if (initialMachine) onSshAddressChange(targetLabel(initialMachine));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -140,12 +156,25 @@ export function ExtendToRemoteDialog({
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <h2>Extend “{project.name}” to remote</h2>
+      <div className="project-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="settings-title-row">
+          <h2>Extend “{project.name}” to remote</h2>
+          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="dialog-scroll">
         <p className="ssh-optional-hint">
-          Attach a remote SSH host to this project. The empty remote folder is
-          created on the host; your existing local files become the synced working
-          copy and stay put. Nothing is uploaded until you push it manually.
+          {initialMachine ? (
+            <>
+              Attach <strong>{initialMachine.label || initialMachine.host}</strong> to this
+              project as its primary remote host. The empty remote folder is created on the
+              host; your existing local files become the synced working copy and stay put.
+              Nothing is uploaded until you push it manually.
+            </>
+          ) : (
+            "Attach a remote SSH host to this project. The empty remote folder is " +
+            "created on the host; your existing local files become the synced working " +
+            "copy and stay put. Nothing is uploaded until you push it manually."
+          )}
         </p>
 
         <RemoteProjectSection
@@ -199,6 +228,7 @@ export function ExtendToRemoteDialog({
               {busy ? "Extending…" : "Extend to remote"}
             </button>
           )}
+        </div>
         </div>
       </div>
     </div>

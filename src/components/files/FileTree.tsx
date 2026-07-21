@@ -39,6 +39,7 @@ import {
 } from "../../lib/shellScriptRun";
 import { readFileText } from "../embed/fileAccess";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
+import { normalizeScanPath } from "./ProjectFilesSettings";
 import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 
@@ -76,6 +77,12 @@ interface Props {
   hiddenEndings?: string[];
   hiddenPaths?: string[];
   shownPaths?: string[];
+  /** Folders excluded from every recursive scan (`scan_excluded_paths` in
+   *  project.json). They still LIST — only their size walk is skipped — so the
+   *  exclusion stays visible and reversible on the row it applies to. */
+  scanExcluded?: string[];
+  /** When given, folder rows offer "Exclude from scans" / "Include in scans". */
+  onToggleScanExcluded?: (relPath: string, excluded: boolean) => void;
   initialRelPath?: string | null;
   onRelPathChange?: (relPath: string) => void;
   /** When given, the context menu offers "Open in a new tab" — on a folder, and
@@ -221,6 +228,8 @@ export function FileTree({
   descending = false,
   hiddenEndings = [],
   hiddenPaths = [],
+  scanExcluded,
+  onToggleScanExcluded,
   shownPaths = [],
   initialRelPath = "",
   onRelPathChange,
@@ -257,6 +266,19 @@ export function FileTree({
   // from being re-dispatched. Small folders resolved inside the gap and showed
   // a size; a big one (the whole point of the feature) never did.
   const sizeGeneration = useRef(0);
+  // Scan exclusions, normalised once per change into the one spelling the backend
+  // matches on. `scanExcludedList` is what the walk commands receive (it prunes
+  // excluded subtrees *nested inside* a folder being sized); `isScanExcluded`
+  // additionally stops us dispatching a walk for an excluded folder at all.
+  const scanExcludedList = useMemo(
+    () => (scanExcluded ?? []).map(normalizeScanPath).filter(Boolean),
+    [scanExcluded],
+  );
+  const scanExcludedSet = useMemo(() => new Set(scanExcludedList), [scanExcludedList]);
+  const isScanExcluded = useCallback(
+    (rel: string) => scanExcludedSet.has(normalizeScanPath(rel)),
+    [scanExcludedSet],
+  );
   // The rel path of the most recent `load` call — lets the async remote-boundary
   // probe bail if navigation has moved on since the listing it was probing failed.
   const loadTargetRef = useRef<string>("");
@@ -635,12 +657,14 @@ export function FileTree({
   // `dir_size` is enough here — the whole folder is ignored by definition, so
   // there's no split to compute, unlike the regular/standard effect below.
   useEffect(() => {
-    const pending = sections.gitignored.filter((e) => e.is_dir && !requestedSizes.current.has(e.path));
+    const pending = sections.gitignored.filter(
+      (e) => e.is_dir && !requestedSizes.current.has(e.path) && !isScanExcluded(relForEntry(e)),
+    );
     if (pending.length === 0) return;
     pending.forEach((e) => requestedSizes.current.add(e.path));
     const gen = sizeGeneration.current;
     for (const e of pending) {
-      invoke<number>("dir_size", { projectDir, relPath: relForEntry(e) })
+      invoke<number>("dir_size", { projectDir, relPath: relForEntry(e), excluded: scanExcludedList })
         .then((bytes) => {
           if (sizeGeneration.current === gen) setDirSizes((m) => ({ ...m, [e.path]: bytes }));
         })
@@ -662,12 +686,18 @@ export function FileTree({
   // `requestedSizes` with the effect above so no folder is fetched twice.
   useEffect(() => {
     const candidates = [...sections.regular, ...sections.standard];
-    const pending = candidates.filter((e) => e.is_dir && !requestedSizes.current.has(e.path));
+    const pending = candidates.filter(
+      (e) => e.is_dir && !requestedSizes.current.has(e.path) && !isScanExcluded(relForEntry(e)),
+    );
     if (pending.length === 0) return;
     pending.forEach((e) => requestedSizes.current.add(e.path));
     const gen = sizeGeneration.current;
     for (const e of pending) {
-      invoke<{ total: number; ignored: number }>("dir_size_breakdown", { projectDir, relPath: relForEntry(e) })
+      invoke<{ total: number; ignored: number }>("dir_size_breakdown", {
+        projectDir,
+        relPath: relForEntry(e),
+        excluded: scanExcludedList,
+      })
         .then(({ total, ignored }) => {
           if (sizeGeneration.current !== gen) return;
           setDirSizes((m) => ({ ...m, [e.path]: total }));
@@ -678,7 +708,7 @@ export function FileTree({
           // `dir_size_breakdown` can fail for reasons `dir_size` wouldn't (a
           // backend that hasn't picked up this new command yet, no `git` on
           // PATH), and a folder's size is more important than its ignored split.
-          invoke<number>("dir_size", { projectDir, relPath: relForEntry(e) })
+          invoke<number>("dir_size", { projectDir, relPath: relForEntry(e), excluded: scanExcludedList })
             .then((bytes) => {
               if (sizeGeneration.current === gen) setDirSizes((m) => ({ ...m, [e.path]: bytes }));
             })
@@ -2749,13 +2779,24 @@ export function FileTree({
                   local only
                 </span>
               )}
-              {e.is_dir
-                ? dirShown !== undefined && (
-                    <span className={`file-size ${sizeCategory(dirShown)}`}>
-                      {fmtSize(dirShown)}
-                    </span>
-                  )
-                : <span className={`file-size ${sizeClass}`}>{fmtSize(e.size)}</span>}
+              {e.is_dir && isScanExcluded(relForEntry(e)) ? (
+                // Stands in for the size rather than sitting beside it: there is no
+                // size to show, and saying why is more use than an empty column.
+                <span
+                  className="file-size file-size-excluded"
+                  title="Excluded from scans — its size isn't computed and its file activity isn't counted. Right-click to include it again."
+                >
+                  not scanned
+                </span>
+              ) : e.is_dir ? (
+                dirShown !== undefined && (
+                  <span className={`file-size ${sizeCategory(dirShown)}`}>
+                    {fmtSize(dirShown)}
+                  </span>
+                )
+              ) : (
+                <span className={`file-size ${sizeClass}`}>{fmtSize(e.size)}</span>
+              )}
             </div>
           );
         }
@@ -2976,6 +3017,42 @@ export function FileTree({
                       }}
                     >
                       Open in a new tab
+                    </button>
+                    <hr />
+                  </>
+                )}
+                {/* Local trees only: the exclusion governs the LOCAL walks (the
+                    size walk and the churn watcher). A remote folder's size comes
+                    from `du` on the host, which this list has no say over. */}
+                {onToggleScanExcluded && entry.is_dir && !remoteListing && (
+                  <>
+                    <button
+                      onClick={() => {
+                        setContextMenu(null);
+                        const now = isScanExcluded(entryRel);
+                        onToggleScanExcluded(entryRel, !now);
+                        // Drop any size already shown for the folder: leaving the
+                        // old number up would claim a figure we've stopped keeping
+                        // current. Re-including re-requests it via `requestedSizes`.
+                        requestedSizes.current.delete(entry.path);
+                        setDirSizes((m) => {
+                          const next = { ...m };
+                          delete next[entry.path];
+                          return next;
+                        });
+                        setDirIgnoredBytes((m) => {
+                          const next = { ...m };
+                          delete next[entry.path];
+                          return next;
+                        });
+                      }}
+                      title={
+                        isScanExcluded(entryRel)
+                          ? "Resume computing this folder's size and counting its file activity"
+                          : "Never walk this folder: no size calculation, no file-activity counting"
+                      }
+                    >
+                      {isScanExcluded(entryRel) ? "Include in scans" : "Exclude from scans"}
                     </button>
                     <hr />
                   </>

@@ -18,6 +18,14 @@ pub struct GlobalMachine {
     /// Display name; falls back to `host` wherever shown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Opt-in to a *silent* connect on launch and whenever a VPN tunnel comes up
+    /// (the machine-wide twin of a project's `RemoteSpec::auto_connect`). Like it,
+    /// the auto path never prompts: it probes first and connects only when the host
+    /// is reachable with no user input, so a stale opt-in degrades to "stay off".
+    /// `#[serde(default)]` so a `global_machines.json` written before this field
+    /// existed still loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_connect: Option<bool>,
 }
 
 impl GlobalMachine {

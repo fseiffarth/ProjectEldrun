@@ -530,8 +530,11 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               <button onClick={() => { setShowAddMenu(false); setDialog("import"); }}>
                 Import Project
               </button>
-              <button onClick={() => { setShowAddMenu(false); setDialog("clone"); }}>
-                Import from GitHub/GitLab
+              <button
+                className="untested"
+                onClick={() => { setShowAddMenu(false); setDialog("clone"); }}
+              >
+                Import from GitHub/GitLab <UntestedTag />
               </button>
               <button
                 className="untested"
@@ -540,12 +543,13 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                 HPC pipeline… <UntestedTag />
               </button>
               <button
+                className="untested"
                 onClick={() => {
                   setShowAddMenu(false);
                   void createBox("New Box");
                 }}
               >
-                New Box
+                New Box <UntestedTag />
               </button>
             </div>
           )}

@@ -232,6 +232,11 @@ interface Props {
   remoteInfo?: DetachedRemoteInfo;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
+  /** Hide the WHOLE popout into the main window's right-panel "Hidden subwindows"
+   *  list (the detached twin of a main-window subwindow's "–" hide). Closes this
+   *  OS window; the group is parked with its tabs mounted and restored from there.
+   *  Undefined ⇒ no hide affordance. */
+  onHideWindow?: () => void;
   /** Multi-host: change where a locatable tab runs (streamed to the main window,
    *  which owns the PTY and respawns the pane on the chosen host). */
   onSetLocation: (key: string, location: TabLocation) => void;
@@ -275,6 +280,7 @@ export function DetachedCenterPanel({
   remoteInfo,
   onActivate,
   onClose,
+  onHideWindow,
   onSetLocation,
   onReorder,
   onSplit,
@@ -1384,6 +1390,24 @@ export function DetachedCenterPanel({
             >
               ◫
             </button>
+            {/* Hide the WHOLE popout into the main window's right-panel Hidden
+                list — the detached twin of the main-window bar's "–". Rendered
+                per bar (like ◫); for a multi-pane popout every bar's "–" hides
+                the whole window as one hidden entry. stopPropagation keeps the
+                press off the bar's window-move/dock drag. */}
+            {onHideWindow && (
+              <button
+                className="subwindow-hide"
+                title="Hide this window into the right panel (bring it back from there)"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onHideWindow();
+                }}
+              >
+                –
+              </button>
+            )}
           </div>
         </div>
         <div className="subwindow-body">

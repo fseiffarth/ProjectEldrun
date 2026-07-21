@@ -8,10 +8,13 @@ import {
   clampZoom,
   stepZoom,
   THEME_CHANGED_EVENT,
+  LANGUAGE_CHANGED_EVENT,
 } from "../../stores/settings";
+import { applyLanguage } from "../../lib/i18n";
 import {
   DETACHED_BOUNDS,
   DETACHED_CLOSE,
+  DETACHED_HIDE,
   DETACHED_EDIT,
   DETACHED_REQUEST_SEED,
   DETACHED_ZOOM,
@@ -127,6 +130,20 @@ export function DetachedApp({ param }: Props) {
     let cancelled = false;
     listen<string>(THEME_CHANGED_EVENT, (e) => {
       applyTheme(e.payload);
+    })
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // Same story for the UI language: this popout holds its own i18n store, so a
+  // language switch in the main window's Settings only re-renders that window
+  // without the cross-window broadcast. Re-apply live (see LANGUAGE_CHANGED_EVENT).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen<string>(LANGUAGE_CHANGED_EVENT, (e) => {
+      applyLanguage(e.payload);
     })
       .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
       .catch(() => {});
@@ -350,6 +367,17 @@ export function DetachedApp({ param }: Props) {
     pushEdit({ kind: "close", key });
   };
 
+  // Hide the WHOLE popout into the main window's right-panel "Hidden subwindows"
+  // list. Like handleClose it closes THIS OS window, but the main window PARKS the
+  // group (tabs stay mounted, PTYs alive) instead of discarding it — restorable
+  // from the panel. Hides the whole window (every pane of a multi-pane popout) as
+  // one hidden entry; destroy() bypasses our onCloseRequested so it won't also
+  // emit DETACHED_CLOSE (which would drop the tabs).
+  const handleHideWindow = () => {
+    void emit(DETACHED_HIDE, { scope: param.scope, groupId: param.groupId });
+    void getCurrentWindow().destroy();
+  };
+
   // Close-on-close: closing this OS window via the WM/title-bar CLOSES the
   // group's tabs for good — they are not docked back and do not restore on next
   // launch (dock-back is done by Ctrl+dragging the tab bar onto the main window,
@@ -394,6 +422,7 @@ export function DetachedApp({ param }: Props) {
       remoteInfo={remoteInfo}
       onActivate={(key) => pushEdit({ kind: "activate", key })}
       onClose={handleClose}
+      onHideWindow={handleHideWindow}
       onSetLocation={(key, location) => pushEdit({ kind: "setLocation", key, location })}
       onReorder={(tabKeys) => pushEdit({ kind: "reorder", tabKeys })}
       onSplit={(key, targetGroupId, edge) =>

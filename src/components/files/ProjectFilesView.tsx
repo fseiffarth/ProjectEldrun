@@ -410,7 +410,9 @@ export function ProjectFilesView({
   };
 
   // Kill a host session (per-row, confirmed). Drops the row optimistically; the
-  // poll reconciles.
+  // poll reconciles. Unlike a tab close (which merely detaches), a kill terminates
+  // the session, so the tab that owns it — now attached to a dead session — is
+  // closed too rather than left showing a defunct terminal.
   const killSession = (hostId: string, name: string) => {
     if (!projectId) return;
     if (
@@ -419,10 +421,12 @@ export function ProjectFilesView({
       )
     )
       return;
+    const ownerKey = sessionOwners.get(`${hostId} ${name}`);
     invoke("remote_tmux_kill", { projectId, hostId, session: name })
-      .then(() =>
-        setSessionRows((rs) => rs.filter((r) => !(r.hostId === hostId && r.session.name === name))),
-      )
+      .then(() => {
+        setSessionRows((rs) => rs.filter((r) => !(r.hostId === hostId && r.session.name === name)));
+        if (ownerKey) useTabsStore.getState().removeTab(ownerKey);
+      })
       .catch(() => {});
   };
 
@@ -791,7 +795,7 @@ export function ProjectFilesView({
           {source === "remote" && runHostPickerApplies(project.compute_hosts) && (
             <RunHostPicker
               projectId={projectId}
-              primaryHost={project.remote.host}
+              primaryHost={project.remote.label || project.remote.host}
               computeHosts={project.compute_hosts}
             />
           )}
@@ -1369,7 +1373,7 @@ export function ProjectFilesView({
           {source === "remote" && runHostPickerApplies(project.compute_hosts) && (
             <RunHostPicker
               projectId={projectId}
-              primaryHost={project.remote.host}
+              primaryHost={project.remote.label || project.remote.host}
               computeHosts={project.compute_hosts}
             />
           )}
@@ -1386,6 +1390,8 @@ export function ProjectFilesView({
           hiddenEndings={filters.hiddenEndings}
           hiddenPaths={filters.hiddenPaths}
           shownPaths={filters.shownPaths}
+          scanExcluded={filters.scanExcluded}
+          onToggleScanExcluded={filters.toggleScanExcluded}
           sortKey={sortKey}
           descending={descending}
           onSortChange={(key, desc) => {

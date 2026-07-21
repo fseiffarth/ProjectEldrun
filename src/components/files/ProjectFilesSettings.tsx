@@ -20,6 +20,16 @@ type ProjectJson = Record<string, unknown>;
 const PANEL_HIDDEN_ENDINGS_KEY = "panel_hidden_endings";
 const PANEL_HIDDEN_PATHS_KEY = "panel_hidden_paths";
 const PANEL_SHOWN_PATHS_KEY = "panel_shown_paths";
+/** Folders excluded from every recursive scan. Read by the backend too — keep the
+ *  spelling in step with `commands::fs::excluded_rel_set`. */
+const SCAN_EXCLUDED_PATHS_KEY = "scan_excluded_paths";
+
+/** The one spelling of a scan-exclusion path: project-relative, forward slashes,
+ *  no leading/trailing separator. Mirrors the backend's `excluded_rel_set`, so a
+ *  path written here matches the one the walk builds as it descends. */
+export function normalizeScanPath(rel: string): string {
+  return rel.replace(/\\/g, "/").trim().replace(/^\.\//, "").replace(/^\/+|\/+$/g, "");
+}
 
 /** File endings that mark a project as holding Python — gates the interpreter
  *  picker, mirroring the pill's `PYTHON_ENDINGS`. */
@@ -48,8 +58,21 @@ export interface ProjectFileFilters {
   hiddenPaths: string[];
   shownPaths: string[];
   availableEndings: string[];
+  /** Folders the user excluded from recursive scans (see `toggleScanExcluded`). */
+  scanExcluded: string[];
   error: string | null;
   toggleHiddenEnding: (ending: string, checked: boolean) => void;
+  /**
+   * Exclude/include a folder from every recursive scan: the size walk
+   * (`dir_size`/`dir_size_breakdown`) and the file-churn watcher
+   * (`services::usage_stats`), which both read this same list.
+   *
+   * Deliberately NOT the same list as `hiddenPaths`. "I don't want to look at
+   * this" and "never traverse this" are different intents — a folder can be
+   * hidden but still worth weighing, and one that is excluded stays visible so
+   * the exclusion is discoverable and reversible from the row it applies to.
+   */
+  toggleScanExcluded: (relPath: string, excluded: boolean) => void;
 }
 
 /**
@@ -69,6 +92,7 @@ export function useProjectFileFilters(opts: {
   const [availableEndings, setAvailableEndings] = useState<string[]>([]);
   const [hiddenPaths, setHiddenPaths] = useState<string[]>([]);
   const [shownPaths, setShownPaths] = useState<string[]>([]);
+  const [scanExcluded, setScanExcluded] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -79,6 +103,7 @@ export function useProjectFileFilters(opts: {
       setAvailableEndings([]);
       setHiddenPaths([]);
       setShownPaths([]);
+      setScanExcluded([]);
       return;
     }
     Promise.all([
@@ -94,6 +119,7 @@ export function useProjectFileFilters(opts: {
         setAvailableEndings(mergeEndings(endings, savedHiddenEndings));
         setHiddenPaths(readStringList(loaded, PANEL_HIDDEN_PATHS_KEY));
         setShownPaths(readStringList(loaded, PANEL_SHOWN_PATHS_KEY));
+        setScanExcluded(readStringList(loaded, SCAN_EXCLUDED_PATHS_KEY).map(normalizeScanPath).filter(Boolean));
       })
       .catch((e) => {
         setProject(null);
@@ -101,6 +127,7 @@ export function useProjectFileFilters(opts: {
         setAvailableEndings([]);
         setHiddenPaths([]);
         setShownPaths([]);
+        setScanExcluded([]);
         setError(String(e));
       });
   }, [localFile, projectDir, remoteBlocked]);
@@ -133,13 +160,33 @@ export function useProjectFileFilters(opts: {
     void saveHiddenEndings(nextEndings);
   };
 
+  const toggleScanExcluded = (relPath: string, excluded: boolean) => {
+    const rel = normalizeScanPath(relPath);
+    if (!rel || !localFile || !project) return;
+    const next = excluded
+      ? scanExcluded.includes(rel)
+        ? scanExcluded
+        : [...scanExcluded, rel]
+      : scanExcluded.filter((item) => normalizeScanPath(item) !== rel);
+    // Optimistic: the tree re-requests sizes off this list, and a failed write
+    // surfaces in `error` — the alternative (await, then update) leaves the row
+    // showing a size the user just asked us to stop computing.
+    setScanExcluded(next);
+    const nextProject = { ...project, [SCAN_EXCLUDED_PATHS_KEY]: next };
+    setProject(nextProject);
+    setError(null);
+    invoke("save_project", { localFile, project: nextProject }).catch((e) => setError(String(e)));
+  };
+
   return {
     hiddenEndings,
     hiddenPaths,
     shownPaths,
     availableEndings,
+    scanExcluded,
     error,
     toggleHiddenEnding,
+    toggleScanExcluded,
   };
 }
 

@@ -112,6 +112,9 @@ export interface Settings {
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
+  /** UI language for Eldrun's interface. Unset/unknown falls back to English.
+   *  Applied live via `lib/i18n` (`applyLanguage`); the backend round-trips it. */
+  language?: "en" | "de" | "es" | "fr" | "it";
   /** The MAIN window's UI zoom factor (helps on high-DPI/4K monitors). `1` (or
    *  unset) is 100% — the default look; applied as the webview's native zoom.
    *  Clamped to [0.5, 3]. Zoom is **per window**: a detached popout persists its
@@ -307,6 +310,21 @@ export interface GlobalMachine {
   host: string;
   port?: number;
   label?: string;
+  /** Opt-in to a silent connect on launch and whenever a VPN tunnel comes up
+   *  (the machine-wide twin of a project's `RemoteSpec.auto_connect`). */
+  auto_connect?: boolean;
+}
+
+/** One machine as it crosses the import/export boundary
+ *  (`commands::global_machines::MachineIo`): the connection address + label
+ *  only. An exported file carries no `user` and never a password — import
+ *  supplies one shared username + password for the whole batch. `user` is an
+ *  accepted field on a hand-authored file, so it is optional here. */
+export interface MachineImportEntry {
+  host: string;
+  port?: number;
+  label?: string;
+  user?: string;
 }
 
 /** Which secrets a `.ovpn` config needs from the user (`openvpn_auth_needs`), so

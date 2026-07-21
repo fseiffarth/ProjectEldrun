@@ -61,13 +61,20 @@ const GUTTER_BG = "color-mix(in srgb, var(--text-primary) 12%, var(--bg-panel))"
 /** The gutter's right edge and the header's bottom edge: a heavier rule than the
  *  1px cell grid, so the sticky chrome stays legible against the scrolling body. */
 const GUTTER_BORDER = "2px solid var(--border-color)";
+/** The header row's own background. It is the SOLID header tone, never the raw
+ *  `--bg-header` — that is a *gradient* in the fancy themes, so every `<th>`
+ *  would repaint the whole 3-stop ramp across its own width (a striped header),
+ *  and the sorted column's `color-mix` over it would be an invalid value, i.e.
+ *  a fully transparent header the scrolling body shows through. Sticky chrome
+ *  must be opaque. */
+const HEADER_BG = "var(--bg-header-solid, var(--bg-panel))";
 /** The active sort column reads as a distinct vertical band, not just a tinted
  *  header — a strong accent header, an accent-tinted column body (kept light
  *  enough that the zebra stripe still shows through it, so the two tints stack),
  *  and 2px accent edge-lines drawn with an inset box-shadow so the band gains no
  *  width and header/body stay column-aligned. Matches the system monitor's table
  *  (`.sysmon-table th.sorted` / `td.sorted`). */
-const SORTED_HEADER_BG = "color-mix(in srgb, var(--accent) 30%, var(--bg-header))";
+const SORTED_HEADER_BG = "color-mix(in srgb, var(--accent) 30%, var(--bg-header-solid))";
 const SORTED_CELL_BG = "color-mix(in srgb, var(--accent) 8%, var(--bg-panel))";
 const SORTED_CELL_BG_STRIPE = "color-mix(in srgb, var(--accent) 15%, var(--bg-panel))";
 /** The accent edge-lines bracketing the sorted column, as an inset shadow so they
@@ -803,7 +810,7 @@ export function TableView({
                     top: 0,
                     left: 0,
                     zIndex: 2,
-                    background: gutterSorted ? SORTED_HEADER_BG : "var(--bg-header)",
+                    background: gutterSorted ? SORTED_HEADER_BG : HEADER_BG,
                     borderBottom: "1px solid var(--border-color)",
                     borderRight: GUTTER_BORDER,
                     padding: 0,
@@ -851,7 +858,7 @@ export function TableView({
                         position: "sticky",
                         top: 0,
                         zIndex: 1,
-                        background: active ? SORTED_HEADER_BG : "var(--bg-header)",
+                        background: active ? SORTED_HEADER_BG : HEADER_BG,
                         boxShadow: active ? SORTED_EDGE : undefined,
                         borderBottom: "1px solid var(--border-color)",
                         borderRight: "1px solid var(--border-color)",

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { TerminalView } from "../terminal/TerminalView";
 import { Toggle } from "../common/Toggle";
 import { ConnLamp } from "../common/ConnLamp";
@@ -122,6 +123,20 @@ function RemoteConnectDialogInner({
   // of its own to conflict with it.
   const currentMachineLabel = host ? "" : project.remote?.label ?? "";
   const [machineDraft, setMachineDraft] = useState(currentMachineLabel);
+
+  // "Disconnect & end jobs": the *active* teardown — kills every running tmux
+  // session on this host before the ordinary disconnect, distinct from plain
+  // Disconnect which leaves them alive to reattach. Two-step confirm (this arms
+  // it) because killing jobs can't be undone. Target is the worker's own spec or
+  // the primary's `remote`.
+  const [killArm, setKillArm] = useState(false);
+  const killTarget = host
+    ? { user: host.user, host: host.host, port: host.port }
+    : {
+        user: project.remote?.user,
+        host: project.remote?.host ?? "",
+        port: project.remote?.port,
+      };
   useEffect(() => setMachineDraft(currentMachineLabel), [currentMachineLabel]);
   const commitMachineLabel = () => {
     const next = machineDraft.trim();
@@ -195,7 +210,7 @@ function RemoteConnectDialogInner({
   return createPortal(
     <div className="modal-backdrop modal-backdrop-elevated" onMouseDown={close}>
       <div
-        className="project-dialog remote-connect-dialog"
+        className="project-dialog dialog-framed remote-connect-dialog"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
@@ -207,6 +222,7 @@ function RemoteConnectDialogInner({
           <button type="button" className="dialog-close-btn" onClick={close}>×</button>
         </div>
 
+        <div className="dialog-scroll">
         <div className="remote-connect-target">
           <div className="remote-connect-location">
             <span className="remote-connect-location-label">Remote</span>
@@ -738,6 +754,37 @@ function RemoteConnectDialogInner({
               Disconnect
             </button>
           )}
+          {/* Active teardown: end every running tmux job on this host, then
+              disconnect. Distinct from plain Disconnect (which detaches and
+              leaves sessions alive to reattach). Only when SSH is up — there are
+              no host jobs to end otherwise. Two-step: the first click arms it. */}
+          {sshStatus === "connected" &&
+            (killArm ? (
+              <button
+                type="button"
+                className="vpn-disconnect-btn"
+                title="Confirm: this kills every running tmux session on the host — it can't be undone."
+                onClick={() => {
+                  setKillArm(false);
+                  void invoke("remote_kill_all_jobs", killTarget).catch(() => {});
+                  stopSsh();
+                  if (vpnConfig) stopVpn();
+                  disconnectRemote(project.id);
+                  close();
+                }}
+              >
+                Confirm: end all jobs
+              </button>
+            ) : (
+              <button
+                type="button"
+                title="Actively disconnect: end every running tmux job on this host and close the connection. Jobs are killed only on this click — never on an Eldrun restart."
+                onClick={() => setKillArm(true)}
+              >
+                Disconnect &amp; end jobs
+                <UntestedTag />
+              </button>
+            ))}
           {/* Only offered when there is something to forget — the keychain state
               (queried on mount) is the source of truth, not the toggles. Stays
               open afterwards so the emptied "Save password" toggles are visible
@@ -752,6 +799,7 @@ function RemoteConnectDialogInner({
             </button>
           )}
           <button type="button" onClick={close}>Close</button>
+        </div>
         </div>
       </div>
     </div>,

@@ -82,6 +82,7 @@ export interface SbatchField {
 /** The keys the directive form surfaces as labeled fields, in display order. */
 export const COMMON_SBATCH_KEYS = [
   "job-name",
+  "account",
   "partition",
   "time",
   "nodes",
@@ -96,6 +97,7 @@ export const COMMON_SBATCH_KEYS = [
  *  field in the form. Only the flags the form surfaces need an entry. */
 const SHORT_TO_LONG: Record<string, string> = {
   J: "job-name",
+  A: "account",
   p: "partition",
   t: "time",
   N: "nodes",
@@ -316,17 +318,21 @@ export interface InteractiveResources {
   mem?: string;
   gpus?: string;
   partition?: string;
+  /** SLURM account (`--account`). Mandatory on group-allocated clusters, where
+   *  an interactive `srun` with no account is rejected. */
+  account?: string;
 }
 
 /** Build the `srun --pty … bash -l` command that lands an interactive shell on a
  *  compute node (the compliant interactive path — never the login node). */
 export function buildInteractiveCommand(res: InteractiveResources): string {
   const parts = ["srun", "--pty"];
+  if (res.account?.trim()) parts.push(`--account=${res.account.trim()}`);
   if (res.partition?.trim()) parts.push(`--partition=${res.partition.trim()}`);
   if (res.time?.trim()) parts.push(`--time=${res.time.trim()}`);
   if (res.cpus?.trim()) parts.push(`--cpus-per-task=${res.cpus.trim()}`);
   if (res.mem?.trim()) parts.push(`--mem=${res.mem.trim()}`);
-  if (res.gpus?.trim()) parts.push(`--gres=gpu:${res.gpus.trim()}`);
+  if (res.gpus?.trim()) parts.push(`--gpus=${res.gpus.trim()}`);
   parts.push("bash", "-l");
   return parts.join(" ");
 }

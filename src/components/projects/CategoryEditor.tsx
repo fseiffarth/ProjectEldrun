@@ -73,13 +73,14 @@ export function CategoryEditor({
   return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
-        className="project-dialog category-editor"
+        className="project-dialog dialog-framed category-editor"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="settings-title-row">
           <h2>{project.name} — Categories</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
+        <div className="dialog-scroll">
         <div className="project-dialog-path">
           Tag this project to color and group it in the project cloud and the pill
           bar. A project can carry several categories; the first is its primary color.
@@ -133,6 +134,7 @@ export function CategoryEditor({
           <button type="button" onClick={() => void save()} disabled={saving}>
             {saving ? "Saving…" : "Save"}
           </button>
+        </div>
         </div>
       </div>
     </div>,

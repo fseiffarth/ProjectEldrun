@@ -54,24 +54,39 @@ pub fn watch_dir(
     }
 
     let emit_path = canonical.to_string_lossy().to_string();
-    // Trailing-edge debounce: each raw event bumps a shared generation and schedules
-    // an emit `DEBOUNCE` later that only fires if no newer event arrived in the
-    // meantime. A burst of raw events thus collapses into a single `fs-change`.
+    // Trailing-edge debounce: each raw event bumps a shared generation, and ONE
+    // long-lived thread waits out `DEBOUNCE` and emits only if no newer event
+    // arrived meanwhile. A burst of raw events thus collapses into a single
+    // `fs-change`.
+    //
+    // The generation counter used to be paired with a `std::thread::spawn` *per
+    // raw event*. That is fine at a handful of events and pathological at a burst:
+    // an unpacking install or a recursive size walk in the watched directory turns
+    // into thousands of thread spawns a second, each one only to sleep 200ms and
+    // find itself outdated. One parked thread does the same job at a fixed cost.
     let generation = Arc::new(AtomicU64::new(0));
+    let (tx, rx) = std::sync::mpsc::channel::<u64>();
+    {
+        let generation = Arc::clone(&generation);
+        std::thread::spawn(move || {
+            // Ends when the watcher (and with it the sender) is dropped.
+            while let Ok(seen) = rx.recv() {
+                std::thread::sleep(DEBOUNCE);
+                // Only the last event of a burst still matches — the rest have been
+                // superseded, and their queued messages are drained by this same
+                // check on the next iterations.
+                if generation.load(Ordering::SeqCst) == seen {
+                    let _ = app.emit("fs-change", &emit_path);
+                }
+            }
+        });
+    }
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
         if res.is_err() {
             return;
         }
         let my_gen = generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let app = app.clone();
-        let emit_path = emit_path.clone();
-        let generation = Arc::clone(&generation);
-        std::thread::spawn(move || {
-            std::thread::sleep(DEBOUNCE);
-            if generation.load(Ordering::SeqCst) == my_gen {
-                let _ = app.emit("fs-change", &emit_path);
-            }
-        });
+        let _ = tx.send(my_gen);
     })
     .map_err(|e| e.to_string())?;
 

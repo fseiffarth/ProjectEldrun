@@ -42,6 +42,7 @@ import {
 } from "./SettingsSubPanels";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
+import { useT, LANGUAGES, type Language, type TranslationKey } from "../../lib/i18n";
 import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
 import { canConnectVpnSilently } from "../../lib/vpnConnect";
@@ -681,22 +682,19 @@ function HelpPanel({ onBack }: { onBack: () => void }) {
 export type SettingsPanelKind = "main" | "global" | "filetypes" | "ollama" | "agents" | "shortcuts" | "git" | "vpn" | "remoteHosts" | "archive" | "scaffoldRepair" | "help";
 
 /** Sub-panel navigation shown as a card menu at the foot of the main settings
- *  panel (styled like the Lessons / How-to-start menus). */
-const SETTINGS_NAV: {
-  panel: Exclude<SettingsPanelKind, "main" | "ollama">;
-  title: string;
-  blurb: string;
-}[] = [
-  { panel: "git", title: "Git Hosting", blurb: "Hosting profile, access token, and publishing." },
-  { panel: "vpn", title: "VPN Auto-Connect", blurb: "Arm a stored tunnel to connect on launch." },
-  { panel: "remoteHosts", title: "Remote Connections", blurb: "Set a standard path per SSH host." },
-  { panel: "global", title: "Global Apps", blurb: "Toolbar launchers shown across every project." },
-  { panel: "filetypes", title: "File Type Apps", blurb: "Choose which app opens each file type." },
-  { panel: "agents", title: "Manage Agents", blurb: "Install or update the agent CLIs." },
-  { panel: "shortcuts", title: "Keyboard Shortcuts", blurb: "Rebind the navigation chords." },
-  { panel: "archive", title: "Archived Projects", blurb: "Restore or permanently delete archived projects." },
-  { panel: "scaffoldRepair", title: "Repair Project Scaffold", blurb: "Regenerate missing scaffold files." },
-  { panel: "help", title: "Feature Guide", blurb: "Full glossary of Eldrun's features." },
+ *  panel (styled like the Lessons / How-to-start menus). Titles/blurbs are
+ *  resolved at render via i18n (`nav.<panel>.title` / `.blurb`). */
+const SETTINGS_NAV: Exclude<SettingsPanelKind, "main" | "ollama">[] = [
+  "git",
+  "vpn",
+  "remoteHosts",
+  "global",
+  "filetypes",
+  "agents",
+  "shortcuts",
+  "archive",
+  "scaffoldRepair",
+  "help",
 ];
 
 export function SettingsDialog({
@@ -706,10 +704,12 @@ export function SettingsDialog({
   onClose: () => void;
   initialPanel?: SettingsPanelKind;
 }) {
-  const { settings, setTheme, updateSettings } = useSettingsStore();
+  const { settings, setTheme, setLanguage, updateSettings } = useSettingsStore();
   const [panel, setPanel] = useState<SettingsPanelKind>(initialPanel);
+  const t = useT();
 
-  const currentTheme = (settings?.color_scheme ?? "light_lavender") as Theme;
+  const currentTheme = (settings?.color_scheme ?? "fancy_dark") as Theme;
+  const currentLang = (settings?.language ?? "en") as Language;
 
   // Live power state for the Energy Saver help line.
   const energyMode = settings?.energy_saver ?? "battery";
@@ -737,12 +737,12 @@ export function SettingsDialog({
         {panel === "main" && (
           <>
             <div className="settings-title-row">
-              <h2>Settings</h2>
+              <h2>{t("settings.title")}</h2>
               <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
             </div>
 
             <div className="settings-row">
-              <label>Theme</label>
+              <label>{t("settings.theme")}</label>
               <Dropdown
                 value={currentTheme}
                 onChange={(v) => void setTheme(v as Theme)}
@@ -750,14 +750,26 @@ export function SettingsDialog({
               />
             </div>
 
+            <div className="settings-row">
+              <label>
+                {t("settings.language")} <UntestedTag />
+              </label>
+              <Dropdown
+                value={currentLang}
+                onChange={(v) => void setLanguage(v as Language)}
+                options={LANGUAGES.map((l) => ({ value: l.value, label: l.label }))}
+              />
+            </div>
+            <p className="settings-help">{t("settings.language.help")}</p>
+
             <ToggleCard
-              label="Run scripts in background"
+              label={t("settings.runScriptsBg")}
               checked={settings?.run_scripts_in_background ?? true}
               onChange={(e) => void updateSettings({ run_scripts_in_background: e.target.checked })}
             />
 
             <ToggleCard
-              label="Claude remote control"
+              label={t("settings.claudeRemote")}
               checked={settings?.agent_remote_control ?? true}
               onChange={(e) => void updateSettings({ agent_remote_control: e.target.checked })}
               help={
@@ -770,7 +782,7 @@ export function SettingsDialog({
             />
 
             <ToggleCard
-              label="Headless remote connections"
+              label={t("settings.headlessRemote")}
               checked={settings?.connections_headless ?? true}
               onChange={(e) => void updateSettings({ connections_headless: e.target.checked })}
               help={
@@ -786,7 +798,7 @@ export function SettingsDialog({
 
             {!IS_WINDOWS && (
               <ToggleCard
-                label="Persistent local sessions (tmux)"
+                label={t("settings.persistLocal")}
                 checked={settings?.persist_local_sessions ?? true}
                 onChange={(e) => void updateSettings({ persist_local_sessions: e.target.checked })}
                 help={
@@ -801,14 +813,14 @@ export function SettingsDialog({
             )}
 
             <div className="settings-row">
-              <label>Energy saver</label>
+              <label>{t("settings.energySaver")}</label>
               <Dropdown
                 value={energyMode}
                 onChange={(v) => void updateSettings({ energy_saver: v as "off" | "battery" | "always" })}
                 options={[
-                  { value: "off", label: "Off" },
-                  { value: "battery", label: "On battery" },
-                  { value: "always", label: "Always" },
+                  { value: "off", label: t("energy.off") },
+                  { value: "battery", label: t("energy.battery") },
+                  { value: "always", label: t("energy.always") },
                 ]}
               />
             </div>
@@ -820,12 +832,12 @@ export function SettingsDialog({
             </p>
 
             <ToggleCard
-              label="Debug mode"
+              label={t("settings.debug")}
               checked={settings?.debug ?? false}
               onChange={(e) => void updateSettings({ debug: e.target.checked })}
             />
 
-            <div className="settings-section-title">Experimental</div>
+            <div className="settings-section-title">{t("settings.experimental")}</div>
             <p className="settings-help">
               Features that are still moving. Each is off by default and{" "}
               <b>on by default in Debug mode</b> — so building Eldrun means seeing them
@@ -835,7 +847,7 @@ export function SettingsDialog({
             </p>
 
             <ToggleCard
-              label="Plan/Auto toggle on agent tabs"
+              label={t("settings.agentModeToggle")}
               checked={experimentalEnabled(settings, "agent_mode_toggle")}
               onChange={(e) => void updateSettings({ agent_mode_toggle: e.target.checked })}
               help={
@@ -852,7 +864,7 @@ export function SettingsDialog({
             />
 
             <ToggleCard
-              label="Python Run/Debug in the code viewer"
+              label={t("settings.pythonRunDebug")}
               checked={experimentalEnabled(settings, "python_run_debug")}
               onChange={(e) => void updateSettings({ python_run_debug: e.target.checked })}
               help={
@@ -868,24 +880,24 @@ export function SettingsDialog({
               }
             />
 
-            <div className="settings-section-title">Resource monitor</div>
+            <div className="settings-section-title">{t("settings.resourceMonitor")}</div>
             <div className="settings-toggle-card">
               <label className="settings-toggle-card-row">
-                <span>Show CPU usage</span>
+                <span>{t("settings.showCpu")}</span>
                 <Toggle
                   checked={settings?.show_cpu_usage ?? true}
                   onChange={(e) => void updateSettings({ show_cpu_usage: e.target.checked })}
                 />
               </label>
               <label className="settings-toggle-card-row">
-                <span>Show RAM usage</span>
+                <span>{t("settings.showRam")}</span>
                 <Toggle
                   checked={settings?.show_ram_usage ?? true}
                   onChange={(e) => void updateSettings({ show_ram_usage: e.target.checked })}
                 />
               </label>
               <label className="settings-toggle-card-row">
-                <span>Show GPU usage</span>
+                <span>{t("settings.showGpu")}</span>
                 <Toggle
                   checked={settings?.show_gpu_usage ?? true}
                   onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
@@ -898,44 +910,44 @@ export function SettingsDialog({
               </p>
             </div>
 
-            <div className="settings-section-title">Calendar</div>
+            <div className="settings-section-title">{t("settings.calendar")}</div>
             <div className="settings-row">
-              <label>Week starts on</label>
+              <label>{t("settings.weekStartsOn")}</label>
               <Dropdown
                 value={String(settings?.calendar_week_start ?? 0)}
                 onChange={(v) =>
                   void updateSettings({ calendar_week_start: Number(v) === 1 ? 1 : 0 })
                 }
                 options={[
-                  { value: "0", label: "Sunday" },
-                  { value: "1", label: "Monday" },
+                  { value: "0", label: t("day.sunday") },
+                  { value: "1", label: t("day.monday") },
                 ]}
               />
             </div>
             <div className="settings-row">
-              <label>Default view</label>
+              <label>{t("settings.defaultView")}</label>
               <Dropdown
                 value={settings?.calendar_default_view ?? "month"}
                 onChange={(v) =>
                   void updateSettings({ calendar_default_view: v as CalendarViewKind })
                 }
                 options={[
-                  { value: "day", label: "Day" },
-                  { value: "week", label: "Week" },
-                  { value: "multiweek", label: "Multiweek" },
-                  { value: "month", label: "Month" },
-                  { value: "agenda", label: "Agenda" },
-                  { value: "tasks", label: "Tasks" },
+                  { value: "day", label: t("view.day") },
+                  { value: "week", label: t("view.week") },
+                  { value: "multiweek", label: t("view.multiweek") },
+                  { value: "month", label: t("view.month") },
+                  { value: "agenda", label: t("view.agenda") },
+                  { value: "tasks", label: t("view.tasks") },
                 ]}
               />
             </div>
             <ToggleCard
-              label="24-hour clock"
+              label={t("settings.clock24")}
               checked={settings?.calendar_time_format_24h ?? false}
               onChange={(e) => void updateSettings({ calendar_time_format_24h: e.target.checked })}
             />
             <div className="settings-row">
-              <label>Day grid starts at</label>
+              <label>{t("settings.dayGridStart")}</label>
               <Dropdown
                 value={String(settings?.calendar_day_start_hour ?? 8)}
                 onChange={(v) => void updateSettings({ calendar_day_start_hour: Number(v) })}
@@ -946,19 +958,19 @@ export function SettingsDialog({
               />
             </div>
             <div className="settings-row">
-              <label>Default reminder</label>
+              <label>{t("settings.defaultReminder")}</label>
               <Dropdown
                 value={String(settings?.calendar_default_reminder_minutes ?? 0)}
                 onChange={(v) =>
                   void updateSettings({ calendar_default_reminder_minutes: Number(v) })
                 }
                 options={[
-                  { value: "0", label: "None" },
-                  { value: "5", label: "5 minutes before" },
-                  { value: "15", label: "15 minutes before" },
-                  { value: "30", label: "30 minutes before" },
-                  { value: "60", label: "1 hour before" },
-                  { value: "1440", label: "1 day before" },
+                  { value: "0", label: t("reminder.none") },
+                  { value: "5", label: t("reminder.5") },
+                  { value: "15", label: t("reminder.15") },
+                  { value: "30", label: t("reminder.30") },
+                  { value: "60", label: t("reminder.60") },
+                  { value: "1440", label: t("reminder.1440") },
                 ]}
               />
             </div>
@@ -968,9 +980,9 @@ export function SettingsDialog({
               scroll to — earlier events are still there, just above the fold.
             </p>
 
-            <div className="settings-section-title">Hints & onboarding</div>
+            <div className="settings-section-title">{t("settings.hintsOnboarding")}</div>
             <ToggleCard
-              label="Show contextual hints"
+              label={t("settings.showHints")}
               checked={settings?.hints_enabled ?? true}
               onChange={(e) => void updateSettings({ hints_enabled: e.target.checked })}
             />
@@ -982,7 +994,7 @@ export function SettingsDialog({
                   window.dispatchEvent(new Event("eldrun:open-how-to-start"));
                 }}
               >
-                How to start...
+                {t("settings.howToStart")}
               </button>
               <button
                 type="button"
@@ -991,7 +1003,7 @@ export function SettingsDialog({
                   window.dispatchEvent(new Event("eldrun:start-tour"));
                 }}
               >
-                Take a tour
+                {t("settings.takeTour")}
               </button>
               <button
                 type="button"
@@ -1000,14 +1012,14 @@ export function SettingsDialog({
                   window.dispatchEvent(new Event("eldrun:open-lessons"));
                 }}
               >
-                Lessons
+                {t("settings.lessons")}
               </button>
               <button type="button" onClick={() => useHintsStore.getState().reset()}>
-                Reset hints
+                {t("settings.resetHints")}
               </button>
             </div>
 
-            <div className="settings-section-title">Layout</div>
+            <div className="settings-section-title">{t("settings.layout")}</div>
             <p className="settings-help">
               Window zoom scales the entire Eldrun interface — handy on 4K /
               high-DPI monitors. 100% is the default. Zoom is <strong>per
@@ -1016,7 +1028,7 @@ export function SettingsDialog({
               window and Ctrl&nbsp;0 resets it. <UntestedTag />
             </p>
             <div className="settings-row">
-              <label>Window zoom</label>
+              <label>{t("settings.windowZoom")}</label>
               <Dropdown
                 value={String(clampZoom(settings?.ui_zoom))}
                 onChange={(v) => {
@@ -1029,7 +1041,7 @@ export function SettingsDialog({
                   (z) => z >= MIN_UI_ZOOM && z <= MAX_UI_ZOOM,
                 ).map((z) => ({
                   value: String(z),
-                  label: `${Math.round(z * 100)}%${z === 1 ? " (default)" : ""}`,
+                  label: `${Math.round(z * 100)}%${z === 1 ? ` (${t("common.default")})` : ""}`,
                 }))}
               />
             </div>
@@ -1038,7 +1050,7 @@ export function SettingsDialog({
               Defaults to {DEFAULT_MIN_SUBWINDOW_PX}px when left blank.
             </p>
             <div className="settings-row">
-              <label htmlFor="min-subwindow-width">Min subwindow width (px)</label>
+              <label htmlFor="min-subwindow-width">{t("settings.minSubWidth")}</label>
               <input
                 id="min-subwindow-width"
                 type="number"
@@ -1055,7 +1067,7 @@ export function SettingsDialog({
               />
             </div>
             <div className="settings-row">
-              <label htmlFor="min-subwindow-height">Min subwindow height (px)</label>
+              <label htmlFor="min-subwindow-height">{t("settings.minSubHeight")}</label>
               <input
                 id="min-subwindow-height"
                 type="number"
@@ -1072,7 +1084,7 @@ export function SettingsDialog({
               />
             </div>
 
-            <div className="settings-section-title">Downloads</div>
+            <div className="settings-section-title">{t("settings.downloads")}</div>
             <p className="settings-help">
               Folders scanned by the right-panel Downloads section (the 📥 toggle),
               for quickly copying freshly downloaded files into a project. Read-only
@@ -1082,7 +1094,7 @@ export function SettingsDialog({
             <div className="settings-list">
               {(settings?.download_sources ?? []).length === 0 ? (
                 <div className="settings-empty">
-                  No folders added — the system Downloads folder is used.
+                  {t("settings.noDownloadFolders")}
                 </div>
               ) : (
                 (settings?.download_sources ?? []).map((dir) => (
@@ -1110,7 +1122,7 @@ export function SettingsDialog({
                       }
                       title="Remove this folder"
                     >
-                      Remove
+                      {t("common.remove")}
                     </button>
                   </div>
                 ))
@@ -1132,13 +1144,13 @@ export function SettingsDialog({
                   })();
                 }}
               >
-                Add download folder...
+                {t("settings.addDownloadFolder")}
               </button>
             </div>
 
-            <div className="settings-section-title">Usage stats</div>
+            <div className="settings-section-title">{t("settings.usageStats")}</div>
             <ToggleCard
-              label="Show the recap at the start of each day"
+              label={t("settings.dailyRecap")}
               checked={settings?.daily_stats_recap ?? true}
               onChange={(e) => void updateSettings({ daily_stats_recap: e.target.checked })}
               help={
@@ -1157,20 +1169,24 @@ export function SettingsDialog({
                 window.dispatchEvent(new CustomEvent(OPEN_STATS_EVENT));
               }}
             >
-              Open usage stats
+              {t("settings.openUsageStats")}
             </button>
 
-            <div className="settings-section-title">More settings</div>
+            <div className="settings-section-title">{t("settings.moreSettings")}</div>
             <div className="settings-nav-list">
-              {SETTINGS_NAV.map((item) => (
+              {SETTINGS_NAV.map((panelKind) => (
                 <button
-                  key={item.panel}
+                  key={panelKind}
                   type="button"
                   className="settings-nav-item"
-                  onClick={() => setPanel(item.panel)}
+                  onClick={() => setPanel(panelKind)}
                 >
-                  <span className="settings-nav-item-title">{item.title}</span>
-                  <span className="settings-nav-item-blurb">{item.blurb}</span>
+                  <span className="settings-nav-item-title">
+                    {t(`nav.${panelKind}.title` as TranslationKey)}
+                  </span>
+                  <span className="settings-nav-item-blurb">
+                    {t(`nav.${panelKind}.blurb` as TranslationKey)}
+                  </span>
                 </button>
               ))}
             </div>

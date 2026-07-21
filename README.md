@@ -13,7 +13,9 @@
 
 > **You don't open applications — you open projects.**
 > Eldrun is a project-centric desktop layer that swaps your whole working
-> context as one unit, with AI agent terminals and in-app file viewers built in.
+> context as one unit, with AI agent terminals and in-app file viewers built in
+> — and it runs that work on remote machines and HPC clusters, not just your
+> laptop.
 
 Eldrun is a **project-centric desktop layer**, not just an app that launches or
 embeds other apps: projects own their windows and desktop context, and selecting
@@ -23,6 +25,11 @@ on top, living *inside* a project once its desktop is restored. Built with
 **Tauri 2 + React + TypeScript**. Linux (X11 / KDE Wayland) and Windows both get
 native workspace, app-launch, default-app, and download integration today; macOS
 runs as a shell with a no-op workspace backend (on the roadmap).
+
+Eldrun is also **strong at working across machines**: it manages a fleet of
+remote hosts, runs agents, shells, and jobs on them over SSH, and drives HPC /
+SLURM clusters — all from the same project cockpit. See
+[Remote machines & HPC clusters](#remote-machines--hpc-clusters).
 
 ---
 
@@ -262,6 +269,37 @@ update-desktop-database ~/.local/share/applications/
 - **Hover-revealed panels**: the global app bar and right file panel appear on
   pointer hover and disappear when the pointer leaves, keeping the center
   terminal unobstructed; the right panel can also be pinned permanently open.
+
+### Remote machines & HPC clusters
+
+Eldrun treats remote hosts as first-class: it **manages a fleet of machines** and
+**runs your work on them**, from a single SSH box to a full HPC cluster.
+
+- **Machine hub**: register SSH hosts once (independent of any project) in the
+  header's machines indicator — see a live CPU/GPU usage bar per machine,
+  connect/disconnect, arm silent auto-connect on launch, and drag a machine onto
+  a project to attach it as a compute host.
+- **Run on the remote host**: a project can point at a host and run its agent,
+  shell, and Python tabs *on that host* over SSH, with the file tree, Git, and
+  in-app viewers all reading the remote tree. VPN-gated hosts bring up an OpenVPN
+  tunnel first.
+- **Many machines per project**: beyond the primary host, add extra *worker*
+  machines — their code is kept in sync from the project (one-way, tracked files
+  only) and their experiment outputs are pulled back on demand. A worker on a
+  **shared filesystem** (e.g. an HPC compute node on a shared home) is used in
+  place, with nothing copied and no Git run on it.
+- **Persistent sessions**: a long run lives in a tmux session per shell tab, so
+  a job survives an SSH drop, a laptop sleep, a VPN drop, or Eldrun quitting, and
+  the tab reattaches on relaunch. A **Sessions view** lists every running session
+  across all connected machines, with per-row attach/rename/kill.
+- **Remote system monitor**: a host's CPU, memory, and GPUs (AMD + NVIDIA,
+  including per-process GPU memory) are sampled over the same SSH connection and
+  shown alongside the local machine's.
+- **HPC / SLURM** *(built, but untested pending real-cluster QA)*: submit a batch
+  script with `sbatch`, watch its live log, list and cancel your queued jobs, and
+  open an interactive compute-node shell via `srun` — without memorizing the
+  commands. A guided **HPC pipeline wizard** walks a cluster newcomer through
+  login → project → data upload → job → watch.
 
 ### In-app file viewers
 

@@ -82,11 +82,12 @@ export function PythonInterpreterWindow({
 
   return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="project-dialog" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="project-dialog dialog-framed" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-title-row">
           <h2>{project.name} — Python interpreter</h2>
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
+        <div className="dialog-scroll">
         <p className="settings-help">
           Used by the code viewer's Run and Debug buttons. Auto-detect is right for
           almost every project — pin one only when your environment lives somewhere
@@ -146,6 +147,7 @@ export function PythonInterpreterWindow({
           <button type="button" onClick={() => void save()} disabled={busy || found === null}>
             {busy ? "Saving…" : "Save"}
           </button>
+        </div>
         </div>
       </div>
     </div>,

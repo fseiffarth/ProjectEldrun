@@ -57,6 +57,18 @@ pub struct ProcSample {
     pub user: String,
 }
 
+/// One interactive login session on the sampled host, from `who`. Mirrors the
+/// connect-time remote-usage dialog's `UserSession`: `user` is the login name,
+/// `tty` the terminal, `detail` the rest of the `who` line verbatim (login time,
+/// origin `(host)`). Populated **only on the remote path** — the local pane never
+/// shows the "Logged in" panel, since local sampling is always just this user.
+#[derive(Serialize, Clone, Default)]
+pub struct LoginSession {
+    pub user: String,
+    pub tty: String,
+    pub detail: String,
+}
+
 /// A single whole-system sample backing the htop-like monitor pane. Everything
 /// here is a *cumulative* counter or an instantaneous gauge; the pane computes
 /// per-core and per-process CPU% by diffing two of these (see the module notes on
@@ -96,6 +108,13 @@ pub struct SystemSnapshot {
     /// desktops don't wire one) or the backend can't read one — never a fake zero.
     #[serde(default)]
     pub mem_temp_c: Option<f64>,
+    /// Interactive login sessions on the host (from `who`), backing the pane's
+    /// "Logged in" panel — the same per-user session view the connect-time
+    /// remote-usage dialog shows. Populated only on the **remote** path; empty
+    /// locally (the panel is remote-only, since local sampling is always just this
+    /// user, so it would be a single trivial row).
+    #[serde(default)]
+    pub sessions: Vec<LoginSession>,
 }
 
 /// Generation counter bumped whenever a PTY is spawned or dies (see
@@ -365,6 +384,25 @@ fn username_for(uid: u32, map: &HashMap<u32, String>) -> String {
         .unwrap_or_else(|| format!("#{uid}"))
 }
 
+/// Parse `who` output into one [`LoginSession`] per non-blank line. Each line is
+/// `user  tty  <login-time> (<origin>)`; the first two whitespace fields are the
+/// user and tty, everything after is kept verbatim as `detail`. Matches
+/// `services::remote_usage::parse_who` so the pane's "Logged in" panel reads
+/// identically to the connect-time dialog's.
+fn parse_who(content: &str) -> Vec<LoginSession> {
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| {
+            let mut parts = l.split_whitespace();
+            let user = parts.next()?.to_string();
+            let tty = parts.next().unwrap_or("").to_string();
+            let detail = parts.collect::<Vec<_>>().join(" ");
+            Some(LoginSession { user, tty, detail })
+        })
+        .collect()
+}
+
 /// hwmon `name` values that identify a CPU **package** temperature sensor: Intel
 /// exposes `coretemp`, AMD Zen `k10temp` (or the out-of-tree `zenpower`), some
 /// ARM/embedded boards `cpu_thermal`. Anything else (a GPU's `amdgpu`, a
@@ -418,6 +456,8 @@ fn pick_cpu_temp(channels: &[(Option<String>, f64)]) -> Option<f64> {
 /// host's GPUs — `NVSMI`/`NVPROC` lines are the `nvidia-smi` CSV verbatim (reusing
 /// the same parsers as the local read), and `AMD\t<card>\t<key>\t<value>` lines
 /// ship one DRM sysfs file each so `parse_drm_card` runs unchanged on them. The
+/// `@WHO@` block carries the host's `who` output verbatim for the pane's "Logged
+/// in" panel ([`parse_who`]). The
 /// `@PASSWD@` block ships the host's `getent passwd` (or `/etc/passwd`) verbatim so
 /// [`parse_passwd`] can map each process's owner uid to a name on the *host's*
 /// account database, not this machine's. Under `@PROCS@` comes one `S`/`U`/`R`/`C`
@@ -431,6 +471,7 @@ printf '@STAT@\n'; cat /proc/stat 2>/dev/null
 printf '@MEM@\n'; cat /proc/meminfo 2>/dev/null
 printf '@LOAD@\n'; cat /proc/loadavg 2>/dev/null
 printf '@UP@\n'; cat /proc/uptime 2>/dev/null
+printf '@WHO@\n'; who 2>/dev/null
 printf '@GPU@\n'
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit,clocks.sm,clocks.mem,fan.speed,driver_version,pcie.link.gen.current,pcie.link.width.current --format=csv,noheader,nounits 2>/dev/null | sed 's/^/NVSMI\t/'
@@ -506,6 +547,7 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
         Mem,
         Load,
         Up,
+        Who,
         Gpu,
         CpuTemp,
         MemTemp,
@@ -518,6 +560,7 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
     let mut mem_buf = String::new();
     let mut load_buf = String::new();
     let mut up_buf = String::new();
+    let mut who_buf = String::new();
     // The host's passwd db (shipped under @PASSWD@), accumulated then parsed into a
     // uid → name map the instant @PROCS@ starts — fully built before any process
     // line, so `flush` can resolve each owner immediately.
@@ -604,6 +647,10 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
                 sec = Sec::Up;
                 continue;
             }
+            "@WHO@" => {
+                sec = Sec::Who;
+                continue;
+            }
             "@GPU@" => {
                 sec = Sec::Gpu;
                 continue;
@@ -653,6 +700,10 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
             Sec::Up => {
                 up_buf.push_str(line);
                 up_buf.push('\n');
+            }
+            Sec::Who => {
+                who_buf.push_str(line);
+                who_buf.push('\n');
             }
             Sec::Gpu => {
                 if let Some(rest) = line.strip_prefix("NVSMI\t") {
@@ -752,6 +803,7 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
     gpus.extend(crate::gpustat::parse_nvidia_smi(&nvsmi));
     let gpu_procs = crate::gpustat::parse_nvidia_apps(&nvproc);
     let cpu_temp_c = pick_cpu_temp(&cpu_temp_channels);
+    let sessions = parse_who(&who_buf);
 
     SystemSnapshot {
         supported: true,
@@ -770,6 +822,7 @@ pub fn parse_remote_snapshot(raw: &str) -> SystemSnapshot {
         gpu_procs,
         cpu_temp_c,
         mem_temp_c,
+        sessions,
     }
 }
 
@@ -1080,6 +1133,7 @@ mod platform {
             gpu_procs: Vec::new(),
             cpu_temp_c: cpu_temp_c(),
             mem_temp_c: mem_temp_c(),
+            sessions: Vec::new(), // remote-only (the pane's "Logged in" panel)
         }
     }
 }
@@ -1346,6 +1400,7 @@ mod platform {
             gpu_procs: Vec::new(),
             cpu_temp_c: None, // no cheap CPU thermal read on this backend
             mem_temp_c: None, // nor a memory thermal read
+            sessions: Vec::new(), // remote-only (the pane's "Logged in" panel)
         }
     }
 }
@@ -1686,6 +1741,7 @@ mod platform {
             gpu_procs: Vec::new(),
             cpu_temp_c: None, // no cheap CPU thermal read on this backend
             mem_temp_c: None, // nor a memory thermal read
+            sessions: Vec::new(), // remote-only (the pane's "Logged in" panel)
         }
     }
 }
@@ -2062,9 +2118,9 @@ SwapFree:        2000000 kB
     #[test]
     fn parse_remote_snapshot_assembles_from_script_output() {
         // A minimal but complete capture in the wire format REMOTE_SNAPSHOT_SCRIPT
-        // emits: a CLK line, four `@SECTION@` blocks of raw kernel files, then
-        // S/R/C triples per process. One core, 8 GiB RAM, two processes — one with
-        // a real cmdline, one kernel thread (empty cmdline → `[comm]` fallback).
+        // emits: a CLK line, `@SECTION@` blocks of raw kernel files (incl. `who`),
+        // then S/R/C triples per process. One core, 8 GiB RAM, two processes — one
+        // with a real cmdline, one kernel thread (empty cmdline → `[comm]` fallback).
         let raw = "CLK\t100\n\
 @STAT@\n\
 cpu  100 0 50 800 0 0 0 0 0 0\n\
@@ -2079,6 +2135,10 @@ SwapFree:        2048000 kB\n\
 0.50 0.40 0.30 1/234 5678\n\
 @UP@\n\
 123456.78 987654.32\n\
+@WHO@\n\
+alice    pts/0        2026-07-18 09:12 (203.0.113.5)\n\
+alice    pts/1        2026-07-18 09:20 (203.0.113.5)\n\
+bob      tty1         2026-07-17 22:03\n\
 @PROCS@\n\
 S\t42 (bash) S 1 42 42 0 -1 4194304 100 0 0 0 12 8 0 0 20 0 3 0 999 0 0\n\
 R\t2048\n\
@@ -2117,6 +2177,15 @@ C\t\n";
         assert_eq!(kworker.pid, 7);
         assert_eq!(kworker.rss_kib, 0);
         assert_eq!(kworker.cmdline, "[kworker/0:1]");
+
+        // `who` → login sessions for the "Logged in" panel: three sessions across
+        // two users, the tail of each line kept verbatim as `detail`.
+        assert_eq!(snap.sessions.len(), 3);
+        assert_eq!(snap.sessions[0].user, "alice");
+        assert_eq!(snap.sessions[0].tty, "pts/0");
+        assert!(snap.sessions[0].detail.contains("203.0.113.5"));
+        assert_eq!(snap.sessions[2].user, "bob");
+        assert_eq!(snap.sessions[2].tty, "tty1");
     }
 
     #[test]

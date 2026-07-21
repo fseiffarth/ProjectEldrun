@@ -276,7 +276,10 @@ export function VpnIndicator() {
       </button>
       {open && (
         <div className="tab-new-menu vpn-indicator-menu" role="menu">
+          {/* Pinned title; the region below it scrolls so the scrollbar starts
+              beneath the header (unified `.menu-scroll-region` shape). */}
           <div className="tab-new-menu-group-label">OpenVPN</div>
+          <div className="menu-scroll-region">
           <div className="vpn-indicator-note">
             A tunnel routes <strong>this whole computer's</strong> traffic, not just
             Eldrun's — including your browser — for as long as it is up.
@@ -419,6 +422,7 @@ export function VpnIndicator() {
             </div>
           )}
           {error && <div className="vpn-indicator-error">{error}</div>}
+          </div>
         </div>
       )}
     </div>

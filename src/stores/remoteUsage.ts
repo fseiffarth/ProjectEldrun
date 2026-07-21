@@ -1,18 +1,25 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { PRIMARY_HOST } from "./remoteStatus";
 
 /**
- * Remote-host resource snapshot taken right after a project's SSH connection
- * comes up (see `services::remote_usage` / `commands::remote::remote_connect`).
+ * Host usage reports — who's logged in, CPU/load, memory, GPU, top processes
+ * (see `services::remote_usage` for the probe).
  *
- * Pushed, not pulled: `remote_connect` fires the probe fire-and-forget after
- * every connect (manual dialog and silent auto-connect alike) — primary AND
- * any multi-host `compute_hosts` worker — and emits it as a
- * `remote-usage-report` event tagged with `hostId`, since a probe that could
- * block or fail must never delay activation. `RemoteUsageWarningDialog`
- * listens for the event and renders ONE combined dialog per project, with a
- * section per host; this store holds the latest report per `(project, host)`.
+ * **On demand only.** The dialog is opened by the header Machines menu's
+ * "Remote host usage…" button and by nothing else — a connect no longer pops it
+ * up. `remote_connect` still fires its probe fire-and-forget and emits a
+ * `remote-usage-report` event per project host; this store keeps those reports
+ * so the dialog has something to show the instant it opens, but receiving one
+ * never puts it on screen.
+ *
+ * **Keyed by host, not by project.** The dialog lives in the *Machines* menu, so
+ * its subject is the machine list: every global machine, in that list's order,
+ * plus whichever of the active project's own hosts aren't already in it. A
+ * project id can't key that, hence [`UsageTarget`] and its `key` — and hence two
+ * probe commands behind one `recheck`: a global machine authenticates ad-hoc
+ * (`global_machine_usage_check`), a project host rides its pooled ControlMaster
+ * (`remote_usage_check`). Both run the same script through the same parser, so
+ * the two kinds of section read identically.
  */
 
 export interface UserSession {
@@ -55,53 +62,67 @@ export interface RemoteUsageReport {
   reasons: string[];
 }
 
+/** One host the dialog shows a section for. `kind` decides which probe command
+ *  reads it; `key` is how its report is stored and must be stable across
+ *  reopens (so a cached report survives). */
+export type UsageTarget =
+  | {
+      kind: "machine";
+      key: string;
+      label: string;
+      user?: string;
+      host: string;
+      port?: number;
+    }
+  | { kind: "projectHost"; key: string; label: string; projectId: string; hostId: string };
+
+/** Report key for a global machine (`stores/globalMachines` id). */
+export const machineKey = (id: string) => `gm:${id}`;
+/** Report key for one of a project's own hosts (`"primary"` or a worker id). */
+export const projectHostKey = (projectId: string, hostId: string) =>
+  `ph:${projectId}:${hostId}`;
+
 interface RemoteUsageStore {
-  /** Latest report per project id, per host id (`"primary"` or a
-   *  `compute_hosts` worker id) — every host currently shown in the combined
-   *  dialog gets its own entry. */
-  reports: Record<string, Record<string, RemoteUsageReport>>;
-  /** Projects whose current (combined, all-hosts) dialog has been dismissed by
-   *  the user. Cleared whenever a fresh report for ANY of that project's hosts
-   *  arrives, so the next connect's usage report is shown again rather than
-   *  staying silenced forever. */
-  dismissed: Record<string, boolean>;
-  setReport: (projectId: string, hostId: string, report: RemoteUsageReport) => void;
-  dismiss: (projectId: string) => void;
-  /** On-demand recheck of one host (the dialog's "Recheck" action calls this
-   *  once per host section it's showing), awaited directly rather than
-   *  round-tripped through the event. `hostId` defaults to the primary. */
-  recheck: (projectId: string, hostId?: string) => Promise<void>;
+  /** Latest report per [`UsageTarget`] key. */
+  reports: Record<string, RemoteUsageReport>;
+  /** Whether the usage dialog is on screen. The ONLY thing that sets it is the
+   *  Machines menu's "Remote host usage…" button — an arriving report never
+   *  does, which is what makes the dialog on-demand rather than a connect-time
+   *  popup. */
+  isOpen: boolean;
+  setReport: (key: string, report: RemoteUsageReport) => void;
+  open: () => void;
+  close: () => void;
+  /** On-demand read of one host, awaited directly rather than round-tripped
+   *  through the connect-time event. Best-effort: a failed probe (host down,
+   *  credential gone) leaves whatever was cached, so a machine that can't be
+   *  reached simply shows no reading instead of tearing down the dialog. */
+  recheck: (target: UsageTarget) => Promise<void>;
 }
 
 export const useRemoteUsageStore = create<RemoteUsageStore>((set) => ({
   reports: {},
-  dismissed: {},
+  isOpen: false,
 
-  setReport: (projectId, hostId, report) =>
-    set((s) => ({
-      reports: {
-        ...s.reports,
-        [projectId]: { ...s.reports[projectId], [hostId]: report },
-      },
-      dismissed: { ...s.dismissed, [projectId]: false },
-    })),
+  setReport: (key, report) => set((s) => ({ reports: { ...s.reports, [key]: report } })),
 
-  dismiss: (projectId) =>
-    set((s) => ({ dismissed: { ...s.dismissed, [projectId]: true } })),
+  open: () => set({ isOpen: true }),
+  close: () => set({ isOpen: false }),
 
-  recheck: async (projectId, hostId = PRIMARY_HOST) => {
+  recheck: async (target) => {
     try {
-      const report = await invoke<RemoteUsageReport>("remote_usage_check", {
-        projectId,
-        hostId,
-      });
-      set((s) => ({
-        reports: {
-          ...s.reports,
-          [projectId]: { ...s.reports[projectId], [hostId]: report },
-        },
-        dismissed: { ...s.dismissed, [projectId]: false },
-      }));
+      const report =
+        target.kind === "machine"
+          ? await invoke<RemoteUsageReport>("global_machine_usage_check", {
+              user: target.user,
+              host: target.host,
+              port: target.port,
+            })
+          : await invoke<RemoteUsageReport>("remote_usage_check", {
+              projectId: target.projectId,
+              hostId: target.hostId,
+            });
+      set((s) => ({ reports: { ...s.reports, [target.key]: report } }));
     } catch {
       // Best-effort, like the connect-time probe — a failed recheck just
       // leaves the previous report (or none) in place.

@@ -41,6 +41,16 @@ export interface ProcSample {
   user: string;
 }
 
+/** One interactive login session on the sampled host (a `who` row). Populated
+ *  only on the **remote** path — the local pane never shows the "Logged in"
+ *  panel, since local sampling is always just this user. */
+export interface LoginSession {
+  user: string;
+  tty: string;
+  /** The rest of the `who` line verbatim — login time and `(origin)`. */
+  detail: string;
+}
+
 export interface SystemSnapshot {
   supported: boolean;
   clk_tck: number;
@@ -65,13 +75,25 @@ export interface SystemSnapshot {
   /** Hottest DIMM temperature in °C, or null/undefined when the board exposes no
    *  on-module sensor (`jc42`/`spd5118`) — most desktops don't wire one. */
   mem_temp_c?: number | null;
+  /** Interactive login sessions on the host (from `who`), backing the "Logged in"
+   *  panel — the same per-user session view the connect-time remote-usage dialog
+   *  shows. Populated only on the remote path; empty locally. */
+  sessions?: LoginSession[];
 }
 
 interface Props {
   /** Owning project, or `null` in the root scope. A remote (SSH) project unlocks
-   *  a source toggle so the pane can sample the **host** instead of this machine. */
+   *  a source toggle so the pane can sample the **host** instead of this machine.
+   *  Ignored when `globalMachine` is set. */
   projectId: string | null;
   visible: boolean;
+  /** When set, the pane skips the project/host machinery entirely and samples
+   *  this ad-hoc global machine (`stores/globalMachines.ts` — no project, no
+   *  pooled ControlMaster) via `global_machine_monitor_snapshot`, opened by
+   *  `GlobalMachineMonitorDialog` from the header's Machines menu in place of
+   *  its old small inline usage bars. Always treated as a remote source (no
+   *  "This machine" toggle — there is only the one machine to show). */
+  globalMachine?: { user?: string; host: string; port?: number };
 }
 
 /** Which machine the pane samples: this one, or a connected remote project's host.
@@ -236,6 +258,40 @@ function groupByUser(rows: ProcRow[]): UserRow[] {
   return [...byUser.values()].sort((a, b) => b.cpu - a.cpu);
 }
 
+/** One logged-in user: how many interactive sessions they hold, plus their summed
+ *  CPU%/MEM% from the full process table. Same look as the connect-time
+ *  remote-usage dialog's "Logged in" row. */
+interface SessionRow {
+  user: string;
+  sessions: number;
+  cpu: number;
+  mem: number;
+}
+
+/** Collapse `who`'s login sessions into one row per user — a session count plus
+ *  that user's CPU%/MEM% looked up from the full-table `byUser` breakdown, so the
+ *  compute figures are exact rather than a `ps` sample (which is what the connect
+ *  dialog has to settle for). Sorted by CPU%, busiest first. Unlike "By user"
+ *  (every process owner, including system daemons), this lists only users with an
+ *  actual interactive login — the "who else is on this shared machine?" view. */
+function groupLoginSessions(
+  sessions: LoginSession[],
+  byUser: Map<string, UserRow>,
+): SessionRow[] {
+  const counts = new Map<string, number>();
+  const order: string[] = [];
+  for (const s of sessions) {
+    if (!counts.has(s.user)) order.push(s.user);
+    counts.set(s.user, (counts.get(s.user) ?? 0) + 1);
+  }
+  return order
+    .map((user) => {
+      const u = byUser.get(user);
+      return { user, sessions: counts.get(user) ?? 0, cpu: u?.cpu ?? 0, mem: u?.mem ?? 0 };
+    })
+    .sort((a, b) => b.cpu - a.cpu);
+}
+
 // ── Small presentational bits ─────────────────────────────────────────────────
 
 function Meter({
@@ -344,7 +400,7 @@ function GpuProcList({ procs }: { procs: GpuProc[] }) {
   );
 }
 
-export function SystemMonitorPane({ projectId, visible }: Props) {
+export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) {
   const [pair, setPair] = useState<{ snap: SystemSnapshot; prev: SystemSnapshot | null } | null>(
     null,
   );
@@ -360,6 +416,8 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
   const [procOpen, setProcOpen] = useState(true);
   // The per-user breakdown is collapsible too, expanded by default when present.
   const [usersOpen, setUsersOpen] = useState(true);
+  // The logged-in-sessions panel (remote hosts only), likewise collapsible.
+  const [sessionsOpen, setSessionsOpen] = useState(true);
   const prevRef = useRef<SystemSnapshot | null>(null);
 
   // A remote (SSH) project can sample its primary host, and — multi-host
@@ -392,11 +450,19 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
     setSource(next);
   }
 
-  const onHost = source !== "local";
-  const selectedHostId = onHost ? (source as { hostId: string }).hostId : null;
-  const hostConnected = onHost && selectedHostId != null && connState(selectedHostId) === "connected";
+  // A global machine has no project/host machinery at all — it is always
+  // treated as "on a remote host" (the sessions/by-user panels, the remote poll
+  // cadence) but skips the source toggle and the pooled-connection gate: it
+  // authenticates ad-hoc on every poll, same as the dialog's old small usage bar.
+  const onHost = !!globalMachine || source !== "local";
+  const selectedHostId = !globalMachine && onHost ? (source as { hostId: string }).hostId : null;
+  const hostConnected = globalMachine
+    ? true
+    : onHost && selectedHostId != null && connState(selectedHostId) === "connected";
   const remoteHost = onHost
-    ? (hosts.find((h) => h.id === selectedHostId)?.label ?? "the host")
+    ? (globalMachine
+        ? "this machine"
+        : (hosts.find((h) => h.id === selectedHostId)?.label ?? "the host"))
     : "the host";
   // Whether the pane is actually sampling (and so the table/meters below apply).
   const sampling = visible && !(onHost && !hostConnected);
@@ -416,10 +482,16 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
     let cancelled = false;
     async function poll() {
       try {
-        const next = await invoke<SystemSnapshot>("system_monitor_snapshot", {
-          projectId: onHost ? projectId : null,
-          hostId: onHost ? selectedHostId : null,
-        });
+        const next = globalMachine
+          ? await invoke<SystemSnapshot>("global_machine_monitor_snapshot", {
+              user: globalMachine.user,
+              host: globalMachine.host,
+              port: globalMachine.port,
+            })
+          : await invoke<SystemSnapshot>("system_monitor_snapshot", {
+              projectId: onHost ? projectId : null,
+              hostId: onHost ? selectedHostId : null,
+            });
         if (cancelled) return;
         const prev = prevRef.current;
         prevRef.current = next;
@@ -449,7 +521,15 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [sampling, onHost, projectId, selectedHostId]);
+  }, [
+    sampling,
+    onHost,
+    projectId,
+    selectedHostId,
+    globalMachine?.user,
+    globalMachine?.host,
+    globalMachine?.port,
+  ]);
 
   // Every process, before the table's text filter — the per-user breakdown sums
   // over the whole machine, not just what the filter happens to show.
@@ -470,6 +550,16 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
 
   const userRows = useMemo(() => groupByUser(allRows), [allRows]);
   const hasUserData = userRows.length > 0;
+
+  // Logged-in sessions (from the host's `who`), attributed CPU/MEM from the
+  // full-table per-user sums. Remote-only — a local snapshot carries no sessions.
+  const sessionRows = useMemo(() => {
+    const sessions = pair?.snap.sessions;
+    if (!sessions || sessions.length === 0) return [];
+    const byUser = new Map(userRows.map((u) => [u.user, u]));
+    return groupLoginSessions(sessions, byUser);
+  }, [pair, userRows]);
+  const hasSessions = sessionRows.length > 0;
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -665,6 +755,66 @@ export function SystemMonitorPane({ projectId, visible }: Props) {
               </div>
             )}
           </div>
+
+          {/* Logged-in sessions: who is actually logged in on this shared host
+              right now (from `who`), grouped by user with a session count — the
+              same "Logged in" panel the connect-time remote-usage dialog shows,
+              rendered in its exact look. Remote-host only (a local snapshot carries
+              no sessions), and distinct from "By user" below: this lists only users
+              with an interactive login, that one every process owner. Shown for
+              **every** connected host, even when empty — a compute node reached only
+              over the pooled (non-PTY) master has no utmp entry of its own, so `who`
+              is legitimately empty there; the empty note makes that explicit rather
+              than silently dropping the section (which read as "only the primary
+              has this panel"). */}
+          {onHost && (
+            <>
+              <div className="sysmon-proc-head">
+                <button
+                  type="button"
+                  className="sysmon-proc-toggle"
+                  onClick={() => setSessionsOpen((v) => !v)}
+                  aria-expanded={sessionsOpen}
+                  title={sessionsOpen ? "Collapse logged-in sessions" : "Expand logged-in sessions"}
+                >
+                  <span className="sysmon-proc-caret">{sessionsOpen ? "▾" : "▸"}</span>
+                  <span className="sysmon-group-title">Logged in</span>
+                  <UntestedTag />
+                </button>
+                <span className="sysmon-count">
+                  {sessionRows.length} {sessionRows.length === 1 ? "user" : "users"}
+                </span>
+              </div>
+              {sessionsOpen &&
+                (hasSessions ? (
+                  <div className="sysmon-users">
+                    <ul className="remote-usage-users">
+                      <li className="remote-usage-users-head" aria-hidden="true">
+                        <span>User</span>
+                        <span>CPU</span>
+                        <span>Sessions</span>
+                        <span>Mem</span>
+                      </li>
+                      {sessionRows.map((s) => (
+                        <li key={s.user}>
+                          <span className="remote-usage-user">{s.user}</span>
+                          <span className="remote-usage-user-cpu">
+                            <UsageLight pct={s.cpu} />
+                            {s.cpu.toFixed(0)}%
+                          </span>
+                          <span className="remote-usage-user-sessions">{s.sessions}</span>
+                          <span className="remote-usage-user-mem">{s.mem.toFixed(0)}%</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <div className="sysmon-users sysmon-users-empty">
+                    No interactive logins on this host.
+                  </div>
+                ))}
+            </>
+          )}
 
           {/* Per-user breakdown: who is loading the machine, summed over the whole
               process table. Shown for a **remote host only** — it exists to answer
@@ -1112,7 +1262,10 @@ const SYSMON_CSS = `
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--bg-header);
+  /* The SOLID header tone, not --bg-header: that is a gradient in the fancy
+     themes, so each th would repaint the whole ramp and the .sorted color-mix
+     below would be invalid — i.e. a transparent sticky header. */
+  background: var(--bg-header-solid, var(--bg-panel));
   color: var(--text-secondary);
   text-align: left;
   font-weight: 600;
@@ -1127,7 +1280,7 @@ const SYSMON_CSS = `
    by 2px accent edge-lines drawn with an inset box-shadow (so the band gains no
    width and the columns stay aligned). */
 .sysmon-table th.sorted {
-  background: color-mix(in srgb, var(--accent) 30%, var(--bg-header));
+  background: color-mix(in srgb, var(--accent) 30%, var(--bg-header-solid));
   color: var(--text-primary);
   font-weight: 700;
   box-shadow: inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent);
@@ -1166,5 +1319,9 @@ const SYSMON_CSS = `
    an indented block below the vitals, not the full-width process scroller. */
 .sysmon-users {
   padding: 0 12px 8px;
+}
+.sysmon-users-empty {
+  color: var(--text-muted);
+  font-style: italic;
 }
 `;
