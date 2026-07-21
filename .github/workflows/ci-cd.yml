@@ -262,15 +262,21 @@ jobs:
           # step's `bash -e` would treat as fatal before `test -n` ever runs.
           dmg="$(find src-tauri/target target -path '*/universal-apple-darwin/release/bundle/dmg/*.dmg' -print -quit 2>/dev/null || true)"
           test -n "$dmg"
-          mv "$dmg" "$(dirname "$dmg")/Eldrun-${{ github.sha }}-universal.dmg"
+          # Name the published asset by version, like the AppImage/deb/exe
+          # bundles do — naming it by commit sha made the macOS asset the only
+          # one a user couldn't match to a release at a glance. Guard the move:
+          # Tauri may already emit exactly this name, and `mv x x` fails.
+          version="$(node -p "require('./package.json').version")"
+          target="$(dirname "$dmg")/Eldrun_${version}_universal.dmg"
+          [ "$dmg" = "$target" ] || mv "$dmg" "$target"
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
           name: eldrun-${{ github.sha }}-macos-universal-dmg
           path: |
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*-universal.dmg
-            target/universal-apple-darwin/release/bundle/dmg/*-universal.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*universal.dmg
+            target/universal-apple-darwin/release/bundle/dmg/*universal.dmg
 
   release:
     name: release
@@ -356,8 +362,11 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          # Pre-1.0 tags are alpha/preview builds; mark them so on GitHub.
-          prerelease: true
+          # Publish as a full release so the newest tag becomes GitHub's
+          # "Latest" — a pre-release never does, which left the releases page
+          # with no latest build and the README's /releases/latest link stale.
+          # The notes still say alpha; this flag is about discoverability.
+          prerelease: false
           body_path: release-body.md
           fail_on_unmatched_files: false
           # Recursive globs: the upload steps list two path patterns, so
